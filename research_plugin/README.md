@@ -277,7 +277,11 @@ agreement via a three-way diff against a baseline stored at
 Conflicts (both sides changed since the last sync) are recorded and halt the
 next `sandbox.request` until resolved.
 
-Excluded paths: `.git`, `.research_plugin`, `.research_plugin_sessions`,
+Excluded paths are configurable per project in the UI/API and fall back to
+`.research_plugin/sync_exclusions.json`, which is created with the current
+defaults on startup. The config has three lists: `names` (path components
+excluded anywhere), `prefixes`/`paths` (repo-relative path prefixes), and
+`suffixes`. Defaults: `.git`, `.research_plugin`, `.research_plugin_sessions`,
 `.venv`/`venv`, `__pycache__`, `*.pyc`, `.mypy_cache`, `.pytest_cache`,
 `.ruff_cache`, `.cache`, `.aws`, `node_modules`, `.DS_Store`, `data/raw`,
 `data/processed`.
@@ -285,7 +289,7 @@ Excluded paths: `.git`, `.research_plugin`, `.research_plugin_sessions`,
 Implemented MCP tools:
 
 - `workflow.status_and_next`
-- `project.create`, `project.update`, `project.get`
+- `project.create`, `project.update`, `project.get`, `project.get_settings`, `project.update_settings`
 - `claim.create`, `claim.list`
 - `experiment.create`, `experiment.list`, `experiment.get_state`, `experiment.transition`
 - `resource.register_file`, `resource.observe_file`, `resource.sync_changed_files`, `resource.associate`, `resource.list`, `resource.resolve`, `resource.history`

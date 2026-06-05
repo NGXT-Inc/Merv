@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ..sync_config import ensure_sync_exclusions_file
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
 from ..utils import now_iso
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
+  sync_exclusions_json TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -261,6 +263,7 @@ class StateStore:
 
     def _initialize(self) -> None:
         self._migrate_resources_unique()
+        ensure_sync_exclusions_file(repo_root=self.repo_root)
         conn = self.connect()
         try:
             conn.executescript(SCHEMA)
@@ -287,6 +290,11 @@ class StateStore:
     def _ensure_forward_schema(self, *, conn: sqlite3.Connection) -> None:
         # Experiments now persist the accepted conclusion on `complete`; older
         # databases predate the column.
+        self._ensure_columns(
+            conn=conn,
+            table="projects",
+            columns={"sync_exclusions_json": "TEXT NOT NULL DEFAULT ''"},
+        )
         self._ensure_columns(
             conn=conn,
             table="experiments",

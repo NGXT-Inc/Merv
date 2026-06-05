@@ -125,6 +125,61 @@ developer/debug data, not as a public audit feed.
 }
 ```
 
+Every `tool.call` event also carries `sent_chars` (size of the arguments the
+agent sent) and `received_chars` (size of the JSON result the agent received,
+serialized exactly as the MCP proxy hands it to the model). Unlike `args`/
+`result` above — which are summarized and capped — these are the **true** I/O
+sizes, so they hold even when the logged `result` is truncated.
+
+## Tool I/O analyzer (debug)
+
+A bounded SQLite ring (`.research_plugin/tool_calls.sqlite`) records the **full**
+request and response of recent tool calls — distinct from the activity log,
+which summarizes args and caps results. This powers the Debug page: rank tools
+by data returned, then read any single call's raw I/O.
+
+```http
+GET  /api/debug/tool-calls?minutes=&source=&status=&tool=&limit=200&sort=ts&order=desc
+GET  /api/debug/tool-calls/{id}
+POST /api/debug/tool-calls/clear
+```
+
+The list endpoint filters by time window (`minutes`), `source` (mcp/http/app),
+`status` (ok/error), and `tool` (substring), then returns a per-tool aggregate
+plus a sorted slice of individual calls. `sort` ∈ `ts | received_chars |
+sent_chars | duration_ms | tool`. Call rows are lightweight (sizes + an `id`);
+fetch one call's full raw payload — parsed back to native JSON — with the `{id}`
+endpoint.
+
+```json
+{
+  "totals": { "calls": 312, "sent_chars": 48211, "received_chars": 5840220, "error_calls": 7 },
+  "coverage": { "calls": 312, "stored": 1500, "oldest_ts": "…", "newest_ts": "…", "capped": false },
+  "filter": { "minutes": 60, "source": "mcp", "status": null, "tool": null },
+  "by_tool": [
+    {
+      "tool": "experiment.get_state", "calls": 84, "error_calls": 0,
+      "sent_chars": 6720, "received_chars": 4120000,
+      "avg_received_chars": 49047, "p50_received_chars": 41000, "p95_received_chars": 88000,
+      "max_received_chars": 92110, "avg_sent_chars": 80, "max_sent_chars": 120,
+      "avg_duration_ms": 24, "max_duration_ms": 61, "last_ts": "…"
+    }
+  ],
+  "calls": [
+    { "id": 9123, "ts": "…", "tool": "experiment.get_state", "source": "mcp",
+      "status": "ok", "duration_ms": 31, "sent_chars": 80, "received_chars": 92110, "error_code": "" }
+  ]
+}
+```
+
+`GET /api/debug/tool-calls/{id}` returns the same row plus `args` and `result`
+as native JSON (`result` is a plain string for error calls), with
+`args_truncated`/`result_truncated` flags for the rare oversized payload (stored
+as a `{ "_truncated": true, "_chars": N, "preview": "…" }` marker; the size
+fields stay exact). `by_tool` is sorted by `received_chars` descending — the
+worst context offenders first. `coverage.capped` is true when the requested
+window may extend past calls already evicted from the ring.
+
 ## Projects
 
 ```http
@@ -324,6 +379,7 @@ sandboxes or run commands. Each experiment has at most one sandbox.
 GET  /api/projects/{project_id}/sandboxes
 GET  /api/sandboxes/health
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox
+GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal?tail=50000
 POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 ```
@@ -348,6 +404,31 @@ A sandbox row looks like:
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the experiment's
 sandbox. The release endpoint terminates the sandbox and returns the updated row.
+
+The metrics endpoint returns live in-container usage, sampled on demand inside
+the sandbox (CPU/RAM via cgroups, GPU via `nvidia-smi`). It is best-effort:
+`available` is `false` (with `metrics: null`) when the sandbox is not running or
+the sampler came back empty (e.g. a CPU-only image without `nvidia-smi`). Samples
+are coalesced for ~2s so concurrent pollers don't double-exec.
+
+```json
+{
+  "experiment_id": "exp_...",
+  "sandbox_id": "sb-...",
+  "status": "running",
+  "available": true,
+  "sampled_at": "2026-06-02T23:14:00Z",
+  "reserved": { "gpu": "A100", "cpu": 2.0, "memory_mib": 8192 },
+  "metrics": {
+    "cpu": { "used_cores": 1.73, "limit_cores": 2.0 },
+    "memory": { "used_bytes": 2147483648, "limit_bytes": 8589934592 },
+    "gpus": [
+      { "index": 0, "name": "NVIDIA A100-SXM4-40GB",
+        "util_pct": 37, "mem_used_mib": 512, "mem_total_mib": 40960 }
+    ]
+  }
+}
+```
 
 ## Events
 

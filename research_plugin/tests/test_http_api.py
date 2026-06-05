@@ -134,6 +134,61 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(updated["status"], "supported")
         self.assertEqual(updated["confidence"], "high")
 
+    def test_project_sync_exclusions_roundtrip_and_reset(self) -> None:
+        project = self.request("POST", "/api/projects", {"name": "Sync Config"})
+        pid = project["id"]
+        self.assertIn("node_modules", project["sync_exclusions"]["names"])
+        self.assertIn("data/raw", project["sync_exclusions"]["prefixes"])
+
+        updated = self.request(
+            "PATCH",
+            f"/api/projects/{pid}",
+            {
+                "sync_exclusions": {
+                    "names": ["custom_cache"],
+                    "prefixes": ["datasets/local"],
+                    "suffixes": [".bin"],
+                }
+            },
+        )
+        self.assertEqual(updated["sync_exclusions_source"], "project")
+        self.assertEqual(updated["sync_exclusions"]["names"], ["custom_cache"])
+        self.assertEqual(updated["sync_exclusions"]["prefixes"], ["datasets/local"])
+        self.assertEqual(updated["sync_exclusions"]["suffixes"], [".bin"])
+
+        reset = self.request(
+            "PATCH",
+            f"/api/projects/{pid}",
+            {"reset_sync_exclusions": True},
+        )
+        self.assertNotEqual(reset["sync_exclusions_source"], "project")
+        self.assertIn("node_modules", reset["sync_exclusions"]["names"])
+
+    def test_project_settings_tools_expose_sync_exclusions_to_agents(self) -> None:
+        project = self.app.call_tool("project.create", {"name": "Agent Settings"})
+        pid = project["id"]
+
+        settings = self.app.call_tool("project.get_settings", {"project_id": pid})
+        self.assertEqual(settings["project_id"], pid)
+        self.assertIn("node_modules", settings["sync_exclusions"]["names"])
+        self.assertEqual(settings["config_file"], ".research_plugin/sync_exclusions.json")
+
+        updated = self.app.call_tool(
+            "project.update_settings",
+            {
+                "project_id": pid,
+                "sync_exclusions": {
+                    "names": ["agent_cache"],
+                    "paths": ["runs/tmp"],
+                    "suffixes": [".tmp"],
+                },
+            },
+        )
+        self.assertEqual(updated["sync_exclusions_source"], "project")
+        self.assertEqual(updated["sync_exclusions"]["names"], ["agent_cache"])
+        self.assertEqual(updated["sync_exclusions"]["prefixes"], ["runs/tmp"])
+        self.assertEqual(updated["sync_exclusions"]["suffixes"], [".tmp"])
+
     def test_sandbox_http_endpoints(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Sandbox UI Project"})
         project_id = project["id"]
@@ -156,6 +211,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         listed = self.request("GET", f"/api/projects/{project_id}/sandboxes")["sandboxes"]
         self.assertEqual(len(listed), 1)
+
+        # Live usage metrics endpoint surfaces the in-container sample.
+        self.backend.metrics[requested["sandbox_id"]] = {
+            "cpu": {"used_cores": 1.0, "limit_cores": 2.0},
+            "memory": {"used_bytes": 1073741824, "limit_bytes": 8589934592},
+            "gpus": [{"index": 0, "name": "A100", "util_pct": 10, "mem_used_mib": 512, "mem_total_mib": 40960}],
+        }
+        metrics = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/metrics")
+        self.assertTrue(metrics["available"])
+        self.assertEqual(metrics["metrics"]["gpus"][0]["util_pct"], 10)
 
         self.backend.append_transcript(experiment_id=exp_id, text="$ ls\nplan.md\n")
         terminal = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal")
@@ -220,6 +285,34 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 for event in activity["events"]
             )
         )
+
+    def test_tool_call_stats_endpoint(self) -> None:
+        # Generate a few tool calls of differing result sizes via the HTTP path.
+        self.request("GET", "/api/projects")
+        self.request("GET", "/api/projects")
+        stats = self.request("GET", "/api/debug/tool-calls?limit=50")
+        self.assertGreaterEqual(stats["totals"]["calls"], 2)
+        tools = {row["tool"]: row for row in stats["by_tool"]}
+        self.assertIn("project.list", tools)
+        self.assertGreater(tools["project.list"]["received_chars"], 0)
+        # Aggregate carries distribution stats, per-call rows carry sizes + an id.
+        self.assertIn("p95_received_chars", tools["project.list"])
+        self.assertTrue(all({"id", "received_chars", "sent_chars"} <= set(c) for c in stats["calls"]))
+
+    def test_tool_call_detail_and_clear(self) -> None:
+        self.request("GET", "/api/projects")
+        stats = self.request("GET", "/api/debug/tool-calls?tool=project.list")
+        call_id = stats["calls"][0]["id"]
+        detail = self.request("GET", f"/api/debug/tool-calls/{call_id}")
+        # Full raw response is returned as native JSON.
+        self.assertEqual(detail["tool"], "project.list")
+        self.assertIn("projects", detail["result"])
+        self.assertIsInstance(detail["args"], dict)
+        # Filtering by an unknown source yields nothing; clear wipes the store.
+        self.assertEqual(self.request("GET", "/api/debug/tool-calls?source=nope")["totals"]["calls"], 0)
+        cleared = self.request("POST", "/api/debug/tool-calls/clear")
+        self.assertGreaterEqual(cleared["cleared"], 1)
+        self.assertEqual(self.request("GET", "/api/debug/tool-calls")["totals"]["calls"], 0)
 
     def test_live_http_server_smoke(self) -> None:
         server = make_http_server(self.app, "127.0.0.1", 0)

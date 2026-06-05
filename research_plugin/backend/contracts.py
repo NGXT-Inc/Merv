@@ -30,15 +30,27 @@ class WorkflowStatusAndNextInput(ProjectScopedInput):
 class ProjectCreateInput(ContractModel):
     name: str
     summary: str = ""
+    sync_exclusions: dict[str, Any] | None = None
 
 
 class ProjectUpdateInput(ProjectScopedInput):
     name: str | None = None
     summary: str | None = None
+    sync_exclusions: dict[str, Any] | None = None
+    reset_sync_exclusions: bool = False
 
 
 class ProjectGetInput(ProjectScopedInput):
     pass
+
+
+class ProjectGetSettingsInput(ProjectScopedInput):
+    pass
+
+
+class ProjectUpdateSettingsInput(ProjectScopedInput):
+    sync_exclusions: dict[str, Any] | None = None
+    reset_sync_exclusions: bool = False
 
 
 class ClaimCreateInput(ProjectScopedInput):
@@ -198,6 +210,8 @@ TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
     "project.create": ProjectCreateInput,
     "project.update": ProjectUpdateInput,
     "project.get": ProjectGetInput,
+    "project.get_settings": ProjectGetSettingsInput,
+    "project.update_settings": ProjectUpdateSettingsInput,
     "project.list": EmptyInput,
     "claim.create": ClaimCreateInput,
     "claim.list": ClaimListInput,

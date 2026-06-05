@@ -53,14 +53,48 @@ class ResearchHttpApi:
             "summary": result["summary"],
         }
 
+    def tool_call_stats(
+        self,
+        *,
+        minutes: int | None,
+        source: str | None,
+        status: str | None,
+        tool: str | None,
+        limit: int,
+        sort: str,
+        order: str,
+    ) -> dict[str, Any]:
+        return self.app.tool_calls.stats(
+            minutes=minutes,
+            source=source,
+            status=status,
+            tool=tool,
+            limit=limit,
+            sort=sort,
+            order=order,
+        )
+
+    def tool_call_detail(self, call_id: int) -> dict[str, Any]:
+        record = self.app.tool_calls.get(call_id=call_id)
+        if record is None:
+            raise NotFoundError(f"tool call not found: {call_id}")
+        return record
+
+    def tool_calls_clear(self) -> dict[str, Any]:
+        return self.app.tool_calls.clear()
+
     def home(self, project_id: str) -> dict[str, Any]:
-        status = self.call_tool(name="workflow.status_and_next", arguments={"project_id": project_id})
+        # The UI needs the rich shape (project-wide claims/experiments); the
+        # slimmed `workflow.status_and_next` tool is for the agent only, so call
+        # the service method directly here.
+        status = self.app.workflow.status_and_next(project_id=project_id)
         resources = self.call_tool(name="resource.list", arguments={"project_id": project_id})["resources"]
         reviews = self.review_queue(project_id=project_id)
         events = self.events(project_id=project_id, limit=25)["events"]
         claims = status["project"]["active_claims"]
         experiments = [
-            self.call_tool(name="experiment.get_state", arguments={"project_id": project_id, "experiment_id": exp["id"]})
+            # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
+            self.app.experiments.get_state(experiment_id=exp["id"], project_id=project_id)
             for exp in status["project"]["active_experiments"]
         ]
         active_work = self.app.workflow.active_work(project_id=project_id)
@@ -91,7 +125,8 @@ class ResearchHttpApi:
         }
 
     def experiments_view(self, project_id: str) -> dict[str, Any]:
-        experiments = self.call_tool(name="experiment.list", arguments={"project_id": project_id})["experiments"]
+        # Full per-experiment state for the UI; the experiment.list tool stays slim.
+        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
         return {
             "experiments": [self._experiment_view_model(exp=exp) for exp in experiments],
             "current": experiments[-1] if experiments else None,
@@ -246,7 +281,10 @@ class ResearchHttpApi:
     def create_project(self, body: dict[str, Any]) -> dict[str, Any]:
         name = body.get("name") or body.get("title") or "Untitled Project"
         summary = body.get("summary") or body.get("description") or body.get("research_goal") or ""
-        return self.call_tool(name="project.create", arguments={"name": name, "summary": summary})
+        args: dict[str, Any] = {"name": name, "summary": summary}
+        if "sync_exclusions" in body:
+            args["sync_exclusions"] = body["sync_exclusions"]
+        return self.call_tool(name="project.create", arguments=args)
 
     def create_experiment(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         intent = body.get("intent") or body.get("title") or body.get("question") or ""
@@ -269,7 +307,8 @@ class ResearchHttpApi:
         )
 
     def filter_experiments(self, project_id: str, status: str | None) -> dict[str, Any]:
-        experiments = self.call_tool(name="experiment.list", arguments={"project_id": project_id})["experiments"]
+        # Full per-experiment state for the UI; the experiment.list tool stays slim.
+        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
         if status:
             experiments = [exp for exp in experiments if exp.get("status") == status]
         return {"experiments": experiments}
@@ -365,6 +404,29 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
     def activity(limit: int = Query(100, ge=1), source: str | None = None) -> dict[str, Any]:
         return api.activity(limit=limit, source=source)
 
+    @http.get("/api/debug/tool-calls")
+    def tool_call_stats(
+        minutes: int | None = Query(None, ge=1),
+        source: str | None = None,
+        status: str | None = None,
+        tool: str | None = None,
+        limit: int = Query(200, ge=1, le=2000),
+        sort: str = "ts",
+        order: str = "desc",
+    ) -> dict[str, Any]:
+        return api.tool_call_stats(
+            minutes=minutes, source=source, status=status, tool=tool,
+            limit=limit, sort=sort, order=order,
+        )
+
+    @http.get("/api/debug/tool-calls/{call_id}")
+    def tool_call_detail(call_id: int) -> dict[str, Any]:
+        return api.tool_call_detail(call_id=call_id)
+
+    @http.post("/api/debug/tool-calls/clear")
+    def tool_calls_clear() -> dict[str, Any]:
+        return api.tool_calls_clear()
+
     @http.get("/api/projects")
     def list_projects() -> dict[str, Any]:
         return api.call_tool(name="project.list", arguments={})
@@ -388,10 +450,8 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
 
     @http.get("/api/projects/{project_id}/status")
     def project_status(project_id: str, experiment_id: str | None = None) -> dict[str, Any]:
-        args = {"project_id": project_id}
-        if experiment_id:
-            args["experiment_id"] = experiment_id
-        return api.call_tool(name="workflow.status_and_next", arguments=args)
+        # Full shape for the UI (see home()); the tool stays slim for the agent.
+        return api.app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
 
     @http.get("/api/projects/{project_id}/claims")
     def list_claims(project_id: str) -> dict[str, Any]:
@@ -424,11 +484,13 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}")
     def get_experiment(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.call_tool(name="experiment.get_state", arguments={"project_id": project_id, "experiment_id": experiment_id})
+        # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
+        return api.app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/status")
     def experiment_status(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.call_tool(name="workflow.status_and_next", arguments={"project_id": project_id, "experiment_id": experiment_id})
+        # Full shape for the UI (see home()); the tool stays slim for the agent.
+        return api.app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
 
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/transition")
     def transition_experiment(project_id: str, experiment_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
@@ -497,6 +559,10 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")
     def get_sandbox(project_id: str, experiment_id: str) -> dict[str, Any]:
         return api.app.sandboxes.get_for_ui(project_id=project_id, experiment_id=experiment_id)
+
+    @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics")
+    def sandbox_metrics(project_id: str, experiment_id: str) -> dict[str, Any]:
+        return api.app.sandboxes.metrics_for_ui(project_id=project_id, experiment_id=experiment_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal")
     def sandbox_terminal(project_id: str, experiment_id: str, tail: int | None = None) -> dict[str, Any]:

@@ -16,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
+from backend.sync_config import SyncExclusionPolicy, normalize_sync_exclusions
 from backend.execution.backends.modal.sync.baseline import BaselineStore
 from backend.execution.backends.modal.sync.differ import three_way_diff
 from backend.execution.backends.modal.sync.engine import SyncEngine
@@ -134,6 +135,33 @@ class LocalScanExclusionsTest(unittest.TestCase):
             self.assertFalse(any(p.startswith(".venv/") for p in result))
             self.assertFalse(any(p.startswith(".research_plugin/") for p in result))
             self.assertFalse(any(p.startswith(".research_plugin_job/") for p in result))
+
+    def test_scan_uses_custom_exclusion_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".venv").mkdir()
+            (repo / ".venv" / "python").write_text("sync me\n")
+            (repo / "tmp").mkdir()
+            (repo / "tmp" / "x.txt").write_text("skip me\n")
+            (repo / "src").mkdir()
+            (repo / "src" / "main.pyc").write_text("sync bytecode\n")
+
+            result = local_scan(
+                repo_root=repo,
+                exclusions=SyncExclusionPolicy(
+                    names=("tmp",),
+                    suffixes=(),
+                    prefixes=(),
+                ),
+            )
+
+            self.assertIn(".venv/python", result)
+            self.assertIn("src/main.pyc", result)
+            self.assertNotIn("tmp/x.txt", result)
+
+    def test_config_accepts_paths_alias_for_prefixes(self) -> None:
+        config = normalize_sync_exclusions({"paths": ["local/data"]})
+        self.assertEqual(config["prefixes"], ["local/data"])
 
 
 class BaselineStoreTest(unittest.TestCase):

@@ -38,12 +38,17 @@ class FakeSandboxBackend:
         self.terminated: list[str] = []
         self.transcripts: dict[str, str] = {}
         self.by_experiment: dict[str, str] = {}
+        # Live SSH endpoint per sandbox id; move_endpoint() simulates a tunnel
+        # that Modal relocated so refresh_ssh_endpoint() can be exercised.
+        self.endpoints: dict[str, tuple[str, int]] = {}
         self.phases: list[tuple[str, str]] = []
         self.healthy = True
         # async-path knobs
         self.gate: threading.Event | None = None
         self.fail_after_create = False
         self.fail_immediately = False
+        # metrics knob: per-sandbox-id sample dict (None => unavailable).
+        self.metrics: dict[str, dict | None] = {}
 
     def acquire(
         self,
@@ -65,6 +70,7 @@ class FakeSandboxBackend:
         name = f"rp-{request.experiment_id}"
         self.alive[sandbox_id] = True
         self.by_experiment[request.experiment_id] = sandbox_id
+        self.endpoints[sandbox_id] = ("sandbox.modal.test", 40000 + self.counter)
         workdir = request.remote_workdir or "/workspace/repo"
         # Past create: a failure must terminate the sandbox (mirrors Modal).
         try:
@@ -79,15 +85,21 @@ class FakeSandboxBackend:
         except BaseException:
             self.terminate(sandbox_id=sandbox_id)
             raise
+        host, port = self.endpoints[sandbox_id]
         return ProvisionedSandbox(
             sandbox_id=sandbox_id,
-            ssh_host="sandbox.modal.test",
-            ssh_port=40000 + self.counter,
+            ssh_host=host,
+            ssh_port=port,
             ssh_user="root",
             workdir=workdir,
             volume_name=f"research-plugin-{request.project_id}",
             reused=False,
         )
+
+    def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
+        if not self.alive.get(sandbox_id):
+            return None
+        return self.endpoints.get(sandbox_id)
 
     def find_sandbox_id(self, *, experiment_id: str) -> str | None:
         sandbox_id = self.by_experiment.get(experiment_id)
@@ -117,6 +129,11 @@ class FakeSandboxBackend:
             return text[-tail:]
         return text
 
+    def sample_metrics(self, *, sandbox_id: str) -> dict | None:
+        if not self.alive.get(sandbox_id):
+            return None
+        return self.metrics.get(sandbox_id)
+
     def health(self) -> dict:
         return {"ok": self.healthy, "name": self.capabilities.name}
 
@@ -125,6 +142,10 @@ class FakeSandboxBackend:
     def kill(self, *, sandbox_id: str) -> None:
         """Simulate Modal reaping a sandbox (timeout / crash)."""
         self.alive[sandbox_id] = False
+
+    def move_endpoint(self, *, sandbox_id: str, host: str, port: int) -> None:
+        """Simulate Modal relocating a live sandbox's SSH tunnel."""
+        self.endpoints[sandbox_id] = (host, port)
 
     def append_transcript(self, *, experiment_id: str, text: str) -> None:
         self.transcripts[experiment_id] = self.transcripts.get(experiment_id, "") + text

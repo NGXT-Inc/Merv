@@ -15,6 +15,7 @@ import Reviews from './pages/Reviews';
 import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
 import Activity from './pages/Activity';
+import Debug from './pages/Debug';
 import VisualDag from './pages/VisualDag';
 
 export default function App() {
@@ -73,6 +74,7 @@ export default function App() {
           <Route path="/events" element={<Events />} />
           <Route path="/sandboxes" element={<Sandboxes />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/debug" element={<Debug />} />
           <Route path="/visual/dag" element={<VisualDag />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -102,6 +102,39 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 2)
 
+    # ---- tunnel endpoint refresh (alive sandbox, moved tunnel) ----
+
+    def test_get_refreshes_moved_endpoint(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        old_host = created["ssh"]["host"]
+        # Sandbox stays alive but Modal relocates its SSH tunnel.
+        self.backend.move_endpoint(
+            sandbox_id=created["sandbox_id"], host="r999.modal.host", port=55555
+        )
+        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(got["status"], "running")
+        self.assertNotEqual(got["ssh"]["host"], old_host)
+        self.assertEqual(got["ssh"]["host"], "r999.modal.host")
+        self.assertEqual(got["ssh"]["port"], 55555)
+        # The conn file the dispatcher sources must carry the refreshed endpoint.
+        body = (self.repo / ".research_plugin" / "sandboxes" / "conn" / exp_id).read_text()
+        self.assertIn("r999.modal.host", body)
+        self.assertIn("55555", body)
+
+    def test_reuse_refreshes_moved_endpoint(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.move_endpoint(
+            sandbox_id=created["sandbox_id"], host="r777.modal.host", port=33333
+        )
+        reused = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.assertTrue(reused["reused"])
+        self.assertEqual(reused["ssh"]["host"], "r777.modal.host")
+        self.assertEqual(reused["ssh"]["port"], 33333)
+        # No new sandbox was created — this was a pure reuse + endpoint refresh.
+        self.assertEqual(len(self.backend.acquired), 1)
+
     # ---- status / liveness ----
 
     def test_get_reconciles_dead_sandbox(self) -> None:
@@ -117,6 +150,62 @@ class SandboxServiceTest(unittest.TestCase):
         other = self.call("project.create", name="Other")["id"]
         with self.assertRaises(NotFoundError):
             self.call("sandbox.get", project_id=other, experiment_id=exp_id)
+
+    # ---- live usage metrics ----
+
+    def test_metrics_for_running_sandbox(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        sample = {
+            "cpu": {"used_cores": 1.5, "limit_cores": 2.0},
+            "memory": {"used_bytes": 2147483648, "limit_bytes": 8589934592},
+            "gpus": [{"index": 0, "name": "A100", "util_pct": 42, "mem_used_mib": 1024, "mem_total_mib": 40960}],
+        }
+        self.backend.metrics[created["sandbox_id"]] = sample
+        result = self.app.sandboxes.metrics_for_ui(
+            project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["metrics"], sample)
+        # The row's reserved request rides along to frame the bars.
+        self.assertEqual(result["reserved"]["cpu"], 2.0)
+
+    def test_metrics_caches_within_ttl(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.metrics[created["sandbox_id"]] = {"cpu": {"used_cores": 0.1, "limit_cores": None}, "memory": {"used_bytes": 1, "limit_bytes": None}, "gpus": []}
+        calls = {"n": 0}
+        original = self.backend.sample_metrics
+
+        def counting(*, sandbox_id):
+            calls["n"] += 1
+            return original(sandbox_id=sandbox_id)
+
+        self.backend.sample_metrics = counting
+        self.app.sandboxes.metrics_for_ui(project_id=self.project_id, experiment_id=exp_id)
+        self.app.sandboxes.metrics_for_ui(project_id=self.project_id, experiment_id=exp_id)
+        # Second call inside the TTL window is served from cache.
+        self.assertEqual(calls["n"], 1)
+
+    def test_metrics_unavailable_when_not_running(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        result = self.app.sandboxes.metrics_for_ui(
+            project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["metrics"])
+        # A terminated sandbox is never sampled.
+        self.assertEqual(created["status"], "running")
+
+    def test_metrics_no_sandbox_is_soft_none(self) -> None:
+        exp_id = self._experiment()
+        result = self.app.sandboxes.metrics_for_ui(
+            project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertFalse(result["available"])
+        self.assertEqual(result["status"], "none")
 
     # ---- terminal ----
 

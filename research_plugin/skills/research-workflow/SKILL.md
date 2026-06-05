@@ -50,7 +50,7 @@ Do not reconstruct workflow state from memory.
 ## Execution environment
 
 Expensive or GPU work runs in a **Modal sandbox** that you drive directly over
-SSH. There is no job abstraction — you run ordinary shell commands.
+SSH. You run ordinary shell commands.
 
 1. Once the experiment is `ready_to_run` (or `running`), call
    `sandbox.request(project_id, experiment_id, gpu?, cpu?, memory?, time_limit?)`.
@@ -114,16 +114,9 @@ When Codex creates or changes files during an experiment:
 - when `workflow.status_and_next` includes `resource_guidance`, follow its
   `association_role`; do not guess plural role names such as `results`,
   `report`, or `output`
-- expect the server to store path, mtime, size, current `version_id`, and
-  backend-owned shadow Git metadata for small text files
-- expect future status calls to return those paths so Codex can read the files
-  directly from the repo
 - expect `workflow.status_and_next` to refresh already-associated current-attempt
   resources if their live files changed; do not do separate sync checks before
   every workflow status call
-- use `resource.history` to list immutable observed versions of a resource
-  (historical file content is not retrievable through MCP — open the live file
-  or use git history in the user's repo)
 - do not create artifact manifests or content-addressed resource objects
 - do not restore old versions through MCP; edit the live file normally and sync
   it as a new version
@@ -133,7 +126,7 @@ When Codex creates or changes files during an experiment:
 When MCP says the next action is `launch_design_reviewer` or
 `launch_experiment_reviewer`, inspect `workflow.review_gate`:
 
-- `status: none`: call `review.request`, then launch a new reviewer agent using
+- `status: none`: call `review.request`, then launch a new, independent reviewer agent using
   the returned `reviewer_capability` and `reviewer_handoff`.
 - `status: requested`: a review request exists but no reviewer has started. Use
   the `reviewer_capability` from the last `review.request` response to launch

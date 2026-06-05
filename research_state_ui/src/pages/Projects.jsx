@@ -100,6 +100,13 @@ function ProjectCard({ project, isActive, onSwitch, onRename }) {
     setEditing(false);
   }
 
+  function startEditing() {
+    setName(project.name || '');
+    setSummary(project.summary || '');
+    setError(null);
+    setEditing(true);
+  }
+
   return (
     <div className={`proj-card${isActive ? ' proj-card--active' : ''}`}>
       {editing ? (
@@ -137,7 +144,7 @@ function ProjectCard({ project, isActive, onSwitch, onRename }) {
               </div>
             </div>
             <div className="cluster" style={{ flexShrink: 0 }}>
-              <button className="btn btn--sm btn--ghost" onClick={() => setEditing(true)}>Rename</button>
+              <button className="btn btn--sm btn--ghost" onClick={startEditing}>Edit</button>
               {isActive
                 ? <Link to="/" className="btn btn--sm">Open →</Link>
                 : <button className="btn btn--sm btn--primary" onClick={onSwitch}>Switch →</button>}

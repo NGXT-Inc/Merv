@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.sync_config import SyncExclusionPolicy
 from .applier import SyncApplier
 from .baseline import BaselineStore
 from .scanner import local_scan, remote_scan
@@ -52,6 +53,7 @@ from .types import SyncResult
 VOLUME_REPO_DIR = ""  # The volume IS the repo; no internal prefix.
 
 ActivityHook = Callable[[str, dict[str, Any]], None]
+SyncExclusionProvider = Callable[[str], SyncExclusionPolicy]
 
 
 def now_iso() -> str:
@@ -89,6 +91,7 @@ class SyncEngine:
         volume_mount_path: str = "/workspace/repo",
         activity: ActivityHook | None = None,
         process_lock: InterProcessSyncLock | None = None,
+        exclusion_provider: SyncExclusionProvider | None = None,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.baseline = baseline
@@ -96,6 +99,7 @@ class SyncEngine:
         self.volume_name_prefix = volume_name_prefix
         self.volume_mount_path = volume_mount_path
         self.activity = activity
+        self.exclusion_provider = exclusion_provider
         self.process_lock = process_lock or InterProcessSyncLock(
             lock_path=self.repo_root / ".research_plugin" / "modal" / "sync.lock"
         )
@@ -136,6 +140,9 @@ class SyncEngine:
             "mount_path": self.volume_mount_path,
             "repo_dir": VOLUME_REPO_DIR,
         }
+
+    def set_exclusion_provider(self, provider: SyncExclusionProvider | None) -> None:
+        self.exclusion_provider = provider
 
     def sync(
         self,
@@ -249,9 +256,14 @@ class SyncEngine:
         started = time.monotonic()
         info = self.ensure_project_volume(project_id=project_id)
         volume = self.volume_provider(info["volume_name"])
+        exclusions = self._exclusions_for(project_id=project_id)
 
-        local = local_scan(repo_root=self.repo_root)
-        remote = remote_scan(volume=volume, repo_dir=VOLUME_REPO_DIR)
+        local = local_scan(repo_root=self.repo_root, exclusions=exclusions)
+        remote = remote_scan(
+            volume=volume,
+            repo_dir=VOLUME_REPO_DIR,
+            exclusions=exclusions,
+        )
         baseline = self.baseline.load_baseline(project_id=project_id)
         conflict_paths = self.baseline.conflict_paths(project_id=project_id)
 
@@ -262,7 +274,7 @@ class SyncEngine:
             conflict_paths=conflict_paths,
         )
 
-        outcome = self.applier.apply(volume=volume, plan=plan)
+        outcome = self.applier.apply(volume=volume, plan=plan, exclusions=exclusions)
 
         when = now_iso()
         for path, (local_fp, remote_fp) in outcome.fingerprints.items():
@@ -340,6 +352,18 @@ class SyncEngine:
             self.activity(event_type, payload)
         except Exception:  # noqa: BLE001
             pass
+
+    def _exclusions_for(self, *, project_id: str) -> SyncExclusionPolicy:
+        if self.exclusion_provider is None:
+            return SyncExclusionPolicy.defaults()
+        try:
+            return self.exclusion_provider(project_id)
+        except Exception as exc:  # noqa: BLE001
+            self._emit(
+                "modal.sync.exclusion_config_error",
+                {"project_id": project_id, "message": str(exc)},
+            )
+            return SyncExclusionPolicy.defaults()
 
 
 def _with_coalesced(result: SyncResult) -> SyncResult:

@@ -20,6 +20,7 @@ const FAILED = 'failed';
 export default function SandboxTerminal({ projectId, experimentId }) {
   const [sandbox, setSandbox] = useState(null);
   const [transcript, setTranscript] = useState(null);
+  const [metrics, setMetrics] = useState(null);
   const [error, setError] = useState(null);
   const [releasing, setReleasing] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
@@ -36,6 +37,15 @@ export default function SandboxTerminal({ projectId, experimentId }) {
         } catch {
           /* terminal is best-effort */
         }
+      }
+      if (sb && sb.status === RUNNING) {
+        try {
+          setMetrics(await api.getSandboxMetrics(projectId, experimentId));
+        } catch {
+          /* live usage is best-effort */
+        }
+      } else {
+        setMetrics(null);
       }
     } catch (err) {
       setError(err.message);
@@ -113,6 +123,7 @@ export default function SandboxTerminal({ projectId, experimentId }) {
       ) : (
         <>
           <SandboxMeta sandbox={sandbox} />
+          <SandboxUsage metrics={metrics} sandbox={sandbox} />
           <div className="sbx-term-head">
             <span>
               terminal transcript
@@ -198,4 +209,115 @@ function SandboxMeta({ sandbox }) {
       )}
     </div>
   );
+}
+
+/**
+ * SandboxUsage — live in-container resource gauges (CPU / RAM / GPU), sampled
+ * inside the sandbox every poll. Best-effort: renders nothing until the first
+ * successful sample, and a quiet note when the sampler is unavailable (e.g. a
+ * CPU-only image without nvidia-smi). Reserved gpu/cpu/memory from the sandbox
+ * row frame the bars when the cgroup limit isn't readable.
+ */
+function SandboxUsage({ metrics, sandbox }) {
+  if (!metrics) return null;
+  if (metrics.available === false || !metrics.metrics) {
+    return (
+      <div className="sbx-usage sbx-usage--empty">
+        <span className="sbx-usage-title">live usage</span>
+        <span className="sbx-usage-note">sampling…</span>
+      </div>
+    );
+  }
+  const m = metrics.metrics;
+  const reservedMemBytes = sandbox?.memory ? sandbox.memory * 1024 * 1024 : null;
+
+  const cpuUsed = m.cpu?.used_cores;
+  const cpuLimit = m.cpu?.limit_cores || sandbox?.cpu || null;
+  const memUsed = m.memory?.used_bytes;
+  const memLimit = m.memory?.limit_bytes || reservedMemBytes;
+  const gpus = Array.isArray(m.gpus) ? m.gpus : [];
+
+  return (
+    <div className="sbx-usage">
+      <div className="sbx-usage-head">
+        <span className="sbx-usage-title">live usage</span>
+        <span className="log-tail-live-dot" title="sampled live" />
+      </div>
+      <div className="sbx-usage-grid">
+        {cpuUsed != null && (
+          <UsageBar
+            label="CPU"
+            value={cpuUsed}
+            max={cpuLimit}
+            pct={cpuLimit ? (cpuUsed / cpuLimit) * 100 : null}
+            text={`${cpuUsed.toFixed(2)}${cpuLimit ? ` / ${fmtCores(cpuLimit)}` : ''} cores`}
+          />
+        )}
+        {memUsed != null && (
+          <UsageBar
+            label="RAM"
+            value={memUsed}
+            max={memLimit}
+            pct={memLimit ? (memUsed / memLimit) * 100 : null}
+            text={`${fmtBytes(memUsed)}${memLimit ? ` / ${fmtBytes(memLimit)}` : ''}`}
+            title="Resident memory in use (anonymous + unreclaimable). Excludes reclaimable page cache / mmapped files, so it reflects real pressure toward the reserved limit, not what `free` reports."
+          />
+        )}
+        {gpus.map((g) => (
+          <UsageBar
+            key={`gpu-util-${g.index}`}
+            label={gpus.length > 1 ? `GPU${g.index} util` : 'GPU util'}
+            pct={g.util_pct}
+            text={g.util_pct != null ? `${g.util_pct}%` : '—'}
+          />
+        ))}
+        {gpus.map((g) => (
+          g.mem_total_mib ? (
+            <UsageBar
+              key={`gpu-vram-${g.index}`}
+              label={gpus.length > 1 ? `GPU${g.index} VRAM` : 'VRAM'}
+              pct={g.mem_used_mib != null ? (g.mem_used_mib / g.mem_total_mib) * 100 : null}
+              text={`${fmtMib(g.mem_used_mib)} / ${fmtMib(g.mem_total_mib)}`}
+            />
+          ) : null
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UsageBar({ label, pct, text, title }) {
+  const clamped = pct == null ? null : Math.max(0, Math.min(100, pct));
+  const hot = clamped != null && clamped >= 90;
+  return (
+    <div className="sbx-usage-item" title={title || undefined}>
+      <div className="sbx-usage-item-head">
+        <span className="sbx-usage-label">{label}</span>
+        <span className="sbx-usage-value mono">{text}</span>
+      </div>
+      <div className="sbx-usage-track">
+        <div
+          className={`sbx-usage-fill${hot ? ' hot' : ''}`}
+          style={{ width: clamped == null ? '0%' : `${clamped}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function fmtCores(n) {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+function fmtBytes(bytes) {
+  if (bytes == null) return '—';
+  const gib = bytes / (1024 ** 3);
+  if (gib >= 1) return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`;
+  const mib = bytes / (1024 ** 2);
+  return `${Math.round(mib)} MiB`;
+}
+
+function fmtMib(mib) {
+  if (mib == null) return '—';
+  return fmtBytes(mib * 1024 * 1024);
 }

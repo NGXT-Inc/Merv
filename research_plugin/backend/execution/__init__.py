@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.sync_config import SyncExclusionPolicy
 from .errors import (
     BackendPermissionError,
     BackendUnavailableError,
@@ -30,6 +31,7 @@ from .types import (
 
 ActivityHook = Callable[[str, dict[str, Any]], None]
 ShouldPollProject = Callable[[str], bool]
+SyncExclusionProvider = Callable[[str], SyncExclusionPolicy]
 
 
 def build_sandbox_backend(
@@ -38,6 +40,7 @@ def build_sandbox_backend(
     name: str | None = None,
     activity: ActivityHook | None = None,
     should_poll_project: ShouldPollProject | None = None,
+    sync_exclusion_provider: SyncExclusionProvider | None = None,
 ) -> SandboxBackend:
     """Select and construct the configured sandbox backend.
 
@@ -58,6 +61,7 @@ def build_sandbox_backend(
             repo_root=repo_root,
             activity=activity,
             should_poll_project=should_poll_project,
+            sync_exclusion_provider=sync_exclusion_provider,
         )
     raise BackendUnavailableError(f"unknown execution backend: {selected}")
 
@@ -76,5 +80,6 @@ __all__ = [
     "SandboxBackend",
     "SandboxRequest",
     "ShouldPollProject",
+    "SyncExclusionProvider",
     "build_sandbox_backend",
 ]

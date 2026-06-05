@@ -6,50 +6,34 @@ import asyncio
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from backend.sync_config import SyncExclusionPolicy
 from .types import FileFingerprint
 
 
-# Directories whose entire contents we never sync.
-HARDCODED_EXCLUDED_NAMES: frozenset[str] = frozenset(
-    {
-        ".git",
-        ".research_plugin",
-        ".research_plugin_job",
-        ".research_plugin_sessions",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".cache",
-        ".aws",
-        "node_modules",
-        ".DS_Store",
-    }
-)
+DEFAULT_EXCLUSION_POLICY = SyncExclusionPolicy.defaults()
 
-HARDCODED_EXCLUDED_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
-
-# Path prefixes (repo-relative, posix) that are pruned from sync entirely.
-# These hold large, volume-managed, reproducible-on-demand data that the job
-# writes/reads directly on the Modal Volume and must never round-trip to the
-# local repo — otherwise the bidirectional submit-time sync tries to pull tens
-# of GB back to the daemon host and blows past the submit watchdog. Experiment
-# outputs (declared expected_outputs) live under experiments/ and still sync.
-HARDCODED_EXCLUDED_PREFIXES: tuple[str, ...] = ("data/raw", "data/processed")
+# Backwards-compatible names for tests/downstream imports. New code should pass
+# a SyncExclusionPolicy explicitly when project config is available.
+HARDCODED_EXCLUDED_NAMES: frozenset[str] = frozenset(DEFAULT_EXCLUSION_POLICY.names)
+HARDCODED_EXCLUDED_SUFFIXES: tuple[str, ...] = DEFAULT_EXCLUSION_POLICY.suffixes
+HARDCODED_EXCLUDED_PREFIXES: tuple[str, ...] = DEFAULT_EXCLUSION_POLICY.prefixes
 
 
-def local_scan(*, repo_root: Path) -> dict[str, FileFingerprint]:
+def local_scan(
+    *,
+    repo_root: Path,
+    exclusions: SyncExclusionPolicy | None = None,
+) -> dict[str, FileFingerprint]:
     """Walk the local repo, stat every file, return {rel_path: fingerprint}.
 
     Symlinks are skipped. Excluded directory names are pruned.
     """
     repo_root = repo_root.resolve()
+    policy = exclusions or DEFAULT_EXCLUSION_POLICY
     result: dict[str, FileFingerprint] = {}
-    for path in _iter_local_files(repo_root):
+    for path in _iter_local_files(repo_root, exclusions=policy):
         rel = path.relative_to(repo_root).as_posix()
-        if _excluded(rel):
+        if _excluded(rel, exclusions=policy):
             continue
         stat = path.stat()
         result[rel] = FileFingerprint(
@@ -60,7 +44,12 @@ def local_scan(*, repo_root: Path) -> dict[str, FileFingerprint]:
     return result
 
 
-def remote_scan(*, volume: Any, repo_dir: str = "") -> dict[str, FileFingerprint]:
+def remote_scan(
+    *,
+    volume: Any,
+    repo_dir: str = "",
+    exclusions: SyncExclusionPolicy | None = None,
+) -> dict[str, FileFingerprint]:
     """List the modal volume recursively under repo_dir, return {rel_path: fingerprint}.
 
     The volume content is treated as a direct mirror of the local repo root, so
@@ -68,6 +57,7 @@ def remote_scan(*, volume: Any, repo_dir: str = "") -> dict[str, FileFingerprint
     the entire volume is treated as the repo.
     """
     prefix = repo_dir.strip("/")
+    policy = exclusions or DEFAULT_EXCLUSION_POLICY
     listdir = getattr(volume, "listdir", None)
     if listdir is None:
         raise RuntimeError("modal volume object has no listdir; cannot scan remote")
@@ -88,7 +78,7 @@ def remote_scan(*, volume: Any, repo_dir: str = "") -> dict[str, FileFingerprint
             if prefix and full_path.startswith(f"{prefix}/")
             else full_path
         )
-        if not rel or _excluded(rel):
+        if not rel or _excluded(rel, exclusions=policy):
             continue
         mtime = getattr(entry, "mtime", 0) or 0
         size = int(getattr(entry, "size", 0) or 0)
@@ -100,7 +90,7 @@ def remote_scan(*, volume: Any, repo_dir: str = "") -> dict[str, FileFingerprint
     return result
 
 
-def _iter_local_files(repo_root: Path):
+def _iter_local_files(repo_root: Path, *, exclusions: SyncExclusionPolicy):
     """rglob with directory pruning. Yields file Path objects only."""
     stack: list[Path] = [repo_root]
     while stack:
@@ -113,26 +103,26 @@ def _iter_local_files(repo_root: Path):
             if entry.is_symlink():
                 continue
             name = entry.name
-            if name in HARDCODED_EXCLUDED_NAMES:
+            if name in exclusions.names:
                 continue
             if entry.is_dir():
                 stack.append(entry)
                 continue
             if not entry.is_file():
                 continue
-            if name.endswith(HARDCODED_EXCLUDED_SUFFIXES):
+            if name.endswith(exclusions.suffixes):
                 continue
             yield entry
 
 
-def _excluded(rel_path: str) -> bool:
+def _excluded(rel_path: str, *, exclusions: SyncExclusionPolicy) -> bool:
     parts = PurePosixPath(rel_path).parts
-    if any(part in HARDCODED_EXCLUDED_NAMES for part in parts):
+    if any(part in exclusions.names for part in parts):
         return True
-    for prefix in HARDCODED_EXCLUDED_PREFIXES:
+    for prefix in exclusions.prefixes:
         if rel_path == prefix or rel_path.startswith(prefix + "/"):
             return True
-    return rel_path.endswith(HARDCODED_EXCLUDED_SUFFIXES)
+    return rel_path.endswith(exclusions.suffixes)
 
 
 def _entry_is_file(entry: Any) -> bool:

@@ -75,6 +75,7 @@ class FakeSandbox:
         self.terminated = False
         self.exec_calls: list[str] = []
         self.transcript = ""
+        self.metrics_output = ""
 
     def tunnels(self):
         if FakeSandbox.tunnels_fail:
@@ -95,7 +96,11 @@ class FakeSandbox:
         pass
 
     def exec(self, *args, timeout=None):
-        self.exec_calls.append(" ".join(str(a) for a in args))
+        command = " ".join(str(a) for a in args)
+        self.exec_calls.append(command)
+        # The usage sampler is the only exec that shells out to nvidia-smi.
+        if "nvidia-smi" in command:
+            return FakeProcess(stdout=self.metrics_output, code=0)
         return FakeProcess(stdout=self.transcript, code=0)
 
 
@@ -300,6 +305,36 @@ class ModalSandboxBackendTest(unittest.TestCase):
             workdir=provisioned.workdir,
         )
         self.assertIn("committed transcript line", text)
+
+    def test_sample_metrics_parses_gauges(self) -> None:
+        provisioned = self.backend.acquire(request=self._request())
+        FakeSandbox.registry[provisioned.sandbox_id].metrics_output = (
+            "RPM cpu_cores_used=1.5000\n"
+            "RPM cpu_cores_limit=2.0000\n"
+            "RPM mem_used_bytes=2147483648\n"
+            "RPM mem_limit_bytes=8589934592\n"
+            "RPM gpu idx=0 util=42 used=1024 total=40960 name=NVIDIA A100-SXM4-40GB\n"
+            "RPM ok=1\n"
+        )
+        metrics = self.backend.sample_metrics(sandbox_id=provisioned.sandbox_id)
+        self.assertIsNotNone(metrics)
+        self.assertEqual(metrics["cpu"], {"used_cores": 1.5, "limit_cores": 2.0})
+        self.assertEqual(metrics["memory"], {"used_bytes": 2147483648, "limit_bytes": 8589934592})
+        self.assertEqual(len(metrics["gpus"]), 1)
+        gpu = metrics["gpus"][0]
+        self.assertEqual(gpu["util_pct"], 42)
+        self.assertEqual(gpu["mem_used_mib"], 1024)
+        self.assertEqual(gpu["mem_total_mib"], 40960)
+        self.assertIn("A100", gpu["name"])
+
+    def test_sample_metrics_empty_output_is_none(self) -> None:
+        provisioned = self.backend.acquire(request=self._request())
+        # Sampler returns nothing usable (no nvidia-smi, unreadable cgroups).
+        FakeSandbox.registry[provisioned.sandbox_id].metrics_output = ""
+        self.assertIsNone(self.backend.sample_metrics(sandbox_id=provisioned.sandbox_id))
+
+    def test_sample_metrics_unknown_sandbox_is_none(self) -> None:
+        self.assertIsNone(self.backend.sample_metrics(sandbox_id=""))
 
     def test_health(self) -> None:
         self.assertTrue(self.backend.health()["ok"])

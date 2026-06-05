@@ -111,6 +111,14 @@ class ActivityLogger:
                 "duration_ms": duration_ms,
                 "args": summarize_arguments(arguments=arguments),
                 "result": cap_result(value=result),
+                # Full I/O sizes in characters — what the agent actually sent and
+                # received — independent of the capped `result`/summarized `args`
+                # above. `received_chars` matches the MCP proxy's serialization
+                # (json.dumps(result, sort_keys=True)) so it reflects the exact
+                # payload that lands in the agent's context. This is the signal
+                # the debug view sorts on to find context-bloating tools.
+                "sent_chars": payload_chars(value=arguments),
+                "received_chars": payload_chars(value=result),
             },
         )
 
@@ -134,6 +142,8 @@ class ActivityLogger:
                 "error": error,
                 "error_code": error_code,
                 "args": summarize_arguments(arguments=arguments),
+                "sent_chars": payload_chars(value=arguments),
+                "received_chars": len(error or ""),
             },
         )
 
@@ -274,6 +284,19 @@ def summarize_arguments(*, arguments: dict[str, Any]) -> dict[str, Any]:
         elif key in ID_KEYS:
             summary[key] = value
     return summary
+
+
+def payload_chars(*, value: Any) -> int:
+    """Length (in chars) of a value serialized the way the agent sees it.
+
+    Matches the MCP proxy's `json.dumps(result, sort_keys=True)` so the count is
+    the true size of the JSON text that enters the agent's context. Returns 0 on
+    any serialization failure rather than raising — this is telemetry.
+    """
+    try:
+        return len(json.dumps(jsonable(value=value), sort_keys=True))
+    except (TypeError, ValueError):
+        return 0
 
 
 def cap_result(*, value: Any) -> Any:

@@ -51,10 +51,14 @@ conflicts exist.
 
 Some paths are excluded from normal repo sync, including internal plugin state,
 session transcripts, virtualenvs, caches, `node_modules`, bytecode, and large
-volume-managed data prefixes. Terminal transcripts under
-`.research_plugin_sessions` are intentionally excluded from normal repo sync; the
-backend reads them directly from the live sandbox (or the committed Volume when
-the sandbox is gone).
+volume-managed data prefixes. The defaults are written to
+`.research_plugin/sync_exclusions.json` on startup and can be overridden per
+project through the project API/UI. The scanner understands three lists:
+`names` for path components excluded anywhere, `prefixes` (or `paths` in the
+config file) for repo-relative path prefixes, and `suffixes` for file endings.
+Terminal transcripts under `.research_plugin_sessions` are intentionally
+excluded from normal repo sync; the backend reads them directly from the live
+sandbox (or the committed Volume when the sandbox is gone).
 
 ## When Sync Runs
 

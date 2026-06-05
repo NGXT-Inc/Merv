@@ -1,0 +1,114 @@
+"""The agent-facing experiment.get_state / experiment.list tools return a
+slim projection (detail kept, waste dropped); the service methods stay full."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from backend.app import ResearchPluginApp
+from backend.execution.backends.fake import FakeSandboxBackend
+
+SLIM_RESOURCE_KEYS = {"id", "association_role", "path", "kind", "size_bytes", "missing", "title"}
+WASTE_RESOURCE_KEYS = {"version_token", "mtime_ns", "current_version_id", "association_version_id",
+                       "git_commit", "created_by", "observed_at", "project_id", "association_attempt_index"}
+WASTE_REVIEW_KEYS = {"target_snapshot_id", "request_id", "session_id", "target_id", "target_type", "project_id"}
+
+
+class ExperimentSlimTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.app = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
+        )
+        self.project_id = self.call("project.create", name="Slim get_state")["id"]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def call(self, tool: str, **kwargs):
+        return self.app.call_tool(tool, kwargs)
+
+    def _experiment_with_resources(self) -> str:
+        exp_id = self.call(
+            "experiment.create", project_id=self.project_id,
+            intent="Train REVE-Small.\n\nTitle: REVE-Small",
+        )["id"]
+        for path, kind, role in [
+            ("experiments/004/scripts/launch.sh", "script", "code"),
+            ("experiments/004/plan.md", "plan", "plan"),
+            ("experiments/004/results/status.json", "other", "result"),
+        ]:
+            p = self.repo / path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x" * 50)
+            r = self.call("resource.register_file", project_id=self.project_id, path=path, kind=kind)
+            self.call("resource.associate", project_id=self.project_id, resource_id=r["id"],
+                      target_type="experiment", target_id=exp_id, role=role)
+        return exp_id
+
+    def test_get_state_tool_is_slim(self) -> None:
+        exp_id = self._experiment_with_resources()
+        slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+
+        # The duplicate all-attempts `resources` list is gone.
+        self.assertNotIn("resources", slim)
+        self.assertIn("current_attempt_resources", slim)
+        res = slim["current_attempt_resources"][0]
+        self.assertEqual(set(res), SLIM_RESOURCE_KEYS)
+        self.assertEqual(WASTE_RESOURCE_KEYS & set(res), set())
+        # Detail that get_state exists for is preserved.
+        self.assertIn("intent", slim)
+        self.assertIn("conclusion", slim)
+        self.assertEqual({"id", "statement", "confidence", "status", "scope"},
+                         set(slim["tested_claims"][0]) if slim["tested_claims"] else {"id", "statement", "confidence", "status", "scope"})
+        # Single-attempt experiment: no prior-attempt block.
+        self.assertNotIn("prior_attempt_resources", slim)
+
+    def test_get_state_review_keeps_findings_drops_bookkeeping(self) -> None:
+        exp_id = self._experiment_with_resources()
+        # Seed a review directly (FK off) with bookkeeping + findings.
+        import sqlite3
+        raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
+        raw.execute("PRAGMA foreign_keys=OFF")
+        cols = [r[1] for r in raw.execute("PRAGMA table_info(reviews)").fetchall()]
+        vals = {
+            "id": "rev_1", "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
+            "role": "experiment_reviewer", "verdict": "pass", "status": "submitted",
+            "findings_json": json.dumps([{"issue": "narrow", "severity": "low"}]),
+            "evidence_json": json.dumps({"exit_code": 0}), "notes": "looks good",
+            "target_snapshot_id": "experiment|" + "x" * 500, "created_at": "2026-06-03T04:41:27Z",
+            "request_id": "rr_x", "session_id": "rvs_x",
+        }
+        present = {k: v for k, v in vals.items() if k in cols}
+        raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
+        raw.commit(); raw.close()
+
+        slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        review = slim["reviews"][0]
+        self.assertEqual(review["verdict"], "pass")
+        self.assertEqual(review["findings"][0]["issue"], "narrow")   # detail kept
+        self.assertEqual(review["notes"], "looks good")
+        self.assertEqual(review["evidence"], {"exit_code": 0})
+        self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())     # bookkeeping dropped
+
+    def test_list_tool_is_slim(self) -> None:
+        self._experiment_with_resources()
+        listed = self.call("experiment.list", project_id=self.project_id)["experiments"]
+        self.assertNotIn("resources", listed[0])
+        self.assertEqual(set(listed[0]["current_attempt_resources"][0]), SLIM_RESOURCE_KEYS)
+
+    def test_service_method_keeps_full_shape_for_ui(self) -> None:
+        exp_id = self._experiment_with_resources()
+        full = self.app.experiments.get_state(experiment_id=exp_id, project_id=self.project_id)
+        self.assertIn("resources", full)
+        self.assertIn("version_token", full["current_attempt_resources"][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

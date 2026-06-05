@@ -88,7 +88,8 @@ class ResourceVersioningTest(unittest.TestCase):
 
         self.assertEqual(refreshed["status"], "refreshed")
         self.assertNotEqual(refreshed["version_id"], first_id)
-        self.assertEqual(current_plan["association_version_id"], refreshed["version_id"])
+        self.assertEqual(current_plan["association_role"], "plan")
+        self.assertEqual(current_plan["missing"], 0)
         self.assertEqual(status["workflow"]["current_gate"], "design_review")
         self.assertEqual(status["workflow"]["next_action"], "launch_design_reviewer")
 
@@ -135,8 +136,8 @@ class ResourceVersioningTest(unittest.TestCase):
         status = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=self.exp_id)
         changed = status.get("resource_refresh", {}).get("changed", [])
         self.assertTrue(any(item["status"] == "refreshed" for item in changed))
-        current_plan = status["experiment"]["current_attempt_resources"][0]
-        self.assertNotEqual(current_plan["association_version_id"], first_id)
+        refreshed = next(item for item in changed if item["status"] == "refreshed")
+        self.assertNotEqual(refreshed["version_id"], first_id)
 
     def test_internal_state_directory_cannot_be_registered_as_resource(self) -> None:
         internal = self.repo / ".research_plugin" / "note.md"

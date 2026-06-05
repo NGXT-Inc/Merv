@@ -34,14 +34,15 @@ project.status_and_next(project_id)
 project.create(name, summary?)
 project.update(project_id, name?, summary?)
 project.get(project_id)
-project.visible_summary(project_id)
+project.get_settings(project_id)
+project.update_settings(project_id, sync_exclusions?, reset_sync_exclusions?)
 claim.list(project_id)
 claim.create(project_id, statement, scope?)
 claim.propose_update(project_id, claim_id, patch, rationale)
 experiment.list(project_id)
 experiment.create(project_id, intent, tested_claim_ids?)
 experiment.get(project_id, experiment_id)
-experiment.get_state(project_id, experiment_id)
+experiment.get_state(project_id, experiment_id)   # see "get_state shape" below
 resource.list(project_id)
 review.status(project_id, target_type, target_id)
 event.list(project_id, limit?)
@@ -97,41 +98,83 @@ workflow.record_blocker(project_id, experiment_id, reason)
 workflow.request_human_review(project_id, experiment_id, reason)
 ```
 
-The server may reject transitions that skip required gates. `status_and_next`
-should return enough visibility for both Codex and the user:
+The server may reject transitions that skip required gates. The agent-facing
+tool returns a **slim** projection — only what the next-action decision and the
+agent need — because this call is polled constantly and the underlying state is
+large. (The UI gets the full shape via the HTTP `/status` endpoints, which call
+the service directly.) The slim shape, scoped to an experiment:
 
 ```json
 {
-  "project": {
-    "id": "proj_...",
-    "summary": "Current research objective.",
-    "active_claims": [],
-    "active_experiments": []
-  },
-  "experiment": {
-    "id": "exp_...",
-    "status": "experiment_review",
-    "attempt": 2,
-    "tested_claims": [],
-    "plan_resources": [],
-    "result_resources": [],
-    "latest_reviews": []
-  },
+  "scope": "experiment",
   "workflow": {
     "current_gate": "experiment_review",
     "next_action": "launch_experiment_reviewer",
     "allowed_actions": ["review.request"],
     "blocked_actions": [
-      {
-        "action": "experiment.complete",
-        "reason": "missing passing experiment review"
-      }
+      { "action": "experiment.complete", "reason": "missing passing experiment review" }
     ],
     "missing_evidence": [],
-    "revision_context": "optional feedback from prior failed run"
-  }
+    "revision_context": ""
+  },
+  "experiment": {
+    "id": "exp_...",
+    "status": "experiment_review",
+    "attempt_index": 2,
+    "intent": "…",
+    "conclusion": "",
+    "updated_at": "2026-06-03T04:41:37Z",
+    "tested_claim_ids": ["claim_..."],
+    "current_attempt_resources": [
+      { "id": "res_...", "association_role": "result",
+        "path": "experiments/004/results/status.json", "kind": "other",
+        "missing": 0, "size_bytes": 341 }
+    ],
+    "reviews": [
+      { "id": "rev_...", "role": "design_reviewer", "verdict": "pass", "created_at": "…" }
+    ]
+  },
+  "sandbox": {
+    "active": false,
+    "last_status": "terminated",
+    "note": "No active sandbox for this experiment — call sandbox.request to create or reuse one."
+  },
+  "project": { "id": "proj_...", "name": "…" }
 }
 ```
+
+When a sandbox is live, `sandbox` is `{ "active": true, "sandbox_id", "status",
+"gpu", "cpu", "memory", "ssh_host", "ssh_port", "ssh_user", "workdir",
+"expires_at" }`. Dropped vs. the underlying `experiment.get_state`: the duplicate
+all-attempts `resources` list, per-resource version bookkeeping (`version_token`,
+`mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review
+prose/`evidence`/`target_snapshot_id`, and the project-wide claim/experiment
+detail. For those, call the scoped tools (`experiment.get_state`,
+`resource.list`, `review.status`). Called **without** `experiment_id` (only at
+project setup, before any experiment exists), it returns
+`{ "scope": "project", "workflow", "project": { id, name, summary, claims[] } }`.
+
+#### get_state shape
+
+`experiment.get_state` (and the per-experiment entries of `experiment.list`) is
+the *detail* call, so it keeps the substance — `intent`, `conclusion`, the
+resource list, and full review `findings` / `notes` / `evidence` / `verdict`.
+What it drops is pure waste:
+
+- the duplicate all-attempts `resources` list (a copy of
+  `current_attempt_resources`); resources from *earlier* attempts appear instead
+  as a compact `prior_attempt_resources: [{id, association_role, path,
+  association_attempt_index}]`, present only when a rerun produced them;
+- per-resource bookkeeping — `version_token` (itself `path:mtime:mtime:size`),
+  `mtime_ns`, the two usually-equal `*_version_id`, the three timestamps,
+  repeated `project_id`, constant `created_by`/`git_commit`/
+  `association_attempt_index`. Each resource keeps `{id, association_role, path,
+  kind, size_bytes, missing, title}`;
+- review internals — `target_snapshot_id`, `request_id`, `session_id`,
+  `target_id`, `target_type`, `project_id`.
+
+The UI gets the full shape (the HTTP routes call the service directly). For
+per-resource version history, use `resource.history` / `resource.resolve`.
 
 ### Execution tools
 

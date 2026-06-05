@@ -82,6 +82,41 @@ class TailReadTest(unittest.TestCase):
             event = json.loads((tmp / "activity.jsonl").read_text().splitlines()[-1])
             self.assertTrue(event["result"]["_truncated"])
 
+    def test_tool_ok_records_true_io_sizes_even_when_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            logger = self._logger(tmp)
+            big = "z" * (RESULT_LOG_MAX_BYTES + 5000)
+            logger.tool_ok(
+                source="mcp",
+                tool="experiment.get_state",
+                arguments={"experiment_id": "exp_1"},
+                duration_ms=12,
+                result={"blob": big},
+            )
+            event = json.loads((tmp / "activity.jsonl").read_text().splitlines()[-1])
+            # The on-disk result is truncated, but the recorded size reflects the
+            # FULL payload the agent actually received.
+            self.assertTrue(event["result"]["_truncated"])
+            self.assertGreater(event["received_chars"], RESULT_LOG_MAX_BYTES)
+            self.assertGreater(event["sent_chars"], 0)
+
+    def test_tool_error_records_sent_and_error_size(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            logger = self._logger(tmp)
+            logger.tool_error(
+                source="mcp",
+                tool="sandbox.request",
+                arguments={"experiment_id": "exp_1"},
+                duration_ms=4,
+                error="boom",
+                error_code="bad",
+            )
+            event = json.loads((tmp / "activity.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(event["received_chars"], len("boom"))
+            self.assertGreater(event["sent_chars"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from backend.sync_config import SyncExclusionPolicy
 from .scanner import remote_scan
 from .types import FileFingerprint, SyncPlan
 
@@ -34,7 +35,13 @@ class SyncApplier:
         self.repo_root = repo_root.resolve()
         self.repo_dir = repo_dir.strip("/")
 
-    def apply(self, *, volume: Any, plan: SyncPlan) -> ApplyOutcome:
+    def apply(
+        self,
+        *,
+        volume: Any,
+        plan: SyncPlan,
+        exclusions: SyncExclusionPolicy | None = None,
+    ) -> ApplyOutcome:
         pushed = self._push(volume=volume, fingerprints=plan.push)
         deleted_remote = self._delete_remote(volume=volume, paths=plan.delete_remote)
         pulled = self._pull(volume=volume, fingerprints=plan.pull)
@@ -47,7 +54,11 @@ class SyncApplier:
             + tuple(plan.delete_local)
             + tuple(fp.path for fp in plan.converged)
         )
-        fingerprints = self._refingerprint(volume=volume, paths=touched_paths)
+        fingerprints = self._refingerprint(
+            volume=volume,
+            paths=touched_paths,
+            exclusions=exclusions,
+        )
         return ApplyOutcome(
             pushed=pushed,
             pulled=pulled,
@@ -133,13 +144,21 @@ class SyncApplier:
     # ---------- post-apply rescan ----------
 
     def _refingerprint(
-        self, *, volume: Any, paths: tuple[str, ...]
+        self,
+        *,
+        volume: Any,
+        paths: tuple[str, ...],
+        exclusions: SyncExclusionPolicy | None,
     ) -> dict[str, tuple[FileFingerprint | None, FileFingerprint | None]]:
         """Get fresh local + remote fingerprints for the touched paths."""
         if not paths:
             return {}
         unique_paths = set(paths)
-        remote_index = remote_scan(volume=volume, repo_dir=self.repo_dir)
+        remote_index = remote_scan(
+            volume=volume,
+            repo_dir=self.repo_dir,
+            exclusions=exclusions,
+        )
         result: dict[str, tuple[FileFingerprint | None, FileFingerprint | None]] = {}
         for path in unique_paths:
             local_path = self.repo_root / path

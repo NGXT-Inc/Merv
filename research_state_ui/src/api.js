@@ -133,6 +133,24 @@ export const api = {
     return request(`/api/activity?${params.toString()}`);
   },
 
+  // Tool-call I/O analyzer. Per-tool aggregate (avg/p50/p95/max received) plus a
+  // filtered, sortable slice of individual calls — each drillable to its full
+  // raw request/response via getToolCall(). Powers the Debug page.
+  toolCallStats: ({ minutes, source, status, tool, limit = 300, sort = 'ts', order = 'desc' } = {}) => {
+    const p = new URLSearchParams();
+    if (minutes) p.set('minutes', String(minutes));
+    if (source && source !== 'all') p.set('source', source);
+    if (status && status !== 'all') p.set('status', status);
+    if (tool) p.set('tool', tool);
+    p.set('limit', String(limit));
+    p.set('sort', sort);
+    p.set('order', order);
+    return request(`/api/debug/tool-calls?${p.toString()}`);
+  },
+  // Full raw record for one call, with args/result parsed back to native JSON.
+  getToolCall: (id) => request(`/api/debug/tool-calls/${encodeURIComponent(id)}`),
+  clearToolCalls: () => request(`/api/debug/tool-calls/clear`, { method: 'POST' }),
+
   // Sandboxes (Modal-backed; agent drives execution over SSH — see sandboxes.py).
   // The UI observes; it does not procure sandboxes (that is an agent MCP action).
   listSandboxes: (pid) => request(`/api/projects/${encodeURIComponent(pid)}/sandboxes`),
@@ -140,6 +158,11 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox`),
   getSandboxTerminal: (pid, eid, tail = 50000) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/terminal?tail=${tail}`),
+  // Live in-container usage (CPU/RAM/GPU), sampled on demand. Best-effort:
+  // returns { available: false } when the sandbox is not running or the sampler
+  // came back empty (e.g. a CPU-only image without nvidia-smi).
+  getSandboxMetrics: (pid, eid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/metrics`),
   releaseSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/release`, { method: 'POST' }),
   sandboxesHealth: () => request(`/api/sandboxes/health`),

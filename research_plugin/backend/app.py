@@ -22,7 +22,7 @@ from .services import (
     SandboxService,
     WorkflowService,
 )
-from .state import ActivityLogger, StateStore, monotonic_ms
+from .state import ActivityLogger, StateStore, ToolCallStore, monotonic_ms
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,11 @@ class ResearchPluginApp:
     ) -> None:
         self.store = StateStore(db_path=db_path, repo_root=repo_root)
         self.activity = ActivityLogger(repo_root=self.store.repo_root)
+        # Full-fidelity tool-call recorder backing the debug analyzer. Isolated in
+        # its own SQLite file so its churn never touches the state DB.
+        self.tool_calls = ToolCallStore(
+            db_path=self.store.repo_root / ".research_plugin" / "tool_calls.sqlite"
+        )
         self.permissions = PermissionService()
         self.projects = ProjectService(store=self.store)
         self.claims = ClaimService(store=self.store)
@@ -81,8 +86,16 @@ class ResearchPluginApp:
             execution_backend = build_sandbox_backend(
                 repo_root=self.store.repo_root,
                 activity=self._activity_hook,
+                sync_exclusion_provider=self.projects.sync_exclusion_policy,
             )
         self.execution_backend = execution_backend
+        set_sync_exclusion_provider = getattr(
+            self.execution_backend,
+            "set_sync_exclusion_provider",
+            None,
+        )
+        if callable(set_sync_exclusion_provider):
+            set_sync_exclusion_provider(self.projects.sync_exclusion_policy)
         self.sandboxes = SandboxService(
             store=self.store,
             sandbox_backend=execution_backend,
@@ -96,18 +109,20 @@ class ResearchPluginApp:
             resources=self.resources,
         )
         handlers: dict[str, tuple[str, Callable[..., dict[str, Any]]]] = {
-            "workflow.status_and_next": ("Orient Codex and user from durable project/experiment state.", self.workflow.status_and_next),
-            "project.status_and_next": ("Alias for workflow.status_and_next.", self.workflow.status_and_next),
+            "workflow.status_and_next": ("Orient Codex from durable project/experiment state.", self.workflow.status_and_next_agent),
+            "project.status_and_next": ("Alias for workflow.status_and_next.", self.workflow.status_and_next_agent),
             "project.create": ("Create a project.", self.projects.create),
             "project.update": ("Update a project name or summary.", self.projects.update),
             "project.get": ("Get project metadata.", self.projects.get),
+            "project.get_settings": ("Get project-level settings, including sync exclusions.", self.projects.get_settings),
+            "project.update_settings": ("Update project-level settings, including sync exclusions.", self.projects.update_settings),
             "project.list": ("List projects.", self.projects.list_projects),
             "claim.create": ("Create a claim.", self.claims.create),
             "claim.list": ("List claims.", self.claims.list_claims),
             "claim.update": ("Update a claim's statement, scope, status, or confidence.", self.claims.update),
             "experiment.create": ("Create a planned experiment.", self.experiments.create),
-            "experiment.list": ("List experiments with state.", self.experiments.list_experiments),
-            "experiment.get_state": ("Get one experiment state.", self.experiments.get_state),
+            "experiment.list": ("List experiments with state.", self.experiments.list_experiments_agent),
+            "experiment.get_state": ("Get one experiment state.", self.experiments.get_state_agent),
             "experiment.transition": ("Apply an allowed experiment transition.", self.experiments.transition),
             "resource.register_file": ("Register or observe one repo-relative file as a resource.", self.resources.register_file),
             "resource.observe_file": ("Observe one repo-relative resource file without changing kind metadata.", self.resources.observe_file),
@@ -175,30 +190,59 @@ class ResearchPluginApp:
                     details={"tool": name, "errors": exc.errors()},
                 ) from exc
             self._on_tool_success(name=name, result=result)
+            duration_ms = monotonic_ms() - started
             self.activity.tool_ok(
                 source=activity_source,
                 tool=name,
                 arguments=arguments,
-                duration_ms=monotonic_ms() - started,
+                duration_ms=duration_ms,
+                result=result,
+            )
+            self.tool_calls.record(
+                tool=name,
+                source=activity_source,
+                status="ok",
+                duration_ms=duration_ms,
+                arguments=arguments,
                 result=result,
             )
             return result
         except ResearchPluginError as exc:
+            duration_ms = monotonic_ms() - started
             self.activity.tool_error(
                 source=activity_source,
                 tool=name,
                 arguments=arguments,
-                duration_ms=monotonic_ms() - started,
+                duration_ms=duration_ms,
+                error=exc.message,
+                error_code=exc.error_code,
+            )
+            self.tool_calls.record(
+                tool=name,
+                source=activity_source,
+                status="error",
+                duration_ms=duration_ms,
+                arguments=arguments,
                 error=exc.message,
                 error_code=exc.error_code,
             )
             raise
         except Exception as exc:
+            duration_ms = monotonic_ms() - started
             self.activity.tool_error(
                 source=activity_source,
                 tool=name,
                 arguments=arguments,
-                duration_ms=monotonic_ms() - started,
+                duration_ms=duration_ms,
+                error=str(exc),
+                error_code="unexpected",
+            )
+            self.tool_calls.record(
+                tool=name,
+                source=activity_source,
+                status="error",
+                duration_ms=duration_ms,
+                arguments=arguments,
                 error=str(exc),
                 error_code="unexpected",
             )

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
+import { useProjectStore } from '../store/useProjectStore';
 
 /**
  * VolumeSyncIndicator — ambient status of the backend's repo ↔ Modal Volume sync.
@@ -26,9 +27,18 @@ const REFRESH_MS = 3000;
 const ACTIVITY_LIMIT = 200;
 
 export default function VolumeSyncIndicator({ projectId }) {
+  const projects = useProjectStore(s => s.projects);
+  const patchProject = useProjectStore(s => s.patchProject);
+  const project = projects.find(p => p.id === projectId) || null;
   const [events, setEvents] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [excludeNames, setExcludeNames] = useState('');
+  const [excludePrefixes, setExcludePrefixes] = useState('');
+  const [excludeSuffixes, setExcludeSuffixes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
   const inFlightRef = useRef(false);
 
   // 1Hz tick for the "next in Xs" countdown and "Ns ago" labels.
@@ -36,6 +46,13 @@ export default function VolumeSyncIndicator({ projectId }) {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  useEffect(() => {
+    setExcludeNames(listText(project?.sync_exclusions?.names));
+    setExcludePrefixes(listText(project?.sync_exclusions?.prefixes));
+    setExcludeSuffixes(listText(project?.sync_exclusions?.suffixes));
+    setSaveError(null);
+  }, [project?.id, project?.sync_exclusions]);
 
   // Poll the activity feed for modal.sync.* events.
   useEffect(() => {
@@ -142,12 +159,29 @@ export default function VolumeSyncIndicator({ projectId }) {
     statusLabel = 'syncing…';
   }
 
-  // Hide entirely if no sync activity has ever been observed for this project
-  // and we've polled at least once. Most likely: the backend is not the Modal
-  // backend (Ray/fake), or this project's volume hasn't been registered yet.
-  // Hiding prevents a confusing "awaiting volume" forever for non-Modal users.
-  if (loaded && events.length === 0) {
-    return null;
+  async function saveSettings(e, { reset = false } = {}) {
+    e.preventDefault();
+    if (!projectId || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      if (reset) {
+        await patchProject(projectId, { reset_sync_exclusions: true });
+      } else {
+        await patchProject(projectId, {
+          sync_exclusions: {
+            names: lines(excludeNames),
+            prefixes: lines(excludePrefixes),
+            suffixes: lines(excludeSuffixes),
+          },
+        });
+      }
+      setSettingsOpen(false);
+    } catch (err) {
+      setSaveError(err.message || String(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -156,6 +190,16 @@ export default function VolumeSyncIndicator({ projectId }) {
         <span className={dotClass} aria-hidden="true" />
         <span className="vsync-title">volume sync</span>
         <span className="vsync-status">{statusLabel}</span>
+        {project && (
+          <button
+            type="button"
+            className="vsync-settings-btn"
+            onClick={() => setSettingsOpen(v => !v)}
+            aria-expanded={settingsOpen}
+          >
+            Settings
+          </button>
+        )}
       </div>
       <div className="vsync-row vsync-row--sched">
         <span>every {POLL_INTERVAL_SEC}s</span>
@@ -209,6 +253,56 @@ export default function VolumeSyncIndicator({ projectId }) {
             : hintFromEvent(lastCoalesced)}
         </div>
       )}
+      {!loaded && events.length === 0 && (
+        <div className="vsync-row vsync-row--hint">checking volume state</div>
+      )}
+      {project && (
+        <div className="vsync-row vsync-row--hint">
+          ignored paths: {project.sync_exclusions_source || 'default'}
+        </div>
+      )}
+      {settingsOpen && project && (
+        <form className="vsync-settings" onSubmit={saveSettings}>
+          <label className="vsync-field">
+            <span>Names</span>
+            <textarea
+              value={excludeNames}
+              onChange={e => setExcludeNames(e.target.value)}
+              spellCheck="false"
+            />
+          </label>
+          <label className="vsync-field">
+            <span>Paths</span>
+            <textarea
+              value={excludePrefixes}
+              onChange={e => setExcludePrefixes(e.target.value)}
+              spellCheck="false"
+            />
+          </label>
+          <label className="vsync-field">
+            <span>Suffixes</span>
+            <textarea
+              value={excludeSuffixes}
+              onChange={e => setExcludeSuffixes(e.target.value)}
+              spellCheck="false"
+            />
+          </label>
+          {saveError && <div className="vsync-settings-error">{saveError}</div>}
+          <div className="vsync-settings-actions">
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              disabled={saving}
+              onClick={(e) => saveSettings(e, { reset: true })}
+            >
+              Defaults
+            </button>
+            <button type="submit" className="btn btn--primary btn--sm" disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -257,6 +351,17 @@ function hintFromEvent(ev) {
   if (ev.event === 'modal.sync.skipped_busy') return 'last attempt skipped (busy)';
   if (ev.event === 'modal.sync.coalesced') return 'last attempt coalesced';
   return '';
+}
+
+function lines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function listText(value) {
+  return Array.isArray(value) ? value.join('\n') : '';
 }
 
 function mostRecent(evs) {
