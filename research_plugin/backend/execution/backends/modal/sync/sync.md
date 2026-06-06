@@ -1,6 +1,6 @@
 # Modal Storage And Sync
 
-This backend uses one project-scoped Modal Volume as the remote copy of the
+This backend uses one project-scoped Modal Volume v2 as the remote copy of the
 repo. The Volume root mirrors the local repo root and is mounted writable into
 each Modal sandbox at the configured remote workdir. The agent's commands run
 directly inside that mounted repo over SSH; there is no read-only mount, copied
@@ -19,20 +19,25 @@ The Volume is the bridge between local and sandbox storage. The sandbox does not
 write outputs through an API back to the daemon. It writes files into the mounted
 Volume, and the daemon later synchronizes that Volume with the local repo.
 
+Large datasets are the exception to the "repo mirror" rule. Each sandbox also
+gets a sandbox-local data directory (default `/workspace/sandbox_data`, exported
+as `$RP_SANDBOX_DATA_DIR` and `$RP_DATASET_DIR`) outside the mounted repo. Agents
+should download large datasets and caches there so the Modal Volume stays limited
+to code, configs, transcripts, metrics, and compact result artifacts.
+
 ## Sandbox To Volume
 
 The agent's SSH commands write outputs and a terminal transcript inside the
 mounted repo. Because those paths are on the mounted Volume, Modal's Volume
 commit machinery is responsible for durability.
 
-The in-sandbox `sshd` `ForceCommand` transcript wrapper flushes local filesystem
-buffers with `sync <mountpoint>` after each command it records. This keeps the
-Volume copy of outputs and the transcript fresh for Modal's commit process.
-
 The sandbox does not call `Volume.commit()` directly. The sandbox does not have
-Modal credentials, and Modal already runs background commits plus a final commit
-on container shutdown. The `sync` call just makes the sandbox's local writes
-ready for Modal's commit process to pick up promptly.
+Modal credentials, and Modal already commits Volume changes when the sandbox
+terminates. For intermediate visibility, `sandbox.sync` uses the Volumes v2
+commit hook by running `sync <workdir>` in the live sandbox. Modal documents
+this mountpoint form as v2-only, so the backend creates project Volumes with
+`version=2` and rejects `RESEARCH_PLUGIN_MODAL_VOLUME_VERSION` values other than
+`2`.
 
 The daemon calls `volume.reload()` before reading or scanning a Volume so its
 handle can see writes committed by other containers.
@@ -68,8 +73,16 @@ Sync runs from both scheduled and event-driven paths:
 - `sandbox.request` performs an awaited push of the current repo before the
   sandbox boots, so the agent sees up-to-date code.
 
-The background poller continues syncing while a sandbox is active, pulling the
-agent's outputs back to the local repo on each tick.
+The background poller continues syncing while a sandbox is active, but it can
+only see committed Volume state. Agents should not rely on it to commit live
+sandbox writes.
+
+Agents should not rely on the poller for result materialization. Before
+registering or associating result resources, `sandbox.sync` explicitly runs
+`sync <workdir>` in the live sandbox to commit mounted Volume writes, then runs a
+daemon-side sync pass so the remote result files exist in the local repo. Agents
+should also call `sandbox.sync` after major file changes so the user can inspect
+the latest local files while the sandbox is still running.
 
 ## Queueing And Backpressure
 
@@ -90,11 +103,27 @@ writing the baseline all mutate the shared local repo.
 ## Concurrency Model
 
 Multiple experiment sandboxes may run against the same project Volume at the same
-time. This is intentional. If they write different paths, sync pulls their
-outputs normally. If they write the same path, the latest committed state wins.
-That last-writer-wins risk is accepted for this workflow.
+time. Volumes v2 handles many concurrent writers to distinct files, which fits
+the per-experiment output-directory model. If sandboxes write the same file, the
+latest committed state wins. That last-writer-wins risk is accepted for this
+workflow and should be avoided by writing experiment-scoped paths.
 
 Local edits can also race with remote sandbox writes. The three-way baseline catches
 local-vs-remote divergent edits as conflicts, but it is not a transactional
 filesystem. The design favors throughput, bounded backpressure, and recoverable
 conflict handling over strict serialization of all writes.
+
+## Volumes v2 Notes
+
+Modal Volumes v2 are still beta. They remove the v1 total inode limit and are a
+better fit for concurrent distinct-file writers, faster commits/reloads, and
+random writes, but they are not recommended by Modal for mission-critical data.
+Current v2 limits still matter here: files must be smaller than 1 TiB, a single
+directory may contain at most 262,144 files, and large directory traversals can
+be slower because the filesystem tree is demand-loaded.
+
+There is no automatic v1-to-v2 migration. If a project Volume was created before
+this backend required v2, create a new v2 Volume or manually migrate/delete the
+old v1 Volume before expecting `sandbox.sync` to work. The installed Modal SDK's
+`Volume.info()` does not expose the filesystem version, so the backend cannot
+preflight an existing named Volume's version.

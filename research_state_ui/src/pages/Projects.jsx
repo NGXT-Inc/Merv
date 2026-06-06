@@ -35,8 +35,8 @@ export default function Projects() {
             <div className="page-eyebrow">Workspace</div>
             <h1 className="page-title">Projects</h1>
             <p className="page-summary">
-              Every research project in this repo's <span className="mono">.research_plugin/state.sqlite</span> store.
-              Each project has its own claims, experiments, resources, and review history.
+              Every research project known to this backend. Each project owns a local directory
+              with its own files, claims, experiments, resources, and review history.
             </p>
           </div>
           <div className="page-actions">
@@ -138,6 +138,11 @@ function ProjectCard({ project, isActive, onSwitch, onRename }) {
               {project.summary
                 ? <p className="proj-card-sum">{project.summary}</p>
                 : <p className="proj-card-sum faint">No summary yet.</p>}
+              {project.repo_root && (
+                <div className="mono" style={{ marginTop: 8, fontSize: 'var(--text-xs)', color: 'var(--faint)', overflowWrap: 'anywhere' }}>
+                  {project.repo_root}
+                </div>
+              )}
               <div className="cluster" style={{ marginTop: 10, fontSize: 'var(--text-xs)', color: 'var(--faint)' }}>
                 <ObjId id={project.id} strong />
                 {project.created_at && <span className="mono">· created {fmtDate(project.created_at)}</span>}

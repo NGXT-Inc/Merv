@@ -37,7 +37,7 @@ PROCESS_STATUS_PRIORITY = {
 _SLIM_RESOURCE_FIELDS = ("id", "association_role", "path", "kind", "missing", "size_bytes")
 _SANDBOX_SUMMARY_FIELDS = (
     "sandbox_id", "status", "gpu", "cpu", "memory",
-    "ssh_host", "ssh_port", "ssh_user", "workdir", "expires_at",
+    "ssh_host", "ssh_port", "ssh_user", "workdir", "sandbox_data_dir", "expires_at",
 )
 
 
@@ -377,6 +377,7 @@ class WorkflowService:
                         "sandbox.request",
                         "sandbox.terminal",
                         "sandbox.get",
+                        "sandbox.sync",
                         "resource.register_file",
                         "resource.associate",
                         "resource.sync_changed_files",
@@ -386,7 +387,14 @@ class WorkflowService:
                 )
             return self._next(
                 gate="experiment_review_required",
-                action="submit_results_for_review",
+                action=(
+                    "submit_results_for_review (call only once the experiment "
+                    "is fully complete and every success criterion in the "
+                    "experiment intent is satisfied; do NOT call if the "
+                    "experiment should continue running; continue with "
+                    "sandbox.* and resource.* calls instead and only "
+                    "transition once the work is truly done)"
+                ),
                 allowed=["experiment.transition"],
             )
         if status == "experiment_review":
@@ -531,6 +539,22 @@ class WorkflowService:
             "target_type": "experiment",
             "association_role": "result",
             "allowed_resource_roles": sorted(RESOURCE_ROLES),
+            "dataset_guidance": (
+                "Prefer CPU-only sandboxes for data inspection and data engineering "
+                "unless the command needs GPU. Download large datasets and caches to sandbox_data_dir "
+                "($RP_SANDBOX_DATA_DIR / $RP_DATASET_DIR inside the sandbox), "
+                "not under the mounted repo workdir. Keep reusable scripts and compact outputs "
+                "under workdir and call sandbox.sync so they persist. Prefer saving an "
+                "experiment-folder data.md that records dataset sources, splits, filters, "
+                "schema/row-count notes, caveats, and where ephemeral data lives."
+            ),
+            "sync_guidance": (
+                "After the sandbox is running, make repo file changes inside "
+                "the sandbox. Before registering or associating result resources, "
+                "call sandbox.sync so remote result files exist in the local repo. "
+                "Also call sandbox.sync after major file changes so the user can "
+                "inspect the latest local files while the sandbox is still running."
+            ),
         }
 
     def _next(

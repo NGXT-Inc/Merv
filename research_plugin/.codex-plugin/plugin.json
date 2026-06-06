@@ -1,7 +1,7 @@
 {
   "name": "research-plugin",
-  "version": "0.0004+codex.20260601191116",
-  "description": "Lean Codex research-state workflow with MCP-controlled memory, permissions, resources, and Modal SSH sandboxes.",
+  "version": "0.0005+codex.20260605",
+  "description": "Lean Codex research-state workflow with project-local MCP context, resources, reviews, and Modal SSH sandboxes.",
   "license": "UNLICENSED",
   "keywords": [
     "research",
@@ -11,11 +11,11 @@
     "experiments"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Research Plugin",
-    "shortDescription": "Claims, experiments, repo-file resources, and Modal SSH sandboxes",
-    "longDescription": "A lean research-state plug-in where Codex operates through skills and an MCP server controls durable memory, permissioned mutations, resource sync, workflow state, adversarial review records, and Modal sandbox provisioning the agent drives over SSH.",
+    "shortDescription": "Project-scoped claims, experiments, resources, reviews, and Modal sandboxes",
+    "longDescription": "A lean research-state plug-in where Codex operates through skills and a project-local MCP proxy. A shared HTTP daemon controls durable memory, permissioned mutations, repo-file resources, workflow state, adversarial review records, and Modal sandbox provisioning. Agents use project.current for folder context and sandbox.sync before associating remote results.",
     "developerName": "Papyrus",
     "category": "Productivity",
     "capabilities": [
@@ -24,9 +24,9 @@
       "Interactive"
     ],
     "defaultPrompt": [
-      "Use Research Plugin to plan an experiment.",
-      "Use Research Plugin to run and review this experiment.",
-      "Use Research Plugin to sync resources and update claims."
+      "Use Research Plugin. Start with project.current, then workflow.status_and_next.",
+      "Use Research Plugin to run this experiment in a sandbox and call sandbox.sync before registering results.",
+      "Use Research Plugin to sync resources, review the experiment, and update claims."
     ],
     "composerIcon": "./assets/icon.svg"
   }

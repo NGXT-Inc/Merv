@@ -1,9 +1,8 @@
 """Entrypoint for the Research Plugin MCP stdio proxy.
 
 The MCP process is a thin adapter — it owns no state and starts no jobs.
-It forwards Codex tool calls to the long-running HTTP daemon that the user
-started in the target repo. See ``docs/STARTUP_CHEATSHEET.md`` for the
-startup order.
+It forwards Codex tool calls plus hidden repo context to the long-running HTTP
+daemon. See ``docs/STARTUP_CHEATSHEET.md`` for the startup order.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import sys
 from pathlib import Path
 
 from .daemon_marker import discover_daemon_url
-from .proxy import HttpProxyMcpServer, ProxyConfig
+from .proxy import DEFAULT_DAEMON_URL, HttpProxyMcpServer, ProxyConfig
 
 
 def main() -> int:
@@ -43,8 +42,8 @@ def main() -> int:
         # error envelope per tool call if the daemon is still missing then.
         sys.stderr.write(
             "[research_plugin] no HTTP daemon detected; tool calls will fail "
-            "until you start one with `research-plugin-http --repo "
-            f"{repo_root}`.\n"
+            f"until you start one with `research-plugin-http` at {DEFAULT_DAEMON_URL} "
+            "or set RESEARCH_PLUGIN_DAEMON_URL to the shared daemon URL.\n"
         )
 
     config = ProxyConfig(repo_root=repo_root, daemon_url=daemon_url)

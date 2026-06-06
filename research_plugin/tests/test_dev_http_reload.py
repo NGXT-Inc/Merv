@@ -28,6 +28,39 @@ class DevHttpReloadTest(unittest.TestCase):
         module = load_dev_http_reload()
         self.assertFalse(module.port_in_use("127.0.0.1", 0))
 
+    def test_server_command_defaults_to_shared_mode(self) -> None:
+        module = load_dev_http_reload()
+        command = module.server_command(
+            launcher=Path("/tmp/bin/research-plugin-http"),
+            research_repo=None,
+            store_path=None,
+            registry_store_path=Path("/tmp/registry.sqlite"),
+            host="127.0.0.1",
+            port=8787,
+            activity_stderr=True,
+        )
+        self.assertIn("--registry-store", command)
+        self.assertNotIn("--repo", command)
+        self.assertNotIn("--store", command)
+        self.assertIn("--activity-stderr", command)
+
+    def test_server_command_supports_legacy_repo_mode(self) -> None:
+        module = load_dev_http_reload()
+        command = module.server_command(
+            launcher=Path("/tmp/bin/research-plugin-http"),
+            research_repo=Path("/tmp/repo"),
+            store_path=Path("/tmp/repo/.research_plugin/state.sqlite"),
+            registry_store_path=Path("/tmp/registry.sqlite"),
+            host="127.0.0.1",
+            port=8787,
+            activity_stderr=False,
+        )
+        self.assertIn("--registry-store", command)
+        self.assertIn("--repo", command)
+        self.assertIn("/tmp/repo", command)
+        self.assertIn("--store", command)
+        self.assertNotIn("--activity-stderr", command)
+
 
 if __name__ == "__main__":
     unittest.main()

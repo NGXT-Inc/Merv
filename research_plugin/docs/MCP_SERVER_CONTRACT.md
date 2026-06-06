@@ -6,10 +6,12 @@ The MCP server is the authority for research state and workflow state. Codex can
 reason and edit files, but MCP decides whether a state mutation is allowed, what
 gate is active, and what the workflow requires next.
 
-Codex should usually begin with the broad orientation tool:
+Codex should usually begin with the broad orientation tool. In project-local MCP
+sessions, the stdio proxy supplies `project_id` from hidden repo context, so the
+agent-facing schema may omit it:
 
 ```text
-workflow.status_and_next(project_id, experiment_id?)
+workflow.status_and_next(experiment_id?)
 ```
 
 This tool exists because Codex may lose conversation memory. The server must be
@@ -21,15 +23,25 @@ The MCP tool surface is owned by the long-running HTTP daemon (`bin/research-plu
 What Codex launches via the plugin manifest (`bin/research-plugin-mcp`) is a
 thin stdio proxy that forwards `tools/list` and `tools/call` to the daemon's
 `/mcp/tools` and `/mcp/call` endpoints. The proxy holds no state of its own —
-everything in this contract is enforced inside the daemon. Both the browser
-UI and the proxy go through the same `ResearchPluginApp.call_tool` path, so
-permission checks and workflow gates are identical regardless of caller.
+everything in this contract is enforced inside the daemon. The proxy does add
+the current repo root as hidden context and hides `project_id` from
+project-scoped tool schemas when that context can supply it. HTTP and core
+service calls still carry explicit `project_id`.
+
+In shared-daemon mode, `project.current` through MCP is folder-scoped and
+returns the project registered for the folder where the MCP proxy was started,
+or `exists: false` if that folder does not have a project yet. It never lists
+projects from other folders and does not create a project as a side effect. If
+`exists` is false, the agent should ask the user what project name and summary
+to use before calling `project.create`, unless the user already supplied that
+information.
 
 ## Tool groups
 
 ### Memory tools
 
 ```text
+project.current()
 project.status_and_next(project_id)
 project.create(name, summary?)
 project.update(project_id, name?, summary?)
@@ -145,7 +157,7 @@ the service directly.) The slim shape, scoped to an experiment:
 
 When a sandbox is live, `sandbox` is `{ "active": true, "sandbox_id", "status",
 "gpu", "cpu", "memory", "ssh_host", "ssh_port", "ssh_user", "workdir",
-"expires_at" }`. Dropped vs. the underlying `experiment.get_state`: the duplicate
+"sandbox_data_dir", "expires_at" }`. Dropped vs. the underlying `experiment.get_state`: the duplicate
 all-attempts `resources` list, per-resource version bookkeeping (`version_token`,
 `mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review
 prose/`evidence`/`target_snapshot_id`, and the project-wide claim/experiment
@@ -179,11 +191,12 @@ per-resource version history, use `resource.history` / `resource.resolve`.
 ### Execution tools
 
 ```text
-sandbox.request(project_id, experiment_id, gpu?, cpu?, memory?, time_limit?)
-sandbox.get(project_id, experiment_id)
-sandbox.list(project_id)
-sandbox.release(project_id, experiment_id)
-sandbox.terminal(project_id, experiment_id, tail?)
+sandbox.request(experiment_id, gpu?, cpu?, memory?, time_limit?)
+sandbox.get(experiment_id)
+sandbox.sync(experiment_id)
+sandbox.list()
+sandbox.release(experiment_id)
+sandbox.terminal(experiment_id, tail?)
 sandbox.health()
 ```
 
@@ -194,10 +207,56 @@ runs shell commands on the sandbox itself. Lightweight work still runs locally.
 `sandbox.request` is the only procurement call. The registry keeps **one sandbox
 per experiment** and reuses the live one if it is still alive, otherwise creates
 a fresh one. The response carries `ssh` (host, port, user, key_path, command,
-raw_command), `workdir`, `volume`, `status`, `expires_at`, and `reused`.
+raw_command), `workdir`, `sandbox_data_dir`, `volume`, `status`, `expires_at`,
+and `reused`.
 `ssh.command` is the short dispatcher form
 `.research_plugin/sbx <experiment_id>` (run from the repo root); `ssh.raw_command`
 is the full `ssh -i … user@host` line for use from any directory.
+
+Agents should prefer CPU-only sandboxes for exploratory data inspection,
+dataset downloads, schema checks, preprocessing scripts, joins, filtering, and
+other data engineering unless a command specifically needs GPU acceleration.
+Omit `gpu` for CPU-only. `cpu` is Modal CPU cores, where Modal documents 1 core
+as 2 vCPUs. `memory` is requested sandbox memory in MiB; set it explicitly when
+the dataset or operation needs more RAM.
+
+`workdir` is the mounted repo on the project Modal Volume. `sandbox_data_dir`
+is sandbox-local ephemeral storage outside that Volume (default
+`/workspace/sandbox_data`) and is exported inside SSH commands as
+`$RP_SANDBOX_DATA_DIR` and `$RP_DATASET_DIR`. Agents should download large
+datasets and caches there, then write only compact scripts, configs, metrics,
+and result artifacts back under `workdir`. Data transformations and temporary
+derived datasets left only under `sandbox_data_dir` are ephemeral and will not
+carry into future sandboxes; reusable preprocessing/analysis scripts and compact
+outputs should live under `workdir` and be persisted with `sandbox.sync`.
+Agents should also prefer to save a Markdown data note in the experiment folder
+under `workdir` (for example `experiments/<name>/data.md`) describing datasets
+used, source identifiers, split/filter choices, important columns, row counts,
+caveats, and where large ephemeral files were placed in `sandbox_data_dir`.
+Persist that note with `sandbox.sync` so future sandboxes carry the data context
+forward.
+
+When the backend has `HF_TOKEN` in its env file or process environment,
+`sandbox.request` / `sandbox.get` include an `environment.available_tokens`
+entry naming `HF_TOKEN`. The token value is not returned. Inside SSH commands,
+`HF_TOKEN` and `HUGGING_FACE_HUB_TOKEN` are available for Hugging Face tooling.
+The backend passes the token through Modal's sandbox `secrets` API, not as a
+plain sandbox `env` value and not as a synced repo `.env` file.
+Agents must not print the token, write it into the mounted repo, or register it
+as a resource.
+
+At creation time, the sandbox sees the local repo state that was synced before
+boot. After that, experiment file changes should be made inside the sandbox.
+Before registering or associating result resources, the agent must call
+`sandbox.sync(experiment_id)`: it runs `sync <workdir>` in the live
+sandbox to commit mounted Volume changes, reloads/scans the Volume, and syncs
+those files into the local repo. This requires Modal Volumes v2; the backend
+creates new project Volumes with `version=2` because Modal documents
+`sync <mountpoint>` as v2-only. Resource tools only operate on local repo files,
+so a file produced remotely cannot be associated until `sandbox.sync` completes.
+Call `sandbox.sync` before `sandbox.release` for any outputs that must survive,
+and after major sandbox file changes so the user can inspect the latest local
+files while the sandbox is still running.
 
 Provisioning is **best-effort-synchronous**. Creating a sandbox can outlast the
 MCP call timeout (large first sync, cold GPU), so `sandbox.request` provisions on
@@ -233,9 +292,11 @@ to the local repo through the Modal sync engine. The execution contract
 (`SandboxBackend`) stays narrow so additional providers can live inside
 `execution/backends/`.
 
-All project-scoped tools require an explicit `project_id`; the server does not
-fall back to the first-created project. The UI and skills must select a project
-first and pass that id through every scoped call.
+Core HTTP/service calls still require an explicit `project_id`. In project-local
+MCP sessions, the proxy supplies that scope from hidden repo context and removes
+`project_id` from agent-facing schemas. Agents should call `project.current`
+first; if it returns `exists: false`, ask the user what project name and summary
+to use before creating the folder's project.
 
 ### Review tools
 

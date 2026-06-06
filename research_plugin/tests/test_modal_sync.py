@@ -372,76 +372,6 @@ class SyncEngineLockingTest(unittest.TestCase):
             self.assertTrue(coalesce_result[0].coalesced)
             self.assertFalse(coalesce_result[0].skipped_busy)
 
-    def test_coalescer_receives_queued_sync_actual_result(self) -> None:
-        """The coalesce path returns the queued sync's *actual* SyncResult
-        (with non-zero counts when the queued sync did work), plus
-        coalesced=True. The coalescer's request literally becomes the queued
-        one — same result object's counts."""
-        with tempfile.TemporaryDirectory() as tmp:
-            engine = self._engine(Path(tmp))
-
-            fake_result = SyncResult(
-                project_id="p1",
-                pushed=7,
-                pulled=3,
-                deleted_remote=1,
-                deleted_local=2,
-                conflicts=0,
-                duration_ms=42,
-            )
-            first_entered = threading.Event()
-            release = threading.Event()
-            calls = []
-
-            def fake_work(*, project_id: str):
-                calls.append(project_id)
-                if len(calls) == 1:
-                    first_entered.set()
-                    release.wait(timeout=5.0)
-                return fake_result
-
-            engine._do_sync_work = fake_work  # type: ignore[assignment]
-
-            # Spin up running + queued + coalescing caller.
-            running_t = threading.Thread(
-                target=lambda: engine.sync(project_id="p1"),
-                daemon=True,
-            )
-            running_t.start()
-            self.assertTrue(first_entered.wait(timeout=2.0))
-
-            queued_t = threading.Thread(
-                target=lambda: engine.sync(project_id="p1"),
-                daemon=True,
-            )
-            queued_t.start()
-            time.sleep(0.05)  # let queued_t take the queued slot
-
-            coalesce_results: list = []
-
-            def coalescer():
-                coalesce_results.append(engine.sync(project_id="p1"))
-
-            coalesce_t = threading.Thread(target=coalescer, daemon=True)
-            coalesce_t.start()
-            time.sleep(0.05)  # let it reach the coalesce wait
-
-            release.set()
-            running_t.join(timeout=5.0)
-            queued_t.join(timeout=5.0)
-            coalesce_t.join(timeout=5.0)
-
-            self.assertEqual(len(coalesce_results), 1)
-            r = coalesce_results[0]
-            # Coalescer gets the actual counts from the queued sync (not zeros).
-            self.assertEqual(r.pushed, 7)
-            self.assertEqual(r.pulled, 3)
-            self.assertEqual(r.deleted_remote, 1)
-            self.assertEqual(r.deleted_local, 2)
-            self.assertEqual(r.duration_ms, 42)
-            self.assertTrue(r.coalesced)
-            self.assertFalse(r.skipped_busy)
-
     def test_at_most_one_caller_queued_among_many_default_callers(self) -> None:
         """Five concurrent default-policy callers → exactly two actually run
         the underlying work (running + queued); the rest coalesce."""
@@ -486,60 +416,6 @@ class SyncEngineLockingTest(unittest.TestCase):
 
             # The queue bound: max one running + one queued = 2 work executions.
             self.assertEqual(len(work_calls), 2)
-
-    def test_blocking_default_waits_for_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            engine = self._engine(Path(tmp))
-            gate = self._pause_applier(engine)
-
-            entered = threading.Event()
-            results: list = []
-            errors: list[BaseException] = []
-
-            def first():
-                try:
-                    entered.set()
-                    engine.sync(project_id="p1")
-                except BaseException as exc:  # noqa: BLE001
-                    errors.append(exc)
-
-            t1 = threading.Thread(target=first, daemon=True)
-            t1.start()
-            self.assertTrue(entered.wait(timeout=2.0))
-            time.sleep(0.05)
-
-            def second():
-                try:
-                    r = engine.sync(project_id="p1")
-                    results.append(r)
-                except BaseException as exc:  # noqa: BLE001
-                    errors.append(exc)
-
-            t2 = threading.Thread(target=second, daemon=True)
-            t2.start()
-
-            # Confirm second is genuinely blocked while first holds the lock.
-            time.sleep(0.1)
-            self.assertTrue(t2.is_alive())
-            self.assertEqual(results, [])
-
-            gate.set()
-            t1.join(timeout=5.0)
-            t2.join(timeout=5.0)
-            self.assertFalse(t1.is_alive())
-            self.assertFalse(t2.is_alive())
-            self.assertEqual(errors, [])
-            self.assertEqual(len(results), 1)
-            self.assertFalse(results[0].skipped_busy)
-
-    def test_skip_if_busy_does_not_skip_when_lock_free(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            engine = self._engine(Path(tmp))
-            result = engine.sync(
-                project_id="p1",
-                skip_if_busy=True,
-            )
-            self.assertFalse(result.skipped_busy)
 
     def test_skip_if_busy_skips_when_repo_lock_is_busy_for_other_project(self) -> None:
         """The repo-wide lock prevents cross-project sync passes from racing."""

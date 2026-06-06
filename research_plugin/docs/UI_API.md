@@ -16,25 +16,31 @@ The HTTP launcher uses `.venv/bin/python` automatically when that virtualenv
 exists. Set `RESEARCH_PLUGIN_PYTHON=/path/to/python` to force a different
 interpreter.
 
-Run the HTTP API:
+Run the shared HTTP API:
 
 ```bash
-research_plugin/bin/research-plugin-http --repo /path/to/research-repo --host 127.0.0.1 --port 8787
+research_plugin/bin/research-plugin-http --host 127.0.0.1 --port 8787
 ```
+
+In shared mode, `POST /api/projects` supplies the directory for each project and
+the daemon routes project-scoped requests to that directory's isolated
+`.research_plugin/state.sqlite`. The legacy single-repo mode is still available
+with `--repo /path/to/research-repo`.
 
 For auto-reload while editing backend code:
 
 ```bash
 cd /Users/guraltoo/Documents/dev/proj/experiments/Papyrus/research_plugin
 python3 scripts/dev_http_reload.py \
-  --repo /path/to/research-repo \
   --host 127.0.0.1 \
   --port 8787 \
   --activity-stderr
 ```
 
-The HTTP launcher uses code from the installed plugin but stores state in the
-target research repo. The default store path is:
+The HTTP launcher uses code from the installed plugin and runs the shared
+multi-project backend. Project state is stored in each project directory after
+the UI creates or selects that project. Pass `--repo /path/to/research-repo`
+only for the legacy single-repo backend. The default legacy store path is:
 
 ```text
 /path/to/research-repo/.research_plugin/state.sqlite
@@ -76,7 +82,7 @@ Returns:
 ```json
 {
   "ok": true,
-  "version": "0.0004",
+  "version": "0.0005",
   "repo_root": "/path/to/repo",
   "store": "/path/to/.research_plugin/state.sqlite",
   "activity_log": "/path/to/.research_plugin/activity.jsonl"
@@ -196,9 +202,15 @@ Create payload:
 ```json
 {
   "name": "Toy Length Classifier",
-  "summary": "Evaluate a threshold classifier on a toy dataset."
+  "summary": "Evaluate a threshold classifier on a toy dataset.",
+  "repo_root": "/absolute/path/to/toy-length-classifier"
 }
 ```
+
+`repo_root` is required in shared backend mode. It is the local directory that
+owns the project's files and `.research_plugin` state. `GET /api/projects`
+returns `repo_root` for directory-backed projects so the UI can show what each
+project owns.
 
 `/home` is the main bootstrap endpoint. It returns:
 
@@ -381,6 +393,7 @@ GET  /api/sandboxes/health
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal?tail=50000
+POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/sync
 POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 ```
 
@@ -396,6 +409,7 @@ A sandbox row looks like:
   "memory": 8192,
   "ssh_host": "...", "ssh_port": 50022, "ssh_user": "root",
   "workdir": "/workspace/repo",
+  "sandbox_data_dir": "/workspace/sandbox_data",
   "volume_name": "research-plugin-proj_...",
   "expires_at": "2026-06-01T18:00:00Z"
 }
@@ -403,7 +417,9 @@ A sandbox row looks like:
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the experiment's
-sandbox. The release endpoint terminates the sandbox and returns the updated row.
+sandbox. The sync endpoint commits mounted repo writes from the live sandbox and
+pulls them into the local repo before resource registration. The release endpoint
+terminates the sandbox and returns the updated row.
 
 The metrics endpoint returns live in-container usage, sampled on demand inside
 the sandbox (CPU/RAM via cgroups, GPU via `nvidia-smi`). It is best-effort:

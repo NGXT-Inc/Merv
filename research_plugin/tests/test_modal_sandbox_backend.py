@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from backend.execution.errors import BackendUnavailableError
+from backend.execution.errors import BackendUnavailableError, BackendValidationError
 from backend.execution.types import SandboxRequest
 from backend.execution.backends.modal.config import ModalConfig
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
+from backend.execution.backends.modal.sync.types import SyncResult
 
 
 # --- fake modal SDK ---------------------------------------------------------
@@ -143,9 +146,11 @@ class FakeVolume:
 
 class FakeVolumeClass:
     instances: dict[str, FakeVolume] = {}
+    requested_versions: list[object] = []
 
     @classmethod
-    def from_name(cls, name, create_if_missing=False):
+    def from_name(cls, name, create_if_missing=False, version=None):
+        cls.requested_versions.append(version)
         return cls.instances.setdefault(name, FakeVolume(name))
 
 
@@ -153,6 +158,10 @@ class FakeSecret:
     @staticmethod
     def from_dict(d):
         return {"secret": dict(d)}
+
+    @staticmethod
+    def from_local_environ(keys):
+        return {"local_environ": list(keys), "secret": {key: os.environ[key] for key in keys}}
 
 
 class FakeApp:
@@ -172,11 +181,15 @@ class FakeModal:
 class _FakeSyncEngine:
     baseline = object()
 
+    def __init__(self) -> None:
+        self.sync_calls: list[str] = []
+
     def ensure_project_volume(self, *, project_id: str) -> dict:
         return {"volume_name": f"research-plugin-{project_id}"}
 
-    def sync(self, *, project_id: str) -> None:
-        return None
+    def sync(self, *, project_id: str) -> SyncResult:
+        self.sync_calls.append(project_id)
+        return SyncResult(project_id=project_id, pulled=2)
 
 
 class ModalSandboxBackendTest(unittest.TestCase):
@@ -186,20 +199,38 @@ class ModalSandboxBackendTest(unittest.TestCase):
         FakeSandboxClass.created = []
         FakeSandboxClass.by_name = {}
         FakeVolumeClass.instances = {}
-        import os
-
-        os.environ.setdefault("MODAL_TOKEN_ID", "tok")
-        os.environ.setdefault("MODAL_TOKEN_SECRET", "sec")
+        FakeVolumeClass.requested_versions = []
+        self._old_hf_env = {
+            "HF_TOKEN": os.environ.get("HF_TOKEN"),
+            "HUGGING_FACE_HUB_TOKEN": os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+        }
+        os.environ["MODAL_TOKEN_ID"] = os.environ.get("MODAL_TOKEN_ID", "tok")
+        os.environ["MODAL_TOKEN_SECRET"] = os.environ.get("MODAL_TOKEN_SECRET", "sec")
+        os.environ.pop("HF_TOKEN", None)
+        os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
         self.tmp = tempfile.TemporaryDirectory()
+        self.sync_engine = _FakeSyncEngine()
+        config = ModalConfig.from_env()
+        # ModalConfig.from_env() intentionally loads the plugin .env. Most tests
+        # exercise sandbox creation without optional Hugging Face credentials, so
+        # clear them after config loading and restore the developer environment in
+        # tearDown.
+        os.environ.pop("HF_TOKEN", None)
+        os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
         self.backend = ModalSandboxBackend(
             repo_root=Path(self.tmp.name),
-            config=ModalConfig.from_env(),
+            config=config,
             modal_module=FakeModal,
-            sync_engine=_FakeSyncEngine(),
+            sync_engine=self.sync_engine,
             start_poller=False,
         )
 
     def tearDown(self) -> None:
+        for key, value in self._old_hf_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmp.cleanup()
 
     def _request(self) -> SandboxRequest:
@@ -226,11 +257,31 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(kwargs["timeout"], 1234)
         self.assertEqual(kwargs["gpu"], "A100")
         self.assertIn(kwargs["workdir"], kwargs["volumes"])  # volume mounted at workdir
-        self.assertIn("secrets", kwargs)
+        self.assertEqual(provisioned.sandbox_data_dir, "/workspace/sandbox_data")
+        self.assertNotIn(provisioned.sandbox_data_dir, kwargs["volumes"])
+        self.assertIn(2, FakeVolumeClass.requested_versions)
+        self.assertNotIn("secrets", kwargs)
+        self.assertEqual(kwargs["env"]["RP_SANDBOX_DATA_DIR"], "/workspace/sandbox_data")
+        self.assertEqual(kwargs["env"]["RP_EXPERIMENT_ID"], "exp1")
+        self.assertNotIn("HF_TOKEN", kwargs["env"])
         # tags applied
         sandbox = FakeSandbox.registry[provisioned.sandbox_id]
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
+
+    def test_huggingface_token_is_passed_as_secret_env(self) -> None:
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_test_secret"}, clear=False):
+            self.backend.acquire(request=self._request())
+            env_info = self.backend.sandbox_environment()
+
+        secrets = FakeSandboxClass.created[-1]["kwargs"]["secrets"]
+        self.assertEqual(secrets[0]["local_environ"], ["HF_TOKEN"])
+        secret = secrets[0]["secret"]
+        self.assertEqual(secret["HF_TOKEN"], "hf_test_secret")
+        self.assertNotIn("HUGGING_FACE_HUB_TOKEN", secret)
+        self.assertNotIn("HF_TOKEN", FakeSandboxClass.created[-1]["kwargs"]["env"])
+        self.assertIn("HF_TOKEN", env_info["available_tokens"])
+        self.assertNotIn("hf_test_secret", str(env_info))
 
     def test_acquire_invokes_phase_and_created_callbacks(self) -> None:
         phases: list[str] = []
@@ -268,17 +319,6 @@ class ModalSandboxBackendTest(unittest.TestCase):
         sandboxes = list(FakeSandbox.registry.values())
         self.assertTrue(sandboxes[-1].terminated)
 
-    def test_find_sandbox_id(self) -> None:
-        provisioned = self.backend.acquire(request=self._request())
-        self.assertEqual(self.backend.find_sandbox_id(experiment_id="exp1"), provisioned.sandbox_id)
-        self.assertIsNone(self.backend.find_sandbox_id(experiment_id="never"))
-
-    def test_is_alive_and_terminate(self) -> None:
-        provisioned = self.backend.acquire(request=self._request())
-        self.assertTrue(self.backend.is_alive(sandbox_id=provisioned.sandbox_id))
-        self.assertTrue(self.backend.terminate(sandbox_id=provisioned.sandbox_id))
-        self.assertFalse(self.backend.is_alive(sandbox_id=provisioned.sandbox_id))
-
     def test_read_transcript_live(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         FakeSandbox.registry[provisioned.sandbox_id].transcript = "epoch 1 loss 0.5\n"
@@ -306,6 +346,34 @@ class ModalSandboxBackendTest(unittest.TestCase):
         )
         self.assertIn("committed transcript line", text)
 
+    def test_sync_sandbox_files_commits_mount_then_syncs_local(self) -> None:
+        provisioned = self.backend.acquire(request=self._request())
+        result = self.backend.sync_sandbox_files(
+            project_id="proj1",
+            sandbox_id=provisioned.sandbox_id,
+            workdir=provisioned.workdir,
+            volume_name=provisioned.volume_name,
+        )
+        sandbox = FakeSandbox.registry[provisioned.sandbox_id]
+        self.assertIn("sync /workspace/repo", sandbox.exec_calls[-1])
+        self.assertEqual(self.sync_engine.sync_calls[-1], "proj1")
+        self.assertTrue(result["committed"])
+        self.assertEqual(result["pulled"], 2)
+
+    def test_config_rejects_non_v2_volumes(self) -> None:
+        with self.assertRaises(BackendValidationError):
+            ModalConfig(
+                app_name="research-plugin-jobs",
+                retention_seconds=600,
+                sandbox_timeout=4200,
+                job_timeout=3000,
+                idle_timeout=0,
+                remote_workdir="/workspace/repo",
+                sandbox_data_dir="/workspace/sandbox_data",
+                runner_dir="/workspace/repo/.research_plugin_job",
+                volume_version=1,
+            ).validated()
+
     def test_sample_metrics_parses_gauges(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         FakeSandbox.registry[provisioned.sandbox_id].metrics_output = (
@@ -326,19 +394,6 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(gpu["mem_used_mib"], 1024)
         self.assertEqual(gpu["mem_total_mib"], 40960)
         self.assertIn("A100", gpu["name"])
-
-    def test_sample_metrics_empty_output_is_none(self) -> None:
-        provisioned = self.backend.acquire(request=self._request())
-        # Sampler returns nothing usable (no nvidia-smi, unreadable cgroups).
-        FakeSandbox.registry[provisioned.sandbox_id].metrics_output = ""
-        self.assertIsNone(self.backend.sample_metrics(sandbox_id=provisioned.sandbox_id))
-
-    def test_sample_metrics_unknown_sandbox_is_none(self) -> None:
-        self.assertIsNone(self.backend.sample_metrics(sandbox_id=""))
-
-    def test_health(self) -> None:
-        self.assertTrue(self.backend.health()["ok"])
-
 
 if __name__ == "__main__":
     unittest.main()

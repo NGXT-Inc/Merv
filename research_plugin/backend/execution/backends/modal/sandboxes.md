@@ -53,11 +53,13 @@ sandbox = modal.Sandbox.create(
     timeout=time_limit, workdir=remote_workdir,
     volumes={remote_workdir: volume},
     unencrypted_ports=[22],
-    secrets=[modal.Secret.from_dict({
+    env={
         "RP_AUTHORIZED_KEY": public_key,
         "RP_EXPERIMENT_ID": experiment_id,
         "RP_WORKDIR": remote_workdir,
-    })],
+        "RP_SANDBOX_DATA_DIR": sandbox_data_dir,
+    },
+    secrets=[modal.Secret.from_local_environ(["HF_TOKEN"])],  # only when set
 )
 host, port = sandbox.tunnels()[22].tcp_socket
 ```
@@ -73,6 +75,31 @@ ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no \
 
 Reuse works because the same per-experiment public key stays authorized across
 the sandbox's life.
+
+The mounted repo (`$RP_WORKDIR`, default `/workspace/repo`) is the project
+Modal Volume. Large downloaded datasets, model caches, and other disposable
+inputs belong in `$RP_SANDBOX_DATA_DIR` / `$RP_DATASET_DIR` (default
+`/workspace/sandbox_data`), which is created at boot and is not mounted to the
+Volume.
+Agents should use CPU-only sandboxes for dataset inspection and data engineering
+unless the command needs GPU acceleration. They can request more RAM with
+`memory` in MiB and more CPU with `cpu` in Modal CPU cores (Modal documents 1
+core as 2 vCPUs). Reusable preprocessing/analysis scripts belong under the
+mounted repo; temporary derived datasets left in `$RP_SANDBOX_DATA_DIR` are
+ephemeral.
+Agents should also save a Markdown data note in the experiment folder under the
+mounted repo, such as `experiments/<name>/data.md`, recording dataset sources,
+splits, filters, schema/row-count notes, caveats, and where large ephemeral data
+was placed. That note persists through Volume/local sync and gives future
+sandboxes the data context that ephemeral files do not preserve.
+
+If the backend env file or process environment contains `HF_TOKEN`, sandbox
+creation passes it through with Modal's `secrets` API. Non-secret Research
+Plugin bootstrap values use `Sandbox.create(env=...)`; the Hugging Face token
+does not. The SSH wrapper exports both `HF_TOKEN` and
+`HUGGING_FACE_HUB_TOKEN` for Hugging Face tooling. The token value must not be
+written into the mounted repo, transcript, resources, or agent-visible API
+responses.
 
 ### Image additions
 
@@ -98,7 +125,6 @@ if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
   bash -lc "$SSH_ORIGINAL_COMMAND" 2>&1 | tee -a "$LOG"
   rc=${PIPESTATUS[0]}
   printf '[%s] (exit %d)\n' "$(ts)" "$rc" >> "$LOG"
-  sync "$RP_WORKDIR" 2>/dev/null || true   # nudge Modal's volume commit
   exit $rc
 else
   printf '\n[%s] (interactive shell)\n' "$(ts)" >> "$LOG"
@@ -111,6 +137,8 @@ fi
 - It lives on the mounted Volume, so it survives sandbox death.
 - `tee` preserves the real exit code via `${PIPESTATUS[0]}` so the agent's `ssh`
   exit status is honest.
+- The wrapper records commands only. It does not commit the Volume after every
+  command; `sandbox.sync` is the explicit commit-and-pull boundary.
 
 ### Reading the transcript
 
@@ -142,13 +170,15 @@ sync — it is operational state, read directly from the sandbox/Volume.
 |------|---------|
 | `sandbox.request` | Procure (reuse-or-create) the experiment's sandbox; returns SSH details. |
 | `sandbox.get` | Current sandbox status + SSH details for the experiment. |
+| `sandbox.sync` | Run Volumes v2 `sync <workdir>` in the live sandbox, then sync committed files to the local repo. |
 | `sandbox.list` | All experiment sandboxes in the project. |
 | `sandbox.release` | Terminate the experiment's sandbox. |
 | `sandbox.terminal` | Read the experiment's terminal transcript (tail). |
 | `sandbox.health` | Is the execution backend reachable. |
 
-The agent's normal loop is: `sandbox.request` → run commands over SSH → sync
-result resources → `experiment.transition` to review. No job lifecycle to manage.
+The agent's normal loop is: `sandbox.request` → run/edit/write files over SSH →
+`sandbox.sync` → register/associate local result resources →
+`experiment.transition` to review. No job lifecycle to manage.
 
 ## What changed from the job model
 

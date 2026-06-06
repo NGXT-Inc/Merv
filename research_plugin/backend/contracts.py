@@ -20,7 +20,12 @@ class EmptyInput(ContractModel):
 
 
 class ProjectScopedInput(ContractModel):
-    project_id: str = Field(description="Explicit project scope. The server never falls back to an implicit project.")
+    project_id: str = Field(
+        description=(
+            "Explicit project scope. Project-local MCP adapters may fill this "
+            "from hidden repo context before the call reaches core services."
+        )
+    )
 
 
 class WorkflowStatusAndNextInput(ProjectScopedInput):
@@ -28,8 +33,16 @@ class WorkflowStatusAndNextInput(ProjectScopedInput):
 
 
 class ProjectCreateInput(ContractModel):
-    name: str
-    summary: str = ""
+    name: str = Field(
+        description=(
+            "User-confirmed project name. Do not infer a placeholder from the "
+            "folder name unless the user explicitly asked for that."
+        )
+    )
+    summary: str = Field(
+        default="",
+        description="Short user-confirmed project purpose or scope.",
+    )
     sync_exclusions: dict[str, Any] | None = None
 
 
@@ -179,8 +192,17 @@ class SandboxRequestInput(ProjectScopedInput):
         default=None,
         description="Optional GPU type (e.g. 'A100', 'H100'). Omit for a CPU-only sandbox.",
     )
-    cpu: float | None = Field(default=None, description="Requested vCPUs. Default 2.")
-    memory: int | None = Field(default=None, description="Requested memory in MiB. Default 8192.")
+    cpu: float | None = Field(
+        default=None,
+        description=(
+            "Requested Modal CPU cores. Modal documents 1 CPU core as 2 vCPUs. "
+            "Default 2 cores."
+        ),
+    )
+    memory: int | None = Field(
+        default=None,
+        description="Requested sandbox memory in MiB. Default 8192.",
+    )
     time_limit: int | None = Field(
         default=None,
         description="Max sandbox lifetime in seconds (60..86400). Default 3600.",
@@ -188,6 +210,10 @@ class SandboxRequestInput(ProjectScopedInput):
 
 
 class SandboxGetInput(ProjectScopedInput):
+    experiment_id: str
+
+
+class SandboxSyncInput(ProjectScopedInput):
     experiment_id: str
 
 
@@ -212,6 +238,7 @@ TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
     "project.get": ProjectGetInput,
     "project.get_settings": ProjectGetSettingsInput,
     "project.update_settings": ProjectUpdateSettingsInput,
+    "project.current": EmptyInput,
     "project.list": EmptyInput,
     "claim.create": ClaimCreateInput,
     "claim.list": ClaimListInput,
@@ -233,8 +260,15 @@ TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
     "review.status": ReviewStatusInput,
     "sandbox.request": SandboxRequestInput,
     "sandbox.get": SandboxGetInput,
+    "sandbox.sync": SandboxSyncInput,
     "sandbox.list": SandboxListInput,
     "sandbox.release": SandboxReleaseInput,
     "sandbox.terminal": SandboxTerminalInput,
     "sandbox.health": EmptyInput,
+}
+
+PROJECT_SCOPED_TOOL_NAMES = {
+    name
+    for name, model in TOOL_INPUT_MODELS.items()
+    if issubclass(model, ProjectScopedInput)
 }

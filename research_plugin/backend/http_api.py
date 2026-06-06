@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse, Response
 
 from . import __version__
 from .app import ResearchPluginApp
+from .contracts import PROJECT_SCOPED_TOOL_NAMES
+from .project_router import ProjectRouter
 from .utils import NotFoundError, ResearchPluginError, ValidationError
 from .state import monotonic_ms
 
@@ -361,8 +363,53 @@ class ResearchHttpApi:
         }
 
 
-def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
-    api = ResearchHttpApi(app=app)
+def create_fastapi_app(
+    app: ResearchPluginApp | None = None,
+    *,
+    router: ProjectRouter | None = None,
+) -> FastAPI:
+    if (app is None) == (router is None):
+        raise ValueError("provide exactly one of app or router")
+    api = ResearchHttpApi(app=app) if app is not None else None
+
+    def api_for_project(project_id: str) -> ResearchHttpApi:
+        if router is not None:
+            return ResearchHttpApi(app=router.app_for_project(project_id))
+        assert api is not None
+        return api
+
+    def default_api() -> ResearchHttpApi:
+        if api is not None:
+            return api
+        assert router is not None
+        return ResearchHttpApi(app=router.tool_template_app())
+
+    def route_call_tool(
+        *,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        activity_source: str = "http",
+    ) -> dict[str, Any]:
+        if router is not None:
+            return router.call_tool(
+                name=name,
+                arguments=arguments,
+                context=context,
+                activity_source=activity_source,
+            )
+        assert api is not None
+        arguments = dict(arguments or {})
+        if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments and (context or {}).get("repo_root"):
+            projects = api.app.projects.list_projects()["projects"]
+            if len(projects) != 1:
+                raise ValidationError(
+                    "project_id is required when the repo has multiple projects",
+                    details={"projects": [project["id"] for project in projects]},
+                )
+            arguments["project_id"] = projects[0]["id"]
+        return api.app.call_tool(name=name, arguments=arguments, activity_source=activity_source)
+
     http = FastAPI(title="Research Plugin API", version=__version__)
     http.add_middleware(
         CORSMiddleware,
@@ -380,12 +427,14 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
             status = response.status_code
             return response
         finally:
-            api.app.activity.http_request(
-                method=request.method,
-                path=str(request.url.path) + (f"?{request.url.query}" if request.url.query else ""),
-                status=status,
-                duration_ms=monotonic_ms() - started,
-            )
+            path = str(request.url.path) + (f"?{request.url.query}" if request.url.query else "")
+            if api is not None:
+                api.app.activity.http_request(
+                    method=request.method,
+                    path=path,
+                    status=status,
+                    duration_ms=monotonic_ms() - started,
+                )
 
     @http.exception_handler(ResearchPluginError)
     async def research_error_handler(_request: Request, exc: ResearchPluginError) -> JSONResponse:
@@ -398,10 +447,16 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
 
     @http.get("/health")
     def health() -> dict[str, Any]:
+        if router is not None:
+            return {"ok": True, "version": __version__, **router.health()}
+        assert api is not None
         return api.health()
 
     @http.get("/api/activity")
     def activity(limit: int = Query(100, ge=1), source: str | None = None) -> dict[str, Any]:
+        if router is not None:
+            return router.activity_recent(limit=limit, source=source)
+        assert api is not None
         return api.activity(limit=limit, source=source)
 
     @http.get("/api/debug/tool-calls")
@@ -414,173 +469,200 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
         sort: str = "ts",
         order: str = "desc",
     ) -> dict[str, Any]:
-        return api.tool_call_stats(
+        return default_api().tool_call_stats(
             minutes=minutes, source=source, status=status, tool=tool,
             limit=limit, sort=sort, order=order,
         )
 
     @http.get("/api/debug/tool-calls/{call_id}")
     def tool_call_detail(call_id: int) -> dict[str, Any]:
-        return api.tool_call_detail(call_id=call_id)
+        return default_api().tool_call_detail(call_id=call_id)
 
     @http.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
-        return api.tool_calls_clear()
+        return default_api().tool_calls_clear()
 
     @http.get("/api/projects")
     def list_projects() -> dict[str, Any]:
+        if router is not None:
+            return router.list_projects()
+        assert api is not None
         return api.call_tool(name="project.list", arguments={})
 
     @http.post("/api/projects", status_code=201)
     def create_project(body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.create_project(body=body or {})
+        payload = body or {}
+        if router is not None:
+            repo_root = payload.get("repo_root") or payload.get("directory") or payload.get("path")
+            if not repo_root:
+                raise ValidationError("repo_root is required", details={"field": "repo_root"})
+            name = payload.get("name") or payload.get("title") or "Untitled Project"
+            summary = payload.get("summary") or payload.get("description") or payload.get("research_goal") or ""
+            return router.create_project(
+                repo_root=repo_root,
+                name=name,
+                summary=summary,
+                sync_exclusions=payload.get("sync_exclusions"),
+            )
+        assert api is not None
+        return api.create_project(body=payload)
 
     @http.get("/api/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:
-        return api.call_tool(name="project.get", arguments={"project_id": project_id})
+        return api_for_project(project_id).call_tool(name="project.get", arguments={"project_id": project_id})
 
     @http.patch("/api/projects/{project_id}")
     @http.put("/api/projects/{project_id}")
     def update_project(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="project.update", arguments={"project_id": project_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="project.update", arguments={"project_id": project_id, **(body or {})})
 
     @http.get("/api/projects/{project_id}/home")
     def home(project_id: str) -> dict[str, Any]:
-        return api.home(project_id=project_id)
+        return api_for_project(project_id).home(project_id=project_id)
 
     @http.get("/api/projects/{project_id}/status")
     def project_status(project_id: str, experiment_id: str | None = None) -> dict[str, Any]:
         # Full shape for the UI (see home()); the tool stays slim for the agent.
-        return api.app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
+        return api_for_project(project_id).app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
 
     @http.get("/api/projects/{project_id}/claims")
     def list_claims(project_id: str) -> dict[str, Any]:
-        return api.call_tool(name="claim.list", arguments={"project_id": project_id})
+        return api_for_project(project_id).call_tool(name="claim.list", arguments={"project_id": project_id})
 
     @http.post("/api/projects/{project_id}/claims", status_code=201)
     def create_claim(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="claim.create", arguments={"project_id": project_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="claim.create", arguments={"project_id": project_id, **(body or {})})
 
     @http.get("/api/projects/{project_id}/claims/{claim_id}")
     def get_claim(project_id: str, claim_id: str) -> dict[str, Any]:
-        return api.get_claim(project_id=project_id, claim_id=claim_id)
+        return api_for_project(project_id).get_claim(project_id=project_id, claim_id=claim_id)
 
     @http.patch("/api/projects/{project_id}/claims/{claim_id}")
     @http.put("/api/projects/{project_id}/claims/{claim_id}")
     def update_claim(project_id: str, claim_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="claim.update", arguments={"project_id": project_id, "claim_id": claim_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="claim.update", arguments={"project_id": project_id, "claim_id": claim_id, **(body or {})})
 
     @http.get("/api/projects/{project_id}/experiments")
     def list_experiments(project_id: str, status: str | None = None) -> dict[str, Any]:
-        return api.filter_experiments(project_id=project_id, status=status)
+        return api_for_project(project_id).filter_experiments(project_id=project_id, status=status)
 
     @http.post("/api/projects/{project_id}/experiments", status_code=201)
     def create_experiment(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.create_experiment(project_id=project_id, body=body or {})
+        return api_for_project(project_id).create_experiment(project_id=project_id, body=body or {})
 
     @http.get("/api/projects/{project_id}/experiments/view")
     def experiments_view(project_id: str) -> dict[str, Any]:
-        return api.experiments_view(project_id=project_id)
+        return api_for_project(project_id).experiments_view(project_id=project_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}")
     def get_experiment(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
-        return api.app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+        return api_for_project(project_id).app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/status")
     def experiment_status(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Full shape for the UI (see home()); the tool stays slim for the agent.
-        return api.app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
+        return api_for_project(project_id).app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
 
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/transition")
     def transition_experiment(project_id: str, experiment_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="experiment.transition", arguments={"project_id": project_id, "experiment_id": experiment_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="experiment.transition", arguments={"project_id": project_id, "experiment_id": experiment_id, **(body or {})})
 
     @http.get("/api/projects/{project_id}/resources")
     def list_resources(project_id: str, kind: str | None = None) -> dict[str, Any]:
-        return api.filter_resources(project_id=project_id, kind=kind)
+        return api_for_project(project_id).filter_resources(project_id=project_id, kind=kind)
 
     @http.post("/api/projects/{project_id}/resources", status_code=201)
     def register_resource(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.register_resource(project_id=project_id, body=body or {})
+        return api_for_project(project_id).register_resource(project_id=project_id, body=body or {})
 
     @http.get("/api/projects/{project_id}/resources/tree")
     def resources_tree(project_id: str) -> dict[str, Any]:
-        return api.resources_tree(project_id=project_id)
+        return api_for_project(project_id).resources_tree(project_id=project_id)
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}")
     def resolve_resource(project_id: str, resource_id: str) -> dict[str, Any]:
-        return api.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
+        return api_for_project(project_id).call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/history")
     def resource_history(project_id: str, resource_id: str) -> dict[str, Any]:
-        return api.call_tool(name="resource.history", arguments={"project_id": project_id, "resource_id": resource_id})
+        return api_for_project(project_id).call_tool(name="resource.history", arguments={"project_id": project_id, "resource_id": resource_id})
 
     @http.post("/api/projects/{project_id}/resources/{resource_id}/associate")
     def associate_resource(project_id: str, resource_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="resource.associate", arguments={"project_id": project_id, "resource_id": resource_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="resource.associate", arguments={"project_id": project_id, "resource_id": resource_id, **(body or {})})
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/content")
     def resource_content(project_id: str, resource_id: str) -> dict[str, Any]:
-        return api.resource_content(project_id=project_id, resource_id=resource_id)
+        return api_for_project(project_id).resource_content(project_id=project_id, resource_id=resource_id)
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/file")
     def resource_file(project_id: str, resource_id: str) -> Response:
-        content, headers = api.resource_file(project_id=project_id, resource_id=resource_id)
+        content, headers = api_for_project(project_id).resource_file(project_id=project_id, resource_id=resource_id)
         content_type = headers.pop("Content-Type", "application/octet-stream")
         return Response(content=content, media_type=content_type, headers=headers)
 
     @http.get("/api/projects/{project_id}/reviews")
     def reviews(project_id: str, target_type: str = "experiment", target_id: str | None = None) -> dict[str, Any]:
         if not target_id:
-            return api.review_queue(project_id=project_id)
-        return api.call_tool(name="review.status", arguments={"project_id": project_id, "target_type": target_type, "target_id": target_id})
+            return api_for_project(project_id).review_queue(project_id=project_id)
+        return api_for_project(project_id).call_tool(name="review.status", arguments={"project_id": project_id, "target_type": target_type, "target_id": target_id})
 
     @http.post("/api/projects/{project_id}/reviews/request", status_code=201)
     def request_review(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.call_tool(name="review.request", arguments={"project_id": project_id, **(body or {})})
+        return api_for_project(project_id).call_tool(name="review.request", arguments={"project_id": project_id, **(body or {})})
 
     @http.post("/api/projects/{project_id}/reviews/start")
     def start_review(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.start_review(project_id=project_id, body=body or {})
+        return api_for_project(project_id).start_review(project_id=project_id, body=body or {})
 
     @http.post("/api/projects/{project_id}/reviews/submit")
     def submit_review(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        return api.submit_review(project_id=project_id, body=body or {})
+        return api_for_project(project_id).submit_review(project_id=project_id, body=body or {})
 
     @http.get("/api/projects/{project_id}/sandboxes")
     def list_sandboxes(project_id: str) -> dict[str, Any]:
-        return api.app.sandboxes.list_for_ui(project_id=project_id)
+        return api_for_project(project_id).app.sandboxes.list_for_ui(project_id=project_id)
 
     @http.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
+        if router is not None:
+            return {"ok": True, "mode": "multi_project"}
+        assert api is not None
         return api.app.sandboxes.health_for_ui()
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")
     def get_sandbox(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.app.sandboxes.get_for_ui(project_id=project_id, experiment_id=experiment_id)
+        return api_for_project(project_id).app.sandboxes.get_for_ui(project_id=project_id, experiment_id=experiment_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics")
     def sandbox_metrics(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.app.sandboxes.metrics_for_ui(project_id=project_id, experiment_id=experiment_id)
+        return api_for_project(project_id).app.sandboxes.metrics_for_ui(project_id=project_id, experiment_id=experiment_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal")
     def sandbox_terminal(project_id: str, experiment_id: str, tail: int | None = None) -> dict[str, Any]:
         args: dict[str, Any] = {"project_id": project_id, "experiment_id": experiment_id}
         if tail is not None:
             args["tail"] = tail
-        return api.call_tool(name="sandbox.terminal", arguments=args)
+        return api_for_project(project_id).call_tool(name="sandbox.terminal", arguments=args)
+
+    @http.post("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/sync")
+    def sync_sandbox(project_id: str, experiment_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).call_tool(
+            name="sandbox.sync",
+            arguments={"project_id": project_id, "experiment_id": experiment_id},
+        )
 
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/release")
     def release_sandbox(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.call_tool(
+        return api_for_project(project_id).call_tool(
             name="sandbox.release",
             arguments={"project_id": project_id, "experiment_id": experiment_id},
         )
 
     @http.get("/api/projects/{project_id}/events")
     def events(project_id: str, limit: int = Query(100, ge=1)) -> dict[str, Any]:
-        return api.events(project_id=project_id, limit=limit)
+        return api_for_project(project_id).events(project_id=project_id, limit=limit)
 
     # MCP-shaped endpoints — drive the same ResearchPluginApp.call_tool path that
     # the stdio MCP server uses. The stdio MCP proxy forwards Codex tool calls
@@ -588,6 +670,9 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
     # ResearchPluginError handler above so they preserve error_code + details.
     @http.get("/mcp/tools")
     def mcp_tools_list() -> dict[str, Any]:
+        if router is not None:
+            return {"tools": router.list_tools()}
+        assert api is not None
         return {"tools": api.app.list_tools()}
 
     @http.post("/mcp/call")
@@ -599,7 +684,15 @@ def create_fastapi_app(app: ResearchPluginApp) -> FastAPI:
         arguments = payload.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ValidationError("arguments must be an object", details={"field": "arguments"})
-        result = api.app.call_tool(name=name, arguments=arguments, activity_source="mcp")
+        context = payload.get("context") or {}
+        if context is not None and not isinstance(context, dict):
+            raise ValidationError("context must be an object", details={"field": "context"})
+        result = route_call_tool(
+            name=name,
+            arguments=arguments,
+            context=context,
+            activity_source="mcp",
+        )
         return {"result": result}
 
     return http

@@ -60,6 +60,7 @@ class ProvisionedSandbox:
     ssh_user: str
     workdir: str
     volume_name: str
+    sandbox_data_dir: str = ""
     reused: bool = False
 
 
@@ -92,5 +93,16 @@ class SandboxBackend(Protocol):
         workdir: str,
         tail: int | None = None,
     ) -> str: ...
+
+    def sync_sandbox_files(
+        self,
+        *,
+        project_id: str,
+        sandbox_id: str,
+        workdir: str,
+        volume_name: str,
+    ) -> dict: ...
+
+    def sandbox_environment(self) -> dict: ...
 
     def health(self) -> dict: ...

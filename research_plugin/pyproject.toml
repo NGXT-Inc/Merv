@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-plugin"
+version = "0.0005"
+description = "Lean research-state workflow with project-local MCP context, resources, reviews, and Modal SSH sandboxes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "UNLICENSED" }
+authors = [{ name = "Papyrus" }]
+keywords = ["research", "ml", "mcp", "experiments"]
+dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.27,<1",
+    "modal>=1.4,<2",
+    "pydantic>=2.8,<3",
+    "uvicorn>=0.30,<1",
+]
+
+[project.scripts]
+research-plugin-mcp = "mcp_server.__main__:main"
+research-plugin-http = "backend.http_server:main"
+
+[tool.setuptools]
+packages = ["backend", "mcp_server"]
+
+[tool.setuptools.package-dir]
+backend = "backend"
+mcp_server = "mcp_server"

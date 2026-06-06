@@ -111,12 +111,18 @@ class ResearchPluginApp:
         handlers: dict[str, tuple[str, Callable[..., dict[str, Any]]]] = {
             "workflow.status_and_next": ("Orient Codex from durable project/experiment state.", self.workflow.status_and_next_agent),
             "project.status_and_next": ("Alias for workflow.status_and_next.", self.workflow.status_and_next_agent),
-            "project.create": ("Create a project.", self.projects.create),
+            "project.create": (
+                "Create a project for this folder using a user-confirmed name and summary. "
+                "If project.current returned exists:false and the user has not already "
+                "provided the project name/purpose, ask before calling this tool.",
+                self.projects.create,
+            ),
             "project.update": ("Update a project name or summary.", self.projects.update),
             "project.get": ("Get project metadata.", self.projects.get),
             "project.get_settings": ("Get project-level settings, including sync exclusions.", self.projects.get_settings),
             "project.update_settings": ("Update project-level settings, including sync exclusions.", self.projects.update_settings),
-            "project.list": ("List projects.", self.projects.list_projects),
+            "project.current": ("Get the current folder's project, or report that none exists yet.", self.projects.current),
+            "project.list": ("List projects in the current tool scope.", self.projects.list_projects),
             "claim.create": ("Create a claim.", self.claims.create),
             "claim.list": ("List claims.", self.claims.list_claims),
             "claim.update": ("Update a claim's statement, scope, status, or confidence.", self.claims.update),
@@ -137,6 +143,7 @@ class ResearchPluginApp:
             "review.status": ("Inspect review requests and submissions for a target.", self.reviews.status),
             "sandbox.request": ("Procure (reuse or create) the experiment's sandbox and return SSH details.", self.sandboxes.request),
             "sandbox.get": ("Get the experiment's sandbox status and SSH details.", self.sandboxes.get),
+            "sandbox.sync": ("Commit live sandbox repo writes to the Modal Volume, then sync the Volume back to local files.", self.sandboxes.sync),
             "sandbox.list": ("List sandboxes for the project.", self.sandboxes.list_sandboxes),
             "sandbox.release": ("Terminate the experiment's sandbox.", self.sandboxes.release),
             "sandbox.terminal": ("Read the experiment's terminal transcript.", self.sandboxes.terminal),

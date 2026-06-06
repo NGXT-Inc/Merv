@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   ssh_user TEXT NOT NULL DEFAULT 'root',
   key_path TEXT NOT NULL DEFAULT '',
   workdir TEXT NOT NULL DEFAULT '',
+  sandbox_data_dir TEXT NOT NULL DEFAULT '',
   volume_name TEXT NOT NULL DEFAULT '',
   sandbox_name TEXT NOT NULL DEFAULT '',
   phase TEXT NOT NULL DEFAULT '',
@@ -311,6 +312,7 @@ class StateStore:
                 "detail": "TEXT NOT NULL DEFAULT ''",
                 "error": "TEXT NOT NULL DEFAULT ''",
                 "provision_started_at": "TEXT",
+                "sandbox_data_dir": "TEXT NOT NULL DEFAULT ''",
             },
         )
         # The shadow-git unplug (May 2026) dropped these columns from the

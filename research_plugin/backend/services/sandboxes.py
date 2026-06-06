@@ -408,6 +408,65 @@ class SandboxService:
             "transcript": transcript,
         }
 
+    def sync(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
+        try:
+            row = self._fetch_scoped(experiment_id=experiment_id, project_id=project_id)
+        except NotFoundError as exc:
+            raise ValidationError(
+                "sandbox.sync requires a running sandbox; call sandbox.request first"
+            ) from exc
+        row = self._reconcile(row=row)
+        if row.get("status") not in ACTIVE_SANDBOX_STATUSES or not row.get("sandbox_id"):
+            raise ValidationError(
+                "sandbox.sync requires a running sandbox; call sandbox.request first"
+            )
+        try:
+            result = self.backend.sync_sandbox_files(
+                project_id=str(row["project_id"]),
+                sandbox_id=str(row["sandbox_id"]),
+                workdir=str(row.get("workdir") or ""),
+                volume_name=str(row.get("volume_name") or ""),
+            )
+        except BackendUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BackendUnavailableError(f"sandbox sync failed: {exc}") from exc
+        self._emit_event(
+            project_id=str(row["project_id"]),
+            event_type="sandbox.synced",
+            experiment_id=experiment_id,
+            payload={
+                "sandbox_id": row.get("sandbox_id", ""),
+                "volume": row.get("volume_name", ""),
+                "pulled": result.get("pulled", 0),
+                "conflicts": result.get("conflicts", 0),
+            },
+        )
+        has_conflicts = bool(result.get("conflicts") or result.get("skipped_conflicts"))
+        hint = (
+            "Sandbox repo writes were committed to the Modal Volume, but the "
+            "local sync has conflicts. Resolve the reported conflict paths, then "
+            "run sandbox.sync again before registering or associating resources."
+            if has_conflicts
+            else (
+                "Sandbox repo writes have been committed to the Modal Volume and "
+                "synced to the local repo. Now register/associate local result "
+                "files with resource.register_file and resource.associate before "
+                "sandbox.release."
+            )
+        )
+        return {
+            "experiment_id": experiment_id,
+            "project_id": row.get("project_id"),
+            "sandbox_id": row.get("sandbox_id"),
+            "status": row.get("status"),
+            "workdir": row.get("workdir"),
+            "sandbox_data_dir": row.get("sandbox_data_dir") or "",
+            "volume": row.get("volume_name"),
+            "sync": result,
+            "hint": hint,
+        }
+
     def health(self) -> dict[str, Any]:
         health = self.backend.health()
         result = {"ok": bool(health.get("ok"))}
@@ -582,6 +641,7 @@ class SandboxService:
                 ssh_port=provisioned.ssh_port,
                 ssh_user=provisioned.ssh_user,
                 workdir=provisioned.workdir,
+                sandbox_data_dir=provisioned.sandbox_data_dir,
                 volume_name=provisioned.volume_name,
                 expires_at=_iso_after(seconds=req.time_limit),
                 last_seen_at=now,
@@ -733,6 +793,11 @@ class SandboxService:
             jobs = list(self._jobs.values())
         for job in jobs:
             job.cancel.set()
+        for job in jobs:
+            try:
+                job.thread.join(timeout=2.0)
+            except RuntimeError:
+                pass
 
     def _is_alive(self, *, sandbox_id: str) -> bool:
         try:
@@ -1031,12 +1096,23 @@ class SandboxService:
                 "raw_command": raw_command,
             },
             "workdir": row.get("workdir"),
+            "sandbox_data_dir": row.get("sandbox_data_dir") or "",
             "volume": row.get("volume_name"),
             "gpu": row.get("gpu") or None,
             "cpu": row.get("cpu"),
             "memory": row.get("memory"),
             "expires_at": row.get("expires_at"),
         }
+        env_info = self._sandbox_environment()
+        credential_note = ""
+        if env_info.get("available_tokens"):
+            view["environment"] = env_info
+            if "HF_TOKEN" in env_info["available_tokens"]:
+                credential_note = (
+                    "If you need Hugging Face access, HF_TOKEN is already "
+                    "available inside the sandbox environment; use it through "
+                    "Hugging Face tooling and do not print or write the token. "
+                )
         if status == "provisioning":
             view["phase"] = row.get("phase") or "starting"
             view["detail"] = row.get("detail") or ""
@@ -1045,7 +1121,8 @@ class SandboxService:
                 "Provisioning (a large first sync or cold start can take a few "
                 "minutes). Poll sandbox.get every ~10s until status is running, "
                 "then run commands with ssh.command. Do not re-call "
-                "sandbox.request to poll."
+                "sandbox.request to poll. "
+                f"{credential_note}"
             )
         elif status == "failed":
             view["error"] = row.get("error") or "provisioning failed"
@@ -1059,6 +1136,17 @@ class SandboxService:
                 "Output streams back and is recorded to the experiment terminal. "
                 "Use ssh.raw_command instead if you are not in the repo root. "
                 "The repo is mounted at the workdir on a shared Modal Volume. "
+                "Once this sandbox is running, make repo file changes inside "
+                "the sandbox; local edits are not part of the live sandbox state. "
+                "Download large datasets and caches to sandbox_data_dir "
+                "($RP_SANDBOX_DATA_DIR / $RP_DATASET_DIR inside the sandbox), "
+                "which is sandbox-local and not on the Volume. "
+                f"{credential_note}"
+                "Before registering result resources or releasing the sandbox, "
+                "call sandbox.sync to commit sandbox writes to the Volume and "
+                "pull them into the local repo. Also call sandbox.sync after "
+                "major file changes so the user can inspect the latest local "
+                "files while the sandbox is still running. "
                 "The dispatcher multiplexes one SSH connection and auto-retries "
                 "transient connect failures, so do not wrap it in your own retry "
                 "loop; if commands keep failing to connect, call sandbox.get once "
@@ -1069,6 +1157,28 @@ class SandboxService:
         if reused is not None:
             view["reused"] = reused
         return view
+
+    def _sandbox_environment(self) -> dict[str, Any]:
+        describe = getattr(self.backend, "sandbox_environment", None)
+        if not callable(describe):
+            return {"available_tokens": [], "notes": []}
+        try:
+            result = describe()
+        except Exception:  # noqa: BLE001
+            return {"available_tokens": [], "notes": []}
+        if not isinstance(result, dict):
+            return {"available_tokens": [], "notes": []}
+        tokens = [
+            str(token)
+            for token in result.get("available_tokens", [])
+            if isinstance(token, str) and token
+        ]
+        notes = [
+            str(note)
+            for note in result.get("notes", [])
+            if isinstance(note, str) and note
+        ]
+        return {"available_tokens": tokens, "notes": notes}
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1096,6 +1206,7 @@ class SandboxService:
             "ssh_port": row.get("ssh_port"),
             "ssh_user": row.get("ssh_user"),
             "workdir": row.get("workdir"),
+            "sandbox_data_dir": row.get("sandbox_data_dir") or "",
             "volume_name": row.get("volume_name"),
             "requested_at": row.get("requested_at"),
             "expires_at": row.get("expires_at"),

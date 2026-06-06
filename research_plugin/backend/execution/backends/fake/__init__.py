@@ -49,6 +49,7 @@ class FakeSandboxBackend:
         self.fail_immediately = False
         # metrics knob: per-sandbox-id sample dict (None => unavailable).
         self.metrics: dict[str, dict | None] = {}
+        self.synced: list[dict] = []
 
     def acquire(
         self,
@@ -93,6 +94,7 @@ class FakeSandboxBackend:
             ssh_user="root",
             workdir=workdir,
             volume_name=f"research-plugin-{request.project_id}",
+            sandbox_data_dir="/workspace/sandbox_data",
             reused=False,
         )
 
@@ -133,6 +135,37 @@ class FakeSandboxBackend:
         if not self.alive.get(sandbox_id):
             return None
         return self.metrics.get(sandbox_id)
+
+    def sync_sandbox_files(
+        self,
+        *,
+        project_id: str,
+        sandbox_id: str,
+        workdir: str,
+        volume_name: str,
+    ) -> dict:
+        if not self.alive.get(sandbox_id):
+            raise BackendUnavailableError("fake sandbox is not running")
+        result = {
+            "project_id": project_id,
+            "sandbox_id": sandbox_id,
+            "workdir": workdir,
+            "volume": volume_name,
+            "committed": True,
+            "pushed": 0,
+            "pulled": 0,
+            "deleted_remote": 0,
+            "deleted_local": 0,
+            "conflicts": 0,
+            "skipped_conflicts": [],
+            "skipped_busy": False,
+            "coalesced": False,
+        }
+        self.synced.append(result)
+        return result
+
+    def sandbox_environment(self) -> dict:
+        return {"available_tokens": [], "notes": []}
 
     def health(self) -> dict:
         return {"ok": self.healthy, "name": self.capabilities.name}

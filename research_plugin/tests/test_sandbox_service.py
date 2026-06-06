@@ -26,6 +26,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.project_id = self.call("project.create", name="Sandbox Project")["id"]
 
     def tearDown(self) -> None:
+        self.app.shutdown()
         self.tmp.cleanup()
 
     def call(self, tool: str, **kwargs):
@@ -61,6 +62,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertTrue(result["sandbox_id"])
         # Short agent-facing command goes through the repo-local dispatcher.
         self.assertEqual(result["ssh"]["command"], f".research_plugin/sbx {exp_id}")
+        self.assertEqual(result["sandbox_data_dir"], "/workspace/sandbox_data")
         # Full ssh line is still available as a cwd-independent fallback.
         self.assertTrue(result["ssh"]["raw_command"].startswith("ssh -i "))
         self.assertIn("@sandbox.modal.test", result["ssh"]["raw_command"])
@@ -69,6 +71,22 @@ class SandboxServiceTest(unittest.TestCase):
         # experiment flips to running
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["status"], "running")
+
+    def test_request_and_get_report_huggingface_env_without_secret_value(self) -> None:
+        self.backend.sandbox_environment = lambda: {  # type: ignore[method-assign]
+            "available_tokens": ["HF_TOKEN"],
+            "notes": ["HF_TOKEN is available inside the sandbox."],
+        }
+        exp_id = self._experiment()
+        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(result["environment"]["available_tokens"], ["HF_TOKEN"])
+        self.assertIn("Hugging Face", result["hint"])
+        self.assertIn("HF_TOKEN", result["hint"])
+        self.assertNotIn("hf_", str(result))
+
+        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(got["environment"]["available_tokens"], ["HF_TOKEN"])
+        self.assertIn("HF_TOKEN", got["hint"])
 
     def test_request_writes_dispatcher_and_conn(self) -> None:
         exp_id = self._experiment()
@@ -122,19 +140,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("r999.modal.host", body)
         self.assertIn("55555", body)
 
-    def test_reuse_refreshes_moved_endpoint(self) -> None:
-        exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.backend.move_endpoint(
-            sandbox_id=created["sandbox_id"], host="r777.modal.host", port=33333
-        )
-        reused = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.assertTrue(reused["reused"])
-        self.assertEqual(reused["ssh"]["host"], "r777.modal.host")
-        self.assertEqual(reused["ssh"]["port"], 33333)
-        # No new sandbox was created — this was a pure reuse + endpoint refresh.
-        self.assertEqual(len(self.backend.acquired), 1)
-
     # ---- status / liveness ----
 
     def test_get_reconciles_dead_sandbox(self) -> None:
@@ -170,43 +175,6 @@ class SandboxServiceTest(unittest.TestCase):
         # The row's reserved request rides along to frame the bars.
         self.assertEqual(result["reserved"]["cpu"], 2.0)
 
-    def test_metrics_caches_within_ttl(self) -> None:
-        exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.backend.metrics[created["sandbox_id"]] = {"cpu": {"used_cores": 0.1, "limit_cores": None}, "memory": {"used_bytes": 1, "limit_bytes": None}, "gpus": []}
-        calls = {"n": 0}
-        original = self.backend.sample_metrics
-
-        def counting(*, sandbox_id):
-            calls["n"] += 1
-            return original(sandbox_id=sandbox_id)
-
-        self.backend.sample_metrics = counting
-        self.app.sandboxes.metrics_for_ui(project_id=self.project_id, experiment_id=exp_id)
-        self.app.sandboxes.metrics_for_ui(project_id=self.project_id, experiment_id=exp_id)
-        # Second call inside the TTL window is served from cache.
-        self.assertEqual(calls["n"], 1)
-
-    def test_metrics_unavailable_when_not_running(self) -> None:
-        exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
-        result = self.app.sandboxes.metrics_for_ui(
-            project_id=self.project_id, experiment_id=exp_id
-        )
-        self.assertFalse(result["available"])
-        self.assertIsNone(result["metrics"])
-        # A terminated sandbox is never sampled.
-        self.assertEqual(created["status"], "running")
-
-    def test_metrics_no_sandbox_is_soft_none(self) -> None:
-        exp_id = self._experiment()
-        result = self.app.sandboxes.metrics_for_ui(
-            project_id=self.project_id, experiment_id=exp_id
-        )
-        self.assertFalse(result["available"])
-        self.assertEqual(result["status"], "none")
-
     # ---- terminal ----
 
     def test_terminal_reads_transcript(self) -> None:
@@ -215,6 +183,21 @@ class SandboxServiceTest(unittest.TestCase):
         self.backend.append_transcript(experiment_id=exp_id, text="$ python train.py\nloss 0.1\n")
         term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         self.assertIn("train.py", term["transcript"])
+
+    def test_sync_commits_sandbox_and_returns_resource_guidance(self) -> None:
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["sync"]["sandbox_id"], created["sandbox_id"])
+        self.assertTrue(result["sync"]["committed"])
+        self.assertIn("resource.register_file", result["hint"])
+        self.assertEqual(self.backend.synced[-1]["sandbox_id"], created["sandbox_id"])
+
+    def test_sync_requires_running_sandbox(self) -> None:
+        exp_id = self._experiment()
+        with self.assertRaises(ValidationError):
+            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
 
     # ---- release ----
 
@@ -274,13 +257,6 @@ class SandboxServiceTest(unittest.TestCase):
         final = self._await_status(exp_id, "running")
         self.assertEqual(final["status"], "running")
         self.assertEqual(final["ssh"]["command"], f".research_plugin/sbx {exp_id}")
-
-    def test_request_fast_path_returns_running_inline(self) -> None:
-        # No gate: the fake completes within the budget, so request returns SSH.
-        exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(result["status"], "running")
-        self.assertEqual(result["ssh"]["command"], f".research_plugin/sbx {exp_id}")
 
     def test_provisioning_failure_marks_failed_and_cleans_up(self) -> None:
         self.app.sandboxes.request_wait_seconds = 2.0

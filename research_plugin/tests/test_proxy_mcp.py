@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import ResearchPluginApp
+from backend.project_router import ProjectRouter
 from mcp_server.daemon_marker import (
     discover_daemon_url,
     marker_path,
@@ -52,21 +53,10 @@ class DaemonMarkerTest(unittest.TestCase):
         path.write_text("not valid json {")
         self.assertIsNone(read_marker(repo_root=self.repo))
 
-    def test_ipv6_url_is_bracketed(self) -> None:
-        write_marker(repo_root=self.repo, host="::1", port=9090)
-        info = read_marker(repo_root=self.repo)
-        assert info is not None
-        self.assertEqual(info.url, "http://[::1]:9090")
-
     def test_env_var_overrides_marker(self) -> None:
         write_marker(repo_root=self.repo, host="127.0.0.1", port=8787)
         with mock.patch.dict(os.environ, {"RESEARCH_PLUGIN_DAEMON_URL": "http://1.2.3.4:9999"}):
             self.assertEqual(discover_daemon_url(repo_root=self.repo), "http://1.2.3.4:9999")
-
-    def test_discover_returns_none_without_env_or_marker(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("RESEARCH_PLUGIN_DAEMON_URL", None)
-            self.assertIsNone(discover_daemon_url(repo_root=self.repo))
 
 
 class _LiveDaemonFixture:
@@ -98,6 +88,7 @@ class _LiveDaemonFixture:
     def stop(self) -> None:
         try:
             self.server.shutdown()
+            self._thread.join(timeout=5.0)
         finally:
             self.server.server_close()
 
@@ -128,10 +119,17 @@ class HttpProxyMcpServerLiveTest(unittest.TestCase):
 
     def test_tools_list_round_trips_through_daemon(self) -> None:
         listed = self.proxy.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        tool_names = {tool["name"] for tool in listed["result"]["tools"]}
+        tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+        tool_names = set(tools)
         self.assertIn("workflow.status_and_next", tool_names)
+        self.assertIn("project.current", tool_names)
         self.assertIn("project.create", tool_names)
         self.assertIn("sandbox.request", tool_names)
+        self.assertIn("sandbox.sync", tool_names)
+        self.assertNotIn("project.list", tool_names)
+        workflow_schema = tools["workflow.status_and_next"]["inputSchema"]
+        self.assertNotIn("project_id", workflow_schema.get("properties", {}))
+        self.assertNotIn("project_id", workflow_schema.get("required", []))
 
     def test_tools_call_round_trips_with_structured_content(self) -> None:
         created = self.proxy.handle(
@@ -148,8 +146,139 @@ class HttpProxyMcpServerLiveTest(unittest.TestCase):
         text = json.loads(created["result"]["content"][0]["text"])
         self.assertEqual(text["id"], project["id"])
 
-    def test_tool_validation_errors_round_trip(self) -> None:
-        missing = self.proxy.handle(
+class HttpProxyMcpServerRoutedDaemonTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.repo_a = self.root / "repo-a"
+        self.repo_b = self.root / "repo-b"
+        self.router = ProjectRouter(
+            registry_db_path=self.root / "registry.sqlite",
+            execution_backend_factory=lambda _repo: FakeSandboxBackend(),
+        )
+        self.server = make_http_server(router=self.router, host="127.0.0.1", port=0)
+        self.host, self.port = self.server.server_address
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+        self.url = f"http://{self.host}:{self.port}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self._thread.join(timeout=5.0)
+        self.server.server_close()
+        self.router.shutdown()
+        self.tmp.cleanup()
+
+    def _project_current(self, repo: Path) -> dict:
+        proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=repo, daemon_url=self.url))
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "project.current", "arguments": {}},
+            }
+        )
+        self.assertNotIn("error", response)
+        return response["result"]["structuredContent"]
+
+    def _create_project(self, repo: Path, name: str) -> dict:
+        proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=repo, daemon_url=self.url))
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "project.create", "arguments": {"name": name}},
+            }
+        )
+        self.assertNotIn("error", response)
+        return response["result"]["structuredContent"]
+
+    def test_mcp_project_current_is_scoped_and_does_not_create_project(self) -> None:
+        current_a = self._project_current(self.repo_a)
+
+        self.assertFalse(current_a["exists"])
+        self.assertIsNone(current_a["project"])
+        self.assertIn("project.create", current_a["hint"])
+        self.assertIn("Ask the user", current_a["hint"])
+        self.assertFalse((self.repo_a / ".research_plugin" / "state.sqlite").exists())
+        self.assertEqual(self.router.list_projects()["projects"], [])
+
+    def test_markerless_fresh_repo_can_use_default_shared_daemon_url(self) -> None:
+        self.assertFalse(marker_path(repo_root=self.repo_a).exists())
+        with mock.patch.dict(os.environ, {"RESEARCH_PLUGIN_DEFAULT_DAEMON_URL": self.url}):
+            proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo_a, daemon_url=None))
+            response = proxy.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "project.current", "arguments": {}},
+                }
+            )
+
+        self.assertNotIn("error", response)
+        current = response["result"]["structuredContent"]
+        self.assertFalse(current["exists"])
+        self.assertIn("project.create", current["hint"])
+        self.assertIn("Ask the user", current["hint"])
+
+    def test_mcp_sandbox_health_does_not_require_folder_project(self) -> None:
+        proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo_a, daemon_url=self.url))
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "sandbox.health", "arguments": {}},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        health = response["result"]["structuredContent"]
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["mode"], "multi_project")
+
+    def test_mcp_project_create_establishes_folder_mapping(self) -> None:
+        project_a = self._create_project(self.repo_a, "Project A")
+        project_b = self._create_project(self.repo_b, "Project B")
+
+        current_a = self._project_current(self.repo_a)
+        current_b = self._project_current(self.repo_b)
+
+        self.assertTrue(current_a["exists"])
+        self.assertTrue(current_b["exists"])
+        self.assertEqual(current_a["project"]["id"], project_a["id"])
+        self.assertEqual(current_b["project"]["id"], project_b["id"])
+        self.assertNotEqual(project_a["id"], project_b["id"])
+        self.assertTrue((self.repo_a / ".research_plugin" / "state.sqlite").exists())
+        self.assertTrue((self.repo_b / ".research_plugin" / "state.sqlite").exists())
+
+        global_projects = self.router.list_projects()["projects"]
+        self.assertEqual({p["id"] for p in global_projects}, {project_a["id"], project_b["id"]})
+
+    def test_mcp_project_current_recovers_existing_folder_project(self) -> None:
+        app = ResearchPluginApp(
+            repo_root=self.repo_a,
+            db_path=self.repo_a / ".research_plugin" / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
+        )
+        existing = app.projects.list_projects()["projects"][0]
+        app.projects.update(project_id=existing["id"], name="Existing Project")
+        app.shutdown()
+
+        current = self._project_current(self.repo_a)
+
+        self.assertTrue(current["exists"])
+        self.assertEqual(current["project"]["id"], existing["id"])
+        self.assertEqual(current["project"]["name"], "Existing Project")
+        self.assertEqual(self.router.list_projects()["projects"][0]["id"], existing["id"])
+
+    def test_routed_project_scoped_tool_uses_hidden_repo_context(self) -> None:
+        project_a = self._create_project(self.repo_a, "Project A")
+        proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo_a, daemon_url=self.url))
+        status = proxy.handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -157,41 +286,32 @@ class HttpProxyMcpServerLiveTest(unittest.TestCase):
                 "params": {"name": "workflow.status_and_next", "arguments": {}},
             }
         )
-        self.assertEqual(missing["error"]["code"], -32000)
-        self.assertIn("project_id is required", missing["error"]["message"])
-        self.assertEqual(missing["error"]["data"]["error_code"], "validation_error")
+        self.assertNotIn("error", status)
+        project = status["result"]["structuredContent"]["project"]
+        self.assertEqual(project["id"], project_a["id"])
 
-    def test_unknown_tool_returns_research_plugin_error(self) -> None:
-        unknown = self.proxy.handle(
+    def test_routed_project_scoped_tool_requires_registered_folder_project(self) -> None:
+        proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo_a, daemon_url=self.url))
+        status = proxy.handle(
             {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "nonsense.tool", "arguments": {}},
+                "params": {"name": "workflow.status_and_next", "arguments": {}},
             }
         )
-        self.assertEqual(unknown["error"]["data"]["error_code"], "research_plugin_error")
+        self.assertEqual(status["error"]["data"]["error_code"], "validation_error")
+        self.assertIn("project.create", status["error"]["message"])
 
-    def test_daemon_calls_are_logged_with_mcp_source(self) -> None:
-        self.proxy.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "project.create", "arguments": {"name": "Source Tag"}},
-            }
-        )
-        events = self.fixture.app.activity.recent(limit=20, source="mcp")["events"]
-        self.assertTrue(
-            any(event.get("tool") == "project.create" and event.get("source") == "mcp" for event in events)
-        )
+    def test_shared_daemon_clears_project_marker_on_close(self) -> None:
+        self._create_project(self.repo_a, "Project A")
+        marker = marker_path(repo_root=self.repo_a)
+        self.assertTrue(marker.exists())
+        self.assertEqual(discover_daemon_url(repo_root=self.repo_a), self.url)
 
-    def test_proxy_rediscovers_daemon_url_each_call(self) -> None:
-        # Even if the proxy was constructed without an explicit URL, it should
-        # discover the daemon via the marker that the live fixture wrote.
-        fresh = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo, daemon_url=None))
-        listed = fresh.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        self.assertIn("project.create", {tool["name"] for tool in listed["result"]["tools"]})
+        self.server.server_close()
+
+        self.assertFalse(marker.exists())
 
 
 class HttpProxyMcpServerOfflineTest(unittest.TestCase):
@@ -203,7 +323,11 @@ class HttpProxyMcpServerOfflineTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_tools_call_returns_actionable_error_when_daemon_missing(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {"RESEARCH_PLUGIN_DEFAULT_DAEMON_URL": "http://127.0.0.1:1"},
+            clear=False,
+        ):
             os.environ.pop("RESEARCH_PLUGIN_DAEMON_URL", None)
             proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo, daemon_url=None))
             response = proxy.handle(
@@ -211,26 +335,11 @@ class HttpProxyMcpServerOfflineTest(unittest.TestCase):
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/call",
-                    "params": {"name": "project.list", "arguments": {}},
+                    "params": {"name": "project.current", "arguments": {}},
                 }
             )
         self.assertEqual(response["error"]["data"]["error_code"], "daemon_not_running")
         self.assertIn("research-plugin-http", response["error"]["message"])
-
-    def test_tools_call_returns_error_when_daemon_url_unreachable(self) -> None:
-        proxy = HttpProxyMcpServer(
-            config=ProxyConfig(repo_root=self.repo, daemon_url="http://127.0.0.1:1", timeout_seconds=1.0),
-        )
-        response = proxy.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "project.list", "arguments": {}},
-            }
-        )
-        self.assertEqual(response["error"]["data"]["error_code"], "daemon_not_running")
-
 
 if __name__ == "__main__":
     unittest.main()

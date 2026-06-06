@@ -13,6 +13,9 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from backend import __version__ as BACKEND_VERSION
+from mcp_server import __version__ as MCP_VERSION
+
 
 class LocalShippingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -33,7 +36,7 @@ class LocalShippingTest(unittest.TestCase):
         shutil.copytree(self.source_plugin / "mcp_server", self.install_dir / "mcp_server")
         shutil.copytree(self.source_plugin / "bin", self.install_dir / "bin")
         shutil.copytree(self.source_plugin / "skills", self.install_dir / "skills")
-        shutil.copy2(self.source_plugin / ".mcp.json", self.install_dir / ".mcp.json")
+        shutil.copy2(self.source_plugin / ".mcp.codex.json", self.install_dir / ".mcp.codex.json")
         shutil.copytree(self.source_plugin / ".codex-plugin", self.install_dir / ".codex-plugin")
 
     def _clean_env(self) -> dict[str, str]:
@@ -44,32 +47,30 @@ class LocalShippingTest(unittest.TestCase):
         return env
 
     def test_mcp_launcher_uses_current_repo_for_state_and_resources(self) -> None:
-        # New architecture: the daemon owns state. Start it first, then point
-        # the stdio MCP proxy at the same repo so it discovers the daemon via
-        # .research_plugin/daemon.json.
+        # New architecture: the daemon is shared and repo-agnostic. The MCP
+        # proxy stays project-local and forwards hidden repo context.
         daemon = self._start_http_daemon()
         self.addCleanup(self._stop_process, daemon)
-        self._wait_for_daemon_ready(daemon)
+        daemon_url = self._wait_for_daemon_ready(daemon, expect_marker=False)
 
-        proc = self._start_mcp_from_config()
+        proc = self._start_mcp_from_config({"RESEARCH_PLUGIN_DAEMON_URL": daemon_url})
         self.addCleanup(self._stop_process, proc)
 
         self._rpc(proc, "initialize")
         tools = self._rpc(proc, "tools/list")["result"]["tools"]
         status_schema = next(tool for tool in tools if tool["name"] == "workflow.status_and_next")["inputSchema"]
-        self.assertIn("project_id", status_schema["required"])
+        self.assertNotIn("project_id", status_schema.get("required", []))
 
         project = self._tool(proc, "project.create", name="Shipping Smoke", summary="Run from arbitrary repo.")
+        self.assertTrue((self.research_repo / ".research_plugin" / "daemon.json").exists())
         claim = self._tool(
             proc,
             "claim.create",
-            project_id=project["id"],
             statement="A tiny threshold experiment can be tracked from a separate repo.",
         )
         exp = self._tool(
             proc,
             "experiment.create",
-            project_id=project["id"],
             intent="Record plan and result resources through the installed MCP launcher.",
             tested_claim_ids=[claim["id"]],
         )
@@ -82,7 +83,6 @@ class LocalShippingTest(unittest.TestCase):
         plan = self._tool(
             proc,
             "resource.register_file",
-            project_id=project["id"],
             path="experiments/shipping/plan.md",
             kind="note",
             title="Shipping plan",
@@ -90,46 +90,41 @@ class LocalShippingTest(unittest.TestCase):
         self._tool(
             proc,
             "resource.associate",
-            project_id=project["id"],
             resource_id=plan["id"],
             target_type="experiment",
             target_id=exp_id,
             role="plan",
         )
-        self._tool(proc, "experiment.transition", project_id=project["id"], experiment_id=exp_id, transition="submit_design")
-        self._submit_review(proc, project["id"], exp_id, "design_reviewer", "pass", "Plan is scoped.")
+        self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="submit_design")
+        self._submit_review(proc, exp_id, "design_reviewer", "pass", "Plan is scoped.")
         self._tool(
             proc,
             "experiment.transition",
-            project_id=project["id"],
             experiment_id=exp_id,
             transition="mark_ready_to_run",
         )
-        self._tool(proc, "experiment.transition", project_id=project["id"], experiment_id=exp_id, transition="start_running")
+        self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="start_running")
 
         (self.research_repo / "experiments" / "shipping" / "results.json").write_text('{"accuracy": 1.0}\n')
         result = self._tool(
             proc,
             "resource.register_file",
-            project_id=project["id"],
             path="experiments/shipping/results.json",
             kind="result",
         )
         self._tool(
             proc,
             "resource.associate",
-            project_id=project["id"],
             resource_id=result["id"],
             target_type="experiment",
             target_id=exp_id,
             role="result",
         )
-        self._tool(proc, "experiment.transition", project_id=project["id"], experiment_id=exp_id, transition="submit_results")
-        self._submit_review(proc, project["id"], exp_id, "experiment_reviewer", "pass", "Result file exists.")
+        self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="submit_results")
+        self._submit_review(proc, exp_id, "experiment_reviewer", "pass", "Result file exists.")
         completed = self._tool(
             proc,
             "experiment.transition",
-            project_id=project["id"],
             experiment_id=exp_id,
             transition="complete",
         )
@@ -138,14 +133,15 @@ class LocalShippingTest(unittest.TestCase):
         self.assertTrue((self.research_repo / ".research_plugin" / "state.sqlite").exists())
         self.assertFalse((self.install_dir / ".research_plugin").exists())
 
-    def _start_mcp_from_config(self):
+    def _start_mcp_from_config(self, extra_env: dict[str, str] | None = None):
         manifest = json.loads((self.install_dir / ".codex-plugin" / "plugin.json").read_text())
         mcp_config = json.loads((self.install_dir / manifest["mcpServers"]).read_text())
         server = mcp_config["mcpServers"]["research-plugin"]
+        env = {**self._clean_env(), **server.get("env", {}), **(extra_env or {})}
         return subprocess.Popen(
             [server["command"], *server.get("args", [])],
             cwd=self.research_repo,
-            env={**self._clean_env(), **server.get("env", {})},
+            env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -157,12 +153,12 @@ class LocalShippingTest(unittest.TestCase):
         return subprocess.Popen(
             [
                 str(self.install_dir / "bin" / "research-plugin-http"),
-                "--repo",
-                str(self.research_repo),
                 "--host",
                 "127.0.0.1",
                 "--port",
                 "0",
+                "--registry-store",
+                str(self.root / "registry.sqlite"),
             ],
             cwd=self.root,
             env=self._clean_env(),
@@ -171,7 +167,7 @@ class LocalShippingTest(unittest.TestCase):
             text=True,
         )
 
-    def _wait_for_daemon_ready(self, daemon) -> str:
+    def _wait_for_daemon_ready(self, daemon, *, expect_marker: bool = True) -> str:
         """Wait for the daemon to print its bound URL and write the marker."""
         line = daemon.stdout.readline()
         match = re.search(r"http://[^ ]+", line)
@@ -184,12 +180,15 @@ class LocalShippingTest(unittest.TestCase):
         # a marker-readiness wait.
         self._fetch_json(base + "/health")
         marker = self.research_repo / ".research_plugin" / "daemon.json"
-        self.assertTrue(marker.exists(), "daemon marker was not written")
+        if expect_marker:
+            self.assertTrue(marker.exists(), "daemon marker was not written")
         return base
 
     def test_plugin_manifest_paths_resolve_for_local_install(self) -> None:
         manifest = json.loads((self.install_dir / ".codex-plugin" / "plugin.json").read_text())
         self.assertEqual(manifest["name"], "research-plugin")
+        self.assertEqual(BACKEND_VERSION, MCP_VERSION)
+        self.assertTrue(manifest["version"].startswith(f"{BACKEND_VERSION}+"))
         self.assertTrue((self.install_dir / manifest["skills"]).is_dir())
 
         mcp_config = json.loads((self.install_dir / manifest["mcpServers"]).read_text())
@@ -199,6 +198,19 @@ class LocalShippingTest(unittest.TestCase):
             command_path = self.install_dir / command_path
         self.assertTrue(command_path.exists())
         self.assertTrue(os.access(command_path, os.X_OK))
+        env = mcp_config["mcpServers"]["research-plugin"].get("env", {})
+        self.assertEqual(env["RESEARCH_PLUGIN_DAEMON_URL"], "http://127.0.0.1:8787")
+
+    def test_root_marketplace_points_at_current_plugin(self) -> None:
+        repo_root = self.source_plugin.parent
+        marketplace = json.loads((repo_root / ".agents" / "plugins" / "marketplace.json").read_text())
+        entries = marketplace["plugins"]
+        entry = next(item for item in entries if item["name"] == "research-plugin")
+        plugin_dir = (repo_root / entry["source"]["path"]).resolve()
+        self.assertEqual(plugin_dir, self.source_plugin.resolve())
+        manifest = json.loads((plugin_dir / ".codex-plugin" / "plugin.json").read_text())
+        self.assertTrue(manifest["version"].startswith(f"{BACKEND_VERSION}+"))
+        self.assertEqual(entry["policy"]["installation"], "AVAILABLE")
 
     def test_http_launcher_accepts_explicit_repo(self) -> None:
         proc = subprocess.Popen(
@@ -231,11 +243,10 @@ class LocalShippingTest(unittest.TestCase):
         self.assertTrue((self.research_repo / ".research_plugin" / "state.sqlite").exists())
         self.assertFalse((self.install_dir / ".research_plugin").exists())
 
-    def _submit_review(self, proc, project_id: str, exp_id: str, role: str, verdict: str, notes: str) -> None:
+    def _submit_review(self, proc, exp_id: str, role: str, verdict: str, notes: str) -> None:
         req = self._tool(
             proc,
             "review.request",
-            project_id=project_id,
             target_type="experiment",
             target_id=exp_id,
             role=role,

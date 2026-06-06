@@ -53,8 +53,8 @@ export const useProjectStore = create((set, get) => ({
     }
   },
 
-  async createProject({ name, summary }) {
-    const created = await api.createProject({ name, summary });
+  async createProject({ name, summary, repo_root }) {
+    const created = await api.createProject({ name, summary, repo_root });
     const projectRow = created.project || created;
     await get().loadProjects();
     get().setProjectId(projectRow.id);

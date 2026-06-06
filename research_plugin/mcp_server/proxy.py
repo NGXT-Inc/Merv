@@ -9,17 +9,21 @@ Discovery order for the daemon URL:
 1. ``RESEARCH_PLUGIN_DAEMON_URL`` environment variable.
 2. ``<repo_root>/.research_plugin/daemon.json`` written by the daemon on
    startup.
+3. ``RESEARCH_PLUGIN_DEFAULT_DAEMON_URL`` or ``http://127.0.0.1:8787`` for the
+   shared daemon's conventional local address.
 
-If neither is available, the proxy still serves ``initialize`` and ``ping`` so
-Codex can register the MCP cleanly, but any tool call returns a structured
-error telling the user how to start the daemon.
+If the selected URL is unreachable, the proxy still serves ``initialize`` and
+``ping`` so Codex can register the MCP cleanly, but any tool call returns a
+structured error telling the user how to start the daemon.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -31,6 +35,7 @@ from .daemon_marker import discover_daemon_url
 
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_DAEMON_URL = "http://127.0.0.1:8787"
 
 
 @dataclass(frozen=True)
@@ -63,8 +68,10 @@ def _daemon_not_running_message(*, repo_root: Path) -> str:
     return (
         "research_plugin HTTP daemon is not running for repo "
         f"{repo_root}. Start it with:\n"
-        f"    research-plugin-http --repo {repo_root}\n"
-        "Or set RESEARCH_PLUGIN_DAEMON_URL to the daemon's URL."
+        "    research-plugin-http\n"
+        "The MCP proxy also tries http://127.0.0.1:8787 by default. "
+        "If the daemon is on another port, set RESEARCH_PLUGIN_DAEMON_URL "
+        "to the shared daemon's URL."
     )
 
 
@@ -155,13 +162,21 @@ class HttpProxyMcpServer:
                 error_code="daemon_bad_response",
                 details={"payload": body},
             )
-        return tools
+        return [
+            self._with_hidden_project_scope(tool=tool)
+            for tool in tools
+            if tool.get("name") != "project.list"
+        ]
 
     def _call_tool(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         url = self._require_daemon_url()
         body = self._http_post(
             url=f"{url}/mcp/call",
-            payload={"name": name, "arguments": arguments},
+            payload={
+                "name": name,
+                "arguments": arguments,
+                "context": {"repo_root": str(self.config.repo_root)},
+            },
         )
         result = body.get("result")
         if not isinstance(result, dict):
@@ -175,7 +190,12 @@ class HttpProxyMcpServer:
     def _require_daemon_url(self) -> str:
         # Re-discover on every call so the proxy survives a daemon restart on
         # a different port without the user having to restart Codex.
-        url = discover_daemon_url(repo_root=self.config.repo_root) or self.config.daemon_url
+        url = (
+            discover_daemon_url(repo_root=self.config.repo_root)
+            or self.config.daemon_url
+            or os.environ.get("RESEARCH_PLUGIN_DEFAULT_DAEMON_URL")
+            or DEFAULT_DAEMON_URL
+        )
         if not url:
             raise _HttpDaemonError(
                 _daemon_not_running_message(repo_root=self.config.repo_root),
@@ -183,6 +203,20 @@ class HttpProxyMcpServer:
                 details={"repo_root": str(self.config.repo_root)},
             )
         return url.rstrip("/")
+
+    def _with_hidden_project_scope(self, *, tool: dict[str, Any]) -> dict[str, Any]:
+        """Hide project_id in MCP schemas; the proxy sends repo context instead."""
+        scoped = deepcopy(tool)
+        schema = scoped.get("inputSchema")
+        if not isinstance(schema, dict):
+            return scoped
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("project_id", None)
+        required = schema.get("required")
+        if isinstance(required, list):
+            schema["required"] = [field for field in required if field != "project_id"]
+        return scoped
 
     def _http_get(self, *, url: str) -> dict[str, Any]:
         req = Request(url, method="GET", headers={"Accept": "application/json"})

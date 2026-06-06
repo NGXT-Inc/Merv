@@ -19,6 +19,7 @@ import uvicorn
 from .app import ResearchPluginApp
 from .daemon_marker import clear_marker, write_marker
 from .http_api import create_fastapi_app
+from .project_router import ProjectRouter
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:
@@ -40,14 +41,24 @@ class UvicornHttpServer:
     clear it on shutdown.
     """
 
-    def __init__(self, *, app: ResearchPluginApp, host: str, port: int) -> None:
+    def __init__(
+        self,
+        *,
+        app: ResearchPluginApp | None = None,
+        router: ProjectRouter | None = None,
+        host: str,
+        port: int,
+    ) -> None:
+        if (app is None) == (router is None):
+            raise ValueError("provide exactly one of app or router")
         self._socket = _bind_socket(host=host, port=port)
         selected_port = int(self._socket.getsockname()[1])
         self.server_address = (host, selected_port)
         self._app = app
+        self._router = router
         self._marker_written = False
         config = uvicorn.Config(
-            create_fastapi_app(app=app),
+            create_fastapi_app(app=app, router=router),
             host=host,
             port=selected_port,
             log_level="warning",
@@ -61,11 +72,14 @@ class UvicornHttpServer:
         # see it once we're actually listening. Best-effort: failures here must
         # not block serving.
         host, port = self.server_address
-        try:
-            write_marker(repo_root=self._app.store.repo_root, host=host, port=port)
-            self._marker_written = True
-        except Exception:  # noqa: BLE001
-            self._marker_written = False
+        if self._app is not None:
+            try:
+                write_marker(repo_root=self._app.store.repo_root, host=host, port=port)
+                self._marker_written = True
+            except Exception:  # noqa: BLE001
+                self._marker_written = False
+        elif self._router is not None:
+            self._router.set_marker_endpoint(host=host, port=port)
         try:
             self._server.run(sockets=[self._socket])
         finally:
@@ -79,7 +93,10 @@ class UvicornHttpServer:
         self._socket.close()
 
     def _clear_marker(self) -> None:
-        if not self._marker_written:
+        if self._router is not None:
+            self._router.clear_markers()
+            return
+        if not self._marker_written or self._app is None:
             return
         try:
             clear_marker(repo_root=self._app.store.repo_root)
@@ -89,16 +106,30 @@ class UvicornHttpServer:
             self._marker_written = False
 
 
-def make_http_server(app: ResearchPluginApp, host: str, port: int) -> UvicornHttpServer:
-    return UvicornHttpServer(app=app, host=host, port=port)
+def make_http_server(
+    app: ResearchPluginApp | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    *,
+    router: ProjectRouter | None = None,
+) -> UvicornHttpServer:
+    return UvicornHttpServer(app=app, router=router, host=host, port=port)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default=os.environ.get("RESEARCH_PLUGIN_HTTP_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("RESEARCH_PLUGIN_HTTP_PORT", "8787")))
-    parser.add_argument("--repo", default=os.environ.get("RESEARCH_PLUGIN_REPO_ROOT", "."))
+    parser.add_argument("--repo", default=os.environ.get("RESEARCH_PLUGIN_REPO_ROOT"))
     parser.add_argument("--store", default=os.environ.get("RESEARCH_PLUGIN_STORE", ".research_plugin/state.sqlite"))
+    parser.add_argument(
+        "--registry-store",
+        default=os.environ.get(
+            "RESEARCH_PLUGIN_REGISTRY_STORE",
+            str(Path.home() / ".research_plugin" / "registry.sqlite"),
+        ),
+        help="Global registry DB for shared multi-project mode.",
+    )
     parser.add_argument(
         "--activity-stderr",
         action="store_true",
@@ -107,16 +138,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    repo_root = Path(args.repo).resolve()
-    db_path = Path(args.store)
-    if not db_path.is_absolute():
-        db_path = repo_root / db_path
-
     if args.activity_stderr:
         os.environ["RESEARCH_PLUGIN_ACTIVITY_STDERR"] = "1"
 
-    app = ResearchPluginApp(repo_root=repo_root, db_path=db_path)
-    server = make_http_server(app=app, host=args.host, port=args.port)
+    app: ResearchPluginApp | None = None
+    router: ProjectRouter | None = None
+    if args.repo:
+        repo_root = Path(args.repo).resolve()
+        db_path = Path(args.store)
+        if not db_path.is_absolute():
+            db_path = repo_root / db_path
+        app = ResearchPluginApp(repo_root=repo_root, db_path=db_path)
+        server = make_http_server(app=app, host=args.host, port=args.port)
+    else:
+        router = ProjectRouter(registry_db_path=Path(args.registry_store))
+        server = make_http_server(router=router, host=args.host, port=args.port)
     host, port = server.server_address
     print(f"research_plugin HTTP API listening on http://{host}:{port}", flush=True)
     try:
@@ -125,7 +161,10 @@ def main() -> int:
         pass
     finally:
         server.server_close()
-        app.shutdown()
+        if app is not None:
+            app.shutdown()
+        if router is not None:
+            router.shutdown()
     return 0
 
 

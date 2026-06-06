@@ -22,8 +22,10 @@ COMPUTE_TIERS: dict[str, dict[str, int]] = {
 
 DEFAULT_APP_NAME = "research-plugin-jobs"
 DEFAULT_REMOTE_WORKDIR = "/workspace/repo"
+DEFAULT_SANDBOX_DATA_DIR = "/workspace/sandbox_data"
 DEFAULT_RUNNER_DIR = "/workspace/repo/.research_plugin_job"
 DEFAULT_VOLUME_NAME_PREFIX = "research-plugin"
+DEFAULT_VOLUME_VERSION = 2
 DEFAULT_RETENTION_SECONDS = 600
 DEFAULT_SANDBOX_TIMEOUT = 4200
 DEFAULT_JOB_TIMEOUT = 3000
@@ -55,9 +57,11 @@ class ModalConfig:
     job_timeout: int
     idle_timeout: int
     remote_workdir: str
+    sandbox_data_dir: str
     runner_dir: str
     timeout_buffer_seconds: int = DEFAULT_TIMEOUT_BUFFER_SECONDS
     volume_name_prefix: str = DEFAULT_VOLUME_NAME_PREFIX
+    volume_version: int = DEFAULT_VOLUME_VERSION
 
     @classmethod
     def from_env(cls) -> "ModalConfig":
@@ -78,6 +82,10 @@ class ModalConfig:
                 _env_str("RESEARCH_PLUGIN_MODAL_WORKDIR", DEFAULT_REMOTE_WORKDIR),
                 field="RESEARCH_PLUGIN_MODAL_WORKDIR",
             ),
+            sandbox_data_dir=_absolute_posix_path(
+                _env_str("RESEARCH_PLUGIN_MODAL_DATA_DIR", DEFAULT_SANDBOX_DATA_DIR),
+                field="RESEARCH_PLUGIN_MODAL_DATA_DIR",
+            ),
             runner_dir=_absolute_posix_path(
                 _env_str("RESEARCH_PLUGIN_MODAL_RUNNER_DIR", DEFAULT_RUNNER_DIR),
                 field="RESEARCH_PLUGIN_MODAL_RUNNER_DIR",
@@ -90,6 +98,10 @@ class ModalConfig:
                 "RESEARCH_PLUGIN_MODAL_VOLUME_PREFIX",
                 DEFAULT_VOLUME_NAME_PREFIX,
             ),
+            volume_version=_env_int(
+                "RESEARCH_PLUGIN_MODAL_VOLUME_VERSION",
+                DEFAULT_VOLUME_VERSION,
+            ),
         ).validated()
 
     def validated(self) -> "ModalConfig":
@@ -97,6 +109,17 @@ class ModalConfig:
             raise BackendValidationError(
                 "RESEARCH_PLUGIN_MODAL_RUNNER_DIR must be under RESEARCH_PLUGIN_MODAL_WORKDIR "
                 "so runner status/logs are persisted in the mounted Modal Volume"
+            )
+        if _is_under_path(self.sandbox_data_dir, self.remote_workdir):
+            raise BackendValidationError(
+                "RESEARCH_PLUGIN_MODAL_DATA_DIR must be outside RESEARCH_PLUGIN_MODAL_WORKDIR "
+                "so large datasets stay off the mounted Modal Volume"
+            )
+        if self.volume_version != 2:
+            raise BackendValidationError(
+                "RESEARCH_PLUGIN_MODAL_VOLUME_VERSION must be 2 because sandbox.sync "
+                "commits live sandbox writes with `sync <workdir>`, which Modal "
+                "supports only for Volumes v2"
             )
         return self
 

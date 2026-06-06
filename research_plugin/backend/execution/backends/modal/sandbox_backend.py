@@ -18,6 +18,7 @@ backend (see sync/sync.md).
 from __future__ import annotations
 
 import base64
+import os
 import shlex
 import threading
 from pathlib import Path, PurePosixPath
@@ -122,6 +123,7 @@ echo "RPM ok=1"
 # wrapper, then execs sshd in the foreground (which keeps the container alive).
 BOOT_SCRIPT = r"""#!/usr/bin/env bash
 set -eu
+mkdir -p "${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 if [ -n "${RP_AUTHORIZED_KEY:-}" ]; then
   printf '%s\n' "$RP_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
@@ -130,8 +132,14 @@ fi
 # Persist the session env so the ForceCommand wrapper can read it (sshd does not
 # pass the container environment through to forced commands).
 {
-  printf 'RP_WORKDIR=%s\n' "${RP_WORKDIR:-/workspace/repo}"
-  printf 'RP_EXPERIMENT_ID=%s\n' "${RP_EXPERIMENT_ID:-unknown}"
+  printf 'RP_WORKDIR=%q\n' "${RP_WORKDIR:-/workspace/repo}"
+  printf 'RP_EXPERIMENT_ID=%q\n' "${RP_EXPERIMENT_ID:-unknown}"
+  printf 'RP_SANDBOX_DATA_DIR=%q\n' "${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
+  printf 'RP_DATASET_DIR=%q\n' "${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
+  if [ -n "${HF_TOKEN:-}" ]; then
+    printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
+    printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
+  fi
 } > /opt/rp/env
 mkdir -p /run/sshd
 ssh-keygen -A >/dev/null 2>&1 || true
@@ -157,6 +165,13 @@ REC_SCRIPT = r"""#!/usr/bin/env bash
 [ -f /opt/rp/env ] && . /opt/rp/env
 RP_WORKDIR="${RP_WORKDIR:-/workspace/repo}"
 RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
+RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
+RP_DATASET_DIR="${RP_DATASET_DIR:-$RP_SANDBOX_DATA_DIR}"
+if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
+  HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+fi
+export RP_WORKDIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN
+mkdir -p "$RP_SANDBOX_DATA_DIR" 2>/dev/null || true
 LOG_DIR="$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIMENT_ID"
 LOG="$LOG_DIR/transcript.log"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -167,7 +182,6 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
   bash -lc "$SSH_ORIGINAL_COMMAND" 2>&1 | tee -a "$LOG"
   rc=${PIPESTATUS[0]}
   { printf '[%s] (exit %d)\n' "$(ts)" "$rc" >> "$LOG"; } 2>/dev/null || true
-  sync "$RP_WORKDIR" 2>/dev/null || true
   exit "$rc"
 else
   { printf '\n[%s] (interactive shell)\n' "$(ts)" >> "$LOG"; } 2>/dev/null || true
@@ -261,17 +275,18 @@ class ModalSandboxBackend:
             pass
 
         workdir = request.remote_workdir or self.config.remote_workdir
+        sandbox_data_dir = self.config.sandbox_data_dir
         volume = self._provide_volume(volume_name)
         modal = self._modal_module()
         image = self._image(cuda_devel=request.cuda_devel, image_packages=request.image_packages)
         app = self._get_app()
-        secret = modal.Secret.from_dict(
-            {
-                "RP_AUTHORIZED_KEY": request.public_key,
-                "RP_EXPERIMENT_ID": request.experiment_id,
-                "RP_WORKDIR": workdir,
-            }
+        env = self._sandbox_env(
+            public_key=request.public_key,
+            experiment_id=request.experiment_id,
+            workdir=workdir,
+            sandbox_data_dir=sandbox_data_dir,
         )
+        secrets = self._sandbox_secrets(modal)
         name = _sandbox_name(request.experiment_id)
         kwargs: dict[str, Any] = {
             "app": app,
@@ -280,11 +295,13 @@ class ModalSandboxBackend:
             "workdir": workdir,
             "volumes": {workdir: volume},
             "unencrypted_ports": [22],
-            "secrets": [secret],
+            "env": env,
             "cpu": request.cpu,
             "memory": int(request.memory),
             "name": name,
         }
+        if secrets:
+            kwargs["secrets"] = secrets
         if request.gpu:
             kwargs["gpu"] = request.gpu
         _call(on_phase, "creating", f"gpu={request.gpu or 'cpu'}")
@@ -326,6 +343,7 @@ class ModalSandboxBackend:
             ssh_user="root",
             workdir=workdir,
             volume_name=volume_name,
+            sandbox_data_dir=sandbox_data_dir,
             reused=False,
         )
 
@@ -440,6 +458,55 @@ class ModalSandboxBackend:
             return None
         return _parse_metrics(output)
 
+    def sync_sandbox_files(
+        self,
+        *,
+        project_id: str,
+        sandbox_id: str,
+        workdir: str,
+        volume_name: str,
+    ) -> dict[str, Any]:
+        """Commit mounted Volume writes from the live sandbox, then sync local."""
+        if not sandbox_id:
+            raise BackendUnavailableError("cannot sync without a live sandbox id")
+        if not workdir:
+            workdir = self.config.remote_workdir
+        try:
+            sandbox = self._sandbox_from_id(sandbox_id)
+            process = sandbox.exec("sync", workdir, timeout=300)
+            exit_code = wait_process(process)
+            if exit_code != 0:
+                stderr = read_stream(getattr(process, "stderr", None))
+                stdout = read_stream(getattr(process, "stdout", None))
+                detail = stderr or stdout or "no output"
+                raise BackendUnavailableError(
+                    f"Modal Volume commit via sync failed with exit code {exit_code}: {detail}"
+                )
+        except BackendUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BackendUnavailableError(f"Modal sandbox sync failed: {exc}") from exc
+
+        if volume_name:
+            self._provide_volume(volume_name)
+        result = self.sync_engine.sync(project_id=project_id)
+        return {
+            "project_id": project_id,
+            "sandbox_id": sandbox_id,
+            "workdir": workdir,
+            "volume": volume_name,
+            "committed": True,
+            "pushed": result.pushed,
+            "pulled": result.pulled,
+            "deleted_remote": result.deleted_remote,
+            "deleted_local": result.deleted_local,
+            "conflicts": result.conflicts,
+            "skipped_conflicts": list(result.skipped_conflicts),
+            "skipped_busy": result.skipped_busy,
+            "coalesced": result.coalesced,
+            "duration_ms": result.duration_ms,
+        }
+
     def health(self) -> dict[str, Any]:
         try:
             self._ensure_credentials()
@@ -447,6 +514,22 @@ class ModalSandboxBackend:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "name": "modal", "error": str(exc)}
         return {"ok": True, "name": "modal", "app": self.config.app_name}
+
+    def sandbox_environment(self) -> dict[str, Any]:
+        available_tokens: list[str] = []
+        if os.environ.get("HF_TOKEN"):
+            available_tokens.append("HF_TOKEN")
+        return {
+            "available_tokens": available_tokens,
+            "notes": (
+                [
+                    "HF_TOKEN is available inside the sandbox for Hugging Face downloads. "
+                    "Do not print or write the token; use it through Hugging Face tooling."
+                ]
+                if available_tokens
+                else []
+            ),
+        }
 
     def on_project_created(self, *, project_id: str) -> None:
         self.sync_engine.ensure_project_volume(project_id=project_id)
@@ -503,7 +586,11 @@ class ModalSandboxBackend:
             self._ensure_credentials()
             modal = self._modal_module()
             try:
-                volume = modal.Volume.from_name(volume_name, create_if_missing=True)
+                volume = modal.Volume.from_name(
+                    volume_name,
+                    create_if_missing=True,
+                    version=self.config.volume_version,
+                )
             except Exception as exc:  # noqa: BLE001
                 raise BackendUnavailableError(
                     f"Modal volume is unavailable: {volume_name}: {exc}"
@@ -516,6 +603,36 @@ class ModalSandboxBackend:
             except Exception:  # noqa: BLE001
                 pass
         return volume
+
+    def _sandbox_env(
+        self,
+        *,
+        public_key: str,
+        experiment_id: str,
+        workdir: str,
+        sandbox_data_dir: str,
+    ) -> dict[str, str]:
+        return {
+            "RP_AUTHORIZED_KEY": public_key,
+            "RP_EXPERIMENT_ID": experiment_id,
+            "RP_WORKDIR": workdir,
+            "RP_SANDBOX_DATA_DIR": sandbox_data_dir,
+        }
+
+    def _sandbox_secrets(self, modal: Any) -> list[Any]:
+        """Build Modal sandbox secrets from the daemon environment.
+
+        The backend has already loaded the configured env file into
+        ``os.environ``. Use Modal's local-environment helper instead of
+        ``Secret.from_dotenv()`` so sandbox creation is independent of the
+        daemon's current working directory.
+        """
+        if not os.environ.get("HF_TOKEN"):
+            return []
+        keys = ["HF_TOKEN"]
+        if os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+            keys.append("HUGGING_FACE_HUB_TOKEN")
+        return [modal.Secret.from_local_environ(keys)]
 
     def _ssh_endpoint(self, *, sandbox: Any) -> tuple[str, int]:
         get_tunnels = getattr(sandbox, "tunnels", None)

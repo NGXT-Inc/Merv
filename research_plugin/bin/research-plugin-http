@@ -14,17 +14,56 @@ done
 
 BIN_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 PLUGIN_DIR="$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd)"
-PYTHON_BIN="${RESEARCH_PLUGIN_PYTHON:-python3}"
-if [[ -x "$PLUGIN_DIR/.venv/bin/python" ]]; then
+# Python resolution. The daemon needs the full requirements.txt deps
+# (fastapi, modal, pydantic, httpx, uvicorn), so we fail loud if no venv is
+# found instead of silently falling through to a system python that may not
+# have them. The user has to set this up once per machine.
+if [[ -n "${RESEARCH_PLUGIN_PYTHON:-}" ]]; then
+  PYTHON_BIN="$RESEARCH_PLUGIN_PYTHON"
+elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" && -x "$CLAUDE_PLUGIN_DATA/.venv/bin/python" ]]; then
+  PYTHON_BIN="$CLAUDE_PLUGIN_DATA/.venv/bin/python"
+elif [[ -x "$PLUGIN_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$PLUGIN_DIR/.venv/bin/python"
+else
+  cat >&2 <<EOF
+research-plugin-http: no Python interpreter with the daemon's dependencies found.
+
+Looked for, in order:
+  \$RESEARCH_PLUGIN_PYTHON              (unset)
+  \$CLAUDE_PLUGIN_DATA/.venv/bin/python (per-user data dir)
+  $PLUGIN_DIR/.venv/bin/python          (in-tree dev venv)
+
+One-time setup:
+  python3 -m venv "$PLUGIN_DIR/.venv"
+  "$PLUGIN_DIR/.venv/bin/pip" install -r "$PLUGIN_DIR/requirements.txt"
+
+Or point at any other venv with: export RESEARCH_PLUGIN_PYTHON=/path/to/python
+EOF
+  exit 1
 fi
 
 export PYTHONPATH="$PLUGIN_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
-# Default to a .env at the plugin root; explicit deployment env always wins.
-DEFAULT_MODAL_ENV_FILE="$PLUGIN_DIR/.env"
-if [[ -z "${RESEARCH_PLUGIN_MODAL_ENV_FILE:-}" && -f "$DEFAULT_MODAL_ENV_FILE" ]]; then
-  export RESEARCH_PLUGIN_MODAL_ENV_FILE="$DEFAULT_MODAL_ENV_FILE"
+# Modal/HF credential resolution. Secrets must live OUTSIDE the plugin tree so
+# they are never copied into a Claude Code install cache or accidentally
+# committed. Priority (first hit wins):
+#   1. $RESEARCH_PLUGIN_MODAL_ENV_FILE             (explicit deployment override)
+#   2. ${CLAUDE_PLUGIN_DATA}/.env                  (Claude Code per-user data dir)
+#   3. ${XDG_CONFIG_HOME:-${HOME}/.config}/research-plugin/.env  (XDG standard)
+#   4. ${HOME}/.research_plugin/.env               (legacy location)
+#   5. $PLUGIN_DIR/.env                            (dev-only; gitignored)
+# If none exist, Modal's SDK falls back to its native auth (~/.modal.toml).
+if [[ -z "${RESEARCH_PLUGIN_MODAL_ENV_FILE:-}" ]]; then
+  for candidate in \
+    "${CLAUDE_PLUGIN_DATA:-/__unset__}/.env" \
+    "${XDG_CONFIG_HOME:-${HOME}/.config}/research-plugin/.env" \
+    "${HOME}/.research_plugin/.env" \
+    "$PLUGIN_DIR/.env"; do
+    if [[ -f "$candidate" ]]; then
+      export RESEARCH_PLUGIN_MODAL_ENV_FILE="$candidate"
+      break
+    fi
+  done
 fi
 
 exec "$PYTHON_BIN" -m backend.http_server "$@"

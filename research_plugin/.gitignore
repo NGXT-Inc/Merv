@@ -1,0 +1,17 @@
+# Secrets — never committed; real creds live at ~/.config/research-plugin/.env
+.env
+.env.local
+
+# Local dev artifacts
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Dev-only logs from supervisor / daemon
+logs/
+
+# Deprecated, kept locally for reference only
+deprecated/
+.research_plugin/

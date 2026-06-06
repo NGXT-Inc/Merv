@@ -5,4 +5,4 @@ backend, and the volume sync poller. Fronted to Codex by the stdio MCP proxy
 in `mcp_server`.
 """
 
-__version__ = "0.0004"
+__version__ = "0.0005"

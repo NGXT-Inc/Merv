@@ -132,6 +132,24 @@ class ProjectService:
         finally:
             conn.close()
 
+    def current(self) -> dict[str, Any]:
+        projects = self.list_projects()["projects"]
+        if not projects:
+            return {
+                "exists": False,
+                "project": None,
+                "hint": (
+                    "No Research Plugin project exists yet. Ask the user what project "
+                    "name and short summary to use, then call project.create."
+                ),
+            }
+        if len(projects) > 1:
+            raise ValidationError(
+                "multiple projects exist in this state store; use project.get with an explicit project_id",
+                details={"project_ids": [project["id"] for project in projects]},
+            )
+        return {"exists": True, "project": projects[0]}
+
     def get_settings(self, *, project_id: str | None = None) -> dict[str, Any]:
         project = self.get(project_id=project_id)
         return self._settings_view(project=project)

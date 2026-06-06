@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from fastapi.testclient import TestClient
 
 from backend.app import ResearchPluginApp
 from backend.http_api import create_fastapi_app
-from backend.http_server import make_http_server
+from backend.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
 from mcp_server.time_utils import now_iso
 
@@ -226,6 +223,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         terminal = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal")
         self.assertIn("plan.md", terminal["transcript"])
 
+        synced = self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
+        self.assertTrue(synced["sync"]["committed"])
+
         released = self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
         self.assertEqual(released["status"], "terminated")
 
@@ -286,66 +286,79 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             )
         )
 
-    def test_tool_call_stats_endpoint(self) -> None:
-        # Generate a few tool calls of differing result sizes via the HTTP path.
-        self.request("GET", "/api/projects")
-        self.request("GET", "/api/projects")
-        stats = self.request("GET", "/api/debug/tool-calls?limit=50")
-        self.assertGreaterEqual(stats["totals"]["calls"], 2)
-        tools = {row["tool"]: row for row in stats["by_tool"]}
-        self.assertIn("project.list", tools)
-        self.assertGreater(tools["project.list"]["received_chars"], 0)
-        # Aggregate carries distribution stats, per-call rows carry sizes + an id.
-        self.assertIn("p95_received_chars", tools["project.list"])
-        self.assertTrue(all({"id", "received_chars", "sent_chars"} <= set(c) for c in stats["calls"]))
+class RoutedResearchPluginHttpApiTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.router = ProjectRouter(
+            registry_db_path=self.root / "registry.sqlite",
+            execution_backend_factory=lambda _repo: FakeSandboxBackend(),
+        )
+        self.client = TestClient(create_fastapi_app(router=self.router))
 
-    def test_tool_call_detail_and_clear(self) -> None:
-        self.request("GET", "/api/projects")
-        stats = self.request("GET", "/api/debug/tool-calls?tool=project.list")
-        call_id = stats["calls"][0]["id"]
-        detail = self.request("GET", f"/api/debug/tool-calls/{call_id}")
-        # Full raw response is returned as native JSON.
-        self.assertEqual(detail["tool"], "project.list")
-        self.assertIn("projects", detail["result"])
-        self.assertIsInstance(detail["args"], dict)
-        # Filtering by an unknown source yields nothing; clear wipes the store.
-        self.assertEqual(self.request("GET", "/api/debug/tool-calls?source=nope")["totals"]["calls"], 0)
-        cleared = self.request("POST", "/api/debug/tool-calls/clear")
-        self.assertGreaterEqual(cleared["cleared"], 1)
-        self.assertEqual(self.request("GET", "/api/debug/tool-calls")["totals"]["calls"], 0)
+    def tearDown(self) -> None:
+        self.router.shutdown()
+        self.tmp.cleanup()
 
-    def test_live_http_server_smoke(self) -> None:
-        server = make_http_server(self.app, "127.0.0.1", 0)
-        host, port = server.server_address
-        import threading
+    def request(self, method: str, path: str, body: dict | None = None):
+        response = self.client.request(method, path, json=body)
+        self.assertLess(response.status_code, 400, response.text)
+        return response.json()
 
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            base = f"http://{host}:{port}"
-            health = self.fetch_json(base + "/health")
-            self.assertTrue(health["ok"])
-            project = self.fetch_json(
-                base + "/api/projects",
-                method="POST",
-                body={"name": "Live UI Project"},
-            )
-            home = self.fetch_json(base + f"/api/projects/{project['id']}/home")
-            self.assertEqual(home["project"]["name"], "Live UI Project")
-            activity = self.fetch_json(base + "/api/activity?limit=20")
-            self.assertTrue(any(event.get("event") == "http.request" for event in activity["events"]))
-        finally:
-            server.shutdown()
-            server.server_close()
+    def test_project_create_requires_directory_and_routes_by_project(self) -> None:
+        missing_dir = self.client.request("POST", "/api/projects", json={"name": "No Dir"})
+        self.assertEqual(missing_dir.status_code, 400, missing_dir.text)
+        self.assertIn("repo_root", missing_dir.text)
 
-    def fetch_json(self, url: str, *, method: str = "GET", body: dict | None = None):
-        data = None if body is None else json.dumps(body).encode("utf-8")
-        req = Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
-        try:
-            with urlopen(req, timeout=5) as res:
-                return json.loads(res.read().decode("utf-8"))
-        except HTTPError as exc:
-            self.fail(exc.read().decode("utf-8"))
+        repo_a = self.root / "project-a"
+        repo_b = self.root / "project-b"
+        project_a = self.request(
+            "POST",
+            "/api/projects",
+            {"name": "Project A", "summary": "Alpha", "repo_root": str(repo_a)},
+        )
+        project_b = self.request(
+            "POST",
+            "/api/projects",
+            {"name": "Project B", "summary": "Beta", "repo_root": str(repo_b)},
+        )
+        self.assertEqual(project_a["repo_root"], str(repo_a.resolve()))
+        self.assertEqual(project_b["repo_root"], str(repo_b.resolve()))
+        self.assertTrue((repo_a / ".research_plugin" / "state.sqlite").exists())
+        self.assertTrue((repo_b / ".research_plugin" / "state.sqlite").exists())
+
+        projects = self.request("GET", "/api/projects")["projects"]
+        self.assertEqual({p["id"] for p in projects}, {project_a["id"], project_b["id"]})
+        self.assertEqual(
+            {p["repo_root"] for p in projects},
+            {str(repo_a.resolve()), str(repo_b.resolve())},
+        )
+
+        (repo_a / "result.txt").write_text("owned by a\n")
+        resource_a = self.request(
+            "POST",
+            f"/api/projects/{project_a['id']}/resources",
+            {"path": "result.txt", "kind": "result"},
+        )
+        self.assertEqual(resource_a["path"], "result.txt")
+
+        wrong_project = self.client.request(
+            "POST",
+            f"/api/projects/{project_b['id']}/resources",
+            json={"path": "result.txt", "kind": "result"},
+        )
+        self.assertEqual(wrong_project.status_code, 404, wrong_project.text)
+
+    def test_duplicate_directory_is_rejected(self) -> None:
+        repo = self.root / "same-project"
+        self.request("POST", "/api/projects", {"name": "One", "repo_root": str(repo)})
+        duplicate = self.client.request(
+            "POST",
+            "/api/projects",
+            json={"name": "Two", "repo_root": str(repo)},
+        )
+        self.assertEqual(duplicate.status_code, 400, duplicate.text)
+        self.assertIn("already exists", duplicate.text)
 
 
 if __name__ == "__main__":

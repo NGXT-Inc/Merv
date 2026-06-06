@@ -202,12 +202,19 @@ orientation question:
 workflow.status_and_next(project_id, experiment_id?)
 ```
 
+In project-local MCP sessions, the stdio proxy supplies `project_id` from the
+current repo context, so the agent-facing schema can omit it:
+
+```text
+workflow.status_and_next(experiment_id?)
+```
+
 The server answers with a project/experiment summary, the current gate, allowed
 actions, blocked actions, missing evidence, and the next required step.
 
-The server never guesses the active project. Every project-scoped tool requires
-an explicit `project_id`; Codex and the UI must select or create a project before
-working on claims, experiments, resources, reviews, or sandboxes.
+Core services never guess the active project. Every project-scoped service call
+is explicit; the project-local MCP proxy is the adapter that fills that explicit
+scope from repo context.
 
 This tool is deliberately high-level. It can include a known sandbox summary from
 durable state, but it should not poll Modal or perform detailed inspection itself.

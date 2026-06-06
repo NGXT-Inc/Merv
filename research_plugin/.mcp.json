@@ -1,10 +1,11 @@
 {
   "mcpServers": {
     "research-plugin": {
-      "command": "/Users/guraltoo/Documents/dev/proj/experiments/research-suite/research_plugin/bin/research-plugin-mcp",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/research-plugin-mcp",
       "args": [],
-      "env": {},
-      "default_tools_approval_mode": "approve"
+      "env": {
+        "RESEARCH_PLUGIN_DAEMON_URL": "http://127.0.0.1:8787"
+      }
     }
   }
 }

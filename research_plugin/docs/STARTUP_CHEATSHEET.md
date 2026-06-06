@@ -11,9 +11,10 @@ proxy that Codex spawns on demand:
 ```text
                    ┌───────────────────────────────────────────┐
                    │  research_plugin HTTP daemon              │
-                   │  (research-plugin-http --repo $REPO)      │
+                   │  (research-plugin-http)                   │
                    │                                           │
-                   │  - SQLite state, activity log             │
+                   │  - Project directory router               │
+                   │  - SQLite state, activity logs            │
                    │  - SandboxService + Modal SSH sandboxes   │
                    │  - SyncEngine + 60 s poller               │
                    │  - HTTP API at  /api/* and /mcp/*         │
@@ -31,9 +32,11 @@ proxy that Codex spawns on demand:
                                             └────────────┘
 ```
 
-The daemon must be running before Codex makes any tool call. The MCP proxy
-discovers it via `$REPO/.research_plugin/daemon.json` (written on startup) or
-the `RESEARCH_PLUGIN_DAEMON_URL` env var.
+The daemon must be running before Codex makes any tool call. The MCP proxy tries
+`RESEARCH_PLUGIN_DAEMON_URL`, then `$REPO/.research_plugin/daemon.json`, then
+the default shared URL `http://127.0.0.1:8787`. A fresh folder can therefore
+call `project.current` before it has a marker, as long as the shared daemon is
+running on the default port.
 
 Replace this path with the research repo you want to work inside:
 
@@ -109,23 +112,24 @@ The `bin/research-plugin-mcp`, `bin/research-plugin-http`, and reload helper
 use `$RESEARCH_PLUGIN/.venv/bin/python` automatically when it exists.
 Set `RESEARCH_PLUGIN_PYTHON=/path/to/python` to force a different interpreter.
 
-Development mode with auto-reload and live activity printing:
+Development mode with auto-reload and live activity printing runs the shared
+multi-project backend:
 
 ```bash
 cd "$RESEARCH_PLUGIN"
 
 python3 scripts/dev_http_reload.py \
-  --repo "$RESEARCH_REPO" \
   --host 127.0.0.1 \
   --port 8787 \
   --activity-stderr
 ```
 
+Pass `--repo "$RESEARCH_REPO"` only for the legacy single-repo backend.
+
 One-shot mode without auto-reload:
 
 ```bash
 "$RESEARCH_PLUGIN/bin/research-plugin-http" \
-  --repo "$RESEARCH_REPO" \
   --host 127.0.0.1 \
   --port 8787 \
   --activity-stderr
@@ -158,8 +162,9 @@ pkill -f 'backend.http_server --host 127.0.0.1 --port 8787'
 
 ## Terminal 3: Live Activity
 
-This file is the reliable shared live view for both HTTP calls and
-Codex-started MCP tool calls:
+Each directory-backed project has its own activity file. After registering or
+creating the project for `$RESEARCH_REPO`, this file is the reliable live view
+for both HTTP calls and Codex-started MCP tool calls in that project:
 
 ```bash
 tail -f "$RESEARCH_REPO/.research_plugin/activity.jsonl"
@@ -194,13 +199,17 @@ then start with a prompt like this:
 ```text
 Use Research Plugin.
 
-First list existing projects. If there is no appropriate project, create one.
-After we select a project_id, call workflow.status_and_next for that project.
+First call project.current. In project-local MCP it returns the project for the
+current folder, or exists:false if the folder does not have a project yet. If
+exists is false, ask me what project name and summary to use before calling
+project.create, unless I already gave you that information.
+Then call workflow.status_and_next.
 Also check sandbox.health so we know whether the configured execution backend is
 available.
 
-Use explicit project_id for every project-scoped MCP tool. Treat local repo
-files as resources only after syncing/registering them through MCP.
+In project-local MCP, the proxy supplies project scope from the current repo.
+Treat local repo files as resources only after syncing/registering them through
+MCP.
 ```
 
 For an existing project:
@@ -226,11 +235,13 @@ review before completing the experiment.
 
 Minimum for **any** Codex work (the daemon is no longer optional):
 
-- HTTP daemon on `127.0.0.1:8787` started with `--repo "$RESEARCH_REPO"`
+- HTTP daemon on `127.0.0.1:8787`
 - Codex session in the research repo with `research-plugin` enabled
 
-The MCP proxy is started by Codex itself; the daemon's marker file
-`$RESEARCH_REPO/.research_plugin/daemon.json` is how the proxy finds the URL.
+The MCP proxy is started by Codex itself. The marketplace MCP config points it
+at `http://127.0.0.1:8787` by default. Use `RESEARCH_PLUGIN_DAEMON_URL` only
+when the shared daemon is on another host or port. After registration the daemon
+also writes `$RESEARCH_REPO/.research_plugin/daemon.json` for discovery.
 
 Additional, for the UI:
 
@@ -247,12 +258,15 @@ Recommended while debugging:
 
 ## State Files
 
-Research state lives in the research repo, not in the plugin source:
+Research state lives in each project directory, not in the plugin source:
 
 ```text
 $RESEARCH_REPO/.research_plugin/state.sqlite
 $RESEARCH_REPO/.research_plugin/activity.jsonl
 ```
 
-If the UI does not show the same projects as Codex, check `/health` and confirm
-the HTTP backend is pointed at the same `RESEARCH_REPO` that Codex is using.
+The shared daemon also keeps a small global registry mapping project ids to
+directories (`RESEARCH_PLUGIN_REGISTRY_STORE`, default
+`~/.research_plugin/registry.sqlite`). If the UI does not show the same project
+as Codex, check `/health`, `RESEARCH_PLUGIN_DAEMON_URL`, and the project's
+`repo_root` in `GET /api/projects`.

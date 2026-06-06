@@ -20,7 +20,7 @@ async function request(path, { method = 'GET', body, signal } = {}) {
     try { data = JSON.parse(text); } catch { data = { raw: text }; }
   }
   if (!res.ok) {
-    const err = new Error((data && (data.message || data.error)) || `HTTP ${res.status} on ${method} ${path}`);
+    const err = new Error((data && (data.message || data.detail || data.error)) || `HTTP ${res.status} on ${method} ${path}`);
     err.status = res.status;
     err.data = data;
     throw err;
@@ -33,7 +33,7 @@ export const api = {
 
   // Projects
   listProjects: () => request('/api/projects'),
-  createProject: ({ name, summary }) => request('/api/projects', { method: 'POST', body: { name, summary: summary || '' } }),
+  createProject: ({ name, summary, repo_root }) => request('/api/projects', { method: 'POST', body: { name, summary: summary || '', repo_root } }),
   getProject: (pid) => request(`/api/projects/${encodeURIComponent(pid)}`),
   patchProject: (pid, patch) => request(`/api/projects/${encodeURIComponent(pid)}`, { method: 'PATCH', body: patch }),
   getHome: (pid, signal) => request(`/api/projects/${encodeURIComponent(pid)}/home`, { signal }),
@@ -163,6 +163,8 @@ export const api = {
   // came back empty (e.g. a CPU-only image without nvidia-smi).
   getSandboxMetrics: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/metrics`),
+  syncSandbox: (pid, eid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/sync`, { method: 'POST' }),
   releaseSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/release`, { method: 'POST' }),
   sandboxesHealth: () => request(`/api/sandboxes/health`),
