@@ -63,6 +63,10 @@ def build_sandbox_backend(
             should_poll_project=should_poll_project,
             sync_exclusion_provider=sync_exclusion_provider,
         )
+    if selected in {"lambda", "lambda_labs", "lambdalabs"}:
+        from .backends.lambda_labs import build_lambda_labs_sandbox_backend
+
+        return build_lambda_labs_sandbox_backend(repo_root=repo_root)
     raise BackendUnavailableError(f"unknown execution backend: {selected}")
 
 

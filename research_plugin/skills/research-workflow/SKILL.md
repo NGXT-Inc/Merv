@@ -113,6 +113,16 @@ SSH. You run ordinary shell commands.
    `HF_TOKEN`, Hugging Face credentials are already available inside SSH
    commands. Use them through Hugging Face tooling or environment variables; do
    not print the token, write it into files, or sync it as a resource.
+   **Training observability.** Every sandbox runs an MLflow tracking server and
+   a TensorBoard side-by-side, with their stores on the mounted Volume so runs
+   persist across sandbox restarts of the same experiment. Inside SSH commands,
+   `MLFLOW_TRACKING_URI=http://localhost:5000` is already exported and
+   `$RP_TB_LOGDIR` points at the TensorBoard logdir. Frameworks that
+   auto-detect MLflow — Hugging Face `Trainer` with the default
+   `report_to="all"`, and PyTorch Lightning with `MLFlowLogger` — pick it up
+   with no setup. For plain PyTorch, add `mlflow.autolog()` once at the top of
+   the training script. The user sees the dashboards live in their UI; you do
+   not need to fetch, share, or open the URLs yourself.
 6. Before registering or associating result resources, call
    `sandbox.sync(experiment_id)`. This commits the sandbox's mounted
    repo changes to the Modal Volume and syncs the Volume back to the local repo.
@@ -141,10 +151,38 @@ Prefer the minimal MCP shape:
 }
 ```
 
-The MCP server also accepts common aliases such as `claim_id`, `claim_ids`,
-`title`, `hypothesis`, `design`, `success_criteria`, and `risks`; those rich
-fields are folded into the experiment's durable `intent`. Create always starts
-at `planned`. Use `experiment.transition` for workflow state changes.
+`intent` is the durable **one-line headline** — the experiment's title in the
+UI. The full design (hypothesis, method, evaluation, risks) does **not** go in
+`intent`; it lives in the `plan.md` resource (see Experiment plan below). The
+MCP server still accepts the older aliases `claim_id`, `claim_ids`, `title`,
+`hypothesis`, `design`, `success_criteria`, and `risks`, but they are deprecated
+and no longer folded into `intent` — put that content in the plan instead.
+Create always starts at `planned`. Use `experiment.transition` for workflow
+state changes.
+
+## Experiment plan
+
+The plan is one repo file (e.g. `experiments/<name>/plan.md`) associated with
+role `plan`. It is the **face of the experiment**: what the user reads in the UI
+and what the design reviewer evaluates. Write it from
+`skills/research-workflow/plan-template.md` (a PRD-style template).
+
+The plan has a small **required spine** — `experiment.transition(submit_design)`
+is blocked until each of these headings has real content:
+
+- **Summary** — 2–3 plain sentences: what and why (the readable face).
+- **Objective & hypothesis** — which claim, expected direction, and why it matters.
+- **Evaluation** — how you will judge success: metric(s), baseline, decision
+  rule, success threshold, and what would invalidate the result. This is the
+  contract the experiment reviewer later grades the conclusion against.
+
+The recommended sections (**Method**, **Outputs**, **Risks & confounders**) are
+not lint-enforced, but the design reviewer can return `needs_changes` if they
+are missing or too thin for this experiment. Scale their depth to the work.
+
+If `submit_design` is rejected for missing sections, fill them in and retry —
+the lint reads the live file, so no re-registration is needed (though you still
+sync the plan as a resource so it is associated).
 
 ## Resource discipline
 

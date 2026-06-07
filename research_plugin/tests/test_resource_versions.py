@@ -56,7 +56,11 @@ class ResourceVersioningTest(unittest.TestCase):
 
     def test_status_refreshes_changed_resources_and_invalidates_old_review_snapshot(self) -> None:
         plan_path = self.repo / "plan.md"
-        plan_path.write_text("approved plan\n")
+        plan_path.write_text(
+            "## Summary\nApproved plan.\n\n"
+            "## Objective & hypothesis\nTest the claim.\n\n"
+            "## Evaluation\nMetric: accuracy vs baseline.\n"
+        )
         plan = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
         self.call("resource.associate", project_id=self.project_id, resource_id=plan["id"], target_type="experiment", target_id=self.exp_id, role="plan")
         first_id = plan["current_version_id"]
@@ -105,6 +109,41 @@ class ResourceVersioningTest(unittest.TestCase):
         self.assertEqual(status["resource_refresh"]["changed"][0]["status"], "missing")
         self.assertEqual(status["experiment"]["current_attempt_resources"][0]["missing"], 1)
         self.assertEqual(status["workflow"]["current_gate"], "plan_required")
+
+    def test_delete_removes_resource_from_active_tracking_but_preserves_history(self) -> None:
+        plan_path = self.repo / "plan.md"
+        plan_path.write_text("planned\n")
+        plan = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
+        self.call("resource.associate", project_id=self.project_id, resource_id=plan["id"], target_type="experiment", target_id=self.exp_id, role="plan")
+
+        deleted = self.call("resource.delete", project_id=self.project_id, resource_id=plan["id"])
+        resources = self.call("resource.list", project_id=self.project_id)["resources"]
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=self.exp_id)
+        history = self.call("resource.history", project_id=self.project_id, resource_id=plan["id"])
+
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(deleted["removed_associations"], 1)
+        self.assertEqual(deleted["resource"]["deleted"], 1)
+        self.assertEqual(resources, [])
+        self.assertEqual(state["current_attempt_resources"], [])
+        self.assertEqual(len(history["versions"]), 1)
+
+    def test_registering_deleted_resource_revives_same_resource_id(self) -> None:
+        plan_path = self.repo / "plan.md"
+        plan_path.write_text("version one\n")
+        plan = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
+        self.call("resource.delete", project_id=self.project_id, resource_id=plan["id"])
+
+        plan_path.write_text("version two\n")
+        revived = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
+        resources = self.call("resource.list", project_id=self.project_id)["resources"]
+
+        self.assertEqual(revived["id"], plan["id"])
+        self.assertEqual(revived["deleted"], 0)
+        self.assertEqual(revived["missing"], 0)
+        self.assertEqual(len(revived["associations"]), 0)
+        self.assertEqual([item["id"] for item in resources], [plan["id"]])
+        self.assertEqual(len(self.call("resource.history", project_id=self.project_id, resource_id=plan["id"])["versions"]), 2)
 
     def test_same_repo_file_is_a_distinct_resource_per_project(self) -> None:
         (self.repo / "shared.md").write_text("shared\n")

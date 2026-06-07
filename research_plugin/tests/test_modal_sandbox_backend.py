@@ -19,6 +19,8 @@ from backend.execution.backends.modal.sync.types import SyncResult
 class FakeImage:
     def __init__(self) -> None:
         self.commands: list[str] = []
+        self.apt_packages: list[str] = []
+        self.pip_packages: list[str] = []
 
     @classmethod
     def debian_slim(cls, **_kw) -> "FakeImage":
@@ -29,9 +31,11 @@ class FakeImage:
         return cls()
 
     def apt_install(self, *_a) -> "FakeImage":
+        self.apt_packages.extend(str(pkg) for pkg in _a)
         return self
 
     def pip_install(self, *_a) -> "FakeImage":
+        self.pip_packages.extend(str(pkg) for pkg in _a)
         return self
 
     def run_commands(self, *cmds) -> "FakeImage":
@@ -63,8 +67,17 @@ class FakeProcess:
 
 
 class FakeTunnel:
+    """Mimics the SSH (TCP) tunnel shape — exposes .tcp_socket."""
+
     def __init__(self, host: str, port: int) -> None:
         self.tcp_socket = (host, port)
+
+
+class FakeEncryptedTunnel:
+    """Mimics the dashboard (HTTPS) tunnel shape — exposes .url."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
 
 
 class FakeSandbox:
@@ -83,7 +96,15 @@ class FakeSandbox:
     def tunnels(self):
         if FakeSandbox.tunnels_fail:
             raise RuntimeError("tunnel not ready")
-        return {22: FakeTunnel("sandbox.modal.test", 50022)}
+        return {
+            22: FakeTunnel("sandbox.modal.test", 50022),
+            5000: FakeEncryptedTunnel(
+                f"https://mlflow-{self.object_id}.modal.test"
+            ),
+            6006: FakeEncryptedTunnel(
+                f"https://tensorboard-{self.object_id}.modal.test"
+            ),
+        }
 
     def set_tags(self, tags) -> None:
         self.tags = dict(tags)
@@ -254,6 +275,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(create["args"], ("bash", "/opt/rp/boot.sh"))
         kwargs = create["kwargs"]
         self.assertEqual(kwargs["unencrypted_ports"], [22])
+        # Dashboards: MLflow on 5000 and TensorBoard on 6006 are requested as
+        # encrypted_ports so Modal exposes them as HTTPS tunnels.
+        self.assertEqual(kwargs["encrypted_ports"], [5000, 6006])
         self.assertEqual(kwargs["timeout"], 1234)
         self.assertEqual(kwargs["gpu"], "A100")
         self.assertIn(kwargs["workdir"], kwargs["volumes"])  # volume mounted at workdir
@@ -268,6 +292,69 @@ class ModalSandboxBackendTest(unittest.TestCase):
         sandbox = FakeSandbox.registry[provisioned.sandbox_id]
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
+
+    def test_acquire_captures_dashboard_urls(self) -> None:
+        provisioned = self.backend.acquire(request=self._request())
+        # ProvisionedSandbox.dashboards mirrors the encrypted-tunnel .url fields
+        # for MLflow (5000) and TensorBoard (6006). Names — not ports — are the
+        # contract surface so future dashboards key cleanly.
+        self.assertEqual(set(provisioned.dashboards.keys()), {"mlflow", "tensorboard"})
+        self.assertTrue(provisioned.dashboards["mlflow"].startswith("https://mlflow-"))
+        self.assertTrue(
+            provisioned.dashboards["tensorboard"].startswith("https://tensorboard-")
+        )
+
+    def test_dashboard_urls_refresh_returns_fresh_map(self) -> None:
+        provisioned = self.backend.acquire(request=self._request())
+        # The registry calls this after detecting tunnel relocation; mirrors
+        # refresh_ssh_endpoint's shape but for HTTPS dashboard tunnels.
+        urls = self.backend.dashboard_urls(sandbox_id=provisioned.sandbox_id)
+        self.assertEqual(urls, dict(provisioned.dashboards))
+
+    def test_dashboard_urls_empty_when_sandbox_id_missing(self) -> None:
+        # Defensive: empty dict, never raises — same contract as
+        # refresh_ssh_endpoint returning None when there's nothing to refresh.
+        self.assertEqual(self.backend.dashboard_urls(sandbox_id=""), {})
+
+    def test_boot_script_starts_mlflow_and_tensorboard(self) -> None:
+        # The image layering writes the boot script as a heredoc into the
+        # image; the embedded module-level BOOT_SCRIPT is the source of truth.
+        from backend.execution.backends.modal.sandbox_backend import BOOT_SCRIPT, REC_SCRIPT
+
+        # MLflow tracking server bound to 0.0.0.0:5000, SQLite backend store,
+        # artifacts under the per-experiment sessions dir on the Volume.
+        self.assertIn("mlflow server", BOOT_SCRIPT)
+        self.assertIn("--port 5000", BOOT_SCRIPT)
+        self.assertIn("backend-store-uri", BOOT_SCRIPT)
+        # TensorBoard, same Volume-backed logdir pattern.
+        self.assertIn("tensorboard.main", BOOT_SCRIPT)
+        self.assertIn("--port 6006", BOOT_SCRIPT)
+        # Both must be backgrounded so sshd still becomes the foreground PID 1.
+        self.assertIn("&\n", BOOT_SCRIPT)
+        # MLFLOW_TRACKING_URI must reach every SSH command so framework
+        # auto-detection (HF Trainer's report_to="all") just works.
+        self.assertIn("MLFLOW_TRACKING_URI", BOOT_SCRIPT)
+        self.assertIn("MLFLOW_TRACKING_URI", REC_SCRIPT)
+
+    def test_modal_images_install_agent_shell_baseline(self) -> None:
+        base = self.backend._base_image_default()
+        cuda = self.backend._cuda_image_default()
+
+        expected = {
+            "ripgrep",
+            "fd-find",
+            "jq",
+            "rsync",
+            "tree",
+            "git-lfs",
+            "build-essential",
+            "ninja-build",
+            "lsof",
+        }
+        self.assertTrue(expected.issubset(set(base.apt_packages)))
+        self.assertTrue(expected.issubset(set(cuda.apt_packages)))
+        self.assertIn("ln -sf /usr/bin/fdfind /usr/local/bin/fd || true", base.commands)
+        self.assertIn("ln -sf /usr/bin/fdfind /usr/local/bin/fd || true", cuda.commands)
 
     def test_huggingface_token_is_passed_as_secret_env(self) -> None:
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_test_secret"}, clear=False):

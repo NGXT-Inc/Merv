@@ -140,6 +140,88 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("r999.modal.host", body)
         self.assertIn("55555", body)
 
+    # ---- observability dashboards (MLflow + TensorBoard) ----
+
+    def test_request_surfaces_dashboard_urls(self) -> None:
+        # The agent view carries the dashboard URLs so the (rare) agent that
+        # wants to show them in transcripts can; the user-facing UI view does
+        # the same. URL strings come straight from the backend's encrypted
+        # tunnel surface — no rewriting.
+        exp_id = self._experiment()
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertIn("dashboards", result)
+        self.assertIn("mlflow", result["dashboards"])
+        self.assertTrue(result["dashboards"]["mlflow"].startswith("https://mlflow-"))
+        self.assertIn("tensorboard", result["dashboards"])
+        # And the hint nudges the agent toward the auto-detect path so HF
+        # Trainer and Lightning users get charts for free.
+        self.assertIn("MLFLOW_TRACKING_URI", result["hint"])
+        self.assertIn("mlflow.autolog", result["hint"])
+
+    def test_ui_view_exposes_dashboards(self) -> None:
+        # The HTTP API surfaces dashboards in the sandbox row so the UI can
+        # render an iframe tab per non-empty entry. Empty {} when the backend
+        # exposes none — never a missing key.
+        exp_id = self._experiment()
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        view = self.app.sandboxes.get_for_ui(
+            project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertEqual(
+            view["dashboards"],
+            {
+                "mlflow": f"https://mlflow-{created['sandbox_id']}.modal.test",
+                "tensorboard": f"https://tensorboard-{created['sandbox_id']}.modal.test",
+            },
+        )
+
+    def test_get_refreshes_moved_dashboards(self) -> None:
+        # When Modal relocates a live sandbox's tunnels, the dashboard URLs
+        # change alongside the SSH endpoint. Reconcile must persist the fresh
+        # URLs so the UI iframe doesn't 404 on stale ones.
+        exp_id = self._experiment()
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        relocated = {
+            "mlflow": "https://mlflow-r999.modal.host",
+            "tensorboard": "https://tb-r999.modal.host",
+        }
+        self.backend.move_dashboards(
+            sandbox_id=created["sandbox_id"], urls=relocated
+        )
+        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(got["dashboards"], relocated)
+
+    def test_dashboards_empty_when_backend_exposes_none(self) -> None:
+        # CPU-only / older backends may surface no dashboards. The field must
+        # still be present (empty dict) so the UI keys defensively.
+        exp_id = self._experiment()
+        # Pre-empty the backend's default before acquire stores the row.
+        original_acquire = self.backend.acquire
+
+        def acquire_without_dashboards(*, request, on_phase=None, on_created=None):
+            provisioned = original_acquire(
+                request=request, on_phase=on_phase, on_created=on_created
+            )
+            self.backend.dashboards[provisioned.sandbox_id] = {}
+            from dataclasses import replace
+            return replace(provisioned, dashboards={})
+
+        self.backend.acquire = acquire_without_dashboards  # type: ignore[method-assign]
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertEqual(result["dashboards"], {})
+        view = self.app.sandboxes.get_for_ui(
+            project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertEqual(view["dashboards"], {})
+
     # ---- status / liveness ----
 
     def test_get_reconciles_dead_sandbox(self) -> None:

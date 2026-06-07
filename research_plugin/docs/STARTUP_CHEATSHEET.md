@@ -252,6 +252,16 @@ Additional, for the default Modal backend (daemon env only):
 - `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` available directly or through
   `RESEARCH_PLUGIN_MODAL_ENV_FILE`
 
+Additional, for the Lambda Labs backend (daemon env only):
+
+- `RESEARCH_PLUGIN_EXECUTION_BACKEND=lambda_labs`
+- `LAMBDA_LABS_API_KEY` (or `RESEARCH_PLUGIN_LAMBDA_API_KEY`)
+- `RESEARCH_PLUGIN_LAMBDA_REGION`, for example `us-east-1`
+- `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`, for example `gpu_1x_a10`
+
+Lambda provisioning currently creates an SSH-ready VM with the agent shell/ML
+tooling baseline. Repo sync is intentionally not implemented for Lambda yet.
+
 Recommended while debugging:
 
 - `tail -f "$RESEARCH_REPO/.research_plugin/activity.jsonl"`

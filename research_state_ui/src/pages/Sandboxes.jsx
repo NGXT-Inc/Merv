@@ -176,6 +176,7 @@ function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
         <Link to={`/experiments/${s.experiment_id}#execution`} className="sbx-card-link">open experiment</Link>
         <span className="sbx-fleet-sep">·</span>
         <ObjId id={s.experiment_id} />
+        <DashboardChips dashboards={s.dashboards} />
       </div>
       {open && (
         <div className="sbx-card-body">
@@ -183,6 +184,39 @@ function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * DashboardChips — tiny inline links into the in-sandbox MLflow / TensorBoard
+ * dashboards on the fleet list. They open in a new tab; the same URLs render
+ * as iframes inside SandboxTerminal when the card is expanded, so the chip
+ * here is just a fast peek + bookmark surface.
+ */
+function DashboardChips({ dashboards }) {
+  if (!dashboards) return null;
+  const entries = [
+    dashboards.mlflow && { key: 'mlflow', label: 'MLflow', url: dashboards.mlflow },
+    dashboards.tensorboard && { key: 'tensorboard', label: 'TB', url: dashboards.tensorboard },
+  ].filter(Boolean);
+  if (entries.length === 0) return null;
+  return (
+    <>
+      {entries.map((e) => (
+        <span key={e.key}>
+          <span className="sbx-fleet-sep">·</span>
+          <a
+            href={e.url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="sbx-card-link"
+            title={`Open ${e.label} for this sandbox in a new tab`}
+          >
+            {e.label} ↗
+          </a>
+        </span>
+      ))}
+    </>
   );
 }
 

@@ -761,6 +761,293 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   .vsync-dot--active { animation: none; }
 }
 
+/* The head row doubles as a "open details" button. Keep it visually identical
+   to the old static row; reveal interactivity only on hover. */
+.vsync-open-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 1px 2px;
+  margin: -1px -2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.vsync-open-btn:hover { background: var(--bg-soft); }
+.vsync-open-btn:hover .vsync-status { text-decoration: underline; text-underline-offset: 2px; }
+.vsync-open-btn:focus-visible { outline: 2px solid var(--active); outline-offset: 1px; }
+
+/* ===== Volume Sync Details Modal (vsdm) ============================== */
+.vsdm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(20, 20, 20, 0.34);
+  backdrop-filter: blur(1.5px);
+}
+.vsdm {
+  /* Plain block + scroll, NOT a flex column: a column flexbox that overflows
+     max-height shrinks its children, and the file/history tables (overflow:hidden)
+     would collapse to their borders. Normal flow + overflow-y keeps them intact. */
+  display: block;
+  width: 100%;
+  max-width: 580px;
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 18px 20px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.vsdm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vsdm-head-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.vsdm-title { font-size: var(--text-md); font-weight: 600; margin: 0; }
+.vsdm-close {
+  margin-left: auto;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.vsdm-close:hover { background: var(--bg-soft); border-color: var(--line); color: var(--text); }
+
+.vsdm-pill {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid transparent;
+}
+.vsdm-pill--idle    { background: rgba(47, 110, 53, 0.10);  color: var(--supports);  border-color: rgba(47, 110, 53, 0.25); }
+.vsdm-pill--active  { background: rgba(31, 79, 175, 0.10);  color: var(--active);    border-color: rgba(31, 79, 175, 0.25); }
+.vsdm-pill--error   { background: rgba(168, 46, 37, 0.10);  color: var(--refutes);   border-color: rgba(168, 46, 37, 0.25); }
+.vsdm-pill--conflict{ background: rgba(158, 101, 0, 0.10);  color: var(--qualifies); border-color: rgba(158, 101, 0, 0.25); }
+.vsdm-pill--paused  { background: var(--bg-soft);           color: var(--muted);     border-color: var(--line); }
+.vsdm-pill--pending { background: var(--bg-soft);           color: var(--faint);     border-color: var(--line); }
+
+.vsdm-lede { margin: 10px 0 0; color: var(--muted); line-height: var(--leading-base); font-size: var(--text-xs); }
+.vsdm-arrow { color: var(--faint); }
+.vsdm-vol { font-family: var(--font-mono); font-size: 10.5px; color: var(--text); }
+
+.vsdm-sched {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.vsdm-dot-sep { color: var(--faint); }
+
+.vsdm-size {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  font-variant-numeric: tabular-nums;
+}
+.vsdm-size-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: var(--faint);
+}
+.vsdm-size-val {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--text);
+}
+.vsdm-size-files { font-size: var(--text-xs); color: var(--muted); }
+.vsdm-size-remote { font-size: var(--text-xs); color: var(--muted); }
+
+.vsdm-banner {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+}
+.vsdm-banner--err { background: rgba(168, 46, 37, 0.08); border: 1px solid rgba(168, 46, 37, 0.25); color: var(--refutes); }
+
+.vsdm-section-label {
+  margin: 16px 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.vsdm-section-label--warn { color: var(--qualifies); }
+.vsdm-count-note { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--faint); }
+
+.vsdm-cards {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+.vsdm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 8px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+.vsdm-card-top { display: flex; align-items: baseline; gap: 4px; }
+.vsdm-card-glyph { font-size: 12px; line-height: 1; }
+.vsdm-card-count { font-size: var(--text-md); font-weight: 600; font-variant-numeric: tabular-nums; }
+.vsdm-card-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-top: 2px; }
+.vsdm-card-sub { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.vsdm-card--push .vsdm-card-glyph,
+.vsdm-card--push .vsdm-card-count { color: var(--active); }
+.vsdm-card--pull .vsdm-card-glyph,
+.vsdm-card--pull .vsdm-card-count { color: var(--supports); }
+.vsdm-card--del .vsdm-card-glyph { color: var(--refutes); }
+.vsdm-card--conflict .vsdm-card-glyph,
+.vsdm-card--conflict .vsdm-card-count { color: var(--qualifies); }
+
+.vsdm-table-wrap {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.vsdm-table { width: 100%; border-collapse: collapse; }
+.vsdm-table tr { border-bottom: 1px solid var(--line-soft); }
+.vsdm-table tr:last-child { border-bottom: 0; }
+.vsdm-table td { padding: 5px 8px; vertical-align: middle; }
+.vsdm-td-dir { width: 1%; white-space: nowrap; }
+.vsdm-td-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.vsdm-td-size {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--muted);
+}
+.vsdm-vs { color: var(--faint); }
+
+.vsdm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.vsdm-chip-glyph { font-size: 10px; }
+.vsdm-chip--push     { background: rgba(31, 79, 175, 0.10); color: var(--active);    border-color: rgba(31, 79, 175, 0.22); }
+.vsdm-chip--pull     { background: rgba(47, 110, 53, 0.10); color: var(--supports);  border-color: rgba(47, 110, 53, 0.22); }
+.vsdm-chip--del      { background: rgba(168, 46, 37, 0.08); color: var(--refutes);   border-color: rgba(168, 46, 37, 0.22); }
+.vsdm-chip--conflict { background: rgba(158, 101, 0, 0.10); color: var(--qualifies); border-color: rgba(158, 101, 0, 0.25); }
+
+.vsdm-conflict-note { margin: -2px 0 7px; font-size: var(--text-xs); color: var(--muted); line-height: var(--leading-tight); }
+.vsdm-legend { margin-top: 4px; font-size: 10px; color: var(--faint); text-align: right; }
+
+.vsdm-history { display: flex; flex-direction: column; }
+.vsdm-hist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.vsdm-hist-row:last-child { border-bottom: 0; }
+.vsdm-hist-ts { color: var(--muted); font-family: var(--font-mono); font-size: 10.5px; }
+.vsdm-hist-counts { display: flex; gap: 7px; }
+.vsdm-hist-up { color: var(--active); }
+.vsdm-hist-down { color: var(--supports); }
+.vsdm-hist-del { color: var(--refutes); }
+.vsdm-hist-conf { color: var(--qualifies); }
+.vsdm-hist-bytes { margin-left: auto; color: var(--muted); }
+.vsdm-hist-ms { color: var(--faint); min-width: 52px; text-align: right; }
+
+.vsdm-empty {
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-base);
+}
+.vsdm-empty--big { margin-top: 14px; text-align: center; }
+
+.vsdm-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 10.5px;
+}
+.vsdm-foot-label { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: var(--faint); }
+.vsdm-foot-val { font-family: var(--font-mono); color: var(--text); }
+.vsdm-foot-hint { margin-left: auto; color: var(--faint); font-style: italic; }
+
+@media (max-width: 640px) {
+  .vsdm-cards { grid-template-columns: repeat(2, 1fr); }
+}
+
 .shell-main { flex: 1; min-width: 0; }
 
 /* =====================================================================
@@ -3399,6 +3686,73 @@ html { scroll-behavior: smooth; }
   margin-bottom: 8px;
 }
 
+/* Structured (PRD-style) plan rendering: Summary as the face, the spine
+   expanded, recommended sections + attempt log collapsed. */
+.plan-structured {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+/* Summary is the face: larger, unframed, sits at the top. */
+.plan-summary {
+  font-size: var(--text-md);
+  line-height: var(--leading-base);
+  color: var(--text);
+}
+.plan-summary .markdown-body { font-size: var(--text-md); }
+
+.plan-section { margin: 0; }
+.plan-section-head {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+/* Spine sections (Objective & hypothesis, Evaluation) stay open. */
+.plan-section--spine {
+  border-top: 1px solid var(--line-soft);
+  padding-top: var(--space-3);
+}
+.plan-section--spine .plan-section-body { margin-top: var(--space-2); }
+
+/* Recommended sections + attempt log collapse into <details>. */
+.plan-section--details {
+  border-top: 1px solid var(--line-soft);
+  padding-top: var(--space-3);
+}
+.plan-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.plan-section-toggle::-webkit-details-marker { display: none; }
+.plan-section-toggle::before {
+  content: '▸';
+  color: var(--faint);
+  font-size: 10px;
+  transition: transform var(--motion-fast);
+}
+details[open] > .plan-section-toggle::before { transform: rotate(90deg); }
+.plan-section-toggle:hover .plan-section-head { color: var(--text); }
+.plan-section--details .plan-section-body { margin-top: var(--space-2); }
+.plan-section-empty {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+}
+.plan-section--log .plan-section-head { color: var(--faint); }
+
 .plan-status {
   font-size: 10px;
   font-weight: 700;
@@ -4288,6 +4642,62 @@ button.review-stepper-version:hover {
 .sbx-term-toggle:hover { color: var(--text); }
 .sbx-term { max-height: 460px; }
 .btn--xs { padding: 1px 6px; font-size: 10.5px; }
+
+/* Tabbed observability surface inside the sandbox panel: Terminal sits next to
+ * MLflow + TensorBoard dashboards (iframes served from inside the sandbox via
+ * Modal encrypted tunnels). The strip is quiet — borrowing the muted text /
+ * thin underline language already used elsewhere — so it doesn't compete with
+ * the active dashboard content. */
+.sbx-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.sbx-tabs-strip {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.sbx-tabs-spacer { flex: 1; }
+.sbx-tab {
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  margin-bottom: -1px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid transparent;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
+}
+.sbx-tab:hover { color: var(--text); }
+.sbx-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--text);
+  font-weight: 600;
+}
+.sbx-dashboard {
+  position: relative;
+  width: 100%;
+  height: 540px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #fafafa;
+}
+.sbx-dashboard-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
 
 /* Terminal-style transcript renderer (TerminalLog.jsx) */
 .term {

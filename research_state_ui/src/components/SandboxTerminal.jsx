@@ -9,10 +9,20 @@ import TerminalLog from './TerminalLog';
  * Replaces the old job dashboard. The agent procures the sandbox (sandbox.request
  * over MCP) and runs commands over SSH itself; this panel only *observes*:
  *   - sandbox status + SSH connection details (read-only, copyable);
- *   - a live transcript of every command + output recorded in the sandbox.
+ *   - a live transcript of every command + output recorded in the sandbox;
+ *   - **MLflow** (port 5000) and **TensorBoard** (port 6006) dashboards
+ *     surfaced as HTTPS URLs from Modal encrypted tunnels — rendered as
+ *     `<iframe>` tabs sitting next to "Terminal" so the user can watch
+ *     loss curves, gradients, and TB scalars live without ever opening a
+ *     separate tab. Tabs only appear when the row exposes a URL for them.
  *
  * Polls GET /sandbox + /sandbox/terminal every 3s while the sandbox is running.
  */
+const PANEL_TABS = [
+  { key: 'terminal', label: 'Terminal' },
+  { key: 'mlflow', label: 'MLflow' },
+  { key: 'tensorboard', label: 'TensorBoard' },
+];
 const RUNNING = 'running';
 const PROVISIONING = 'provisioning';
 const FAILED = 'failed';
@@ -24,6 +34,10 @@ export default function SandboxTerminal({ projectId, experimentId }) {
   const [error, setError] = useState(null);
   const [releasing, setReleasing] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  // Active observability tab. Terminal is always available; mlflow/tensorboard
+  // only render when their URL is non-empty on the row. If the active tab loses
+  // its URL (e.g. the sandbox was released), fall back to terminal.
+  const [activeTab, setActiveTab] = useState('terminal');
 
   const fetchOnce = useCallback(async () => {
     try {
@@ -124,34 +138,161 @@ export default function SandboxTerminal({ projectId, experimentId }) {
         <>
           <SandboxMeta sandbox={sandbox} />
           <SandboxUsage metrics={metrics} sandbox={sandbox} />
-          <div className="sbx-term-head">
-            <span>
-              terminal transcript
-              {transcript != null && ` · ${transcript.split('\n').length} lines`}
-            </span>
-            {transcript && transcript.trim() !== '' && (
-              <button
-                type="button"
-                className="sbx-term-toggle"
-                onClick={() => setShowRaw((v) => !v)}
-                title={showRaw ? 'Show formatted view' : 'Show raw transcript'}
-              >
-                {showRaw ? 'formatted' : 'raw'}
-              </button>
-            )}
-          </div>
-          {transcript == null ? (
-            <div className="log-tail-empty">Loading transcript…</div>
-          ) : transcript.trim() === '' ? (
-            <div className="log-tail-empty">
-              No commands recorded yet. Output appears here as the agent runs commands over SSH.
-            </div>
-          ) : (
-            <TerminalLog text={transcript} live={isLive} raw={showRaw} />
-          )}
+          <SandboxPanelTabs
+            sandbox={sandbox}
+            transcript={transcript}
+            isLive={isLive}
+            showRaw={showRaw}
+            setShowRaw={setShowRaw}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+          />
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * SandboxPanelTabs — switches between the terminal transcript and the in-sandbox
+ * observability dashboards (MLflow + TensorBoard). The dashboard URLs come from
+ * the row's `dashboards` map (HTTPS tunnels Modal exposes for encrypted_ports).
+ * A tab whose URL is empty is hidden; if the currently-active tab disappears
+ * (sandbox released, tunnel relocation lost the URL temporarily), we fall back
+ * to Terminal so the panel never goes blank.
+ */
+function SandboxPanelTabs({
+  sandbox,
+  transcript,
+  isLive,
+  showRaw,
+  setShowRaw,
+  activeTab,
+  setActiveTab,
+}) {
+  const dashboards = sandbox?.dashboards || {};
+  const availableTabs = PANEL_TABS.filter(
+    (t) => t.key === 'terminal' || dashboards[t.key],
+  );
+  const effectiveTab = availableTabs.some((t) => t.key === activeTab)
+    ? activeTab
+    : 'terminal';
+
+  return (
+    <div className="sbx-tabs">
+      <div className="sbx-tabs-strip" role="tablist">
+        {availableTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={effectiveTab === tab.key}
+            className={`sbx-tab${effectiveTab === tab.key ? ' is-active' : ''}`}
+            onClick={() => setActiveTab(tab.key)}
+            title={
+              tab.key === 'mlflow'
+                ? 'MLflow tracking server (port 5000) — runs, metrics, params, artifacts'
+                : tab.key === 'tensorboard'
+                ? 'TensorBoard (port 6006) — scalars and event-file visualizations'
+                : 'Recorded SSH command transcript'
+            }
+          >
+            {tab.label}
+            {tab.key !== 'terminal' && isLive && (
+              <span className="log-tail-live-dot" title="live" />
+            )}
+          </button>
+        ))}
+        <div className="sbx-tabs-spacer" />
+        {effectiveTab === 'terminal' && transcript && transcript.trim() !== '' && (
+          <button
+            type="button"
+            className="sbx-term-toggle"
+            onClick={() => setShowRaw((v) => !v)}
+            title={showRaw ? 'Show formatted view' : 'Show raw transcript'}
+          >
+            {showRaw ? 'formatted' : 'raw'}
+          </button>
+        )}
+        {effectiveTab !== 'terminal' && dashboards[effectiveTab] && (
+          <a
+            href={dashboards[effectiveTab]}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="sbx-term-toggle"
+            title="Open this dashboard in a new tab"
+          >
+            open ↗
+          </a>
+        )}
+      </div>
+
+      {effectiveTab === 'terminal' ? (
+        <SandboxTerminalPane
+          transcript={transcript}
+          isLive={isLive}
+          showRaw={showRaw}
+        />
+      ) : (
+        <SandboxDashboardFrame
+          name={effectiveTab}
+          url={dashboards[effectiveTab]}
+        />
+      )}
+    </div>
+  );
+}
+
+function SandboxTerminalPane({ transcript, isLive, showRaw }) {
+  return (
+    <>
+      <div className="sbx-term-head">
+        <span>
+          terminal transcript
+          {transcript != null && ` · ${transcript.split('\n').length} lines`}
+        </span>
+      </div>
+      {transcript == null ? (
+        <div className="log-tail-empty">Loading transcript…</div>
+      ) : transcript.trim() === '' ? (
+        <div className="log-tail-empty">
+          No commands recorded yet. Output appears here as the agent runs commands over SSH.
+        </div>
+      ) : (
+        <TerminalLog text={transcript} live={isLive} raw={showRaw} />
+      )}
+    </>
+  );
+}
+
+/**
+ * SandboxDashboardFrame — embeds an MLflow or TensorBoard dashboard served from
+ * inside the sandbox. The iframe is sandboxed (allow-scripts + same-origin) but
+ * not allowed top-navigation or forms, so a malicious page inside the iframe
+ * can't redirect the user away. The wrapper key includes the URL so a tunnel
+ * relocation forces a clean reload rather than reusing a now-404 src.
+ */
+function SandboxDashboardFrame({ name, url }) {
+  if (!url) {
+    return (
+      <div className="log-tail-empty">
+        No {name} dashboard URL on this sandbox yet. The dashboard server
+        comes up shortly after SSH; refreshes on the next poll.
+      </div>
+    );
+  }
+  const title = name === 'mlflow' ? 'MLflow tracking UI' : 'TensorBoard';
+  return (
+    <div className="sbx-dashboard" key={url}>
+      <iframe
+        src={url}
+        title={title}
+        className="sbx-dashboard-frame"
+        sandbox="allow-scripts allow-same-origin allow-popups allow-downloads"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+      />
+    </div>
   );
 }
 

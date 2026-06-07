@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from backend.sync_config import SyncExclusionPolicy
+from backend.execution.bootstrap_tools import ML_PYTHON_PACKAGES, MODAL_APT_PACKAGES
 from ...errors import BackendUnavailableError, BackendValidationError
 from ...types import (
     BackendCapabilities,
@@ -45,6 +46,14 @@ SyncExclusionProvider = Callable[[str], SyncExclusionPolicy]
 SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
 TRANSCRIPT_TAIL_DEFAULT = 50_000
+
+# Observability dashboards. Both servers run in the sandbox on these ports and
+# are surfaced to the user through Modal encrypted tunnels (HTTPS). The names
+# here are the keys in `ProvisionedSandbox.dashboards` and the persisted
+# `sandboxes.dashboards_json` column.
+DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
+MLFLOW_PORT = 5000
+TENSORBOARD_PORT = 6006
 
 # How long a metrics sample exec may run before we give up. The sampler sleeps
 # ~0.25s (for the CPU delta) plus a single nvidia-smi call, so this is generous.
@@ -129,6 +138,38 @@ if [ -n "${RP_AUTHORIZED_KEY:-}" ]; then
   printf '%s\n' "$RP_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
 fi
+# Observability dashboards: an MLflow tracking server on port 5000 and a
+# TensorBoard on port 6006. Both serve from per-experiment dirs on the mounted
+# Volume so runs survive sandbox death and accumulate across re-acquires of
+# the same experiment id. Launched as backgrounded processes BEFORE `exec sshd`
+# so they're already up by the time the agent's first SSH command lands.
+#
+# Failure to launch is non-fatal: a missing python package or a port collision
+# only loses observability for this run; the sandbox is still usable. The
+# transcript wrapper exports MLFLOW_TRACKING_URI to every command so frameworks
+# that auto-detect MLflow (HF Trainer with report_to="all", PyTorch Lightning's
+# MLFlowLogger) pick it up with no agent setup.
+RP_DASH_DIR="${RP_WORKDIR:-/workspace/repo}/.research_plugin_sessions/${RP_EXPERIMENT_ID:-unknown}"
+RP_MLFLOW_DB="$RP_DASH_DIR/mlflow.db"
+RP_MLFLOW_ARTIFACTS="$RP_DASH_DIR/mlflow-artifacts"
+RP_TB_LOGDIR="$RP_DASH_DIR/tb"
+mkdir -p "$RP_MLFLOW_ARTIFACTS" "$RP_TB_LOGDIR" 2>/dev/null || true
+{
+  # Run from /tmp so MLflow doesn't pollute the repo with its meta dir, and
+  # use file:// for artifacts so a missing artifact store doesn't crash logging.
+  cd /tmp
+  nohup python -m mlflow server \
+    --host 0.0.0.0 --port 5000 \
+    --backend-store-uri "sqlite:///$RP_MLFLOW_DB" \
+    --artifacts-destination "file://$RP_MLFLOW_ARTIFACTS" \
+    --serve-artifacts \
+    >"$RP_DASH_DIR/mlflow.log" 2>&1 &
+  nohup python -m tensorboard.main \
+    --host 0.0.0.0 --port 6006 \
+    --logdir "$RP_TB_LOGDIR" \
+    --bind_all \
+    >"$RP_DASH_DIR/tensorboard.log" 2>&1 &
+} || true
 # Persist the session env so the ForceCommand wrapper can read it (sshd does not
 # pass the container environment through to forced commands).
 {
@@ -136,6 +177,9 @@ fi
   printf 'RP_EXPERIMENT_ID=%q\n' "${RP_EXPERIMENT_ID:-unknown}"
   printf 'RP_SANDBOX_DATA_DIR=%q\n' "${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
   printf 'RP_DATASET_DIR=%q\n' "${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
+  printf 'RP_DASH_DIR=%q\n' "$RP_DASH_DIR"
+  printf 'RP_TB_LOGDIR=%q\n' "$RP_TB_LOGDIR"
+  printf 'MLFLOW_TRACKING_URI=%s\n' 'http://localhost:5000'
   if [ -n "${HF_TOKEN:-}" ]; then
     printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
     printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
@@ -167,10 +211,12 @@ RP_WORKDIR="${RP_WORKDIR:-/workspace/repo}"
 RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
 RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/sandbox_data}"
 RP_DATASET_DIR="${RP_DATASET_DIR:-$RP_SANDBOX_DATA_DIR}"
+MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://localhost:5000}"
+RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIMENT_ID/tb}"
 if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
   HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
-export RP_WORKDIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN
+export RP_WORKDIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN MLFLOW_TRACKING_URI RP_TB_LOGDIR
 mkdir -p "$RP_SANDBOX_DATA_DIR" 2>/dev/null || true
 LOG_DIR="$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIMENT_ID"
 LOG="$LOG_DIR/transcript.log"
@@ -295,6 +341,10 @@ class ModalSandboxBackend:
             "workdir": workdir,
             "volumes": {workdir: volume},
             "unencrypted_ports": [22],
+            # MLflow (5000) and TensorBoard (6006) served from inside the
+            # sandbox over HTTPS-fronted Modal tunnels. URLs captured below
+            # after creation and persisted in the sandbox row as dashboards.
+            "encrypted_ports": [MLFLOW_PORT, TENSORBOARD_PORT],
             "env": env,
             "cpu": request.cpu,
             "memory": int(request.memory),
@@ -330,6 +380,10 @@ class ModalSandboxBackend:
             _call(on_created, sandbox_id, name or "")
             _call(on_phase, "connecting", "waiting for ssh")
             host, port = self._ssh_endpoint(sandbox=sandbox)
+            # Read the encrypted dashboard tunnels alongside SSH. Failure here is
+            # treated as "no dashboards this run" rather than a fatal acquire
+            # error — the sandbox is still usable, the user just loses MLflow/TB.
+            dashboards = self._dashboard_urls(sandbox=sandbox)
         except BaseException:
             try:
                 sandbox.terminate()
@@ -345,6 +399,7 @@ class ModalSandboxBackend:
             volume_name=volume_name,
             sandbox_data_dir=sandbox_data_dir,
             reused=False,
+            dashboards=dashboards,
         )
 
     def find_sandbox_id(self, *, experiment_id: str) -> str | None:
@@ -376,6 +431,22 @@ class ModalSandboxBackend:
             return maybe_await(poll()) is None
         except Exception:  # noqa: BLE001
             return False
+
+    def dashboard_urls(self, *, sandbox_id: str) -> dict[str, str]:
+        """Best-effort re-read of the encrypted dashboard tunnels for a live sandbox.
+
+        Returns an empty dict if the sandbox is gone, its tunnels can't be read
+        right now, or no dashboard ports were exposed. Used by the registry to
+        recover URLs after a tunnel relocation, the same way refresh_ssh_endpoint
+        recovers the SSH host/port.
+        """
+        if not sandbox_id:
+            return {}
+        try:
+            sandbox = self._sandbox_from_id(sandbox_id)
+            return self._dashboard_urls(sandbox=sandbox)
+        except Exception:  # noqa: BLE001 — caller treats empty as "couldn't refresh"
+            return {}
 
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
         """Re-read the live SSH tunnel endpoint for an existing sandbox.
@@ -650,6 +721,36 @@ class ModalSandboxBackend:
         except Exception as exc:  # noqa: BLE001
             raise BackendUnavailableError(f"Modal SSH tunnel is unavailable: {exc}") from exc
 
+    def _dashboard_urls(self, *, sandbox: Any) -> dict[str, str]:
+        """Read the encrypted tunnel URLs for the dashboard ports.
+
+        Modal tunnels for ``encrypted_ports`` expose a ``.url`` attribute that
+        is the public HTTPS URL routed to that in-container port. A missing
+        port (older Modal version, port not actually requested, etc.) is
+        silently skipped — the registry treats missing keys as "this dashboard
+        wasn't exposed for this sandbox" and the UI hides the tab.
+        """
+        get_tunnels = getattr(sandbox, "tunnels", None)
+        if not callable(get_tunnels):
+            return {}
+        try:
+            tunnels = maybe_await(get_tunnels())
+        except Exception:  # noqa: BLE001 — best-effort
+            return {}
+        result: dict[str, str] = {}
+        for name, port in DASHBOARD_PORTS.items():
+            tunnel = None
+            try:
+                tunnel = tunnels.get(port) if hasattr(tunnels, "get") else tunnels[port]
+            except (KeyError, Exception):  # noqa: BLE001
+                tunnel = None
+            if tunnel is None:
+                continue
+            url = getattr(tunnel, "url", None)
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                result[name] = url
+        return result
+
     def _sandbox_from_id(self, sandbox_id: str) -> Any:
         modal = self._modal_module()
         return modal.Sandbox.from_id(sandbox_id)
@@ -676,12 +777,16 @@ class ModalSandboxBackend:
                 if self._base_image is None:
                     modal = self._modal_module()
                     self._base_image = self._with_ssh(
-                        modal.Image.debian_slim(python_version="3.11")
-                        .apt_install("openssh-server", "ca-certificates", "curl")
-                        .pip_install("uv")
-                        .run_commands(
-                            "uv pip install --system torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121",
-                            "uv pip install --system transformers numpy matplotlib pandas scikit-learn modal",
+                        self._with_observability(
+                            modal.Image.debian_slim(python_version="3.11")
+                            .apt_install(*MODAL_APT_PACKAGES)
+                            .pip_install("uv")
+                            .run_commands(
+                                "ln -sf /usr/bin/fdfind /usr/local/bin/fd || true",
+                                "uv pip install --system torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121",
+                                "uv pip install --system "
+                                + " ".join((*ML_PYTHON_PACKAGES, "modal")),
+                            )
                         )
                     )
         return self._base_image
@@ -692,18 +797,34 @@ class ModalSandboxBackend:
                 if self._cuda_image is None:
                     modal = self._modal_module()
                     self._cuda_image = self._with_ssh(
-                        modal.Image.from_registry(
-                            "nvidia/cuda:12.1.1-devel-ubuntu22.04",
-                            add_python="3.11",
-                        )
-                        .apt_install("openssh-server", "ca-certificates", "curl")
-                        .pip_install("uv")
-                        .run_commands(
-                            "uv pip install --system torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121",
-                            "uv pip install --system transformers numpy matplotlib pandas scikit-learn ninja modal",
+                        self._with_observability(
+                            modal.Image.from_registry(
+                                "nvidia/cuda:12.1.1-devel-ubuntu22.04",
+                                add_python="3.11",
+                            )
+                            .apt_install(*MODAL_APT_PACKAGES)
+                            .pip_install("uv")
+                            .run_commands(
+                                "ln -sf /usr/bin/fdfind /usr/local/bin/fd || true",
+                                "uv pip install --system torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121",
+                                "uv pip install --system "
+                                + " ".join((*ML_PYTHON_PACKAGES, "ninja", "modal")),
+                            )
                         )
                     )
         return self._cuda_image
+
+    def _with_observability(self, image: Any) -> Any:
+        """Layer in the MLflow + TensorBoard servers used by the boot script.
+
+        Kept as its own layer below the heavy torch install so iterating on
+        observability versions doesn't invalidate the multi-GB torch+CUDA
+        layer above. Pins are conservative — major versions known to be
+        backward-compatible with the boot script's CLI flags.
+        """
+        return image.run_commands(
+            "uv pip install --system mlflow==2.18.0 tensorboard==2.18.0",
+        )
 
     def _with_ssh(self, image: Any) -> Any:
         """Bake the SSH entrypoint + transcript wrapper into the image."""

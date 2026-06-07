@@ -414,7 +414,7 @@ def create_fastapi_app(
     http.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET", "POST", "PUT", "PATCH", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Accept"],
     )
 
@@ -481,6 +481,22 @@ def create_fastapi_app(
     @http.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
         return default_api().tool_calls_clear()
+
+    @http.get("/api/compute/lambda/available-gpus")
+    def lambda_available_gpus(
+        region: str | None = None,
+        gpu: str | None = None,
+        instance_type: str | None = None,
+        min_gpus: int | None = Query(None, ge=1),
+        only_available: bool = True,
+    ) -> dict[str, Any]:
+        return default_api().app.compute.lambda_available_gpus(
+            region=region,
+            gpu=gpu,
+            instance_type=instance_type,
+            min_gpus=min_gpus,
+            only_available=only_available,
+        )
 
     @http.get("/api/projects")
     def list_projects() -> dict[str, Any]:
@@ -591,6 +607,10 @@ def create_fastapi_app(
     @http.post("/api/projects/{project_id}/resources/{resource_id}/associate")
     def associate_resource(project_id: str, resource_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
         return api_for_project(project_id).call_tool(name="resource.associate", arguments={"project_id": project_id, "resource_id": resource_id, **(body or {})})
+
+    @http.delete("/api/projects/{project_id}/resources/{resource_id}")
+    def delete_resource(project_id: str, resource_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).call_tool(name="resource.delete", arguments={"project_id": project_id, "resource_id": resource_id})
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/content")
     def resource_content(project_id: str, resource_id: str) -> dict[str, Any]:

@@ -78,7 +78,9 @@ class LocalShippingTest(unittest.TestCase):
 
         (self.research_repo / "experiments" / "shipping").mkdir(parents=True)
         (self.research_repo / "experiments" / "shipping" / "plan.md").write_text(
-            "Metric: accuracy. Baseline: majority class.\n"
+            "## Summary\nShip a plan and result through the installed launcher.\n\n"
+            "## Objective & hypothesis\nThreshold rule beats the majority class.\n\n"
+            "## Evaluation\nMetric: accuracy. Baseline: majority class. Success if higher.\n"
         )
         plan = self._tool(
             proc,

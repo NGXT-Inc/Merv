@@ -15,17 +15,23 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from backend.sync_config import SyncExclusionPolicy, normalize_sync_exclusions
 from backend.execution.backends.modal.sync.baseline import BaselineStore
 from backend.execution.backends.modal.sync.differ import three_way_diff
-from backend.execution.backends.modal.sync.engine import SyncEngine
+from backend.execution.backends.modal.sync.engine import (
+    MAX_PASS_FILE_DETAILS,
+    SyncEngine,
+    _pass_file_details,
+)
 from backend.execution.backends.modal.sync.lock import InterProcessSyncLock
 from backend.execution.backends.modal.sync.poller import SyncPoller
 from backend.execution.backends.modal.sync.scanner import local_scan
 from backend.execution.backends.modal.sync.types import (
     ConflictRecord,
     FileFingerprint,
+    SyncPlan,
     SyncResult,
 )
 
@@ -202,6 +208,40 @@ class BaselineStoreTest(unittest.TestCase):
             self.assertIn("ok.txt", baseline)
             self.assertNotIn("bad.txt", baseline)
             self.assertEqual(store.conflict_paths(project_id="p1"), {"bad.txt"})
+
+    def test_totals_sums_clean_rows_and_excludes_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = BaselineStore(db_path=Path(tmp) / "sync.sqlite")
+            self.assertEqual(
+                store.totals(project_id="p1"),
+                {"files": 0, "local_bytes": 0, "remote_bytes": 0},
+            )
+            store.upsert_clean(
+                project_id="p1", path="a.txt",
+                local=fp("a.txt", 1, 10), remote=fp("a.txt", 2, 10),
+                synced_at="2026-01-01T00:00:00Z",
+            )
+            store.upsert_clean(
+                project_id="p1", path="b.bin",
+                local=fp("b.bin", 1, 1000), remote=fp("b.bin", 2, 1000),
+                synced_at="2026-01-01T00:00:00Z",
+            )
+            # A conflict row must not count toward the project total.
+            store.mark_conflict(
+                project_id="p1", path="bad.txt",
+                local=fp("bad.txt", 5, 99), remote=fp("bad.txt", 6, 99),
+                when="2026-01-01T00:00:01Z",
+            )
+            # Another project's rows must not leak in.
+            store.upsert_clean(
+                project_id="p2", path="c.txt",
+                local=fp("c.txt", 1, 7), remote=fp("c.txt", 2, 7),
+                synced_at="2026-01-01T00:00:00Z",
+            )
+            self.assertEqual(
+                store.totals(project_id="p1"),
+                {"files": 2, "local_bytes": 1010, "remote_bytes": 1010},
+            )
 
     def test_known_projects_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -542,6 +582,124 @@ with lock.acquire(blocking=False) as acquired:
         env=env,
     )
     return proc.stdout.strip()
+
+
+class PassFileDetailsTest(unittest.TestCase):
+    """The per-file breakdown embedded in modal.sync.pass events."""
+
+    def test_labels_directions_and_counts_total(self) -> None:
+        plan = SyncPlan(
+            push=(fp("a.txt", 1, 10), fp("b.txt", 1, 30)),
+            pull=(fp("c.txt", 1, 20),),
+            delete_remote=("gone_remote.txt",),
+            delete_local=("gone_local.txt",),
+        )
+        entries, total = _pass_file_details(plan, cap=80)
+        self.assertEqual(total, 5)
+        by_path = {e["path"]: e for e in entries}
+        self.assertEqual(by_path["a.txt"]["dir"], "push")
+        self.assertEqual(by_path["a.txt"]["size"], 10)
+        self.assertEqual(by_path["c.txt"]["dir"], "pull")
+        self.assertEqual(by_path["gone_remote.txt"]["dir"], "del_remote")
+        self.assertEqual(by_path["gone_local.txt"]["dir"], "del_local")
+
+    def test_sorts_largest_first_with_deletes_last(self) -> None:
+        plan = SyncPlan(
+            push=(fp("small.txt", 1, 5), fp("big.txt", 1, 500)),
+            pull=(fp("mid.txt", 1, 50),),
+            delete_remote=("zzz.txt",),
+        )
+        entries, _ = _pass_file_details(plan, cap=80)
+        self.assertEqual([e["path"] for e in entries], ["big.txt", "mid.txt", "small.txt", "zzz.txt"])
+
+    def test_caps_entries_but_reports_full_total(self) -> None:
+        plan = SyncPlan(push=tuple(fp(f"f{i}.txt", 1, i) for i in range(10)))
+        entries, total = _pass_file_details(plan, cap=3)
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(total, 10)
+        # Largest-first under the cap: sizes 9, 8, 7.
+        self.assertEqual([e["size"] for e in entries], [9, 8, 7])
+
+
+class _PushFakeVolume:
+    """Modal-volume stub that records pushes and reflects them in listdir, so a
+    push-only sync runs end-to-end and the post-apply remote scan sees the
+    uploaded files — as a real Volume would. The pre-apply scan still sees an
+    empty remote (nothing uploaded yet), so the push is still planned."""
+
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, str]] = []
+
+    def listdir(self, _path: str, recursive: bool = True):  # noqa: ARG002
+        return [
+            SimpleNamespace(path=remote, size=os.path.getsize(local), mtime=0)
+            for local, remote in self.uploaded
+        ]
+
+    def batch_upload(self, force: bool = False):  # noqa: ARG002
+        volume = self
+
+        class _Batch:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def put_file(self_inner, local: str, remote: str) -> None:
+                volume.uploaded.append((local, remote))
+
+        return _Batch()
+
+
+class PassEventDetailEmissionTest(unittest.TestCase):
+    """A real bidirectional pass emits the enriched modal.sync.pass payload."""
+
+    def test_modal_sync_pass_carries_files_and_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            repo = tmp / "repo"
+            repo.mkdir()
+            (repo / "a.txt").write_text("hello world", encoding="utf-8")  # 11 bytes
+            baseline = BaselineStore(db_path=tmp / "sync.sqlite")
+            volume = _PushFakeVolume()
+            events: list[tuple[str, dict]] = []
+            engine = SyncEngine(
+                repo_root=repo,
+                baseline=baseline,
+                volume_provider=lambda _name: volume,
+                activity=lambda event_type, payload: events.append((event_type, payload)),
+            )
+
+            engine.sync(project_id="p1")
+
+            passes = [payload for name, payload in events if name == "modal.sync.pass"]
+            self.assertEqual(len(passes), 1)
+            payload = passes[0]
+            self.assertEqual(payload["pushed"], 1)
+            self.assertEqual(payload["bytes_pushed"], 11)
+            self.assertEqual(payload["bytes_pulled"], 0)
+            self.assertEqual(payload["files_total"], 1)
+            self.assertFalse(payload["files_truncated"])
+            self.assertEqual(
+                payload["files"],
+                [{"path": "a.txt", "dir": "push", "size": 11}],
+            )
+            # Whole-project totals after the pass: the pushed file is now in
+            # sync on both sides, so local and remote each total its 11 bytes.
+            self.assertEqual(payload["total_files"], 1)
+            self.assertEqual(payload["total_bytes"], 11)
+            self.assertEqual(payload["total_remote_bytes"], 11)
+            # One push, to the repo-relative remote path. (Compare basename +
+            # remote only: the engine resolves repo_root, so on macOS the local
+            # path gains a /private prefix vs the tmpdir we created.)
+            self.assertEqual(len(volume.uploaded), 1)
+            local_path, remote_path = volume.uploaded[0]
+            self.assertTrue(local_path.endswith("/repo/a.txt"))
+            self.assertEqual(remote_path, "a.txt")
+
+    def test_cap_constant_is_positive(self) -> None:
+        self.assertGreater(MAX_PASS_FILE_DETAILS, 0)
 
 
 if __name__ == "__main__":

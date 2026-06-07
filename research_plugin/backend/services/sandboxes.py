@@ -18,6 +18,7 @@ transcript, surfaced through `terminal`.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -248,6 +249,7 @@ class SandboxService:
             self._touch_alive(experiment_id=experiment_id)
             self._mark_experiment_running(experiment_id=experiment_id, project_id=project_id)
             row = self._maybe_refresh_endpoint(row=self._load_row(experiment_id=experiment_id))
+            row = self._maybe_refresh_dashboards(row=row)
             self._emit_event(
                 project_id=project_id,
                 event_type="sandbox.reused",
@@ -510,7 +512,10 @@ class SandboxService:
         if status in ACTIVE_SANDBOX_STATUSES and row.get("sandbox_id"):
             if self._is_alive(sandbox_id=str(row["sandbox_id"])):
                 self._touch_alive(experiment_id=exp)
-                return self._maybe_refresh_endpoint(row=self._load_row(experiment_id=exp))
+                refreshed = self._maybe_refresh_endpoint(
+                    row=self._load_row(experiment_id=exp)
+                )
+                return self._maybe_refresh_dashboards(row=refreshed)
             self._mark_terminated(experiment_id=exp)
             self._emit_event(
                 project_id=str(row["project_id"]),
@@ -643,6 +648,7 @@ class SandboxService:
                 workdir=provisioned.workdir,
                 sandbox_data_dir=provisioned.sandbox_data_dir,
                 volume_name=provisioned.volume_name,
+                dashboards_json=_encode_dashboards(provisioned.dashboards),
                 expires_at=_iso_after(seconds=req.time_limit),
                 last_seen_at=now,
                 phase="",
@@ -804,6 +810,34 @@ class SandboxService:
             return bool(self.backend.is_alive(sandbox_id=sandbox_id))
         except Exception:  # noqa: BLE001
             return False
+
+    def _maybe_refresh_dashboards(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Re-read the encrypted dashboard tunnel URLs and persist if changed.
+
+        Companion to ``_maybe_refresh_endpoint``: when a sandbox's tunnels move
+        on the Modal side, the SSH host/port AND the dashboard HTTPS URLs all
+        change together. Best-effort: a backend without ``dashboard_urls`` or
+        an error reading them leaves the stored value untouched.
+        """
+        refresher = getattr(self.backend, "dashboard_urls", None)
+        if not callable(refresher):
+            return row
+        sandbox_id = str(row.get("sandbox_id") or "")
+        if not sandbox_id or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            return row
+        try:
+            fresh = refresher(sandbox_id=sandbox_id)
+        except Exception:  # noqa: BLE001 — refresh must never break the caller
+            return row
+        if not isinstance(fresh, dict):
+            return row
+        normalized = {str(k): str(v) for k, v in fresh.items() if isinstance(v, str) and v}
+        encoded = _encode_dashboards(normalized)
+        if encoded == (row.get("dashboards_json") or "{}"):
+            return row
+        experiment_id = str(row.get("experiment_id"))
+        self._upsert_sandbox(experiment_id=experiment_id, dashboards_json=encoded)
+        return self._load_row(experiment_id=experiment_id)
 
     def _maybe_refresh_endpoint(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Re-read a live sandbox's SSH tunnel and persist it if it moved.
@@ -1102,6 +1136,10 @@ class SandboxService:
             "cpu": row.get("cpu"),
             "memory": row.get("memory"),
             "expires_at": row.get("expires_at"),
+            # Observability dashboards visible to the user. The agent receives
+            # the URLs purely informationally (it talks to MLflow through the
+            # in-sandbox `MLFLOW_TRACKING_URI` localhost env, not these URLs).
+            "dashboards": _decode_dashboards(row.get("dashboards_json")),
         }
         env_info = self._sandbox_environment()
         credential_note = ""
@@ -1131,6 +1169,20 @@ class SandboxService:
                 "call sandbox.request to retry."
             )
         elif live:
+            dashboards = view.get("dashboards") or {}
+            dashboard_note = ""
+            if dashboards.get("mlflow") or dashboards.get("tensorboard"):
+                dashboard_note = (
+                    "Training observability: an MLflow tracking server "
+                    "(MLFLOW_TRACKING_URI=http://localhost:5000) and a "
+                    "TensorBoard (logdir at $RP_TB_LOGDIR) are already "
+                    "running inside the sandbox. HuggingFace Trainer and "
+                    "PyTorch Lightning's MLFlowLogger auto-pick MLflow up "
+                    "with no setup. For plain PyTorch, add mlflow.autolog() "
+                    "once at the top of the training script. The user sees "
+                    "the dashboards live in the UI; you do not need to "
+                    "fetch or share the URLs. "
+                )
             view["hint"] = (
                 f"Run commands with: {command} '<your shell command>' (from the repo root). "
                 "Output streams back and is recorded to the experiment terminal. "
@@ -1142,6 +1194,7 @@ class SandboxService:
                 "($RP_SANDBOX_DATA_DIR / $RP_DATASET_DIR inside the sandbox), "
                 "which is sandbox-local and not on the Volume. "
                 f"{credential_note}"
+                f"{dashboard_note}"
                 "Before registering result resources or releasing the sandbox, "
                 "call sandbox.sync to commit sandbox writes to the Volume and "
                 "pull them into the local repo. Also call sandbox.sync after "
@@ -1208,6 +1261,10 @@ class SandboxService:
             "workdir": row.get("workdir"),
             "sandbox_data_dir": row.get("sandbox_data_dir") or "",
             "volume_name": row.get("volume_name"),
+            # Observability dashboards (MLflow, TensorBoard). Empty dict when
+            # no tunnels are exposed (test backends, pre-Phase-1 rows). The UI
+            # renders a tab per non-empty entry.
+            "dashboards": _decode_dashboards(row.get("dashboards_json")),
             "requested_at": row.get("requested_at"),
             "expires_at": row.get("expires_at"),
             "last_seen_at": row.get("last_seen_at"),
@@ -1270,3 +1327,36 @@ def _env_float(name: str, override: float | None, default: float) -> float:
         except ValueError:
             pass
     return default
+
+
+
+# Dashboards persistence is plain JSON, mirroring how Python sees the field on
+# ProvisionedSandbox. Tolerant of legacy/empty values: a missing or unparseable
+# column returns {}, never raises. The UI keys on dashboard name (e.g. "mlflow",
+# "tensorboard") so adding a new dashboard later only means another key here.
+def _encode_dashboards(dashboards: Any) -> str:
+    if not dashboards:
+        return "{}"
+    try:
+        clean = {
+            str(k): str(v)
+            for k, v in dict(dashboards).items()
+            if isinstance(v, str) and v
+        }
+    except Exception:  # noqa: BLE001 — never fail the upsert on a malformed map
+        return "{}"
+    return json.dumps(clean, sort_keys=True)
+
+
+def _decode_dashboards(raw: Any) -> dict[str, str]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+    try:
+        parsed = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k): str(v) for k, v in parsed.items() if isinstance(v, str) and v}

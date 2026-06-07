@@ -140,6 +140,36 @@ fi
 - The wrapper records commands only. It does not commit the Volume after every
   command; `sandbox.sync` is the explicit commit-and-pull boundary.
 
+### Training observability: MLflow + TensorBoard
+
+Every sandbox also runs **two observability servers** on the mounted Volume,
+launched from the boot script alongside `sshd`:
+
+- **MLflow tracking server** on port `5000`, backed by
+  `sqlite:///$RP_DASH_DIR/mlflow.db` and serving artifacts from
+  `$RP_DASH_DIR/mlflow-artifacts`. The dashboard store lives under
+  `.research_plugin_sessions/<experiment_id>/`, so runs accumulate across
+  sandbox restarts of the same experiment.
+- **TensorBoard** on port `6006`, with `--logdir $RP_TB_LOGDIR`
+  (`= $RP_DASH_DIR/tb`). Auto-picked up by Hugging Face Trainer (`report_to`
+  defaults to `"all"`).
+
+Both ports ship as Modal `encrypted_ports`, so the daemon receives them as
+HTTPS URLs via `sandbox.tunnels()[port].url`. The `_dashboard_urls()` helper
+maps `{port → name}` and persists the result as JSON in the `dashboards_json`
+column. `_maybe_refresh_dashboards()` re-reads them whenever the SSH tunnel
+relocates, so a moved sandbox doesn't leave stale dashboard URLs in the row.
+
+The transcript wrapper (`/opt/rp/rec.sh`) exports `MLFLOW_TRACKING_URI`
+(`http://localhost:5000`) and `RP_TB_LOGDIR` into every SSH command, so any
+training framework that auto-detects MLflow logs to the local server without
+agent setup. For plain PyTorch the agent calls `mlflow.autolog()` once.
+
+The dashboard servers are best-effort: a missing pip package or port collision
+loses observability for the run, never breaks SSH. The fake test backend exposes
+the same `dashboard_urls(sandbox_id)` contract so registry behavior can be
+exercised without Modal.
+
 ### Reading the transcript
 
 `sandbox.terminal(project_id, experiment_id, tail?)` and the UI read the

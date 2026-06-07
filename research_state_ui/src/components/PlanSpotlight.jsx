@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import FileRenderer from './FileRenderer';
+import PlanBody from './PlanBody';
 import ReviewEvolutionStepper from './ReviewEvolutionStepper';
 
 function bytes(n) {
@@ -197,7 +197,7 @@ export default function PlanSpotlight({
             content.data.is_binary ? (
               <div className="empty">Binary plan file</div>
             ) : (
-              <FileRenderer text={content.data.content ?? ''} path={planResource.path} />
+              <PlanBody text={content.data.content ?? ''} path={planResource.path} />
             )
           ) : content?.kind === 'version' ? (
             content.data.available === false ? (
@@ -212,7 +212,7 @@ export default function PlanSpotlight({
                 </div>
               </div>
             ) : (
-              <FileRenderer
+              <PlanBody
                 text={content.data.text ?? ''}
                 path={planResource.path}
               />

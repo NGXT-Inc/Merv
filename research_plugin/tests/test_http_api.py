@@ -47,7 +47,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"intent": "Compare threshold with baseline.", "claim_ids": [claim["id"]]},
         )
         exp_id = exp["id"]
-        (self.repo / "plan.md").write_text("metric: accuracy\nbaseline: majority\n")
+        (self.repo / "plan.md").write_text(
+            "## Summary\nCompare a threshold classifier with the baseline.\n\n"
+            "## Objective & hypothesis\nThreshold rule beats majority class.\n\n"
+            "## Evaluation\nMetric: accuracy vs majority baseline; success if higher.\n"
+        )
         resource = self.request(
             "POST",
             f"/api/projects/{project_id}/resources",
@@ -69,6 +73,20 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         history = self.request("GET", f"/api/projects/{project_id}/resources/{resource['id']}/history")
         version_id = history["versions"][0]["id"]
         self.assertTrue(version_id)
+        deleted_resource = self.request("DELETE", f"/api/projects/{project_id}/resources/{resource['id']}")
+        self.assertTrue(deleted_resource["deleted"])
+        self.assertEqual(self.request("GET", f"/api/projects/{project_id}/resources")["resources"], [])
+        resource = self.request(
+            "POST",
+            f"/api/projects/{project_id}/resources",
+            {"path": "plan.md", "kind": "note", "title": "Plan"},
+        )
+        self.assertEqual(resource["id"], deleted_resource["resource"]["id"])
+        self.request(
+            "POST",
+            f"/api/projects/{project_id}/resources/{resource['id']}/associate",
+            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
+        )
 
         self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/transition", {"transition": "submit_design"})
         review_request = self.request(
@@ -89,7 +107,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         pid = project["id"]
         exp = self.request("POST", f"/api/projects/{pid}/experiments", {"intent": "Scoped review"})
         exp_id = exp["id"]
-        (self.repo / "plan.md").write_text("plan\n")
+        (self.repo / "plan.md").write_text(
+            "## Summary\nScoped review.\n\n"
+            "## Objective & hypothesis\nTest scoping.\n\n"
+            "## Evaluation\nMetric: pass/fail of the scoping check.\n"
+        )
         plan = self.request("POST", f"/api/projects/{pid}/resources", {"path": "plan.md", "kind": "plan"})
         self.request("POST", f"/api/projects/{pid}/resources/{plan['id']}/associate", {"target_type": "experiment", "target_id": exp_id, "role": "plan"})
         self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
@@ -205,6 +227,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
         self.assertEqual(sandbox["status"], "running")
         self.assertTrue(sandbox["sandbox_id"])
+        # The HTTP row carries observability dashboard URLs (MLflow + TensorBoard
+        # over Modal encrypted tunnels) so the UI can render an iframe tab per
+        # non-empty entry.
+        self.assertIn("dashboards", sandbox)
+        self.assertIn("mlflow", sandbox["dashboards"])
+        self.assertTrue(sandbox["dashboards"]["mlflow"].startswith("https://"))
 
         listed = self.request("GET", f"/api/projects/{project_id}/sandboxes")["sandboxes"]
         self.assertEqual(len(listed), 1)

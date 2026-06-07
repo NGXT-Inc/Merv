@@ -68,11 +68,21 @@ the server accepts common Codex/user aliases:
 ```text
 claim_id -> tested_claim_ids[0]
 claim_ids -> tested_claim_ids
-title, hypothesis, design, success_criteria, risks -> folded into intent
+title, hypothesis, design, success_criteria, risks -> deprecated; no longer
+  folded into intent. `intent` is the one-line headline; the full design lives
+  in the plan.md resource. These aliases are accepted for back-compat and, only
+  when `intent` is empty, the first non-empty one becomes the headline.
 status must be omitted or "planned"
 ```
 
 Use `experiment.transition` for workflow state changes after creation.
+
+The plan resource follows a PRD-style schema (see
+`skills/research-workflow/plan-template.md`). `experiment.transition(submit_design)`
+is gated on a required spine — **Summary**, **Objective & hypothesis**,
+**Evaluation** — each present and non-empty in the plan file; the design
+reviewer judges whether the recommended sections (Method, Outputs, Risks) are
+sufficient.
 
 ### Resource tools
 

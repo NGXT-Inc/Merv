@@ -63,7 +63,7 @@ class ResourceService:
                     SET kind = CASE WHEN ? = 'other' THEN kind ELSE ? END,
                         title = COALESCE(NULLIF(?, ''), title), version_token = ?,
                         mtime_ns = ?, size_bytes = ?, observed_at = ?, missing = 0,
-                        updated_at = ?
+                        deleted = 0, updated_at = ?
                     WHERE id = ?
                     """,
                     (kind, kind, title, token, stat.st_mtime_ns, stat.st_size, observed_at, observed_at, resource_id),
@@ -130,6 +130,46 @@ class ResourceService:
         resources = [self.register_file(path=path, project_id=project_id) for path in paths]
         return {"synced": resources, "count": len(resources)}
 
+    def delete(self, *, resource_id: str, project_id: str | None = None) -> dict[str, Any]:
+        with self.store.transaction() as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            resource = conn.execute(
+                "SELECT * FROM resources WHERE id = ? AND project_id = ?",
+                (resource_id, project_id),
+            ).fetchone()
+            if resource is None:
+                raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+            if int(resource["deleted"] or 0):
+                return {"deleted": False, "resource": self._hydrate_resource(row=resource, conn=conn)}
+            deleted_at = now_iso()
+            association_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM resource_associations WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()["count"]
+            conn.execute("DELETE FROM resource_associations WHERE resource_id = ?", (resource_id,))
+            conn.execute(
+                """
+                UPDATE resources
+                SET deleted = 1, missing = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (deleted_at, resource_id),
+            )
+            self.store.record_event(
+                conn=conn,
+                project_id=project_id,
+                event_type="resource.deleted",
+                target_type="resource",
+                target_id=resource_id,
+                payload={"path": resource["path"], "removed_associations": association_count},
+            )
+            deleted = conn.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+            return {
+                "deleted": True,
+                "removed_associations": association_count,
+                "resource": self._hydrate_resource(row=deleted, conn=conn),
+            }
+
     def associate(
         self,
         *,
@@ -142,7 +182,7 @@ class ResourceService:
         self.permissions.validate_resource_association(target_type=target_type, role=role)
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            resource = conn.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+            resource = conn.execute("SELECT * FROM resources WHERE id = ? AND deleted = 0", (resource_id,)).fetchone()
             if resource is None:
                 raise NotFoundError(f"resource not found: {resource_id}")
             if resource["project_id"] != project_id:
@@ -178,7 +218,7 @@ class ResourceService:
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
-                "SELECT * FROM resources WHERE project_id = ? ORDER BY path",
+                "SELECT * FROM resources WHERE project_id = ? AND deleted = 0 ORDER BY path",
                 (project_id,),
             ).fetchall()
             return {"resources": [self._hydrate_resource(row=row, conn=conn) for row in rows]}
@@ -234,6 +274,7 @@ class ResourceService:
             FROM resources r
             JOIN resource_associations a ON a.resource_id = r.id
             WHERE a.target_type = ? AND a.target_id = ?
+              AND r.deleted = 0
             ORDER BY a.attempt_index, a.role, r.path
             """,
             (target_type, target_id),
@@ -263,6 +304,7 @@ class ResourceService:
             FROM resource_associations a
             JOIN resources r ON r.id = a.resource_id
             WHERE a.target_type = ? AND a.target_id = ?
+              AND r.deleted = 0
         """
         params: list[Any] = [target_type, target_id]
         if attempt_index is not None:
@@ -505,4 +547,3 @@ class ResourceService:
         if row is None:
             raise NotFoundError(f"resource version not found: {version_id}")
         return self._hydrate_version(row=row, conn=conn)
-

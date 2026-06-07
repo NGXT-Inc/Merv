@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..utils import NotFoundError, ValidationError, WorkflowError
@@ -12,6 +13,61 @@ from ..utils import now_iso
 
 
 TERMINAL_STATUSES = frozenset({"complete", "failed", "abandoned"})
+
+# --- Plan schema (PRD-style) -------------------------------------------------
+# plan.md is the face of the experiment in the UI and the artifact the design
+# reviewer evaluates. We enforce a small REQUIRED spine — the minimum that makes
+# a plan readable (Summary), motivated (Objective & hypothesis), and judgeable
+# (Evaluation) — and leave Method/Outputs/Risks to the design reviewer's
+# judgment. See skills/research-workflow/plan-template.md.
+#
+# Each entry is (canonical_name, match_key): a plan heading satisfies the
+# section when its normalized text starts with match_key. The lint is
+# deliberately dumb (heading present + non-empty body); whether the content is
+# *sufficient* is the design reviewer's call, not the linter's.
+REQUIRED_PLAN_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Summary", "summary"),
+    ("Objective & hypothesis", "objective"),
+    ("Evaluation", "evaluation"),
+)
+
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _normalize_heading(text: str) -> str:
+    """Lowercase, expand '&' to 'and', collapse to space-separated words."""
+    text = text.replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def plan_sections_missing(plan_text: str) -> list[str]:
+    """Return the canonical names of REQUIRED plan sections that are absent or
+    empty. A section counts as present when its heading exists and the body
+    beneath it — up to the next same-or-higher-level heading — contains
+    non-whitespace text. HTML comments are stripped first, so they neither count
+    as content nor register as headings; template guidance therefore lives in
+    comments precisely so an unfilled section reads as empty here."""
+    text = _HTML_COMMENT_RE.sub("", plan_text)
+    headings = [
+        (m.start(), len(m.group(1)), _normalize_heading(m.group(2)), m.end())
+        for m in _HEADING_RE.finditer(text)
+    ]
+    missing: list[str] = []
+    for canonical, key in REQUIRED_PLAN_SECTIONS:
+        idx = next((i for i, h in enumerate(headings) if h[2].startswith(key)), None)
+        if idx is None:
+            missing.append(canonical)
+            continue
+        level, body_start = headings[idx][1], headings[idx][3]
+        body_end = len(text)
+        for nxt_start, nxt_level, _, _ in headings[idx + 1:]:
+            if nxt_level <= level:
+                body_end = nxt_start
+                break
+        if not text[body_start:body_end].strip():
+            missing.append(canonical)
+    return missing
 
 # Agent-facing projection of get_state. get_state is the "give me the detail"
 # call, so unlike status_and_next we KEEP the substance (review findings/notes,
@@ -150,20 +206,18 @@ class ExperimentService:
         success_criteria: str,
         risks: str,
     ) -> str:
-        pieces = []
+        # `intent` is the durable one-line headline (the experiment's title in
+        # the UI). The full design — hypothesis, method, evaluation, risks — now
+        # lives in the plan.md resource, which is the single source of truth and
+        # the face the reviewer evaluates. We no longer fold the structured
+        # fields into intent. For back-compat, if a caller supplied only those
+        # fields, fall back to the first non-empty one so intent is never blank.
         if intent.strip():
-            pieces.append(intent.strip())
-        labeled = [
-            ("Title", title),
-            ("Hypothesis", hypothesis),
-            ("Design", design),
-            ("Success criteria", success_criteria),
-            ("Risks", risks),
-        ]
-        for label, value in labeled:
+            return intent.strip()
+        for value in (title, hypothesis, design, success_criteria, risks):
             if value and value.strip():
-                pieces.append(f"{label}: {value.strip()}")
-        return "\n\n".join(pieces)
+                return value.strip()
+        return ""
 
     def _normalize_claim_ids(
         self,
@@ -367,12 +421,14 @@ class ExperimentService:
         next_status = allowed.get((status, transition))
         if next_status is None:
             raise WorkflowError(f"transition {transition!r} is not allowed from {status!r}")
-        if transition == "submit_design" and not self._has_resource_role(
-            conn=conn,
-            experiment_id=experiment_id,
-            role="plan",
-        ):
-            raise WorkflowError("an experiment plan resource must be synced before design review")
+        if transition == "submit_design":
+            if not self._has_resource_role(
+                conn=conn,
+                experiment_id=experiment_id,
+                role="plan",
+            ):
+                raise WorkflowError("an experiment plan resource must be synced before design review")
+            self._validate_plan_sections(conn=conn, experiment_id=experiment_id)
         if transition == "mark_ready_to_run" and not self._has_passing_review(
             conn=conn,
             experiment_id=experiment_id,
@@ -405,6 +461,43 @@ class ExperimentService:
             (experiment_id, role, experiment_id),
         ).fetchone()
         return row is not None
+
+    def _validate_plan_sections(self, *, conn, experiment_id: str) -> None:
+        """Block submit_design unless the current-attempt plan file fills in the
+        required spine. Reads the live file (the same content the UI shows and
+        the reviewer reads), not a cached snapshot."""
+        row = conn.execute(
+            """
+            SELECT r.path
+            FROM resource_associations a
+            JOIN resources r ON r.id = a.resource_id
+            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = 'plan'
+              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
+              AND r.deleted = 0
+            ORDER BY a.rowid DESC
+            LIMIT 1
+            """,
+            (experiment_id, experiment_id),
+        ).fetchone()
+        if row is None:
+            # _has_resource_role already guaranteed a plan exists; defensive only.
+            raise WorkflowError("an experiment plan resource must be synced before design review")
+        plan_path = self.store.repo_root / row["path"]
+        try:
+            plan_text = plan_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkflowError(
+                f"plan resource {row['path']!r} could not be read for design review: {exc}"
+            ) from exc
+        missing = plan_sections_missing(plan_text)
+        if missing:
+            raise WorkflowError(
+                "experiment plan is missing required sections before design review: "
+                + ", ".join(missing)
+                + ". Fill in the plan template's required spine — Summary; "
+                "Objective & hypothesis; Evaluation — see "
+                "skills/research-workflow/plan-template.md."
+            )
 
     def _has_passing_review(self, *, conn, experiment_id: str, role: str) -> bool:
         snapshot_id = self._target_snapshot_id(conn=conn, experiment_id=experiment_id)

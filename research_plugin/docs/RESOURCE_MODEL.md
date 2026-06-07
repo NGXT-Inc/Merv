@@ -124,10 +124,10 @@ The MCP server should expose resource operations that are intentionally boring:
 - `resource.observe_file(project_id, path)`
 - `resource.sync_changed_files(project_id, paths?)`
 - `resource.associate(project_id, resource_id, target_type, target_id, role)`
+- `resource.delete(project_id, resource_id)`
 - `resource.list(project_id, filters?)`
 - `resource.resolve(project_id, resource_id)`
 - `resource.history(project_id, resource_id)`
-- `resource.mark_role(project_id, resource_id, role)`
 
 Every resource operation is project-scoped. The server must reject missing
 `project_id` rather than guessing an active project.
@@ -152,6 +152,8 @@ preserves append-only history.
 - moving a file is a resource path update, not a new artifact lineage system
 - deleting a file does not delete the resource memory; it marks the resource
   missing until restored or archived
+- deleting a resource removes it from active project tracking and associations,
+  but keeps observed version rows for audit/history
 - local files may exist without being resources
 - resources may point to missing local files, but MCP must report them as missing
   in status responses

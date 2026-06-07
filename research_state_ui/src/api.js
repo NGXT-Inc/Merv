@@ -87,6 +87,10 @@ export const api = {
       method: 'POST',
       body: { target_type, target_id, role },
     }),
+  deleteResource: (pid, rid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}`, {
+      method: 'DELETE',
+    }),
   getResource: (pid, rid) => request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}`),
   getResourceContent: (pid, rid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/content`),

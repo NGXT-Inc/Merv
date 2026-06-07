@@ -16,13 +16,23 @@ provided by MCP. Submit the review directly to MCP if the tool is available.
 
 ## Check
 
-- Is the tested claim explicit and scoped?
-- Does the design actually test the claim?
-- Are dataset/input, method, metric, baseline, and success criteria defined?
-- Are expected output files listed as repo-file resources?
-- Are failure modes and confounders stated?
-- Is the run small and concrete enough to execute?
-- Would a successful result justify the proposed conclusion?
+The plan follows a required spine — **Summary**, **Objective & hypothesis**,
+**Evaluation** — plus recommended **Method**, **Outputs**, and **Risks &
+confounders**. The spine's presence is lint-enforced; your job is whether it is
+*sufficient*:
+
+- **Summary**: does it convey, in plain language, what the experiment does and why?
+- **Objective & hypothesis**: is the tested claim explicit and scoped, the
+  hypothesis and its direction clear, and the motivation real?
+- **Evaluation**: are the metric(s), baseline/comparison, **decision rule**
+  (which result supports vs. weakens the claim), success threshold, and
+  invalidation conditions defined and appropriate? A vague or missing decision
+  rule is a `needs_changes`.
+- **Method**: is the procedure concrete, small enough to execute, and does it
+  actually test the claim?
+- **Outputs**: are the expected result files named so they can be synced later?
+- **Risks & confounders**: are the failure modes and confounders stated?
+- Would a result that meets the Evaluation justify the proposed conclusion?
 
 ## Verdicts
 

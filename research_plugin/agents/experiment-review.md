@@ -27,12 +27,19 @@ tool.
 
 ## Check
 
-- Did the executed work match the approved design?
-- Are result files present and synced as resources?
-- Were metrics computed on the right data and population?
+Grade the attempt against the approved plan — especially its **Evaluation**
+section, which is the pre-registered contract for judging success:
+
+- Did the executed work match the approved **Method**?
+- Are the result files named in **Outputs** present and synced as resources?
+- Were the metrics named in **Evaluation** computed on the right data and
+  population, against the stated baseline?
+- Apply the plan's **decision rule** and **success threshold** to the observed
+  results: does the conclusion follow from them, or does it move the goalposts
+  (reach beyond, or quietly ignore, the pre-registered rule)?
+- Did any **Invalidation** condition from the plan actually occur?
 - Is there leakage, invalid normalization, missing baseline, or cherry-picking?
 - Are failed or partial runs disclosed?
-- Does the conclusion follow from the observed results?
 - Should the next attempt reuse the design, revise execution, revise metric, or
   abandon the claim direction?
 

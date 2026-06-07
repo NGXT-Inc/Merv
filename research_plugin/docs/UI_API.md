@@ -317,6 +317,7 @@ GET /api/projects/{project_id}/resources/{resource_id}/content
 GET /api/projects/{project_id}/resources/{resource_id}/file
 POST /api/projects/{project_id}/resources
 POST /api/projects/{project_id}/resources/{resource_id}/associate
+DELETE /api/projects/{project_id}/resources/{resource_id}
 ```
 
 Register payload:
@@ -343,6 +344,21 @@ Experiment resource associations are attempt-scoped by the backend and include
 the exact `version_id` associated to that attempt. `/content` and `/file` read
 the current live file. Historical version content is not served by the backend —
 `history` returns version metadata (sha256, size, mtime, content_type) only.
+Deleting a resource removes it from active lists and workflow associations, but
+keeps observed version metadata; registering the same path again revives the
+resource.
+
+## Compute Availability
+
+```http
+GET /api/compute/lambda/available-gpus
+GET /api/compute/lambda/available-gpus?region=us-west-1&gpu=H100&min_gpus=8
+```
+
+Returns Lambda Labs instance types with current regional capacity, normalized
+for choosing a region and GPU before launching a VM. This endpoint does not
+launch, reserve, or mutate compute resources. It requires
+`RESEARCH_PLUGIN_LAMBDA_API_KEY`, `LAMBDA_LABS_API_KEY`, or `LAMBDA_API_KEY`.
 
 ## Reviews
 
@@ -411,15 +427,33 @@ A sandbox row looks like:
   "workdir": "/workspace/repo",
   "sandbox_data_dir": "/workspace/sandbox_data",
   "volume_name": "research-plugin-proj_...",
+  "dashboards": {
+    "mlflow": "https://...modal.host",
+    "tensorboard": "https://...modal.host"
+  },
   "expires_at": "2026-06-01T18:00:00Z"
 }
 ```
+
+`dashboards` is a `name → public HTTPS URL` map for the in-sandbox
+observability servers (MLflow on port 5000, TensorBoard on 6006) exposed
+through Modal encrypted tunnels. The map is always present; expect an empty
+object when the backend exposed no dashboards (older rows, fake test backend,
+a CPU-only path that didn't request them). Render one tab per non-empty entry
+as an `<iframe>`. The URLs are public-but-unguessable; treat them as
+secret-by-obscurity for now. If the sandbox's tunnels relocate, the row updates
+on the next `sandbox.get` so a stale iframe is at worst one poll behind.
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the experiment's
 sandbox. The sync endpoint commits mounted repo writes from the live sandbox and
 pulls them into the local repo before resource registration. The release endpoint
 terminates the sandbox and returns the updated row.
+
+When `RESEARCH_PLUGIN_EXECUTION_BACKEND=lambda_labs`, sandbox procurement
+launches a Lambda Labs VM with SSH and the baseline agent tooling installed via
+launch `user_data`. Lambda file sync is not implemented yet, so `sandbox.sync`
+returns an unsupported-backend error for that backend.
 
 The metrics endpoint returns live in-container usage, sampled on demand inside
 the sandbox (CPU/RAM via cgroups, GPU via `nvidia-smi`). It is best-effort:

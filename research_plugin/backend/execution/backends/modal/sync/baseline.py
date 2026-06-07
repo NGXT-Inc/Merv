@@ -183,6 +183,34 @@ class BaselineStore:
         finally:
             conn.close()
 
+    def totals(self, *, project_id: str) -> dict[str, int]:
+        """Aggregate size of the in-sync ('clean') tracked files for a project.
+
+        `local_bytes` and `remote_bytes` are equal once a path has converged;
+        they differ only for paths recorded clean on just one side. Conflict
+        rows are excluded — they are not agreed state. Returns zeros for an
+        unknown or empty project."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS files,
+                  COALESCE(SUM(local_size), 0) AS local_bytes,
+                  COALESCE(SUM(remote_size), 0) AS remote_bytes
+                FROM sync_baseline
+                WHERE project_id = ? AND state = 'clean'
+                """,
+                (project_id,),
+            ).fetchone()
+            return {
+                "files": int(row["files"] or 0),
+                "local_bytes": int(row["local_bytes"] or 0),
+                "remote_bytes": int(row["remote_bytes"] or 0),
+            }
+        finally:
+            conn.close()
+
     def conflict_paths(self, *, project_id: str) -> set[str]:
         conn = self._connect()
         try:

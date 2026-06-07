@@ -14,6 +14,7 @@ from .utils import ValidationError as ToolValidationError
 from .execution import SandboxBackend, build_sandbox_backend
 from .services import (
     ClaimService,
+    ComputeService,
     ExperimentService,
     PermissionService,
     ProjectService,
@@ -61,6 +62,7 @@ class ResearchPluginApp:
         repo_root: Path,
         db_path: Path,
         execution_backend: SandboxBackend | None = None,
+        compute_service: ComputeService | None = None,
     ) -> None:
         self.store = StateStore(db_path=db_path, repo_root=repo_root)
         self.activity = ActivityLogger(repo_root=self.store.repo_root)
@@ -71,6 +73,7 @@ class ResearchPluginApp:
         )
         self.permissions = PermissionService()
         self.projects = ProjectService(store=self.store)
+        self.compute = compute_service or ComputeService()
         self.claims = ClaimService(store=self.store)
         self.experiments = ExperimentService(store=self.store)
         self.resources = ResourceService(
@@ -134,6 +137,7 @@ class ResearchPluginApp:
             "resource.observe_file": ("Observe one repo-relative resource file without changing kind metadata.", self.resources.observe_file),
             "resource.sync_changed_files": ("Register or observe changed repo-relative files.", self.resources.sync_changed_files),
             "resource.associate": ("Associate a resource to a claim, experiment, review, or attempt.", self.resources.associate),
+            "resource.delete": ("Delete a resource from active project tracking while preserving observed version history.", self.resources.delete),
             "resource.list": ("List registered resources.", self.resources.list_resources),
             "resource.resolve": ("Resolve one registered resource.", self.resources.resolve),
             "resource.history": ("List immutable observed versions for a resource.", self.resources.history),

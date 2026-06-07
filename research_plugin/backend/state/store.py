@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS resources (
   observed_at TEXT NOT NULL,
   git_commit TEXT,
   missing INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL DEFAULT 'codex',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -179,6 +180,11 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   workdir TEXT NOT NULL DEFAULT '',
   sandbox_data_dir TEXT NOT NULL DEFAULT '',
   volume_name TEXT NOT NULL DEFAULT '',
+  -- Observability dashboards exposed inside the sandbox (MLflow at 5000,
+  -- TensorBoard at 6006), surfaced to the user as HTTPS URLs from the Modal
+  -- encrypted tunnels. JSON object keyed by dashboard name. Empty '{}' when
+  -- no dashboards were exposed (e.g. the fake backend in tests).
+  dashboards_json TEXT NOT NULL DEFAULT '{}',
   sandbox_name TEXT NOT NULL DEFAULT '',
   phase TEXT NOT NULL DEFAULT '',
   detail TEXT NOT NULL DEFAULT '',
@@ -215,6 +221,7 @@ CREATE TABLE resources_migrate (
   observed_at TEXT NOT NULL,
   git_commit TEXT,
   missing INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL DEFAULT 'codex',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -301,6 +308,11 @@ class StateStore:
             table="experiments",
             columns={"conclusion": "TEXT NOT NULL DEFAULT ''"},
         )
+        self._ensure_columns(
+            conn=conn,
+            table="resources",
+            columns={"deleted": "INTEGER NOT NULL DEFAULT 0"},
+        )
         # Async provisioning (June 2026): sandboxes gained a provisioning/failed
         # lifecycle with progress + error fields. Older DBs predate these columns.
         self._ensure_columns(
@@ -313,6 +325,11 @@ class StateStore:
                 "error": "TEXT NOT NULL DEFAULT ''",
                 "provision_started_at": "TEXT",
                 "sandbox_data_dir": "TEXT NOT NULL DEFAULT ''",
+                # Phase 1 observability dashboards: MLflow + TensorBoard URLs
+                # surfaced from the in-sandbox servers through Modal encrypted
+                # tunnels. JSON object keyed by dashboard name; '{}' on older
+                # rows and any sandbox where no tunnels were exposed.
+                "dashboards_json": "TEXT NOT NULL DEFAULT '{}'",
             },
         )
         # The shadow-git unplug (May 2026) dropped these columns from the
@@ -390,12 +407,12 @@ class StateStore:
                     INSERT INTO resources_migrate (
                       id, project_id, path, kind, title, current_version_id,
                       version_token, mtime_ns, size_bytes, observed_at, git_commit,
-                      missing, created_by, created_at, updated_at
+                      missing, deleted, created_by, created_at, updated_at
                     )
                     SELECT
                       id, project_id, path, kind, title, current_version_id,
                       version_token, mtime_ns, size_bytes, observed_at, git_commit,
-                      missing, created_by, created_at, updated_at
+                      missing, 0, created_by, created_at, updated_at
                     FROM resources
                     """
                 )

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useProjectStore, selectResources, selectExperiments } from '../store/useProjectStore';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
@@ -10,6 +10,7 @@ const ROLES = ['plan', 'code', 'config', 'input', 'result', 'note', 'model'];
 
 export default function Resources() {
   const { resourceId } = useParams();
+  const navigate = useNavigate();
   const projectId = useProjectStore(s => s.projectId);
   const refreshHome = useProjectStore(s => s.refreshHome);
   const resources = useProjectStore(selectResources);
@@ -30,6 +31,10 @@ export default function Resources() {
           resource={selected}
           experiments={experiments}
           onAssociated={refreshHome}
+          onDeleted={async () => {
+            await refreshHome();
+            navigate('/resources');
+          }}
         />
       ) : (
         <div className="page-stage--explorer-empty">
@@ -81,17 +86,34 @@ export default function Resources() {
   );
 }
 
-function PreviewPanel({ projectId, resource, experiments, onAssociated }) {
+function PreviewPanel({ projectId, resource, experiments, onAssociated, onDeleted }) {
   const [associating, setAssociating] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
   // Version selection: null = current (live file), else a specific version id.
   const [viewingVersionId, setViewingVersionId] = useState(null);
 
   useEffect(() => {
     setAssociating(false);
     setDetailsOpen(false);
+    setDeleteBusy(false);
+    setDeleteError(null);
     setViewingVersionId(null);
   }, [resource.id]);
+
+  async function deleteResource() {
+    if (!window.confirm(`Delete resource registration for ${resource.path}?`)) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await api.deleteResource(projectId, resource.id);
+      await onDeleted();
+    } catch (err) {
+      setDeleteError(err.message);
+      setDeleteBusy(false);
+    }
+  }
 
   return (
     <div className="file-view">
@@ -133,7 +155,16 @@ function PreviewPanel({ projectId, resource, experiments, onAssociated }) {
               >
                 Open raw
               </a>
+              <button
+                type="button"
+                className="btn btn--sm btn--danger"
+                disabled={deleteBusy}
+                onClick={deleteResource}
+              >
+                {deleteBusy ? 'Deleting…' : 'Delete'}
+              </button>
             </div>
+            {deleteError && <div className="error-message">{deleteError}</div>}
             {associating && (
               <div className="file-strip-associate">
                 <AssociateForm

@@ -41,6 +41,10 @@ class FakeSandboxBackend:
         # Live SSH endpoint per sandbox id; move_endpoint() simulates a tunnel
         # that Modal relocated so refresh_ssh_endpoint() can be exercised.
         self.endpoints: dict[str, tuple[str, int]] = {}
+        # Observability dashboard URLs per sandbox id, mirroring Modal's
+        # encrypted-tunnel surface. Empty by default; tests opt in by setting
+        # the entry or calling move_dashboards() to simulate a relocation.
+        self.dashboards: dict[str, dict[str, str]] = {}
         self.phases: list[tuple[str, str]] = []
         self.healthy = True
         # async-path knobs
@@ -87,6 +91,16 @@ class FakeSandboxBackend:
             self.terminate(sandbox_id=sandbox_id)
             raise
         host, port = self.endpoints[sandbox_id]
+        # Default fake-Modal dashboard URLs so the SandboxService persistence +
+        # serializer path is exercised. A test wanting "no dashboards" can clear
+        # ``self.dashboards[sandbox_id]``.
+        self.dashboards.setdefault(
+            sandbox_id,
+            {
+                "mlflow": f"https://mlflow-{sandbox_id}.modal.test",
+                "tensorboard": f"https://tensorboard-{sandbox_id}.modal.test",
+            },
+        )
         return ProvisionedSandbox(
             sandbox_id=sandbox_id,
             ssh_host=host,
@@ -96,12 +110,18 @@ class FakeSandboxBackend:
             volume_name=f"research-plugin-{request.project_id}",
             sandbox_data_dir="/workspace/sandbox_data",
             reused=False,
+            dashboards=dict(self.dashboards[sandbox_id]),
         )
 
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
         if not self.alive.get(sandbox_id):
             return None
         return self.endpoints.get(sandbox_id)
+
+    def dashboard_urls(self, *, sandbox_id: str) -> dict[str, str]:
+        if not self.alive.get(sandbox_id):
+            return {}
+        return dict(self.dashboards.get(sandbox_id, {}))
 
     def find_sandbox_id(self, *, experiment_id: str) -> str | None:
         sandbox_id = self.by_experiment.get(experiment_id)
@@ -179,6 +199,10 @@ class FakeSandboxBackend:
     def move_endpoint(self, *, sandbox_id: str, host: str, port: int) -> None:
         """Simulate Modal relocating a live sandbox's SSH tunnel."""
         self.endpoints[sandbox_id] = (host, port)
+
+    def move_dashboards(self, *, sandbox_id: str, urls: dict[str, str]) -> None:
+        """Simulate Modal relocating a live sandbox's encrypted dashboard tunnels."""
+        self.dashboards[sandbox_id] = dict(urls)
 
     def append_transcript(self, *, experiment_id: str, text: str) -> None:
         self.transcripts[experiment_id] = self.transcripts.get(experiment_id, "") + text

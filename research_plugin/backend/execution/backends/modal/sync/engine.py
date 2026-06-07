@@ -47,10 +47,17 @@ from .baseline import BaselineStore
 from .scanner import local_scan, remote_scan
 from .differ import three_way_diff
 from .lock import InterProcessSyncLock
-from .types import SyncResult
+from .types import SyncPlan, SyncResult
 
 
 VOLUME_REPO_DIR = ""  # The volume IS the repo; no internal prefix.
+
+# Cap on how many per-file entries we embed in a `modal.sync.pass` activity
+# event. The activity log is tail-read and the UI polls it every few seconds, so
+# the payload must stay bounded. The details modal shows the largest transfers
+# first and notes when the list was truncated; the aggregate counts/bytes in the
+# same event are always exact regardless of this cap.
+MAX_PASS_FILE_DETAILS = 80
 
 ActivityHook = Callable[[str, dict[str, Any]], None]
 SyncExclusionProvider = Callable[[str], SyncExclusionPolicy]
@@ -321,6 +328,11 @@ class SyncEngine:
             duration_ms=duration_ms,
             skipped_conflicts=tuple(sorted(conflict_paths)),
         )
+        file_details, files_total = _pass_file_details(plan, cap=MAX_PASS_FILE_DETAILS)
+        # Whole-project size after this pass's baseline writes (the reconciled,
+        # in-sync state — the pre-apply scans are stale once we apply). Lets the
+        # UI show "project: 2.3 GB" alongside the per-pass deltas.
+        totals = self.baseline.totals(project_id=project_id)
         self._emit(
             "modal.sync.pass",
             {
@@ -331,6 +343,21 @@ class SyncEngine:
                 "deleted_local": result.deleted_local,
                 "conflicts": result.conflicts,
                 "duration_ms": result.duration_ms,
+                # Byte volume actually moved this pass (intent = plan; pushes and
+                # pulls apply wholesale). Lets the UI show "1.2 MB up" not just "↑3".
+                "bytes_pushed": sum(fingerprint.size_bytes for fingerprint in plan.push),
+                "bytes_pulled": sum(fingerprint.size_bytes for fingerprint in plan.pull),
+                # Per-file breakdown for the details modal. Capped (largest first);
+                # `files_total`/`files_truncated` report the full extent.
+                "files": file_details,
+                "files_total": files_total,
+                "files_truncated": files_total > len(file_details),
+                # Whole-project totals over in-sync files (conflicts excluded).
+                # `total_bytes` is the local size (the project as on disk);
+                # `total_remote_bytes` is the Volume size — equal once converged.
+                "total_files": totals["files"],
+                "total_bytes": totals["local_bytes"],
+                "total_remote_bytes": totals["remote_bytes"],
             },
         )
         return result
@@ -380,6 +407,28 @@ def _with_coalesced(result: SyncResult) -> SyncResult:
         skipped_busy=result.skipped_busy,
         coalesced=True,
     )
+
+
+def _pass_file_details(plan: SyncPlan, *, cap: int) -> tuple[list[dict[str, Any]], int]:
+    """Per-file breakdown of a sync plan for UI display.
+
+    Returns ``(capped_entries, total_count)``. Entries are sorted largest-first
+    so a truncated sample still surfaces the heaviest transfers; deletions (which
+    carry no size) sort last. ``dir`` is one of push | pull | del_remote |
+    del_local.
+    """
+    entries: list[dict[str, Any]] = []
+    for fingerprint in plan.push:
+        entries.append({"path": fingerprint.path, "dir": "push", "size": fingerprint.size_bytes})
+    for fingerprint in plan.pull:
+        entries.append({"path": fingerprint.path, "dir": "pull", "size": fingerprint.size_bytes})
+    for path in plan.delete_remote:
+        entries.append({"path": path, "dir": "del_remote", "size": 0})
+    for path in plan.delete_local:
+        entries.append({"path": path, "dir": "del_local", "size": 0})
+    total = len(entries)
+    entries.sort(key=lambda entry: (-int(entry["size"]), entry["path"]))
+    return entries[:cap], total
 
 
 def _safe_name(value: str, *, default: str) -> str:

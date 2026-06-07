@@ -102,9 +102,10 @@ class StoreMigrationTest(unittest.TestCase):
             uniques = self._unique_index_columns(conn)
             self.assertIn(["project_id", "path"], uniques)
             self.assertNotIn(["path"], uniques)
-            row = conn.execute("SELECT id, project_id, path FROM resources").fetchone()
+            row = conn.execute("SELECT id, project_id, path, deleted FROM resources").fetchone()
             self.assertEqual(row["id"], "res_old")
             self.assertEqual(row["path"], "shared.md")
+            self.assertEqual(row["deleted"], 0)
         finally:
             conn.close()
 

@@ -11,8 +11,8 @@ commands over SSH itself — the backend never wraps or queues commands.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Protocol
+from dataclasses import dataclass, field
+from typing import Callable, Mapping, Protocol
 
 
 SANDBOX_STATES = ("provisioning", "running", "terminated", "failed", "unknown")
@@ -52,6 +52,10 @@ class ProvisionedSandbox:
     """SSH connection facts for a live sandbox.
 
     Timing/persistence (expires_at, key_path, …) live in the registry, not here.
+    `dashboards` is a name → public URL map for in-sandbox observability servers
+    (MLflow at 5000, TensorBoard at 6006) exposed via Modal encrypted tunnels.
+    Empty for backends that don't expose dashboards. The map is immutable so the
+    dataclass stays hashable.
     """
 
     sandbox_id: str
@@ -62,6 +66,7 @@ class ProvisionedSandbox:
     volume_name: str
     sandbox_data_dir: str = ""
     reused: bool = False
+    dashboards: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

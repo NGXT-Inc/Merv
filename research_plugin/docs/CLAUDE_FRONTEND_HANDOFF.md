@@ -109,6 +109,11 @@ Minimum useful screens:
    - show the per-experiment sandbox status + SSH details (read-only)
    - show the live terminal transcript for the experiment's sandbox
    - expose release for a running sandbox
+   - render the **MLflow** and **TensorBoard** dashboards from the row's
+     `dashboards` map (HTTPS URLs from Modal encrypted tunnels). One `<iframe>`
+     tab per non-empty entry, sitting next to "Terminal." The URLs change if a
+     tunnel relocates — re-read the row on the existing poll cadence rather
+     than caching them in component state.
 
 ## Important UX Rules
 

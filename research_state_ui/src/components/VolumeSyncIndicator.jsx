@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useProjectStore } from '../store/useProjectStore';
+import VolumeSyncDetailsModal from './VolumeSyncDetailsModal';
 
 /**
  * VolumeSyncIndicator — ambient status of the backend's repo ↔ Modal Volume sync.
@@ -34,6 +35,7 @@ export default function VolumeSyncIndicator({ projectId }) {
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [excludeNames, setExcludeNames] = useState('');
   const [excludePrefixes, setExcludePrefixes] = useState('');
   const [excludeSuffixes, setExcludeSuffixes] = useState('');
@@ -142,21 +144,27 @@ export default function VolumeSyncIndicator({ projectId }) {
   // healthy; the active-job skip event is the more reliable signal.
   let dotClass = 'vsync-dot vsync-dot--idle';
   let statusLabel = 'idle';
+  let statusKind = 'idle';
   if (isErrorState) {
     dotClass = 'vsync-dot vsync-dot--error';
     statusLabel = 'error';
+    statusKind = 'error';
   } else if (conflicts > 0) {
     dotClass = 'vsync-dot vsync-dot--conflict';
     statusLabel = `${conflicts} conflict${conflicts === 1 ? '' : 's'}`;
+    statusKind = 'conflict';
   } else if (isPausedByJob) {
     dotClass = 'vsync-dot vsync-dot--paused';
     statusLabel = 'paused · active job';
+    statusKind = 'paused';
   } else if (!lastPass) {
     dotClass = 'vsync-dot vsync-dot--pending';
     statusLabel = lastVolumeReady ? 'first sync pending' : 'awaiting volume';
+    statusKind = 'pending';
   } else if (probablyRunning) {
     dotClass = 'vsync-dot vsync-dot--active';
     statusLabel = 'syncing…';
+    statusKind = 'active';
   }
 
   async function saveSettings(e, { reset = false } = {}) {
@@ -187,9 +195,16 @@ export default function VolumeSyncIndicator({ projectId }) {
   return (
     <div className="vsync" aria-label="Volume sync status">
       <div className="vsync-row vsync-row--head">
-        <span className={dotClass} aria-hidden="true" />
-        <span className="vsync-title">volume sync</span>
-        <span className="vsync-status">{statusLabel}</span>
+        <button
+          type="button"
+          className="vsync-open-btn"
+          onClick={() => setDetailsOpen(true)}
+          title="View sync details"
+        >
+          <span className={dotClass} aria-hidden="true" />
+          <span className="vsync-title">volume sync</span>
+          <span className="vsync-status">{statusLabel}</span>
+        </button>
         {project && (
           <button
             type="button"
@@ -303,6 +318,22 @@ export default function VolumeSyncIndicator({ projectId }) {
           </div>
         </form>
       )}
+      <VolumeSyncDetailsModal
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        events={events}
+        project={project}
+        meta={{
+          statusKind,
+          statusLabel,
+          intervalSec: POLL_INTERVAL_SEC,
+          nextInSec,
+          probablyRunning,
+          sinceLastMs,
+          volumeName: lastVolumeReady?.volume_name || '',
+          exclusionsSource: project?.sync_exclusions_source || 'default',
+        }}
+      />
     </div>
   );
 }

@@ -406,6 +406,18 @@ its output to `.research_plugin_sessions/<experiment>/transcript.log` on the
 mounted Volume. `sandbox.terminal` reads it (live from the sandbox, falling back
 to the committed Volume); the UI renders it as a per-experiment terminal window.
 
+For training runs the sandbox also boots an **MLflow tracking server** (port
+5000) and a **TensorBoard** (port 6006) backed by the same Volume-mounted
+sessions directory, exposed to the user as HTTPS URLs through Modal encrypted
+tunnels. The sandbox row carries them as
+`dashboards: {mlflow, tensorboard}` and the UI renders one iframe tab per
+non-empty entry. `MLFLOW_TRACKING_URI=http://localhost:5000` is exported into
+every SSH command, so Hugging Face `Trainer` and PyTorch Lightning's
+`MLFlowLogger` auto-detect the server; for plain PyTorch the agent calls
+`mlflow.autolog()` once. Stores live under
+`.research_plugin_sessions/<experiment>/{mlflow.db, mlflow-artifacts, tb}` so
+runs accumulate across re-acquires of the same experiment.
+
 The Modal backend mirrors each project's local repo into a per-project Modal
 Volume v2 (`research-plugin-<project_id>`) and mounts it writable at
 `/workspace/repo`. A `SyncEngine` keeps the Volume and the local repo in
@@ -447,6 +459,6 @@ Implemented MCP tools:
 - `project.current`, `project.create`, `project.update`, `project.get`, `project.get_settings`, `project.update_settings`
 - `claim.create`, `claim.list`
 - `experiment.create`, `experiment.list`, `experiment.get_state`, `experiment.transition`
-- `resource.register_file`, `resource.observe_file`, `resource.sync_changed_files`, `resource.associate`, `resource.list`, `resource.resolve`, `resource.history`
+- `resource.register_file`, `resource.observe_file`, `resource.sync_changed_files`, `resource.associate`, `resource.delete`, `resource.list`, `resource.resolve`, `resource.history`
 - `review.request`, `review.start`, `review.submit`, `review.status`
 - `sandbox.request`, `sandbox.get`, `sandbox.sync`, `sandbox.list`, `sandbox.release`, `sandbox.terminal`, `sandbox.health`

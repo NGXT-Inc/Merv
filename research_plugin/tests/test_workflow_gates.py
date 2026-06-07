@@ -5,7 +5,19 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
+from backend.services.experiments import plan_sections_missing
 from backend.utils import ValidationError, WorkflowError
+
+# A plan that satisfies the required spine (Summary; Objective & hypothesis;
+# Evaluation), so submit_design's section lint passes.
+VALID_PLAN = (
+    "## Summary\n"
+    "A toy experiment used by the gate tests.\n\n"
+    "## Objective & hypothesis\n"
+    "Test that the threshold rule beats the majority baseline.\n\n"
+    "## Evaluation\n"
+    "Metric: accuracy vs the majority-class baseline; success if accuracy > 0.6.\n"
+)
 
 
 class WorkflowGateTest(unittest.TestCase):
@@ -56,7 +68,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def _drive_to_complete(self, *, conclusion: str = "") -> str:
         exp_id = self.call("experiment.create", project_id=self.project_id, intent="Full loop.")["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body="the plan\n")
+        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
@@ -85,9 +97,45 @@ class WorkflowGateTest(unittest.TestCase):
             self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])["status"],
             "planned",
         )
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body="plan\n")
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
+
+    def test_submit_design_requires_plan_spine_sections(self) -> None:
+        exp = self.call("experiment.create", project_id=self.project_id, intent="Thin plan.")
+        # A plan resource exists, but the file lacks the required spine sections.
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body="just some loose notes\n")
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        self.assertIn("missing required sections", str(ctx.exception))
+        self.assertEqual(
+            self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])["status"],
+            "planned",
+        )
+        # Filling in the spine unblocks it. The lint reads the live file, so just
+        # rewriting it (no re-register) is enough to clear the gate.
+        (self.repo / "plan.md").write_text(VALID_PLAN)
+        out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        self.assertEqual(out["status"], "design_review")
+
+    def test_plan_sections_missing_detects_empty_and_absent(self) -> None:
+        self.assertEqual(plan_sections_missing(VALID_PLAN), [])
+        # Heading present but body is only template guidance (HTML comment) ⇒ empty.
+        only_comments = (
+            "## Summary\n<!-- fill me in -->\n\n"
+            "## Objective & hypothesis\nReal objective.\n\n"
+            "## Evaluation\nReal evaluation.\n"
+        )
+        self.assertEqual(plan_sections_missing(only_comments), ["Summary"])
+        # Absent headings are reported by canonical name; '&'/'and' both match.
+        self.assertEqual(
+            plan_sections_missing("## Summary\nx\n\n## Objective and hypothesis\ny\n"),
+            ["Evaluation"],
+        )
+        self.assertEqual(
+            set(plan_sections_missing("# Title only\n")),
+            {"Summary", "Objective & hypothesis", "Evaluation"},
+        )
 
     # ---- terminal transitions ----
 

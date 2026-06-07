@@ -87,15 +87,15 @@ class ClaimUpdateInput(ProjectScopedInput):
 
 
 class ExperimentCreateInput(ProjectScopedInput):
-    intent: str = Field(default="", description="Preferred durable experiment summary or question.")
+    intent: str = Field(default="", description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.")
     tested_claim_ids: list[str] | str | None = Field(default_factory=list)
     claim_id: str | None = Field(default=None, description="Alias for a single tested claim id.")
     claim_ids: list[str] | str | None = Field(default=None, description="Alias for tested_claim_ids.")
-    title: str = Field(default="", description="Optional; folded into intent.")
-    hypothesis: str = Field(default="", description="Optional; folded into intent.")
-    design: str = Field(default="", description="Optional; folded into intent.")
-    success_criteria: str = Field(default="", description="Optional; folded into intent.")
-    risks: str = Field(default="", description="Optional; folded into intent.")
+    title: str = Field(default="", description="Deprecated; back-compat fallback for intent. Put design detail in plan.md.")
+    hypothesis: str = Field(default="", description="Deprecated; put the hypothesis in plan.md's 'Objective & hypothesis' section.")
+    design: str = Field(default="", description="Deprecated; put the method in plan.md's 'Method' section.")
+    success_criteria: str = Field(default="", description="Deprecated; put success criteria in plan.md's 'Evaluation' section.")
+    risks: str = Field(default="", description="Deprecated; put risks in plan.md's 'Risks & confounders' section.")
     status: Literal["planned"] = Field(default="planned", description="Create always starts planned.")
 
 
@@ -144,6 +144,10 @@ class ResourceAssociateInput(ProjectScopedInput):
         description="Resource association role. Use 'result' for experiment output files.",
         json_schema_extra={"enum": sorted(RESOURCE_ROLES)},
     )
+
+
+class ResourceDeleteInput(ProjectScopedInput):
+    resource_id: str
 
 
 class ResourceListInput(ProjectScopedInput):
@@ -251,6 +255,7 @@ TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
     "resource.observe_file": ResourceObserveFileInput,
     "resource.sync_changed_files": ResourceSyncChangedFilesInput,
     "resource.associate": ResourceAssociateInput,
+    "resource.delete": ResourceDeleteInput,
     "resource.list": ResourceListInput,
     "resource.resolve": ResourceResolveInput,
     "resource.history": ResourceHistoryInput,
