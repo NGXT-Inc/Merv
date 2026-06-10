@@ -19,6 +19,7 @@ import StatusPill from './StatusPill';
 export default function GateBanner({
   workflow,
   experimentStatus,
+  closedStatus = null,
   primaryAction = null,
   secondaryActions = [],
   onAction,
@@ -27,6 +28,32 @@ export default function GateBanner({
 }) {
   if (!workflow) return null;
   const { current_gate, next_action, blocked_actions = [], missing_evidence = [] } = workflow;
+
+  // Closed / terminal experiment: there is no gate and nothing the user can
+  // do. The backend still reports current_gate="terminal" plus an internal
+  // blocked entry (e.g. `mutate_experiment — experiment complete`). Rendering
+  // those raw — the bare word "terminal" next to a red "blocked:" line — reads
+  // like an error on a successful run, so render a calm closure note instead
+  // and skip the gate/next/blocked machinery entirely.
+  const closed = ['complete', 'failed', 'abandoned'].includes(closedStatus)
+    ? closedStatus
+    : (current_gate === 'terminal' ? 'closed' : null);
+  if (closed) {
+    const CLOSED = {
+      complete:  { cls: 'gate-banner--terminal', glyph: '✓', label: 'Experiment complete' },
+      failed:    { cls: 'gate-banner--failed',   glyph: '✕', label: 'Experiment failed' },
+      abandoned: { cls: 'gate-banner--failed',   glyph: '✕', label: 'Experiment abandoned' },
+      closed:    { cls: 'gate-banner--terminal', glyph: '✓', label: 'Experiment closed' },
+    }[closed];
+    return (
+      <div className={`gate-banner gate-banner--closed ${CLOSED.cls}`}>
+        <div className="gate-banner-body gate-banner-body--closed">
+          <span className="gate-closed-glyph" aria-hidden="true">{CLOSED.glyph}</span>
+          <span className="gate-banner-title">{CLOSED.label}</span>
+        </div>
+      </div>
+    );
+  }
 
   const isTerminal = experimentStatus === 'complete' || current_gate === 'terminal';
   const isFailed = experimentStatus === 'failed' || experimentStatus === 'abandoned';

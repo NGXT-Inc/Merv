@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useProjectStore, selectStats, selectResources, selectSandboxes } from '../store/useProjectStore';
+import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
 import ExperimentSyncIndicator from './ExperimentSyncIndicator';
@@ -15,7 +16,12 @@ function fmtSyncedAgo(ms) {
   return `${Math.floor(m / 60)}h ago`;
 }
 
+// Cycle order for the theme button: explicit choices first, then back to
+// following the OS.
+const NEXT_THEME_MODE = { light: 'dark', dark: 'system', system: 'light' };
+
 export default function Sidebar({ onRefresh }) {
+  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const home = useProjectStore(s => s.home);
   const stats = useProjectStore(selectStats);
   const lastSyncedAt = useProjectStore(s => s.lastSyncedAt);
@@ -139,7 +145,17 @@ export default function Sidebar({ onRefresh }) {
           <span className={dotClass} />
           <span>ui {syncLabel} · synced {fmtSyncedAgo(lastSyncedAt)}</span>
         </div>
-        <button className="btn btn--ghost btn--sm" onClick={onRefresh}>Refresh now</button>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button className="btn btn--ghost btn--sm" onClick={onRefresh}>Refresh now</button>
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => setThemeMode(NEXT_THEME_MODE[themeMode])}
+            title={`Theme follows ${themeMode === 'system' ? 'the OS' : 'your choice'} — click to switch to ${NEXT_THEME_MODE[themeMode]}`}
+          >
+            <span aria-hidden="true">{theme === 'dark' ? '◑' : '◐'}</span>
+            {themeMode === 'system' ? `auto · ${theme}` : themeMode}
+          </button>
+        </div>
         {lastSyncError && <div className="error-message" style={{ fontSize: 11 }}>{lastSyncError}</div>}
       </div>
     </aside>

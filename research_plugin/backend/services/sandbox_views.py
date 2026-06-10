@@ -98,10 +98,11 @@ def agent_view(
         view["detail"] = row.get("detail") or ""
         view["poll_after_seconds"] = POLL_AFTER_SECONDS
         view["hint"] = (
-            "Provisioning (a large first sync or cold start can take a few "
-            "minutes). Poll sandbox.get every ~10s until status is running, "
-            "then run commands with ssh.command. Do not re-call "
-            "sandbox.request to poll. "
+            "Provisioning. A fresh Lambda Labs VM commonly takes 5-15 minutes "
+            "to boot and bootstrap (a large first sync adds time). Poll "
+            "sandbox.get every 30-60 seconds until status is running, then "
+            "run commands with ssh.command. Do not re-call sandbox.request "
+            "to poll. "
             f"{credential_note}"
         )
     elif status == "failed":

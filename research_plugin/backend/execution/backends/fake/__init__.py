@@ -192,7 +192,15 @@ class FakeSandboxBackend:
             return text[-tail:]
         return text
 
-    def sample_metrics(self, *, sandbox_id: str) -> dict | None:
+    def sample_metrics(
+        self,
+        *,
+        sandbox_id: str,
+        ssh_host: str = "",  # noqa: ARG002
+        ssh_port: int = 0,  # noqa: ARG002
+        ssh_user: str = "",  # noqa: ARG002
+        key_path: str = "",  # noqa: ARG002
+    ) -> dict | None:
         if not self.alive.get(sandbox_id):
             return None
         return self.metrics.get(sandbox_id)

@@ -87,11 +87,13 @@ SSH. You run ordinary shell commands. The default provider is **Lambda Labs**
    - **Provisioning is best-effort-synchronous.** `request` returns SSH inline
      when the sandbox comes up quickly. If it can't finish in time (a large
      first sync or a cold GPU), it returns `status: "provisioning"` instead.
-     When that happens, **poll `sandbox.get` every ~10s** (`poll_after_seconds`)
-     until `status` is `"running"` (then use `ssh.command`) or `"failed"` (read
-     `error`, fix the cause, and call `sandbox.request` again). Do **not** spam
-     `sandbox.request` to poll, and do not treat `provisioning` as an error -
-     the sandbox is still coming up.
+     When that happens, **poll `sandbox.get` every 30-60 seconds**
+     (`poll_after_seconds`) until `status` is `"running"` (then use
+     `ssh.command`) or `"failed"` (read `error`, fix the cause, and call
+     `sandbox.request` again). A fresh Lambda Labs VM commonly takes **5-15
+     minutes** to boot and bootstrap. Do **not** spam `sandbox.request` to
+     poll, and do not treat `provisioning` as an error - the sandbox is
+     still coming up.
 2. When `status` is `"running"` the response includes `ssh.command` - a short
    dispatcher invocation like
    `.research_plugin/sbx <experiment_id>` that wraps all the SSH boilerplate

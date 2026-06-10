@@ -667,7 +667,7 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(result["status"], "provisioning")
-        self.assertEqual(result["poll_after_seconds"], 10)
+        self.assertEqual(result["poll_after_seconds"], 30)
         self.assertEqual(result["ssh"]["command"], "")
         # get keeps reporting provisioning while the job is gated.
         polled = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)

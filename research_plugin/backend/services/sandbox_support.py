@@ -49,8 +49,10 @@ DEFAULT_REQUEST_WAIT_SECONDS = 45.0
 # Backstop: a `provisioning` row this old whose job is no longer in this process
 # (daemon restart, or a wedged acquire) is reconciled to `failed`.
 DEFAULT_STALE_PROVISION_SECONDS = 15 * 60.0
-# Cadence hint handed to the agent while provisioning.
-POLL_AFTER_SECONDS = 10
+# Cadence hint handed to the agent while provisioning. Lambda VMs commonly
+# take 5-15 minutes to boot and bootstrap, so a tighter cadence just burns
+# calls without learning anything new.
+POLL_AFTER_SECONDS = 30
 # Live-usage samples are coalesced for this long so the fleet view and the
 # drill-in terminal (which both poll ~3s) don't double-exec into a sandbox.
 METRICS_CACHE_TTL_SECONDS = 2.0

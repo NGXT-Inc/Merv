@@ -198,6 +198,7 @@ export default function ExperimentDetail() {
         <GateBanner
           workflow={workflow}
           experimentStatus={null}
+          closedStatus={experiment.status}
           primaryAction={primary}
           secondaryActions={secondary}
           actionsBusy={busy}

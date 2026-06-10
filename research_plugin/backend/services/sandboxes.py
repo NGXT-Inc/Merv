@@ -511,10 +511,14 @@ class SandboxService:
         }
         if status not in ACTIVE_SANDBOX_STATUSES or not sandbox_id:
             return {**base, "available": False, "metrics": None}
-        metrics = self._sample_metrics_cached(sandbox_id=sandbox_id)
+        metrics = self._sample_metrics_cached(
+            experiment_id=experiment_id, sandbox_id=sandbox_id, row=row
+        )
         return {**base, "available": metrics is not None, "metrics": metrics, "sampled_at": now_iso()}
 
-    def _sample_metrics_cached(self, *, sandbox_id: str) -> dict[str, Any] | None:
+    def _sample_metrics_cached(
+        self, *, experiment_id: str, sandbox_id: str, row: dict[str, Any]
+    ) -> dict[str, Any] | None:
         sampler = getattr(self.backend, "sample_metrics", None)
         if not callable(sampler):
             return None
@@ -524,7 +528,15 @@ class SandboxService:
             if cached is not None and now - cached[0] < METRICS_CACHE_TTL_SECONDS:
                 return cached[1]
         try:
-            metrics = sampler(sandbox_id=sandbox_id)
+            metrics = sampler(
+                sandbox_id=sandbox_id,
+                # Stored endpoint + per-experiment key, for backends that sample
+                # over plain SSH (Lambda Labs). Modal ignores these.
+                ssh_host=str(row.get("ssh_host") or ""),
+                ssh_port=int(row.get("ssh_port") or 0),
+                ssh_user=str(row.get("ssh_user") or ""),
+                key_path=str(row.get("key_path") or self._key_path(experiment_id=experiment_id)),
+            )
         except Exception:  # noqa: BLE001 — metrics are best-effort
             metrics = None
         with self._metrics_lock:

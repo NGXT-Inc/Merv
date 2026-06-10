@@ -3,18 +3,22 @@ import { Link } from 'react-router-dom';
 import { useProjectStore, selectExperiments } from '../store/useProjectStore';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
-import StatusPill from '../components/StatusPill';
 import SandboxTerminal from '../components/SandboxTerminal';
 import { parseIntent } from '../utils/intent';
 
 const STATUS_TABS = ['all', 'running', 'provisioning', 'terminated'];
 
+// Column template (chevron · status · experiment · hardware · uptime · expires
+// · endpoint · links) lives in CSS as --sbxt-cols so the head and every row
+// share one source of truth and stay aligned.
+
 /**
- * Sandboxes index — one Modal sandbox per experiment.
+ * Sandboxes index — the compute fleet as an infra table.
  *
- * The agent procures sandboxes over MCP (sandbox.request) and runs commands on
- * them over SSH; this page makes the fleet visible: how many are running, and a
- * drill-in terminal for each one.
+ * One sandbox per experiment; the agent procures them over MCP and drives them
+ * over SSH. This page is the instance console: status, hardware, lifetime, and
+ * endpoint per row, with an expand-to-terminal drawer (the live terminal UI is
+ * unchanged — see SandboxTerminal).
  */
 export default function Sandboxes() {
   const projectId = useProjectStore(s => s.projectId);
@@ -59,14 +63,9 @@ export default function Sandboxes() {
     return map;
   }, [sandboxes]);
 
-  const runningCount = counts.running || 0;
-  const provisioningCount = counts.provisioning || 0;
-  const totalCount = counts.all || 0;
-
   const filtered = useMemo(() => {
     let list = sandboxes || [];
     if (filterStatus !== 'all') list = list.filter(s => s.status === filterStatus);
-    // running first, then provisioning, then most-recently-updated.
     const rank = (st) => (st === 'running' ? 0 : st === 'provisioning' ? 1 : 2);
     return list.slice().sort((a, b) => {
       const ar = rank(a.status);
@@ -78,37 +77,17 @@ export default function Sandboxes() {
 
   return (
     <div className="page-stage">
-      <header className="page-header page-header--lg">
+      <header className="page-header">
         <div className="page-eyebrow">Sandboxes</div>
-        <h1 className="page-title">Experiment sandboxes</h1>
-        <div className="sbx-fleet" aria-label="running sandbox count">
-          <span className={`sbx-fleet-dot${runningCount > 0 ? ' live' : ''}`} />
-          <span className="sbx-fleet-count tabular">{runningCount}</span>
-          <span className="sbx-fleet-label">running</span>
-          {provisioningCount > 0 && (
-            <>
-              <span className="sbx-fleet-sep">·</span>
-              <span className="sbx-fleet-total tabular">{provisioningCount}</span>
-              <span className="sbx-fleet-label">provisioning</span>
-            </>
-          )}
-          <span className="sbx-fleet-sep">·</span>
-          <span className="sbx-fleet-total tabular">{totalCount}</span>
-          <span className="sbx-fleet-label">total</span>
-        </div>
-        <p className="page-summary">
-          One Modal sandbox per experiment, procured by the agent and accessed over SSH.
-          Expand a sandbox to watch its live terminal.
-        </p>
-        <div className="cluster" style={{ marginTop: 14, gap: 8 }}>
-          <div className="tab-row">
-            {STATUS_TABS.map(s => (
-              <button key={s} className={`tab${filterStatus === s ? ' active' : ''}`} onClick={() => setFilterStatus(s)}>
-                {s}
-                <span className="tab-count">{counts[s] || 0}</span>
-              </button>
-            ))}
-          </div>
+        <h1 className="page-title">Compute fleet</h1>
+        <div className="tab-row" style={{ marginTop: 12 }}>
+          {STATUS_TABS.map(s => (
+            <button key={s} className={`tab${filterStatus === s ? ' active' : ''}`} onClick={() => setFilterStatus(s)}>
+              {s === 'running' && (counts.running || 0) > 0 && <span className="sbxt-tab-dot" />}
+              {s}
+              <span className="tab-count">{counts[s] || 0}</span>
+            </button>
+          ))}
         </div>
       </header>
 
@@ -120,24 +99,36 @@ export default function Sandboxes() {
         <div className="empty-state">
           <h2>No sandboxes</h2>
           <p>
-            {(sandboxes.length === 0)
-              ? 'The agent provisions a sandbox with sandbox.request once an experiment is ready_to_run.'
-              : 'Try a different status filter.'}
+            {sandboxes.length === 0
+              ? 'The agent provisions one with sandbox.request once an experiment is ready_to_run.'
+              : `No ${filterStatus} sandboxes.`}
           </p>
         </div>
       ) : (
-        <div className="stack">
-          {filtered.map((s) => (
-            <SandboxRow
-              key={s.experiment_id}
-              sandbox={s}
-              experiment={expById[s.experiment_id]}
-              projectId={projectId}
-              now={now}
-              open={expanded === s.experiment_id}
-              onToggle={() => setExpanded(expanded === s.experiment_id ? null : s.experiment_id)}
-            />
-          ))}
+        <div className="sbxt-scroll">
+          <div className="sbxt">
+            <div className="sbxt-head">
+              <span aria-hidden="true" />
+              <span className="sbxt-th">Status</span>
+              <span className="sbxt-th">Experiment</span>
+              <span className="sbxt-th">Hardware</span>
+              <span className="sbxt-th sbxt-th--r">Uptime</span>
+              <span className="sbxt-th sbxt-th--r">Expires</span>
+              <span className="sbxt-th">SSH endpoint</span>
+              <span className="sbxt-th sbxt-th--r">Links</span>
+            </div>
+            {filtered.map(s => (
+              <SandboxRow
+                key={s.experiment_id}
+                sandbox={s}
+                experiment={expById[s.experiment_id]}
+                projectId={projectId}
+                now={now}
+                open={expanded === s.experiment_id}
+                onToggle={() => setExpanded(expanded === s.experiment_id ? null : s.experiment_id)}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -148,38 +139,52 @@ function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
   const s = sandbox;
   const live = s.status === 'running';
   const title = experiment ? (parseIntent(experiment.intent).title || experiment.intent) : s.experiment_id;
-  const resources = [
-    s.gpu && `gpu ${s.gpu}`,
+  const hardware = [
+    s.gpu,
     s.cpu && `${s.cpu} cpu`,
     s.memory && `${Math.round(s.memory / 1024)} GiB`,
   ].filter(Boolean).join(' · ');
   const endpoint = s.ssh_host && s.ssh_port ? `${s.ssh_user || 'root'}@${s.ssh_host}:${s.ssh_port}` : null;
 
+  const expiresMs = live && s.expires_at ? Date.parse(s.expires_at) - now : null;
+  const expiresCls = expiresMs == null ? '' : expiresMs < 120000 ? ' sbxt-warn--hot' : expiresMs < 600000 ? ' sbxt-warn' : '';
+
+  const onKey = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+  };
+
   return (
-    <div className={`sbx-card${open ? ' sbx-card--open' : ''}`}>
-      <button type="button" className="sbx-card-head" onClick={onToggle} aria-expanded={open}>
-        <span className={`sbx-card-twist${open ? ' open' : ''}`} aria-hidden="true">▸</span>
-        <StatusPill value={s.status} />
-        {live && <span className="log-tail-live-dot" title="live" />}
-        <span className="sbx-card-title">{title}</span>
-        <span className="sbx-card-spacer" />
-        <span className="sbx-card-meta mono">
-          {resources && <span>{resources}</span>}
-          {live && s.requested_at && <span>· up {fmtSince(now, s.requested_at)}</span>}
-          {live && s.expires_at && <span>· expires {fmtUntil(now, s.expires_at)}</span>}
+    <div className={`sbxt-rowgroup${open ? ' open' : ''}`}>
+      <div
+        className="sbxt-row"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={onKey}
+      >
+        <span className={`sbxt-twist${open ? ' open' : ''}`} aria-hidden="true">▸</span>
+        <span className="sbxt-status">
+          <span className={`sbxt-dot sbxt-dot--${s.status}`} />
+          <span className="sbxt-status-label">{s.status}</span>
         </span>
-      </button>
-      <div className="sbx-card-sub">
-        <span className="mono">{s.sandbox_id || '—'}</span>
-        {endpoint && <><span className="sbx-fleet-sep">·</span><span className="mono">{endpoint}</span></>}
-        <span className="sbx-fleet-sep">·</span>
-        <Link to={`/experiments/${s.experiment_id}#execution`} className="sbx-card-link">open experiment</Link>
-        <span className="sbx-fleet-sep">·</span>
-        <ObjId id={s.experiment_id} />
-        <DashboardChips dashboards={s.dashboards} />
+        <span className="sbxt-exp">
+          <span className="sbxt-exp-title">{title}</span>
+          <span className="sbxt-exp-id"><ObjId id={s.experiment_id} /></span>
+        </span>
+        <span className="sbxt-hw mono" title={hardware}>{hardware || '—'}</span>
+        <span className="sbxt-num">{live && s.requested_at ? fmtDur(now - Date.parse(s.requested_at)) : '—'}</span>
+        <span className={`sbxt-num${expiresCls}`}>
+          {expiresMs == null ? '—' : expiresMs <= 0 ? 'soon' : fmtDur(expiresMs)}
+        </span>
+        <span className="sbxt-ep mono" title={endpoint || ''}>{endpoint || '—'}</span>
+        <span className="sbxt-links" onClick={(e) => e.stopPropagation()}>
+          <Link to={`/experiments/${s.experiment_id}#execution`} className="sbxt-link">open ↗</Link>
+          <DashboardChips dashboards={s.dashboards} />
+        </span>
       </div>
       {open && (
-        <div className="sbx-card-body">
+        <div className="sbxt-drawer">
           <SandboxTerminal projectId={projectId} experimentId={s.experiment_id} />
         </div>
       )}
@@ -187,12 +192,6 @@ function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
   );
 }
 
-/**
- * DashboardChips — tiny inline links into the in-sandbox MLflow / TensorBoard
- * dashboards on the fleet list. They open in a new tab; the same URLs render
- * as iframes inside SandboxTerminal when the card is expanded, so the chip
- * here is just a fast peek + bookmark surface.
- */
 function DashboardChips({ dashboards }) {
   if (!dashboards) return null;
   const entries = [
@@ -203,32 +202,19 @@ function DashboardChips({ dashboards }) {
   return (
     <>
       {entries.map((e) => (
-        <span key={e.key}>
-          <span className="sbx-fleet-sep">·</span>
-          <a
-            href={e.url}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="sbx-card-link"
-            title={`Open ${e.label} for this sandbox in a new tab`}
-          >
-            {e.label} ↗
-          </a>
-        </span>
+        <a
+          key={e.key}
+          href={e.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="sbxt-link sbxt-link--muted"
+          title={`Open ${e.label} for this sandbox in a new tab`}
+        >
+          {e.label} ↗
+        </a>
       ))}
     </>
   );
-}
-
-function fmtSince(now, iso) {
-  const ms = now - Date.parse(iso);
-  return fmtDur(ms);
-}
-
-function fmtUntil(now, iso) {
-  const ms = Date.parse(iso) - now;
-  if (ms <= 0) return 'soon';
-  return 'in ' + fmtDur(ms);
 }
 
 function fmtDur(ms) {

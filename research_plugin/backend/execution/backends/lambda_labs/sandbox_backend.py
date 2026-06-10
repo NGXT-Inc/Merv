@@ -21,6 +21,7 @@ from backend.execution.bootstrap_tools import (
     LAMBDA_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
 )
+from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
 from ...errors import BackendUnavailableError, BackendValidationError
 from ...types import (
     BackendCapabilities,
@@ -300,6 +301,47 @@ class LambdaLabsSandboxBackend:
                 f"transcript read over SSH failed (exit {result.returncode}): {detail}"
             )
         return result.stdout or ""
+
+    def sample_metrics(
+        self,
+        *,
+        sandbox_id: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Sample live VM usage (CPU/RAM/GPU) via an unrecorded SSH exec.
+
+        Runs the shared sampler script through the rec.sh transcript-read
+        bypass, so the ~3s UI poll never spams the experiment transcript. On a
+        dedicated VM the root cgroup / nvidia-smi probes gauge the whole
+        machine, which is the number the user wants. Returns a parsed gauge
+        dict, or None when the VM is unreachable or the sampler produced
+        nothing usable. Never raises — the registry treats None as "metrics
+        unavailable" and the UI hides the strip.
+        """
+        if not sandbox_id or not ssh_host or not key_path:
+            return None
+        remote_command = f"{TRANSCRIPT_READ_PREFIX}{METRICS_SCRIPT}"
+        command = [
+            "ssh",
+            "-i", key_path,
+            "-p", str(int(ssh_port) or 22),
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
+            f"{ssh_user or self.config.ssh_user}@{ssh_host}",
+            remote_command,
+        ]
+        try:
+            result = self._ssh_runner(command)
+        except Exception:  # noqa: BLE001 — metrics are best-effort
+            return None
+        if result.returncode != 0:
+            return None
+        return parse_metrics(result.stdout or "")
 
     def sandbox_environment(self) -> dict:
         available_tokens: list[str] = []

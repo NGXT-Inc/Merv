@@ -518,6 +518,76 @@ class LambdaTranscriptTest(unittest.TestCase):
         )
 
 
+class LambdaMetricsTest(unittest.TestCase):
+    SAMPLE_OUTPUT = (
+        "RPM cpu_cores_used=3.4210\n"
+        "RPM mem_used_bytes=2147483648\n"
+        "RPM gpu idx=0 util=97 used=20000 total=24576 name=NVIDIA A10\n"
+        "RPM ok=1\n"
+    )
+
+    def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
+        config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
+        return LambdaLabsSandboxBackend(
+            config=config, client=FakeLambdaSandboxClient(), ssh_runner=runner  # type: ignore[arg-type]
+        )
+
+    def _sample(self, backend: LambdaLabsSandboxBackend, **overrides) -> dict | None:
+        kwargs = {
+            "sandbox_id": "inst_1",
+            "ssh_host": "198.51.100.2",
+            "ssh_port": 22,
+            "ssh_user": "ubuntu",
+            "key_path": "/keys/exp1",
+        }
+        kwargs.update(overrides)
+        return backend.sample_metrics(**kwargs)
+
+    def test_sample_metrics_parses_gauges_over_ssh(self) -> None:
+        runner = FakeSshRunner(stdout=self.SAMPLE_OUTPUT)
+        backend = self._backend(runner)
+
+        metrics = self._sample(backend)
+
+        self.assertIsNotNone(metrics)
+        self.assertAlmostEqual(metrics["cpu"]["used_cores"], 3.421)
+        self.assertEqual(metrics["memory"]["used_bytes"], 2_147_483_648)
+        self.assertEqual(
+            metrics["gpus"],
+            [{
+                "index": 0,
+                "name": "NVIDIA A10",
+                "util_pct": 97,
+                "mem_used_mib": 20000,
+                "mem_total_mib": 24576,
+            }],
+        )
+        command = runner.commands[0]
+        self.assertEqual(command[0], "ssh")
+        self.assertIn("/keys/exp1", command)
+        self.assertEqual(command[-2], "ubuntu@198.51.100.2")
+        remote = command[-1]
+        # The sampler must ride the rec.sh bypass: a recorded exec would spam
+        # the experiment transcript on every ~3s UI poll.
+        self.assertTrue(remote.startswith(TRANSCRIPT_READ_PREFIX))
+        self.assertIn("nvidia-smi", remote)
+
+    def test_sample_metrics_without_endpoint_or_key_returns_none(self) -> None:
+        runner = FakeSshRunner(stdout=self.SAMPLE_OUTPUT)
+        backend = self._backend(runner)
+
+        self.assertIsNone(self._sample(backend, sandbox_id=""))
+        self.assertIsNone(self._sample(backend, ssh_host=""))
+        self.assertIsNone(self._sample(backend, key_path=""))
+        self.assertEqual(runner.commands, [])
+
+    def test_sample_metrics_never_raises_on_ssh_failure(self) -> None:
+        runner = FakeSshRunner(returncode=255, stderr="ssh: connect to host: refused")
+        backend = self._backend(runner)
+
+        self.assertIsNone(self._sample(backend))
+
+
 class LambdaEnvironmentTest(unittest.TestCase):
     def _backend(self) -> tuple[LambdaLabsSandboxBackend, FakeLambdaSandboxClient]:
         client = FakeLambdaSandboxClient()
