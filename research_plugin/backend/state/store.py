@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   target_id TEXT NOT NULL,
   role TEXT NOT NULL,
   verdict TEXT NOT NULL,
+  return_to TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   findings_json TEXT NOT NULL DEFAULT '[]',
   evidence_json TEXT NOT NULL DEFAULT '{}',
@@ -187,9 +188,9 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   sandbox_data_dir TEXT NOT NULL DEFAULT '',
   volume_name TEXT NOT NULL DEFAULT '',
   -- Observability dashboards exposed inside the sandbox (MLflow at 5000,
-  -- TensorBoard at 6006), surfaced to the user as HTTPS URLs from the Modal
-  -- encrypted tunnels. JSON object keyed by dashboard name. Empty '{}' when
-  -- no dashboards were exposed (e.g. the fake backend in tests).
+  -- TensorBoard at 6006), surfaced to the user as provider URLs (Modal HTTPS
+  -- tunnels) or daemon-owned local SSH forwards (Lambda Labs). JSON object
+  -- keyed by dashboard name. Empty '{}' when no dashboards were exposed.
   dashboards_json TEXT NOT NULL DEFAULT '{}',
   sandbox_name TEXT NOT NULL DEFAULT '',
   phase TEXT NOT NULL DEFAULT '',
@@ -313,6 +314,14 @@ class StateStore:
             table="resources",
             columns={"deleted": "INTEGER NOT NULL DEFAULT 0"},
         )
+        # Stage-routed rejections (June 2026): experiment reviews record which
+        # stage a rejection sent the experiment back to ('planned' or
+        # 'running'); empty on passes and on rows that predate the column.
+        self._ensure_columns(
+            conn=conn,
+            table="reviews",
+            columns={"return_to": "TEXT NOT NULL DEFAULT ''"},
+        )
         # Async provisioning (June 2026): sandboxes gained a provisioning/failed
         # lifecycle with progress + error fields. Older DBs predate these columns.
         self._ensure_columns(
@@ -329,9 +338,9 @@ class StateStore:
                 "unsynced_dir": "TEXT NOT NULL DEFAULT ''",
                 "local_sync_dir": "TEXT NOT NULL DEFAULT ''",
                 # Phase 1 observability dashboards: MLflow + TensorBoard URLs
-                # surfaced from the in-sandbox servers through Modal encrypted
-                # tunnels. JSON object keyed by dashboard name; '{}' on older
-                # rows and any sandbox where no tunnels were exposed.
+                # surfaced from the in-sandbox servers through provider URLs or
+                # daemon-owned local SSH forwards. JSON object keyed by dashboard
+                # name; '{}' on older rows and sandboxes where none were exposed.
                 "dashboards_json": "TEXT NOT NULL DEFAULT '{}'",
                 # Lambda-default (June 2026): provider-bundled machine SKU +
                 # datacenter for backends that procure a fixed instance type.

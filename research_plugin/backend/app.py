@@ -158,10 +158,14 @@ class ResearchPluginApp:
             "review.start": ("Start a read-only reviewer session.", self.reviews.start),
             "review.submit": (
                 "Submit a review from a reviewer session. Accepts ONLY: "
-                "review_session_id, verdict (pass|needs_changes|fail), notes, "
-                "findings (list of {issue, severity?}), and evidence (free-form "
-                "dict). Put structured rationale inside 'evidence' — unknown "
-                "top-level fields are rejected.",
+                "review_session_id, verdict (pass|needs_changes|fail), return_to, "
+                "notes, findings (list of {issue, severity?}), and evidence "
+                "(free-form dict). On experiment-review rejections return_to is "
+                "REQUIRED: 'planned' if the results show the plan itself is "
+                "flawed, 'running' if the plan stands but execution or the "
+                "conclusion is flawed (the experiment resumes running with its "
+                "approved plan intact). Put structured rationale inside "
+                "'evidence' — unknown top-level fields are rejected.",
                 self.reviews.submit,
             ),
             "review.status": ("Inspect review requests and submissions for a target.", self.reviews.status),

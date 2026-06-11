@@ -47,11 +47,12 @@ export default function PlanSpotlight({
   designReviews,
   attemptIndex,
   experimentStatus,
+  defaultOpen = true,
 }) {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [showBody, setShowBody] = useState(true);
+  const [showBody, setShowBody] = useState(defaultOpen);
   const [selectedAttempt, setSelectedAttempt] = useState(attemptIndex);
 
   // Reset to the current attempt whenever it advances (new attempt landed).

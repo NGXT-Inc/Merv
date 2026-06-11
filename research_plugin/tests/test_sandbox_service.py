@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from backend.app import ResearchPluginApp
 from backend.http_api import ResearchHttpApi
@@ -44,6 +46,24 @@ class FakeRsyncSyncer:
             stderr="",
             direction="push",
         )
+
+
+class FakeProcess:
+    def __init__(self) -> None:
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return -15 if self.terminated or self.killed else None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+        return self.poll() or 0
 
 
 class SandboxServiceTest(unittest.TestCase):
@@ -186,11 +206,193 @@ class SandboxServiceTest(unittest.TestCase):
 
     # ---- observability dashboards (MLflow + TensorBoard) ----
 
+    def test_tunnel_ready_waits_out_the_ssh_handshake(self) -> None:
+        # The ssh -L listener binds only after the handshake (0.5-2s); an
+        # instant probe always loses that race. _tunnel_ready must wait for
+        # the bind, then probe end-to-end.
+        import http.server
+        from backend.services.sandboxes import _free_local_port, _tunnel_ready
+
+        port = _free_local_port()
+        server: list = []
+
+        def serve_after_delay() -> None:
+            time.sleep(0.7)  # simulate the ssh handshake window
+            handler = type(
+                "OK",
+                (http.server.BaseHTTPRequestHandler,),
+                {
+                    "do_GET": lambda self: (self.send_response(200), self.end_headers()),
+                    "log_message": lambda self, *a: None,
+                },
+            )
+            srv = http.server.HTTPServer(("127.0.0.1", port), handler)
+            server.append(srv)
+            srv.serve_forever()
+
+        thread = threading.Thread(target=serve_after_delay, daemon=True)
+        thread.start()
+        fake_ssh = subprocess.Popen(["sleep", "30"])
+        try:
+            self.assertTrue(
+                _tunnel_ready(fake_ssh, port, f"http://127.0.0.1:{port}", timeout=6.0)
+            )
+        finally:
+            fake_ssh.kill()
+            if server:
+                server[0].shutdown()
+
+    def test_tunnel_ready_fails_fast_when_ssh_dies(self) -> None:
+        from backend.services.sandboxes import _free_local_port, _tunnel_ready
+
+        port = _free_local_port()
+        dead_ssh = subprocess.Popen(["true"])
+        dead_ssh.wait()
+        self.assertFalse(
+            _tunnel_ready(dead_ssh, port, f"http://127.0.0.1:{port}", timeout=2.0)
+        )
+
+    def test_tunnel_ready_times_out_without_listener(self) -> None:
+        from backend.services.sandboxes import _free_local_port, _tunnel_ready
+
+        port = _free_local_port()
+        fake_ssh = subprocess.Popen(["sleep", "30"])
+        try:
+            start = time.monotonic()
+            self.assertFalse(
+                _tunnel_ready(fake_ssh, port, f"http://127.0.0.1:{port}", timeout=0.8)
+            )
+            self.assertLess(time.monotonic() - start, 3.0)
+        finally:
+            fake_ssh.kill()
+
+    def test_mlflow_deep_link_picks_newest_real_experiment(self) -> None:
+        # No runs yet in the experiment: land on the experiment chart view.
+        from backend.services.sandboxes import _mlflow_deep_link
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "experiments": [
+                        {"experiment_id": "0", "name": "Default", "last_update_time": 50},
+                        {"experiment_id": "1", "name": "older_exp", "last_update_time": 10},
+                        {"experiment_id": "2", "name": "lora_glue", "last_update_time": 99},
+                    ]
+                }
+
+        class NoRuns:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"runs": []}
+
+        with patch("backend.services.sandboxes.httpx.get", return_value=FakeResponse()), patch(
+            "backend.services.sandboxes.httpx.post", return_value=NoRuns()
+        ):
+            self.assertEqual(
+                _mlflow_deep_link("http://127.0.0.1:5000"),
+                "http://127.0.0.1:5000/#/experiments/2?compareRunsMode=CHART",
+            )
+
+    def test_mlflow_deep_link_lands_on_latest_run_model_metrics(self) -> None:
+        # With runs present, link straight to the newest run's Model metrics
+        # tab — and a RUNNING run beats a newer finished one.
+        from backend.services.sandboxes import _mlflow_deep_link
+
+        class Experiments:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "experiments": [
+                        {"experiment_id": "1", "name": "lora_glue", "last_update_time": 99},
+                    ]
+                }
+
+        class Runs:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "runs": [
+                        {"info": {"run_id": "fff", "status": "FINISHED", "start_time": 300}},
+                        {"info": {"run_id": "aaa", "status": "RUNNING", "start_time": 200}},
+                        {"info": {"run_id": "bbb", "status": "RUNNING", "start_time": 100}},
+                    ]
+                }
+
+        with patch("backend.services.sandboxes.httpx.get", return_value=Experiments()), patch(
+            "backend.services.sandboxes.httpx.post", return_value=Runs()
+        ):
+            self.assertEqual(
+                _mlflow_deep_link("http://127.0.0.1:5000"),
+                "http://127.0.0.1:5000/#/experiments/1/runs/aaa/model-metrics",
+            )
+
+    def test_mlflow_deep_link_run_lookup_failure_degrades_to_chart_view(self) -> None:
+        from backend.services.sandboxes import _mlflow_deep_link
+        import httpx as _httpx
+
+        class Experiments:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {
+                    "experiments": [
+                        {"experiment_id": "1", "name": "lora_glue", "last_update_time": 99},
+                    ]
+                }
+
+        with patch("backend.services.sandboxes.httpx.get", return_value=Experiments()), patch(
+            "backend.services.sandboxes.httpx.post",
+            side_effect=_httpx.ConnectError("down"),
+        ):
+            self.assertEqual(
+                _mlflow_deep_link("http://127.0.0.1:5000"),
+                "http://127.0.0.1:5000/#/experiments/1?compareRunsMode=CHART",
+            )
+
+    def test_mlflow_deep_link_falls_back_to_base_url(self) -> None:
+        from backend.services.sandboxes import _mlflow_deep_link
+        import httpx as _httpx
+
+        class OnlyDefault:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"experiments": [{"experiment_id": "0", "name": "Default", "last_update_time": 1}]}
+
+        with patch("backend.services.sandboxes.httpx.get", return_value=OnlyDefault()):
+            self.assertEqual(_mlflow_deep_link("http://x"), "http://x")
+
+        class ServerError:
+            status_code = 500
+
+            @staticmethod
+            def json():
+                return {}
+
+        with patch("backend.services.sandboxes.httpx.get", return_value=ServerError()):
+            self.assertEqual(_mlflow_deep_link("http://x"), "http://x")
+
+        with patch(
+            "backend.services.sandboxes.httpx.get",
+            side_effect=_httpx.ConnectError("down"),
+        ):
+            self.assertEqual(_mlflow_deep_link("http://x"), "http://x")
+
     def test_request_surfaces_dashboard_urls(self) -> None:
-        # The agent view carries the dashboard URLs so the (rare) agent that
-        # wants to show them in transcripts can; the user-facing UI view does
-        # the same. URL strings come straight from the backend's encrypted
-        # tunnel surface — no rewriting.
+        # The agent and UI views carry dashboard URLs from the backend, while
+        # the hint keeps the agent focused on emitting training logs rather than
+        # managing dashboard servers or links.
         exp_id = self._experiment()
         result = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
@@ -199,10 +401,11 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("mlflow", result["dashboards"])
         self.assertTrue(result["dashboards"]["mlflow"].startswith("https://mlflow-"))
         self.assertIn("tensorboard", result["dashboards"])
-        # And the hint nudges the agent toward the auto-detect path so HF
-        # Trainer and Lightning users get charts for free.
         self.assertIn("MLFLOW_TRACKING_URI", result["hint"])
+        self.assertIn("$RP_TB_LOGDIR", result["hint"])
+        self.assertIn("params, metrics, and artifacts", result["hint"])
         self.assertIn("mlflow.autolog", result["hint"])
+        self.assertIn("automatically rsyncs", result["hint"])
 
     def test_ui_view_exposes_dashboards(self) -> None:
         # The HTTP API surfaces dashboards in the sandbox row so the UI can
@@ -265,6 +468,164 @@ class SandboxServiceTest(unittest.TestCase):
             project_id=self.project_id, experiment_id=exp_id
         )
         self.assertEqual(view["dashboards"], {})
+
+    # ---- durable metrics archive (results outlive the VM) ----
+
+    SNAPSHOT = {
+        "source": "mlflow",
+        "base_url": "https://mlflow-x.modal.test",
+        "experiments": [
+            {
+                "experiment_id": "1",
+                "name": "lora_glue",
+                "last_update_time": 99,
+                "runs": [
+                    {
+                        "run_id": "r1",
+                        "run_name": "seed_0",
+                        "status": "FINISHED",
+                        "params": {"lr": "0.0005"},
+                        "metrics": {"acc": {"last": 0.91}},
+                        "history": {"acc": [[10, 0.85], [20, 0.91]]},
+                    }
+                ],
+            }
+        ],
+    }
+
+    def test_release_archives_metrics_before_terminating(self) -> None:
+        # The MLflow server dies with the VM — release must capture a final
+        # snapshot first, and the archive must stay readable after termination.
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        with patch(
+            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+        ) as snap:
+            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        snap.assert_called_once()
+        self.assertTrue(snap.call_args.args[0].startswith("https://mlflow-"))
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sandbox_status"], "terminated")
+        self.assertEqual(result["experiments"][0]["name"], "lora_glue")
+        self.assertEqual(
+            result["experiments"][0]["runs"][0]["metrics"]["acc"]["last"], 0.91
+        )
+        self.assertIn("captured_at", result)
+        with self.app.store.transaction() as conn:
+            rows = conn.execute(
+                "SELECT type FROM events WHERE type = 'sandbox.metrics_persisted'"
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+
+    def test_explicit_sync_archives_metrics(self) -> None:
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        with patch(
+            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+        ):
+            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sandbox_status"], "running")
+
+    def test_unreachable_mlflow_keeps_last_good_archive(self) -> None:
+        # A dead tunnel at release time must not wipe the archive captured
+        # during earlier syncs: snapshot_mlflow -> None means "skip", never
+        # "overwrite with empty".
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        with patch(
+            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+        ):
+            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=None):
+            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["experiments"][0]["name"], "lora_glue")
+
+    def test_results_metrics_unavailable_shape(self) -> None:
+        exp_id = self._experiment()
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertFalse(result["available"])
+        self.assertEqual(result["sandbox_status"], "none")
+        self.assertIn("hint", result)
+
+    def test_results_metrics_backfills_from_pulled_mlflow_db(self) -> None:
+        # Rescue path: a sandbox terminated before REST archiving ever ran,
+        # but the rsync pull captured its mlflow.db. The first read extracts
+        # the archive from that file and persists it.
+        from tests.test_metrics_archive import write_fake_mlflow_db
+
+        exp_id = self._experiment()
+        db_path = self.app.sandboxes._pulled_mlflow_db_path(experiment_id=exp_id)
+        write_fake_mlflow_db(db_path)
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["experiments"][0]["name"], "lora_glue")
+        self.assertEqual(
+            result["experiments"][0]["runs"][0]["metrics"]["acc"]["last"], 0.91
+        )
+        # Persisted: a second read works even if the pulled file disappears.
+        db_path.unlink()
+        again = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(again["available"])
+
+    def test_local_dashboard_tunnels_when_backend_has_ports_but_no_urls(self) -> None:
+        self.backend.default_dashboards = False
+        self.backend.local_dashboard_ports = lambda: {"mlflow": 5000, "tensorboard": 6006}  # type: ignore[attr-defined]
+        exp_id = self._experiment()
+        self.app.sandboxes._ensure_keypair(experiment_id=exp_id)
+        popen_calls: list[list[str]] = []
+        procs: list[FakeProcess] = []
+
+        def fake_popen(command, **_kwargs):
+            popen_calls.append(list(command))
+            proc = FakeProcess()
+            procs.append(proc)
+            return proc
+
+        class FakeResponse:
+            status_code = 200
+
+        with (
+            patch("backend.services.sandboxes.subprocess.Popen", side_effect=fake_popen),
+            # The bind-wait would loop against a port nobody listens on; a
+            # connectable socket stands in for ssh having bound the forward.
+            patch("backend.services.sandboxes.socket.create_connection", return_value=MagicMock()),
+            patch("backend.services.sandboxes.httpx.get", return_value=FakeResponse()),
+        ):
+            result = self.call(
+                "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+            )
+            dashboards = result["dashboards"]
+            self.assertEqual(set(dashboards), {"mlflow", "tensorboard"})
+            self.assertTrue(dashboards["mlflow"].startswith("http://127.0.0.1:"))
+            self.assertTrue(dashboards["tensorboard"].startswith("http://127.0.0.1:"))
+            self.assertEqual(len(popen_calls), 2)
+            self.assertTrue(
+                any(
+                    any(part.endswith(":127.0.0.1:5000") for part in command)
+                    for command in popen_calls
+                )
+            )
+            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+
+        self.assertTrue(procs)
+        self.assertTrue(all(proc.terminated for proc in procs))
 
     # ---- status / liveness ----
 

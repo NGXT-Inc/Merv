@@ -57,6 +57,10 @@ POLL_AFTER_SECONDS = 30
 # drill-in terminal (which both poll ~3s) don't double-exec into a sandbox.
 METRICS_CACHE_TTL_SECONDS = 2.0
 DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS = 5.0
+# The auto-sync loop runs every few seconds, but archiving MLflow metrics
+# sweeps the whole REST surface (runs + per-metric history), so it is
+# throttled to this cadence. Explicit sync/release/reap bypass the throttle.
+METRICS_PERSIST_TTL_SECONDS = 60.0
 # How often the reaper checks for sandboxes past their expires_at deadline and
 # terminates them. Needed because Lambda VMs (unlike Modal sandboxes) have no
 # server-side lifetime enforcement, so without this an expired VM bills forever.

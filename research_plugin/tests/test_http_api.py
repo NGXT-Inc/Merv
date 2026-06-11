@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -199,9 +200,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
         self.assertEqual(sandbox["status"], "running")
         self.assertTrue(sandbox["sandbox_id"])
-        # The HTTP row carries observability dashboard URLs (MLflow + TensorBoard
-        # over Modal encrypted tunnels) so the UI can render an iframe tab per
-        # non-empty entry.
+        # The HTTP row carries observability dashboard URLs (MLflow + TensorBoard)
+        # so the UI can render an iframe tab per non-empty entry.
         self.assertIn("dashboards", sandbox)
         self.assertIn("mlflow", sandbox["dashboards"])
         self.assertTrue(sandbox["dashboards"]["mlflow"].startswith("https://"))
@@ -222,6 +222,21 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.backend.append_transcript(experiment_id=exp_id, text="$ ls\nplan.md\n")
         terminal = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal")
         self.assertIn("plan.md", terminal["transcript"])
+        # Incremental polling: `since=cursor` returns only new bytes.
+        cursor = terminal["cursor"]
+        unchanged = self.request(
+            "GET",
+            f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal?since={cursor}",
+        )
+        self.assertEqual(unchanged["transcript"], "")
+        self.assertEqual(unchanged["cursor"], cursor)
+        self.backend.append_transcript(experiment_id=exp_id, text="results.json\n")
+        delta = self.request(
+            "GET",
+            f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/terminal?since={cursor}",
+        )
+        self.assertEqual(delta["transcript"], "results.json\n")
+        self.assertGreater(delta["cursor"], cursor)
 
         synced = self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
         self.assertEqual(synced["sync"]["provider"], "ssh_rsync")
@@ -231,6 +246,63 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(released["status"], "terminated")
 
         self.assertTrue(self.request("GET", "/api/sandboxes/health")["ok"])
+
+    def test_results_metrics_endpoint_survives_release(self) -> None:
+        # The archived-metrics endpoint is what makes results outlive the VM:
+        # empty before any capture, populated after sync, still readable (same
+        # payload) after the sandbox is terminated.
+        project = self.request("POST", "/api/projects", {"name": "Results Project"})
+        project_id = project["id"]
+        exp = self.request(
+            "POST", f"/api/projects/{project_id}/experiments", {"intent": "Train"}
+        )
+        exp_id = exp["id"]
+        with self.app.store.transaction() as conn:
+            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+        self.app.call_tool(
+            "sandbox.request", {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"}
+        )
+
+        url = f"/api/projects/{project_id}/experiments/{exp_id}/results/metrics"
+        empty = self.request("GET", url)
+        self.assertFalse(empty["available"])
+        self.assertIn("hint", empty)
+
+        snapshot = {
+            "source": "mlflow",
+            "base_url": "https://mlflow-x.modal.test",
+            "experiments": [
+                {
+                    "experiment_id": "1",
+                    "name": "lora_glue",
+                    "runs": [
+                        {
+                            "run_id": "r1",
+                            "run_name": "seed_0",
+                            "status": "FINISHED",
+                            "params": {"lr": "0.0005"},
+                            "metrics": {"acc": {"last": 0.91}},
+                            "history": {"acc": [[10, 0.85], [20, 0.91]]},
+                        }
+                    ],
+                }
+            ],
+        }
+        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=snapshot):
+            self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
+        live = self.request("GET", url)
+        self.assertTrue(live["available"])
+        self.assertEqual(live["sandbox_status"], "running")
+
+        # Release with MLflow already unreachable — the last good archive serves on.
+        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=None):
+            self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
+        durable = self.request("GET", url)
+        self.assertTrue(durable["available"])
+        self.assertEqual(durable["sandbox_status"], "terminated")
+        run = durable["experiments"][0]["runs"][0]
+        self.assertEqual(run["metrics"]["acc"]["last"], 0.91)
+        self.assertEqual(run["history"]["acc"], [[10, 0.85], [20, 0.91]])
 
     def test_home_exposes_active_experiments_and_processes(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Active Work Project"})
@@ -286,6 +358,196 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 for event in activity["events"]
             )
         )
+
+    def test_experiment_figure_endpoint(self) -> None:
+        project = self.request("POST", "/api/projects", {"name": "Figure Project"})
+        pid = project["id"]
+        claim = self.request("POST", f"/api/projects/{pid}/claims", {"statement": "Rank-8 LoRA matches full FT."})
+        exp = self.request(
+            "POST",
+            f"/api/projects/{pid}/experiments",
+            {"intent": "Compare LoRA ranks.", "claim_ids": [claim["id"]]},
+        )
+        exp_id = exp["id"]
+        (self.repo / "plan.md").write_text(
+            "## Summary\nCompare LoRA ranks.\n\n"
+            "## Objective & hypothesis\nRank 8 suffices.\n\n"
+            "## Evaluation\nMetric: eval loss delta; success if within 0.05.\n"
+        )
+        plan = self.request("POST", f"/api/projects/{pid}/resources", {"path": "plan.md", "kind": "plan", "title": "Plan"})
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/resources/{plan['id']}/associate",
+            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
+        )
+
+        figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
+        nodes = {node["id"]: node for node in figure["nodes"]}
+        edge_ids = {edge["id"] for edge in figure["edges"]}
+        self.assertEqual(figure["source"], "derived")
+        self.assertEqual(figure["attempt_index"], 1)
+        self.assertEqual(nodes["attempt:1"]["status"], "pending")
+        self.assertEqual(nodes[f"res:{plan['id']}:a1"]["sublabel"], "plan")
+        self.assertIn(f"res:{plan['id']}:a1->attempt:1:feeds", edge_ids)
+        self.assertEqual(nodes[f"claim:{claim['id']}"]["type"], "claim")
+        self.assertIn(f"attempt:1->claim:{claim['id']}:tests", edge_ids)
+
+        # Design-review round: the open gate appears, then needs_changes draws the revision loop.
+        self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
+        req = self.request(
+            "POST",
+            f"/api/projects/{pid}/reviews/request",
+            {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"},
+        )
+        figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
+        nodes = {node["id"]: node for node in figure["nodes"]}
+        self.assertEqual(nodes[f"review_request:{req['review_request_id']}"]["status"], "open")
+
+        session = self.request(
+            "POST",
+            f"/api/projects/{pid}/reviews/start",
+            {
+                "review_request_id": req["review_request_id"],
+                "reviewer_capability": req["reviewer_capability"],
+                "caller_session_id": "rev",
+            },
+        )
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/reviews/submit",
+            {"review_session_id": session["review_session_id"], "verdict": "needs_changes"},
+        )
+
+        figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
+        nodes = {node["id"]: node for node in figure["nodes"]}
+        edge_ids = {edge["id"] for edge in figure["edges"]}
+        self.assertEqual(figure["attempt_index"], 2)
+        self.assertEqual(nodes["attempt:1"]["status"], "superseded")
+        self.assertEqual(nodes["attempt:2"]["status"], "pending")
+        self.assertIn("attempt:1->attempt:2:revised_to", edge_ids)
+        self.assertNotIn(f"review_request:{req['review_request_id']}", nodes)
+        review_nodes = [n for n in figure["nodes"] if n["type"] == "review" and n["status"] == "needs_changes"]
+        self.assertEqual(len(review_nodes), 1)
+        self.assertEqual(review_nodes[0]["group"], "attempt:1")
+        self.assertIn(f"{review_nodes[0]['id']}->attempt:2:revised_to", edge_ids)
+
+        # Sandbox liveness and the conclusion both surface as derived nodes.
+        with self.app.store.transaction() as conn:
+            conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
+        self.app.call_tool("sandbox.request", {"project_id": pid, "experiment_id": exp_id, "gpu": "A100"})
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'complete', conclusion = 'Rank 8 is enough.' WHERE id = ?",
+                (exp_id,),
+            )
+
+        figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
+        nodes = {node["id"]: node for node in figure["nodes"]}
+        edge_ids = {edge["id"] for edge in figure["edges"]}
+        self.assertEqual(nodes["attempt:2"]["status"], "done")
+        self.assertEqual(nodes["sandbox"]["status"], "active")
+        self.assertIn("attempt:2->sandbox:ran_on", edge_ids)
+        self.assertEqual(nodes["conclusion"]["sublabel"], "Rank 8 is enough.")
+        self.assertIn("attempt:2->conclusion:concludes", edge_ids)
+        self.assertIn(f"conclusion->claim:{claim['id']}:tests", edge_ids)
+
+        missing = self.client.request("GET", f"/api/projects/{pid}/experiments/exp_nope/figure")
+        self.assertEqual(missing.status_code, 404, missing.text)
+
+
+class ResourceRelFileTest(unittest.TestCase):
+    """GET /resources/{id}/file?rel=… serves a file next to the resource (a
+    report's figure), locked inside the repo root."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.app = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
+            rsync_syncer=FakeRsyncSyncer(),
+        )
+        self.client = TestClient(create_fastapi_app(self.app))
+        project = self.client.post("/api/projects", json={"name": "Rel"}).json()
+        self.project_id = project["id"]
+        (self.repo / "exp").mkdir()
+        (self.repo / "exp" / "report.md").write_text("![loss](figures/loss.png)\n")
+        (self.repo / "exp" / "figures").mkdir()
+        (self.repo / "exp" / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        self.resource_id = self.client.post(
+            f"/api/projects/{self.project_id}/resources",
+            json={"path": "exp/report.md", "kind": "report"},
+        ).json()["id"]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_serves_sibling_figure(self) -> None:
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
+            params={"rel": "figures/loss.png"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertTrue(response.content.startswith(b"\x89PNG"))
+
+    def test_rejects_escape_outside_repo_root(self) -> None:
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
+            params={"rel": "../../../../etc/hosts"},
+        )
+        self.assertGreaterEqual(response.status_code, 400)
+
+    def test_missing_sibling_is_not_found(self) -> None:
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
+            params={"rel": "figures/nope.png"},
+        )
+        self.assertGreaterEqual(response.status_code, 400)
+
+
+class FigureViewTest(unittest.TestCase):
+    def test_resource_fanout_rolls_up_past_cap(self) -> None:
+        from backend.services.figure_view import RESOURCE_FANOUT_CAP, build_experiment_figure
+
+        experiment = {
+            "id": "exp_x",
+            "intent": "Stress the figure.",
+            "status": "running",
+            "attempt_index": 1,
+            "conclusion": "",
+            "tested_claims": [],
+            "reviews": [],
+            "resources": [
+                {
+                    "id": f"res_{i:03d}",
+                    "path": f"results/file_{i:03d}.json",
+                    "title": "",
+                    "kind": "result",
+                    "association_role": "result",
+                    "association_attempt_index": 1,
+                    "association_version_id": None,
+                }
+                for i in range(20)
+            ],
+        }
+        figure = build_experiment_figure(
+            experiment=experiment,
+            review_attempts={},
+            open_review_requests=[],
+            sandbox=None,
+        )
+        resource_nodes = [n for n in figure["nodes"] if n["type"] == "resource"]
+        group_nodes = [n for n in figure["nodes"] if n["type"] == "resource_group"]
+        self.assertEqual(len(resource_nodes), RESOURCE_FANOUT_CAP)
+        self.assertEqual(len(group_nodes), 1)
+        self.assertEqual(group_nodes[0]["meta"]["count"], 20 - RESOURCE_FANOUT_CAP)
+        self.assertIn("attempt:1->resgroup:a1:down:produced", {e["id"] for e in figure["edges"]})
+        # Live attempt status flows through to the spine node.
+        attempt = next(n for n in figure["nodes"] if n["id"] == "attempt:1")
+        self.assertEqual(attempt["status"], "active")
+
 
 class RoutedResearchPluginHttpApiTest(unittest.TestCase):
     def setUp(self) -> None:

@@ -27,12 +27,18 @@ rows; the HTTP layer shapes the UI responses from `get_row`/`rows`/
 
 from __future__ import annotations
 
+import contextlib
 import os
+import socket
+import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from ..execution.ssh_rsync import SshRsyncSyncer
 from ..execution.sync_dirs import (
@@ -52,6 +58,7 @@ from ..execution import (
     SandboxRequest,
 )
 from . import sandbox_views
+from .metrics_archive import MetricsArchive, snapshot_mlflow, snapshot_mlflow_db
 from .sandbox_conn import SandboxConnFiles
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
@@ -62,8 +69,10 @@ from .sandbox_support import (
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     METRICS_CACHE_TTL_SECONDS,
+    METRICS_PERSIST_TTL_SECONDS,
     _Canceled,
     _ProvisionJob,
+    decode_dashboards,
     encode_dashboards,
     env_float,
     iso_after,
@@ -71,6 +80,15 @@ from .sandbox_support import (
     parse_terminal_markers,
     validate_request_inputs,
 )
+
+
+@dataclass
+class _DashboardTunnel:
+    """A daemon-owned SSH local port-forward for one dashboard."""
+
+    process: subprocess.Popen[Any]
+    local_port: int
+    url: str
 
 
 class SandboxService:
@@ -108,6 +126,15 @@ class SandboxService:
         # Short-TTL cache of live-usage samples, keyed by sandbox_id.
         self._metrics_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._metrics_lock = threading.Lock()
+        self._dashboard_tunnels: dict[tuple[str, str], _DashboardTunnel] = {}
+        self._dashboard_tunnel_attempts: dict[tuple[str, str], float] = {}
+        self._dashboard_tunnels_lock = threading.Lock()
+        # (sandbox_id, base_url) -> (computed_at, display_url): TTL cache for
+        # the MLflow deep link so polls don't query MLflow every 3 seconds.
+        self._mlflow_links: dict[tuple[str, str], tuple[float, str]] = {}
+        # Durable per-experiment metrics snapshots (results outlive the VM).
+        self.metrics_archive = MetricsArchive(repo_root=store.repo_root)
+        self._metrics_persisted_at: dict[str, float] = {}
         self._sync_locks: dict[str, threading.Lock] = {}
         self._sync_locks_lock = threading.Lock()
         self._auto_sync_stop = threading.Event()
@@ -187,6 +214,7 @@ class SandboxService:
             self._mark_experiment_running(experiment_id=experiment_id, project_id=project_id)
             row = self._maybe_refresh_endpoint(row=self._load_row(experiment_id=experiment_id))
             row = self._maybe_refresh_dashboards(row=row)
+            row = self._ensure_local_dashboard_tunnels(row=row)
             self._emit_event(
                 project_id=project_id,
                 event_type="sandbox.reused",
@@ -233,6 +261,7 @@ class SandboxService:
         )
         job.done.wait(timeout=self.request_wait_seconds)
         row = self._load_row(experiment_id=experiment_id)
+        row = self._ensure_local_dashboard_tunnels(row=row)
         reused = False if row.get("status") == "running" else None
         return self._agent_view(row=row, key_path=key_path, reused=reused)
 
@@ -251,7 +280,7 @@ class SandboxService:
                 "status": "none",
                 "hint": "No sandbox for this experiment — call sandbox.request to create one.",
             }
-        row = self._reconcile(row=row)
+        row = self._ensure_local_dashboard_tunnels(row=self._reconcile(row=row))
         key_path = self._key_path(experiment_id=experiment_id)
         return self._agent_view(row=row, key_path=key_path, reused=None)
 
@@ -301,6 +330,8 @@ class SandboxService:
                 self._sync_row(row=row, skip_if_busy=True)
             except Exception:  # noqa: BLE001 — release should still terminate
                 pass
+            # Last chance to read MLflow: the server dies with the VM.
+            self._persist_metrics_row(row=row, force=True)
         if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
             try:
                 stopped = self.backend.terminate(sandbox_id=str(row["sandbox_id"]))
@@ -416,6 +447,7 @@ class SandboxService:
             raise
         except Exception as exc:  # noqa: BLE001
             raise BackendUnavailableError(f"sandbox sync failed: {exc}") from exc
+        self._persist_metrics_row(row=row, force=True)
         self._emit_event(
             project_id=str(row["project_id"]),
             event_type="sandbox.synced",
@@ -454,6 +486,101 @@ class SandboxService:
             "hint": hint,
         }
 
+    def results_metrics(
+        self, *, experiment_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
+        """Archived MLflow metrics for an experiment.
+
+        Served from the daemon-owned archive, so it works long after the
+        sandbox is terminated. ``available=False`` means nothing was ever
+        captured (no MLflow runs existed, or the sandbox predates archiving).
+        """
+        status = "none"
+        try:
+            row = self._fetch_scoped(experiment_id=experiment_id, project_id=project_id)
+            status = str(row.get("status") or "none")
+        except NotFoundError:
+            if self._sandbox_exists(experiment_id=experiment_id):
+                raise  # exists under another project — a real scope error
+        data = self.metrics_archive.load(experiment_id=experiment_id)
+        if data is None:
+            # Lazy backfill: the MLflow backend store lives inside the synced
+            # workspace, so the rsync pull usually captured mlflow.db even for
+            # sandboxes that died before REST archiving existed.
+            snapshot = snapshot_mlflow_db(self._pulled_mlflow_db_path(experiment_id=experiment_id))
+            if snapshot is not None:
+                with contextlib.suppress(OSError):
+                    self.metrics_archive.persist(experiment_id=experiment_id, snapshot=snapshot)
+                data = self.metrics_archive.load(experiment_id=experiment_id)
+        if data is None:
+            return {
+                "experiment_id": experiment_id,
+                "available": False,
+                "sandbox_status": status,
+                "hint": (
+                    "No archived metrics yet — they are captured from the "
+                    "sandbox's MLflow on sync and right before release."
+                ),
+            }
+        return {
+            "experiment_id": experiment_id,
+            "available": True,
+            "sandbox_status": status,
+            **data,
+        }
+
+    def _persist_metrics_row(self, *, row: dict[str, Any], force: bool = False) -> None:
+        """Best-effort: archive the sandbox's MLflow metrics on the daemon's disk.
+
+        The MLflow server dies with the VM; this snapshot is what makes results
+        outlive it. Called throttled from the auto-sync loop and forced on
+        explicit sync / release / reap (before terminate). Never raises, and
+        never overwrites an existing archive with emptiness — an unreachable
+        tunnel at release time just keeps the last good snapshot.
+        """
+        try:
+            experiment_id = str(row.get("experiment_id") or "")
+            if not experiment_id:
+                return
+            now = time.monotonic()
+            last = self._metrics_persisted_at.get(experiment_id)
+            if not force and last is not None and now - last < METRICS_PERSIST_TTL_SECONDS:
+                return
+            try:
+                live = self._ensure_local_dashboard_tunnels(row=row)
+            except Exception:  # noqa: BLE001 — fall back to the stored URLs
+                live = row
+            base_url = decode_dashboards(live.get("dashboards_json")).get("mlflow", "")
+            snapshot = snapshot_mlflow(base_url) if base_url else None
+            if snapshot is None:
+                # REST unreachable (tunnel died, server crashed): fall back to
+                # the mlflow.db the rsync pull just brought down.
+                snapshot = snapshot_mlflow_db(
+                    self._pulled_mlflow_db_path(experiment_id=experiment_id)
+                )
+            if snapshot is None:
+                return
+            self._metrics_persisted_at[experiment_id] = now
+            path = self.metrics_archive.persist(
+                experiment_id=experiment_id, snapshot=snapshot
+            )
+            if force:
+                self._emit_event(
+                    project_id=str(row.get("project_id") or ""),
+                    event_type="sandbox.metrics_persisted",
+                    experiment_id=experiment_id,
+                    payload={
+                        "sandbox_id": row.get("sandbox_id", ""),
+                        "path": str(path),
+                        "runs": sum(
+                            len(e.get("runs") or [])
+                            for e in snapshot.get("experiments") or []
+                        ),
+                    },
+                )
+        except Exception:  # noqa: BLE001 — archiving must never block sync/release
+            return
+
     def health(self) -> dict[str, Any]:
         health = self.backend.health()
         result = {"ok": bool(health.get("ok"))}
@@ -473,11 +600,14 @@ class SandboxService:
             row = self._fetch_scoped(experiment_id=experiment_id, project_id=project_id)
         except NotFoundError:
             return None
-        return self._reconcile(row=row)
+        return self._ensure_local_dashboard_tunnels(row=self._reconcile(row=row))
 
     def rows(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
         """All sandbox rows for a project (most-recent first)."""
-        return self._list_rows(project_id=project_id)
+        return [
+            self._ensure_local_dashboard_tunnels(row=row)
+            for row in self._list_rows(project_id=project_id)
+        ]
 
     def backend_health(self) -> dict[str, Any]:
         """Full backend health payload (the slim ``health`` tool trims this)."""
@@ -873,6 +1003,7 @@ class SandboxService:
         sid = (row or {}).get("sandbox_id")
         if sid:
             seen.add(str(sid))
+            self._stop_dashboard_tunnels(sandbox_id=str(sid))
             try:
                 self.backend.terminate(sandbox_id=str(sid))
             except Exception:  # noqa: BLE001
@@ -890,6 +1021,11 @@ class SandboxService:
                     pass
 
     def _mark_failed(self, *, experiment_id: str, error: str) -> None:
+        try:
+            row = self._load_row(experiment_id=experiment_id)
+            self._stop_dashboard_tunnels(sandbox_id=str(row.get("sandbox_id") or ""))
+        except NotFoundError:
+            pass
         now = now_iso()
         with self.store.transaction() as conn:
             conn.execute(
@@ -922,6 +1058,7 @@ class SandboxService:
                 job.thread.join(timeout=2.0)
             except RuntimeError:
                 pass
+        self._stop_dashboard_tunnels()
         if self._auto_sync_thread is not None:
             self._auto_sync_thread.join(timeout=2.0)
         if self._reaper_thread is not None:
@@ -971,6 +1108,7 @@ class SandboxService:
             self._sync_row(row=row, skip_if_busy=True)
         except Exception:  # noqa: BLE001 — reaping must still terminate
             pass
+        self._persist_metrics_row(row=row, force=True)
         sandbox_id = str(row.get("sandbox_id") or "")
         stopped = False
         if sandbox_id:
@@ -1023,6 +1161,7 @@ class SandboxService:
                     result = self._sync_row(row=row, skip_if_busy=True)
                     if not result.get("skipped"):
                         last_errors.pop(experiment_id, None)
+                        self._persist_metrics_row(row=row)
                 except Exception as exc:  # noqa: BLE001
                     message = str(exc)
                     if last_errors.get(experiment_id) == message:
@@ -1169,6 +1308,207 @@ class SandboxService:
         self._upsert_sandbox(experiment_id=experiment_id, dashboards_json=encoded)
         return self._load_row(experiment_id=experiment_id)
 
+    def _ensure_local_dashboard_tunnels(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Expose in-sandbox dashboards through daemon-owned SSH local forwards.
+
+        Modal returns native HTTPS tunnel URLs from the backend. Lambda Labs VMs
+        do not have a provider tunnel surface, but they do have SSH. Backends can
+        advertise dashboard ports with ``local_dashboard_ports()``; the registry
+        then publishes loopback URLs only after the forwarded dashboard responds.
+        """
+        ports_fn = getattr(self.backend, "local_dashboard_ports", None)
+        if not callable(ports_fn) or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            return row
+        sandbox_id = str(row.get("sandbox_id") or "")
+        ssh_host = str(row.get("ssh_host") or "")
+        key_path = str(row.get("key_path") or self._key_path(experiment_id=str(row.get("experiment_id") or "")))
+        if not sandbox_id or not ssh_host or not key_path:
+            return row
+        try:
+            ports = ports_fn()
+        except Exception:  # noqa: BLE001 — dashboard tunnels are best-effort
+            return row
+        if not isinstance(ports, dict) or not ports:
+            return row
+
+        dashboards = decode_dashboards(row.get("dashboards_json"))
+        changed = False
+        for raw_name, raw_port in ports.items():
+            name = str(raw_name)
+            try:
+                remote_port = int(raw_port)
+            except (TypeError, ValueError):
+                continue
+            if remote_port <= 0:
+                continue
+            current_url = dashboards.get(name, "")
+            # Native provider URLs win. Local tunnels are only the fallback for
+            # backends that cannot expose a public dashboard URL themselves.
+            if current_url and not _is_local_dashboard_url(current_url):
+                continue
+
+            key = (sandbox_id, name)
+            tunnel = self._live_dashboard_tunnel(key=key)
+            if tunnel is not None:
+                display_url = self._dashboard_display_url(
+                    name=name, base_url=tunnel.url, sandbox_id=sandbox_id
+                )
+                if dashboards.get(name) != display_url:
+                    dashboards[name] = display_url
+                    changed = True
+                continue
+
+            if current_url:
+                dashboards.pop(name, None)
+                changed = True
+            last_attempt = self._dashboard_tunnel_attempts.get(key, 0.0)
+            if time.monotonic() - last_attempt < 10.0:
+                continue
+            self._dashboard_tunnel_attempts[key] = time.monotonic()
+
+            tunnel = self._start_dashboard_tunnel(
+                name=name,
+                project_id=str(row.get("project_id") or ""),
+                experiment_id=str(row.get("experiment_id") or ""),
+                sandbox_id=sandbox_id,
+                ssh_host=ssh_host,
+                ssh_port=int(row.get("ssh_port") or 22),
+                ssh_user=str(row.get("ssh_user") or "root"),
+                key_path=key_path,
+                remote_port=remote_port,
+            )
+            if tunnel is None:
+                continue
+            with self._dashboard_tunnels_lock:
+                self._dashboard_tunnels[key] = tunnel
+            dashboards[name] = self._dashboard_display_url(
+                name=name, base_url=tunnel.url, sandbox_id=sandbox_id
+            )
+            changed = True
+
+        encoded = encode_dashboards(dashboards)
+        if not changed and encoded == (row.get("dashboards_json") or "{}"):
+            return row
+        experiment_id = str(row.get("experiment_id"))
+        self._upsert_sandbox(experiment_id=experiment_id, dashboards_json=encoded)
+        return self._load_row(experiment_id=experiment_id)
+
+    def _dashboard_display_url(self, *, name: str, base_url: str, sandbox_id: str) -> str:
+        """The URL the UI should embed for one dashboard.
+
+        For MLflow this is a deep link into the most recently active real
+        experiment (recomputed at most every 15s, so it upgrades on a later
+        poll once training creates the experiment). Everything else uses the
+        tunnel URL as-is.
+        """
+        if name != "mlflow":
+            return base_url
+        key = (sandbox_id, base_url)
+        now = time.monotonic()
+        cached = self._mlflow_links.get(key)
+        if cached is not None and now - cached[0] < 15.0:
+            return cached[1]
+        url = _mlflow_deep_link(base_url)
+        self._mlflow_links[key] = (now, url)
+        return url
+
+    def _live_dashboard_tunnel(self, *, key: tuple[str, str]) -> _DashboardTunnel | None:
+        with self._dashboard_tunnels_lock:
+            tunnel = self._dashboard_tunnels.get(key)
+            if tunnel is None:
+                return None
+            if tunnel.process.poll() is None:
+                return tunnel
+            self._dashboard_tunnels.pop(key, None)
+        self._terminate_dashboard_process(tunnel.process)
+        return None
+
+    def _start_dashboard_tunnel(
+        self,
+        *,
+        name: str,
+        project_id: str,
+        experiment_id: str,
+        sandbox_id: str,
+        ssh_host: str,
+        ssh_port: int,
+        ssh_user: str,
+        key_path: str,
+        remote_port: int,
+    ) -> _DashboardTunnel | None:
+        local_port = _free_local_port()
+        command = [
+            "ssh",
+            "-N",
+            "-i", key_path,
+            "-p", str(int(ssh_port) or 22),
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ConnectTimeout=5",
+            "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+            f"{ssh_user}@{ssh_host}",
+        ]
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            return None
+        tunnel = _DashboardTunnel(
+            process=proc,
+            local_port=local_port,
+            url=f"http://127.0.0.1:{local_port}",
+        )
+        if not _tunnel_ready(proc, local_port, tunnel.url):
+            self._terminate_dashboard_process(proc)
+            return None
+        self._emit_event(
+            project_id=project_id,
+            event_type="sandbox.dashboard_tunneled",
+            experiment_id=experiment_id,
+            payload={
+                "sandbox_id": sandbox_id,
+                "dashboard": name,
+                "local_port": local_port,
+                "remote_port": remote_port,
+            },
+        )
+        return tunnel
+
+    def _stop_dashboard_tunnels(self, *, sandbox_id: str = "") -> None:
+        with self._dashboard_tunnels_lock:
+            if sandbox_id:
+                items = [
+                    (key, tunnel)
+                    for key, tunnel in self._dashboard_tunnels.items()
+                    if key[0] == sandbox_id
+                ]
+            else:
+                items = list(self._dashboard_tunnels.items())
+            for key, _ in items:
+                self._dashboard_tunnels.pop(key, None)
+                self._dashboard_tunnel_attempts.pop(key, None)
+        for _, tunnel in items:
+            self._terminate_dashboard_process(tunnel.process)
+
+    @staticmethod
+    def _terminate_dashboard_process(proc: subprocess.Popen[Any]) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=2.0)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _maybe_refresh_endpoint(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Re-read a live sandbox's SSH tunnel and persist it if it moved.
 
@@ -1242,6 +1582,11 @@ class SandboxService:
             )
 
     def _mark_terminated(self, *, experiment_id: str) -> None:
+        try:
+            row = self._load_row(experiment_id=experiment_id)
+            self._stop_dashboard_tunnels(sandbox_id=str(row.get("sandbox_id") or ""))
+        except NotFoundError:
+            pass
         now = now_iso()
         with self.store.transaction() as conn:
             conn.execute(
@@ -1354,6 +1699,17 @@ class SandboxService:
     def _local_sync_dir(self, *, experiment_id: str) -> Path:
         return local_experiment_sync_dir(repo_root=self.store.repo_root, experiment_id=experiment_id)
 
+    def _pulled_mlflow_db_path(self, *, experiment_id: str) -> Path:
+        # The sandbox's MLflow backend store, as mirrored locally by the rsync
+        # pull (the dashboard bootstrap puts it under the synced workspace's
+        # .research_plugin_sessions/<experiment_id>/ directory).
+        return (
+            self._local_sync_dir(experiment_id=experiment_id)
+            / ".research_plugin_sessions"
+            / experiment_id
+            / "mlflow.db"
+        )
+
     def _emit_event(
         self, *, project_id: str, event_type: str, experiment_id: str, payload: dict[str, Any]
     ) -> None:
@@ -1452,3 +1808,114 @@ class SandboxService:
             if isinstance(note, str) and note
         ]
         return {"available_tokens": tokens, "notes": notes}
+
+
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _is_local_dashboard_url(url: str) -> bool:
+    return url.startswith("http://127.0.0.1:") or url.startswith("http://localhost:")
+
+
+def _dashboard_url_ready(url: str) -> bool:
+    try:
+        response = httpx.get(url, timeout=1.0, follow_redirects=False)
+    except httpx.HTTPError:
+        return False
+    return response.status_code < 500
+
+
+def _mlflow_deep_link(base_url: str) -> str:
+    """Deep-link MLflow at the training charts instead of the empty landing page.
+
+    A fresh MLflow opens on the empty "Default" experiment, several clicks away
+    from the training charts. The daemon asks MLflow's REST API — through the
+    tunnel it owns; the browser cannot, because of CORS — for the newest
+    non-Default experiment, then for that experiment's newest run (preferring
+    one still RUNNING), and points the iframe straight at the run's
+    "Model metrics" tab. Fallbacks, in order: experiment chart view when the
+    experiment has no runs yet, the bare URL before any real experiment exists
+    or on any error.
+    """
+    try:
+        response = httpx.get(
+            f"{base_url}/api/2.0/mlflow/experiments/search",
+            params={"max_results": 100},
+            timeout=1.5,
+        )
+        if response.status_code != 200:
+            return base_url
+        experiments = response.json().get("experiments") or []
+    except Exception:  # noqa: BLE001 — the deep link is best-effort sugar
+        return base_url
+    real = [
+        e for e in experiments if isinstance(e, dict) and e.get("name") != "Default"
+    ]
+    if not real:
+        return base_url
+    best = max(real, key=lambda e: int(e.get("last_update_time") or 0))
+    experiment_id = str(best.get("experiment_id") or "")
+    if not experiment_id:
+        return base_url
+    run_id = _mlflow_latest_run_id(base_url, experiment_id)
+    if run_id:
+        return f"{base_url}/#/experiments/{experiment_id}/runs/{run_id}/model-metrics"
+    return f"{base_url}/#/experiments/{experiment_id}?compareRunsMode=CHART"
+
+
+def _mlflow_latest_run_id(base_url: str, experiment_id: str) -> str | None:
+    """The run worth watching: newest in the experiment, RUNNING beats finished."""
+    try:
+        response = httpx.post(
+            f"{base_url}/api/2.0/mlflow/runs/search",
+            json={
+                "experiment_ids": [experiment_id],
+                "order_by": ["attributes.start_time DESC"],
+                "max_results": 20,
+            },
+            timeout=1.5,
+        )
+        if response.status_code != 200:
+            return None
+        runs = response.json().get("runs") or []
+    except Exception:  # noqa: BLE001 — best-effort, same as the experiment lookup
+        return None
+    infos = [
+        run.get("info") or {}
+        for run in runs
+        if isinstance(run, dict) and isinstance(run.get("info"), dict)
+    ]
+    candidates = [info for info in infos if info.get("run_id")]
+    if not candidates:
+        return None
+    running = [info for info in candidates if info.get("status") == "RUNNING"]
+    best = max(running or candidates, key=lambda i: int(i.get("start_time") or 0))
+    return str(best["run_id"])
+
+
+def _tunnel_ready(
+    proc: subprocess.Popen[Any], local_port: int, url: str, *, timeout: float = 6.0
+) -> bool:
+    """True once the ssh -L listener is bound AND the dashboard answers through it.
+
+    A cold ssh handshake takes 0.5-2s before the local forward port exists, so
+    a single instant probe always loses the race (this is why Lambda dashboard
+    tabs never surfaced even with the servers running). Wait for the local bind
+    first — that only proves ssh connected — then make one end-to-end HTTP
+    probe through the forward, which is what actually tests the remote service.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if proc.poll() is not None:
+            return False  # ssh died: auth failure or ExitOnForwardFailure
+        try:
+            with socket.create_connection(("127.0.0.1", local_port), timeout=0.3):
+                break
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+    return _dashboard_url_ready(url)

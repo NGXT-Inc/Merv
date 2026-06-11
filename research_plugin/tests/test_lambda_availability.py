@@ -15,6 +15,7 @@ from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.execution.backends.lambda_labs.config import LambdaCloudConfig
 from backend.execution.backends.lambda_labs.sandbox_backend import (
+    DASHBOARD_SCRIPT,
     REC_SCRIPT,
     TRANSCRIPT_READ_PREFIX,
     TRANSCRIPT_TAIL_DEFAULT,
@@ -252,8 +253,25 @@ class LambdaAvailabilityTest(unittest.TestCase):
         self.assertIn("artifacts_to_keep", user_data)
         self.assertIn("chown -R ubuntu:ubuntu", user_data)
         self.assertIn("ForceCommand /opt/rp/rec.sh", user_data)
-        self.assertIn("uv pip install --system torch torchvision torchaudio", user_data)
-        self.assertIn("mlflow==2.18.0", user_data)
+        # Dashboard deps install individually, only when missing, and with
+        # --ignore-installed: the image ships Debian-owned packages without
+        # RECORD files (e.g. Werkzeug) that pip cannot uninstall, so a normal
+        # install aborts mid-flight; --ignore-installed never calls uninstall.
+        self.assertIn(
+            "python3 -c 'import mlflow' >/dev/null 2>&1 || "
+            "python3 -m pip install --break-system-packages --ignore-installed mlflow==2.18.0",
+            user_data,
+        )
+        self.assertIn(
+            "python3 -c 'import tensorboard' >/dev/null 2>&1 || "
+            "python3 -m pip install --break-system-packages --ignore-installed tensorboard",
+            user_data,
+        )
+        self.assertNotIn("tensorboard==", user_data)
+        self.assertIn("install_with_uv_or_pip torch torchvision torchaudio", user_data)
+        # Dashboards must start as the SSH login user, never root: root-owned
+        # pids/logs in the synced workspace break the ubuntu-user rsync.
+        self.assertIn("sudo -u ubuntu /opt/rp/start_dashboards.sh", user_data)
 
     def test_lambda_sandbox_name_is_lambda_hostname_safe(self) -> None:
         self.assertEqual(
@@ -296,6 +314,24 @@ class LambdaAvailabilityTest(unittest.TestCase):
 
         self.assertIn("RP_WORKDIR=/workspace/synced", user_data)
         self.assertIn("RP_SANDBOX_DATA_DIR=/workspace/unsynced", user_data)
+        self.assertIn("RP_DASH_DIR=/workspace/synced/.research_plugin_sessions/exp1", user_data)
+        self.assertIn("start_dashboards.sh", user_data)
+        self.assertIn("/opt/rp/start_dashboards.sh || true", user_data)
+
+    def test_lambda_backend_advertises_local_dashboard_ports(self) -> None:
+        backend = LambdaLabsSandboxBackend()
+        self.assertEqual(
+            backend.local_dashboard_ports(),
+            {"mlflow": 5000, "tensorboard": 6006},
+        )
+
+    def test_lambda_dashboard_script_starts_mlflow_and_tensorboard(self) -> None:
+        self.assertIn("python3 -m mlflow server", DASHBOARD_SCRIPT)
+        self.assertIn("--host 127.0.0.1 --port 5000", DASHBOARD_SCRIPT)
+        self.assertIn("backend-store-uri", DASHBOARD_SCRIPT)
+        self.assertIn("mlflow is not importable yet", DASHBOARD_SCRIPT)
+        self.assertIn("python3 -m tensorboard.main", DASHBOARD_SCRIPT)
+        self.assertIn("--host 127.0.0.1 --port 6006", DASHBOARD_SCRIPT)
 
     def test_build_sandbox_backend_accepts_lambda_labs_name(self) -> None:
         with patch.dict(

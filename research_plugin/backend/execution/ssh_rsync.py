@@ -132,6 +132,14 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     "*.tgz",
 )
 
+# The sandbox authors this directory itself (command transcripts, MLflow/
+# TensorBoard stores and pid files — created at boot, before the first push).
+# It is remote-authored, pull-only state: the push must never manage it. With
+# --delete, an --exclude *protects* the remote tree; without this, the very
+# first push tries to delete the boot-created files and fails (rsync exit 23,
+# Permission denied on root-owned pids/logs).
+SESSIONS_DIR_EXCLUDE = ".research_plugin_sessions/"
+
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
@@ -278,7 +286,8 @@ class SshRsyncSyncer:
                     remote_dir=remote_sync_dir,
                     local_dir=local_sync_dir,
                     max_size="100m",
-                    excludes=DEFAULT_EXCLUDES + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/",),
+                    excludes=DEFAULT_EXCLUDES
+                    + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/", SESSIONS_DIR_EXCLUDE),
                 ),
                 False,
             ),

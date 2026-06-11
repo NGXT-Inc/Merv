@@ -38,6 +38,7 @@ class FakeSandboxBackend:
         configurable_resources: bool = True,
         catalog_options: list[dict] | None = None,
         catalog_regions: list[str] | None = None,
+        default_dashboards: bool = True,
     ) -> None:
         self.capabilities = BackendCapabilities(
             name="fake",
@@ -51,6 +52,7 @@ class FakeSandboxBackend:
         # at all, so default instances behave exactly as before (no catalog).
         self._catalog_options = catalog_options
         self._catalog_regions = catalog_regions
+        self.default_dashboards = default_dashboards
         if requires_hardware_selection:
             self.hardware_catalog = self._hardware_catalog_impl  # type: ignore[assignment]
         self.counter = 0
@@ -115,13 +117,16 @@ class FakeSandboxBackend:
         # Default fake-Modal dashboard URLs so the SandboxService persistence +
         # serializer path is exercised. A test wanting "no dashboards" can clear
         # ``self.dashboards[sandbox_id]``.
-        self.dashboards.setdefault(
-            sandbox_id,
-            {
-                "mlflow": f"https://mlflow-{sandbox_id}.modal.test",
-                "tensorboard": f"https://tensorboard-{sandbox_id}.modal.test",
-            },
-        )
+        if self.default_dashboards:
+            self.dashboards.setdefault(
+                sandbox_id,
+                {
+                    "mlflow": f"https://mlflow-{sandbox_id}.modal.test",
+                    "tensorboard": f"https://tensorboard-{sandbox_id}.modal.test",
+                },
+            )
+        else:
+            self.dashboards.setdefault(sandbox_id, {})
         return ProvisionedSandbox(
             sandbox_id=sandbox_id,
             ssh_host=host,

@@ -106,6 +106,15 @@ class SshRsyncSyncerTest(unittest.TestCase):
         self.assertEqual(calls[0][-1], "root@127.0.0.1:/workspace/synced/")
         self.assertEqual(calls[1][-2], str(local / "artifacts_to_keep") + "/")
         self.assertEqual(calls[1][-1], "root@127.0.0.1:/workspace/synced/artifacts_to_keep/")
+        # The sandbox-authored sessions dir is protected from the push's
+        # --delete: the sandbox creates dashboard pids/logs there at boot,
+        # before the first push, and the push must never try to remove them.
+        main_push = calls[0]
+        self.assertIn("--delete", main_push)
+        exclude_values = [
+            main_push[i + 1] for i, arg in enumerate(main_push) if arg == "--exclude"
+        ]
+        self.assertIn(".research_plugin_sessions/", exclude_values)
 
     def test_push_initial_missing_artifact_dir_is_tolerated(self) -> None:
         calls: list[list[str]] = []

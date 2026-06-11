@@ -65,6 +65,9 @@ export const api = {
   getExperiment: (pid, eid) => request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}`),
   getExperimentStatus: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/status`),
+  // Derived figure graph (nodes + edges) for the experiment canvas.
+  getExperimentFigure: (pid, eid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/figure`),
   transitionExperiment: (pid, eid, transition, evidence) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/transition`, {
       method: 'POST',
@@ -94,8 +97,12 @@ export const api = {
   getResource: (pid, rid) => request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}`),
   getResourceContent: (pid, rid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/content`),
-  resourceFileUrl: (pid, rid) =>
-    `${BASE}/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/file`,
+  // rel: optional path relative to the resource's own directory (locked inside
+  // the repo root server-side) — used to resolve a report's figure links.
+  resourceFileUrl: (pid, rid, rel = null) =>
+    `${BASE}/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/file${
+      rel ? `?rel=${encodeURIComponent(rel)}` : ''
+    }`,
 
   // Versioning (shadow-Git-backed). Resources carry version metadata directly
   // (current_version_id, current_version, associations[].version_id), but for
@@ -155,18 +162,32 @@ export const api = {
   getToolCall: (id) => request(`/api/debug/tool-calls/${encodeURIComponent(id)}`),
   clearToolCalls: () => request(`/api/debug/tool-calls/clear`, { method: 'POST' }),
 
-  // Sandboxes (Modal-backed; agent drives execution over SSH — see sandboxes.py).
+  // Sandboxes (cloud-backed; agent drives execution over SSH — see sandboxes.py).
   // The UI observes; it does not procure sandboxes (that is an agent MCP action).
   listSandboxes: (pid) => request(`/api/projects/${encodeURIComponent(pid)}/sandboxes`),
   getSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox`),
-  getSandboxTerminal: (pid, eid, tail = 50000) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/terminal?tail=${tail}`),
+  // Terminal transcript. Pass { since: cursor } (from the previous response's
+  // `cursor`) to fetch only new bytes — the cheap incremental poll. Without
+  // `since`, returns the last `tail` bytes (the initial full pull).
+  getSandboxTerminal: (pid, eid, { tail = 200000, since = null } = {}) => {
+    const p = new URLSearchParams();
+    if (since != null) p.set('since', String(since));
+    else p.set('tail', String(tail));
+    return request(
+      `/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/terminal?${p.toString()}`,
+    );
+  },
   // Live in-container usage (CPU/RAM/GPU), sampled on demand. Best-effort:
   // returns { available: false } when the sandbox is not running or the sampler
   // came back empty (e.g. a CPU-only image without nvidia-smi).
   getSandboxMetrics: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/metrics`),
+  // Archived MLflow metrics (runs, params, final values, downsampled history),
+  // captured by the daemon on sync and right before release — readable long
+  // after the sandbox VM is gone. { available: false } when never captured.
+  getExperimentResultsMetrics: (pid, eid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/results/metrics`),
   syncSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/sync`, { method: 'POST' }),
   releaseSandbox: (pid, eid) =>

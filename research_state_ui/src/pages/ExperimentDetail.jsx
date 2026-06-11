@@ -7,6 +7,8 @@ import StatusPill from '../components/StatusPill';
 import FSMStrip from '../components/FSMStrip';
 import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
+import ReportSpotlight from '../components/ReportSpotlight';
+import ExperimentFigure from '../components/ExperimentFigure';
 import SandboxTerminal from '../components/SandboxTerminal';
 import OutcomesSection from '../components/OutcomesSection';
 import ResourceList from '../components/ResourceList';
@@ -18,6 +20,7 @@ import { gateToSectionId, useScrollToHash } from '../utils/useScrollToHash';
 const NEXT_ACTION_TO_ROLE = {
   write_or_sync_plan_resource: 'plan',
   sync_result_resources: 'result',
+  write_and_associate_results_report: 'report',
 };
 
 // Map experiment.status → which stage to highlight in the orientation strip.
@@ -48,7 +51,10 @@ function deriveActionButtons(workflow) {
   if (!workflow) return { primary: null, secondary: [] };
   const allowsTransition = (workflow.allowed_actions || []).some(a => a === 'experiment.transition' || (a && !a.includes('.')));
   if (!allowsTransition) return { primary: null, secondary: [] };
-  const primary = NEXT_ACTION_TO_TRANSITION[workflow.next_action] || null;
+  // next_action may carry inline guidance after the verb (e.g.
+  // "submit_results_for_review (call only once …)") — match on the verb.
+  const actionKey = String(workflow.next_action || '').split(/[\s(]/)[0];
+  const primary = NEXT_ACTION_TO_TRANSITION[actionKey] || null;
   const inFlight = !['complete', 'failed', 'abandoned', 'terminal'].includes(workflow.current_gate);
   return { primary, secondary: inFlight ? SECONDARY_TRANSITIONS : [] };
 }
@@ -67,6 +73,7 @@ export default function ExperimentDetail() {
   const [showAddPlan, setShowAddPlan] = useState(false);
   const [showAddInput, setShowAddInput] = useState(false);
   const [showAddOutcome, setShowAddOutcome] = useState(false);
+  const [showAddReport, setShowAddReport] = useState(false);
 
   // Cross-page deep links (e.g. /experiments/:id#execution) — once the
   // experiment has loaded and its sections rendered, scroll the matching id
@@ -151,9 +158,15 @@ export default function ExperimentDetail() {
         a => a.target_type === 'experiment' && a.target_id === experimentId && a.role === 'plan'
       )) || null;
   const planRes = planResFromCurrent || planResFromHistory;
+  // The results report (role 'report') mirrors the plan: current attempt only
+  // (a prior attempt's report is history, not the face of this attempt).
+  const reportResBare = currentRes.find(r => r.association_role === 'report') || null;
+  const reportRes = reportResBare
+    ? (allProjectResources.find(r => r.id === reportResBare.id) || reportResBare)
+    : null;
   const execRes    = currentRes.filter(r => ['code', 'config', 'input'].includes(r.association_role));
   const outcomeRes = currentRes.filter(r => ['result', 'model'].includes(r.association_role));
-  const otherRes   = currentRes.filter(r => !['plan', 'code', 'config', 'input', 'result', 'model'].includes(r.association_role));
+  const otherRes   = currentRes.filter(r => !['plan', 'report', 'code', 'config', 'input', 'result', 'model'].includes(r.association_role));
 
   // Historical (deduped by id).
   const historicalRes = (experiment.resources || [])
@@ -211,7 +224,26 @@ export default function ExperimentDetail() {
         {actionError && <div className="error-message">{actionError}</div>}
       </section>
 
-      {/* ─────────────  PLAN SPOTLIGHT  ─────────────────────────────── */}
+      {/* ─────────────  FIGURE  ─────────────────────────────────────── */}
+      <ExperimentFigure
+        projectId={projectId}
+        experimentId={experimentId}
+        experimentStatus={experiment.status}
+        attemptIndex={currentAttempt}
+      />
+
+      {/* ─────────────  REPORT + PLAN SPOTLIGHTS  ───────────────────── */}
+      {/* Once a results report exists it becomes the face of the experiment:
+          it renders first and the plan starts collapsed (still one click
+          away). Before results, the plan keeps the hero position. */}
+      {reportRes && (
+        <ReportSpotlight
+          projectId={projectId}
+          reportResource={reportRes}
+          experimentReviews={experimentReviews}
+          experimentStatus={experiment.status}
+        />
+      )}
       <PlanSpotlight
         projectId={projectId}
         experimentId={experimentId}
@@ -219,6 +251,7 @@ export default function ExperimentDetail() {
         designReviews={designReviews}
         attemptIndex={currentAttempt}
         experimentStatus={experiment.status}
+        defaultOpen={!reportRes}
       />
 
       {!planRes && !['complete', 'failed', 'abandoned'].includes(experiment.status) && (
@@ -286,6 +319,32 @@ export default function ExperimentDetail() {
         experimentReviews={experimentReviews}
         experimentStatus={experiment.status}
       />
+
+      {!reportRes && experiment.status === 'running' && (
+        <div id="report" className="spotlight-followup">
+          <button
+            type="button"
+            className="btn btn--sm btn--primary"
+            onClick={() => setShowAddReport(v => !v)}
+          >
+            {showAddReport ? 'Cancel' : '+ Add results report'}
+          </button>
+          {showAddReport && (
+            <div style={{ marginTop: 10 }}>
+              <AddResourceToExperiment
+                projectId={projectId}
+                experimentId={experimentId}
+                attemptIndex={currentAttempt}
+                currentResources={currentRes}
+                allResources={allProjectResources}
+                defaultRole="report"
+                onCancel={() => setShowAddReport(false)}
+                onDone={async () => { setShowAddReport(false); await refresh(); }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {!['complete', 'failed', 'abandoned'].includes(experiment.status) && experiment.status !== 'planned' && (
         <div className="spotlight-followup">

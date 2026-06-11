@@ -145,6 +145,7 @@ class ReviewService:
         notes: str = "",
         findings: list[dict[str, Any]] | None = None,
         evidence: dict[str, Any] | None = None,
+        return_to: str = "",
     ) -> dict[str, Any]:
         self.permissions.validate_review_verdict(verdict=verdict)
         with self.store.transaction() as conn:
@@ -156,14 +157,15 @@ class ReviewService:
             req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (session["request_id"],)).fetchone()
             if req is None:
                 raise NotFoundError(f"review request not found: {session['request_id']}")
+            return_to = self._validate_return_to(role=req["role"], verdict=verdict, return_to=return_to)
             review_id = new_id(prefix="rev")
             conn.execute(
                 """
                 INSERT INTO reviews (
                   id, project_id, request_id, session_id, target_snapshot_id, target_type, target_id,
-                  role, verdict, notes, findings_json, evidence_json, created_at
+                  role, verdict, return_to, notes, findings_json, evidence_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
@@ -175,6 +177,7 @@ class ReviewService:
                     req["target_id"],
                     req["role"],
                     verdict,
+                    return_to,
                     notes,
                     json.dumps(findings or [], sort_keys=True),
                     json.dumps(evidence or {}, sort_keys=True),
@@ -189,7 +192,7 @@ class ReviewService:
                 event_type="review.submitted",
                 target_type=req["target_type"],
                 target_id=req["target_id"],
-                payload={"role": req["role"], "verdict": verdict, "review_id": review_id},
+                payload={"role": req["role"], "verdict": verdict, "review_id": review_id, "return_to": return_to},
             )
             if req["target_type"] == "experiment" and verdict in {"needs_changes", "fail"}:
                 revision_context = self._revision_context(
@@ -197,12 +200,20 @@ class ReviewService:
                     verdict=verdict,
                     notes=notes,
                     findings=findings or [],
+                    return_to=return_to,
                 )
-                self.experiments.send_back_to_planned(
-                    conn=conn,
-                    experiment_id=req["target_id"],
-                    revision_context=revision_context,
-                )
+                if return_to == "running":
+                    self.experiments.send_back_to_running(
+                        conn=conn,
+                        experiment_id=req["target_id"],
+                        revision_context=revision_context,
+                    )
+                else:
+                    self.experiments.send_back_to_planned(
+                        conn=conn,
+                        experiment_id=req["target_id"],
+                        revision_context=revision_context,
+                    )
             review = conn.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
             return self._hydrate_review(row=review)
 
@@ -317,6 +328,34 @@ class ReviewService:
         if datetime.now(UTC) > expires:
             raise PermissionDeniedError("reviewer capability expired")
 
+    def _validate_return_to(self, *, role: str, verdict: str, return_to: str) -> str:
+        """Resolve where a rejection sends the experiment.
+
+        Experiment reviewers must choose explicitly: 'planned' when the results
+        revealed a flaw in the plan itself, 'running' when the plan stands but
+        execution or the conclusion is flawed. Design rejections can only go
+        back to 'planned' — a flawed plan is never fixed by re-running it.
+        """
+        return_to = (return_to or "").strip()
+        if return_to not in {"", "planned", "running"}:
+            raise ValidationError("return_to must be 'planned' or 'running'")
+        if verdict == "pass":
+            if return_to:
+                raise ValidationError("return_to only applies when the verdict is needs_changes or fail")
+            return ""
+        if role == "experiment_reviewer" and not return_to:
+            raise ValidationError(
+                "experiment-review rejections must set return_to: 'planned' if the "
+                "results show the plan itself is flawed, or 'running' if the plan "
+                "stands but execution or the conclusion is flawed"
+            )
+        if role == "design_reviewer" and return_to == "running":
+            raise ValidationError(
+                "design-review rejections cannot return_to 'running'; a flawed plan "
+                "goes back to 'planned'"
+            )
+        return return_to or "planned"
+
     def _validate_role_matches_gate(self, *, experiment_status: str, role: str) -> None:
         expected = {
             "design_review": "design_reviewer",
@@ -347,9 +386,16 @@ class ReviewService:
             ]
         )
 
-    def _revision_context(self, *, role: str, verdict: str, notes: str, findings: list[dict[str, Any]]) -> str:
+    def _revision_context(
+        self, *, role: str, verdict: str, notes: str, findings: list[dict[str, Any]], return_to: str = ""
+    ) -> str:
         finding_text = "; ".join(str(item.get("issue", "")) for item in findings if item.get("issue"))
         pieces = [f"{role} returned {verdict}"]
+        if return_to == "running":
+            pieces.append(
+                "Sent back to running: the approved plan stands; fix execution "
+                "and/or the conclusion, then sync results and resubmit"
+            )
         if notes:
             pieces.append(notes)
         if finding_text:

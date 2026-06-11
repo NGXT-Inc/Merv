@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { api } from '../api';
 
 const KINDS = ['plan', 'code', 'config', 'input', 'dataset', 'result', 'note', 'model', 'other'];
-const ROLES = ['plan', 'code', 'config', 'input', 'result', 'note', 'model'];
+const ROLES = ['plan', 'code', 'config', 'input', 'result', 'report', 'note', 'model'];
 
 /**
  * Two flows for getting a resource into an experiment:

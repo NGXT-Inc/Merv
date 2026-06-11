@@ -21,6 +21,7 @@ from . import __version__
 from .app import ResearchPluginApp
 from .contracts import PROJECT_SCOPED_TOOL_NAMES
 from .project_router import ProjectRouter
+from .services.figure_view import build_experiment_figure
 from .services.sandbox_views import sandbox_row_view
 from .utils import NotFoundError, ResearchPluginError, ValidationError
 from .state import monotonic_ms
@@ -272,9 +273,22 @@ class ResearchHttpApi:
             "size_bytes": path.stat().st_size,
         }
 
-    def resource_file(self, project_id: str, resource_id: str) -> tuple[bytes, dict[str, str]]:
+    def resource_file(
+        self, project_id: str, resource_id: str, rel: str | None = None
+    ) -> tuple[bytes, dict[str, str]]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
         path = self._resource_path(resource=resource)
+        if rel:
+            # Serve a file referenced by the resource (e.g. a report's relative
+            # figure link), resolved against the resource's own directory and
+            # locked inside the repo root.
+            path = (path.parent / rel).resolve()
+            try:
+                path.relative_to(self.app.store.repo_root)
+            except ValueError as exc:
+                raise ValidationError("relative file path escapes repo root") from exc
+            if not path.is_file():
+                raise NotFoundError(f"file not found next to resource: {rel}")
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         return path.read_bytes(), {
             "Content-Type": mime,
@@ -350,8 +364,56 @@ class ResearchHttpApi:
     def sandbox_metrics_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
         return self.app.sandboxes.sample_metrics(experiment_id=experiment_id, project_id=project_id)
 
+    def results_metrics_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+        """Archived MLflow metrics — durable results that outlive the sandbox VM."""
+        return self.app.sandboxes.results_metrics(experiment_id=experiment_id, project_id=project_id)
+
     def sandbox_health_view(self) -> dict[str, Any]:
         return self.app.sandboxes.backend_health()
+
+    def experiment_figure(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+        """Derived figure graph for the UI canvas (no agent-authored overlay yet)."""
+        experiment = self.app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+        review_attempts = {
+            str(review.get("id")): int(
+                self.app.reviews.snapshot_from_id(
+                    snapshot_id=str(review.get("target_snapshot_id") or "")
+                ).get("attempt_index") or 0
+            )
+            for review in experiment.get("reviews", [])
+        }
+        sandbox_row = self.app.sandboxes.get_row(experiment_id=experiment_id, project_id=project_id)
+        sandbox = (
+            sandbox_row_view(row=sandbox_row, repo_root=self.app.store.repo_root)
+            if sandbox_row is not None
+            else None
+        )
+        return build_experiment_figure(
+            experiment=experiment,
+            review_attempts=review_attempts,
+            open_review_requests=self._open_review_requests(
+                project_id=project_id, experiment_id=experiment_id
+            ),
+            sandbox=sandbox,
+        )
+
+    def _open_review_requests(self, *, project_id: str, experiment_id: str) -> list[dict[str, Any]]:
+        conn = self.app.store.connect()
+        try:
+            project_id = self.app.store.require_project_id(conn=conn, project_id=project_id)
+            rows = conn.execute(
+                """
+                SELECT id, role, status, reason, created_at
+                FROM review_requests
+                WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
+                  AND status IN ('requested', 'started')
+                ORDER BY rowid
+                """,
+                (project_id, experiment_id),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
 
     def _experiment_view_model(self, *, exp: dict[str, Any]) -> dict[str, Any]:
         current = exp.get("current_attempt_resources", [])
@@ -601,6 +663,11 @@ def create_fastapi_app(
         # Full shape for the UI (see home()); the tool stays slim for the agent.
         return api_for_project(project_id).app.workflow.status_and_next(project_id=project_id, experiment_id=experiment_id)
 
+    @http.get("/api/projects/{project_id}/experiments/{experiment_id}/figure")
+    def experiment_figure(project_id: str, experiment_id: str) -> dict[str, Any]:
+        # Derived graph for the figure canvas; UI-only read, no agent tool.
+        return api_for_project(project_id).experiment_figure(project_id=project_id, experiment_id=experiment_id)
+
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/transition")
     def transition_experiment(project_id: str, experiment_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
         return api_for_project(project_id).call_tool(name="experiment.transition", arguments={"project_id": project_id, "experiment_id": experiment_id, **(body or {})})
@@ -642,8 +709,10 @@ def create_fastapi_app(
         return api_for_project(project_id).resource_content(project_id=project_id, resource_id=resource_id)
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/file")
-    def resource_file(project_id: str, resource_id: str) -> Response:
-        content, headers = api_for_project(project_id).resource_file(project_id=project_id, resource_id=resource_id)
+    def resource_file(project_id: str, resource_id: str, rel: str | None = None) -> Response:
+        content, headers = api_for_project(project_id).resource_file(
+            project_id=project_id, resource_id=resource_id, rel=rel
+        )
         content_type = headers.pop("Content-Type", "application/octet-stream")
         return Response(content=content, media_type=content_type, headers=headers)
 
@@ -684,11 +753,24 @@ def create_fastapi_app(
     def sandbox_metrics(project_id: str, experiment_id: str) -> dict[str, Any]:
         return api_for_project(project_id).sandbox_metrics_view(project_id=project_id, experiment_id=experiment_id)
 
+    @http.get("/api/projects/{project_id}/experiments/{experiment_id}/results/metrics")
+    def experiment_results_metrics(project_id: str, experiment_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).results_metrics_view(
+            project_id=project_id, experiment_id=experiment_id
+        )
+
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal")
-    def sandbox_terminal(project_id: str, experiment_id: str, tail: int | None = None) -> dict[str, Any]:
+    def sandbox_terminal(
+        project_id: str,
+        experiment_id: str,
+        tail: int | None = None,
+        since: int | None = None,
+    ) -> dict[str, Any]:
         args: dict[str, Any] = {"project_id": project_id, "experiment_id": experiment_id}
         if tail is not None:
             args["tail"] = tail
+        if since is not None:
+            args["since"] = since
         return api_for_project(project_id).call_tool(name="sandbox.terminal", arguments=args)
 
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/sync")

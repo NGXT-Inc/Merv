@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 from backend.execution.bootstrap_tools import (
     LAMBDA_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
+    REC_EXEC_CORE,
 )
 from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
 from ...errors import BackendUnavailableError, BackendValidationError
@@ -47,6 +48,7 @@ TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
 TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
 ACTIVE_INSTANCE_STATUSES = frozenset({"active"})
 LIVE_INSTANCE_STATUSES = frozenset({"booting", "active", "unhealthy"})
+DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
 
 SshRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
@@ -63,6 +65,9 @@ RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIME
 MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://localhost:5000}"
 export RP_WORKDIR RP_SYNC_DIR RP_UNSYNCED_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR RP_TB_LOGDIR MLFLOW_TRACKING_URI
 mkdir -p "$RP_SYNC_DIR" "$RP_UNSYNCED_DIR" "$RP_SYNC_DIR/artifacts_to_keep" 2>/dev/null || true
+if [ -x /opt/rp/start_dashboards.sh ]; then
+  /opt/rp/start_dashboards.sh >/dev/null 2>&1 || true
+fi
 LOG_DIR="$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIMENT_ID"
 LOG="$LOG_DIR/transcript.log"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -86,14 +91,65 @@ if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
   esac
   { printf '\n[%s] $ %s\n' "$(ts)" "$SSH_ORIGINAL_COMMAND" >> "$LOG"; } 2>/dev/null || true
   cd "$RP_WORKDIR" 2>/dev/null || true
-  bash -lc "$SSH_ORIGINAL_COMMAND" 2>&1 | tee -a "$LOG"
-  rc=${PIPESTATUS[0]}
-  { printf '[%s] (exit %d)\n' "$(ts)" "$rc" >> "$LOG"; } 2>/dev/null || true
-  exit "$rc"
+""" + REC_EXEC_CORE + r"""
 else
   { printf '\n[%s] (interactive shell)\n' "$(ts)" >> "$LOG"; } 2>/dev/null || true
   cd "$RP_WORKDIR" 2>/dev/null || true
   exec bash -l
+fi
+"""
+
+
+DASHBOARD_SCRIPT = r"""#!/usr/bin/env bash
+set +e
+[ -f /opt/rp/env ] && . /opt/rp/env
+RP_WORKDIR="${RP_WORKDIR:-/workspace/synced}"
+RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
+RP_DASH_DIR="${RP_DASH_DIR:-$RP_WORKDIR/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
+RP_MLFLOW_DB="$RP_DASH_DIR/mlflow.db"
+RP_MLFLOW_ARTIFACTS="$RP_DASH_DIR/mlflow-artifacts"
+RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_DASH_DIR/tb}"
+mkdir -p "$RP_MLFLOW_ARTIFACTS" "$RP_TB_LOGDIR" 2>/dev/null || true
+
+pid_alive() {
+  pid_file="$1"
+  [ -s "$pid_file" ] || return 1
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+if python3 -c 'import mlflow' >/dev/null 2>&1; then
+  if ! pid_alive "$RP_DASH_DIR/mlflow.pid"; then
+    (
+      cd /tmp || exit 0
+      nohup python3 -m mlflow server \
+        --host 127.0.0.1 --port 5000 \
+        --backend-store-uri "sqlite:///$RP_MLFLOW_DB" \
+        --artifacts-destination "file://$RP_MLFLOW_ARTIFACTS" \
+        --serve-artifacts \
+        >"$RP_DASH_DIR/mlflow.log" 2>&1 &
+      echo $! > "$RP_DASH_DIR/mlflow.pid"
+    )
+  fi
+else
+  {
+    printf '[%s] mlflow is not importable yet; dashboard not started\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    python3 -c 'import mlflow' 2>&1
+  } >> "$RP_DASH_DIR/mlflow.log" 2>&1 || true
+fi
+
+if python3 -c 'import tensorboard' >/dev/null 2>&1; then
+  if ! pid_alive "$RP_DASH_DIR/tensorboard.pid"; then
+    (
+      cd /tmp || exit 0
+      nohup python3 -m tensorboard.main \
+        --host 127.0.0.1 --port 6006 \
+        --logdir "$RP_TB_LOGDIR" \
+        >"$RP_DASH_DIR/tensorboard.log" 2>&1 &
+      echo $! > "$RP_DASH_DIR/tensorboard.pid"
+    )
+  fi
 fi
 """
 
@@ -343,6 +399,15 @@ class LambdaLabsSandboxBackend:
             return None
         return parse_metrics(result.stdout or "")
 
+    def local_dashboard_ports(self) -> dict[str, int]:
+        """Dashboard ports reachable only from inside the VM.
+
+        The registry turns these into daemon-owned SSH local forwards and stores
+        loopback URLs in the sandbox row. Modal does not use this path because it
+        exposes native HTTPS dashboard tunnels.
+        """
+        return dict(DASHBOARD_PORTS)
+
     def sandbox_environment(self) -> dict:
         available_tokens: list[str] = []
         if os.environ.get("HF_TOKEN"):
@@ -554,9 +619,22 @@ def build_user_data(
     tokens: Mapping[str, str] | None = None,
 ) -> str:
     apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
-    python_packages = " ".join(shlex.quote(pkg) for pkg in (*ML_PYTHON_PACKAGES, "mlflow==2.18.0", "tensorboard==2.18.0"))
+    python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
+    # Dashboard deps install one-at-a-time, only when missing, and with
+    # --ignore-installed. The image ships Debian-owned Python packages without
+    # RECORD files (Werkzeug 3.0.1 was the observed one); pip cannot uninstall
+    # those, so any dependency upgrade that touches one aborts the whole
+    # install — that is how mlflow silently went missing while the hint still
+    # advertised it. --ignore-installed installs fresh copies into /usr/local
+    # (which shadows the Debian dist-packages on sys.path) and never calls
+    # uninstall at all. uv is skipped here: `uv pip install --system` refuses
+    # PEP 668 externally-managed interpreters outright. tensorboard stays
+    # unpinned (the preinstalled one is fine); mlflow keeps its pin.
+    mlflow_package = shlex.quote("mlflow==2.18.0")
     public_key_b64 = base64.b64encode(public_key.encode("utf-8")).decode("ascii")
     rec_script_b64 = base64.b64encode(REC_SCRIPT.encode("utf-8")).decode("ascii")
+    dashboard_script_b64 = base64.b64encode(DASHBOARD_SCRIPT.encode("utf-8")).decode("ascii")
+    dash_dir = workdir + "/" + SESSIONS_DIR_NAME + "/" + experiment_id
     env_lines = "\n".join(
         [
             f"RP_WORKDIR={shlex.quote(workdir)}",
@@ -565,7 +643,8 @@ def build_user_data(
             f"RP_EXPERIMENT_ID={shlex.quote(experiment_id)}",
             f"RP_SANDBOX_DATA_DIR={shlex.quote(sandbox_data_dir)}",
             f"RP_DATASET_DIR={shlex.quote(sandbox_data_dir)}",
-            f"RP_TB_LOGDIR={shlex.quote(workdir + '/' + SESSIONS_DIR_NAME + '/' + experiment_id + '/tb')}",
+            f"RP_DASH_DIR={shlex.quote(dash_dir)}",
+            f"RP_TB_LOGDIR={shlex.quote(dash_dir + '/tb')}",
             "MLFLOW_TRACKING_URI=http://localhost:5000",
             # Credentials (e.g. HF_TOKEN) ride in /opt/rp/env with an explicit
             # `export` so rec.sh's sourcing puts them in every SSH session's
@@ -602,7 +681,9 @@ cat > /opt/rp/env <<'RP_ENV'
 {env_lines}
 RP_ENV
 printf '%s' {shlex.quote(rec_script_b64)} | base64 -d > /opt/rp/rec.sh
+printf '%s' {shlex.quote(dashboard_script_b64)} | base64 -d > /opt/rp/start_dashboards.sh
 chmod +x /opt/rp/rec.sh
+chmod +x /opt/rp/start_dashboards.sh
 cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
@@ -628,11 +709,24 @@ if ! command -v uv >/dev/null 2>&1; then
     install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
   fi
 fi
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --system torch torchvision torchaudio || true
-  uv pip install --system {python_packages} || true
+install_with_uv_or_pip() {{
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --system "$@" || python3 -m pip install --break-system-packages "$@"
+  else
+    python3 -m pip install --break-system-packages "$@"
+  fi
+}}
+python3 -c 'import mlflow' >/dev/null 2>&1 || python3 -m pip install --break-system-packages --ignore-installed {mlflow_package} || echo "[rp] mlflow install failed" >> /opt/rp/bootstrap.log
+python3 -c 'import tensorboard' >/dev/null 2>&1 || python3 -m pip install --break-system-packages --ignore-installed tensorboard || echo "[rp] tensorboard install failed" >> /opt/rp/bootstrap.log
+install_with_uv_or_pip torch torchvision torchaudio || true
+install_with_uv_or_pip {python_packages} || true
+# Dashboards write pids/logs into the synced workspace; start them as the SSH
+# login user, never root — root-owned files here break the ubuntu-user rsync
+# (--delete cannot unlink them: exit 23 on the very first workspace push).
+if id ubuntu >/dev/null 2>&1; then
+  sudo -u ubuntu /opt/rp/start_dashboards.sh || true
 else
-  python3 -m pip install --break-system-packages torch torchvision torchaudio {python_packages} || true
+  /opt/rp/start_dashboards.sh || true
 fi
 """
 

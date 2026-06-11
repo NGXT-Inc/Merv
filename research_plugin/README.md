@@ -427,15 +427,25 @@ its output to `.research_plugin_sessions/<experiment>/transcript.log` under
 `/workspace/synced`. `sandbox.terminal` reads it live from the sandbox; the UI
 renders it as a per-experiment terminal window.
 
+Durability: the wrapper runs every recorded command inside a detached tmux
+session (both backends), so a command's lifetime is anchored to the VM rather
+than to the SSH channel — dropped connections and timed-out agent calls stop
+the viewing, not the work. Output keeps streaming into the transcript and the
+`(exit N)` marker is written when the command ends, even with nobody connected.
+Per-command run records (command, output, exit code) live under
+`$RP_UNSYNCED_DIR/.rp_runs/`. If tmux is unavailable the wrapper falls back to
+the legacy attached execution.
+
 For training runs the sandbox also boots an **MLflow tracking server** (port
-5000) and a **TensorBoard** (port 6006) backed by the synced sessions directory,
-exposed to the user as HTTPS URLs through Modal encrypted tunnels. The sandbox
-row carries them as
+5000) and a **TensorBoard** (port 6006) backed by the synced sessions directory.
+Modal exposes them as HTTPS URLs through encrypted tunnels; Lambda Labs exposes
+them through daemon-owned SSH local forwards. The sandbox row carries them as
 `dashboards: {mlflow, tensorboard}` and the UI renders one iframe tab per
 non-empty entry. `MLFLOW_TRACKING_URI=http://localhost:5000` is exported into
 every SSH command, so Hugging Face `Trainer` and PyTorch Lightning's
-`MLFlowLogger` auto-detect the server; for plain PyTorch the agent calls
-`mlflow.autolog()` once. Stores live under
+`MLFlowLogger` can log to MLflow directly. Agents log run params, metrics, and
+artifacts to MLflow and write TensorBoard events to `$RP_TB_LOGDIR`; for plain
+PyTorch they can call `mlflow.autolog()` when useful. Stores live under
 `.research_plugin_sessions/<experiment>/{mlflow.db, mlflow-artifacts, tb}` so
 runs accumulate across re-acquires of the same experiment.
 

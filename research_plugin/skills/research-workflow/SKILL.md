@@ -103,7 +103,12 @@ SSH. You run ordinary shell commands. The default provider is **Lambda Labs**
    regenerated each request, so it always points at the live sandbox. Run it
    from the repo root; if you are elsewhere, use `ssh.raw_command` (the fully
    qualified `ssh` line) instead. Output streams back to you and is recorded to
-   the experiment's terminal transcript for the user.
+   the experiment's terminal transcript for the user. Commands run under a
+   tmux supervisor on the sandbox, so they keep running if SSH drops or your
+   command call times out - a timeout means you stopped watching, not that the
+   command stopped. Long foreground runs are safe; check the transcript
+   (`sandbox.terminal`) for the command's `(exit N)` marker before re-running
+   anything long.
 3. The sandbox starts with the experiment's local synced folder pushed to
    `$RP_SYNC_DIR` (`/workspace/synced`). Once it is running, treat the sandbox as
    the source of truth for experiment file changes: edit/run/write result files
@@ -130,12 +135,12 @@ SSH. You run ordinary shell commands. The default provider is **Lambda Labs**
    a TensorBoard side-by-side under `$RP_SYNC_DIR/.research_plugin_sessions`.
    Inside SSH commands,
    `MLFLOW_TRACKING_URI=http://localhost:5000` is already exported and
-   `$RP_TB_LOGDIR` points at the TensorBoard logdir. Frameworks that
-   auto-detect MLflow — Hugging Face `Trainer` with the default
-   `report_to="all"`, and PyTorch Lightning with `MLFlowLogger` — pick it up
-   with no setup. For plain PyTorch, add `mlflow.autolog()` once at the top of
-   the training script. The user sees the dashboards live in their UI; you do
-   not need to fetch, share, or open the URLs yourself.
+   `$RP_TB_LOGDIR` points at the TensorBoard logdir. Log run params, metrics,
+   and artifacts to MLflow, and write TensorBoard events to `$RP_TB_LOGDIR`.
+   Framework integrations such as Hugging Face `Trainer` and PyTorch Lightning
+   `MLFlowLogger` can use these env vars directly; for plain PyTorch, add
+   `mlflow.autolog()` when useful. The user sees the dashboards live in their
+   UI; you do not need to fetch, share, or open the URLs yourself.
 6. Before registering or associating result resources, call
    `sandbox.sync(experiment_id)`. This pulls `$RP_SYNC_DIR` back to the local
    experiment folder with SSH rsync. Resource tools only see local files, so
@@ -196,6 +201,32 @@ If `submit_design` is rejected for missing sections, fill them in and retry —
 the lint reads the live file, so no re-registration is needed (though you still
 sync the plan as a resource so it is associated).
 
+## Results report
+
+The report is one repo file (e.g. `experiments/<name>/report.md`) associated
+with role `report`. It is the **face of the executed experiment**: what the
+user reads in the UI once results exist and what the experiment reviewer
+grades against the plan's Evaluation section. Write it from
+`skills/research-workflow/report-template.md`, in the same pass as your result
+files — save the figures (matplotlib PNGs) while the run's metrics are at hand.
+
+`experiment.transition(submit_results)` is blocked until the current attempt
+has BOTH a `result` resource and a `report` resource whose live file passes
+the report lint:
+
+- **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
+  with real content.
+- **Results must contain a markdown table** of metrics: target/paper value vs
+  achieved, per task/seed where relevant — the exact metrics the plan's
+  Evaluation section named.
+- **Under 10 KB.** The report is the executive layer: link raw metrics files
+  (`results.json`, logs) as separate result resources instead of inlining.
+- **Every relative image link resolves** to a synced file. Save figures next
+  to the report (`figures/*.png`) and `sandbox.sync` before submitting.
+
+The Conclusion must apply the plan's pre-registered decision rule explicitly —
+the experiment reviewer compares the two documents side by side.
+
 ## Resource discipline
 
 Resources are repo files. Prefer one file per resource.
@@ -209,7 +240,7 @@ When the agent creates or changes files during an experiment:
 - associate synced resources with the current experiment, claim, or review
 - when `workflow.status_and_next` includes `resource_guidance`, follow its
   `association_role`; do not guess plural role names such as `results`,
-  `report`, or `output`
+  `reports`, or `output` (the singular roles are `result` and `report`)
 - expect `workflow.status_and_next` to refresh already-associated current-attempt
   resources if their live files changed; do not do separate sync checks before
   every workflow status call
@@ -248,8 +279,16 @@ review to MCP. They must not mutate claims, experiments, resources, sandboxes,
 or workflow state.
 
 If a review fails or needs changes, ask MCP for `workflow.status_and_next`.
-Expect the experiment to return to `planned` with revision context from prior
-attempts and review findings.
+The reviewer's `return_to` decides where the experiment lands, with revision
+context attached either way:
+
+- Design-review rejections always return to `planned` — revise the plan and
+  resubmit for design review (the attempt counter advances).
+- Experiment-review rejections return to `planned` when the plan itself was
+  flawed, or to `running` when the plan stands but execution or the conclusion
+  was flawed. Back in `running`, the approved plan and current attempt remain
+  valid: address the revision context, re-run what is needed, sync results,
+  and `submit_results` again — do not redo the plan or design review.
 
 ## Completion
 

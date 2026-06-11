@@ -196,6 +196,17 @@ class ReviewStartInput(ContractModel):
 class ReviewSubmitInput(ContractModel):
     review_session_id: str
     verdict: Literal["pass", "needs_changes", "fail"]
+    return_to: Literal["", "planned", "running"] = Field(
+        default="",
+        description=(
+            "Where a rejected experiment goes next. REQUIRED on experiment-review "
+            "rejections (needs_changes/fail): 'planned' if the results show the "
+            "plan itself is flawed; 'running' if the plan stands but execution or "
+            "the conclusion is flawed (fix and re-run without redoing design "
+            "review). Omit on pass. Design-review rejections always return to "
+            "'planned'."
+        ),
+    )
     notes: str = Field(default="", description="Free-text summary of the review.")
     findings: list[dict[str, Any]] = Field(
         default_factory=list,

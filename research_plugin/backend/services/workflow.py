@@ -383,6 +383,20 @@ class WorkflowService:
                     ],
                     missing=["result resource"],
                     resource_guidance=self._result_resource_guidance(),
+                    revision=experiment.get("revision_context", ""),
+                )
+            if "report" not in roles:
+                return self._next(
+                    gate="results_report_required",
+                    action="write_and_associate_results_report",
+                    allowed=[
+                        "sandbox.sync",
+                        "resource.register_file",
+                        "resource.associate",
+                    ],
+                    missing=["results report resource (role 'report')"],
+                    resource_guidance=self._report_resource_guidance(),
+                    revision=experiment.get("revision_context", ""),
                 )
             return self._next(
                 gate="experiment_review_required",
@@ -392,9 +406,12 @@ class WorkflowService:
                     "experiment intent is satisfied; do NOT call if the "
                     "experiment should continue running; continue with "
                     "sandbox.* and resource.* calls instead and only "
-                    "transition once the work is truly done)"
+                    "transition once the work is truly done; if revision_context "
+                    "is present, the last review rejected this attempt — address "
+                    "it before resubmitting)"
                 ),
                 allowed=["experiment.transition"],
+                revision=experiment.get("revision_context", ""),
             )
         if status == "experiment_review":
             review_next = self._review_next(
@@ -556,6 +573,32 @@ class WorkflowService:
                 "sync directory. The backend also rsyncs periodically while the sandbox is "
                 "running, but explicit sandbox.sync is the durable handoff before workflow "
                 "mutations."
+            ),
+            "report_guidance": (
+                "A results report (role 'report') is also required before "
+                "submit_results — write it in the same pass as your result files. "
+                "While the run produces metrics, save the figures (matplotlib PNGs) "
+                "you will reference. See skills/research-workflow/report-template.md."
+            ),
+        }
+
+    def _report_resource_guidance(self) -> dict[str, Any]:
+        return {
+            "target_type": "experiment",
+            "association_role": "report",
+            "template": "skills/research-workflow/report-template.md",
+            "guidance": (
+                "Write a SHORT markdown results report in the experiment folder "
+                "($RP_SYNC_DIR on the sandbox), e.g. experiments/<name>/report.md. "
+                "Required sections: Summary; Results — MUST contain a markdown "
+                "table of metrics (paper/target value vs achieved, per task/seed "
+                "where relevant); Deviations from plan ('none' if faithful); "
+                "Conclusion — apply the plan's pre-registered decision rule "
+                "explicitly. Keep it under 10 KB: link raw metrics files instead "
+                "of inlining data. Reference figures with relative markdown image "
+                "links (e.g. ![loss](figures/loss.png)); every linked image must "
+                "exist after sandbox.sync or submit_results is blocked. Then "
+                "register the report and associate it with role 'report'."
             ),
         }
 

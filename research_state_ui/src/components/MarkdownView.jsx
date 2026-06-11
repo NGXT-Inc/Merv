@@ -13,13 +13,23 @@ import CodeBlock from './CodeBlock';
  * - remark-gfm adds tables, strikethrough, task lists, autolinks.
  * - Fenced code with a language hint renders through CodeBlock (Prism).
  * - External links open in a new tab; in-document anchors stay in place.
+ * - resolveImageSrc (optional): maps a relative image src (e.g. a report's
+ *   `figures/loss.png`) to a fetchable URL. Absolute/data/http srcs pass
+ *   through untouched.
  */
-export default function MarkdownView({ text }) {
+export default function MarkdownView({ text, resolveImageSrc }) {
   return (
     <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          img({ src, alt, title }) {
+            const passthrough = !src
+              || /^(https?:|data:|blob:)/i.test(src)
+              || src.startsWith('/');
+            const resolved = passthrough || !resolveImageSrc ? src : resolveImageSrc(src);
+            return <img src={resolved} alt={alt || ''} title={title} loading="lazy" />;
+          },
           // Fenced code blocks land here. The child is the `code` element
           // with the language hint as className.
           pre({ children }) {

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { segmentTranscript, elapsedSeconds, formatElapsed } from '../utils/terminalBlocks';
 
 /**
  * TerminalLog — renders a sandbox transcript with a real terminal feel.
@@ -9,16 +10,20 @@ import { useEffect, useMemo, useRef } from 'react';
  *   - exit markers:     `[<ts>] (exit N)` / `[<ts>] (interactive shell)`
  *   - output:           arbitrary stdout/stderr (often JSONL, sometimes ANSI)
  *
- * We classify each line and render it like a terminal: dim timestamps, a green
- * prompt, colored exit codes, ANSI SGR colors for real terminal output, and
- * JSON syntax-coloring for the structured event lines these scripts emit. A
- * "raw" toggle always exposes the verbatim transcript.
+ * Lines are grouped into per-command blocks (utils/terminalBlocks.js). Each
+ * block's command line carries an exit-status chip — and, because the tmux
+ * supervisor writes exit markers even when nobody is connected, an open block
+ * reliably means *that command is still running on the VM*. A tmux-style
+ * status bar at the bottom shows what is running right now with a live
+ * elapsed clock. Command lines click-toggle their output collapsed.
  *
- * Dependency-free: a small ANSI SGR parser + a JSON tokenizer, no xterm/anser.
+ * Output rendering is unchanged old-school: dim timestamps, a green prompt,
+ * ANSI SGR colors, JSON syntax-coloring. A "raw" toggle always exposes the
+ * verbatim transcript. Dependency-free: small ANSI parser + JSON tokenizer.
  */
 
 // Hard cap on pretty-rendered lines. The transcript tail is already bounded by
-// the backend, but rendering tens of thousands of DOM nodes every 3s poll would
+// the backend, but rendering tens of thousands of DOM nodes every poll would
 // be wasteful. Beyond this we keep the most recent lines and show a notice.
 const MAX_LINES = 5000;
 
@@ -108,9 +113,6 @@ function highlightJson(text) {
   return out;
 }
 
-const CMD_RE = /^\[([^\]]+)\]\s\$\s([\s\S]*)$/;
-const META_RE = /^\[([^\]]+)\]\s\((exit\s(\d+)|interactive shell)\)\s*$/;
-
 function looksJson(t) {
   return (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
 }
@@ -126,42 +128,124 @@ function renderOutput(raw) {
   if (looksJson(t)) {
     try { JSON.parse(t); return highlightJson(line); } catch { /* not JSON, fall through */ }
   }
-  return line.length ? line : ' ';
+  return line.length ? line : ' ';
 }
 
-function TermLine({ raw }) {
-  const cmd = CMD_RE.exec(raw);
-  if (cmd) {
+function StatusChip({ block, running, nowMs }) {
+  if (running) {
+    const secs = block.ts ? elapsedSeconds(block.ts, nowMs) : null;
     return (
-      <div className="term-line term-line--cmd">
-        <span className="term-ts">{cmd[1]}</span>
-        <span className="term-prompt">$</span>
-        <span className="term-cmd">{cmd[2]}</span>
+      <span className="term-chip term-chip--run">
+        running{secs != null ? ` ${formatElapsed(secs)}` : ''}
+      </span>
+    );
+  }
+  if (block.exitCode == null) return null;
+  if (block.exitCode === 0) return <span className="term-chip term-chip--ok">✓ 0</span>;
+  return <span className="term-chip term-chip--bad">✗ {block.exitCode}</span>;
+}
+
+function CommandBlock({ block, running, nowMs, collapsed, onToggle }) {
+  const showLines = !collapsed;
+  return (
+    <div className={`term-block${running ? ' is-running' : ''}`}>
+      {block.cmd != null && (
+        <div
+          className="term-line term-line--cmd"
+          onClick={onToggle}
+          title={collapsed ? 'Click to expand output' : 'Click to collapse output'}
+        >
+          <span className="term-fold">{collapsed ? '▸' : '▾'}</span>
+          {block.ts && <span className="term-ts">{block.ts}</span>}
+          <span className="term-prompt">$</span>
+          <span className="term-cmd">{block.cmd}</span>
+          <StatusChip block={block} running={running} nowMs={nowMs} />
+        </div>
+      )}
+      {collapsed ? (
+        <div className="term-line term-collapsed">… {block.lines.length} output lines hidden …</div>
+      ) : (
+        block.lines.map((line, i) => (
+          <div key={i} className="term-line">{renderOutput(line)}</div>
+        ))
+      )}
+      {showLines && block.finishedAt != null && (
+        <div className={`term-line term-line--meta ${block.exitCode !== 0 ? 'is-bad' : 'is-ok'}`}>
+          <span className="term-ts">{block.finishedAt}</span>
+          <span className="term-meta-txt">(exit {block.exitCode})</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Status bar — one tmux-ish reverse-video line pinned under the scrollback.
+ * Authoritative inputs: `meta.command_running` (daemon-parsed, gated on the
+ * sandbox actually being alive) decides between RUNNING and idle; the newest
+ * open block supplies the command text and start time for the elapsed clock.
+ */
+function StatusBar({ meta, openBlocks, nowMs }) {
+  if (!meta) return null;
+  const alive = meta.running === true;
+  const inFlight = alive && (meta.command_running === true || openBlocks.length > 0);
+  if (inFlight) {
+    const newest = openBlocks[openBlocks.length - 1];
+    const secs = newest?.ts ? elapsedSeconds(newest.ts, nowMs) : null;
+    return (
+      <div className="term-status is-running">
+        <span className="term-status-dot" />
+        <span className="term-status-state">RUNNING</span>
+        {openBlocks.length > 1 && (
+          <span className="term-status-extra">{openBlocks.length} commands</span>
+        )}
+        {newest?.cmd && <span className="term-status-cmd">{newest.cmd}</span>}
+        {secs != null && <span className="term-status-extra">{formatElapsed(secs)}</span>}
       </div>
     );
   }
-  const meta = META_RE.exec(raw);
-  if (meta) {
-    const failed = meta[3] !== undefined && meta[3] !== '0';
-    return (
-      <div className={`term-line term-line--meta ${failed ? 'is-bad' : 'is-ok'}`}>
-        <span className="term-ts">{meta[1]}</span>
-        <span className="term-meta-txt">{meta[2]}</span>
-      </div>
-    );
-  }
-  return <div className="term-line">{renderOutput(raw)}</div>;
+  return (
+    <div className="term-status">
+      <span className="term-status-state">{alive ? 'idle' : `sandbox ${meta.status || 'gone'}`}</span>
+      {meta.last_exit_code != null && (
+        <span className="term-status-extra">
+          last exit {meta.last_exit_code}
+          {meta.last_command_finished_at ? ` at ${meta.last_command_finished_at}` : ''}
+        </span>
+      )}
+    </div>
+  );
 }
 
-export default function TerminalLog({ text = '', live = false, raw = false }) {
+export default function TerminalLog({ text = '', live = false, raw = false, meta = null }) {
   const bodyRef = useRef(null);
   const stickyRef = useRef(true);
+  const [collapsedKeys, setCollapsedKeys] = useState(() => new Set());
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const { lines, truncated } = useMemo(() => {
+  const { blocks, truncated } = useMemo(() => {
     const all = text.split('\n');
-    if (all.length <= MAX_LINES) return { lines: all, truncated: 0 };
-    return { lines: all.slice(-MAX_LINES), truncated: all.length - MAX_LINES };
+    const kept = all.length <= MAX_LINES ? all : all.slice(-MAX_LINES);
+    return {
+      blocks: segmentTranscript(kept.join('\n')),
+      truncated: all.length - kept.length,
+    };
   }, [text]);
+
+  // A block with no exit marker is genuinely still running on the VM — but
+  // only while the sandbox itself is alive (a dead sandbox runs nothing).
+  const sandboxAlive = meta ? meta.running === true : live;
+  const openBlocks = useMemo(
+    () => (sandboxAlive ? blocks.filter((b) => b.cmd && !b.interactive && b.exitCode == null) : []),
+    [blocks, sandboxAlive],
+  );
+
+  // Tick the elapsed clocks once a second while something is running.
+  useEffect(() => {
+    if (!openBlocks.length) return undefined;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [openBlocks.length]);
 
   // Auto-scroll to the bottom unless the user scrolled up.
   useEffect(() => {
@@ -175,6 +259,15 @@ export default function TerminalLog({ text = '', live = false, raw = false }) {
     stickyRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
   }
 
+  function toggleBlock(key) {
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <div className="term">
       <div className="term-body" ref={bodyRef} onScroll={onScroll}>
@@ -184,10 +277,20 @@ export default function TerminalLog({ text = '', live = false, raw = false }) {
         {raw ? (
           <pre className="term-raw">{text}</pre>
         ) : (
-          lines.map((line, i) => <TermLine key={i} raw={line} />)
+          blocks.map((block) => (
+            <CommandBlock
+              key={block.key}
+              block={block}
+              running={openBlocks.includes(block)}
+              nowMs={nowMs}
+              collapsed={collapsedKeys.has(block.key)}
+              onToggle={() => toggleBlock(block.key)}
+            />
+          ))
         )}
         {live && !raw && <span className="term-cursor" aria-hidden="true" />}
       </div>
+      <StatusBar meta={meta} openBlocks={openBlocks} nowMs={nowMs} />
     </div>
   );
 }

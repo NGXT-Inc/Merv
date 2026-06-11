@@ -21,7 +21,11 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
-from backend.execution.bootstrap_tools import ML_PYTHON_PACKAGES, MODAL_APT_PACKAGES
+from backend.execution.bootstrap_tools import (
+    ML_PYTHON_PACKAGES,
+    MODAL_APT_PACKAGES,
+    REC_EXEC_CORE,
+)
 from backend.execution.usage_metrics import (
     METRICS_EXEC_TIMEOUT,
     METRICS_SCRIPT,
@@ -81,9 +85,8 @@ fi
 #
 # Failure to launch is non-fatal: a missing python package or a port collision
 # only loses observability for this run; the sandbox is still usable. The
-# transcript wrapper exports MLFLOW_TRACKING_URI to every command so frameworks
-# that auto-detect MLflow (HF Trainer with report_to="all", PyTorch Lightning's
-# MLFlowLogger) pick it up with no agent setup.
+# transcript wrapper exports MLFLOW_TRACKING_URI to every command so training
+# code can log to MLflow without managing the server.
 RP_DASH_DIR="$RP_SYNC_DIR/.research_plugin_sessions/${RP_EXPERIMENT_ID:-unknown}"
 RP_MLFLOW_DB="$RP_DASH_DIR/mlflow.db"
 RP_MLFLOW_ARTIFACTS="$RP_DASH_DIR/mlflow-artifacts"
@@ -162,12 +165,17 @@ LOG="$LOG_DIR/transcript.log"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  # File-transfer protocols (rsync/scp/sftp) speak a binary protocol over stdio
+  # and must bypass both the transcript tee and the tmux supervisor (which
+  # detaches stdin).
+  case "$SSH_ORIGINAL_COMMAND" in
+    rsync\ --server*|*"sftp-server"*|internal-sftp*|scp\ -*)
+      exec bash -lc "$SSH_ORIGINAL_COMMAND"
+      ;;
+  esac
   { printf '\n[%s] $ %s\n' "$(ts)" "$SSH_ORIGINAL_COMMAND" >> "$LOG"; } 2>/dev/null || true
   cd "$RP_WORKDIR" 2>/dev/null || true
-  bash -lc "$SSH_ORIGINAL_COMMAND" 2>&1 | tee -a "$LOG"
-  rc=${PIPESTATUS[0]}
-  { printf '[%s] (exit %d)\n' "$(ts)" "$rc" >> "$LOG"; } 2>/dev/null || true
-  exit "$rc"
+""" + REC_EXEC_CORE + r"""
 else
   { printf '\n[%s] (interactive shell)\n' "$(ts)" >> "$LOG"; } 2>/dev/null || true
   cd "$RP_WORKDIR" 2>/dev/null || true

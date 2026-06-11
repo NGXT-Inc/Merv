@@ -7,13 +7,15 @@ gates:
 
 ```text
 idea -> planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
-            ^             |                                  |
-            |             v                                  v
-            +------ needs_changes                    needs_changes
-            |                                                |
-            +---------------- planned with revision context --+
+            ^             |                            ^                 |
+            |             v                            |                 v
+            +------ needs_changes              return_to=running   needs_changes / fail
+            |                                          |                 |
+            |                                          +--- (plan stands; fix
+            |                                                execution/conclusion)
+            +---------------- return_to=planned (plan is flawed) --------+
 
-failed / abandoned are terminal exits.
+Rejections attach revision context either way. failed / abandoned are terminal exits.
 ```
 
 Codex should not guess the state, the gate, or the next step. It should ask:
@@ -38,9 +40,15 @@ MVP gates:
 2. Design review gate: a separate read-only design reviewer must pass the plan.
 3. Result sync gate: after execution, Codex must sync created/modified files as
    resources.
-4. Experiment review gate: a separate read-only experiment reviewer must pass
-   the executed attempt.
-5. Claim update gate: claim status/confidence changes require evidence links and
+4. Results report gate: before `submit_results`, the current attempt must carry
+   a short markdown report (role `report`) with Summary, Results (containing a
+   metrics table: target vs achieved), Deviations from plan, and Conclusion
+   applying the plan's pre-registered decision rule; under 10 KB; every
+   relative figure link must resolve to a synced file. See
+   `skills/research-workflow/report-template.md`.
+5. Experiment review gate: a separate read-only experiment reviewer must pass
+   the executed attempt, verifying the report against the raw result files.
+6. Claim update gate: claim status/confidence changes require evidence links and
    a passing experiment or human review.
 
 ## Design reviewer contract
@@ -73,11 +81,18 @@ The experiment reviewer checks:
 - look for leakage, metric misuse, missing baseline, cherry-picked results, and
   unsupported conclusions
 - return `pass`, `fail`, or `needs_changes`
+- on rejection, choose `return_to`: `planned` when the results revealed a flaw
+  in the plan itself; `running` when the plan stands but execution or the
+  conclusion is flawed
 - include concrete findings
 - avoid mutating research state directly
 
-If experiment review fails, MCP returns the experiment to `planned`, not
-`failed`, unless the user explicitly abandons it. The next plan should carry
+A rejection routed to `running` keeps the approved plan and the current attempt
+intact: the agent fixes execution and/or the conclusion, re-syncs results, and
+resubmits for experiment review — no new design review. A rejection routed to
+`planned` advances the attempt counter and requires a revised plan to pass a
+fresh design review. Either way the experiment is never silently moved to
+`failed` — that exit stays explicit. A rejection back to `planned` should carry
 forward prior attempt context:
 
 - previous plan
@@ -112,8 +127,12 @@ high-risk work, MCP can require human review.
 The reviewer submits through MCP:
 
 ```text
-review.submit(review_session_id, verdict, notes, findings, evidence?)
+review.submit(review_session_id, verdict, return_to?, notes, findings, evidence?)
 ```
+
+`return_to` is required on experiment-review rejections (`planned` or
+`running`) and forbidden on `pass`; design-review rejections always go back to
+`planned`.
 
 ## Codex responsibilities after a run
 
@@ -125,7 +144,8 @@ After any experiment execution, Codex should:
 4. ask `workflow.status_and_next`
 5. launch experiment reviewer if requested
 6. wait for review submission status through MCP
-7. revise plan or rerun if MCP sends the experiment back to `planned`
+7. if rejected: revise the plan when sent back to `planned`, or fix
+   execution/conclusion and resubmit results when sent back to `running`
 8. propose experiment conclusion or claim update only after passing review
 
 Resources from prior attempts remain visible as experiment history, but MCP only
@@ -136,7 +156,10 @@ While an experiment is `running` and no result resource is associated yet,
 `workflow.status_and_next` returns `run_experiment_and_sync_results` with
 `resource_guidance`. Agents run the experiment on the sandbox over SSH, then sync
 the output files and associate them to the experiment with
-`association_role: "result"`.
+`association_role: "result"`. Once results are synced but no report exists, the
+gate becomes `results_report_required` with report-specific guidance; the
+`submit_results` transition lints the report file (sections, metrics table,
+size, figure links) before the experiment enters review.
 
 ## Completion rule
 

@@ -409,9 +409,52 @@ GET  /api/sandboxes/health
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal?tail=50000
+GET  /api/projects/{project_id}/experiments/{experiment_id}/results/metrics
 POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/sync
 POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 ```
+
+### Archived results metrics (outlive the VM)
+
+The MLflow tracking server runs *on* the sandbox, so terminating the VM would
+take the metrics history with it. The daemon therefore archives a structured
+snapshot of MLflow's state (experiments → runs → params, final metric values,
+and downsampled per-metric history) to local disk on every sync — throttled in
+the auto-sync loop — and force-refreshes it right before release/reap.
+
+`GET .../results/metrics` serves that archive at any time, including long after
+the sandbox is terminated:
+
+```json
+{
+  "experiment_id": "exp_...",
+  "available": true,
+  "sandbox_status": "terminated",
+  "captured_at": "2026-06-11T01:23:45+00:00",
+  "source": "mlflow",
+  "base_url": "http://127.0.0.1:64382",
+  "experiments": [
+    {
+      "experiment_id": "1",
+      "name": "lora_roberta_glue_paper_only",
+      "runs": [
+        {
+          "run_id": "...", "run_name": "...", "status": "RUNNING",
+          "start_time": 1765400000000, "end_time": null,
+          "params": {"lr": "0.0005"},
+          "metrics": {"acc": {"last": 0.91, "step": 20, "timestamp": 1765400001000, "min": 0.85, "max": 0.91}},
+          "history": {"acc": [[10, 0.85], [20, 0.91]]}
+        }
+      ]
+    }
+  ]
+}
+```
+
+`available: false` (with a `hint`) means nothing was ever captured — no MLflow
+runs existed, or the sandbox predates archiving. `history` arrays are
+`[step, value]` pairs downsampled to ≤1000 points; `metrics.*.last` is always
+the exact final value. Non-finite values (NaN/Inf) are stored as `null`.
 
 A sandbox row looks like:
 
@@ -437,14 +480,15 @@ A sandbox row looks like:
 }
 ```
 
-`dashboards` is a `name → public HTTPS URL` map for the in-sandbox
-observability servers (MLflow on port 5000, TensorBoard on 6006) exposed
-through Modal encrypted tunnels. The map is always present; expect an empty
-object when the backend exposed no dashboards (older rows, fake test backend,
-a CPU-only path that didn't request them). Render one tab per non-empty entry
-as an `<iframe>`. The URLs are public-but-unguessable; treat them as
-secret-by-obscurity for now. If the sandbox's tunnels relocate, the row updates
-on the next `sandbox.get` so a stale iframe is at worst one poll behind.
+`dashboards` is a `name → URL` map for the in-sandbox observability servers
+(MLflow on port 5000, TensorBoard on 6006). Modal entries are public HTTPS URLs
+from encrypted tunnels; Lambda Labs entries are daemon-owned loopback URLs backed
+by SSH local forwards. The map is always present; expect an empty object when the
+backend exposed no dashboards (older rows, fake test backend, or dashboards that
+are still installing/starting). Render one tab per non-empty entry as an
+`<iframe>`. Treat non-loopback URLs as secret-by-obscurity for now. If provider
+tunnels relocate, the row updates on the next `sandbox.get`; local SSH forwards
+are recreated by the daemon when needed.
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the experiment's

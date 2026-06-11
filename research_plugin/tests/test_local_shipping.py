@@ -122,6 +122,26 @@ class LocalShippingTest(unittest.TestCase):
             target_id=exp_id,
             role="result",
         )
+        (self.research_repo / "experiments" / "shipping" / "report.md").write_text(
+            "## Summary\nShipping smoke run completed per plan.\n\n"
+            "## Results\n\n| Metric | Target | Achieved |\n|---|---|---|\n| accuracy | majority | 1.0 |\n\n"
+            "## Deviations from plan\nNone.\n\n"
+            "## Conclusion\nDecision rule met: accuracy beats the majority baseline.\n"
+        )
+        report = self._tool(
+            proc,
+            "resource.register_file",
+            path="experiments/shipping/report.md",
+            kind="report",
+        )
+        self._tool(
+            proc,
+            "resource.associate",
+            resource_id=report["id"],
+            target_type="experiment",
+            target_id=exp_id,
+            role="report",
+        )
         self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="submit_results")
         self._submit_review(proc, exp_id, "experiment_reviewer", "pass", "Result file exists.")
         completed = self._tool(

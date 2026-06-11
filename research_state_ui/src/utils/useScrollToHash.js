@@ -49,6 +49,7 @@ export function gateToSectionId(gate) {
   // Order matters: design_review must hit 'design', experiment_review must
   // hit 'outcomes', so check the longer / more specific tokens first.
   if (g.includes('experiment_review') || g === 'terminal' || g === 'complete') return 'outcomes';
+  if (g.includes('report')) return 'report';
   if (g.includes('design')) return 'design';
   if (g.includes('execution') || g === 'ready_to_run' || g === 'running') return 'execution';
   if (g === 'planned' || g === 'idle') return 'design';

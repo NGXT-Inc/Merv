@@ -112,23 +112,26 @@ def agent_view(
             "call sandbox.request to retry."
         )
     elif live:
-        dashboards = view.get("dashboards") or {}
-        dashboard_note = ""
-        if dashboards.get("mlflow") or dashboards.get("tensorboard"):
-            dashboard_note = (
-                "Training observability: an MLflow tracking server "
-                "(MLFLOW_TRACKING_URI=http://localhost:5000) and a "
-                "TensorBoard (logdir at $RP_TB_LOGDIR) are already "
-                "running inside the sandbox. HuggingFace Trainer and "
-                "PyTorch Lightning's MLFlowLogger auto-pick MLflow up "
-                "with no setup. For plain PyTorch, add mlflow.autolog() "
-                "once at the top of the training script. The user sees "
-                "the dashboards live in the UI; you do not need to "
-                "fetch or share the URLs. "
-            )
+        dashboard_note = (
+            "Training observability: the backend starts MLflow and "
+            "TensorBoard inside the sandbox. Use "
+            "MLFLOW_TRACKING_URI=http://localhost:5000 for run params, "
+            "metrics, and artifacts; write TensorBoard events to "
+            "$RP_TB_LOGDIR. Framework integrations such as Hugging Face "
+            "Trainer and PyTorch Lightning's MLFlowLogger can use these "
+            "env vars directly; for plain PyTorch, add mlflow.autolog() "
+            "when useful. The user sees dashboard tabs in the UI once "
+            "the servers are reachable; you do not need to fetch or "
+            "share the URLs. "
+        )
         view["hint"] = (
             f"Run commands with: {command} '<your shell command>' (from the repo root). "
             "Output streams back and is recorded to the experiment terminal. "
+            "Every command runs under a tmux supervisor on the sandbox and "
+            "keeps running if SSH drops or your call times out - a timeout "
+            "means you stopped watching, not that the command stopped. Check "
+            "the terminal transcript for the command's exit marker before "
+            "re-running anything long. "
             "If you are not in the repo root, use ssh.raw_command instead: it is a "
             "full ssh command line, so run it directly and append your command in "
             "single quotes (do not store it in a shell variable and re-invoke it). "

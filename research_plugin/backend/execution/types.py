@@ -65,10 +65,11 @@ class ProvisionedSandbox:
     """SSH connection facts for a live sandbox.
 
     Timing/persistence (expires_at, key_path, …) live in the registry, not here.
-    `dashboards` is a name → public URL map for in-sandbox observability servers
-    (MLflow at 5000, TensorBoard at 6006) exposed via Modal encrypted tunnels.
-    Empty for backends that don't expose dashboards. The map is immutable so the
-    dataclass stays hashable.
+    `dashboards` is a name → URL map for in-sandbox observability servers
+    (MLflow at 5000, TensorBoard at 6006). Providers can return native URLs
+    (Modal HTTPS tunnels), or the registry can fill local SSH-forward URLs for
+    providers such as Lambda Labs. Empty when no dashboards are exposed. The map
+    is immutable so the dataclass stays hashable.
     """
 
     sandbox_id: str

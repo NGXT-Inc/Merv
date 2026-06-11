@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from ..execution.sync_dirs import local_experiment_sync_dir
@@ -35,7 +36,11 @@ TRANSITION_REQUIREMENTS: dict[str, str] = {
         "the required plan section headers present"
     ),
     "mark_ready_to_run": "a passing design_reviewer review",
-    "submit_results": "a 'result' resource must be synced & associated to this experiment",
+    "submit_results": (
+        "a 'result' resource AND a results report (role 'report') must be synced "
+        "& associated to this experiment; the report needs the required section "
+        "headers, a metrics table, and resolvable figure links"
+    ),
     "complete": "a passing experiment_reviewer review",
 }
 
@@ -77,8 +82,26 @@ REQUIRED_PLAN_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Evaluation", "evaluation"),
 )
 
+# --- Results report schema ---------------------------------------------------
+# report.md is the face of the *executed* experiment: the artifact the
+# experiment reviewer grades and the UI spotlights once results exist. Same
+# philosophy as the plan spine — the lint enforces shape (sections present, a
+# real metrics table, short, figures resolve), and the experiment reviewer
+# judges substance. See skills/research-workflow/report-template.md.
+REQUIRED_REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Summary", "summary"),
+    ("Results", "results"),
+    ("Deviations from plan", "deviations"),
+    ("Conclusion", "conclusion"),
+)
+
+# Brevity is structural: the report is the executive layer; raw numbers, logs,
+# and large tables belong in linked result resources. 10 KB ≈ 1500 words.
+MAX_REPORT_BYTES = 10_000
+
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)")
 
 
 def _normalize_heading(text: str) -> str:
@@ -87,20 +110,22 @@ def _normalize_heading(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
-def plan_sections_missing(plan_text: str) -> list[str]:
-    """Return the canonical names of REQUIRED plan sections that are absent or
+def _sections_missing(
+    text: str, required: tuple[tuple[str, str], ...]
+) -> list[str]:
+    """Return the canonical names of REQUIRED sections that are absent or
     empty. A section counts as present when its heading exists and the body
     beneath it — up to the next same-or-higher-level heading — contains
     non-whitespace text. HTML comments are stripped first, so they neither count
     as content nor register as headings; template guidance therefore lives in
     comments precisely so an unfilled section reads as empty here."""
-    text = _HTML_COMMENT_RE.sub("", plan_text)
+    text = _HTML_COMMENT_RE.sub("", text)
     headings = [
         (m.start(), len(m.group(1)), _normalize_heading(m.group(2)), m.end())
         for m in _HEADING_RE.finditer(text)
     ]
     missing: list[str] = []
-    for canonical, key in REQUIRED_PLAN_SECTIONS:
+    for canonical, key in required:
         idx = next((i for i, h in enumerate(headings) if h[2].startswith(key)), None)
         if idx is None:
             missing.append(canonical)
@@ -114,6 +139,68 @@ def plan_sections_missing(plan_text: str) -> list[str]:
         if not text[body_start:body_end].strip():
             missing.append(canonical)
     return missing
+
+
+def plan_sections_missing(plan_text: str) -> list[str]:
+    return _sections_missing(plan_text, REQUIRED_PLAN_SECTIONS)
+
+
+def report_sections_missing(report_text: str) -> list[str]:
+    return _sections_missing(report_text, REQUIRED_REPORT_SECTIONS)
+
+
+def _has_markdown_table(text: str) -> bool:
+    """A GFM table = a header row with pipes followed by a |/-/: separator."""
+    lines = text.splitlines()
+    for i in range(1, len(lines)):
+        sep = lines[i].strip()
+        if "|" not in lines[i - 1]:
+            continue
+        if sep and "---" in sep and set(sep) <= set("|-: \t"):
+            return True
+    return False
+
+
+def report_problems(report_text: str, *, report_path: Path, repo_root: Path) -> list[str]:
+    """Everything wrong with a results report, in one pass, so the agent can
+    fix all of it in a single revision instead of peeling errors one by one.
+
+    Checks: required spine sections; the Results section's mandatory metrics
+    table; the brevity ceiling; and that every relative image link resolves to
+    a real file (a report whose figures didn't sync renders broken in the UI
+    and is unreviewable)."""
+    problems: list[str] = []
+    missing = report_sections_missing(report_text)
+    if missing:
+        problems.append("missing required sections: " + ", ".join(missing))
+    stripped = _HTML_COMMENT_RE.sub("", report_text)
+    if not _has_markdown_table(stripped):
+        problems.append(
+            "the Results section must contain a markdown table of metrics "
+            "(target/paper value vs achieved)"
+        )
+    size = len(report_text.encode("utf-8"))
+    if size > MAX_REPORT_BYTES:
+        problems.append(
+            f"report is {size} bytes; keep it under {MAX_REPORT_BYTES} — move raw "
+            "numbers and logs into result resources and link them instead"
+        )
+    for match in _IMAGE_LINK_RE.finditer(stripped):
+        target = match.group(1)
+        if target.startswith(("http://", "https://", "data:", "/")):
+            continue
+        resolved = (report_path.parent / target).resolve()
+        try:
+            resolved.relative_to(repo_root.resolve())
+        except ValueError:
+            problems.append(f"image link escapes the repo: {target}")
+            continue
+        if not resolved.is_file():
+            problems.append(
+                f"image link does not resolve to a synced file: {target} "
+                "(save figures next to the report and sandbox.sync before submitting)"
+            )
+    return problems
 
 # Agent-facing projection of get_state. get_state is the "give me the detail"
 # call, so unlike status_and_next we KEEP the substance (review findings/notes,
@@ -454,6 +541,33 @@ class ExperimentService:
             payload={"revision_context": revision_context},
         )
 
+    def send_back_to_running(self, *, conn, experiment_id: str, revision_context: str) -> None:
+        """Reject an executed attempt back to execution: the approved plan and
+        its attempt-scoped resources stay valid, so attempt_index is NOT bumped
+        — only execution and/or the conclusion must be redone before results
+        are resubmitted."""
+        row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
+        if row is None:
+            raise NotFoundError(f"experiment not found: {experiment_id}")
+        if row["status"] != "experiment_review":
+            raise WorkflowError(
+                f"experiment is {row['status']!r}; only an experiment under "
+                "experiment_review can be sent back to running"
+            )
+        now = now_iso()
+        conn.execute(
+            "UPDATE experiments SET status = 'running', revision_context = ?, updated_at = ? WHERE id = ?",
+            (revision_context, now, experiment_id),
+        )
+        self.store.record_event(
+            conn=conn,
+            project_id=row["project_id"],
+            event_type="experiment.returned_to_running",
+            target_type="experiment",
+            target_id=experiment_id,
+            payload={"revision_context": revision_context},
+        )
+
     def _next_status(self, *, conn, experiment_id: str, status: str, transition: str) -> str:
         # Terminal states are final: no transition (not even abandon/mark_failed)
         # may move an experiment out of complete/failed/abandoned.
@@ -486,12 +600,14 @@ class ExperimentService:
             role="design_reviewer",
         ):
             raise WorkflowError("design review must pass before ready_to_run")
-        if transition == "submit_results" and not self._has_resource_role(
-            conn=conn,
-            experiment_id=experiment_id,
-            role="result",
-        ):
-            raise WorkflowError("result resource must be synced before experiment_review")
+        if transition == "submit_results":
+            if not self._has_resource_role(
+                conn=conn,
+                experiment_id=experiment_id,
+                role="result",
+            ):
+                raise WorkflowError("result resource must be synced before experiment_review")
+            self._validate_results_report(conn=conn, experiment_id=experiment_id)
         if transition == "complete" and not self._has_passing_review(
             conn=conn,
             experiment_id=experiment_id,
@@ -548,6 +664,50 @@ class ExperimentService:
                 + ". Fill in the plan template's required spine — Summary; "
                 "Objective & hypothesis; Evaluation — see "
                 "skills/research-workflow/plan-template.md."
+            )
+
+    def _validate_results_report(self, *, conn, experiment_id: str) -> None:
+        """Block submit_results unless the current attempt carries a results
+        report that passes the report lint. Reads the live file — the same
+        content the UI spotlights and the experiment reviewer grades."""
+        row = conn.execute(
+            """
+            SELECT r.path
+            FROM resource_associations a
+            JOIN resources r ON r.id = a.resource_id
+            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = 'report'
+              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
+              AND r.deleted = 0
+            ORDER BY a.rowid DESC
+            LIMIT 1
+            """,
+            (experiment_id, experiment_id),
+        ).fetchone()
+        if row is None:
+            raise WorkflowError(
+                "a results report must be synced before experiment_review: write a "
+                "short markdown report (sections Summary; Results with a metrics "
+                "table; Deviations from plan; Conclusion applying the plan's "
+                "decision rule), sync it, and associate it with role 'report' — "
+                "see skills/research-workflow/report-template.md"
+            )
+        report_path = self.store.repo_root / row["path"]
+        try:
+            report_text = report_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkflowError(
+                f"results report {row['path']!r} could not be read for experiment review: {exc}"
+            ) from exc
+        problems = report_problems(
+            report_text,
+            report_path=report_path,
+            repo_root=self.store.repo_root,
+        )
+        if problems:
+            raise WorkflowError(
+                "results report is not ready for experiment review: "
+                + "; ".join(problems)
+                + ". See skills/research-workflow/report-template.md."
             )
 
     def _has_passing_review(self, *, conn, experiment_id: str, role: str) -> bool:

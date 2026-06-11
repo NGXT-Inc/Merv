@@ -19,6 +19,21 @@ VALID_PLAN = (
     "Metric: accuracy vs the majority-class baseline; success if accuracy > 0.6.\n"
 )
 
+# A results report that satisfies the report lint (required spine + a metrics
+# table), so submit_results passes in tests that drive the full loop.
+VALID_REPORT = (
+    "## Summary\n"
+    "Ran the toy experiment per the approved plan.\n\n"
+    "## Results\n\n"
+    "| Metric | Target | Achieved |\n"
+    "|--------|--------|----------|\n"
+    "| accuracy | 0.60 | 0.72 |\n\n"
+    "## Deviations from plan\n"
+    "None.\n\n"
+    "## Conclusion\n"
+    "Decision rule met: accuracy 0.72 > 0.6 threshold.\n"
+)
+
 
 class WorkflowGateTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -50,7 +65,7 @@ class WorkflowGateTest(unittest.TestCase):
             role=role,
         )
 
-    def _pass_review(self, *, exp_id: str, role: str) -> None:
+    def _open_review_session(self, *, exp_id: str, role: str) -> str:
         req = self.call(
             "review.request",
             project_id=self.project_id,
@@ -64,7 +79,27 @@ class WorkflowGateTest(unittest.TestCase):
             reviewer_capability=req["reviewer_capability"],
             caller_session_id=f"{role}-reviewer",
         )
-        self.call("review.submit", review_session_id=session["review_session_id"], verdict="pass")
+        return session["review_session_id"]
+
+    def _pass_review(self, *, exp_id: str, role: str) -> None:
+        session_id = self._open_review_session(exp_id=exp_id, role=role)
+        self.call("review.submit", review_session_id=session_id, verdict="pass")
+
+    def _drive_to_running_with_result(self) -> str:
+        exp_id = self.call("experiment.create", project_id=self.project_id, intent="Rejection routing.")["id"]
+        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
+        self._pass_review(exp_id=exp_id, role="design_reviewer")
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running")
+        self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
+        return exp_id
+
+    def _drive_to_experiment_review(self) -> str:
+        exp_id = self._drive_to_running_with_result()
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        return exp_id
 
     def _drive_to_complete(self, *, conclusion: str = "") -> str:
         exp_id = self.call("experiment.create", project_id=self.project_id, intent="Full loop.")["id"]
@@ -74,6 +109,7 @@ class WorkflowGateTest(unittest.TestCase):
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running")
         self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self._pass_review(exp_id=exp_id, role="experiment_reviewer")
         evidence = {"conclusion": conclusion} if conclusion else None
@@ -194,6 +230,136 @@ class WorkflowGateTest(unittest.TestCase):
         exp_id = self._drive_to_complete(conclusion="The claim is supported by results.json.")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["conclusion"], "The claim is supported by results.json.")
+
+    # ---- results report gate ----
+
+    def test_submit_results_requires_report_resource(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertIn("report", str(ctx.exception))
+        self.assertIn("report-template", str(ctx.exception))
+        # Adding a valid report unblocks the same transition.
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertEqual(out["status"], "experiment_review")
+
+    def test_submit_results_lints_report_content(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        # Sections present but no metrics table, and Conclusion left empty.
+        bad_report = (
+            "## Summary\nRan it.\n\n"
+            "## Results\nIt went well.\n\n"
+            "## Deviations from plan\nNone.\n\n"
+            "## Conclusion\n<!-- todo -->\n"
+        )
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=bad_report)
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        msg = str(ctx.exception)
+        self.assertIn("Conclusion", msg)  # empty section reported
+        self.assertIn("markdown table", msg)  # missing table reported in the same pass
+        # The lint reads the live file: rewriting it (no re-register) unblocks.
+        (self.repo / "report.md").write_text(VALID_REPORT)
+        out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertEqual(out["status"], "experiment_review")
+
+    def test_report_image_links_must_resolve(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        report = VALID_REPORT + "\n## Figures\n\n![loss curve](figures/loss.png)\n"
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertIn("figures/loss.png", str(ctx.exception))
+        # Once the figure exists on disk (post-sync), the gate opens.
+        (self.repo / "figures").mkdir()
+        (self.repo / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertEqual(out["status"], "experiment_review")
+
+    def test_report_size_ceiling(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        bloated = VALID_REPORT + "\n" + ("data row padding\n" * 1000)
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=bloated)
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self.assertIn("bytes", str(ctx.exception))
+
+    def test_workflow_surfaces_report_gate_after_results(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        workflow = wf.get("workflow") or wf
+        self.assertEqual(workflow["current_gate"], "results_report_required")
+        self.assertEqual(workflow["next_action"], "write_and_associate_results_report")
+        self.assertEqual(workflow["resource_guidance"]["association_role"], "report")
+
+    # ---- review rejection routing (return_to) ----
+
+    def test_experiment_review_rejection_requires_return_to(self) -> None:
+        exp_id = self._drive_to_experiment_review()
+        session_id = self._open_review_session(exp_id=exp_id, role="experiment_reviewer")
+        with self.assertRaises(ValidationError) as ctx:
+            self.call("review.submit", review_session_id=session_id, verdict="needs_changes")
+        self.assertIn("return_to", str(ctx.exception))
+        # The rejection was rolled back: nothing moved and the session stays
+        # open, so the reviewer can resubmit with a routing decision.
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "experiment_review")
+        out = self.call(
+            "review.submit", review_session_id=session_id, verdict="needs_changes", return_to="running"
+        )
+        self.assertEqual(out["return_to"], "running")
+
+    def test_rejection_to_running_keeps_attempt_and_skips_design_review(self) -> None:
+        exp_id = self._drive_to_experiment_review()
+        session_id = self._open_review_session(exp_id=exp_id, role="experiment_reviewer")
+        self.call(
+            "review.submit",
+            review_session_id=session_id,
+            verdict="needs_changes",
+            return_to="running",
+            notes="Conclusion overreaches; re-derive it from the synced metrics.",
+        )
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["attempt_index"], 1)  # plan + resources stay valid
+        self.assertIn("plan stands", state["revision_context"])
+        self.assertIn("Conclusion overreaches", state["revision_context"])
+        # The fix loop: update results and resubmit — no new plan, no new
+        # design review — then a passing review completes the experiment.
+        (self.repo / "results.json").write_text("{\"metric\": 2}\n")
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self._pass_review(exp_id=exp_id, role="experiment_reviewer")
+        out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="complete")
+        self.assertEqual(out["status"], "complete")
+
+    def test_rejection_to_planned_advances_attempt(self) -> None:
+        exp_id = self._drive_to_experiment_review()
+        session_id = self._open_review_session(exp_id=exp_id, role="experiment_reviewer")
+        self.call("review.submit", review_session_id=session_id, verdict="fail", return_to="planned")
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "planned")
+        self.assertEqual(state["attempt_index"], 2)
+
+    def test_design_review_rejection_cannot_return_to_running(self) -> None:
+        exp = self.call("experiment.create", project_id=self.project_id, intent="Design reject.")
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        session_id = self._open_review_session(exp_id=exp["id"], role="design_reviewer")
+        with self.assertRaises(ValidationError):
+            self.call("review.submit", review_session_id=session_id, verdict="needs_changes", return_to="running")
+        # Without return_to a design rejection still routes to planned.
+        out = self.call("review.submit", review_session_id=session_id, verdict="needs_changes")
+        self.assertEqual(out["return_to"], "planned")
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
+        self.assertEqual(state["status"], "planned")
+        self.assertEqual(state["attempt_index"], 2)
+
+    def test_pass_verdict_rejects_return_to(self) -> None:
+        exp_id = self._drive_to_experiment_review()
+        session_id = self._open_review_session(exp_id=exp_id, role="experiment_reviewer")
+        with self.assertRaises(ValidationError):
+            self.call("review.submit", review_session_id=session_id, verdict="pass", return_to="running")
 
     # ---- claim.update ----
 
