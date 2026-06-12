@@ -81,6 +81,62 @@ class BlobStoreContractMixin:
         self.assertEqual(store.sweep_expired(now="2026-06-01T00:00:00Z"), 0)
         self.assertEqual(store.get(namespace="proj_a", sha256=sha), b"pin me")
 
+    # ---- single-use uploads (the parachute PUT seam, plan Phase 5) ----
+
+    def _write_upload(self, target: dict, data: bytes) -> None:
+        """PUT bytes to the presigned target the way an off-process producer
+        would. Local-mode URLs are file:// staging paths (real presigned
+        HTTPS arrives with Phase 8's S3 behind this same seam)."""
+        from urllib.parse import urlsplit
+        from urllib.request import url2pathname
+
+        url = urlsplit(target["url"])
+        self.assertEqual(url.scheme, "file")
+        Path(url2pathname(url.path)).write_bytes(data)
+
+    def test_presign_put_single_use_round_trip(self) -> None:
+        store = self.make_store()
+        target = store.presign_put(namespace="proj_a", max_size_bytes=1024)
+        self._write_upload(target, b"parachute bytes")
+        stat = store.finalize_put(upload_id=target["upload_id"])
+        self.assertEqual(stat.size_bytes, len(b"parachute bytes"))
+        self.assertEqual(stat.namespace, "proj_a")
+        self.assertEqual(
+            store.get(namespace="proj_a", sha256=stat.sha256), b"parachute bytes"
+        )
+        # Single use: the target is consumed by finalize.
+        with self.assertRaises(NotFoundError):
+            store.finalize_put(upload_id=target["upload_id"])
+
+    def test_finalize_enforces_the_size_cap(self) -> None:
+        store = self.make_store()
+        target = store.presign_put(namespace="proj_a", max_size_bytes=4)
+        self._write_upload(target, b"five!")
+        with self.assertRaises(ValidationError):
+            store.finalize_put(upload_id=target["upload_id"])
+        # Consumed either way — a failed finalize cannot be retried.
+        with self.assertRaises(NotFoundError):
+            store.finalize_put(upload_id=target["upload_id"])
+
+    def test_finalize_without_bytes_raises(self) -> None:
+        store = self.make_store()
+        target = store.presign_put(namespace="proj_a", max_size_bytes=1024)
+        with self.assertRaises(NotFoundError):
+            store.finalize_put(upload_id=target["upload_id"])
+
+    def test_finalized_upload_carries_the_presigned_expiry(self) -> None:
+        store = self.make_store()
+        target = store.presign_put(
+            namespace="proj_a", max_size_bytes=1024, expires_at="2026-01-01T00:00:00Z"
+        )
+        self._write_upload(target, b"ttl-bound")
+        stat = store.finalize_put(upload_id=target["upload_id"])
+        self.assertEqual(stat.expires_at, "2026-01-01T00:00:00Z")
+        # The TTL backstop sweeps an unclaimed object.
+        self.assertEqual(store.sweep_expired(now="2026-06-01T00:00:00Z"), 1)
+        with self.assertRaises(NotFoundError):
+            store.get(namespace="proj_a", sha256=stat.sha256)
+
 
 class LocalDirBlobStoreTest(BlobStoreContractMixin, unittest.TestCase):
     def setUp(self) -> None:

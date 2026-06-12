@@ -31,9 +31,14 @@ class SandboxRequest:
     """A request to procure a sandbox for one experiment.
 
     `public_key` is the registry-owned per-experiment SSH public key that the
-    backend authorizes inside the sandbox. `remote_workdir` is the experiment's
-    one synced folder on the VM; when left empty the backend derives
-    `<remote_root>/<experiment_id>` from its config.
+    backend authorizes inside the sandbox; it is the *user* key — data-plane
+    property (rsync, the sbx dispatcher, tunnels). `management_public_key` is
+    the control-plane-minted management key (plan Phase 5, fixed decision 4),
+    authorized at bootstrap alongside it so transcript reads, metrics
+    sampling, and the expiry parachute never depend on the user's machine.
+    Empty means "no management channel" (legacy callers). `remote_workdir` is
+    the experiment's one synced folder on the VM; when left empty the backend
+    derives `<remote_root>/<experiment_id>` from its config.
 
     Hardware selection is provider-shaped:
 
@@ -48,6 +53,7 @@ class SandboxRequest:
     experiment_id: str
     project_id: str
     public_key: str
+    management_public_key: str = ""
     gpu: str | None = None
     cpu: float = 2.0
     memory: int = 8192
@@ -184,6 +190,25 @@ class SandboxBackend(Protocol):
         """Optionally find an orphan sandbox by experiment. Unsupported backends return None."""
         ...
 
+    def run_parachute(
+        self,
+        *,
+        sandbox_id: str,
+        put_url: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Optionally run the pre-installed expiry parachute (plan Phase 5).
+
+        Executes ``/opt/rp/parachute.sh <put_url>`` over the backend's
+        management channel (Modal: control-plane exec; Lambda: SSH with the
+        management key in ``key_path``). Returns the parsed
+        ``{sha256, size_bytes}`` upload receipt, or None when the backend has
+        no parachute channel.
+        """
+        ...
+
     def shutdown(self) -> None:
         """Optionally release backend-level resources. Unsupported backends no-op."""
         ...
@@ -224,6 +249,18 @@ class SandboxBackendBase:
 
     def find_sandbox_id(self, *, experiment_id: str) -> str | None:
         """Unsupported default: no orphan lookup is available."""
+        return None
+
+    def run_parachute(
+        self,
+        *,
+        sandbox_id: str,
+        put_url: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Unsupported default: no parachute channel is available."""
         return None
 
     def shutdown(self) -> None:

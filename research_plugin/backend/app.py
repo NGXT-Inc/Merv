@@ -26,6 +26,7 @@ from .services import (
     SynthesisService,
     WorkflowService,
 )
+from .services.sandbox_mgmt_keys import LocalMgmtKeyStore
 from .state import ActivityLogger, StateStore, ToolCallStore, monotonic_ms
 from .state.blobs import LocalDirBlobStore
 
@@ -143,6 +144,14 @@ class ResearchPluginApp:
             worker=self.worker,
             activity=self.activity,
             experiments=self.experiments,
+            # Per-sandbox management keys (plan Phase 5): control-plane
+            # custody — local mode roots them under .research_plugin/ beside
+            # the rest of the control state.
+            mgmt_keys=LocalMgmtKeyStore(
+                root=self.workspace.research_dir / "mgmt_keys"
+            ),
+            # Decision 7's one shared blob store also holds parachute objects.
+            blobs=self.blobs,
         )
         self.workflow = WorkflowService(
             store=self.store,

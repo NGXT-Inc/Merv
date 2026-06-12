@@ -31,6 +31,7 @@ BACKEND_METHODS = (
     "dashboard_urls",
     "local_dashboard_ports",
     "find_sandbox_id",
+    "run_parachute",
     "shutdown",
 )
 
@@ -86,6 +87,7 @@ class SandboxBackendContractTest(unittest.TestCase):
             sync_row=lambda **_kwargs: {},
             final_pull=lambda **_kwargs: {},
             persist_metrics=lambda **_kwargs: None,
+            parachute=lambda **_kwargs: None,
         )
 
     def test_backend_classes_expose_full_contract_surface(self) -> None:
@@ -110,6 +112,7 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertIsNone(backend.dashboard_urls(sandbox_id="sb"))
         self.assertEqual(backend.local_dashboard_ports(), {})
         self.assertIsNone(backend.find_sandbox_id(experiment_id="exp"))
+        self.assertIsNone(backend.run_parachute(sandbox_id="sb", put_url="file:///x"))
         self.assertIsNone(backend.shutdown())
 
     def test_services_do_not_probe_backend_optional_methods(self) -> None:

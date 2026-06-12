@@ -522,6 +522,53 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["experiments"][0]["name"], "lora_glue")
 
+    def test_metrics_survive_without_the_daemon_files(self) -> None:
+        # Plan Phase 5: snapshots are control-plane records. Wipe every
+        # daemon-side metrics file — the read path still serves them, so
+        # reviews/UI see metrics without the user machine online.
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        with patch(
+            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+        ):
+            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+        archive_path = self.app.sandboxes.metrics_archive.path_for(exp_id)
+        self.assertTrue(archive_path.exists())  # the local file cache is kept as-is
+        archive_path.unlink()
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        self.assertEqual(result["experiments"][0]["name"], "lora_glue")
+        self.assertIn("captured_at", result)
+        with self.app.store.transaction() as conn:
+            record = conn.execute(
+                "SELECT project_id, source FROM metrics_snapshots WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchone()
+        self.assertIsNotNone(record)
+        self.assertEqual(record["project_id"], self.project_id)
+        self.assertEqual(record["source"], "mlflow")
+
+    def test_pre_record_archive_converges_into_the_control_record(self) -> None:
+        # A pre-Phase-5 experiment has only the daemon file cache: the first
+        # read serves it AND lands it as a control record.
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.app.sandboxes.metrics_archive.persist(
+            experiment_id=exp_id, snapshot=dict(self.SNAPSHOT)
+        )
+        self.assertIsNone(
+            self.app.sandboxes.metrics_records.load(experiment_id=exp_id)
+        )
+        result = self.app.sandboxes.results_metrics(
+            experiment_id=exp_id, project_id=self.project_id
+        )
+        self.assertTrue(result["available"])
+        record = self.app.sandboxes.metrics_records.load(experiment_id=exp_id)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["experiments"][0]["name"], "lora_glue")
+
     def test_results_metrics_unavailable_shape(self) -> None:
         exp_id = self._experiment()
         result = self.app.sandboxes.results_metrics(
@@ -557,7 +604,11 @@ class SandboxServiceTest(unittest.TestCase):
         self.backend.default_dashboards = False
         self.backend.local_dashboard_ports = lambda: {"mlflow": 5000, "tensorboard": 6006}  # type: ignore[attr-defined]
         exp_id = self._experiment()
+        # Mint both keypairs before patching Popen: sandbox_dashboards shares
+        # the global subprocess module, so the patch would otherwise swallow
+        # the ssh-keygen runs inside sandbox.request.
         self.app.sandboxes._ensure_keypair(experiment_id=exp_id)
+        self.app.sandboxes.mgmt_keys.ensure(experiment_id=exp_id)
         popen_calls: list[list[str]] = []
         procs: list[FakeProcess] = []
 
@@ -670,10 +721,11 @@ class SandboxServiceTest(unittest.TestCase):
         term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         self.assertFalse(term["running"])
 
-    def test_terminal_passes_stored_ssh_details_to_backend(self) -> None:
-        # SSH-transcript backends (Lambda Labs) read the log over plain SSH, so
-        # the registry must hand read_transcript the row's stored endpoint and
-        # the per-experiment private key path.
+    def test_terminal_authenticates_with_the_management_key(self) -> None:
+        # SSH-transcript backends (Lambda Labs) read the log over SSH; the
+        # registry hands read_transcript the row's stored endpoint and the
+        # per-sandbox MANAGEMENT key (plan Phase 5, fixed decision 4) — never
+        # the user key, which stays data-plane-only.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
@@ -683,8 +735,10 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(read["ssh_user"], "root")
         self.assertEqual(
             Path(read["key_path"]).resolve(),
-            (self.repo / ".research_plugin" / "sandboxes" / "keys" / exp_id).resolve(),
+            (self.repo / ".research_plugin" / "mgmt_keys" / exp_id / "key").resolve(),
         )
+        user_key = self.repo / ".research_plugin" / "sandboxes" / "keys" / exp_id
+        self.assertNotEqual(Path(read["key_path"]).resolve(), user_key.resolve())
 
     # ---- terminal: per-command exit status (rec.sh markers) ----
 

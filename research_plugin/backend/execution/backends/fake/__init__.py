@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
+import tarfile
 import threading
+from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 from ...errors import BackendUnavailableError
 from ...sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
+from ...transfer_spec import (
+    build_parachute_script,
+    is_excluded_relpath,
+    max_size_bytes_for,
+)
 from ...types import (
     BackendCapabilities,
     OnCreated,
@@ -66,6 +77,19 @@ class FakeSandboxBackend(SandboxBackendBase):
         # Kwargs of every read_transcript call, so tests can assert the
         # registry hands backends the stored SSH endpoint + key.
         self.transcript_reads: list[dict] = []
+        # Captured bootstrap content per sandbox id (plan Phase 5): which
+        # public keys the boot would authorize and which /opt/rp files it
+        # would pre-install — the fake's stand-in for Modal's BOOT_SCRIPT env
+        # and Lambda's user_data, so dual-key and parachute-install tests run
+        # without a cloud.
+        self.bootstraps: dict[str, dict] = {}
+        # Management-channel exec/upload capture (plan Phase 5): every
+        # run_parachute call lands here so the reaper's parachute branch is
+        # observable in-process.
+        self.parachute_calls: list[dict] = []
+        # Simulated remote experiment dir per sandbox id: relpath → bytes.
+        # Seeded by tests; run_parachute tars it per the shared transfer spec.
+        self.remote_files: dict[str, dict[str, bytes]] = {}
         self.by_experiment: dict[str, str] = {}
         # Live SSH endpoint per sandbox id; move_endpoint() simulates a tunnel
         # that Modal relocated so refresh_ssh_endpoint() can be exercised.
@@ -102,6 +126,18 @@ class FakeSandboxBackend(SandboxBackendBase):
         self.alive[sandbox_id] = True
         self.by_experiment[request.experiment_id] = sandbox_id
         self.endpoints[sandbox_id] = ("sandbox.modal.test", 40000 + self.counter)
+        # What a real bootstrap would do with this request: authorize BOTH
+        # keys (user + management, plan Phase 5) and pre-install /opt/rp
+        # tooling. The keys come straight from the captured request so a test
+        # can assert exactly what reached the VM.
+        self.bootstraps[sandbox_id] = {
+            "authorized_keys": [
+                key
+                for key in (request.public_key, request.management_public_key)
+                if key
+            ],
+            "files": dict(self.bootstrap_files()),
+        }
         workdir = request.remote_workdir or remote_experiment_dir(
             experiment_id=request.experiment_id
         )
@@ -214,6 +250,57 @@ class FakeSandboxBackend(SandboxBackendBase):
         if not self.alive.get(sandbox_id):
             return None
         return self.metrics.get(sandbox_id)
+
+    def bootstrap_files(self) -> dict[str, str]:
+        """The /opt/rp files a real bootstrap pre-installs (path → content).
+
+        Mirrors what Modal's file layer and Lambda's user_data ship, so a
+        test can assert the parachute really rides along at bootstrap time.
+        """
+        return {"/opt/rp/parachute.sh": build_parachute_script()}
+
+    def run_parachute(
+        self,
+        *,
+        sandbox_id: str,
+        put_url: str,
+        ssh_host: str = "",  # noqa: ARG002 — the fake needs no endpoint
+        ssh_port: int = 0,  # noqa: ARG002
+        key_path: str = "",
+    ) -> dict | None:
+        """Simulate the VM-side parachute per the shared transfer spec.
+
+        Tars the seeded ``remote_files`` honoring the SAME excludes and
+        per-file size caps the real /opt/rp/parachute.sh enforces, and
+        honors ``file://`` PUT targets (the local blob store's single-use
+        staging URL). Any other scheme needs Phase 8's real presigned URLs.
+        A dead sandbox has no channel to run anything.
+        """
+        self.parachute_calls.append(
+            {"sandbox_id": sandbox_id, "put_url": put_url, "key_path": key_path}
+        )
+        if not self.alive.get(sandbox_id):
+            raise BackendUnavailableError("fake sandbox is not alive")
+        files = self.remote_files.get(sandbox_id) or {}
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for relpath, content in sorted(files.items()):
+                if is_excluded_relpath(relpath):
+                    continue
+                if len(content) > max_size_bytes_for(relpath):
+                    continue
+                info = tarfile.TarInfo(name=f"./{relpath}")
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+        data = buffer.getvalue()
+        target = urlsplit(put_url)
+        if target.scheme != "file":
+            raise BackendUnavailableError(
+                "fake parachute uploads only to file:// targets "
+                "(real presigned URLs are Phase 8's S3)"
+            )
+        Path(url2pathname(target.path)).write_bytes(data)
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
 
     def sandbox_environment(self) -> dict:
         return {"available_tokens": [], "notes": []}

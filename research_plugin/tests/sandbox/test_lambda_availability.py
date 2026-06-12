@@ -14,6 +14,7 @@ from backend.execution.backends.lambda_labs.config import LambdaCloudConfig
 from backend.execution.backends.lambda_labs.sandbox_backend import (
     DASHBOARD_SCRIPT,
     REC_SCRIPT,
+    MGMT_SSH_USER,
     TRANSCRIPT_READ_PREFIX,
     TRANSCRIPT_TAIL_DEFAULT,
     LambdaLabsSandboxBackend,
@@ -470,11 +471,12 @@ class LambdaTranscriptTest(unittest.TestCase):
         self.assertEqual(command[0], "ssh")
         self.assertIn("/keys/exp1", command)
         self.assertIn("22", command)
-        self.assertEqual(command[-2], "ubuntu@198.51.100.2")
+        # The read logs in as the ForceCommand-exempt management principal
+        # (plan Phase 5): never the row's data-plane user, and no recording
+        # sentinel — the Match block exemption replaces the rec.sh bypass.
+        self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
         remote = command[-1]
-        # The sentinel makes rec.sh exec the read raw and unrecorded — without
-        # it every poll would tee the tail output back into the log it reads.
-        self.assertTrue(remote.startswith(TRANSCRIPT_READ_PREFIX))
+        self.assertFalse(remote.startswith(TRANSCRIPT_READ_PREFIX))
         self.assertIn(
             "/workspace/synced/.research_plugin_sessions/exp1/transcript.log", remote
         )
@@ -566,11 +568,11 @@ class LambdaMetricsTest(unittest.TestCase):
         command = runner.commands[0]
         self.assertEqual(command[0], "ssh")
         self.assertIn("/keys/exp1", command)
-        self.assertEqual(command[-2], "ubuntu@198.51.100.2")
+        # The sampler rides the management channel (plan Phase 5): the exempt
+        # principal keeps the ~3s UI poll out of the experiment transcript.
+        self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
         remote = command[-1]
-        # The sampler must ride the rec.sh bypass: a recorded exec would spam
-        # the experiment transcript on every ~3s UI poll.
-        self.assertTrue(remote.startswith(TRANSCRIPT_READ_PREFIX))
+        self.assertFalse(remote.startswith(TRANSCRIPT_READ_PREFIX))
         self.assertIn("nvidia-smi", remote)
 
     def test_sample_metrics_without_endpoint_or_key_returns_none(self) -> None:

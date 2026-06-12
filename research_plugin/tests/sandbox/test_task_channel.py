@@ -9,6 +9,8 @@ dispatch preserves today's ordering exactly.
 
 from __future__ import annotations
 
+import io
+import tarfile
 import tempfile
 import threading
 import time
@@ -195,9 +197,29 @@ class TaskChannelTest(TaskChannelTestBase):
         with self.assertRaises(ValidationError):
             self.app.worker.sync_pull(session=stale_contract)
 
-    def test_parachute_restore_is_stub_acked_until_phase_5(self) -> None:
-        result = self.channel.submit(task_type="parachute_restore", payload={})
-        self.assertIn("unsupported", result)
+    def test_parachute_restore_unpacks_into_the_experiment_folder(self) -> None:
+        # The restore task (plan Phase 5) lands a parachute object at the
+        # normal sync target: experiments/<name>/.
+        exp_id = self._experiment()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            payload = b'{"accuracy": 0.9}\n'
+            info = tarfile.TarInfo(name="./results.json")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        result = self.channel.submit(
+            task_type="parachute_restore",
+            payload={
+                "experiment_id": exp_id,
+                "name": "exp-1",
+                "data": buffer.getvalue(),
+            },
+        )
+        self.assertEqual(result["restored"], 1)
+        self.assertEqual(
+            (self.repo / "experiments" / "exp-1" / "results.json").read_bytes(),
+            b'{"accuracy": 0.9}\n',
+        )
         task, ack = self.channel.history[-1]
         self.assertEqual(task.type, "parachute_restore")
         self.assertTrue(ack["ok"])

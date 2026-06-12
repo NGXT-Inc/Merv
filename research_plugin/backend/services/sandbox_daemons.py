@@ -9,9 +9,9 @@ auto-sync poller — data-plane work that stays on the user's machine — never
 reads rows directly: it asks the injected `ControlPlaneView` for "my running
 sandboxes + a sync lease for each" (cloud plan Phase 4), the exact call that
 becomes the daemon's HTTP poll in Phase 8. Both loops reach the facade
-through injected callables — ``sync_row``, ``final_pull``, and
-``persist_metrics`` — so the facade's swappable rsync syncer and metrics
-archive stay where they are.
+through injected callables — ``sync_row``, ``final_pull``,
+``persist_metrics``, and ``parachute`` — so the facade's swappable rsync
+syncer, metrics archive, and blob store stay where they are.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ class SandboxDaemons:
         sync_row: Callable[..., dict[str, Any]],
         final_pull: Callable[..., dict[str, Any]],
         persist_metrics: Callable[..., None],
+        parachute: Callable[..., None],
     ) -> None:
         self.registry = registry
         self.backend = backend
@@ -68,6 +69,7 @@ class SandboxDaemons:
         self._sync_row = sync_row
         self._final_pull = final_pull
         self._persist_metrics = persist_metrics
+        self._parachute = parachute
         self._auto_sync_stop = threading.Event()
         self._reaper_stop = threading.Event()
         self.auto_sync_thread: threading.Thread | None = None
@@ -137,12 +139,17 @@ class SandboxDaemons:
         experiment_id = str(row.get("experiment_id") or "")
         # Preserve outputs before the kill — same courtesy as release(). The
         # pull arrives at the worker as a final_pull task with a deadline
-        # (plan Phase 4); Phase 5's parachute branch covers a daemon that
-        # misses it.
+        # (plan Phase 4); when it fails — daemon unreachable or rsync broken
+        # — the parachute rescues the experiment dir over the management
+        # channel instead (plan Phase 5, fixed decision 5). In-process the
+        # local worker is by definition reachable, so the branch is
+        # exercised by injecting a failing final_pull; parachute() itself
+        # never raises (loud sandbox.parachute_failed event) and reaping
+        # always proceeds to terminate — billing protection comes first.
         try:
             self._final_pull(row=row)
         except Exception:  # noqa: BLE001 — reaping must still terminate
-            pass
+            self._parachute(row=row)
         self._persist_metrics(row=row, force=True)
         sandbox_id = str(row.get("sandbox_id") or "")
         stopped = False

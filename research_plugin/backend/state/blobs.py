@@ -11,8 +11,12 @@ The namespace maps to the project locally and to ``tenant/project`` in the
 cloud — blobs are never deduplicated across namespaces (cross-tenant dedup
 would leak content existence).
 
-Presigned uploads (the figure tier and the parachute PUT) join the protocol in
-Phase 8, when an HTTP surface exists to accept them.
+Single-use uploads (the parachute PUT, plan Phase 5): ``presign_put`` mints
+an upload target for bytes produced off-process and ``finalize_put`` lands
+them content-addressed, enforcing the size cap and single use. The local
+implementation's "URL" is a ``file://`` staging path — honest to the seam,
+not to the transport: real presigned HTTPS URLs arrive with ``S3BlobStore``
+in Phase 8 behind these same two verbs.
 """
 
 from __future__ import annotations
@@ -23,9 +27,9 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
-from ..utils import NotFoundError, ValidationError, now_iso
+from ..utils import NotFoundError, ValidationError, new_id, now_iso
 
 
 _NAMESPACE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -65,6 +69,27 @@ class BlobStore(Protocol):
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None: ...
 
     def delete(self, *, namespace: str, sha256: str) -> bool: ...
+
+    def presign_put(
+        self,
+        *,
+        namespace: str,
+        max_size_bytes: int,
+        expires_at: str | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        """Mint a single-use upload target for bytes produced off-process
+        (the expiry parachute). Returns ``{upload_id, url, max_size_bytes,
+        expires_at}``; the producer PUTs to ``url``, then the control plane
+        calls ``finalize_put``."""
+        ...
+
+    def finalize_put(self, *, upload_id: str) -> BlobStat:
+        """Land a completed upload in the content-addressed store: enforce
+        the size cap, hash the bytes, consume the single-use target. Raises
+        NotFoundError for an unknown/already-consumed upload or one that
+        received no bytes."""
+        ...
 
     def sweep_expired(self, *, now: str | None = None) -> int:
         """Delete blobs whose ``expires_at`` is past ``now``; returns count."""
@@ -154,6 +179,78 @@ class LocalDirBlobStore:
                 pass
         return existed
 
+    def presign_put(
+        self,
+        *,
+        namespace: str,
+        max_size_bytes: int,
+        expires_at: str | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        """Single-use upload target backed by a local staging file.
+
+        The returned ``url`` is a ``file://`` path the producer can write
+        with ``curl -T`` (or a plain file write) — an honest local stand-in
+        for the seam, not for the transport: a sandbox VM cannot reach this
+        path, which is exactly why ``S3BlobStore`` (Phase 8) must return a
+        real single-use HTTPS PUT URL behind these same verbs. The contract
+        bites in ``finalize_put``: size cap, single use, content addressing.
+        """
+        _validate_keys(namespace=namespace)
+        upload_id = new_id(prefix="upload")
+        staging = self._staging_path(upload_id=upload_id)
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "upload_id": upload_id,
+            "namespace": namespace,
+            "max_size_bytes": int(max_size_bytes),
+            "content_type": content_type,
+            "expires_at": expires_at,
+            "created_at": now_iso(),
+        }
+        self._staging_meta_path(upload_id=upload_id).write_text(
+            json.dumps(meta, sort_keys=True), encoding="utf-8"
+        )
+        return {
+            "upload_id": upload_id,
+            "url": staging.resolve().as_uri(),
+            "max_size_bytes": int(max_size_bytes),
+            "expires_at": expires_at,
+        }
+
+    def finalize_put(self, *, upload_id: str) -> BlobStat:
+        staging = self._staging_path(upload_id=upload_id)
+        meta_path = self._staging_meta_path(upload_id=upload_id)
+        if not meta_path.exists():
+            raise NotFoundError(f"unknown or already-consumed upload: {upload_id}")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        try:
+            if not staging.exists():
+                raise NotFoundError(f"upload received no bytes: {upload_id}")
+            data = staging.read_bytes()
+            max_size_bytes = int(meta["max_size_bytes"])
+            if len(data) > max_size_bytes:
+                raise ValidationError(
+                    f"upload {upload_id} exceeds its size cap: "
+                    f"{len(data)} > {max_size_bytes} bytes"
+                )
+            sha = self.put(
+                namespace=str(meta["namespace"]),
+                data=data,
+                content_type=str(meta["content_type"]),
+                expires_at=meta.get("expires_at"),
+            )
+        finally:
+            # Single use either way: a failed finalize consumes the target.
+            for path in (staging, meta_path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+        stat = self.stat(namespace=str(meta["namespace"]), sha256=sha)
+        assert stat is not None
+        return stat
+
     def sweep_expired(self, *, now: str | None = None) -> int:
         cutoff = now or now_iso()
         swept = 0
@@ -176,6 +273,15 @@ class LocalDirBlobStore:
 
     def _meta_path(self, *, namespace: str, sha256: str) -> Path:
         return self.root / namespace / sha256[:2] / f"{sha256}.meta.json"
+
+    # Staging lives one level deep (".uploads/<id>"), so the expiry sweep's
+    # three-level blob glob never sees it; namespaces are project ids in
+    # practice and never collide with the dot-name.
+    def _staging_path(self, *, upload_id: str) -> Path:
+        return self.root / ".uploads" / upload_id
+
+    def _staging_meta_path(self, *, upload_id: str) -> Path:
+        return self.root / ".uploads" / f"{upload_id}.meta.json"
 
     def _extend_expiry(self, *, meta_path: Path, expires_at: str | None) -> None:
         """An existing blob's lifetime only ever grows: a re-put with no expiry

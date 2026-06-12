@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Callable
 
 from .sync_dirs import ARTIFACTS_TO_KEEP_DIRNAME
+from .transfer_spec import (
+    ARTIFACTS_MAX_FILE_SIZE,
+    DEFAULT_EXCLUDES,
+    SESSIONS_DIR_EXCLUDE,
+    SYNC_MAX_FILE_SIZE,
+)
 
 
 # Sandboxes ship rsync 3.x. Apple's bundled /usr/bin/rsync is 2.6.9
@@ -106,40 +112,11 @@ def _rsync_too_old_error(binary: RsyncBinary) -> RuntimeError:
     )
 
 
-DEFAULT_EXCLUDES: tuple[str, ...] = (
-    ".git/",
-    ".venv/",
-    "venv/",
-    "__pycache__/",
-    ".ipynb_checkpoints/",
-    "node_modules/",
-    ".cache/",
-    "*.parquet",
-    "*.arrow",
-    "*.feather",
-    "*.pt",
-    "*.pth",
-    "*.ckpt",
-    "*.safetensors",
-    "*.bin",
-    "*.onnx",
-    "*.h5",
-    "*.npy",
-    "*.npz",
-    "*.zip",
-    "*.tar",
-    "*.tar.gz",
-    "*.tgz",
-)
-
-# Sandbox-authored telemetry (command transcripts, MLflow/TensorBoard stores
-# and pid files). It now lives OUTSIDE the remote experiment folder, but the
-# push still excludes it defensively: legacy local mirrors may contain an
-# in-folder copy, and with --delete an --exclude *protects* the remote tree —
-# without this, a push could try to delete boot-created root-owned files and
-# fail (rsync exit 23).
-SESSIONS_DIR_EXCLUDE = ".research_plugin_sessions/"
-
+# The exclude patterns and per-file size caps come from the shared transfer
+# contract (transfer_spec.py, plan Phase 5): the expiry parachute tars with
+# the same rules, so what survives a reaped VM is exactly what a pull would
+# have brought home. DEFAULT_EXCLUDES / SESSIONS_DIR_EXCLUDE are re-imported
+# here so existing call sites keep their spelling.
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
@@ -215,7 +192,7 @@ class SshRsyncSyncer:
                     key_path=key_path,
                     remote_dir=remote_sync_dir,
                     local_dir=local_sync_dir,
-                    max_size="100m",
+                    max_size=SYNC_MAX_FILE_SIZE,
                     excludes=DEFAULT_EXCLUDES + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/",),
                 ),
                 False,
@@ -228,7 +205,7 @@ class SshRsyncSyncer:
                     key_path=key_path,
                     remote_dir=f"{remote_sync_dir}/{ARTIFACTS_TO_KEEP_DIRNAME}",
                     local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
-                    max_size="5g",
+                    max_size=ARTIFACTS_MAX_FILE_SIZE,
                     excludes=(),
                 ),
                 True,
@@ -248,7 +225,7 @@ class SshRsyncSyncer:
                         key_path=key_path,
                         remote_dir=remote_sessions_dir.rstrip("/"),
                         local_dir=local_sessions_dir,
-                        max_size="100m",
+                        max_size=SYNC_MAX_FILE_SIZE,
                         excludes=DEFAULT_EXCLUDES,
                     ),
                     True,
@@ -311,7 +288,7 @@ class SshRsyncSyncer:
                     key_path=key_path,
                     remote_dir=remote_sync_dir,
                     local_dir=local_sync_dir,
-                    max_size="100m",
+                    max_size=SYNC_MAX_FILE_SIZE,
                     excludes=DEFAULT_EXCLUDES
                     + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/", SESSIONS_DIR_EXCLUDE),
                 ),
@@ -325,7 +302,7 @@ class SshRsyncSyncer:
                     key_path=key_path,
                     remote_dir=f"{remote_sync_dir}/{ARTIFACTS_TO_KEEP_DIRNAME}",
                     local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
-                    max_size="5g",
+                    max_size=ARTIFACTS_MAX_FILE_SIZE,
                     excludes=(),
                 ),
                 True,

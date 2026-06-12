@@ -39,8 +39,9 @@ class ResourceService:
         self.store = store
         self.permissions = permissions
         # File observation reads the working tree through the workspace, not
-        # the record store; Phase 5 moves these reads behind the worker's
-        # observe_file/read_artifact_bytes duties (plan §3.1).
+        # the record store; the split-mode reshape (plan Phase 8) moves these
+        # reads behind the worker's observe_file/read_artifact_bytes duties
+        # (plan §3.1).
         self.workspace = workspace
         self.blobs = blobs
 

@@ -8,23 +8,31 @@ moment a task is enqueued, preserving today's provision/reap/teardown
 ordering exactly.
 
 Task types: ``initial_push`` | ``final_pull`` | ``conn_refresh`` |
-``teardown`` | ``parachute_restore``. The last is stub-acked until plan
-Phase 5 supplies the machinery it needs (management keys, the presigned
-parachute upload and its recorded object).
+``teardown`` | ``parachute_restore``. The last unpacks a reaped sandbox's
+parachute object (plan Phase 5, fixed decision 5) into the experiment's
+local folder through the worker's normal sync-path semantics.
 
-Payloads carry live objects (sync sessions, row dicts, progress callbacks)
-while both planes share one process; Phase 8 serializes them. Deadlines are
-cloud-minted ISO instants the data plane treats as opaque (plan §3.2) —
-unenforced in-process, where the worker is by definition reachable.
+Payloads carry live objects (sync sessions, row dicts, progress callbacks,
+parachute bytes) while both planes share one process; Phase 8 serializes
+them (the parachute bytes become a presigned GET the daemon downloads).
+Deadlines are cloud-minted ISO instants the data plane treats as opaque
+(plan §3.2) — unenforced in-process, where the worker is by definition
+reachable.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..utils import ValidationError, new_id
-from .worker import DataPlaneWorker
+
+if TYPE_CHECKING:
+    # Typing-only: a runtime import would close the package cycle
+    # dataplane.tasks → dataplane.worker → services (metrics_archive) →
+    # services.sandboxes → dataplane.tasks and break `import
+    # backend.dataplane` as an entry point.
+    from .worker import DataPlaneWorker
 
 
 TASK_TYPES: frozenset[str] = frozenset(
@@ -114,7 +122,11 @@ class InProcessTaskChannel:
                 experiment_id=str(payload["experiment_id"])
             )
             return None
-        # parachute_restore: restoring a reaped sandbox's parachute object
-        # needs plan Phase 5's machinery (management keys, presigned upload,
-        # the recorded {object_key, sha256, ...}); stub-acked until then.
-        return {"unsupported": "parachute_restore arrives with plan Phase 5"}
+        # parachute_restore: unpack a reaped sandbox's parachute object into
+        # the experiment's local folder (plan Phase 5). The bytes ride the
+        # payload in-process; Phase 8 hands the daemon a presigned GET.
+        return self.worker.restore_parachute(
+            experiment_id=str(payload["experiment_id"]),
+            data=payload["data"],
+            name=str(payload.get("name") or ""),
+        )

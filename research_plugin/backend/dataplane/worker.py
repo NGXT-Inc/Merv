@@ -15,13 +15,16 @@ session whose policy or contract version the local rsync flags do not
 implement. The worker's per-experiment locks serialize rsync on this machine,
 subordinate to the lease (the cross-client authority).
 
-Interim duty (Phases 3–4, plan §3.1): ``read_transcript``/``sample_metrics``
-stay where they are — backend reads keyed by the worker-held user key — until
-Phase 5's management-key switch makes them control-feasible.
+Since plan Phase 5's management-key switch, ``read_transcript`` and
+``sample_metrics`` are control-plane duties authenticated by the per-sandbox
+management key; the worker-held user key is data-plane-only (rsync, the sbx
+dispatcher, dashboard tunnels).
 """
 
 from __future__ import annotations
 
+import io
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -121,6 +124,10 @@ class DataPlaneWorker(Protocol):
 
     def final_pull(
         self, *, session: dict[str, Any], name: str = "", deadline: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def restore_parachute(
+        self, *, experiment_id: str, data: bytes, name: str = ""
     ) -> dict[str, Any]: ...
 
     def ensure_local_dashboards(self, *, row: dict[str, Any]) -> dict[str, Any]: ...
@@ -351,11 +358,48 @@ class LocalDataPlaneWorker:
 
         ``deadline`` is the task's cloud-minted budget, carried but unenforced
         in-process — the local worker is by definition reachable, so this is
-        a busy-skipping pull. The unreachable-daemon parachute branch lands
-        with plan Phase 5's management keys.
+        a busy-skipping pull. When the pull fails (or a split-mode daemon
+        misses the deadline), the control plane fires the expiry parachute
+        over the management channel instead (plan Phase 5, decision 5).
         """
         del deadline
         return self.sync_pull(session=session, name=name, skip_if_busy=True)
+
+    def restore_parachute(
+        self, *, experiment_id: str, data: bytes, name: str = ""
+    ) -> dict[str, Any]:
+        """Unpack a parachute object into the experiment's local folder.
+
+        The tar IS the remote experiment dir at reap time — same excludes and
+        size caps as a final pull (shared transfer spec) — so it lands at the
+        normal sync target, under the same per-experiment lock the rsync
+        paths take. Unlike a pull there is no ``--delete``: a parachute is a
+        recovery object, not a mirror pass, so restoring never removes local
+        files. ``data`` arrives inline while both planes share one process;
+        Phase 8 replaces it with a presigned GET the daemon downloads.
+        """
+        with self._sync_locks_lock:
+            lock = self._sync_locks.setdefault(experiment_id, threading.Lock())
+        with lock:
+            local_dir = self.local_experiment_dir(
+                experiment_id=experiment_id, name=name
+            )
+            local_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                members = tar.getmembers()
+                # The 'data' filter refuses absolute paths and parent-dir
+                # escapes and strips dangerous modes — a parachute object is
+                # remote-produced bytes and gets no more trust than a pull.
+                tar.extractall(path=local_dir, filter="data")
+            restored = sum(1 for member in members if member.isfile())
+            self.state.record(
+                experiment_id=experiment_id, local_sync_dir=str(local_dir)
+            )
+        return {
+            "provider": "parachute",
+            "restored": restored,
+            "local_dir": str(local_dir),
+        }
 
     # ---------- dashboards ----------
 

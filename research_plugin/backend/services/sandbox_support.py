@@ -70,6 +70,13 @@ DEFAULT_REAPER_INTERVAL_SECONDS = 30.0
 # so it is retried a few times before the provision is declared failed.
 DEFAULT_INITIAL_PUSH_ATTEMPTS = 6
 DEFAULT_INITIAL_PUSH_RETRY_SECONDS = 10.0
+# Expiry parachute (plan Phase 5, fixed decision 5). The TTL is the blob
+# store's backstop: an unclaimed parachute object (daemon never reconnected)
+# is swept after this long instead of living forever. The object cap bounds
+# the presigned PUT — generous, since the tar's per-file caps already bound
+# the realistic size (5 GiB artifacts + 100 MiB everything else).
+PARACHUTE_TTL_SECONDS = 7 * 24 * 60 * 60
+PARACHUTE_MAX_OBJECT_BYTES = 10 * 1024 * 1024 * 1024
 
 # Static dispatcher dropped at `.research_plugin/sbx`. It resolves the
 # per-experiment connection file the registry regenerates on every request and

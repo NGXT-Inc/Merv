@@ -22,10 +22,15 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from ..dataplane.tasks import InProcessTaskChannel
-from ..dataplane.worker import DataPlaneWorker
+if TYPE_CHECKING:
+    # Typing-only: runtime imports here would close the package cycle
+    # services → dataplane → services (metrics_archive) and break
+    # `import backend.dataplane` as an entry point.
+    from ..dataplane.tasks import InProcessTaskChannel
+    from ..dataplane.worker import DataPlaneWorker
+
 from ..execution import (
     BackendPermissionError,
     BackendUnavailableError,
@@ -390,6 +395,9 @@ class SandboxProvisioner:
             sync_dir=req.remote_workdir or remote_experiment_dir(experiment_id=experiment_id),
             unsynced_dir=DEFAULT_DATA_DIR,
             initial_pushed=-1,
+            # Control knows a management keypair exists for this sandbox (plan
+            # Phase 5): a store reference only — never key material.
+            mgmt_key_ref=(experiment_id if req.management_public_key else ""),
             gpu=req.gpu or "",
             cpu=req.cpu,
             memory=req.memory,

@@ -25,7 +25,14 @@ from tests.paths import BACKEND_ROOT, SERVICES_ROOT
 
 # The only services modules allowed to spawn local processes (ssh/rsync/
 # ssh-keygen/tunnels). Everything else in services/ must stay cloud-servable.
-SUBPROCESS_ALLOWED = {"sandbox_conn.py", "sandbox_dashboards.py"}
+# sandbox_mgmt_keys is control-plane property (plan Phase 5) but mints keys
+# with ssh-keygen — a process the control VM runs itself, never user-machine
+# IO.
+SUBPROCESS_ALLOWED = {
+    "sandbox_conn.py",
+    "sandbox_dashboards.py",
+    "sandbox_mgmt_keys.py",
+}
 
 # Record halves that must be servable from a cloud control plane: no local
 # processes, no rsync/conn machinery, no dataplane worker.
@@ -43,6 +50,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "graph_lint.py",
     SERVICES_ROOT / "pinned.py",
     SERVICES_ROOT / "sync_sessions.py",
+    SERVICES_ROOT / "metrics_records.py",
     BACKEND_ROOT / "state" / "store.py",
 )
 

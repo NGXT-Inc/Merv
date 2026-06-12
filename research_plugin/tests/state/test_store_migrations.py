@@ -228,6 +228,42 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_legacy_db_gains_phase5_columns_and_metrics_records(self) -> None:
+        # Cloud-split Phase 5: the management-key reference and the expiry
+        # parachute record join the sandboxes row, and metrics snapshots gain
+        # a control-plane record table — all via additive convergence on a
+        # pre-Phase-5 database.
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = self._sandbox_columns(conn)
+            for column in (
+                "mgmt_key_ref",
+                "parachute_state",
+                "parachute_object_key",
+                "parachute_sha256",
+                "parachute_size_bytes",
+                "parachute_expires_at",
+            ):
+                self.assertIn(column, columns)
+            tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            self.assertIn("metrics_snapshots", tables)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

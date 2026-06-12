@@ -10,6 +10,11 @@ shutdown. Policy it owns:
   - **Per-experiment SSH keypair.** The registry generates and owns an ed25519
     keypair per experiment, authorizes the public key in the sandbox, and hands
     the agent a ready-to-run `ssh` command.
+  - **Per-sandbox management keypair** (plan Phase 5, fixed decision 4). A
+    second, control-plane-owned ed25519 keypair is authorized at bootstrap
+    alongside the user key; transcript reads, metrics sampling, and the expiry
+    parachute ride it, so none of them depend on the user's machine. The user
+    key is data-plane-only (rsync, sbx dispatcher, tunnels).
 
 The agent never submits commands here. It calls `request` to get SSH details,
 then runs commands itself over SSH. Visibility comes from the in-sandbox
@@ -47,12 +52,18 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..dataplane.tasks import InProcessTaskChannel
-from ..dataplane.worker import DataPlaneWorker
 from ..execution.sync_dirs import remote_experiment_dir
+
+if TYPE_CHECKING:
+    # Typing-only: a runtime import would close the package cycle
+    # services.sandboxes → dataplane.worker → services (metrics_archive) and
+    # break `import backend.dataplane` as an entry point.
+    from ..dataplane.worker import DataPlaneWorker
 from ..state.activity import ActivityLogger
+from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict
 from ..utils import (
     NotFoundError,
@@ -69,7 +80,9 @@ from ..execution import (
 from . import sandbox_views
 from .experiments import ExperimentService
 from .metrics_archive import snapshot_mlflow
+from .metrics_records import MetricsSnapshotStore
 from .sandbox_daemons import SandboxDaemons
+from .sandbox_mgmt_keys import LocalMgmtKeyStore, MgmtKeyStore
 from .sandbox_provisioner import SandboxProvisioner
 from .sandbox_registry import SandboxRegistry
 from .sandbox_support import (
@@ -78,6 +91,8 @@ from .sandbox_support import (
     DEFAULT_STALE_PROVISION_SECONDS,
     METRICS_CACHE_TTL_SECONDS,
     METRICS_PERSIST_TTL_SECONDS,
+    PARACHUTE_MAX_OBJECT_BYTES,
+    PARACHUTE_TTL_SECONDS,
     decode_dashboards,
     encode_dashboards,
     env_float,
@@ -106,10 +121,22 @@ class SandboxService:
         request_wait_seconds: float | None = None,
         stale_provision_seconds: float | None = None,
         experiments: ExperimentService | None = None,
+        mgmt_keys: MgmtKeyStore | None = None,
+        blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
         self.backend = sandbox_backend
         self.activity = activity
+        # Per-sandbox management keypairs (plan Phase 5, fixed decision 4):
+        # control-plane custody; transcript reads, metrics sampling, and the
+        # parachute authenticate with these, never with the user key.
+        self.mgmt_keys = mgmt_keys or LocalMgmtKeyStore(
+            root=worker.workspace.research_dir / "mgmt_keys"
+        )
+        # The blob store holds parachute objects (decision 7's one shared
+        # store). None means "no parachute home" — the branch then fails
+        # LOUDLY (sandbox.parachute_failed), never silently.
+        self.blobs = blobs
         # Sandbox lifecycle changes experiment status only through the workflow
         # engine's system transitions — never by writing the experiments table.
         self.experiments = experiments or ExperimentService(store=store)
@@ -124,8 +151,12 @@ class SandboxService:
         # Short-TTL cache of live-usage samples, keyed by sandbox_id.
         self._metrics_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._metrics_lock = threading.Lock()
-        # Durable per-experiment metrics snapshots (results outlive the VM).
+        # Durable per-experiment metrics snapshots (results outlive the VM):
+        # the daemon-owned file cache, kept as-is, plus the control-plane
+        # record (plan Phase 5) so reviews/UI see metrics without the user
+        # machine online.
         self.metrics_archive = worker.metrics_archive
+        self.metrics_records = MetricsSnapshotStore(store=store)
         self._metrics_persisted_at: dict[str, float] = {}
 
         self.registry = SandboxRegistry(store=store)
@@ -175,6 +206,7 @@ class SandboxService:
             sync_row=self._sync_row,
             final_pull=self._final_pull_row,
             persist_metrics=self._persist_metrics_row,
+            parachute=self._parachute_row,
         )
         self.daemons.start()
 
@@ -224,6 +256,9 @@ class SandboxService:
             )
 
         public_key, _key_path = self._ensure_keypair(experiment_id=experiment_id)
+        # Mint the management keypair before any provision so key injection
+        # always precedes the management read paths (plan Phase 5 sequencing).
+        management_public_key = self.mgmt_keys.ensure(experiment_id=experiment_id)
 
         # 1) Reuse a live sandbox immediately — the common mid-session case.
         if (
@@ -267,6 +302,7 @@ class SandboxService:
             experiment_id=experiment_id,
             project_id=project_id,
             public_key=public_key,
+            management_public_key=management_public_key,
             gpu=gpu,
             cpu=cpu,
             memory=memory,
@@ -309,7 +345,11 @@ class SandboxService:
                 "status": "none",
                 "hint": "No sandbox for this experiment — call sandbox.request to create one.",
             }
-        row = self.worker.ensure_local_dashboards(row=self.provisioner.reconcile(row=row))
+        row = self.provisioner.reconcile(row=row)
+        # An unclaimed parachute lands the moment the data plane shows up
+        # again (plan Phase 5): the poll target is that reconnect signal.
+        row = self._maybe_restore_parachute(row=row)
+        row = self.worker.ensure_local_dashboards(row=row)
         return self._agent_view(row=row, reused=None)
 
     def options(
@@ -359,7 +399,10 @@ class SandboxService:
             try:
                 self._final_pull_row(row=row)
             except Exception:  # noqa: BLE001 — release should still terminate
-                pass
+                # The agent is present at release, so the parachute only
+                # fires when the pull itself failed — same injectable branch
+                # as the reaper (plan Phase 5). Loud either way, never raises.
+                self._parachute_row(row=row)
             # Last chance to read MLflow: the server dies with the VM.
             self._persist_metrics_row(row=row, force=True)
         if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
@@ -416,14 +459,14 @@ class SandboxService:
                 volume_name=str(row.get("volume_name") or ""),
                 workdir=str(row.get("workdir") or ""),
                 tail=None,
-                # Stored endpoint + per-experiment key, for backends that read
-                # the transcript over plain SSH (Lambda Labs). Interim duty
-                # (plan §3.1): this read rides the worker-held user key until
-                # Phase 5's management-key switch.
+                # Stored endpoint + the per-sandbox MANAGEMENT key (plan
+                # Phase 5, fixed decision 4), for backends that read the
+                # transcript over SSH (Lambda Labs). Control-plane property:
+                # this read never touches the user key or the user's machine.
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
                 ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(self._key_path(experiment_id=experiment_id)),
+                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
             )
         except Exception as exc:  # noqa: BLE001
             full = f"(terminal unavailable: {exc})"
@@ -531,11 +574,16 @@ class SandboxService:
     ) -> dict[str, Any]:
         """Archived MLflow metrics for an experiment.
 
-        Served from the daemon-owned archive, so it works long after the
-        sandbox is terminated. ``available=False`` means nothing was ever
-        captured (no MLflow runs existed, or the sandbox predates archiving).
+        Served first from the control-plane record (plan Phase 5) — it works
+        long after the sandbox is terminated AND without the user's machine
+        online. Pre-record experiments fall back to the daemon's file cache,
+        then to the pulled-mlflow.db backfill, converging into the record so
+        the next read is record-served. ``available=False`` means nothing was
+        ever captured (no MLflow runs existed, or the sandbox predates
+        archiving).
         """
         status = "none"
+        row: dict[str, Any] | None = None
         try:
             row = self.registry.fetch_scoped(
                 experiment_id=experiment_id, project_id=project_id
@@ -544,7 +592,10 @@ class SandboxService:
         except NotFoundError:
             if self.registry.exists(experiment_id=experiment_id):
                 raise  # exists under another project — a real scope error
-        data = self.metrics_archive.load(experiment_id=experiment_id)
+        data = self.metrics_records.load(experiment_id=experiment_id)
+        from_record = data is not None
+        if data is None:
+            data = self.metrics_archive.load(experiment_id=experiment_id)
         if data is None:
             # Lazy backfill: the MLflow backend store lives inside the synced
             # workspace, so the rsync pull usually captured mlflow.db even for
@@ -557,6 +608,13 @@ class SandboxService:
                 with contextlib.suppress(OSError):
                     self.metrics_archive.persist(experiment_id=experiment_id, snapshot=snapshot)
                 data = self.metrics_archive.load(experiment_id=experiment_id)
+        if data is not None and not from_record and row is not None:
+            with contextlib.suppress(Exception):
+                self.metrics_records.record(
+                    experiment_id=experiment_id,
+                    project_id=str(row.get("project_id") or ""),
+                    snapshot=data,
+                )
         if data is None:
             return {
                 "experiment_id": experiment_id,
@@ -609,6 +667,13 @@ class SandboxService:
             self._metrics_persisted_at[experiment_id] = now
             path = self.metrics_archive.persist(
                 experiment_id=experiment_id, snapshot=snapshot
+            )
+            # The same snapshot also lands as a control-plane record (plan
+            # Phase 5), so metrics survive the VM *and* the user's machine.
+            self.metrics_records.record(
+                experiment_id=experiment_id,
+                project_id=str(row.get("project_id") or ""),
+                snapshot=snapshot,
             )
             if force:
                 self.registry.emit_event(
@@ -714,14 +779,14 @@ class SandboxService:
         try:
             metrics = self.backend.sample_metrics(
                 sandbox_id=sandbox_id,
-                # Stored endpoint + per-experiment key, for backends that sample
-                # over plain SSH (Lambda Labs). Modal ignores these. Interim
-                # duty (plan §3.1): rides the worker-held user key until
-                # Phase 5's management-key switch.
+                # Stored endpoint + the per-sandbox MANAGEMENT key (plan
+                # Phase 5), for backends that sample over SSH (Lambda Labs).
+                # Modal ignores these (control-plane exec). The user key is
+                # data-plane-only.
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
                 ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(self._key_path(experiment_id=experiment_id)),
+                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
             )
         except Exception:  # noqa: BLE001 — metrics are best-effort
             metrics = None
@@ -776,8 +841,14 @@ class SandboxService:
         tunnels are data-plane property, so in split mode the daemon executes
         it from its task loop. ``sandbox_id`` is None when the row itself was
         missing — the task skips tunnel teardown but still drops the conn
-        file, matching the pre-split behavior.
+        file, matching the pre-split behavior. The management keypair dies
+        with the sandbox (per-sandbox keys, plan Phase 5): control-side
+        custody, so it is dropped here rather than in the data-plane task.
         """
+        try:
+            self.mgmt_keys.remove(experiment_id=experiment_id)
+        except Exception:  # noqa: BLE001 — key cleanup must never block the mark
+            pass
         self.tasks.submit(
             task_type="teardown",
             payload={"experiment_id": experiment_id, "sandbox_id": sandbox_id},
@@ -892,9 +963,9 @@ class SandboxService:
         """Last pull before terminate (release and the reaper).
 
         A ``final_pull`` task on the channel, with a cloud-minted deadline —
-        unenforced in-process, where the local worker is always reachable;
-        plan Phase 5's parachute branch takes over when a split-mode daemon
-        misses it.
+        unenforced in-process, where the local worker is always reachable.
+        When it fails (or a split-mode daemon misses the deadline), the
+        caller fires ``_parachute_row`` instead (plan Phase 5, decision 5).
         """
         experiment_id = str(row.get("experiment_id") or "")
         name = self.registry.experiment_name(experiment_id=experiment_id)
@@ -907,6 +978,138 @@ class SandboxService:
         if not result.get("skipped"):
             self._report_pull(row=row, session=session, result=result)
         return result
+
+    # ---------- expiry parachute (plan Phase 5, fixed decision 5) ----------
+
+    def _parachute_row(self, *, row: dict[str, Any]) -> None:
+        """Rescue the experiment dir over the management channel.
+
+        Fired when a final pull failed (reap with the daemon unreachable; a
+        release whose pull broke): mint a single-use upload target from the
+        blob store, run the pre-installed /opt/rp/parachute.sh on the VM via
+        the backend's management channel, and record the object on the row.
+        Loud by contract (plan risk 9): success emits ``sandbox.parachuted``,
+        any failure emits ``sandbox.parachute_failed`` — never silent. Never
+        raises: the caller must still terminate the sandbox (billing
+        protection beats data recovery).
+        """
+        experiment_id = str(row.get("experiment_id") or "")
+        project_id = str(row.get("project_id") or "")
+        sandbox_id = str(row.get("sandbox_id") or "")
+        try:
+            if self.blobs is None:
+                raise ValidationError(
+                    "no blob store is configured to hold parachute objects"
+                )
+            expires_at = iso_after(seconds=PARACHUTE_TTL_SECONDS)
+            target = self.blobs.presign_put(
+                namespace=project_id,
+                max_size_bytes=PARACHUTE_MAX_OBJECT_BYTES,
+                expires_at=expires_at,
+                content_type="application/gzip",
+            )
+            receipt = self.backend.run_parachute(
+                sandbox_id=sandbox_id,
+                put_url=str(target.get("url") or ""),
+                ssh_host=str(row.get("ssh_host") or ""),
+                ssh_port=int(row.get("ssh_port") or 0),
+                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
+            )
+            if receipt is None:
+                raise ValidationError("backend has no parachute channel")
+            stat = self.blobs.finalize_put(upload_id=str(target["upload_id"]))
+            if receipt.get("sha256") and str(receipt["sha256"]) != stat.sha256:
+                raise ValidationError(
+                    "parachute upload hash mismatch: VM reported "
+                    f"{receipt['sha256']}, store landed {stat.sha256}"
+                )
+            self.registry.upsert(
+                experiment_id=experiment_id,
+                parachute_state="uploaded",
+                parachute_object_key=f"{stat.namespace}/{stat.sha256}",
+                parachute_sha256=stat.sha256,
+                parachute_size_bytes=int(stat.size_bytes),
+                parachute_expires_at=expires_at,
+            )
+            self.registry.emit_event(
+                project_id=project_id,
+                event_type="sandbox.parachuted",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": sandbox_id,
+                    "object_key": f"{stat.namespace}/{stat.sha256}",
+                    "sha256": stat.sha256,
+                    "size_bytes": int(stat.size_bytes),
+                    "expires_at": expires_at,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — loud event, then terminate anyway
+            with contextlib.suppress(Exception):
+                self.registry.upsert(
+                    experiment_id=experiment_id, parachute_state="failed"
+                )
+            with contextlib.suppress(Exception):
+                self.registry.emit_event(
+                    project_id=project_id,
+                    event_type="sandbox.parachute_failed",
+                    experiment_id=experiment_id,
+                    payload={"sandbox_id": sandbox_id, "error": str(exc)},
+                )
+
+    def _maybe_restore_parachute(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Land an unclaimed parachute in the local experiment folder.
+
+        Runs on the poll target (``sandbox.get``): in split mode the poll is
+        the daemon's reconnect signal, so an 'uploaded' parachute restores
+        the moment the data plane is back. The blob rides the
+        ``parachute_restore`` task; restore failure is loud and marks the
+        row 'failed' (a swept/expired blob will never restore).
+        """
+        if str(row.get("parachute_state") or "") != "uploaded":
+            return row
+        experiment_id = str(row.get("experiment_id") or "")
+        project_id = str(row.get("project_id") or "")
+        name = self.registry.experiment_name(experiment_id=experiment_id)
+        try:
+            if self.blobs is None:
+                raise ValidationError(
+                    "no blob store is configured to hold parachute objects"
+                )
+            data = self.blobs.get(
+                namespace=project_id, sha256=str(row.get("parachute_sha256") or "")
+            )
+            result = self.tasks.submit(
+                task_type="parachute_restore",
+                payload={"experiment_id": experiment_id, "name": name, "data": data},
+            )
+        except Exception as exc:  # noqa: BLE001 — loud failure, no silent retry loop
+            self.registry.upsert(experiment_id=experiment_id, parachute_state="failed")
+            self.registry.emit_event(
+                project_id=project_id,
+                event_type="sandbox.parachute_failed",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": str(row.get("sandbox_id") or ""),
+                    "stage": "restore",
+                    "error": str(exc),
+                },
+            )
+            return self.registry.load_row(experiment_id=experiment_id)
+        self.registry.upsert(experiment_id=experiment_id, parachute_state="restored")
+        self.registry.emit_event(
+            project_id=project_id,
+            event_type="sandbox.parachute_restored",
+            experiment_id=experiment_id,
+            payload={
+                "sandbox_id": str(row.get("sandbox_id") or ""),
+                "object_key": str(row.get("parachute_object_key") or ""),
+                "restored": int(result.get("restored") or 0),
+                # Logical (repo-relative) spelling: event payloads are
+                # cloud-bound rows and must not carry absolute local paths.
+                "local_dir": self.worker.repo_relative(result.get("local_dir", "")),
+            },
+        )
+        return self.registry.load_row(experiment_id=experiment_id)
 
     def _report_pull(
         self, *, row: dict[str, Any], session: dict[str, Any], result: dict[str, Any]
@@ -951,9 +1154,6 @@ class SandboxService:
             experiment_id=experiment_id,
             name=self.registry.experiment_name(experiment_id=experiment_id),
         )
-
-    def _key_path(self, *, experiment_id: str) -> Path:
-        return self.worker.key_path(experiment_id=experiment_id)
 
     def _ensure_keypair(self, *, experiment_id: str) -> tuple[str, Path]:
         return self.worker.ensure_keypair(experiment_id=experiment_id)

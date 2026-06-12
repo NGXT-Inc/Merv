@@ -210,6 +210,20 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   sandbox_data_dir TEXT NOT NULL DEFAULT '',
   -- Files delivered by the initial experiment-folder push (-1 = unknown).
   initial_pushed INTEGER NOT NULL DEFAULT -1,
+  -- Management keypair reference (cloud plan Phase 5, fixed decision 4):
+  -- non-empty when a control-plane management key was minted for this
+  -- sandbox. A key-store reference (the experiment id) — never key material.
+  mgmt_key_ref TEXT NOT NULL DEFAULT '',
+  -- Expiry parachute record (cloud plan Phase 5, fixed decision 5): set when
+  -- a reap/release whose final pull failed uploaded the experiment dir to
+  -- the blob store over the management channel. State machine:
+  -- '' (none) → 'uploaded' → 'restored' | 'failed'. The object key is
+  -- namespace/sha256 in the blob store; expires_at is the TTL backstop.
+  parachute_state TEXT NOT NULL DEFAULT '',
+  parachute_object_key TEXT NOT NULL DEFAULT '',
+  parachute_sha256 TEXT NOT NULL DEFAULT '',
+  parachute_size_bytes INTEGER NOT NULL DEFAULT 0,
+  parachute_expires_at TEXT,
   volume_name TEXT NOT NULL DEFAULT '',
   -- Observability dashboards exposed inside the sandbox (MLflow at 5000,
   -- TensorBoard at 6006), surfaced to the user as provider URLs (Modal HTTPS
@@ -257,6 +271,19 @@ CREATE TABLE IF NOT EXISTS sync_leases (
   ttl_seconds INTEGER NOT NULL,
   expires_at TEXT NOT NULL,
   renewed_at TEXT NOT NULL
+);
+
+-- MLflow metrics snapshots as control-plane records (cloud plan Phase 5):
+-- reviews and the UI read metrics without the user machine online. One row
+-- per experiment — the latest snapshot, mirroring the daemon's local file
+-- cache (which is kept as-is). snapshot_json is the full extracted record
+-- (captured_at + source + experiments/runs/metrics).
+CREATE TABLE IF NOT EXISTS metrics_snapshots (
+  experiment_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT '',
+  snapshot_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -430,6 +457,17 @@ class StateStore:
                 # or provisioning still in flight); 0 is meaningful — the local
                 # experiment folder had nothing eligible to push.
                 "initial_pushed": "INTEGER NOT NULL DEFAULT -1",
+                # Cloud-split Phase 5 (June 2026): management keypair reference
+                # — non-empty when a control-plane management key exists for
+                # this sandbox. Never key material.
+                "mgmt_key_ref": "TEXT NOT NULL DEFAULT ''",
+                # Cloud-split Phase 5 (June 2026): expiry-parachute record —
+                # the blob-store object a failed final pull was rescued to.
+                "parachute_state": "TEXT NOT NULL DEFAULT ''",
+                "parachute_object_key": "TEXT NOT NULL DEFAULT ''",
+                "parachute_sha256": "TEXT NOT NULL DEFAULT ''",
+                "parachute_size_bytes": "INTEGER NOT NULL DEFAULT 0",
+                "parachute_expires_at": "TEXT",
             },
         )
         # The shadow-git unplug (May 2026) dropped these columns from the

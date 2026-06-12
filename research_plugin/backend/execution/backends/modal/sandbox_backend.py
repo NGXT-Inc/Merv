@@ -26,6 +26,10 @@ from backend.execution.bootstrap_tools import (
     MODAL_APT_PACKAGES,
     REC_EXEC_CORE,
 )
+from backend.execution.transfer_spec import (
+    build_parachute_script,
+    parse_parachute_receipt,
+)
 from backend.execution.usage_metrics import (
     METRICS_EXEC_TIMEOUT,
     METRICS_SCRIPT,
@@ -59,6 +63,12 @@ DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
 MLFLOW_PORT = 5000
 TENSORBOARD_PORT = 6006
 
+# The expiry parachute (plan Phase 5, fixed decision 5): pre-installed via
+# the image file layer next to rec.sh, executed at reap time through
+# control-plane exec (run_parachute) when the daemon misses its final-pull
+# deadline. Tar + upload of a whole experiment dir can be slow.
+PARACHUTE_EXEC_TIMEOUT = 600
+
 # The usage sampler script + parser live in backend/execution/usage_metrics.py,
 # shared with the Lambda backend (which runs the same probes over plain SSH).
 # Here it runs via `sandbox.exec` (control-plane exec, so it bypasses the sshd
@@ -76,10 +86,19 @@ RP_EXPERIMENT_DIR="${RP_EXPERIMENT_DIR:-$RP_WORKDIR}"
 RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/data}"
 mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep"
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
+# Two keys, two duties (plan Phase 5, fixed decision 4): the user key is the
+# data plane's (rsync, sbx dispatcher); the management key is the control
+# plane's (transcripts, metrics, parachute — though on Modal those ride
+# control-plane exec, which bypasses sshd entirely, the key is authorized so
+# the management channel works over SSH too).
+: > /root/.ssh/authorized_keys
 if [ -n "${RP_AUTHORIZED_KEY:-}" ]; then
-  printf '%s\n' "$RP_AUTHORIZED_KEY" > /root/.ssh/authorized_keys
-  chmod 600 /root/.ssh/authorized_keys
+  printf '%s\n' "$RP_AUTHORIZED_KEY" >> /root/.ssh/authorized_keys
 fi
+if [ -n "${RP_MANAGEMENT_KEY:-}" ]; then
+  printf '%s\n' "$RP_MANAGEMENT_KEY" >> /root/.ssh/authorized_keys
+fi
+chmod 600 /root/.ssh/authorized_keys
 # Observability dashboards: an MLflow tracking server on port 5000 and a
 # TensorBoard on port 6006. Both serve from the per-experiment sessions dir,
 # which lives OUTSIDE the experiment folder (it is sandbox-authored telemetry,
@@ -226,6 +245,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         app = self._get_app()
         env = self._sandbox_env(
             public_key=request.public_key,
+            management_public_key=request.management_public_key,
             experiment_id=request.experiment_id,
             workdir=workdir,
             sandbox_data_dir=sandbox_data_dir,
@@ -435,6 +455,39 @@ class ModalSandboxBackend(SandboxBackendBase):
             return None
         return parse_metrics(output)
 
+    def run_parachute(
+        self,
+        *,
+        sandbox_id: str,
+        put_url: str,
+        ssh_host: str = "",  # noqa: ARG002 — Modal runs via control-plane exec
+        ssh_port: int = 0,  # noqa: ARG002
+        key_path: str = "",  # noqa: ARG002
+    ) -> dict[str, Any] | None:
+        """Run the pre-installed parachute via control-plane exec (Phase 5).
+
+        Raises BackendUnavailableError on any failure so the reaper's
+        parachute branch can surface it loudly (sandbox.parachute_failed) —
+        a lost experiment dir must never fail silently.
+        """
+        if not sandbox_id:
+            raise BackendUnavailableError("parachute needs a sandbox id")
+        try:
+            sandbox = self._sandbox_from_id(sandbox_id)
+            process = sandbox.exec(
+                "bash", "/opt/rp/parachute.sh", put_url, timeout=PARACHUTE_EXEC_TIMEOUT
+            )
+            code = wait_process(process)
+            output = read_stream(getattr(process, "stdout", None))
+        except Exception as exc:  # noqa: BLE001
+            raise BackendUnavailableError(f"parachute exec failed: {exc}") from exc
+        if code != 0:
+            raise BackendUnavailableError(f"parachute exited with {code}")
+        receipt = parse_parachute_receipt(output)
+        if receipt is None:
+            raise BackendUnavailableError("parachute produced no upload receipt")
+        return receipt
+
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any]:
@@ -532,12 +585,14 @@ class ModalSandboxBackend(SandboxBackendBase):
         self,
         *,
         public_key: str,
+        management_public_key: str,
         experiment_id: str,
         workdir: str,
         sandbox_data_dir: str,
     ) -> dict[str, str]:
         return {
             "RP_AUTHORIZED_KEY": public_key,
+            "RP_MANAGEMENT_KEY": management_public_key,
             "RP_EXPERIMENT_ID": experiment_id,
             "RP_WORKDIR": workdir,
             "RP_EXPERIMENT_DIR": workdir,
@@ -684,12 +739,15 @@ class ModalSandboxBackend(SandboxBackendBase):
         )
 
     def _with_ssh(self, image: Any) -> Any:
-        """Bake the SSH entrypoint + transcript wrapper into the image."""
+        """Bake the SSH entrypoint, transcript wrapper, and parachute into
+        the image (the parachute must already be on disk when the daemon is
+        unreachable — that is the whole point, plan Phase 5)."""
         return image.run_commands(
             "mkdir -p /opt/rp",
             _write_file_layer(BOOT_SCRIPT, "/opt/rp/boot.sh"),
             _write_file_layer(REC_SCRIPT, "/opt/rp/rec.sh"),
-            "chmod +x /opt/rp/boot.sh /opt/rp/rec.sh",
+            _write_file_layer(build_parachute_script(), "/opt/rp/parachute.sh"),
+            "chmod +x /opt/rp/boot.sh /opt/rp/rec.sh /opt/rp/parachute.sh",
         )
 
     def _modal_module(self) -> Any:

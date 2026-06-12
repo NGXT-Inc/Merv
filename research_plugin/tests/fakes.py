@@ -134,11 +134,18 @@ def write_fake_mlflow_db(path: Path, *, with_run: bool = True) -> None:
 
 
 class FakeBlobStore:
-    """In-memory BlobStore double sharing LocalDirBlobStore's semantics."""
+    """In-memory BlobStore double sharing LocalDirBlobStore's semantics.
+
+    Single-use uploads stage in a real temp directory so the ``file://`` URL
+    the presign returns is writable by producers exactly like the local
+    store's.
+    """
 
     def __init__(self) -> None:
         self.blobs: dict[tuple[str, str], bytes] = {}
         self.meta: dict[tuple[str, str], dict] = {}
+        self.uploads: dict[str, dict] = {}
+        self._staging_dir: str | None = None
 
     def put(
         self,
@@ -192,6 +199,68 @@ class FakeBlobStore:
         self.blobs.pop(key, None)
         self.meta.pop(key, None)
         return existed
+
+    def presign_put(
+        self,
+        *,
+        namespace: str,
+        max_size_bytes: int,
+        expires_at: str | None = None,
+        content_type: str = "application/octet-stream",
+    ) -> dict:
+        import tempfile
+        from pathlib import Path as _Path
+
+        from backend.utils import new_id
+
+        if self._staging_dir is None:
+            self._staging_dir = tempfile.mkdtemp(prefix="fake-blob-uploads-")
+        upload_id = new_id(prefix="upload")
+        staging = _Path(self._staging_dir) / upload_id
+        self.uploads[upload_id] = {
+            "namespace": namespace,
+            "max_size_bytes": int(max_size_bytes),
+            "content_type": content_type,
+            "expires_at": expires_at,
+            "path": staging,
+        }
+        return {
+            "upload_id": upload_id,
+            "url": staging.resolve().as_uri(),
+            "max_size_bytes": int(max_size_bytes),
+            "expires_at": expires_at,
+        }
+
+    def finalize_put(self, *, upload_id: str):
+        from backend.utils import NotFoundError, ValidationError
+
+        meta = self.uploads.pop(upload_id, None)
+        if meta is None:
+            raise NotFoundError(f"unknown or already-consumed upload: {upload_id}")
+        staging = meta["path"]
+        try:
+            if not staging.exists():
+                raise NotFoundError(f"upload received no bytes: {upload_id}")
+            data = staging.read_bytes()
+            if len(data) > meta["max_size_bytes"]:
+                raise ValidationError(
+                    f"upload {upload_id} exceeds its size cap: "
+                    f"{len(data)} > {meta['max_size_bytes']} bytes"
+                )
+            sha = self.put(
+                namespace=meta["namespace"],
+                data=data,
+                content_type=meta["content_type"],
+                expires_at=meta["expires_at"],
+            )
+        finally:
+            try:
+                staging.unlink()
+            except FileNotFoundError:
+                pass
+        stat = self.stat(namespace=meta["namespace"], sha256=sha)
+        assert stat is not None
+        return stat
 
     def sweep_expired(self, *, now: str | None = None) -> int:
         from backend.utils import now_iso

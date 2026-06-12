@@ -35,6 +35,7 @@ from ..execution.sync_dirs import (
     remote_root_of,
     remote_sessions_dir,
 )
+from ..execution.transfer_spec import TRANSFER_CONTRACT_VERSION
 from ..state.store import StateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
 from .sandbox_registry import SandboxRegistry
@@ -42,16 +43,18 @@ from .sandbox_support import iso_after, parse_iso
 
 
 SYNC_SESSION_SCHEMA_VERSION = 1
-# Pins the shared transfer rules (rsync excludes + size caps); Phase 5's
-# transfer_spec constants module and the parachute tar consume the same pin.
-TRANSFER_CONTRACT_VERSION = 1
+# TRANSFER_CONTRACT_VERSION pins the shared transfer rules (rsync excludes +
+# size caps) into every session; it lives in execution/transfer_spec.py
+# (plan Phase 5), the one module feeding both rsync and the parachute tar,
+# and is re-exported here for session consumers.
 # How long a sync lease lives between renewals. Comfortably above the
 # auto-sync poll interval (~5s), short enough that a dead client's experiment
 # is takeover-able quickly.
 DEFAULT_LEASE_TTL_SECONDS = 120
 # Budget handed to a final_pull task before the control plane gives up on the
 # data plane. Unenforced in-process (the local worker is always reachable);
-# Phase 5's parachute branch fires when a split-mode daemon misses it.
+# the expiry parachute (plan Phase 5, decision 5) fires when the pull fails
+# or a split-mode daemon misses the deadline.
 DEFAULT_FINAL_PULL_DEADLINE_SECONDS = 120
 
 # Per-subtree authority (plan §3.1 / fixed decision 8). These name what the

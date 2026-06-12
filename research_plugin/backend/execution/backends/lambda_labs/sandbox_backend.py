@@ -22,6 +22,10 @@ from backend.execution.bootstrap_tools import (
     ML_PYTHON_PACKAGES,
     REC_EXEC_CORE,
 )
+from backend.execution.transfer_spec import (
+    build_parachute_script,
+    parse_parachute_receipt,
+)
 from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
 from ...errors import BackendUnavailableError, BackendValidationError
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
@@ -41,13 +45,28 @@ from .config import LambdaSandboxConfig
 SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
 TRANSCRIPT_TAIL_DEFAULT = 50_000
-# Sentinel prefix for the daemon's transcript poll. rec.sh execs commands with
-# this prefix raw and UNRECORDED — recording the read would tee the tail output
-# back into the very log being read (the transcript would re-ingest itself on
-# every poll) and spam start/exit markers into the agent's command history.
+# Sentinel prefix that rec.sh execs raw and UNRECORDED — recording such a read
+# would tee the tail output back into the very log being read. Since the
+# management-key switch (plan Phase 5) control-plane reads log in as the
+# ForceCommand-exempt management principal instead, so the backend no longer
+# sends this prefix; the rec.sh bypass is kept as a documented legacy/
+# defensive path for sandboxes bootstrapped before the switch.
 TRANSCRIPT_READ_PREFIX = "rp-transcript-read:"
+# The dedicated management principal (plan Phase 5, fixed decision 4).
+# Bootstrap creates this user with ONLY the management key authorized and an
+# sshd Match block that swaps the global rec.sh ForceCommand for the raw
+# pass-through below — so transcript polls and metrics samples are never
+# recorded as commands, and the parachute runs even when the user's machine
+# is gone. It gets passwordless sudo: the management channel's duties (tar
+# the experiment dir at reap, read logs whatever login wrote them) need root,
+# and the user key already grants root anyway — this is duty separation, not
+# privilege separation.
+MGMT_SSH_USER = "rpmgmt"
 TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
 TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
+# The parachute tars + uploads a whole experiment dir at reap time; give it
+# its own generous subprocess budget (separate from the 30s transcript read).
+PARACHUTE_SSH_TIMEOUT_SECONDS = 600
 ACTIVE_INSTANCE_STATUSES = frozenset({"active"})
 LIVE_INSTANCE_STATUSES = frozenset({"booting", "active", "unhealthy"})
 DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
@@ -99,6 +118,19 @@ else
   cd "$RP_EXPERIMENT_DIR" 2>/dev/null || true
   exec bash -l
 fi
+"""
+
+
+# ForceCommand for the management principal: a raw pass-through. An explicit
+# wrapper instead of `ForceCommand none` keeps the exemption auditable in
+# /opt/rp and independent of the sshd build's support for the `none` argument.
+MGMT_EXEC_SCRIPT = r"""#!/usr/bin/env bash
+# research_plugin management channel (generated; plan Phase 5).
+# The management principal is exempt from the rec.sh transcript wrapper:
+# control-plane reads (transcript tail, metrics sampling) and the expiry
+# parachute run here, raw and unrecorded — recording a transcript read would
+# feed the tail output back into the very log it reads.
+exec bash -lc "${SSH_ORIGINAL_COMMAND:-bash -l}"
 """
 
 
@@ -172,6 +204,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         config: LambdaSandboxConfig | None = None,
         client: LambdaCloudClient | None = None,
         ssh_runner: SshRunner | None = None,
+        parachute_runner: SshRunner | None = None,
     ) -> None:
         # Resolve config/client lazily so the daemon can boot (and report health)
         # with only an API key present — region/instance type are per-request,
@@ -181,6 +214,9 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         self._client = client
         # Test seam: read_transcript shells out to ssh through this.
         self._ssh_runner = ssh_runner or _run_ssh
+        # Separate seam (and timeout budget) for the parachute: tar + upload
+        # of a whole experiment dir does not fit the transcript read's 30s.
+        self._parachute_runner = parachute_runner or ssh_runner or _run_ssh_parachute
 
     @property
     def config(self) -> LambdaSandboxConfig:
@@ -240,6 +276,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
                     experiment_id=request.experiment_id, root=remote_root_of(workdir)
                 ),
                 sandbox_data_dir=self.config.sandbox_data_dir,
+                management_public_key=request.management_public_key,
                 tokens=_sandbox_tokens(),
             )
             instance_id = self.client.launch_instance(
@@ -318,14 +355,17 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         tail: int | None = None,
         ssh_host: str = "",
         ssh_port: int = 0,
-        ssh_user: str = "",
+        ssh_user: str = "",  # noqa: ARG002 — the management channel has its own principal
         key_path: str = "",
     ) -> str:
-        """Tail the rec.sh transcript live over SSH.
+        """Tail the rec.sh transcript over the management SSH channel.
 
-        Uses the registry's stored endpoint + per-experiment key (mirroring how
-        the Modal backend reads via control-plane exec). The remote command is
-        sent with TRANSCRIPT_READ_PREFIX so rec.sh runs it unrecorded.
+        ``key_path`` is the per-sandbox management private key (plan Phase 5,
+        fixed decision 4); the read logs in as the dedicated management
+        principal, which bootstrap exempts from the rec.sh ForceCommand — so
+        polling the transcript is never itself recorded as a command and
+        never depends on the user's machine. The row's data-plane ``ssh_user``
+        is ignored.
         """
         if not sandbox_id or not ssh_host or not key_path:
             return ""
@@ -343,7 +383,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
             base, SESSIONS_DIR_NAME, experiment_id, TRANSCRIPT_FILENAME
         ).as_posix()
         remote_command = (
-            f"{TRANSCRIPT_READ_PREFIX}if [ -f {shlex.quote(log_path)} ]; then "
+            f"if [ -f {shlex.quote(log_path)} ]; then "
             f"tail -c {limit} {shlex.quote(log_path)}; "
             f"elif [ -f {shlex.quote(legacy_path)} ]; then "
             f"tail -c {limit} {shlex.quote(legacy_path)}; fi"
@@ -356,7 +396,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{ssh_user or self.config.ssh_user}@{ssh_host}",
+            f"{MGMT_SSH_USER}@{ssh_host}",
             remote_command,
         ]
         try:
@@ -379,22 +419,22 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         sandbox_id: str,
         ssh_host: str = "",
         ssh_port: int = 0,
-        ssh_user: str = "",
+        ssh_user: str = "",  # noqa: ARG002 — the management channel has its own principal
         key_path: str = "",
     ) -> dict[str, Any] | None:
-        """Sample live VM usage (CPU/RAM/GPU) via an unrecorded SSH exec.
+        """Sample live VM usage (CPU/RAM/GPU) over the management SSH channel.
 
-        Runs the shared sampler script through the rec.sh transcript-read
-        bypass, so the ~3s UI poll never spams the experiment transcript. On a
-        dedicated VM the root cgroup / nvidia-smi probes gauge the whole
-        machine, which is the number the user wants. Returns a parsed gauge
-        dict, or None when the VM is unreachable or the sampler produced
-        nothing usable. Never raises — the registry treats None as "metrics
-        unavailable" and the UI hides the strip.
+        Runs the shared sampler script as the ForceCommand-exempt management
+        principal (``key_path`` is the management key, plan Phase 5), so the
+        ~3s UI poll never spams the experiment transcript. On a dedicated VM
+        the root cgroup / nvidia-smi probes gauge the whole machine, which is
+        the number the user wants. Returns a parsed gauge dict, or None when
+        the VM is unreachable or the sampler produced nothing usable. Never
+        raises — the registry treats None as "metrics unavailable" and the UI
+        hides the strip.
         """
         if not sandbox_id or not ssh_host or not key_path:
             return None
-        remote_command = f"{TRANSCRIPT_READ_PREFIX}{METRICS_SCRIPT}"
         command = [
             "ssh",
             "-i", key_path,
@@ -403,8 +443,8 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{ssh_user or self.config.ssh_user}@{ssh_host}",
-            remote_command,
+            f"{MGMT_SSH_USER}@{ssh_host}",
+            METRICS_SCRIPT,
         ]
         try:
             result = self._ssh_runner(command)
@@ -413,6 +453,57 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         if result.returncode != 0:
             return None
         return parse_metrics(result.stdout or "")
+
+    def run_parachute(
+        self,
+        *,
+        sandbox_id: str,
+        put_url: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Run the pre-installed parachute over the management channel.
+
+        SSHes as the management principal with the management key
+        (``key_path``) and executes ``/opt/rp/parachute.sh`` under sudo, so
+        the tar can read every file in the experiment dir regardless of
+        which login wrote it. Raises BackendUnavailableError on any failure
+        so the reaper's parachute branch surfaces it loudly — a lost
+        experiment dir must never fail silently (plan risk 9).
+        """
+        if not sandbox_id or not ssh_host or not key_path:
+            raise BackendUnavailableError(
+                "parachute needs the SSH endpoint and the management key"
+            )
+        remote_command = f"sudo -n bash /opt/rp/parachute.sh {shlex.quote(put_url)}"
+        command = [
+            "ssh",
+            "-i", key_path,
+            "-p", str(int(ssh_port) or 22),
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
+            f"{MGMT_SSH_USER}@{ssh_host}",
+            remote_command,
+        ]
+        try:
+            result = self._parachute_runner(command)
+        except subprocess.TimeoutExpired as exc:
+            raise BackendUnavailableError(f"parachute over SSH timed out: {exc}") from exc
+        except OSError as exc:
+            raise BackendUnavailableError(f"could not run ssh for parachute: {exc}") from exc
+        if result.returncode != 0:
+            stderr_lines = (result.stderr or "").strip().splitlines()
+            detail = stderr_lines[-1] if stderr_lines else "no stderr"
+            raise BackendUnavailableError(
+                f"parachute over SSH failed (exit {result.returncode}): {detail}"
+            )
+        receipt = parse_parachute_receipt(result.stdout or "")
+        if receipt is None:
+            raise BackendUnavailableError("parachute produced no upload receipt")
+        return receipt
 
     def local_dashboard_ports(self) -> dict[str, int]:
         """Dashboard ports reachable only from inside the VM.
@@ -625,31 +716,31 @@ def _sandbox_tokens() -> dict[str, str]:
     return tokens
 
 
-def build_user_data(
+def build_bootstrap_core(
     *,
     public_key: str,
     experiment_id: str,
     workdir: str,
     sessions_dir: str,
     sandbox_data_dir: str,
+    management_public_key: str = "",
     tokens: Mapping[str, str] | None = None,
 ) -> str:
-    apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
-    python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
-    # Dashboard deps install one-at-a-time, only when missing, and with
-    # --ignore-installed. The image ships Debian-owned Python packages without
-    # RECORD files (Werkzeug 3.0.1 was the observed one); pip cannot uninstall
-    # those, so any dependency upgrade that touches one aborts the whole
-    # install — that is how mlflow silently went missing while the hint still
-    # advertised it. --ignore-installed installs fresh copies into /usr/local
-    # (which shadows the Debian dist-packages on sys.path) and never calls
-    # uninstall at all. uv is skipped here: `uv pip install --system` refuses
-    # PEP 668 externally-managed interpreters outright. tensorboard stays
-    # unpinned (the preinstalled one is fine); mlflow keeps its pin.
-    mlflow_package = shlex.quote("mlflow==2.18.0")
+    """Phase 1 of the VM bootstrap: reachable, writable, both keys live.
+
+    A shell fragment (no shebang) shared by ``build_user_data`` and the
+    docker-simulated VM integration test, so what the test exercises is the
+    bootstrap that ships. It creates the workspace tree, authorizes the user
+    key (root + ubuntu), provisions the management principal with ONLY the
+    management key, installs rec.sh + the dashboards script, and writes the
+    sshd config (global rec.sh ForceCommand; Match-exempt management user).
+    """
     public_key_b64 = base64.b64encode(public_key.encode("utf-8")).decode("ascii")
     rec_script_b64 = base64.b64encode(REC_SCRIPT.encode("utf-8")).decode("ascii")
     dashboard_script_b64 = base64.b64encode(DASHBOARD_SCRIPT.encode("utf-8")).decode("ascii")
+    parachute_script_b64 = base64.b64encode(
+        build_parachute_script().encode("utf-8")
+    ).decode("ascii")
     env_lines = "\n".join(
         [
             f"RP_WORKDIR={shlex.quote(workdir)}",
@@ -671,11 +762,39 @@ def build_user_data(
             ),
         ]
     )
-    return f"""#!/usr/bin/env bash
-set -euxo pipefail
-export DEBIAN_FRONTEND=noninteractive
+    mgmt_block = ""
+    if management_public_key:
+        mgmt_key_b64 = base64.b64encode(
+            management_public_key.encode("utf-8")
+        ).decode("ascii")
+        mgmt_exec_b64 = base64.b64encode(
+            MGMT_EXEC_SCRIPT.encode("utf-8")
+        ).decode("ascii")
+        mgmt_block = f"""
+# Management principal (plan Phase 5, fixed decision 4): only the management
+# key is authorized here, and the Match block below exempts it from the
+# global rec.sh ForceCommand so control-plane reads are never recorded as
+# commands. The Match append goes at the END of /etc/ssh/sshd_config, not in
+# sshd_config.d — Ubuntu's Include sits at the top of the main file, so a
+# Match opened in a conf.d snippet would swallow the distro directives that
+# follow it (UsePAM and friends are illegal inside Match blocks).
+useradd --create-home --shell /bin/bash {MGMT_SSH_USER} 2>/dev/null || true
+mkdir -p /home/{MGMT_SSH_USER}/.ssh
+printf '%s' {shlex.quote(mgmt_key_b64)} | base64 -d > /home/{MGMT_SSH_USER}/.ssh/authorized_keys
+chown -R {MGMT_SSH_USER}:{MGMT_SSH_USER} /home/{MGMT_SSH_USER}/.ssh
+chmod 700 /home/{MGMT_SSH_USER}/.ssh
+chmod 600 /home/{MGMT_SSH_USER}/.ssh/authorized_keys
+printf '{MGMT_SSH_USER} ALL=(ALL) NOPASSWD:ALL\\n' > /etc/sudoers.d/{MGMT_SSH_USER}
+chmod 440 /etc/sudoers.d/{MGMT_SSH_USER}
+printf '%s' {shlex.quote(mgmt_exec_b64)} | base64 -d > /opt/rp/mgmt_exec.sh
+chmod +x /opt/rp/mgmt_exec.sh
+cat >> /etc/ssh/sshd_config <<'RP_SSHD_MATCH'
 
-# === Phase 1: make the VM reachable + writable FAST, before the slow installs ===
+Match User {MGMT_SSH_USER}
+    ForceCommand /opt/rp/mgmt_exec.sh
+RP_SSHD_MATCH
+"""
+    return f"""# === Phase 1: make the VM reachable + writable FAST, before the slow installs ===
 # Create the workspace tree and authorize SSH up front so the registry's initial
 # rsync — which fires the moment SSH is reachable — always lands in a writable
 # directory. This used to run *after* a multi-minute Torch install, so the first
@@ -696,9 +815,11 @@ cat > /opt/rp/env <<'RP_ENV'
 RP_ENV
 printf '%s' {shlex.quote(rec_script_b64)} | base64 -d > /opt/rp/rec.sh
 printf '%s' {shlex.quote(dashboard_script_b64)} | base64 -d > /opt/rp/start_dashboards.sh
+printf '%s' {shlex.quote(parachute_script_b64)} | base64 -d > /opt/rp/parachute.sh
 chmod +x /opt/rp/rec.sh
 chmod +x /opt/rp/start_dashboards.sh
-cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
+chmod +x /opt/rp/parachute.sh
+{mgmt_block}cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PasswordAuthentication no
@@ -708,7 +829,46 @@ PrintMotd no
 AcceptEnv LANG LC_*
 RP_SSHD
 systemctl restart ssh || systemctl restart sshd || service ssh restart || true
+"""
 
+
+def build_user_data(
+    *,
+    public_key: str,
+    experiment_id: str,
+    workdir: str,
+    sessions_dir: str,
+    sandbox_data_dir: str,
+    management_public_key: str = "",
+    tokens: Mapping[str, str] | None = None,
+) -> str:
+    apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
+    python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
+    # Dashboard deps install one-at-a-time, only when missing, and with
+    # --ignore-installed. The image ships Debian-owned Python packages without
+    # RECORD files (Werkzeug 3.0.1 was the observed one); pip cannot uninstall
+    # those, so any dependency upgrade that touches one aborts the whole
+    # install — that is how mlflow silently went missing while the hint still
+    # advertised it. --ignore-installed installs fresh copies into /usr/local
+    # (which shadows the Debian dist-packages on sys.path) and never calls
+    # uninstall at all. uv is skipped here: `uv pip install --system` refuses
+    # PEP 668 externally-managed interpreters outright. tensorboard stays
+    # unpinned (the preinstalled one is fine); mlflow keeps its pin.
+    mlflow_package = shlex.quote("mlflow==2.18.0")
+    bootstrap_core = build_bootstrap_core(
+        public_key=public_key,
+        experiment_id=experiment_id,
+        workdir=workdir,
+        sessions_dir=sessions_dir,
+        sandbox_data_dir=sandbox_data_dir,
+        management_public_key=management_public_key,
+        tokens=tokens,
+    )
+    return f"""#!/usr/bin/env bash
+set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+{bootstrap_core}
 # === Phase 2: heavy toolchain install (the VM is already usable by here) ===
 apt-get update
 apt-get install -y --no-install-recommends {apt_packages}
@@ -753,6 +913,12 @@ def _sandbox_name(experiment_id: str) -> str:
 def _run_ssh(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command, text=True, capture_output=True, timeout=TRANSCRIPT_READ_TIMEOUT_SECONDS
+    )
+
+
+def _run_ssh_parachute(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command, text=True, capture_output=True, timeout=PARACHUTE_SSH_TIMEOUT_SECONDS
     )
 
 
