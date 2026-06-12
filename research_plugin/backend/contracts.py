@@ -16,10 +16,20 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+# Which plane serves a tool once the backend splits into a cloud control plane
+# and a local data-plane daemon (docs/CLOUD_BACKEND_MIGRATION_PLAN.md §3.3).
+# "control" = record/gate/lifecycle work, cloud-servable. "data" = touches the
+# local filesystem or local processes, must run on the user's machine.
+# "aggregate" = merges both planes' answers. In local mode one process serves
+# all three; the annotation is the machine-checkable routing source of truth.
+ToolPlane = Literal["control", "data", "aggregate"]
+
+
 @dataclass(frozen=True)
 class ToolContract:
     input_model: type[ContractModel]
     description: str
+    plane: ToolPlane = "control"
 
 
 class EmptyInput(ContractModel):
@@ -506,10 +516,12 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Register or observe repo-relative file(s) as resources. Pass "
             "'path' for one file, or 'paths' for a changed-files batch."
         ),
+        plane="data",
     ),
     "resource.associate": ToolContract(
         input_model=ResourceAssociateInput,
         description="Associate a resource to a claim, experiment, review, or attempt.",
+        plane="data",
     ),
     "resource.delete": ToolContract(
         input_model=ResourceDeleteInput,
@@ -569,6 +581,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "run needs in that folder first. On Lambda Labs, omit instance_type "
             "to receive a live menu of available machines to pick from."
         ),
+        plane="data",
     ),
     "sandbox.options": ToolContract(
         input_model=SandboxOptionsInput,
@@ -580,6 +593,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.get": ToolContract(
         input_model=SandboxGetInput,
         description="Get the experiment's sandbox status and SSH details.",
+        plane="aggregate",
     ),
     "sandbox.sync": ToolContract(
         input_model=SandboxSyncInput,
@@ -588,6 +602,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "experiment folder with SSH rsync (exact replica; the durable "
             "handoff before registering resources)."
         ),
+        plane="data",
     ),
     "sandbox.list": ToolContract(
         input_model=SandboxListInput,
@@ -614,6 +629,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.health": ToolContract(
         input_model=EmptyInput,
         description="Check the execution backend is reachable.",
+        plane="aggregate",
     ),
 }
 
@@ -626,3 +642,32 @@ PROJECT_SCOPED_TOOL_NAMES = {
     for name, contract in TOOL_CONTRACTS.items()
     if issubclass(contract.input_model, ProjectScopedInput)
 }
+
+# Plane route sets, derived so the routing table and the registry cannot
+# drift. The proxy's dual-upstream routing (split mode) keys on these.
+CONTROL_PLANE_TOOL_NAMES = {
+    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "control"
+}
+DATA_PLANE_TOOL_NAMES = {
+    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "data"
+}
+AGGREGATE_TOOL_NAMES = {
+    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "aggregate"
+}
+
+
+def static_tool_catalog() -> list[dict[str, Any]]:
+    """The MCP tool catalog, derived purely from contracts.
+
+    Same shape as ``ResearchPluginApp.list_tools()`` (top-level ``title``
+    popped from each schema) so tool listing never needs an app instance —
+    and therefore has no filesystem side effects.
+    """
+    catalog: list[dict[str, Any]] = []
+    for name, contract in TOOL_CONTRACTS.items():
+        schema = contract.input_model.model_json_schema()
+        schema.pop("title", None)
+        catalog.append(
+            {"name": name, "description": contract.description, "inputSchema": schema}
+        )
+    return catalog

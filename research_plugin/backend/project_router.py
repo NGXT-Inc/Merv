@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .app import ResearchPluginApp
-from .contracts import PROJECT_SCOPED_TOOL_NAMES
+from .contracts import PROJECT_SCOPED_TOOL_NAMES, static_tool_catalog
 from .daemon_marker import clear_marker, write_marker
 from .execution import SandboxBackend
 from .utils import NotFoundError, ValidationError, now_iso
@@ -232,7 +232,10 @@ class ProjectRouter:
         return app.call_tool(name=name, arguments=arguments, activity_source=activity_source)
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return self.tool_template_app().list_tools()
+        # Static catalog: tool listing must never instantiate an app (the old
+        # template-app path mkdir'd a throwaway `_tool_schema` repo just to
+        # serve schemas).
+        return static_tool_catalog()
 
     def activity_recent(self, *, limit: int, source: str | None = None) -> dict[str, Any]:
         events: list[dict[str, Any]] = []
@@ -249,12 +252,12 @@ class ProjectRouter:
         events = events[-limit:]
         return {"events": events, "summary": {"workspaces": summaries, "count": len(events)}}
 
-    def tool_template_app(self) -> ResearchPluginApp:
+    def any_app(self) -> ResearchPluginApp | None:
+        """An already-instantiated app, or None — never creates one."""
         with self._lock:
             if self._apps_by_repo:
                 return next(iter(self._apps_by_repo.values()))
-            template_repo = self.registry_db_path.parent / "_tool_schema"
-            return self._app_for_repo_locked(template_repo)
+            return None
 
     def _initialize(self) -> None:
         conn = self._connect()

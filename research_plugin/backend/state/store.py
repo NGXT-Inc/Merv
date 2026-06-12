@@ -232,8 +232,25 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
-DROP TABLE IF EXISTS jobs;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
 """
+
+
+# Ordered migration ledger. SCHEMA above stays the CREATE-IF-NOT-EXISTS
+# baseline for fresh databases; one-time or destructive DDL goes here and is
+# applied exactly once per database, recorded in schema_migrations. The
+# introspective helpers (_ensure_columns/_drop_columns) remain the SQLite
+# legacy-convergence path for pre-ledger databases; NEW schema changes should
+# be ledger migrations, not new introspective branches.
+MIGRATIONS: tuple[tuple[int, str, str], ...] = (
+    # The defunct `jobs` table predates the sandbox model. Dropping it lived in
+    # the every-boot SCHEMA constant; destructive DDL belongs in the ledger.
+    (1, "drop_legacy_jobs_table", "DROP TABLE IF EXISTS jobs"),
+)
 
 
 # Rebuild shape for the legacy `resources` table whose UNIQUE was on `path`
@@ -308,6 +325,7 @@ class StateStore:
         try:
             conn.executescript(SCHEMA)
             self._ensure_forward_schema(conn=conn)
+            self._apply_migrations(conn=conn)
             row = conn.execute("SELECT id FROM projects LIMIT 1").fetchone()
             if row is None:
                 project_id = new_id(prefix="proj")
@@ -395,6 +413,21 @@ class StateStore:
             table="resource_versions",
             columns=("snapshot_status", "git_path", "git_commit"),
         )
+
+    def _apply_migrations(self, *, conn: sqlite3.Connection) -> None:
+        """Apply unapplied ledger migrations in order, recording each."""
+        applied = {
+            int(row["version"])
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for version, name, statement in MIGRATIONS:
+            if version in applied:
+                continue
+            conn.execute(statement)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (version, name, now_iso()),
+            )
 
     def _ensure_columns(
         self,

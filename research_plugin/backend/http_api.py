@@ -647,11 +647,12 @@ def create_fastapi_app(
         assert api is not None
         return api
 
-    def default_api() -> ResearchHttpApi:
+    def default_api() -> ResearchHttpApi | None:
         if api is not None:
             return api
         assert router is not None
-        return ResearchHttpApi(app=router.tool_template_app())
+        app = router.any_app()
+        return ResearchHttpApi(app=app) if app is not None else None
 
     def route_call_tool(
         *,
@@ -738,18 +739,35 @@ def create_fastapi_app(
         sort: str = "ts",
         order: str = "desc",
     ) -> dict[str, Any]:
-        return default_api().tool_call_stats(
+        target = default_api()
+        if target is None:
+            # Mirror ToolCallStore.stats' empty `base` shape so the Debug UI
+            # renders the same whether the store is empty or no app exists yet.
+            return {
+                "calls": [],
+                "by_tool": [],
+                "totals": {"calls": 0, "sent_chars": 0, "received_chars": 0, "error_calls": 0},
+                "coverage": {"calls": 0, "stored": 0, "oldest_ts": None, "newest_ts": None, "capped": False},
+                "filter": {"minutes": minutes, "source": source, "status": status, "tool": tool},
+            }
+        return target.tool_call_stats(
             minutes=minutes, source=source, status=status, tool=tool,
             limit=limit, sort=sort, order=order,
         )
 
     @http.get("/api/debug/tool-calls/{call_id}")
     def tool_call_detail(call_id: int) -> dict[str, Any]:
-        return default_api().tool_call_detail(call_id=call_id)
+        target = default_api()
+        if target is None:
+            raise NotFoundError("no project instantiated yet")
+        return target.tool_call_detail(call_id=call_id)
 
     @http.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
-        return default_api().tool_calls_clear()
+        target = default_api()
+        if target is None:
+            return {"cleared": 0}
+        return target.tool_calls_clear()
 
     @http.get("/api/projects")
     def list_projects() -> dict[str, Any]:

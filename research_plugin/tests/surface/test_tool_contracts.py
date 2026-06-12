@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
-from backend.contracts import TOOL_CONTRACTS
+from backend.contracts import TOOL_CONTRACTS, static_tool_catalog
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.project_router import ProjectRouter
 
 
 class ToolContractRegistryTest(unittest.TestCase):
@@ -30,6 +31,24 @@ class ToolContractRegistryTest(unittest.TestCase):
         for name, contract in TOOL_CONTRACTS.items():
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
+
+    def test_static_catalog_matches_app_list_tools(self) -> None:
+        # The static catalog is what the router serves without instantiating an
+        # app; it must be indistinguishable from a live app's listing.
+        self.assertEqual(static_tool_catalog(), self.app.list_tools())
+
+
+class StaticCatalogNoSideEffectTest(unittest.TestCase):
+    def test_router_tool_listing_creates_no_template_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "registry.sqlite"
+            router = ProjectRouter(registry_db_path=registry)
+            try:
+                tools = router.list_tools()
+            finally:
+                router.shutdown()
+            self.assertEqual({tool["name"] for tool in tools}, set(TOOL_CONTRACTS))
+            self.assertFalse((Path(tmp) / "_tool_schema").exists())
 
 
 if __name__ == "__main__":

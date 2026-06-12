@@ -17,6 +17,7 @@ from pathlib import Path
 import uvicorn
 
 from .app import ResearchPluginApp
+from .config import resolve_mode
 from .daemon_marker import clear_marker, write_marker
 from .http_api import create_fastapi_app
 from .project_router import ProjectRouter
@@ -137,6 +138,10 @@ def main() -> int:
         help="Mirror activity JSONL events to stderr for live terminal watching.",
     )
     args = parser.parse_args()
+
+    # Fail fast on a wrong/unsupported RESEARCH_PLUGIN_MODE rather than
+    # silently starting in the wrong topology.
+    resolve_mode()
 
     if args.activity_stderr:
         os.environ["RESEARCH_PLUGIN_ACTIVITY_STDERR"] = "1"
