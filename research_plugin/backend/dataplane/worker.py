@@ -8,6 +8,13 @@ Control-plane code (registry, provisioner, facade verbs) calls the interface;
 machinery. In split mode the same duties become the daemon's task loop
 (Phase 8).
 
+Byte movement is session-shaped (plan Phase 4): ``push_initial``/``sync_pull``
+/``final_pull`` take the lease-backed sync session the control plane minted —
+SSH endpoint, remote directory contract, ``direction_policy`` — and refuse a
+session whose policy or contract version the local rsync flags do not
+implement. The worker's per-experiment locks serialize rsync on this machine,
+subordinate to the lease (the cross-client authority).
+
 Interim duty (Phases 3–4, plan §3.1): ``read_transcript``/``sample_metrics``
 stay where they are — backend reads keyed by the worker-held user key — until
 Phase 5's management-key switch makes them control-feasible.
@@ -21,12 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from ..execution.ssh_rsync import SshRsyncSyncer
-from ..execution.sync_dirs import (
-    remote_experiment_dir,
-    remote_root_of,
-    remote_sessions_dir,
-)
-from ..execution.types import ProvisionedSandbox, SandboxBackend
+from ..execution.types import SandboxBackend
 from ..services.metrics_archive import MetricsArchive, snapshot_mlflow_db
 from ..services.sandbox_conn import SandboxConnFiles
 from ..services.sandbox_dashboards import DashboardTunnels
@@ -36,6 +38,12 @@ from ..services.sandbox_support import (
     DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
     env_float,
 )
+from ..services.sync_sessions import (
+    DIRECTION_POLICY,
+    SYNC_SESSION_SCHEMA_VERSION,
+    TRANSFER_CONTRACT_VERSION,
+)
+from ..utils import ValidationError
 from ..workspace import LocalWorkspace
 from .state import SandboxLocalState
 
@@ -46,11 +54,42 @@ from .state import SandboxLocalState
 OnPushRetry = Callable[[int, int], None]
 
 
+def _require_session(session: Any) -> dict[str, Any]:
+    """Refuse byte movement outside the transfer contract (plan Phase 4).
+
+    The session's ``direction_policy`` must be exactly the one this worker's
+    rsync flags implement — experiment dir mirrored remote-authoritative
+    (pull with --delete), ``artifacts_to_keep`` on its own append-only-shaped
+    5 GB pass — and the contract version must match, so a session minted
+    under different rules fails loudly instead of moving bytes wrong.
+    """
+    if not isinstance(session, dict) or not str(session.get("experiment_id") or ""):
+        raise ValidationError("sync session is required for sandbox byte movement")
+    if int(session.get("schema_version") or 0) != SYNC_SESSION_SCHEMA_VERSION:
+        raise ValidationError(
+            f"unsupported sync session schema_version: {session.get('schema_version')!r}"
+        )
+    if int(session.get("transfer_contract_version") or 0) != TRANSFER_CONTRACT_VERSION:
+        raise ValidationError(
+            "unsupported transfer_contract_version: "
+            f"{session.get('transfer_contract_version')!r} "
+            f"(this worker implements {TRANSFER_CONTRACT_VERSION})"
+        )
+    if dict(session.get("direction_policy") or {}) != DIRECTION_POLICY:
+        raise ValidationError(
+            f"unsupported direction_policy: {session.get('direction_policy')!r} "
+            f"(this worker's rsync implements {DIRECTION_POLICY})"
+        )
+    return session
+
+
 class DataPlaneWorker(Protocol):
     """Local-IO duties the control plane is never allowed to perform itself."""
 
     workspace: LocalWorkspace
     metrics_archive: MetricsArchive
+
+    def client_id(self) -> str: ...
 
     def ensure_workspace(self, *, experiment_id: str, name: str = "") -> Path: ...
 
@@ -71,18 +110,17 @@ class DataPlaneWorker(Protocol):
     def push_initial(
         self,
         *,
-        experiment_id: str,
+        session: dict[str, Any],
         name: str = "",
-        provisioned: ProvisionedSandbox,
         on_retry: OnPushRetry | None = None,
     ) -> dict[str, Any]: ...
 
     def sync_pull(
-        self, *, row: dict[str, Any], name: str = "", skip_if_busy: bool = False
+        self, *, session: dict[str, Any], name: str = "", skip_if_busy: bool = False
     ) -> dict[str, Any]: ...
 
     def final_pull(
-        self, *, row: dict[str, Any], name: str = "", deadline: float | None = None
+        self, *, session: dict[str, Any], name: str = "", deadline: str | None = None
     ) -> dict[str, Any]: ...
 
     def ensure_local_dashboards(self, *, row: dict[str, Any]) -> dict[str, Any]: ...
@@ -131,8 +169,16 @@ class LocalDataPlaneWorker:
             local_state=self.state,
         )
         # One rsync per experiment at a time; sync/release/reap contend.
+        # Machine-local serialization only — subordinate to the sync lease,
+        # which is the cross-client authority (plan Phase 4).
         self._sync_locks: dict[str, threading.Lock] = {}
         self._sync_locks_lock = threading.Lock()
+
+    # ---------- identity ----------
+
+    def client_id(self) -> str:
+        """Stable data-plane client identity — the sync-lease holder id."""
+        return self.state.client_id()
 
     # ---------- workspace ----------
 
@@ -205,11 +251,13 @@ class LocalDataPlaneWorker:
     def push_initial(
         self,
         *,
-        experiment_id: str,
+        session: dict[str, Any],
         name: str = "",
-        provisioned: ProvisionedSandbox,
         on_retry: OnPushRetry | None = None,
     ) -> dict[str, Any]:
+        session = _require_session(session)
+        experiment_id = str(session["experiment_id"])
+        ssh = session["ssh"]
         local_dir = self.local_experiment_dir(experiment_id=experiment_id, name=name)
         local_dir.mkdir(parents=True, exist_ok=True)
         attempts = max(
@@ -229,13 +277,11 @@ class LocalDataPlaneWorker:
         for attempt in range(1, attempts + 1):
             try:
                 result = self.rsync_syncer.push_initial(
-                    ssh_host=provisioned.ssh_host,
-                    ssh_port=provisioned.ssh_port,
-                    ssh_user=provisioned.ssh_user,
+                    ssh_host=str(ssh.get("host") or ""),
+                    ssh_port=int(ssh.get("port") or 0),
+                    ssh_user=str(ssh.get("user") or "root"),
                     key_path=self.key_path(experiment_id=experiment_id),
-                    remote_sync_dir=provisioned.sync_dir
-                    or provisioned.workdir
-                    or remote_experiment_dir(experiment_id=experiment_id, name=name),
+                    remote_sync_dir=str(session["remote"]["experiment_dir"]),
                     local_sync_dir=local_dir,
                 ).as_dict()
                 break
@@ -250,9 +296,10 @@ class LocalDataPlaneWorker:
         return result
 
     def sync_pull(
-        self, *, row: dict[str, Any], name: str = "", skip_if_busy: bool = False
+        self, *, session: dict[str, Any], name: str = "", skip_if_busy: bool = False
     ) -> dict[str, Any]:
-        experiment_id = str(row.get("experiment_id") or "")
+        session = _require_session(session)
+        experiment_id = str(session["experiment_id"])
         with self._sync_locks_lock:
             lock = self._sync_locks.setdefault(experiment_id, threading.Lock())
         acquired = lock.acquire(blocking=not skip_if_busy)
@@ -270,29 +317,24 @@ class LocalDataPlaneWorker:
             local_dir = self.local_experiment_dir(
                 experiment_id=experiment_id, name=name
             )
-            remote_dir = str(
-                row.get("sync_dir")
-                or row.get("workdir")
-                or remote_experiment_dir(experiment_id=experiment_id, name=name)
-            )
+            ssh = session["ssh"]
+            remote = session["remote"]
             result = self.rsync_syncer.sync(
-                ssh_host=str(row.get("ssh_host") or ""),
-                ssh_port=int(row.get("ssh_port") or 0),
-                ssh_user=str(row.get("ssh_user") or "root"),
+                ssh_host=str(ssh.get("host") or ""),
+                ssh_port=int(ssh.get("port") or 0),
+                ssh_user=str(ssh.get("user") or "root"),
                 key_path=self.key_path(experiment_id=experiment_id),
-                remote_sync_dir=remote_dir,
+                remote_sync_dir=str(remote.get("experiment_dir") or ""),
                 local_sync_dir=local_dir,
                 # Sandbox-authored telemetry (MLflow db, TB events, transcript)
                 # lives outside the experiment folder and lands in a daemon-owned
                 # local dir, keyed by sandbox id so each VM generation's history
                 # is preserved. Legacy rows simply have nothing at this remote
                 # path (their sessions ride inside the synced folder).
-                remote_sessions_dir=remote_sessions_dir(
-                    experiment_id=experiment_id, root=remote_root_of(remote_dir)
-                ),
+                remote_sessions_dir=str(remote.get("sessions_dir") or ""),
                 local_sessions_dir=self.workspace.sessions_dir(
                     experiment_id=experiment_id,
-                    sandbox_id=str(row.get("sandbox_id") or ""),
+                    sandbox_id=str(session.get("sandbox_id") or ""),
                 ),
             ).as_dict()
             self.state.record(
@@ -303,16 +345,17 @@ class LocalDataPlaneWorker:
             lock.release()
 
     def final_pull(
-        self, *, row: dict[str, Any], name: str = "", deadline: float | None = None
+        self, *, session: dict[str, Any], name: str = "", deadline: str | None = None
     ) -> dict[str, Any]:
-        """Last pull before terminate (release today; the reaper in Phase 4).
+        """Last pull before terminate (release + the reaper's final_pull task).
 
-        ``deadline`` and the unreachable-daemon parachute branch arrive with
-        the task channel and management keys (plan Phases 4–5); locally the
-        worker is by definition reachable, so this is a busy-skipping pull.
+        ``deadline`` is the task's cloud-minted budget, carried but unenforced
+        in-process — the local worker is by definition reachable, so this is
+        a busy-skipping pull. The unreachable-daemon parachute branch lands
+        with plan Phase 5's management keys.
         """
         del deadline
-        return self.sync_pull(row=row, name=name, skip_if_busy=True)
+        return self.sync_pull(session=session, name=name, skip_if_busy=True)
 
     # ---------- dashboards ----------
 

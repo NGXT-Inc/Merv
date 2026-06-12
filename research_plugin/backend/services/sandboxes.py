@@ -24,6 +24,10 @@ metrics, views glue). The machinery lives in dedicated collaborators:
   - `dataplane.LocalDataPlaneWorker` — every local-IO duty: SSH keys + conn
     files, the rsync push/pull, ssh -L dashboard tunnels, and the
     pulled-mlflow.db metrics fallback (cloud plan §3.1).
+  - `sync_sessions` — sync leases (the cross-client byte-movement authority),
+    session issuance, and the poller's ControlPlaneView (cloud plan Phase 4).
+  - `dataplane.InProcessTaskChannel` — the control→data task seam: initial
+    push, final pull, conn refresh, and teardown ride it as tasks.
   - `sandbox_daemons.SandboxDaemons` — the auto-rsync poller and the
     expiration reaper threads.
   - `sandbox_support` — constants, pure helpers, the SSH dispatcher template.
@@ -45,11 +49,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..dataplane.tasks import InProcessTaskChannel
 from ..dataplane.worker import DataPlaneWorker
 from ..execution.sync_dirs import remote_experiment_dir
 from ..state.activity import ActivityLogger
 from ..state.store import StateStore, row_to_dict
-from ..utils import NotFoundError, PermissionDeniedError, ValidationError, now_iso
+from ..utils import (
+    NotFoundError,
+    PermissionDeniedError,
+    ResearchPluginError,
+    ValidationError,
+    now_iso,
+)
 from ..execution import (
     BackendUnavailableError,
     SandboxBackend,
@@ -70,8 +81,15 @@ from .sandbox_support import (
     decode_dashboards,
     encode_dashboards,
     env_float,
+    iso_after,
     parse_terminal_markers,
     validate_request_inputs,
+)
+from .sync_sessions import (
+    DEFAULT_FINAL_PULL_DEADLINE_SECONDS,
+    InProcessControlPlaneView,
+    LeaseService,
+    SyncSessionService,
 )
 
 
@@ -114,6 +132,18 @@ class SandboxService:
         # Data-plane work that deserves a record (tunnel came up) reports
         # through the registry's event stream.
         self.worker.set_event_sink(self.registry.emit_event)
+        # Sync sessions + leases (plan Phase 4): every byte movement is
+        # authorized by the experiment's exclusive lease — the cross-client
+        # authority — and described by a session the worker executes. This
+        # process's lease holder identity is the worker's persisted client id.
+        self.leases = LeaseService(store=store)
+        self.sessions = SyncSessionService(
+            leases=self.leases, client_id=worker.client_id()
+        )
+        # The task channel (plan Phase 4): control enqueues, data executes.
+        # In-process it dispatches synchronously, so ordering is unchanged;
+        # in split mode it becomes the daemon's long-poll loop (Phase 8).
+        self.tasks = InProcessTaskChannel(worker=self.worker)
         # Marking a row failed/terminated also tears down its runtime
         # attachments; the registry stays persistence-only via this hook.
         self.registry.on_terminal = self._on_terminal_row
@@ -122,6 +152,8 @@ class SandboxService:
             backend=sandbox_backend,
             experiments=self.experiments,
             worker=self.worker,
+            sessions=self.sessions,
+            tasks=self.tasks,
             refresh_row=self._refresh_row,
             stale_provision_seconds=env_float(
                 "RESEARCH_PLUGIN_SANDBOX_STALE",
@@ -129,12 +161,19 @@ class SandboxService:
                 DEFAULT_STALE_PROVISION_SECONDS,
             ),
         )
+        # The poller's window onto "my running sandboxes + leases" — the call
+        # that becomes the daemon's HTTP poll in Phase 8.
+        self.control_view = InProcessControlPlaneView(
+            registry=self.registry, sessions=self.sessions
+        )
         self.daemons = SandboxDaemons(
             registry=self.registry,
             backend=sandbox_backend,
             provisioner=self.provisioner,
             experiments=self.experiments,
+            control_view=self.control_view,
             sync_row=self._sync_row,
+            final_pull=self._final_pull_row,
             persist_metrics=self._persist_metrics_row,
         )
         self.daemons.start()
@@ -438,7 +477,9 @@ class SandboxService:
             )
         try:
             result = self._sync_row(row=row)
-        except BackendUnavailableError:
+        except (BackendUnavailableError, ResearchPluginError):
+            # Domain errors stay actionable as-is — notably a sync lease held
+            # by another client (plan Phase 4), which names the holder.
             raise
         except Exception as exc:  # noqa: BLE001
             raise BackendUnavailableError(f"sandbox sync failed: {exc}") from exc
@@ -731,14 +772,16 @@ class SandboxService:
     def _on_terminal_row(self, experiment_id: str, sandbox_id: str | None) -> None:
         """Registry terminal hook: tear down a row's runtime attachments.
 
-        Routed through the data-plane worker (it owns conn files and tunnels);
-        it becomes a `teardown` task when Phase 4 introduces the task channel.
-        ``sandbox_id`` is None when the row itself was missing — skip tunnel
-        teardown but still drop the conn file, matching the pre-split behavior.
+        A ``teardown`` task on the channel (plan Phase 4) — conn files and
+        tunnels are data-plane property, so in split mode the daemon executes
+        it from its task loop. ``sandbox_id`` is None when the row itself was
+        missing — the task skips tunnel teardown but still drops the conn
+        file, matching the pre-split behavior.
         """
-        if sandbox_id is not None:
-            self.worker.stop_dashboards(sandbox_id=sandbox_id)
-        self.worker.remove_conn_file(experiment_id=experiment_id)
+        self.tasks.submit(
+            task_type="teardown",
+            payload={"experiment_id": experiment_id, "sandbox_id": sandbox_id},
+        )
 
     def _refresh_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Endpoint + provider-dashboard refresh for a confirmed-live row."""
@@ -800,38 +843,85 @@ class SandboxService:
             return row  # unchanged — the common case; avoid a needless write
         experiment_id = str(row.get("experiment_id"))
         self.registry.upsert(experiment_id=experiment_id, ssh_host=host, ssh_port=port)
+        fresh = self.registry.load_row(experiment_id=experiment_id)
+        # The agent's conn file must follow the endpoint: a conn_refresh task
+        # re-renders it through the data plane (plan Phase 4). Best-effort,
+        # like the refresh itself — the next agent view re-renders it anyway.
+        try:
+            self.tasks.submit(
+                task_type="conn_refresh",
+                payload={
+                    "row": fresh,
+                    "name": self.registry.experiment_name(experiment_id=experiment_id),
+                },
+            )
+        except Exception:  # noqa: BLE001 — refresh must never break the caller
+            pass
         self.registry.emit_event(
             project_id=str(row.get("project_id")),
             event_type="sandbox.endpoint_refreshed",
             experiment_id=experiment_id,
             payload={"ssh_host": host, "ssh_port": port},
         )
-        return self.registry.load_row(experiment_id=experiment_id)
+        return fresh
 
     # ---------- sync engine (rsync work delegated to the worker) ----------
 
-    def _sync_row(self, *, row: dict[str, Any], skip_if_busy: bool = False) -> dict[str, Any]:
+    def _sync_row(
+        self,
+        *,
+        row: dict[str, Any],
+        session: dict[str, Any] | None = None,
+        skip_if_busy: bool = False,
+    ) -> dict[str, Any]:
         experiment_id = str(row.get("experiment_id") or "")
+        name = self.registry.experiment_name(experiment_id=experiment_id)
+        # The lease authorizes the bytes (plan Phase 4): acquire — or renew,
+        # for this client's own lease — before anything moves. The auto-sync
+        # poller hands in the session its ControlPlaneView already granted.
+        if session is None:
+            session = self.sessions.grant_for_row(row=row, name=name)
         result = self.worker.sync_pull(
-            row=row,
-            name=self.registry.experiment_name(experiment_id=experiment_id),
-            skip_if_busy=skip_if_busy,
+            session=session, name=name, skip_if_busy=skip_if_busy
         )
         if not result.get("skipped"):
-            self._record_pull(row=row, result=result)
+            self._report_pull(row=row, session=session, result=result)
         return result
 
     def _final_pull_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Last pull before terminate (release; the reaper joins in Phase 4,
-        when the worker's deadline + parachute branch exist — plan §3.1)."""
+        """Last pull before terminate (release and the reaper).
+
+        A ``final_pull`` task on the channel, with a cloud-minted deadline —
+        unenforced in-process, where the local worker is always reachable;
+        plan Phase 5's parachute branch takes over when a split-mode daemon
+        misses it.
+        """
         experiment_id = str(row.get("experiment_id") or "")
-        result = self.worker.final_pull(
-            row=row,
-            name=self.registry.experiment_name(experiment_id=experiment_id),
+        name = self.registry.experiment_name(experiment_id=experiment_id)
+        session = self.sessions.grant_for_row(row=row, name=name)
+        result = self.tasks.submit(
+            task_type="final_pull",
+            payload={"session": session, "name": name},
+            deadline=iso_after(seconds=DEFAULT_FINAL_PULL_DEADLINE_SECONDS),
         )
         if not result.get("skipped"):
-            self._record_pull(row=row, result=result)
+            self._report_pull(row=row, session=session, result=result)
         return result
+
+    def _report_pull(
+        self, *, row: dict[str, Any], session: dict[str, Any], result: dict[str, Any]
+    ) -> None:
+        """Record a completed pull, lease-checked (``sandbox_report_sync``, §3.1).
+
+        A stale or foreign lease id — another client took the experiment over
+        mid-sync — is rejected with an actionable error before any record is
+        written, so a superseded holder never credits its own pull.
+        """
+        self.sessions.report_completion(
+            experiment_id=str(row.get("experiment_id") or ""),
+            lease_id=str((session.get("lease") or {}).get("id") or ""),
+        )
+        self._record_pull(row=row, result=result)
 
     def _record_pull(self, *, row: dict[str, Any], result: dict[str, Any]) -> None:
         self.registry.emit_event(
@@ -880,6 +970,7 @@ class SandboxService:
             row=row,
             env_info=self._sandbox_environment(),
             reused=reused,
+            lease=self.leases.holder(experiment_id=experiment_id),
         )
         enrichment = self.worker.sandbox_enrichment(
             row=row,
@@ -888,7 +979,10 @@ class SandboxService:
         return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        return sandbox_views.agent_summary(row=row)
+        experiment_id = str(row.get("experiment_id") or "")
+        return sandbox_views.agent_summary(
+            row=row, lease=self.leases.holder(experiment_id=experiment_id)
+        )
 
     def _row_view(
         self, *, row: dict[str, Any], conn: sqlite3.Connection | None = None

@@ -89,17 +89,31 @@ def _is_live(*, status: str, ssh: dict[str, Any]) -> bool:
     return bool(ssh.get("host") and ssh.get("port") and status in ACTIVE_SANDBOX_STATUSES)
 
 
+def _lease_facts(lease: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Who is syncing this experiment (plan Phase 4): the lease holder +
+    expiry, so a second client can see why its own syncs are refused and
+    when it can take over. None when no client has ever held the lease."""
+    if lease is None:
+        return None
+    return {
+        "holder_client_id": lease.get("holder_client_id"),
+        "expires_at": lease.get("expires_at"),
+    }
+
+
 def agent_row_facts(
     *,
     row: dict[str, Any],
     env_info: dict[str, Any],
     reused: bool | None,
+    lease: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Provider-portable half of the agent view — pure row projection.
 
     No conn files, no repo paths: everything here can be served by the cloud
-    row in split mode. The machine-local enrichment (ssh command, key path,
-    local folder, hint prose built on them) is merged by ``merge_agent_view``.
+    row in split mode (the lease record arrives as an argument, like the row).
+    The machine-local enrichment (ssh command, key path, local folder, hint
+    prose built on them) is merged by ``merge_agent_view``.
     """
     status = row.get("status") or "none"
     experiment_id = str(row.get("experiment_id") or "")
@@ -143,6 +157,9 @@ def agent_row_facts(
         # in-sandbox `MLFLOW_TRACKING_URI` localhost env, not these URLs).
         "dashboards": decode_dashboards(row.get("dashboards_json")),
     }
+    lease_facts = _lease_facts(lease)
+    if lease_facts is not None:
+        facts["sync_lease"] = lease_facts
     if env_info.get("available_tokens"):
         facts["environment"] = env_info
     if status == "provisioning":
@@ -250,8 +267,10 @@ def merge_agent_view(
     return view
 
 
-def agent_summary(*, row: dict[str, Any]) -> dict[str, Any]:
-    return {
+def agent_summary(
+    *, row: dict[str, Any], lease: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    summary = {
         "experiment_id": row.get("experiment_id"),
         "sandbox_id": row.get("sandbox_id"),
         "status": row.get("status"),
@@ -260,6 +279,10 @@ def agent_summary(*, row: dict[str, Any]) -> dict[str, Any]:
         "region": row.get("region") or None,
         "expires_at": row.get("expires_at"),
     }
+    lease_facts = _lease_facts(lease)
+    if lease_facts is not None:
+        summary["sync_lease"] = lease_facts
+    return summary
 
 
 def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, Any]:

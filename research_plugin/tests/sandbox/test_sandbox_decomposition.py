@@ -15,12 +15,17 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
-from backend.dataplane import LocalDataPlaneWorker
+from backend.dataplane import InProcessTaskChannel, LocalDataPlaneWorker
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.sandbox_daemons import SandboxDaemons
 from backend.services.sandbox_dashboards import DashboardTunnels
 from backend.services.sandbox_provisioner import SandboxProvisioner
 from backend.services.sandbox_registry import SandboxRegistry
+from backend.services.sync_sessions import (
+    InProcessControlPlaneView,
+    LeaseService,
+    SyncSessionService,
+)
 from tests.paths import SERVICES_ROOT
 
 FACADE = SERVICES_ROOT / "sandboxes.py"
@@ -59,6 +64,26 @@ class SandboxDecompositionTest(unittest.TestCase):
         # Data-plane work that deserves a record (a tunnel came up) reports
         # through the registry's event stream, not its own writes.
         self.assertIsNotNone(service.worker.dashboards.emit_event)
+
+    def test_facade_wires_the_phase4_seam(self) -> None:
+        # Sync sessions, leases, and the task channel (cloud plan Phase 4):
+        # one lease service backs the session issuer and the poller's view,
+        # one channel carries every control→data signal, and the provisioner
+        # shares both rather than minting its own.
+        service = self.app.sandboxes
+        self.assertIsInstance(service.leases, LeaseService)
+        self.assertIsInstance(service.sessions, SyncSessionService)
+        self.assertIsInstance(service.tasks, InProcessTaskChannel)
+        self.assertIsInstance(service.control_view, InProcessControlPlaneView)
+        self.assertIs(service.sessions.leases, service.leases)
+        self.assertIs(service.provisioner.sessions, service.sessions)
+        self.assertIs(service.provisioner.tasks, service.tasks)
+        self.assertIs(service.control_view.registry, service.registry)
+        self.assertIs(service.control_view.sessions, service.sessions)
+        self.assertIs(service.daemons.view, service.control_view)
+        self.assertIs(service.tasks.worker, service.worker)
+        # The lease holder identity is the worker's persisted client id.
+        self.assertEqual(service.sessions.client_id, service.worker.client_id())
 
     def test_facade_source_keeps_no_extracted_machinery(self) -> None:
         source = FACADE.read_text(encoding="utf-8")

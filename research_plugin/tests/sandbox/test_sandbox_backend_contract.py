@@ -82,7 +82,9 @@ class SandboxBackendContractTest(unittest.TestCase):
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
             experiments=object(),  # type: ignore[arg-type]
+            control_view=object(),  # type: ignore[arg-type]
             sync_row=lambda **_kwargs: {},
+            final_pull=lambda **_kwargs: {},
             persist_metrics=lambda **_kwargs: None,
         )
 

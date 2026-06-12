@@ -244,6 +244,21 @@ CREATE TABLE IF NOT EXISTS report_figures (
   FOREIGN KEY(report_version_id) REFERENCES resource_versions(id)
 );
 
+-- Sync leases (cloud plan Phase 4, fixed decision 8): the exclusive
+-- per-experiment byte-movement authority. Cloud-held — the only safe
+-- multi-client coordinator — with TTL + takeover; every sandbox sync/push/
+-- final-pull is authorized by the experiment's lease and its completion
+-- report is validated against the lease id. One row per experiment: the
+-- current holder. Expired rows are takeover-able in place.
+CREATE TABLE IF NOT EXISTS sync_leases (
+  experiment_id TEXT PRIMARY KEY,
+  lease_id TEXT NOT NULL,
+  holder_client_id TEXT NOT NULL,
+  ttl_seconds INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  renewed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,

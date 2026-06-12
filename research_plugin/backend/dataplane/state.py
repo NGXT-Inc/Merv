@@ -1,18 +1,26 @@
 """Worker-owned machine-local sandbox state (cloud plan §3.2).
 
 Machine-local values — the per-experiment SSH key path, the local sync dir,
-and daemon-owned loopback dashboard URLs — must never live in cloud-bound
-rows. They live here instead, in a small SQLite file under
-``.research_plugin/`` owned by the data plane (the daemon-mode successor is
-``~/.research_plugin/daemon.sqlite``).
+daemon-owned loopback dashboard URLs, and the stable per-machine client
+identity — must never live in cloud-bound rows. They live here instead, in a
+small SQLite file under ``.research_plugin/`` owned by the data plane (the
+daemon-mode successor is ``~/.research_plugin/daemon.sqlite``).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+from ..utils import new_id
+
+
+# Overrides the persisted client identity — for tests and for simulating a
+# second client against one record store.
+CLIENT_ID_ENV = "RESEARCH_PLUGIN_CLIENT_ID"
 
 
 _SCHEMA = """
@@ -21,6 +29,11 @@ CREATE TABLE IF NOT EXISTS sandbox_local (
   key_path TEXT NOT NULL DEFAULT '',
   local_sync_dir TEXT NOT NULL DEFAULT '',
   dashboards_local_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS client_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 """
 
@@ -96,6 +109,36 @@ class SandboxLocalState:
 
     def dashboards_local(self, *, experiment_id: str) -> dict[str, str]:
         return dict(self.load(experiment_id=experiment_id)["dashboards_local"])
+
+    def client_id(self) -> str:
+        """Stable per-machine data-plane identity — the sync-lease holder id.
+
+        Generated once and persisted (cloud plan Phase 4); the
+        ``RESEARCH_PLUGIN_CLIENT_ID`` env var overrides it for tests and
+        multi-client simulations.
+        """
+        override = os.environ.get(CLIENT_ID_ENV, "").strip()
+        if override:
+            return override
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM client_meta WHERE key = 'client_id'"
+            ).fetchone()
+            if row is not None and str(row["value"] or ""):
+                return str(row["value"])
+            with conn:
+                # OR IGNORE: a concurrent first boot keeps whichever id landed.
+                conn.execute(
+                    "INSERT OR IGNORE INTO client_meta (key, value) VALUES ('client_id', ?)",
+                    (new_id(prefix="client"),),
+                )
+            row = conn.execute(
+                "SELECT value FROM client_meta WHERE key = 'client_id'"
+            ).fetchone()
+            return str(row["value"])
+        finally:
+            conn.close()
 
 
 def _decode(raw: Any) -> dict[str, str]:

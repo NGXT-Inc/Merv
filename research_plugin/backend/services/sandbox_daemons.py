@@ -1,10 +1,15 @@
 """Background sandbox daemons: the auto-rsync poller and the expiration reaper.
 
 `SandboxDaemons` owns the two long-lived threads and their policy (enable
-gates, intervals, the reap composition). It reads rows from `SandboxRegistry`,
-terminates via the backend, cleans orphans via the provisioner, reverts
-experiments only through the workflow engine's system transitions, and reaches
-the facade through two injected callables — ``sync_row`` and
+gates, intervals, the reap composition). The reaper — control-plane work that
+moves cloud-side in split mode — reads rows from `SandboxRegistry` directly,
+terminates via the backend, cleans orphans via the provisioner, and reverts
+experiments only through the workflow engine's system transitions. The
+auto-sync poller — data-plane work that stays on the user's machine — never
+reads rows directly: it asks the injected `ControlPlaneView` for "my running
+sandboxes + a sync lease for each" (cloud plan Phase 4), the exact call that
+becomes the daemon's HTTP poll in Phase 8. Both loops reach the facade
+through injected callables — ``sync_row``, ``final_pull``, and
 ``persist_metrics`` — so the facade's swappable rsync syncer and metrics
 archive stay where they are.
 """
@@ -14,7 +19,7 @@ from __future__ import annotations
 import os
 import threading
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from ..execution.types import SandboxBackend
 from .experiments import ExperimentService
@@ -28,6 +33,18 @@ from .sandbox_support import (
 )
 
 
+class ControlPlaneView(Protocol):
+    """What the auto-sync poller may know about the control plane.
+
+    ``sync_targets`` returns the running sandboxes this client should sync,
+    each with a freshly granted/renewed lease-backed session (rows leased to
+    another client are absent). In-process it is served by the registry +
+    lease service; in split mode it becomes the daemon's poll (plan Phase 8).
+    """
+
+    def sync_targets(self) -> list[dict[str, Any]]: ...
+
+
 class SandboxDaemons:
     """Owns the auto-sync and reaper threads plus the reap policy."""
 
@@ -38,14 +55,18 @@ class SandboxDaemons:
         backend: SandboxBackend,
         provisioner: SandboxProvisioner,
         experiments: ExperimentService,
+        control_view: ControlPlaneView,
         sync_row: Callable[..., dict[str, Any]],
+        final_pull: Callable[..., dict[str, Any]],
         persist_metrics: Callable[..., None],
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.provisioner = provisioner
         self.experiments = experiments
+        self.view = control_view
         self._sync_row = sync_row
+        self._final_pull = final_pull
         self._persist_metrics = persist_metrics
         self._auto_sync_stop = threading.Event()
         self._reaper_stop = threading.Event()
@@ -114,9 +135,12 @@ class SandboxDaemons:
 
     def _reap_row(self, *, row: dict[str, Any]) -> None:
         experiment_id = str(row.get("experiment_id") or "")
-        # Preserve outputs before the kill — same courtesy as release().
+        # Preserve outputs before the kill — same courtesy as release(). The
+        # pull arrives at the worker as a final_pull task with a deadline
+        # (plan Phase 4); Phase 5's parachute branch covers a daemon that
+        # misses it.
         try:
-            self._sync_row(row=row, skip_if_busy=True)
+            self._final_pull(row=row)
         except Exception:  # noqa: BLE001 — reaping must still terminate
             pass
         self._persist_metrics(row=row, force=True)
@@ -171,14 +195,22 @@ class SandboxDaemons:
         # thread touches the dict, so no lock is needed.
         last_errors: dict[str, str] = {}
         while not self._auto_sync_stop.wait(interval):
-            rows = self.registry.list_running_rows()
-            active = {str(row.get("experiment_id")) for row in rows}
+            # Targets come from the ControlPlaneView — running sandboxes with
+            # a lease granted/renewed for this client (plan Phase 4). A row
+            # another client is syncing is simply absent here.
+            targets = self.view.sync_targets()
+            active = {
+                str(target["row"].get("experiment_id")) for target in targets
+            }
             for gone in set(last_errors) - active:
                 last_errors.pop(gone, None)
-            for row in rows:
+            for target in targets:
+                row = target["row"]
                 experiment_id = str(row.get("experiment_id"))
                 try:
-                    result = self._sync_row(row=row, skip_if_busy=True)
+                    result = self._sync_row(
+                        row=row, session=target["session"], skip_if_busy=True
+                    )
                     if not result.get("skipped"):
                         last_errors.pop(experiment_id, None)
                         self._persist_metrics(row=row)

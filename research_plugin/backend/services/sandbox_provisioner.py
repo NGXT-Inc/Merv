@@ -4,10 +4,18 @@
 experiment (idempotent attach), cooperative cancellation, orphan cleanup, and
 the reconcile pass that keeps a polled row truthful after crashes or restarts.
 It talks to persistence through `SandboxRegistry`, applies experiment status
-changes only through the workflow engine's system transitions, performs all
-local IO (the initial rsync push, tunnel teardown) through the injected
-`DataPlaneWorker`, and reaches the facade only through ``refresh_row``
-(endpoint + dashboard refresh for a live row).
+changes only through the workflow engine's system transitions, and reaches
+the facade only through ``refresh_row`` (endpoint + dashboard refresh for a
+live row).
+
+The provision job's row phases: provider ``acquire`` reports ``creating`` /
+``connecting``; then the row sits in the explicit ``awaiting_initial_push``
+phase (cloud plan Phase 4) while the lease-authorized ``initial_push`` task
+delivers the experiment folder, and only a confirmed push flips the row to
+``running``. The row status stays ``provisioning`` throughout, so the
+existing cancellation and orphan-cleanup paths (reconcile, release-cancel)
+cover the new phase — a daemon offline mid-push must never leave a billing VM
+with no files unaccounted for.
 """
 
 from __future__ import annotations
@@ -16,6 +24,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any, Callable
 
+from ..dataplane.tasks import InProcessTaskChannel
 from ..dataplane.worker import DataPlaneWorker
 from ..execution import (
     BackendPermissionError,
@@ -36,6 +45,7 @@ from .sandbox_support import (
     iso_after,
     parse_iso,
 )
+from .sync_sessions import SyncSessionService
 
 
 RefreshRow = Callable[..., dict[str, Any]]
@@ -51,6 +61,8 @@ class SandboxProvisioner:
         backend: SandboxBackend,
         experiments: ExperimentService,
         worker: DataPlaneWorker,
+        sessions: SyncSessionService,
+        tasks: InProcessTaskChannel,
         refresh_row: RefreshRow,
         stale_provision_seconds: float,
     ) -> None:
@@ -58,6 +70,8 @@ class SandboxProvisioner:
         self.backend = backend
         self.experiments = experiments
         self.worker = worker
+        self.sessions = sessions
+        self.tasks = tasks
         self._refresh_row = refresh_row
         self.stale_provision_seconds = stale_provision_seconds
         # In-flight provisioning jobs, keyed by experiment_id.
@@ -226,17 +240,40 @@ class SandboxProvisioner:
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
                 self._settle_canceled(experiment_id=experiment_id, project_id=project_id)
                 return
-            on_phase("syncing", "pushing the local experiment folder")
+            # The explicit phase between provider-acquire and running (plan
+            # Phase 4): the VM exists but its experiment folder hasn't been
+            # confirmed yet. Status stays `provisioning`, so cancellation
+            # (this on_phase checks the cancel flag) and reconcile/orphan
+            # cleanup cover it like any other in-flight phase.
+            on_phase("awaiting_initial_push", "pushing the local experiment folder")
+            name = self.registry.experiment_name(experiment_id=experiment_id)
             try:
-                initial_sync = self.worker.push_initial(
+                # The push is lease-authorized and session-shaped: the control
+                # plane grants the lease and mints the transfer contract, then
+                # enqueues an initial_push task — in split mode the daemon's
+                # task loop executes it; in-process it runs synchronously.
+                session = self.sessions.grant(
                     experiment_id=experiment_id,
-                    name=self.registry.experiment_name(experiment_id=experiment_id),
-                    provisioned=provisioned,
-                    on_retry=lambda attempt, attempts: self.set_provision(
-                        experiment_id=experiment_id,
-                        phase="syncing",
-                        detail=f"waiting for remote workspace (attempt {attempt}/{attempts})",
-                    ),
+                    sandbox_id=provisioned.sandbox_id,
+                    ssh_host=provisioned.ssh_host,
+                    ssh_port=provisioned.ssh_port,
+                    ssh_user=provisioned.ssh_user,
+                    experiment_dir=provisioned.sync_dir
+                    or provisioned.workdir
+                    or remote_experiment_dir(experiment_id=experiment_id, name=name),
+                    data_dir=provisioned.sandbox_data_dir or provisioned.unsynced_dir,
+                )
+                initial_sync = self.tasks.submit(
+                    task_type="initial_push",
+                    payload={
+                        "session": session,
+                        "name": name,
+                        "on_retry": lambda attempt, attempts: self.set_provision(
+                            experiment_id=experiment_id,
+                            phase="awaiting_initial_push",
+                            detail=f"waiting for remote workspace (attempt {attempt}/{attempts})",
+                        ),
+                    },
                 )
             except Exception:
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
