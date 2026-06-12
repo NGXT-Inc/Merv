@@ -44,7 +44,8 @@ class RoleRequirement:
     # Enforcement: WorkflowError message when the association is absent.
     error: str
     # Enforcement: deep-lint hook run after the association exists
-    # ("plan" | "report" | ""). The lint reads the live file.
+    # ("plan" | "report" | ""). The lint reads the SUBMITTED bytes pinned at
+    # resource.associate — never the live file (fix-and-resubmit semantics).
     validator: str = ""
     # Guidance while unmet: current_gate / next_action / allowed_actions /
     # missing_evidence entry / resource_guidance payload key.

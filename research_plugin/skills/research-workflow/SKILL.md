@@ -239,9 +239,10 @@ The recommended sections (**Method**, **Outputs**, **Risks & confounders**) are
 not lint-enforced, but the design reviewer can return `needs_changes` if they
 are missing or too thin for this experiment. Scale their depth to the work.
 
-If `submit_design` is rejected for missing sections, fill them in and retry —
-the lint reads the live file, so no re-registration is needed (though you still
-sync the plan as a resource so it is associated).
+If `submit_design` is rejected for missing sections, fill them in and
+**re-associate the plan** (`resource.associate` with role `plan`) before
+retrying — the lint reads the bytes you SUBMITTED at associate time, never the
+live file, so an edit counts only once it is re-associated.
 
 ## Results report
 
@@ -254,8 +255,8 @@ grades against the plan's Evaluation section. Write it from
 files — save the figures (matplotlib PNGs) while the run's metrics are at hand.
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has BOTH a `result` resource and a `report` resource whose live file passes
-the report lint:
+has BOTH a `result` resource and a `report` resource whose SUBMITTED content
+(the bytes captured when you associate it) passes the report lint:
 
 - **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
   with real content.
@@ -264,8 +265,10 @@ the report lint:
   Evaluation section named.
 - **Under 10 KB.** The report is the executive layer: link raw metrics files
   (`results.json`, logs) as separate result resources instead of inlining.
-- **Every relative image link resolves** to a synced file. Save figures next
-  to the report (`figures/*.png`) and `sandbox.sync` before submitting.
+- **Every relative image link has submitted figure content.** Save figures
+  next to the report (`figures/*.png`), `sandbox.sync` so they exist locally,
+  and THEN associate the report — associating it submits the figures it links
+  alongside it. Added a figure later? Re-associate the report.
 
 The Conclusion must apply the plan's pre-registered decision rule explicitly —
 the experiment reviewer compares the two documents side by side.
@@ -301,7 +304,7 @@ node at the review that forced it, an outcome node at the results file —
 instead of restating their contents in `detail`.
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has a role-`graph` resource whose live file passes the envelope lint: valid
+has a role-`graph` resource whose SUBMITTED content passes the envelope lint: valid
 JSON (`version: 1`), every node with a unique `id` and non-empty `label`,
 **at most 16 nodes**, edges referencing existing nodes and forming a DAG, file
 under 16 KB. The lint checks shape only; the experiment reviewer judges
@@ -330,12 +333,13 @@ When the agent creates or changes files during an experiment:
   `association_role`; do not guess plural role names such as `results`,
   `reports`, or `output` (the singular roles are `result`, `report`, and
   `graph`)
-- expect `workflow.status_and_next` to refresh already-associated current-attempt
-  resources if their live files changed; do not do separate sync checks before
-  every workflow status call
+- gates and lints judge the SUBMITTED bytes (pinned at `resource.associate`),
+  never the live working tree: after fixing a gated artifact (plan, report,
+  graph, proposals, reflection), re-associate it to submit the fix — editing
+  the file alone changes nothing the workflow can see
 - do not create artifact manifests or content-addressed resource objects
-- do not restore old versions through MCP; edit the live file normally and sync
-  it as a new version
+- do not restore old versions through MCP; edit the live file normally and
+  re-associate it to submit a new version
 
 ## Review discipline
 

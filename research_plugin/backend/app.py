@@ -112,6 +112,7 @@ class ResearchPluginApp:
             permissions=self.permissions,
             experiments=self.experiments,
             syntheses=self.syntheses,
+            blobs=self.blobs,
         )
         if execution_backend is None:
             execution_backend = build_sandbox_backend(

@@ -10,7 +10,8 @@ from typing import Any
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from .experiments import ExperimentService
 from ..utils import new_id
-from .permissions import PermissionService
+from ..state.blobs import BlobStore
+from .permissions import GATED_ROLES, PermissionService
 from ..state.store import StateStore, row_to_dict
 from .syntheses import SynthesisService
 from ..utils import now_iso
@@ -33,11 +34,13 @@ class ReviewService:
         permissions: PermissionService,
         experiments: ExperimentService,
         syntheses: SynthesisService,
+        blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
         self.experiments = experiments
         self.syntheses = syntheses
+        self.blobs = blobs
 
     def request(
         self,
@@ -150,7 +153,69 @@ class ReviewService:
                 "target_id": req["target_id"],
                 "independence": independence,
                 "read_scope": ["claim", "experiment", "synthesis", "resource", "review"],
+                # The reviewer grades the SUBMITTED artifacts — the bytes
+                # pinned at associate — not whatever the working tree holds
+                # now. Hydrated here so a reviewer never has to trust disk.
+                "submitted_artifacts": self._submitted_artifacts(
+                    conn=conn,
+                    target_type=str(req["target_type"]),
+                    target_id=str(req["target_id"]),
+                ),
             }
+
+    def _submitted_artifacts(
+        self, *, conn, target_type: str, target_id: str
+    ) -> list[dict[str, Any]]:
+        """The target's current-attempt gated-role artifacts, with content."""
+        if self.blobs is None:
+            return []
+        table = {"experiment": "experiments", "synthesis": "syntheses"}.get(target_type)
+        if table is None:
+            return []
+        attempt = conn.execute(
+            f"SELECT attempt_index FROM {table} WHERE id = ?", (target_id,)
+        ).fetchone()
+        if attempt is None:
+            return []
+        rows = conn.execute(
+            """
+            SELECT a.role, a.version_id, r.path, v.project_id, v.content_sha256
+            FROM resource_associations a
+            JOIN resources r ON r.id = a.resource_id
+            LEFT JOIN resource_versions v ON v.id = a.version_id
+            WHERE a.target_type = ? AND a.target_id = ? AND a.attempt_index = ?
+              AND r.deleted = 0
+            ORDER BY a.rowid
+            """,
+            (target_type, target_id, int(attempt["attempt_index"])),
+        ).fetchall()
+        artifacts: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in reversed(rows):  # newest association per (role, path) wins
+            role = str(row["role"])
+            if role not in GATED_ROLES:
+                continue
+            key = (role, str(row["path"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            entry: dict[str, Any] = {
+                "role": role,
+                "path": str(row["path"]),
+                "version_id": str(row["version_id"]) if row["version_id"] else None,
+            }
+            try:
+                data = self.blobs.get(
+                    namespace=str(row["project_id"]),
+                    sha256=str(row["content_sha256"]),
+                )
+                entry["content"] = data.decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — hydration is best-effort
+                entry["content"] = None
+                entry["note"] = "submitted content unavailable; ask the producer to re-associate"
+            artifacts.append(entry)
+        artifacts.reverse()
+        return artifacts
 
     def submit(
         self,

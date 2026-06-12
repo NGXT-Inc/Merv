@@ -23,6 +23,7 @@ from .contracts import PROJECT_SCOPED_TOOL_NAMES
 from .project_router import ProjectRouter
 from .services.figure_view import build_experiment_figure
 from .services.graph_lint import MAX_GRAPH_NODES, graph_problems
+from .services.permissions import GATED_ROLES
 from .services.sandbox_views import sandbox_row_view
 from .utils import NotFoundError, ResearchPluginError, ValidationError
 from .state import monotonic_ms
@@ -189,6 +190,21 @@ class ResearchHttpApi:
 
     def resource_content(self, project_id: str, resource_id: str) -> dict[str, Any]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
+        # Gated-role artifacts render their SUBMITTED bytes (the content the
+        # gates lint and reviewers grade); other roles read the live file —
+        # a local-mode convenience the cloud profile will not have.
+        pinned = self._pinned_gated_text(project_id=project_id, resource=resource)
+        if pinned is not None:
+            text, version_id = pinned
+            return {
+                "resource": resource,
+                "path": resource["path"],
+                "content": text,
+                "text": text,
+                "size_bytes": len(text.encode("utf-8")),
+                "source": "submitted",
+                "version_id": version_id,
+            }
         path = self._resource_path(resource=resource)
         text = path.read_text(errors="replace")
         return {
@@ -197,17 +213,64 @@ class ResearchHttpApi:
             "content": text,
             "text": text,
             "size_bytes": path.stat().st_size,
+            "source": "live",
         }
+
+    def _latest_gated_version_id(self, *, resource: dict[str, Any]) -> str | None:
+        best: tuple[int, str] | None = None
+        for assoc in resource.get("associations", []):
+            role = str(assoc.get("role") or "")
+            version_id = assoc.get("version_id")
+            if role not in GATED_ROLES or not version_id:
+                continue
+            attempt = int(assoc.get("attempt_index") or 0)
+            if best is None or attempt >= best[0]:
+                best = (attempt, str(version_id))
+        return best[1] if best else None
+
+    def _pinned_gated_text(
+        self, *, project_id: str, resource: dict[str, Any]
+    ) -> tuple[str, str] | None:
+        version_id = self._latest_gated_version_id(resource=resource)
+        if version_id is None:
+            return None
+        conn = self.app.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id, content_sha256 FROM resource_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        try:
+            data = self.app.blobs.get(
+                namespace=str(row["project_id"]), sha256=str(row["content_sha256"])
+            )
+        except NotFoundError:
+            return None
+        return data.decode("utf-8", errors="replace"), version_id
 
     def resource_file(
         self, project_id: str, resource_id: str, rel: str | None = None
     ) -> tuple[bytes, dict[str, str]]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
-        path = self._resource_path(resource=resource)
         if rel:
-            # Serve a file referenced by the resource (e.g. a report's relative
-            # figure link), resolved against the resource's own directory and
-            # locked inside the repo root.
+            # A file referenced by the resource — e.g. a report's relative
+            # figure link. Submitted figures (captured at associate, keyed by
+            # the report's pinned version) serve from the blob store; only
+            # un-submitted links fall back to a repo-jailed live read, a
+            # local-mode convenience.
+            blob = self._submitted_figure(project_id=project_id, resource=resource, rel=rel)
+            if blob is not None:
+                data, name = blob
+                mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                return data, {
+                    "Content-Type": mime,
+                    "Content-Disposition": f'inline; filename="{name}"',
+                }
+            path = self._resource_path(resource=resource)
             path = (path.parent / rel).resolve()
             try:
                 path.relative_to(self.app.store.repo_root)
@@ -215,11 +278,35 @@ class ResearchHttpApi:
                 raise ValidationError("relative file path escapes repo root") from exc
             if not path.is_file():
                 raise NotFoundError(f"file not found next to resource: {rel}")
+        else:
+            path = self._resource_path(resource=resource)
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         return path.read_bytes(), {
             "Content-Type": mime,
             "Content-Disposition": f'inline; filename="{path.name}"',
         }
+
+    def _submitted_figure(
+        self, *, project_id: str, resource: dict[str, Any], rel: str
+    ) -> tuple[bytes, str] | None:
+        version_id = self._latest_gated_version_id(resource=resource)
+        if version_id is None:
+            return None
+        conn = self.app.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT sha256 FROM report_figures WHERE report_version_id = ? AND link_path = ?",
+                (version_id, rel),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        try:
+            data = self.app.blobs.get(namespace=project_id, sha256=str(row["sha256"]))
+        except NotFoundError:
+            return None
+        return data, rel.rsplit("/", 1)[-1]
 
     def create_project(self, body: dict[str, Any]) -> dict[str, Any]:
         name = body.get("name") or body.get("title") or "Untitled Project"
@@ -346,14 +433,17 @@ class ResearchHttpApi:
         }
         if chosen is None:
             return {**base, "available": False, "graph": None, "problems": []}
-        try:
-            path = self._resource_path(resource=chosen)
-            text = path.read_text(errors="replace")
-        except (NotFoundError, ValidationError, OSError):
-            # OSError covers the file vanishing between the existence check and
-            # the read — possible while sandbox sync mirrors the folder with
-            # --delete. Degrade like a missing file, never a 500.
-            return {**base, "available": False, "graph": None, "problems": ["graph file is missing on disk"], "path": chosen.get("path")}
+        text = self._association_pinned_text(chosen)
+        if text is None:
+            # The association predates byte capture (or the blob is gone):
+            # degrade with re-associate guidance, never a 500.
+            return {
+                **base,
+                "available": False,
+                "graph": None,
+                "problems": ["graph has no submitted content — re-associate it (role 'graph')"],
+                "path": chosen.get("path"),
+            }
         graph: dict[str, Any] | None = None
         try:
             parsed = json.loads(text)
@@ -425,15 +515,13 @@ class ResearchHttpApi:
             "attempt_index": synthesis.get("attempt_index"),
             "published_at": synthesis.get("published_at"),
         }
-        try:
-            path = self._resource_path(resource=chosen)
-            text = path.read_text(errors="replace")
-        except (NotFoundError, ValidationError, OSError):
+        text = self._association_pinned_text(chosen)
+        if text is None:
             return {
                 **base,
                 "available": False,
                 "graph": None,
-                "problems": ["graph file is missing on disk"],
+                "problems": ["graph has no submitted content — re-associate it (role 'graph')"],
                 "path": chosen.get("path"),
             }
         graph: dict[str, Any] | None = None
@@ -453,6 +541,30 @@ class ResearchHttpApi:
             "problems": graph_problems(text),
             "ref_index": self._resolve_graph_refs(project_id=project_id, graph=graph),
         }
+
+    def _association_pinned_text(self, resource: dict[str, Any]) -> str | None:
+        """The submitted bytes behind a resources_for_target row (associated
+        version → blob), or None when nothing was submitted."""
+        version_id = resource.get("association_version_id")
+        if not version_id:
+            return None
+        conn = self.app.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id, content_sha256 FROM resource_versions WHERE id = ?",
+                (str(version_id),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        try:
+            data = self.app.blobs.get(
+                namespace=str(row["project_id"]), sha256=str(row["content_sha256"])
+            )
+        except NotFoundError:
+            return None
+        return data.decode("utf-8", errors="replace")
 
     def _synthesis_graph_resource(
         self, *, synthesis: dict[str, Any] | None
@@ -573,12 +685,14 @@ class ResearchHttpApi:
             ).fetchone()
             if row:
                 return self._graph_ref_resource(row=row)
-            if self._repo_file_exists(rel=ref):
-                return {
-                    "type": "unknown",
-                    "resolved": False,
-                    "hint": "file exists in the repo but is not a registered resource",
-                }
+            # Path refs resolve against registered resources only — the record
+            # the control plane can see. (The old working-tree existence probe
+            # was a local-only signal; cloud mode has no disk to probe.)
+            return {
+                "type": "unknown",
+                "resolved": False,
+                "hint": "not a registered resource path; register the file to make this ref resolvable",
+            }
         return {"type": "unknown", "resolved": False}
 
     def _graph_ref_resource(self, *, row) -> dict[str, Any]:
@@ -591,14 +705,6 @@ class ResearchHttpApi:
             "title": row["title"],
             "missing": bool(row["missing"]),
         }
-
-    def _repo_file_exists(self, *, rel: str) -> bool:
-        try:
-            path = (self.app.store.repo_root / rel).resolve()
-            path.relative_to(self.app.store.repo_root)
-        except (ValueError, OSError):
-            return False
-        return path.is_file()
 
     def _experiment_view_model(self, *, exp: dict[str, Any]) -> dict[str, Any]:
         current = exp.get("current_attempt_resources", [])

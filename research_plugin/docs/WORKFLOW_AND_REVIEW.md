@@ -174,12 +174,12 @@ size, figure links) and the logic graph's envelope (valid JSON, node budget,
 DAG) before the experiment enters review.
 
 `workflow.status_and_next` runs those same deep lints once every required
-artifact exists: if a live file would fail the transition's lint, the gate is
+artifact exists: if a submitted artifact would fail the transition's lint, the gate is
 `plan_invalid` / `report_invalid` / `graph_invalid` with the lint problems in
 `missing_evidence` and the action `fix_<role>_resource` — the workflow never
 answers "ready to submit" for an artifact the transition would reject. The
-lints read the live files, so fixing the file (no re-association) clears the
-gate.
+lints read the SUBMITTED bytes (pinned at resource.associate), so clearing
+the gate means fixing the file AND re-associating it to submit the revision.
 
 On rejection, the attached revision context includes a soft reminder to
 *consider* updating the logic graph — whether the rejection and rework belong

@@ -157,10 +157,11 @@ current `attempt_index` and current `version_id` on that association. Workflow
 gates only count resources from the current attempt, so stale result files from
 a failed attempt cannot satisfy a rerun.
 
-`workflow.status_and_next` reconciles already-associated current-attempt
-experiment resources before answering. If an associated live file changed, MCP
-snapshots the new version and updates the association; if the file is missing,
-MCP marks the resource missing. It does not scan the repo or register new files.
+Gates and lints judge the bytes SUBMITTED at `resource.associate` (pinned to
+a version and stored in the blob store), never the live working tree. There is
+no background reconciliation: editing or deleting a file after association
+changes nothing the workflow can see — re-associate the resource to submit the
+new content. MCP does not scan the repo or register new files.
 
 ### Workflow tools
 

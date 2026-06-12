@@ -40,7 +40,9 @@ illustrative, not required. A useful test for every node: does it help answer
 ## Envelope (the only server-enforced rules)
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has a role-`graph` resource whose live file passes these checks:
+has a role-`graph` resource whose SUBMITTED content (the bytes captured
+when you associate it — re-associate after every edit you want counted)
+passes these checks:
 
 - valid JSON object with `"version": 1`
 - `nodes`: non-empty list; every node has a unique string `id` and a

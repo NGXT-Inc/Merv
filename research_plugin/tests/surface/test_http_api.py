@@ -521,11 +521,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(refs[claim["id"]]["type"], "claim")
         self.assertEqual(refs[claim["id"]]["statement"], "Warmup matters.")
         self.assertEqual(refs[exp_id]["type"], "experiment")
-        # Unregistered-but-existing file: unresolved, with an explanatory hint.
-        self.assertFalse(refs["notes.md"]["resolved"])
-        self.assertIn("not a registered resource", refs["notes.md"]["hint"])
-        # Nothing at all: unresolved, no error.
-        self.assertEqual(refs["ghost.json"], {"type": "unknown", "resolved": False})
+        # Unregistered path (whether or not a file exists on disk): unresolved
+        # with register-the-file guidance — path refs resolve against the
+        # resource records only, never a disk probe.
+        for unregistered in ("notes.md", "ghost.json"):
+            self.assertFalse(refs[unregistered]["resolved"])
+            self.assertIn("not a registered resource", refs[unregistered]["hint"])
 
     def test_experiment_logic_graph_picks_latest_association_and_reports_broken_json(self) -> None:
         import json as _json
@@ -561,9 +562,20 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(payload["path"], "a_new.json")
         self.assertEqual(payload["graph"]["nodes"][0]["label"], "new story")
 
-        # Broken JSON in the live file: still available (a graph exists), with
-        # the problems stated — the UI renders the problems instead of hiding.
+        # Corrupting the LIVE file is invisible — the endpoint renders the
+        # submitted bytes, exactly what the validator lints.
         (self.repo / "a_new.json").write_text("{not json")
+        payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["graph"]["nodes"][0]["label"], "new story")
+        # Re-associating the corrupted file submits it: still available (a
+        # graph exists), problems stated — the UI renders them instead of hiding.
+        res = self.request("POST", f"/api/projects/{pid}/resources", {"path": "a_new.json", "kind": "other"})
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/resources/{res['id']}/associate",
+            {"target_type": "experiment", "target_id": exp_id, "role": "graph"},
+        )
         payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
         self.assertTrue(payload["available"])
         self.assertIsNone(payload["graph"])
