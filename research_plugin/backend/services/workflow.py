@@ -92,17 +92,6 @@ class WorkflowService:
                 if experiment_id
                 else None
             )
-            resource_refresh = (
-                self._refresh_experiment_resources(conn=conn, experiment=experiment)
-                if experiment
-                else {"count": 0, "changed": []}
-            )
-            if resource_refresh["count"]:
-                experiment = self.experiments.get_state(
-                    experiment_id=experiment_id,
-                    project_id=project_id,
-                    conn=conn,
-                )
             sandboxes = (
                 self.sandboxes.sandboxes_for_experiment(conn=conn, experiment_id=experiment_id)
                 if experiment_id
@@ -137,8 +126,6 @@ class WorkflowService:
                 "sandboxes": sandboxes,
                 "workflow": workflow,
             }
-            if resource_refresh["count"]:
-                result["resource_refresh"] = resource_refresh
             if reflection is not None:
                 result["project_reflection"] = reflection
             return result
@@ -174,17 +161,6 @@ class WorkflowService:
                     project_id=project_id,
                     conn=conn,
                 )
-                resource_refresh = self._refresh_experiment_resources(
-                    conn=conn,
-                    experiment=experiment,
-                )
-                if resource_refresh["count"]:
-                    experiment = self.experiments.get_state(
-                        experiment_id=row["id"],
-                        project_id=project_id,
-                        conn=conn,
-                    )
-                    experiment["resource_refresh"] = resource_refresh
                 experiments.append(experiment)
 
             experiments_by_id = {
@@ -366,18 +342,6 @@ class WorkflowService:
             return self._graph_resource_guidance(folder=folder)
         return None
 
-    def _refresh_experiment_resources(
-        self, *, conn, experiment: dict[str, Any]
-    ) -> dict[str, Any]:
-        if experiment["status"] in {"complete", "failed", "abandoned"}:
-            return {"count": 0, "changed": []}
-        return self.resources.refresh_target_resources(
-            conn=conn,
-            target_type="experiment",
-            target_id=experiment["id"],
-            attempt_index=experiment["attempt_index"],
-        )
-
     def _review_next(
         self,
         *,
@@ -505,16 +469,6 @@ class WorkflowService:
         """
         open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
         if open_wave is not None:
-            refresh = self.resources.refresh_target_resources(
-                conn=conn,
-                target_type="synthesis",
-                target_id=open_wave["id"],
-                attempt_index=open_wave["attempt_index"],
-            )
-            if refresh["count"]:
-                open_wave = self.syntheses.get_state(
-                    synthesis_id=open_wave["id"], conn=conn
-                )
             return {
                 "synthesis": slim_synthesis(open_wave),
                 "workflow": self._synthesis_workflow_for(conn=conn, synthesis=open_wave),

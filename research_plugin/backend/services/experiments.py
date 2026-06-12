@@ -9,11 +9,13 @@ from typing import Any
 from ..workspace import experiment_folder_rel, local_experiment_dir
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
+from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
 from ..utils import now_iso
 from .artifacts import plan_sections_missing, report_problems
 from .graph_lint import graph_problems
 from .experiment_views import slim_experiment_state
+from .pinned import pinned_artifact_text
 from .workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
@@ -31,8 +33,12 @@ _EXPERIMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class ExperimentService:
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: StateStore, blobs: BlobStore | None = None) -> None:
         self.store = store
+        # Gate lints read submitted (pinned) bytes from here, never the
+        # working tree. Optional only for direct construction in tests; the
+        # composition root always injects it.
+        self.blobs = blobs
 
     def create(
         self,
@@ -494,123 +500,107 @@ class ExperimentService:
         ).fetchone()
         return row is not None
 
-    def _validate_plan_sections(self, *, conn, experiment_id: str) -> None:
-        """Block submit_design unless the current-attempt plan file fills in the
-        required spine. Reads the live file (the same content the UI shows and
-        the reviewer reads), not a cached snapshot."""
-        row = conn.execute(
-            """
-            SELECT r.path
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = 'plan'
-              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY a.rowid DESC
-            LIMIT 1
-            """,
-            (experiment_id, experiment_id),
-        ).fetchone()
-        if row is None:
-            # _has_resource_role already guaranteed a plan exists; defensive only.
-            raise WorkflowError("an experiment plan resource must be synced before design review")
-        plan_path = self.store.repo_root / row["path"]
-        try:
-            plan_text = plan_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+    def _pinned_text(
+        self, *, conn, experiment_id: str, role: str, what: str
+    ) -> tuple[str, str, str]:
+        """(text, version_id, path) of the current attempt's submitted artifact.
+
+        Gates lint the bytes pinned at resource.associate — never the working
+        tree — so fixing an artifact means fix the file AND re-associate it.
+        """
+        if self.blobs is None:
             raise WorkflowError(
-                f"plan resource {row['path']!r} could not be read for design review: {exc}"
-            ) from exc
+                f"{what}: no blob store is configured; gated artifacts cannot be linted"
+            )
+        attempt = conn.execute(
+            "SELECT attempt_index FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()
+        if attempt is None:
+            raise NotFoundError(f"experiment not found: {experiment_id}")
+        return pinned_artifact_text(
+            conn=conn,
+            blobs=self.blobs,
+            target_type="experiment",
+            target_id=experiment_id,
+            role=role,
+            attempt_index=int(attempt["attempt_index"]),
+            what=what,
+        )
+
+    def _validate_plan_sections(self, *, conn, experiment_id: str) -> None:
+        """Block submit_design unless the current attempt's SUBMITTED plan fills
+        in the required spine. Lints the bytes pinned at associate; editing the
+        live file changes nothing until it is re-associated."""
+        plan_text, _, _ = self._pinned_text(
+            conn=conn,
+            experiment_id=experiment_id,
+            role="plan",
+            what="experiment plan",
+        )
         missing = plan_sections_missing(plan_text)
         if missing:
             raise WorkflowError(
                 "experiment plan is missing required sections before design review: "
                 + ", ".join(missing)
                 + ". Fill in the plan template's required spine — Summary; "
-                "Objective & hypothesis; Evaluation — see "
-                "skills/research-workflow/plan-template.md."
+                "Objective & hypothesis; Evaluation — then re-associate the plan "
+                "to submit the fix; see skills/research-workflow/plan-template.md."
             )
 
     def _validate_results_report(self, *, conn, experiment_id: str) -> None:
-        """Block submit_results unless the current attempt carries a results
-        report that passes the report lint. Reads the live file — the same
-        content the UI spotlights and the experiment reviewer grades."""
-        row = conn.execute(
-            """
-            SELECT r.path
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = 'report'
-              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY a.rowid DESC
-            LIMIT 1
-            """,
-            (experiment_id, experiment_id),
-        ).fetchone()
-        if row is None:
-            raise WorkflowError(
-                "a results report must be synced before experiment_review: write a "
-                "short markdown report (sections Summary; Results with a metrics "
-                "table; Deviations from plan; Conclusion applying the plan's "
-                "decision rule), sync it, and associate it with role 'report' — "
-                "see skills/research-workflow/report-template.md"
-            )
-        report_path = self.store.repo_root / row["path"]
-        try:
-            report_text = report_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise WorkflowError(
-                f"results report {row['path']!r} could not be read for experiment review: {exc}"
-            ) from exc
-        problems = report_problems(
-            report_text,
-            report_path=report_path,
-            repo_root=self.store.repo_root,
+        """Block submit_results unless the current attempt's SUBMITTED report
+        passes the report lint — including every relative figure link having
+        submitted figure content (captured when the report was associated)."""
+        report_text, version_id, path = self._pinned_text(
+            conn=conn,
+            experiment_id=experiment_id,
+            role="report",
+            what="results report",
         )
+        figures = {
+            str(row["link_path"]): row
+            for row in conn.execute(
+                "SELECT link_path, sha256 FROM report_figures WHERE report_version_id = ?",
+                (version_id,),
+            ).fetchall()
+        }
+
+        def figure_problem(link: str) -> str | None:
+            if link in figures:
+                return None
+            return (
+                f"figure {link!r} has no submitted content: make sure the file "
+                f"exists next to {path} (sandbox.sync first if it was produced "
+                "on the sandbox), then re-associate the report to submit it"
+            )
+
+        problems = report_problems(report_text, figure_problem=figure_problem)
         if problems:
             raise WorkflowError(
                 "results report is not ready for experiment review: "
                 + "; ".join(problems)
-                + ". See skills/research-workflow/report-template.md."
+                + ". Fix the file and re-associate it to submit the revision — "
+                "see skills/research-workflow/report-template.md."
             )
 
     def _validate_logic_graph(self, *, conn, experiment_id: str) -> None:
-        """Block submit_results unless the current attempt carries a logic
-        graph whose live file passes the envelope lint. The lint checks shape
-        only (parses, node budget, DAG) — the story itself is the agent's to
-        tell and the experiment reviewer's to judge."""
-        row = conn.execute(
-            """
-            SELECT r.path
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = 'graph'
-              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY a.rowid DESC
-            LIMIT 1
-            """,
-            (experiment_id, experiment_id),
-        ).fetchone()
-        if row is None:
-            # _has_resource_role already guaranteed a graph exists; defensive only.
-            raise WorkflowError(
-                "a logic graph resource must be synced before experiment_review"
-            )
-        graph_path = self.store.repo_root / row["path"]
-        try:
-            graph_text = graph_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise WorkflowError(
-                f"logic graph {row['path']!r} could not be read for experiment review: {exc}"
-            ) from exc
+        """Block submit_results unless the current attempt's SUBMITTED logic
+        graph passes the envelope lint. The lint checks shape only (parses,
+        node budget, DAG) — the story itself is the agent's to tell and the
+        experiment reviewer's to judge."""
+        graph_text, _, _ = self._pinned_text(
+            conn=conn,
+            experiment_id=experiment_id,
+            role="graph",
+            what="logic graph",
+        )
         problems = graph_problems(graph_text)
         if problems:
             raise WorkflowError(
                 "logic graph is not ready for experiment review: "
                 + "; ".join(problems)
-                + ". See skills/research-workflow/graph-template.md."
+                + ". Fix the file and re-associate it to submit the revision — "
+                "see skills/research-workflow/graph-template.md."
             )
 
     def _has_passing_review(self, *, conn, experiment_id: str, role: str) -> bool:

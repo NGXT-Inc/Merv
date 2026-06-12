@@ -232,6 +232,20 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+-- Figures submitted alongside a report (cloud plan Phase 2): when a report is
+-- associated, each resolvable relative image link's bytes are captured to the
+-- blob store and recorded here, keyed by the report's pinned version. The
+-- report lint checks THIS mapping (submitted figures), never the disk.
+CREATE TABLE IF NOT EXISTS report_figures (
+  report_version_id TEXT NOT NULL,
+  link_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (report_version_id, link_path),
+  FOREIGN KEY(report_version_id) REFERENCES resource_versions(id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,

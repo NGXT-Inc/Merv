@@ -170,9 +170,9 @@ class WorkflowGateTest(unittest.TestCase):
             self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])["status"],
             "planned",
         )
-        # Filling in the spine unblocks it. The lint reads the live file, so just
-        # rewriting it (no re-register) is enough to clear the gate.
-        (self.repo / "plan.md").write_text(VALID_PLAN)
+        # Filling in the spine unblocks it. The lint reads the SUBMITTED bytes,
+        # so the fix must be re-associated to count (fix-and-resubmit).
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
 
@@ -283,8 +283,12 @@ class WorkflowGateTest(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("Conclusion", msg)  # empty section reported
         self.assertIn("markdown table", msg)  # missing table reported in the same pass
-        # The lint reads the live file: rewriting it (no re-register) unblocks.
+        # Editing the live file alone changes nothing — the lint reads the
+        # submitted bytes; re-associating the fix unblocks.
         (self.repo / "report.md").write_text(VALID_REPORT)
+        with self.assertRaises(WorkflowError):
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
@@ -296,9 +300,11 @@ class WorkflowGateTest(unittest.TestCase):
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertIn("figures/loss.png", str(ctx.exception))
-        # Once the figure exists on disk (post-sync), the gate opens.
+        # Once the figure exists on disk (post-sync), re-associating the report
+        # submits it alongside, and the gate opens.
         (self.repo / "figures").mkdir()
         (self.repo / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
@@ -347,8 +353,8 @@ class WorkflowGateTest(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("17 nodes", msg)
         self.assertIn("16", msg)
-        # The lint reads the live file: rewriting it (no re-register) unblocks.
-        (self.repo / "graph.json").write_text(VALID_GRAPH)
+        # The lint reads the submitted bytes: re-associating the fix unblocks.
+        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
@@ -390,8 +396,13 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertEqual(workflow["next_action"], "fix_graph_resource")
         self.assertTrue(any("17 nodes" in p for p in workflow["missing_evidence"]))
         self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
-        # Fixing the live file flips the guidance to ready — no re-association.
+        # Fixing the live file alone changes nothing (the gate lints submitted
+        # bytes); re-associating the fix flips the guidance to ready.
         (self.repo / "graph.json").write_text(VALID_GRAPH)
+        wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        workflow = wf.get("workflow") or wf
+        self.assertEqual(workflow["current_gate"], "graph_invalid")
+        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "experiment_review_required")

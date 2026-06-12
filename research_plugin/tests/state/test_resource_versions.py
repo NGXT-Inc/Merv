@@ -54,7 +54,7 @@ class ResourceVersioningTest(unittest.TestCase):
         # New version must reflect new file contents — sha256 differs.
         self.assertNotEqual(first_version["content_sha256"], second_version["content_sha256"])
 
-    def test_status_refreshes_changed_resources_and_invalidates_old_review_snapshot(self) -> None:
+    def test_passing_review_survives_live_edits_after_submission(self) -> None:
         plan_path = self.repo / "plan.md"
         plan_path.write_text(
             "## Summary\nApproved plan.\n\n"
@@ -85,30 +85,33 @@ class ResourceVersioningTest(unittest.TestCase):
             "design_review_passed",
         )
 
+        # Submission semantics (cloud plan Phase 2): editing the live file
+        # after review does NOT perturb the pinned association or the passing
+        # review — the working tree may diverge; the record stands.
         plan_path.write_text("changed plan after review\n")
         status = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=self.exp_id)
-        refreshed = status["resource_refresh"]["changed"][0]
         current_plan = status["experiment"]["current_attempt_resources"][0]
 
-        self.assertEqual(refreshed["status"], "refreshed")
-        self.assertNotEqual(refreshed["version_id"], first_id)
+        self.assertNotIn("resource_refresh", status)
+        self.assertEqual(current_plan["association_version_id"], first_id)
         self.assertEqual(current_plan["association_role"], "plan")
-        self.assertEqual(current_plan["missing"], 0)
-        self.assertEqual(status["workflow"]["current_gate"], "design_review")
-        self.assertEqual(status["workflow"]["next_action"], "launch_design_reviewer")
+        self.assertEqual(status["workflow"]["current_gate"], "design_review_passed")
 
-    def test_status_marks_missing_associated_resource_without_crashing(self) -> None:
+    def test_deleting_live_file_after_submission_does_not_crash_status(self) -> None:
         plan_path = self.repo / "plan.md"
         plan_path.write_text("planned\n")
         plan = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
         self.call("resource.associate", project_id=self.project_id, resource_id=plan["id"], target_type="experiment", target_id=self.exp_id, role="plan")
 
+        # Submission semantics: the gates lint the submitted bytes, so the
+        # association survives the live file vanishing. The content here lacks
+        # the plan spine, so the guidance pre-lint reports plan_invalid.
         plan_path.unlink()
         status = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=self.exp_id)
 
-        self.assertEqual(status["resource_refresh"]["changed"][0]["status"], "missing")
-        self.assertEqual(status["experiment"]["current_attempt_resources"][0]["missing"], 1)
-        self.assertEqual(status["workflow"]["current_gate"], "plan_required")
+        self.assertNotIn("resource_refresh", status)
+        self.assertEqual(status["experiment"]["current_attempt_resources"][0]["missing"], 0)
+        self.assertEqual(status["workflow"]["current_gate"], "plan_invalid")
 
     def test_delete_removes_resource_from_active_tracking_but_preserves_history(self) -> None:
         plan_path = self.repo / "plan.md"
@@ -157,7 +160,7 @@ class ResourceVersioningTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in first_list], [first["id"]])
         self.assertEqual([r["id"] for r in second_list], [second["id"]])
 
-    def test_content_change_with_restored_mtime_is_still_detected(self) -> None:
+    def test_content_change_with_restored_mtime_is_detected_at_resubmission(self) -> None:
         plan_path = self.repo / "plan.md"
         plan_path.write_text("AAAA\n")
         plan = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
@@ -166,17 +169,28 @@ class ResourceVersioningTest(unittest.TestCase):
         original = plan_path.stat()
 
         # Same byte length, different content, with mtime restored to the value
-        # captured at registration. Only ctime distinguishes the edit.
+        # captured at registration. Only ctime distinguishes the edit. The
+        # observation happens at RE-ASSOCIATE (submission) — there is no
+        # background sweep — and the ctime-bearing version token must still
+        # catch the sneaky edit there.
         plan_path.write_text("BBBB\n")
         os.utime(plan_path, ns=(original.st_atime_ns, original.st_mtime_ns))
         self.assertEqual(plan_path.stat().st_mtime_ns, original.st_mtime_ns)
         self.assertEqual(plan_path.stat().st_size, original.st_size)
 
-        status = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=self.exp_id)
-        changed = status.get("resource_refresh", {}).get("changed", [])
-        self.assertTrue(any(item["status"] == "refreshed" for item in changed))
-        refreshed = next(item for item in changed if item["status"] == "refreshed")
-        self.assertNotEqual(refreshed["version_id"], first_id)
+        resubmitted = self.call(
+            "resource.associate",
+            project_id=self.project_id,
+            resource_id=plan["id"],
+            target_type="experiment",
+            target_id=self.exp_id,
+            role="plan",
+        )
+        self.assertNotEqual(resubmitted["current_version_id"], first_id)
+        self.assertEqual(
+            resubmitted["associations"][0]["version_id"],
+            resubmitted["current_version_id"],
+        )
 
     def test_internal_state_directory_cannot_be_registered_as_resource(self) -> None:
         internal = self.repo / ".research_plugin" / "note.md"

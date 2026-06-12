@@ -15,9 +15,11 @@ import json
 import re
 from typing import Any
 
+from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from .graph_lint import graph_problems
+from .pinned import pinned_text_for_version, resubmit_hint
 from .synthesis_gates import (
     CORE_LENSES,
     CORE_LENS_IDS,
@@ -39,8 +41,11 @@ STALE_NEW_TERMINAL_THRESHOLD = 3
 
 
 class SynthesisService:
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: StateStore, blobs: BlobStore | None = None) -> None:
         self.store = store
+        # Gate lints read submitted (pinned) bytes from here, never the
+        # working tree (see services/pinned.py).
+        self.blobs = blobs
 
     # ---- create ----
 
@@ -305,21 +310,31 @@ class SynthesisService:
         directory) — the dumb, predictable convention each fan-out subagent is
         told to follow.
         """
-        stems: dict[str, str] = {}
+        stems: dict[str, dict[str, Any]] = {}
         for res in synthesis.get("current_attempt_resources", []):
             if res.get("association_role") != "reflection" or res.get("missing"):
                 continue
             path = str(res.get("path") or "")
             name = path.rsplit("/", 1)[-1]
             stem = name.rsplit(".", 1)[0] if "." in name else name
-            stems.setdefault(stem, path)
+            stems.setdefault(
+                stem,
+                {"path": path, "version_id": res.get("association_version_id")},
+            )
         lenses = []
         missing = []
         for lens in synthesis.get("roster", []):
             lens_id = str(lens.get("id") or "")
-            path = stems.get(lens_id)
-            lenses.append({"lens_id": lens_id, "covered": path is not None, "path": path})
-            if path is None:
+            entry = stems.get(lens_id)
+            lenses.append(
+                {
+                    "lens_id": lens_id,
+                    "covered": entry is not None,
+                    "path": entry["path"] if entry else None,
+                    "version_id": entry.get("version_id") if entry else None,
+                }
+            )
+            if entry is None:
                 missing.append(lens_id)
         return {"lenses": lenses, "missing": missing, "complete": not missing}
 
@@ -442,25 +457,39 @@ class SynthesisService:
                 "<lens_id>.md, submitted by its own subagent"
             )
         for lens in coverage["lenses"]:
-            text = self._read_live_file(path=lens["path"], what=f"reflection {lens['lens_id']!r}")
+            text = self._pinned_text(
+                conn=conn,
+                version_id=lens.get("version_id"),
+                path=str(lens["path"]),
+                role="reflection",
+                what=f"reflection {lens['lens_id']!r}",
+            )
             if not text.strip():
                 raise WorkflowError(
-                    f"reflection for lens {lens['lens_id']!r} ({lens['path']}) is empty"
+                    f"reflection for lens {lens['lens_id']!r} ({lens['path']}) is "
+                    "empty — write it and re-associate to submit the content"
                 )
 
     def _validate_project_graph(self, *, conn, synthesis: dict[str, Any]) -> None:
         row = self._current_role_row(conn=conn, synthesis_id=synthesis["id"], role="graph")
         if row is None:
             raise WorkflowError(
-                "a project logic graph resource must be synced before synthesis_review"
+                "a project logic graph resource must be submitted before synthesis_review"
             )
-        text = self._read_live_file(path=row["path"], what="project logic graph")
+        text = self._pinned_text(
+            conn=conn,
+            version_id=row["version_id"],
+            path=str(row["path"]),
+            role="graph",
+            what="project logic graph",
+        )
         problems = graph_problems(text)
         if problems:
             raise WorkflowError(
                 "project logic graph is not ready for synthesis review: "
                 + "; ".join(problems)
-                + ". See skills/research-workflow/graph-template.md."
+                + ". Fix the file and re-associate it to submit the revision — "
+                "see skills/research-workflow/graph-template.md."
             )
 
     def _validate_proposals(self, *, conn, synthesis: dict[str, Any]) -> None:
@@ -469,11 +498,20 @@ class SynthesisService:
         )
         if row is None:
             raise WorkflowError(
-                "a what's-next proposals resource must be synced before synthesis_review"
+                "a what's-next proposals resource must be submitted before synthesis_review"
             )
-        text = self._read_live_file(path=row["path"], what="proposals file")
+        text = self._pinned_text(
+            conn=conn,
+            version_id=row["version_id"],
+            path=str(row["path"]),
+            role="proposals",
+            what="proposals file",
+        )
         if not text.strip():
-            raise WorkflowError(f"proposals file {row['path']!r} is empty")
+            raise WorkflowError(
+                f"proposals file {row['path']!r} is empty — write it and "
+                "re-associate to submit the content"
+            )
 
     def _current_role_row(self, *, conn, synthesis_id: str, role: str):
         return conn.execute(
@@ -494,12 +532,26 @@ class SynthesisService:
         row = self._current_role_row(conn=conn, synthesis_id=synthesis["id"], role="graph")
         return str(row["version_id"]) if row and row["version_id"] else None
 
-    def _read_live_file(self, *, path: str, what: str) -> str:
-        full = self.store.repo_root / path
-        try:
-            return full.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise WorkflowError(f"{what} ({path}) could not be read: {exc}") from exc
+    def _pinned_text(
+        self, *, conn, version_id: Any, path: str, role: str, what: str
+    ) -> str:
+        """The submitted bytes of a pinned association, never the working tree."""
+        if self.blobs is None:
+            raise WorkflowError(
+                f"{what}: no blob store is configured; gated artifacts cannot be linted"
+            )
+        if not version_id:
+            raise WorkflowError(
+                f"{what} ({path}) has no pinned version — "
+                + resubmit_hint(role=role, path=path)
+            )
+        return pinned_text_for_version(
+            conn=conn,
+            blobs=self.blobs,
+            version_id=str(version_id),
+            what=what,
+            role=role,
+        )
 
     def _has_passing_review(self, *, conn, synthesis_id: str, role: str) -> bool:
         snapshot_id = self._target_snapshot_id(conn=conn, synthesis_id=synthesis_id)

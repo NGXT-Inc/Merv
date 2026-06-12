@@ -12,6 +12,7 @@ from typing import Any
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from .artifacts import report_figure_links
 from .permissions import GATED_ROLE_BYTE_CAPS, PermissionService
 
 
@@ -400,60 +401,58 @@ class ResourceService:
             for row in rows
         ]
 
-    def refresh_target_resources(
-        self,
-        *,
-        conn: sqlite3.Connection,
-        target_type: str,
-        target_id: str,
-        attempt_index: int | None = None,
-    ) -> dict[str, Any]:
-        query = """
-            SELECT a.id AS association_id, a.version_id AS association_version_id,
-                   a.role AS association_role, a.attempt_index AS association_attempt_index,
-                   r.*
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = ? AND a.target_id = ?
-              AND r.deleted = 0
-        """
-        params: list[Any] = [target_type, target_id]
-        if attempt_index is not None:
-            query += " AND a.attempt_index = ?"
-            params.append(attempt_index)
-        changed: list[dict[str, Any]] = []
-        for row in conn.execute(query, params).fetchall():
-            try:
-                version_id = self._ensure_current_version_for_resource(conn=conn, resource=row)
-            except NotFoundError:
-                conn.execute(
-                    "UPDATE resources SET missing = 1, updated_at = ? WHERE id = ?",
-                    (now_iso(), row["id"]),
+    def backfill_gated_blobs(self) -> int:
+        """One-time local upgrade: capture bytes for gated associations made
+        before byte capture existed (cloud plan Phase 2). Only versions whose
+        working-tree file still matches the pinned content_sha256 can be
+        recovered; anything else surfaces later as re-associate guidance from
+        the gates. Idempotent — blobs already present are skipped."""
+        if self.blobs is None:
+            return 0
+        backfilled = 0
+        with self.store.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT v.id AS version_id, v.project_id, v.path,
+                       v.content_sha256, v.content_type, a.role
+                FROM resource_associations a
+                JOIN resource_versions v ON v.id = a.version_id
+                WHERE a.role IN ({placeholders})
+                """.format(
+                    placeholders=",".join("?" * len(GATED_ROLE_BYTE_CAPS))
+                ),
+                tuple(sorted(GATED_ROLE_BYTE_CAPS)),
+            ).fetchall()
+            for row in rows:
+                namespace = str(row["project_id"])
+                sha = str(row["content_sha256"])
+                if self.blobs.stat(namespace=namespace, sha256=sha) is not None:
+                    continue
+                full = self.store.repo_root / str(row["path"])
+                try:
+                    data = full.read_bytes()
+                except OSError:
+                    continue
+                if hashlib.sha256(data).hexdigest() != sha:
+                    continue
+                self.blobs.put(
+                    namespace=namespace,
+                    data=data,
+                    content_type=str(row["content_type"]),
                 )
-                changed.append(
-                    {
-                        "resource_id": row["id"],
-                        "path": row["path"],
-                        "role": row["association_role"],
-                        "status": "missing",
-                    }
-                )
-                continue
-            if version_id != row["association_version_id"]:
-                conn.execute(
-                    "UPDATE resource_associations SET version_id = ? WHERE id = ?",
-                    (version_id, row["association_id"]),
-                )
-                changed.append(
-                    {
-                        "resource_id": row["id"],
-                        "path": row["path"],
-                        "role": row["association_role"],
-                        "status": "refreshed",
-                        "version_id": version_id,
-                    }
-                )
-        return {"count": len(changed), "changed": changed}
+                backfilled += 1
+                if str(row["role"]) == "report":
+                    try:
+                        self._capture_report_figures(
+                            conn=conn,
+                            version_id=str(row["version_id"]),
+                            project_id=namespace,
+                            report_rel_path=str(row["path"]),
+                            report_text=data.decode("utf-8", errors="replace"),
+                        )
+                    except ValidationError:
+                        pass  # bad figure links surface via the lint, not the backfill
+        return backfilled
 
     _COMPACT_FIELDS = (
         "id", "project_id", "path", "kind", "title", "current_version_id",
@@ -584,6 +583,65 @@ class ResourceService:
             data=data,
             content_type=str(version["content_type"]),
         )
+        if role == "report":
+            self._capture_report_figures(
+                conn=conn,
+                version_id=version_id,
+                project_id=project_id,
+                report_rel_path=rel_path,
+                report_text=data.decode("utf-8", errors="replace"),
+            )
+
+    # Figures referenced by a report can be real images; cap each upload.
+    FIGURE_MAX_BYTES = 5_000_000
+
+    def _capture_report_figures(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        version_id: str,
+        project_id: str,
+        report_rel_path: str,
+        report_text: str,
+    ) -> None:
+        """Submit the report's relative figure links alongside the report.
+
+        Each resolvable, repo-jailed, size-capped figure file is captured as a
+        blob and recorded in report_figures keyed by the report's version — the
+        mapping the report lint and the UI use. A link whose file is missing or
+        oversize is simply not recorded; the lint names it with re-associate
+        guidance. A link escaping the repo is rejected outright."""
+        report_dir = (self.store.repo_root / report_rel_path).parent
+        for link in report_figure_links(report_text):
+            resolved = (report_dir / link).resolve()
+            try:
+                resolved.relative_to(self.store.repo_root)
+            except ValueError as exc:
+                raise ValidationError(
+                    f"report figure link escapes the repo: {link}",
+                    details={"link": link, "report": report_rel_path},
+                ) from exc
+            if not resolved.is_file():
+                continue
+            size = resolved.stat().st_size
+            if size > self.FIGURE_MAX_BYTES:
+                continue
+            figure_data = resolved.read_bytes()
+            sha = self.blobs.put(
+                namespace=project_id,
+                data=figure_data,
+                content_type=mimetypes.guess_type(link)[0] or "application/octet-stream",
+            )
+            conn.execute(
+                """
+                INSERT INTO report_figures (report_version_id, link_path, sha256, size_bytes, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(report_version_id, link_path)
+                DO UPDATE SET sha256 = excluded.sha256, size_bytes = excluded.size_bytes,
+                              created_at = excluded.created_at
+                """,
+                (version_id, link, sha, size, now_iso()),
+            )
 
     def _version_token(self, *, path: str, mtime_ns: int, ctime_ns: int, size_bytes: int) -> str:
         # ctime is included so an in-place edit that preserves mtime+size (e.g. a

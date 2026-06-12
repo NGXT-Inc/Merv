@@ -46,7 +46,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("ACTIVE_PROCESS_STATUSES =", source)
 
     def test_artifact_lint_is_a_leaf_module(self) -> None:
-        self.assertEqual(_import_modules("artifacts.py"), {"re", "pathlib"})
+        # Pure text lint: regexes + a callback type. No filesystem imports —
+        # figure resolution is the caller's business (submission capture).
+        self.assertEqual(_import_modules("artifacts.py"), {"re", "collections"})
 
     def test_graph_lint_is_a_leaf_module(self) -> None:
         self.assertEqual(_import_modules("graph_lint.py"), {"json"})

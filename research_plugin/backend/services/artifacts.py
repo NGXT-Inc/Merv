@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from collections.abc import Callable
 
 
 # --- Plan schema (PRD-style) -------------------------------------------------
@@ -102,14 +102,34 @@ def _has_markdown_table(text: str) -> bool:
     return False
 
 
-def report_problems(report_text: str, *, report_path: Path, repo_root: Path) -> list[str]:
+def report_figure_links(report_text: str) -> list[str]:
+    """The report's relative image links, in order (external/absolute/data:
+    URLs are not the report's figures and are skipped). These are the figures
+    that must be submitted alongside the report for it to be reviewable."""
+    stripped = _HTML_COMMENT_RE.sub("", report_text)
+    links: list[str] = []
+    for match in _IMAGE_LINK_RE.finditer(stripped):
+        target = match.group(1)
+        if target.startswith(("http://", "https://", "data:", "/")):
+            continue
+        links.append(target)
+    return links
+
+
+def report_problems(
+    report_text: str,
+    *,
+    figure_problem: Callable[[str], str | None] | None = None,
+) -> list[str]:
     """Everything wrong with a results report, in one pass, so the agent can
     fix all of it in a single revision instead of peeling errors one by one.
 
     Checks: required spine sections; the Results section's mandatory metrics
-    table; the brevity ceiling; and that every relative image link resolves to
-    a real file (a report whose figures didn't sync renders broken in the UI
-    and is unreviewable)."""
+    table; the brevity ceiling; and — via the ``figure_problem`` callback —
+    that every relative image link has submitted figure content (a report
+    whose figures weren't submitted renders broken in the UI and is
+    unreviewable). The callback returns a problem string for a bad link or
+    None when the figure is fine; the lint itself stays pure text."""
     problems: list[str] = []
     missing = report_sections_missing(report_text)
     if missing:
@@ -126,19 +146,9 @@ def report_problems(report_text: str, *, report_path: Path, repo_root: Path) -> 
             f"report is {size} bytes; keep it under {MAX_REPORT_BYTES} — move raw "
             "numbers and logs into result resources and link them instead"
         )
-    for match in _IMAGE_LINK_RE.finditer(stripped):
-        target = match.group(1)
-        if target.startswith(("http://", "https://", "data:", "/")):
-            continue
-        resolved = (report_path.parent / target).resolve()
-        try:
-            resolved.relative_to(repo_root.resolve())
-        except ValueError:
-            problems.append(f"image link escapes the repo: {target}")
-            continue
-        if not resolved.is_file():
-            problems.append(
-                f"image link does not resolve to a synced file: {target} "
-                "(save figures next to the report and sandbox.sync before submitting)"
-            )
+    if figure_problem is not None:
+        for target in report_figure_links(report_text):
+            problem = figure_problem(target)
+            if problem:
+                problems.append(problem)
     return problems

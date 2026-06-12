@@ -280,10 +280,20 @@ class SynthesisGateTest(unittest.TestCase):
         self.assertIn("cost", str(ctx.exception))
 
     def test_empty_reflection_blocks_submit(self) -> None:
+        # The gate lints the SUBMITTED bytes: a reflection whose associated
+        # content is blank blocks the transition (and emptying a live file
+        # after association would be invisible — submission is what counts).
         syn_id = self._create_wave()
         for lens_id in ALL_LENS_IDS:
-            self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
-        (self.repo / f"syntheses/{syn_id}/reflections/rigor.md").write_text("   \n")
+            if lens_id == "rigor":
+                self._associate_file(
+                    syn_id=syn_id,
+                    path=f"syntheses/{syn_id}/reflections/rigor.md",
+                    role="reflection",
+                    body="   \n",
+                )
+            else:
+                self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
                 "synthesis.transition",

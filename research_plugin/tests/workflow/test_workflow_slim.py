@@ -12,8 +12,13 @@ from backend.execution.backends.fake import FakeSandboxBackend
 from tests.fakes import FakeRsyncSyncer
 
 
-SLIM_RESOURCE_KEYS = {"id", "association_role", "path", "kind", "missing", "size_bytes"}
-HEAVY_RESOURCE_KEYS = {"version_token", "mtime_ns", "current_version_id", "association_version_id", "git_commit"}
+# association_version_id is the submission pin — agents confirm a
+# re-associate took effect by watching it change, so it stays in the slim view.
+SLIM_RESOURCE_KEYS = {
+    "id", "association_role", "association_version_id", "path", "kind",
+    "missing", "size_bytes",
+}
+HEAVY_RESOURCE_KEYS = {"version_token", "mtime_ns", "current_version_id", "git_commit"}
 
 class WorkflowSlimTest(unittest.TestCase):
     def setUp(self) -> None:

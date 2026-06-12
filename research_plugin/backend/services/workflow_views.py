@@ -15,7 +15,12 @@ from .workflow_gates import ACTIVE_PROCESS_STATUSES
 # experiment's intent — is pure context bloat for a call the agent polls
 # constantly. The UI keeps the full shape (it calls the service method
 # directly); only the MCP tool is slimmed. See docs/MCP_SERVER_CONTRACT.md.
-_SLIM_RESOURCE_FIELDS = ("id", "association_role", "path", "kind", "missing", "size_bytes")
+# association_version_id is the submission pin: agents (and tests) use it to
+# confirm a re-associate actually submitted new content.
+_SLIM_RESOURCE_FIELDS = (
+    "id", "association_role", "association_version_id", "path", "kind",
+    "missing", "size_bytes",
+)
 _SANDBOX_SUMMARY_FIELDS = (
     "sandbox_id", "status", "gpu", "cpu", "memory",
     "ssh_host", "ssh_port", "ssh_user", "workdir", "sandbox_data_dir", "expires_at",

@@ -97,13 +97,16 @@ class ResearchPluginApp:
         )
         self.projects = ProjectService(store=self.store)
         self.claims = ClaimService(store=self.store)
-        self.experiments = ExperimentService(store=self.store)
+        self.experiments = ExperimentService(store=self.store, blobs=self.blobs)
         self.resources = ResourceService(
             store=self.store,
             permissions=self.permissions,
             blobs=self.blobs,
         )
-        self.syntheses = SynthesisService(store=self.store)
+        # One-time local upgrade: capture bytes for gated associations made
+        # before byte capture existed (idempotent, skips present blobs).
+        self.resources.backfill_gated_blobs()
+        self.syntheses = SynthesisService(store=self.store, blobs=self.blobs)
         self.reviews = ReviewService(
             store=self.store,
             permissions=self.permissions,
