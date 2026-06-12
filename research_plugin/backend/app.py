@@ -9,10 +9,12 @@ from typing import Any, Callable
 from pydantic import ValidationError as PydanticValidationError
 
 from .contracts import ContractModel, TOOL_CONTRACTS
+from .dataplane import LocalDataPlaneWorker
 from .utils import ResearchPluginError
 from .utils import ValidationError as ToolValidationError
 from .execution import SandboxBackend, build_sandbox_backend
 from .execution.ssh_rsync import SshRsyncSyncer
+from .workspace import LocalWorkspace
 from .services import (
     ClaimService,
     ExperimentService,
@@ -82,25 +84,46 @@ class ResearchPluginApp:
         execution_backend: SandboxBackend | None = None,
         rsync_syncer: SshRsyncSyncer | None = None,
     ) -> None:
-        self.store = StateStore(db_path=db_path, repo_root=repo_root)
-        self.activity = ActivityLogger(repo_root=self.store.repo_root)
+        # The plane seam (cloud plan Phase 3): the record store knows nothing
+        # about the checkout; local paths flow from the workspace and every
+        # local-IO duty routes through the data-plane worker. This constructor
+        # IS the local-mode composition — it binds both planes in one process.
+        self.workspace = LocalWorkspace(repo_root=repo_root)
+        self.store = StateStore(db_path=db_path)
+        # Telemetry sinks are machine-local by construction: composition hands
+        # them explicit paths (the control composition gets its own sinks).
+        self.activity = ActivityLogger(repo_root=self.workspace.repo_root)
         # Full-fidelity tool-call recorder backing the debug analyzer. Isolated in
         # its own SQLite file so its churn never touches the state DB.
         self.tool_calls = ToolCallStore(
-            db_path=self.store.repo_root / ".research_plugin" / "tool_calls.sqlite"
+            db_path=self.workspace.research_dir / "tool_calls.sqlite"
         )
         self.permissions = PermissionService()
         # Content-addressed store for gated-artifact bytes (and, later, figures
         # and parachute objects). Local mode roots it next to the state DB.
-        self.blobs = LocalDirBlobStore(
-            root=self.store.repo_root / ".research_plugin" / "blobs"
+        self.blobs = LocalDirBlobStore(root=self.workspace.research_dir / "blobs")
+        if execution_backend is None:
+            execution_backend = build_sandbox_backend(
+                repo_root=self.workspace.repo_root,
+                activity=self._activity_hook,
+            )
+        self.execution_backend = execution_backend
+        self.worker = LocalDataPlaneWorker(
+            workspace=self.workspace,
+            backend=execution_backend,
+            rsync_syncer=rsync_syncer,
         )
         self.projects = ProjectService(store=self.store)
         self.claims = ClaimService(store=self.store)
-        self.experiments = ExperimentService(store=self.store, blobs=self.blobs)
+        self.experiments = ExperimentService(
+            store=self.store,
+            blobs=self.blobs,
+            ensure_workspace=self.worker.ensure_workspace,
+        )
         self.resources = ResourceService(
             store=self.store,
             permissions=self.permissions,
+            workspace=self.workspace,
             blobs=self.blobs,
         )
         # One-time local upgrade: capture bytes for gated associations made
@@ -114,17 +137,11 @@ class ResearchPluginApp:
             syntheses=self.syntheses,
             blobs=self.blobs,
         )
-        if execution_backend is None:
-            execution_backend = build_sandbox_backend(
-                repo_root=self.store.repo_root,
-                activity=self._activity_hook,
-            )
-        self.execution_backend = execution_backend
         self.sandboxes = SandboxService(
             store=self.store,
             sandbox_backend=execution_backend,
+            worker=self.worker,
             activity=self.activity,
-            rsync_syncer=rsync_syncer,
             experiments=self.experiments,
         )
         self.workflow = WorkflowService(

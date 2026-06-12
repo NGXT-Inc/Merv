@@ -5,6 +5,46 @@ from __future__ import annotations
 from pathlib import Path
 
 
+class LocalWorkspace:
+    """Data-plane view of the local repository checkout.
+
+    Owns the repo root and every path derived from it. The control-plane
+    record layer (``StateStore``) does not know where the checkout lives;
+    anything that needs a local path receives this object — or the
+    ``DataPlaneWorker`` built on it — from the composition root.
+    """
+
+    def __init__(self, *, repo_root: Path) -> None:
+        self.repo_root = Path(repo_root).resolve()
+
+    @property
+    def research_dir(self) -> Path:
+        return self.repo_root / ".research_plugin"
+
+    def experiment_dir(self, *, experiment_id: str, name: str = "") -> Path:
+        return local_experiment_dir(
+            repo_root=self.repo_root, experiment_id=experiment_id, name=name
+        )
+
+    def sessions_dir(self, *, experiment_id: str, sandbox_id: str = "") -> Path:
+        return local_sessions_dir(
+            repo_root=self.repo_root, experiment_id=experiment_id, sandbox_id=sandbox_id
+        )
+
+    def relative(self, path: str | Path) -> str:
+        """Repo-relative spelling of a local path.
+
+        Event payloads and other cloud-bound records must not carry absolute
+        machine paths; a path outside the repo passes through unchanged.
+        """
+        if not str(path):
+            return ""
+        try:
+            return Path(path).resolve().relative_to(self.repo_root).as_posix()
+        except ValueError:
+            return str(path)
+
+
 def safe_experiment_dirname(experiment_id: str) -> str:
     """Filesystem-safe directory name for an experiment (its name or id)."""
     return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in experiment_id) or "experiment"

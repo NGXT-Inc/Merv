@@ -81,7 +81,7 @@ class ExperimentNamingTest(unittest.TestCase):
 
     def test_sandbox_sync_dir_follows_the_name(self) -> None:
         exp = self._create(name="cifar-opt", intent="Optimize CIFAR.")
-        local = self.app.sandboxes.registry.local_sync_dir(experiment_id=exp["id"])
+        local = self.app.sandboxes._local_sync_dir(experiment_id=exp["id"])
         # resolve(): tempdirs on macOS live behind the /var -> /private/var symlink.
         self.assertEqual(
             local.resolve(), (self.repo / "experiments" / "cifar-opt").resolve()

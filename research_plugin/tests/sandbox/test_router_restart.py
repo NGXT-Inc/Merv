@@ -73,7 +73,7 @@ class RouterRestartReaperTest(unittest.TestCase):
         project = router.create_project(repo_root=self.repo_active, name="Active")
         router.create_project(repo_root=self.repo_idle, name="Idle")
         app = router.app_for_project(project["id"])
-        app.sandboxes.rsync_syncer = FakeRsyncSyncer(
+        app.sandboxes.worker.rsync_syncer = FakeRsyncSyncer(
             sync_pulled=0,
             push_pulled=0,
             duration_seconds=0.0,
@@ -117,7 +117,7 @@ class RouterRestartReaperTest(unittest.TestCase):
 
         # What the reaper thread will do on its next tick: terminate the
         # expired sandbox and put the experiment back where the agent can act.
-        app.sandboxes.rsync_syncer = FakeRsyncSyncer(
+        app.sandboxes.worker.rsync_syncer = FakeRsyncSyncer(
             sync_pulled=0,
             push_pulled=0,
             duration_seconds=0.0,

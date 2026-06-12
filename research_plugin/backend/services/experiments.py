@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
-from ..workspace import experiment_folder_rel, local_experiment_dir
+from ..workspace import experiment_folder_rel
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
 from ..state.blobs import BlobStore
@@ -33,12 +33,24 @@ _EXPERIMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class ExperimentService:
-    def __init__(self, *, store: StateStore, blobs: BlobStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: StateStore,
+        blobs: BlobStore | None = None,
+        ensure_workspace: Callable[..., Any] | None = None,
+    ) -> None:
         self.store = store
         # Gate lints read submitted (pinned) bytes from here, never the
         # working tree. Optional only for direct construction in tests; the
         # composition root always injects it.
         self.blobs = blobs
+        # Data-plane duty (plan §3.1): creating experiments/<name>/ is local
+        # IO, so the composition root passes the worker's ensure_workspace.
+        # Local mode keeps creating the folder at experiment.create; in split
+        # mode workspace creation becomes lazy on the first data-routed touch
+        # and the folder guidance below turns advisory.
+        self._ensure_workspace = ensure_workspace
 
     def create(
         self,
@@ -114,11 +126,8 @@ class ExperimentService:
                 target_id=experiment_id,
                 payload={"name": name, "intent": intent},
             )
-            local_experiment_dir(
-                repo_root=self.store.repo_root,
-                experiment_id=experiment_id,
-                name=name,
-            ).mkdir(parents=True, exist_ok=True)
+            if self._ensure_workspace is not None:
+                self._ensure_workspace(experiment_id=experiment_id, name=name)
             state = self.get_state(experiment_id=experiment_id, conn=conn)
             state["folder"] = experiment_folder_rel(experiment_id=experiment_id, name=name)
             state["folder_guidance"] = (

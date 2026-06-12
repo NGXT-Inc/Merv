@@ -21,12 +21,12 @@ metrics, views glue). The machinery lives in dedicated collaborators:
     status marks, and the sandbox event stream.
   - `sandbox_provisioner.SandboxProvisioner` — background provisioning jobs,
     cancellation, orphan cleanup, and row reconciliation.
-  - `sandbox_dashboards.DashboardTunnels` — the ssh -L tunnel pool, provider
-    dashboard-URL refresh, and MLflow deep links.
+  - `dataplane.LocalDataPlaneWorker` — every local-IO duty: SSH keys + conn
+    files, the rsync push/pull, ssh -L dashboard tunnels, and the
+    pulled-mlflow.db metrics fallback (cloud plan §3.1).
   - `sandbox_daemons.SandboxDaemons` — the auto-rsync poller and the
     expiration reaper threads.
   - `sandbox_support` — constants, pure helpers, the SSH dispatcher template.
-  - `sandbox_conn.SandboxConnFiles` — SSH key + dispatcher + conn-file plumbing.
   - `sandbox_views` — row→response projections (agent view, row view, etc.).
 
 Experiment status never changes here or in the collaborators except through
@@ -39,44 +39,36 @@ rows; the HTTP layer shapes the UI responses from `get_row`/`rows`/
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from ..execution.ssh_rsync import SshRsyncSyncer
-from ..execution.sync_dirs import (
-    remote_experiment_dir,
-    remote_root_of,
-    remote_sessions_dir,
-)
+from ..dataplane.worker import DataPlaneWorker
+from ..execution.sync_dirs import remote_experiment_dir
 from ..state.activity import ActivityLogger
-from ..workspace import local_sessions_dir
 from ..state.store import StateStore, row_to_dict
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError, now_iso
 from ..execution import (
     BackendUnavailableError,
-    ProvisionedSandbox,
     SandboxBackend,
     SandboxRequest,
 )
 from . import sandbox_views
 from .experiments import ExperimentService
-from .metrics_archive import MetricsArchive, snapshot_mlflow, snapshot_mlflow_db
-from .sandbox_conn import SandboxConnFiles
+from .metrics_archive import snapshot_mlflow
 from .sandbox_daemons import SandboxDaemons
-from .sandbox_dashboards import DashboardTunnels
 from .sandbox_provisioner import SandboxProvisioner
 from .sandbox_registry import SandboxRegistry
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
-    DEFAULT_INITIAL_PUSH_ATTEMPTS,
-    DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     METRICS_CACHE_TTL_SECONDS,
     METRICS_PERSIST_TTL_SECONDS,
     decode_dashboards,
+    encode_dashboards,
     env_float,
     parse_terminal_markers,
     validate_request_inputs,
@@ -84,17 +76,17 @@ from .sandbox_support import (
 
 
 class SandboxService:
-    """Facade over sandbox persistence, provisioning, dashboards, and daemons."""
+    """Facade over sandbox persistence, provisioning, the worker, and daemons."""
 
     def __init__(
         self,
         *,
         store: StateStore,
         sandbox_backend: SandboxBackend,
+        worker: DataPlaneWorker,
         activity: ActivityLogger | None = None,
         request_wait_seconds: float | None = None,
         stale_provision_seconds: float | None = None,
-        rsync_syncer: SshRsyncSyncer | None = None,
         experiments: ExperimentService | None = None,
     ) -> None:
         self.store = store
@@ -103,9 +95,9 @@ class SandboxService:
         # Sandbox lifecycle changes experiment status only through the workflow
         # engine's system transitions — never by writing the experiments table.
         self.experiments = experiments or ExperimentService(store=store)
-        self.keys_dir = store.repo_root / ".research_plugin" / "sandboxes" / "keys"
-        self._conn = SandboxConnFiles(repo_root=store.repo_root, keys_dir=self.keys_dir)
-        self.rsync_syncer = rsync_syncer or SshRsyncSyncer()
+        # All conn/tunnel/rsync work routes through the data-plane worker; the
+        # facade owns no local-IO machinery of its own.
+        self.worker = worker
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
             request_wait_seconds,
@@ -115,17 +107,13 @@ class SandboxService:
         self._metrics_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._metrics_lock = threading.Lock()
         # Durable per-experiment metrics snapshots (results outlive the VM).
-        self.metrics_archive = MetricsArchive(repo_root=store.repo_root)
+        self.metrics_archive = worker.metrics_archive
         self._metrics_persisted_at: dict[str, float] = {}
-        self._sync_locks: dict[str, threading.Lock] = {}
-        self._sync_locks_lock = threading.Lock()
 
         self.registry = SandboxRegistry(store=store)
-        self.dashboards = DashboardTunnels(
-            registry=self.registry,
-            backend=sandbox_backend,
-            key_path=self._key_path,
-        )
+        # Data-plane work that deserves a record (tunnel came up) reports
+        # through the registry's event stream.
+        self.worker.set_event_sink(self.registry.emit_event)
         # Marking a row failed/terminated also tears down its runtime
         # attachments; the registry stays persistence-only via this hook.
         self.registry.on_terminal = self._on_terminal_row
@@ -133,10 +121,8 @@ class SandboxService:
             registry=self.registry,
             backend=sandbox_backend,
             experiments=self.experiments,
-            key_path=self._key_path,
-            push_initial=self._push_initial_files,
+            worker=self.worker,
             refresh_row=self._refresh_row,
-            stop_tunnels=self.dashboards.stop,
             stale_provision_seconds=env_float(
                 "RESEARCH_PLUGIN_SANDBOX_STALE",
                 stale_provision_seconds,
@@ -198,7 +184,7 @@ class SandboxService:
                 ).fetchone()
             )
 
-        public_key, key_path = self._ensure_keypair(experiment_id=experiment_id)
+        public_key, _key_path = self._ensure_keypair(experiment_id=experiment_id)
 
         # 1) Reuse a live sandbox immediately — the common mid-session case.
         if (
@@ -210,14 +196,14 @@ class SandboxService:
             self.registry.touch_alive(experiment_id=experiment_id)
             self._mark_experiment_running(experiment_id=experiment_id)
             row = self._refresh_row(row=self.registry.load_row(experiment_id=experiment_id))
-            row = self.dashboards.ensure_local(row=row)
+            row = self.worker.ensure_local_dashboards(row=row)
             self.registry.emit_event(
                 project_id=project_id,
                 event_type="sandbox.reused",
                 experiment_id=experiment_id,
                 payload={"sandbox_id": existing["sandbox_id"]},
             )
-            return self._agent_view(row=row, key_path=key_path, reused=True)
+            return self._agent_view(row=row, reused=True)
 
         # 2) Hardware-selection gate. A provider that bundles GPU + CPU + RAM into
         #    fixed machine types (Lambda Labs) has nothing sensible to default to,
@@ -263,9 +249,9 @@ class SandboxService:
         )
         job.done.wait(timeout=self.request_wait_seconds)
         row = self.registry.load_row(experiment_id=experiment_id)
-        row = self.dashboards.ensure_local(row=row)
+        row = self.worker.ensure_local_dashboards(row=row)
         reused = False if row.get("status") == "running" else None
-        return self._agent_view(row=row, key_path=key_path, reused=reused)
+        return self._agent_view(row=row, reused=reused)
 
     def get(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
         """Read-only poll target. Never provisions; reconciles stale state."""
@@ -284,9 +270,8 @@ class SandboxService:
                 "status": "none",
                 "hint": "No sandbox for this experiment — call sandbox.request to create one.",
             }
-        row = self.dashboards.ensure_local(row=self.provisioner.reconcile(row=row))
-        key_path = self._key_path(experiment_id=experiment_id)
-        return self._agent_view(row=row, key_path=key_path, reused=None)
+        row = self.worker.ensure_local_dashboards(row=self.provisioner.reconcile(row=row))
+        return self._agent_view(row=row, reused=None)
 
     def options(
         self,
@@ -333,7 +318,7 @@ class SandboxService:
         stopped = False
         if row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES:
             try:
-                self._sync_row(row=row, skip_if_busy=True)
+                self._final_pull_row(row=row)
             except Exception:  # noqa: BLE001 — release should still terminate
                 pass
             # Last chance to read MLflow: the server dies with the VM.
@@ -393,11 +378,13 @@ class SandboxService:
                 workdir=str(row.get("workdir") or ""),
                 tail=None,
                 # Stored endpoint + per-experiment key, for backends that read
-                # the transcript over plain SSH (Lambda Labs).
+                # the transcript over plain SSH (Lambda Labs). Interim duty
+                # (plan §3.1): this read rides the worker-held user key until
+                # Phase 5's management-key switch.
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
                 ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(row.get("key_path") or self._key_path(experiment_id=experiment_id)),
+                key_path=str(self._key_path(experiment_id=experiment_id)),
             )
         except Exception as exc:  # noqa: BLE001
             full = f"(terminal unavailable: {exc})"
@@ -464,7 +451,9 @@ class SandboxService:
                 "sandbox_id": row.get("sandbox_id", ""),
                 "pulled": result.get("pulled", 0),
                 "conflicts": result.get("conflicts", 0),
-                "local_dir": result.get("local_dir", ""),
+                # Logical (repo-relative) spelling: event payloads are
+                # cloud-bound rows and must not carry absolute local paths.
+                "local_dir": self.worker.repo_relative(result.get("local_dir", "")),
             },
         )
         has_conflicts = bool(result.get("conflicts") or result.get("skipped_conflicts"))
@@ -519,7 +508,10 @@ class SandboxService:
             # Lazy backfill: the MLflow backend store lives inside the synced
             # workspace, so the rsync pull usually captured mlflow.db even for
             # sandboxes that died before REST archiving existed.
-            snapshot = snapshot_mlflow_db(self._pulled_mlflow_db_path(experiment_id=experiment_id))
+            snapshot = self.worker.capture_metrics_fallback(
+                experiment_id=experiment_id,
+                name=self.registry.experiment_name(experiment_id=experiment_id),
+            )
             if snapshot is not None:
                 with contextlib.suppress(OSError):
                     self.metrics_archive.persist(experiment_id=experiment_id, snapshot=snapshot)
@@ -559,7 +551,7 @@ class SandboxService:
             if not force and last is not None and now - last < METRICS_PERSIST_TTL_SECONDS:
                 return
             try:
-                live = self.dashboards.ensure_local(row=row)
+                live = self.worker.ensure_local_dashboards(row=row)
             except Exception:  # noqa: BLE001 — fall back to the stored URLs
                 live = row
             base_url = decode_dashboards(live.get("dashboards_json")).get("mlflow", "")
@@ -567,8 +559,9 @@ class SandboxService:
             if snapshot is None:
                 # REST unreachable (tunnel died, server crashed): fall back to
                 # the mlflow.db the rsync pull just brought down.
-                snapshot = snapshot_mlflow_db(
-                    self._pulled_mlflow_db_path(experiment_id=experiment_id)
+                snapshot = self.worker.capture_metrics_fallback(
+                    experiment_id=experiment_id,
+                    name=self.registry.experiment_name(experiment_id=experiment_id),
                 )
             if snapshot is None:
                 return
@@ -583,7 +576,9 @@ class SandboxService:
                     experiment_id=experiment_id,
                     payload={
                         "sandbox_id": row.get("sandbox_id", ""),
-                        "path": str(path),
+                        # Logical key (the archive filename), never an absolute
+                        # local path: event payloads are cloud-bound rows.
+                        "path": path.name,
                         "runs": sum(
                             len(e.get("runs") or [])
                             for e in snapshot.get("experiments") or []
@@ -614,14 +609,19 @@ class SandboxService:
             )
         except NotFoundError:
             return None
-        return self.dashboards.ensure_local(row=self.provisioner.reconcile(row=row))
+        return self.worker.ensure_local_dashboards(row=self.provisioner.reconcile(row=row))
 
     def rows(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
         """All sandbox rows for a project (most-recent first)."""
         return [
-            self.dashboards.ensure_local(row=row)
+            self.worker.ensure_local_dashboards(row=row)
             for row in self.registry.list_rows(project_id=project_id)
         ]
+
+    def row_view(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Public projection of a sandbox row (machine-local fields enriched
+        by the worker). The HTTP layer shapes its responses from this."""
+        return self._row_view(row=row)
 
     def backend_health(self) -> dict[str, Any]:
         """Full backend health payload (the slim ``health`` tool trims this)."""
@@ -674,11 +674,13 @@ class SandboxService:
             metrics = self.backend.sample_metrics(
                 sandbox_id=sandbox_id,
                 # Stored endpoint + per-experiment key, for backends that sample
-                # over plain SSH (Lambda Labs). Modal ignores these.
+                # over plain SSH (Lambda Labs). Modal ignores these. Interim
+                # duty (plan §3.1): rides the worker-held user key until
+                # Phase 5's management-key switch.
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
                 ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(row.get("key_path") or self._key_path(experiment_id=experiment_id)),
+                key_path=str(self._key_path(experiment_id=experiment_id)),
             )
         except Exception:  # noqa: BLE001 — metrics are best-effort
             metrics = None
@@ -693,14 +695,14 @@ class SandboxService:
             "SELECT * FROM sandboxes WHERE experiment_id = ? ORDER BY rowid DESC",
             (experiment_id,),
         ).fetchall()
-        return [self._row_view(row=row_to_dict(row=row) or {}) for row in rows]
+        return [self._row_view(row=row_to_dict(row=row) or {}, conn=conn) for row in rows]
 
     def sandboxes_for_project(self, *, conn, project_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM sandboxes WHERE project_id = ? ORDER BY rowid DESC",
             (project_id,),
         ).fetchall()
-        return [self._row_view(row=row_to_dict(row=row) or {}) for row in rows]
+        return [self._row_view(row=row_to_dict(row=row) or {}, conn=conn) for row in rows]
 
     # ---------- lifecycle plumbing ----------
 
@@ -708,7 +710,7 @@ class SandboxService:
         """Stop the daemons, in-flight provisioning jobs, and tunnels."""
         self.daemons.stop()
         self.provisioner.shutdown()
-        self.dashboards.stop()
+        self.worker.stop_dashboards()
 
     def reap_expired(self, **kwargs: Any) -> int:
         """Terminate running sandboxes past expires_at (see SandboxDaemons)."""
@@ -729,16 +731,45 @@ class SandboxService:
     def _on_terminal_row(self, experiment_id: str, sandbox_id: str | None) -> None:
         """Registry terminal hook: tear down a row's runtime attachments.
 
+        Routed through the data-plane worker (it owns conn files and tunnels);
+        it becomes a `teardown` task when Phase 4 introduces the task channel.
         ``sandbox_id`` is None when the row itself was missing — skip tunnel
         teardown but still drop the conn file, matching the pre-split behavior.
         """
         if sandbox_id is not None:
-            self.dashboards.stop(sandbox_id=sandbox_id)
-        self._remove_conn(experiment_id=experiment_id)
+            self.worker.stop_dashboards(sandbox_id=sandbox_id)
+        self.worker.remove_conn_file(experiment_id=experiment_id)
 
     def _refresh_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Endpoint + provider-dashboard refresh for a confirmed-live row."""
-        return self.dashboards.maybe_refresh(row=self._maybe_refresh_endpoint(row=row))
+        return self._maybe_refresh_dashboards(row=self._maybe_refresh_endpoint(row=row))
+
+    def _maybe_refresh_dashboards(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Re-read provider-native dashboard URLs and persist if changed.
+
+        Companion to the endpoint refresh: when a sandbox's tunnels move on
+        the Modal side, the SSH host/port AND the dashboard HTTPS URLs all
+        change together. These are provider-portable row facts — unlike the
+        worker's loopback tunnels — so they live on the row. Best-effort: a
+        backend without ``dashboard_urls`` or an error reading them leaves the
+        stored value untouched.
+        """
+        sandbox_id = str(row.get("sandbox_id") or "")
+        if not sandbox_id or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            return row
+        try:
+            fresh = self.backend.dashboard_urls(sandbox_id=sandbox_id)
+        except Exception:  # noqa: BLE001 — refresh must never break the caller
+            return row
+        if fresh is None or not isinstance(fresh, dict):
+            return row
+        normalized = {str(k): str(v) for k, v in fresh.items() if isinstance(v, str) and v}
+        encoded = encode_dashboards(normalized)
+        if encoded == (row.get("dashboards_json") or "{}"):
+            return row
+        experiment_id = str(row.get("experiment_id"))
+        self.registry.upsert(experiment_id=experiment_id, dashboards_json=encoded)
+        return self.registry.load_row(experiment_id=experiment_id)
 
     def _maybe_refresh_endpoint(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Re-read a live sandbox's SSH tunnel and persist it if it moved.
@@ -777,192 +808,114 @@ class SandboxService:
         )
         return self.registry.load_row(experiment_id=experiment_id)
 
-    # ---------- sync engine ----------
+    # ---------- sync engine (rsync work delegated to the worker) ----------
 
     def _sync_row(self, *, row: dict[str, Any], skip_if_busy: bool = False) -> dict[str, Any]:
         experiment_id = str(row.get("experiment_id") or "")
-        with self._sync_locks_lock:
-            lock = self._sync_locks.setdefault(experiment_id, threading.Lock())
-        acquired = lock.acquire(blocking=not skip_if_busy)
-        if not acquired:
-            return {
-                "provider": "ssh_rsync",
-                "skipped": "busy",
-                "pulled": 0,
-                "conflicts": 0,
-                "local_dir": str(self._local_sync_dir(experiment_id=experiment_id)),
-            }
-        try:
-            local_dir = (
-                Path(row.get("local_sync_dir") or "")
-                if row.get("local_sync_dir")
-                else self._local_sync_dir(experiment_id=experiment_id)
-            )
-            remote_dir = str(
-                row.get("sync_dir")
-                or row.get("workdir")
-                or remote_experiment_dir(
-                    experiment_id=experiment_id,
-                    name=self.registry.experiment_name(experiment_id=experiment_id),
-                )
-            )
-            result = self.rsync_syncer.sync(
-                ssh_host=str(row.get("ssh_host") or ""),
-                ssh_port=int(row.get("ssh_port") or 0),
-                ssh_user=str(row.get("ssh_user") or "root"),
-                key_path=Path(str(row.get("key_path") or self._key_path(experiment_id=experiment_id))),
-                remote_sync_dir=remote_dir,
-                local_sync_dir=local_dir,
-                # Sandbox-authored telemetry (MLflow db, TB events, transcript)
-                # lives outside the experiment folder and lands in a daemon-owned
-                # local dir, keyed by sandbox id so each VM generation's history
-                # is preserved. Legacy rows simply have nothing at this remote
-                # path (their sessions ride inside the synced folder).
-                remote_sessions_dir=remote_sessions_dir(
-                    experiment_id=experiment_id, root=remote_root_of(remote_dir)
-                ),
-                local_sessions_dir=local_sessions_dir(
-                    repo_root=self.store.repo_root,
-                    experiment_id=experiment_id,
-                    sandbox_id=str(row.get("sandbox_id") or ""),
-                ),
-            ).as_dict()
-            self.registry.emit_event(
-                project_id=str(row.get("project_id")),
-                event_type="sandbox.rsynced",
-                experiment_id=experiment_id,
-                payload={
-                    "sandbox_id": row.get("sandbox_id", ""),
-                    "pulled": result.get("pulled", 0),
-                    "local_dir": result.get("local_dir", ""),
-                    "duration_seconds": result.get("duration_seconds", 0),
-                },
-            )
-            return result
-        finally:
-            lock.release()
+        result = self.worker.sync_pull(
+            row=row,
+            name=self.registry.experiment_name(experiment_id=experiment_id),
+            skip_if_busy=skip_if_busy,
+        )
+        if not result.get("skipped"):
+            self._record_pull(row=row, result=result)
+        return result
 
-    def _push_initial_files(
-        self,
-        *,
-        experiment_id: str,
-        project_id: str,
-        provisioned: ProvisionedSandbox,
-    ) -> dict[str, Any]:
-        local_dir = self._local_sync_dir(experiment_id=experiment_id)
-        local_dir.mkdir(parents=True, exist_ok=True)
-        attempts = max(
-            1,
-            int(env_float(
-                "RESEARCH_PLUGIN_SANDBOX_INITIAL_PUSH_ATTEMPTS",
-                None,
-                DEFAULT_INITIAL_PUSH_ATTEMPTS,
-            )),
+    def _final_pull_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """Last pull before terminate (release; the reaper joins in Phase 4,
+        when the worker's deadline + parachute branch exist — plan §3.1)."""
+        experiment_id = str(row.get("experiment_id") or "")
+        result = self.worker.final_pull(
+            row=row,
+            name=self.registry.experiment_name(experiment_id=experiment_id),
         )
-        retry_seconds = env_float(
-            "RESEARCH_PLUGIN_SANDBOX_INITIAL_PUSH_RETRY",
-            None,
-            DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
-        )
-        result: dict[str, Any] | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                result = self.rsync_syncer.push_initial(
-                    ssh_host=provisioned.ssh_host,
-                    ssh_port=provisioned.ssh_port,
-                    ssh_user=provisioned.ssh_user,
-                    key_path=self._key_path(experiment_id=experiment_id),
-                    remote_sync_dir=provisioned.sync_dir
-                    or provisioned.workdir
-                    or remote_experiment_dir(
-                        experiment_id=experiment_id,
-                        name=self.registry.experiment_name(experiment_id=experiment_id),
-                    ),
-                    local_sync_dir=local_dir,
-                ).as_dict()
-                break
-            except Exception:  # noqa: BLE001 — first push races cloud-init; retry briefly
-                if attempt >= attempts:
-                    raise
-                self.provisioner.set_provision(
-                    experiment_id=experiment_id,
-                    phase="syncing",
-                    detail=f"waiting for remote workspace (attempt {attempt}/{attempts})",
-                )
-                time.sleep(retry_seconds)
-        assert result is not None
+        if not result.get("skipped"):
+            self._record_pull(row=row, result=result)
+        return result
+
+    def _record_pull(self, *, row: dict[str, Any], result: dict[str, Any]) -> None:
         self.registry.emit_event(
-            project_id=project_id,
-            event_type="sandbox.initial_rsynchronized",
-            experiment_id=experiment_id,
+            project_id=str(row.get("project_id")),
+            event_type="sandbox.rsynced",
+            experiment_id=str(row.get("experiment_id") or ""),
             payload={
-                "sandbox_id": provisioned.sandbox_id,
-                "pushed": result.get("pulled", 0),
-                "local_dir": result.get("local_dir", ""),
-                "remote_dir": result.get("remote_dir", ""),
+                "sandbox_id": row.get("sandbox_id", ""),
+                "pulled": result.get("pulled", 0),
+                # Logical (repo-relative) spelling: event payloads are
+                # cloud-bound rows and must not carry absolute local paths.
+                "local_dir": self.worker.repo_relative(result.get("local_dir", "")),
                 "duration_seconds": result.get("duration_seconds", 0),
             },
         )
-        return result
 
-    # ---------- paths / conn-file plumbing (delegated to SandboxConnFiles) ----------
+    # ---------- paths / conn-file plumbing (delegated to the worker) ----------
 
     def _local_sync_dir(self, *, experiment_id: str) -> Path:
-        return self.registry.local_sync_dir(experiment_id=experiment_id)
+        return self.worker.local_experiment_dir(
+            experiment_id=experiment_id,
+            name=self.registry.experiment_name(experiment_id=experiment_id),
+        )
 
     def _pulled_mlflow_db_path(self, *, experiment_id: str) -> Path:
-        # The sandbox's MLflow backend store, as mirrored locally by the rsync
-        # pull. Current layout: the daemon-owned sessions dir, one subdir per
-        # sandbox generation — pick the most recently modified db. Legacy
-        # layouts (sessions inside the synced folder) are checked as fallbacks
-        # so pre-change experiments keep their lazy metrics backfill.
-        sessions_base = local_sessions_dir(
-            repo_root=self.store.repo_root, experiment_id=experiment_id
+        return self.worker.pulled_mlflow_db_path(
+            experiment_id=experiment_id,
+            name=self.registry.experiment_name(experiment_id=experiment_id),
         )
-        candidates = sorted(
-            sessions_base.glob("*/mlflow.db"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates:
-            return candidates[0]
-        local_dir = self._local_sync_dir(experiment_id=experiment_id)
-        for legacy in (
-            local_dir / ".research_plugin_sessions" / experiment_id / "mlflow.db",
-            local_dir / "synced" / ".research_plugin_sessions" / experiment_id / "mlflow.db",
-        ):
-            if legacy.exists():
-                return legacy
-        return sessions_base / "mlflow.db"
 
     def _key_path(self, *, experiment_id: str) -> Path:
-        return self._conn.key_path(experiment_id=experiment_id)
+        return self.worker.key_path(experiment_id=experiment_id)
 
     def _ensure_keypair(self, *, experiment_id: str) -> tuple[str, Path]:
-        return self._conn.ensure_keypair(experiment_id=experiment_id)
-
-    def _remove_conn(self, *, experiment_id: str) -> None:
-        self._conn.remove_conn(experiment_id=experiment_id)
+        return self.worker.ensure_keypair(experiment_id=experiment_id)
 
     # ---------- views (delegated to sandbox_views) ----------
 
-    def _agent_view(
-        self, *, row: dict[str, Any], key_path: Path, reused: bool | None
-    ) -> dict[str, Any]:
-        return sandbox_views.agent_view(
+    def _agent_view(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
+        # Plane decomposition (plan §3.3): provider-portable row facts are a
+        # pure projection; the ssh command / key path / local folder come from
+        # the worker. Local mode merges them here, so tool results are
+        # unchanged; split mode performs the same merge across the seam.
+        experiment_id = str(row.get("experiment_id") or "")
+        facts = sandbox_views.agent_row_facts(
             row=row,
-            key_path=key_path,
-            reused=reused,
-            conn_files=self._conn,
             env_info=self._sandbox_environment(),
-            repo_root=self.store.repo_root,
+            reused=reused,
         )
+        enrichment = self.worker.sandbox_enrichment(
+            row=row,
+            name=self.registry.experiment_name(experiment_id=experiment_id),
+        )
+        return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
         return sandbox_views.agent_summary(row=row)
 
-    def _row_view(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        return sandbox_views.sandbox_row_view(row=row, repo_root=self.store.repo_root)
+    def _row_view(
+        self, *, row: dict[str, Any], conn: sqlite3.Connection | None = None
+    ) -> dict[str, Any]:
+        experiment_id = str(row.get("experiment_id") or "")
+        row = self.worker.merge_local_dashboards(row=row)
+        return sandbox_views.sandbox_row_view(
+            row=row,
+            local_sync_dir=str(
+                self.worker.local_experiment_dir(
+                    experiment_id=experiment_id,
+                    name=self._experiment_name(experiment_id=experiment_id, conn=conn),
+                )
+            ),
+        )
+
+    def _experiment_name(
+        self, *, experiment_id: str, conn: sqlite3.Connection | None = None
+    ) -> str:
+        # Conn-scoped callers (workflow status) resolve the folder name on
+        # their own connection instead of opening a fresh one per row.
+        if conn is None:
+            return self.registry.experiment_name(experiment_id=experiment_id)
+        row = conn.execute(
+            "SELECT name FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()
+        return str(row["name"]) if row is not None and row["name"] else ""
 
     def _needs_selection_view(
         self,

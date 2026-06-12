@@ -204,11 +204,9 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   ssh_host TEXT NOT NULL DEFAULT '',
   ssh_port INTEGER NOT NULL DEFAULT 0,
   ssh_user TEXT NOT NULL DEFAULT 'root',
-  key_path TEXT NOT NULL DEFAULT '',
   workdir TEXT NOT NULL DEFAULT '',
   sync_dir TEXT NOT NULL DEFAULT '',
   unsynced_dir TEXT NOT NULL DEFAULT '',
-  local_sync_dir TEXT NOT NULL DEFAULT '',
   sandbox_data_dir TEXT NOT NULL DEFAULT '',
   -- Files delivered by the initial experiment-folder push (-1 = unknown).
   initial_pushed INTEGER NOT NULL DEFAULT -1,
@@ -296,11 +294,15 @@ CREATE TABLE resources_migrate (
 
 
 class StateStore:
-    """Owns SQLite connections and basic persistence helpers."""
+    """Owns SQLite connections and basic persistence helpers.
 
-    def __init__(self, *, db_path: Path, repo_root: Path) -> None:
+    Records only — the store does not know where the repository checkout
+    lives. Local paths belong to the data plane (``LocalWorkspace`` and the
+    ``DataPlaneWorker``), so the same record layer can serve a cloud DB.
+    """
+
+    def __init__(self, *, db_path: Path) -> None:
         self.db_path = db_path
-        self.repo_root = repo_root.resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -399,7 +401,6 @@ class StateStore:
                 "sandbox_data_dir": "TEXT NOT NULL DEFAULT ''",
                 "sync_dir": "TEXT NOT NULL DEFAULT ''",
                 "unsynced_dir": "TEXT NOT NULL DEFAULT ''",
-                "local_sync_dir": "TEXT NOT NULL DEFAULT ''",
                 # Phase 1 observability dashboards: MLflow + TensorBoard URLs
                 # surfaced from the in-sandbox servers through provider URLs or
                 # daemon-owned local SSH forwards. JSON object keyed by dashboard
@@ -426,6 +427,16 @@ class StateStore:
             conn=conn,
             table="resource_versions",
             columns=("snapshot_status", "git_path", "git_commit"),
+        )
+        # Cloud-split Phase 3 (June 2026): machine-local values left the
+        # cloud-bound sandboxes row — the per-experiment SSH key path and the
+        # local sync dir live in the data-plane worker's local store now
+        # (.research_plugin/dataplane_state.sqlite). Both columns were always
+        # derivable, so no value migration is needed.
+        self._drop_columns(
+            conn=conn,
+            table="sandboxes",
+            columns=("key_path", "local_sync_dir"),
         )
 
     def _apply_migrations(self, *, conn: sqlite3.Connection) -> None:

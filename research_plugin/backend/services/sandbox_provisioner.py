@@ -4,19 +4,19 @@
 experiment (idempotent attach), cooperative cancellation, orphan cleanup, and
 the reconcile pass that keeps a polled row truthful after crashes or restarts.
 It talks to persistence through `SandboxRegistry`, applies experiment status
-changes only through the workflow engine's system transitions, and reaches the
-facade only through two injected callables: ``push_initial`` (the initial
-rsync push, which must read the facade's swappable syncer at call time) and
-``refresh_row`` (endpoint + dashboard refresh for a live row).
+changes only through the workflow engine's system transitions, performs all
+local IO (the initial rsync push, tunnel teardown) through the injected
+`DataPlaneWorker`, and reaches the facade only through ``refresh_row``
+(endpoint + dashboard refresh for a live row).
 """
 
 from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Callable
 
+from ..dataplane.worker import DataPlaneWorker
 from ..execution import (
     BackendPermissionError,
     BackendUnavailableError,
@@ -38,7 +38,6 @@ from .sandbox_support import (
 )
 
 
-PushInitial = Callable[..., dict[str, Any]]
 RefreshRow = Callable[..., dict[str, Any]]
 
 
@@ -51,19 +50,15 @@ class SandboxProvisioner:
         registry: SandboxRegistry,
         backend: SandboxBackend,
         experiments: ExperimentService,
-        key_path: Callable[..., Path],
-        push_initial: PushInitial,
+        worker: DataPlaneWorker,
         refresh_row: RefreshRow,
-        stop_tunnels: Callable[..., None],
         stale_provision_seconds: float,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.experiments = experiments
-        self._key_path = key_path
-        self._push_initial = push_initial
+        self.worker = worker
         self._refresh_row = refresh_row
-        self._stop_tunnels = stop_tunnels
         self.stale_provision_seconds = stale_provision_seconds
         # In-flight provisioning jobs, keyed by experiment_id.
         self._jobs: dict[str, _ProvisionJob] = {}
@@ -233,14 +228,35 @@ class SandboxProvisioner:
                 return
             on_phase("syncing", "pushing the local experiment folder")
             try:
-                initial_sync = self._push_initial(
+                initial_sync = self.worker.push_initial(
                     experiment_id=experiment_id,
-                    project_id=project_id,
+                    name=self.registry.experiment_name(experiment_id=experiment_id),
                     provisioned=provisioned,
+                    on_retry=lambda attempt, attempts: self.set_provision(
+                        experiment_id=experiment_id,
+                        phase="syncing",
+                        detail=f"waiting for remote workspace (attempt {attempt}/{attempts})",
+                    ),
                 )
             except Exception:
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
                 raise
+            self.registry.emit_event(
+                project_id=project_id,
+                event_type="sandbox.initial_rsynchronized",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": provisioned.sandbox_id,
+                    "pushed": initial_sync.get("pulled", 0),
+                    # Logical (repo-relative) spelling: event payloads are
+                    # cloud-bound rows and must not carry absolute local paths.
+                    "local_dir": self.worker.repo_relative(
+                        initial_sync.get("local_dir", "")
+                    ),
+                    "remote_dir": initial_sync.get("remote_dir", ""),
+                    "duration_seconds": initial_sync.get("duration_seconds", 0),
+                },
+            )
             if cancel.is_set():
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
                 self._settle_canceled(experiment_id=experiment_id, project_id=project_id)
@@ -265,9 +281,6 @@ class SandboxProvisioner:
                 workdir=provisioned.workdir,
                 sync_dir=provisioned.sync_dir or provisioned.workdir,
                 unsynced_dir=provisioned.unsynced_dir or provisioned.sandbox_data_dir,
-                local_sync_dir=str(
-                    self.registry.local_sync_dir(experiment_id=experiment_id)
-                ),
                 sandbox_data_dir=provisioned.sandbox_data_dir,
                 initial_pushed=int(initial_sync.get("pulled", -1)),
                 volume_name=provisioned.volume_name,
@@ -339,7 +352,6 @@ class SandboxProvisioner:
             workdir=req.remote_workdir or remote_experiment_dir(experiment_id=experiment_id),
             sync_dir=req.remote_workdir or remote_experiment_dir(experiment_id=experiment_id),
             unsynced_dir=DEFAULT_DATA_DIR,
-            local_sync_dir=str(self.registry.local_sync_dir(experiment_id=experiment_id)),
             initial_pushed=-1,
             gpu=req.gpu or "",
             cpu=req.cpu,
@@ -347,7 +359,6 @@ class SandboxProvisioner:
             instance_type=req.instance_type or "",
             region=req.region or "",
             time_limit=req.time_limit,
-            key_path=str(self._key_path(experiment_id=experiment_id)),
             requested_at=now,
             provision_started_at=now,
             expires_at="",
@@ -388,7 +399,7 @@ class SandboxProvisioner:
         sid = (row or {}).get("sandbox_id")
         if sid:
             seen.add(str(sid))
-            self._stop_tunnels(sandbox_id=str(sid))
+            self.worker.stop_dashboards(sandbox_id=str(sid))
             self._terminate_quietly(sandbox_id=str(sid))
         try:
             orphan = self.backend.find_sandbox_id(experiment_id=experiment_id)

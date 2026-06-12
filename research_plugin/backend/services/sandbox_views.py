@@ -2,28 +2,26 @@
 
 These functions turn a raw ``sandboxes`` row into the dicts callers consume:
 
-- ``agent_view`` — the rich response for ``sandbox.request``/``sandbox.get``
-  (SSH command, hints, dashboards).
+- ``agent_row_facts`` + ``merge_agent_view`` — the rich response for
+  ``sandbox.request``/``sandbox.get``, decomposed along the plane seam
+  (cloud plan §3.3): row facts are provider-portable and pure; the ssh
+  command, key path, and local folder come from the data-plane worker's
+  enrichment and are merged back in. Local mode merges in-process so tool
+  results are unchanged; in split mode the proxy/daemon performs the merge.
 - ``sandbox_row_view`` — the canonical row projection used by the workflow's
   agent-facing status AND the HTTP/UI layer (formerly ``_ui_view``).
 - ``agent_summary`` — the compact per-row shape for ``sandbox.list``.
 - ``needs_selection_view`` — the "pick a machine" response for bundled-hardware
   backends.
 
-They are pure projection logic — no DB or backend calls — so the service module
-keeps only the state machine. ``agent_view`` takes the ``SandboxConnFiles``
-helper and a pre-fetched ``env_info`` dict rather than reaching into service
-state.
+They are pure projection logic — no DB, backend, or filesystem calls.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from ..execution.sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
-from ..workspace import local_experiment_dir
-from .sandbox_conn import SandboxConnFiles
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
@@ -87,39 +85,35 @@ def _folder_contract_note(
     )
 
 
-def agent_view(
+def _is_live(*, status: str, ssh: dict[str, Any]) -> bool:
+    return bool(ssh.get("host") and ssh.get("port") and status in ACTIVE_SANDBOX_STATUSES)
+
+
+def agent_row_facts(
     *,
     row: dict[str, Any],
-    key_path: Path,
-    reused: bool | None,
-    conn_files: SandboxConnFiles,
     env_info: dict[str, Any],
-    repo_root: Path,
+    reused: bool | None,
 ) -> dict[str, Any]:
+    """Provider-portable half of the agent view — pure row projection.
+
+    No conn files, no repo paths: everything here can be served by the cloud
+    row in split mode. The machine-local enrichment (ssh command, key path,
+    local folder, hint prose built on them) is merged by ``merge_agent_view``.
+    """
     status = row.get("status") or "none"
-    live = bool(
-        row.get("ssh_host")
-        and row.get("ssh_port")
-        and status in ACTIVE_SANDBOX_STATUSES
-    )
-    command = conn_files.write_command_wrapper(row=row, key_path=key_path) if live else ""
-    raw_command = conn_files.raw_ssh_command(row=row, key_path=key_path) if live else ""
     experiment_id = str(row.get("experiment_id") or "")
     remote_dir = str(
         row.get("sync_dir")
         or row.get("workdir")
         or remote_experiment_dir(experiment_id=experiment_id)
     )
-    local_dir = str(
-        row.get("local_sync_dir")
-        or local_experiment_dir(repo_root=repo_root, experiment_id=experiment_id)
-    )
     data_dir = str(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
     )
     raw_pushed = row.get("initial_pushed")
     initial_pushed = int(raw_pushed) if raw_pushed is not None else -1
-    view: dict[str, Any] = {
+    facts: dict[str, Any] = {
         "experiment_id": row.get("experiment_id"),
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
@@ -128,15 +122,11 @@ def agent_view(
             "host": row.get("ssh_host"),
             "port": row.get("ssh_port"),
             "user": row.get("ssh_user"),
-            "key_path": str(key_path),
-            "command": command,
-            "raw_command": raw_command,
         },
         "workdir": row.get("workdir"),
         # The one synced location: the experiment's folder, pushed at
         # provisioning and mirrored back while the sandbox lives.
         "experiment_dir": remote_dir,
-        "local_experiment_dir": local_dir,
         # VM-local conventional home for datasets/caches. Never synced —
         # like everything else outside the experiment folder.
         "data_dir": data_dir,
@@ -153,19 +143,53 @@ def agent_view(
         # in-sandbox `MLFLOW_TRACKING_URI` localhost env, not these URLs).
         "dashboards": decode_dashboards(row.get("dashboards_json")),
     }
-    credential_note = ""
     if env_info.get("available_tokens"):
-        view["environment"] = env_info
-        if "HF_TOKEN" in env_info["available_tokens"]:
-            credential_note = (
-                "If you need Hugging Face access, HF_TOKEN is already "
-                "available inside the sandbox environment; use it through "
-                "Hugging Face tooling and do not print or write the token. "
-            )
+        facts["environment"] = env_info
     if status == "provisioning":
-        view["phase"] = row.get("phase") or "starting"
-        view["detail"] = row.get("detail") or ""
-        view["poll_after_seconds"] = POLL_AFTER_SECONDS
+        facts["phase"] = row.get("phase") or "starting"
+        facts["detail"] = row.get("detail") or ""
+        facts["poll_after_seconds"] = POLL_AFTER_SECONDS
+    elif status == "failed":
+        facts["error"] = row.get("error") or "provisioning failed"
+    if reused is not None:
+        facts["reused"] = reused
+    return facts
+
+
+def merge_agent_view(
+    *, facts: dict[str, Any], enrichment: dict[str, Any]
+) -> dict[str, Any]:
+    """Compose the agent view from row facts + data-plane enrichment.
+
+    ``enrichment`` carries ``command``/``raw_command``/``key_path``/
+    ``local_dir`` from the worker (the conn file is already written for live
+    rows). The hint prose is built here because it quotes both halves.
+    """
+    view = dict(facts)
+    status = str(view.get("status") or "none")
+    live = _is_live(status=status, ssh=view.get("ssh") or {})
+    command = str(enrichment.get("command") or "") if live else ""
+    raw_command = str(enrichment.get("raw_command") or "") if live else ""
+    local_dir = str(enrichment.get("local_dir") or "")
+    view["ssh"] = {
+        **(view.get("ssh") or {}),
+        "key_path": str(enrichment.get("key_path") or ""),
+        "command": command,
+        "raw_command": raw_command,
+    }
+    view["local_experiment_dir"] = local_dir
+    remote_dir = str(view.get("experiment_dir") or "")
+    initial_pushed = view.get("files_pushed")
+    initial_pushed = int(initial_pushed) if initial_pushed is not None else -1
+    credential_note = ""
+    env_info = view.get("environment") or {}
+    if "HF_TOKEN" in (env_info.get("available_tokens") or []):
+        credential_note = (
+            "If you need Hugging Face access, HF_TOKEN is already "
+            "available inside the sandbox environment; use it through "
+            "Hugging Face tooling and do not print or write the token. "
+        )
+    if status == "provisioning":
         view["hint"] = (
             "Provisioning. A fresh Lambda Labs VM commonly takes 5-15 minutes "
             "to boot and bootstrap (a large first sync adds time). Poll "
@@ -178,7 +202,6 @@ def agent_view(
             f"{credential_note}"
         )
     elif status == "failed":
-        view["error"] = row.get("error") or "provisioning failed"
         view["hint"] = (
             "Provisioning failed (see error). Fix the cause if you can, then "
             "call sandbox.request to retry."
@@ -224,8 +247,6 @@ def agent_view(
         )
     else:
         view["hint"] = "No live sandbox for this experiment — call sandbox.request to create one."
-    if reused is not None:
-        view["reused"] = reused
     return view
 
 
@@ -241,8 +262,12 @@ def agent_summary(*, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sandbox_row_view(*, row: dict[str, Any], repo_root: Path) -> dict[str, Any]:
-    """Canonical sandbox-row projection (workflow status + HTTP/UI)."""
+def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, Any]:
+    """Canonical sandbox-row projection (workflow status + HTTP/UI).
+
+    ``local_sync_dir`` is machine-local data-plane enrichment: callers resolve
+    it through the worker (it no longer lives in the row).
+    """
     experiment_id = str(row.get("experiment_id") or "")
     remote_dir = str(
         row.get("sync_dir")
@@ -273,9 +298,7 @@ def sandbox_row_view(*, row: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # The experiment's one synced folder on the VM, plus its local mirror.
         # (Key names kept stable for the UI; `sync_dir` IS the experiment dir.)
         "sync_dir": remote_dir,
-        "local_sync_dir": row.get("local_sync_dir") or str(
-            local_experiment_dir(repo_root=repo_root, experiment_id=experiment_id)
-        ),
+        "local_sync_dir": local_sync_dir,
         "sandbox_data_dir": data_dir,
         "initial_pushed": row.get("initial_pushed"),
         "volume_name": row.get("volume_name"),

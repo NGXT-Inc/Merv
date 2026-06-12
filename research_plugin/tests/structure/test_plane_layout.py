@@ -1,16 +1,18 @@
 """Plane-boundary lints for the control/data split.
 
-Phase 0 of docs/CLOUD_BACKEND_MIGRATION_PLAN.md: every tool contract carries a
-plane, the three route sets partition the registry exactly, and the modules
-that must stay cloud-servable do not grow local-process dependencies. The
-import lints start narrow (subprocess only) and tighten as later phases carve
-the seam.
+Phases 0–3 of docs/CLOUD_BACKEND_MIGRATION_PLAN.md: every tool contract
+carries a plane, the three route sets partition the registry exactly, and the
+modules that must stay cloud-servable do not grow local-process or local-path
+dependencies. Hard from Phase 3: control modules cannot import subprocess,
+the rsync/conn machinery, or the dataplane package, and the record store does
+not know where the repository checkout lives.
 """
 
 from __future__ import annotations
 
 import ast
 import unittest
+from pathlib import Path
 
 from backend.contracts import (
     AGGREGATE_TOOL_NAMES,
@@ -18,15 +20,36 @@ from backend.contracts import (
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
 )
-from tests.paths import SERVICES_ROOT
+from tests.paths import BACKEND_ROOT, SERVICES_ROOT
 
 
 # The only services modules allowed to spawn local processes (ssh/rsync/
 # ssh-keygen/tunnels). Everything else in services/ must stay cloud-servable.
 SUBPROCESS_ALLOWED = {"sandbox_conn.py", "sandbox_dashboards.py"}
 
+# Record halves that must be servable from a cloud control plane: no local
+# processes, no rsync/conn machinery, no dataplane worker.
+CONTROL_MODULES = (
+    SERVICES_ROOT / "projects.py",
+    SERVICES_ROOT / "claims.py",
+    SERVICES_ROOT / "experiments.py",
+    SERVICES_ROOT / "syntheses.py",
+    SERVICES_ROOT / "reviews.py",
+    SERVICES_ROOT / "workflow.py",
+    SERVICES_ROOT / "workflow_views.py",
+    SERVICES_ROOT / "experiment_views.py",
+    SERVICES_ROOT / "permissions.py",
+    SERVICES_ROOT / "artifacts.py",
+    SERVICES_ROOT / "graph_lint.py",
+    SERVICES_ROOT / "pinned.py",
+    BACKEND_ROOT / "state" / "store.py",
+)
 
-def _imports(path) -> set[str]:
+# Module names (any dotted segment) control modules may never import.
+CONTROL_FORBIDDEN_SEGMENTS = {"subprocess", "ssh_rsync", "sandbox_conn", "dataplane"}
+
+
+def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     modules: set[str] = set()
     for node in ast.walk(tree):
@@ -37,6 +60,25 @@ def _imports(path) -> set[str]:
                 continue
             modules.add(node.module.split(".", 1)[0])
     return modules
+
+
+def _import_segments(path: Path) -> set[str]:
+    """Every dotted segment of every imported module path.
+
+    Catches relative submodule imports (``from ..execution.ssh_rsync import``)
+    that a top-level-only collector would report as just ``execution``.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    segments: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                segments.update(alias.name.split("."))
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "__future__":
+                continue
+            segments.update(node.module.split("."))
+    return segments
 
 
 class ToolPlanePartitionTest(unittest.TestCase):
@@ -74,6 +116,34 @@ class PlaneImportLintTest(unittest.TestCase):
                 continue
             with self.subTest(module=path.name):
                 self.assertNotIn("subprocess", _imports(path))
+
+    def test_control_modules_import_no_local_io(self) -> None:
+        # Hard from Phase 3: the record halves must be provably IO-free so the
+        # same code can serve from a cloud VM with no checkout, no ssh, and no
+        # worker in-process.
+        for path in CONTROL_MODULES:
+            with self.subTest(module=path.name):
+                forbidden = _import_segments(path) & CONTROL_FORBIDDEN_SEGMENTS
+                self.assertFalse(
+                    forbidden,
+                    f"{path.name} imports local-IO modules: {sorted(forbidden)}",
+                )
+
+    def test_state_store_knows_no_repo_root(self) -> None:
+        # The record store is a records-only component (plan §3.1): local
+        # paths belong to LocalWorkspace / the DataPlaneWorker.
+        source = (BACKEND_ROOT / "state" / "store.py").read_text(encoding="utf-8")
+        self.assertNotIn("repo_root", source)
+
+    def test_telemetry_sinks_are_store_independent(self) -> None:
+        # ActivityLogger and ToolCallStore are config-injected, machine-local
+        # sinks (plan §3.2): they take explicit paths from the composition and
+        # never reach into the record store.
+        for name in ("activity.py", "tool_calls.py"):
+            with self.subTest(module=name):
+                source = (BACKEND_ROOT / "state" / name).read_text(encoding="utf-8")
+                self.assertNotIn("store", _imports(BACKEND_ROOT / "state" / name))
+                self.assertNotIn("StateStore", source)
 
 
 if __name__ == "__main__":

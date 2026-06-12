@@ -36,6 +36,35 @@ CREATE TABLE resources (
 );
 """
 
+# Pre-split `sandboxes` shape: machine-local columns (key_path,
+# local_sync_dir) still lived on the cloud-bound row.
+OLD_SANDBOXES_SCHEMA = """
+CREATE TABLE sandboxes (
+  experiment_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  sandbox_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'none',
+  gpu TEXT NOT NULL DEFAULT '',
+  cpu REAL NOT NULL DEFAULT 0,
+  memory INTEGER NOT NULL DEFAULT 0,
+  time_limit INTEGER NOT NULL DEFAULT 0,
+  ssh_host TEXT NOT NULL DEFAULT '',
+  ssh_port INTEGER NOT NULL DEFAULT 0,
+  ssh_user TEXT NOT NULL DEFAULT 'root',
+  key_path TEXT NOT NULL DEFAULT '',
+  workdir TEXT NOT NULL DEFAULT '',
+  local_sync_dir TEXT NOT NULL DEFAULT '',
+  volume_name TEXT NOT NULL DEFAULT '',
+  requested_at TEXT,
+  expires_at TEXT,
+  last_seen_at TEXT,
+  terminated_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+"""
+
 
 class StoreMigrationTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -96,7 +125,7 @@ class StoreMigrationTest(unittest.TestCase):
     def test_legacy_path_unique_is_rekeyed_to_project_path(self) -> None:
         self._seed_legacy_db()
 
-        store = StateStore(db_path=self.db, repo_root=self.repo)
+        store = StateStore(db_path=self.db)
         conn = store.connect()
         try:
             uniques = self._unique_index_columns(conn)
@@ -123,13 +152,79 @@ class StoreMigrationTest(unittest.TestCase):
     def test_fresh_db_is_not_rebuilt(self) -> None:
         # A brand-new store already has the (project_id, path) unique index, so the
         # migration must be a no-op (idempotent on repeated construction).
-        StateStore(db_path=self.db, repo_root=self.repo)
-        store = StateStore(db_path=self.db, repo_root=self.repo)
+        StateStore(db_path=self.db)
+        store = StateStore(db_path=self.db)
         conn = store.connect()
         try:
             uniques = self._unique_index_columns(conn)
             self.assertIn(["project_id", "path"], uniques)
             self.assertNotIn(["path"], uniques)
+        finally:
+            conn.close()
+
+    def _sandbox_columns(self, conn: sqlite3.Connection) -> set[str]:
+        return {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+        }
+
+    def test_machine_local_sandbox_columns_are_dropped(self) -> None:
+        # Cloud-split Phase 3: key_path / local_sync_dir moved to the worker's
+        # local store; an upgraded database loses the columns but keeps every
+        # provider-portable fact on the row.
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, sandbox_id, status, ssh_host,
+                  ssh_port, key_path, local_sync_dir, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "exp_old",
+                    "proj_old",
+                    "sb-1",
+                    "terminated",
+                    "host.example",
+                    2222,
+                    "/keys/exp_old",
+                    "/repo/experiments/exp_old",
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = self._sandbox_columns(conn)
+            self.assertNotIn("key_path", columns)
+            self.assertNotIn("local_sync_dir", columns)
+            row = conn.execute("SELECT * FROM sandboxes").fetchone()
+            self.assertEqual(row["experiment_id"], "exp_old")
+            self.assertEqual(row["status"], "terminated")
+            self.assertEqual(row["ssh_host"], "host.example")
+            self.assertEqual(row["ssh_port"], 2222)
+        finally:
+            conn.close()
+
+        # Idempotent: a second boot with the columns already gone is a no-op.
+        StateStore(db_path=self.db)
+
+    def test_fresh_db_has_no_machine_local_sandbox_columns(self) -> None:
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = self._sandbox_columns(conn)
+            self.assertNotIn("key_path", columns)
+            self.assertNotIn("local_sync_dir", columns)
         finally:
             conn.close()
 

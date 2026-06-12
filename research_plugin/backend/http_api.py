@@ -24,7 +24,6 @@ from .project_router import ProjectRouter
 from .services.figure_view import build_experiment_figure
 from .services.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .services.permissions import GATED_ROLES
-from .services.sandbox_views import sandbox_row_view
 from .utils import NotFoundError, ResearchPluginError, ValidationError
 from .state import monotonic_ms
 
@@ -61,7 +60,7 @@ class ResearchHttpApi:
         return {
             "ok": True,
             "version": __version__,
-            "repo_root": str(self.app.store.repo_root),
+            "repo_root": str(self.app.workspace.repo_root),
             "store": str(self.app.store.db_path),
             "activity_log": str(self.app.activity.log_path),
         }
@@ -273,7 +272,7 @@ class ResearchHttpApi:
             path = self._resource_path(resource=resource)
             path = (path.parent / rel).resolve()
             try:
-                path.relative_to(self.app.store.repo_root)
+                path.relative_to(self.app.workspace.repo_root)
             except ValueError as exc:
                 raise ValidationError("relative file path escapes repo root") from exc
             if not path.is_file():
@@ -348,9 +347,9 @@ class ResearchHttpApi:
         return {"resources": resources}
 
     def _resource_path(self, *, resource: dict[str, Any]) -> Path:
-        path = (self.app.store.repo_root / resource["path"]).resolve()
+        path = (self.app.workspace.repo_root / resource["path"]).resolve()
         try:
-            path.relative_to(self.app.store.repo_root)
+            path.relative_to(self.app.workspace.repo_root)
         except ValueError as exc:
             raise ValidationError("resource path escapes repo root") from exc
         if not path.exists() or not path.is_file():
@@ -365,12 +364,12 @@ class ResearchHttpApi:
         row = self.app.sandboxes.get_row(experiment_id=experiment_id, project_id=project_id)
         if row is None:
             return {"experiment_id": experiment_id, "status": "none", "sandbox": None}
-        return sandbox_row_view(row=row, repo_root=self.app.store.repo_root)
+        return self.app.sandboxes.row_view(row=row)
 
     def sandbox_list_view(self, *, project_id: str) -> dict[str, Any]:
         return {
             "sandboxes": [
-                sandbox_row_view(row=row, repo_root=self.app.store.repo_root)
+                self.app.sandboxes.row_view(row=row)
                 for row in self.app.sandboxes.rows(project_id=project_id)
             ]
         }
@@ -398,7 +397,7 @@ class ResearchHttpApi:
         }
         sandbox_row = self.app.sandboxes.get_row(experiment_id=experiment_id, project_id=project_id)
         sandbox = (
-            sandbox_row_view(row=sandbox_row, repo_root=self.app.store.repo_root)
+            self.app.sandboxes.row_view(row=sandbox_row)
             if sandbox_row is not None
             else None
         )

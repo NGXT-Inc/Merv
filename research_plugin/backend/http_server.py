@@ -75,7 +75,7 @@ class UvicornHttpServer:
         host, port = self.server_address
         if self._app is not None:
             try:
-                write_marker(repo_root=self._app.store.repo_root, host=host, port=port)
+                write_marker(repo_root=self._app.workspace.repo_root, host=host, port=port)
                 self._marker_written = True
             except Exception:  # noqa: BLE001
                 self._marker_written = False
@@ -100,7 +100,7 @@ class UvicornHttpServer:
         if not self._marker_written or self._app is None:
             return
         try:
-            clear_marker(repo_root=self._app.store.repo_root)
+            clear_marker(repo_root=self._app.workspace.repo_root)
         except Exception:  # noqa: BLE001
             pass
         finally:

@@ -12,6 +12,7 @@ from typing import Any
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from ..workspace import LocalWorkspace
 from .artifacts import report_figure_links
 from .permissions import GATED_ROLE_BYTE_CAPS, PermissionService
 
@@ -32,10 +33,15 @@ class ResourceService:
         *,
         store: StateStore,
         permissions: PermissionService,
+        workspace: LocalWorkspace,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
+        # File observation reads the working tree through the workspace, not
+        # the record store; Phase 5 moves these reads behind the worker's
+        # observe_file/read_artifact_bytes duties (plan §3.1).
+        self.workspace = workspace
         self.blobs = blobs
 
     def register_file(
@@ -428,7 +434,7 @@ class ResourceService:
                 sha = str(row["content_sha256"])
                 if self.blobs.stat(namespace=namespace, sha256=sha) is not None:
                     continue
-                full = self.store.repo_root / str(row["path"])
+                full = self.workspace.repo_root / str(row["path"])
                 try:
                     data = full.read_bytes()
                 except OSError:
@@ -494,9 +500,9 @@ class ResourceService:
             raise ValidationError("resource path may not contain '..'")
         if rel.parts and rel.parts[0] == ".research_plugin":
             raise ValidationError("resource path may not point inside .research_plugin")
-        full = (self.store.repo_root / rel).resolve()
+        full = (self.workspace.repo_root / rel).resolve()
         try:
-            full.relative_to(self.store.repo_root)
+            full.relative_to(self.workspace.repo_root)
         except ValueError as exc:
             raise ValidationError("resource path escapes repo root") from exc
         if not full.exists():
@@ -611,11 +617,11 @@ class ResourceService:
         mapping the report lint and the UI use. A link whose file is missing or
         oversize is simply not recorded; the lint names it with re-associate
         guidance. A link escaping the repo is rejected outright."""
-        report_dir = (self.store.repo_root / report_rel_path).parent
+        report_dir = (self.workspace.repo_root / report_rel_path).parent
         for link in report_figure_links(report_text):
             resolved = (report_dir / link).resolve()
             try:
-                resolved.relative_to(self.store.repo_root)
+                resolved.relative_to(self.workspace.repo_root)
             except ValueError as exc:
                 raise ValidationError(
                     f"report figure link escapes the repo: {link}",

@@ -2,11 +2,11 @@
 
 `DashboardTunnels` owns the daemon-side ssh ``-L`` port-forward processes that
 surface in-sandbox dashboards (MLflow, TensorBoard) for providers without a
-native tunnel surface (Lambda Labs), refreshes provider-native URLs (Modal),
-and decorates MLflow URLs with a deep link into the newest real run. It talks
-to the rest of the registry only through row dicts and `SandboxRegistry`
-(persist + events); it never touches the experiments table or the backend's
-lifecycle methods beyond the optional dashboard probes.
+native tunnel surface (Lambda Labs), and decorates MLflow URLs with a deep
+link into the newest real run. Loopback URLs are machine-local facts (cloud
+plan §3.2): they persist in the data-plane worker's local store, never in the
+cloud-bound sandbox row, and views merge them back through ``merged_row``.
+The provider-native URL refresh (a row fact) lives in the sandbox facade.
 """
 
 from __future__ import annotations
@@ -17,17 +17,31 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import httpx
 
 from ..execution import SandboxBackend
-from .sandbox_registry import SandboxRegistry
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     decode_dashboards,
     encode_dashboards,
 )
+
+
+class LocalDashboardStore(Protocol):
+    """The slice of the worker's local state the tunnel pool needs."""
+
+    def dashboards_local(self, *, experiment_id: str) -> dict[str, str]: ...
+
+    def record(
+        self,
+        *,
+        experiment_id: str,
+        key_path: str | None = None,
+        local_sync_dir: str | None = None,
+        dashboards_local: dict[str, str] | None = None,
+    ) -> None: ...
 
 
 @dataclass
@@ -40,18 +54,22 @@ class _DashboardTunnel:
 
 
 class DashboardTunnels:
-    """Owns dashboard tunnel processes and dashboard-URL persistence."""
+    """Owns dashboard tunnel processes and loopback-URL persistence."""
 
     def __init__(
         self,
         *,
-        registry: SandboxRegistry,
         backend: SandboxBackend,
         key_path: Callable[..., Path],
+        local_state: LocalDashboardStore,
+        emit_event: Callable[..., None] | None = None,
     ) -> None:
-        self.registry = registry
         self.backend = backend
         self._key_path = key_path
+        self.local_state = local_state
+        # Record sink for 'sandbox.dashboard_tunneled'; bound late by the
+        # facade (registry.emit_event) because events are control-plane rows.
+        self.emit_event = emit_event
         self._tunnels: dict[tuple[str, str], _DashboardTunnel] = {}
         self._tunnel_attempts: dict[tuple[str, str], float] = {}
         self._tunnels_lock = threading.Lock()
@@ -59,57 +77,48 @@ class DashboardTunnels:
         # the MLflow deep link so polls don't query MLflow every 3 seconds.
         self._mlflow_links: dict[tuple[str, str], tuple[float, str]] = {}
 
-    def maybe_refresh(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Re-read provider-native dashboard URLs and persist if changed.
+    def merged_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        """The row with provider URLs + locally stored loopback URLs merged.
 
-        Companion to the facade's endpoint refresh: when a sandbox's tunnels
-        move on the Modal side, the SSH host/port AND the dashboard HTTPS URLs
-        all change together. Best-effort: a backend without ``dashboard_urls``
-        or an error reading them leaves the stored value untouched.
+        Loopback URLs never live in the row; rows written before the split may
+        still carry them, so the row's map is filtered to provider-portable
+        URLs before the worker-local map overlays it.
         """
-        sandbox_id = str(row.get("sandbox_id") or "")
-        if not sandbox_id or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+        experiment_id = str(row.get("experiment_id") or "")
+        provider = _provider_dashboards(row=row)
+        local = self.local_state.dashboards_local(experiment_id=experiment_id)
+        merged = encode_dashboards({**provider, **local})
+        if merged == (row.get("dashboards_json") or "{}"):
             return row
-        try:
-            fresh = self.backend.dashboard_urls(sandbox_id=sandbox_id)
-        except Exception:  # noqa: BLE001 — refresh must never break the caller
-            return row
-        if fresh is None or not isinstance(fresh, dict):
-            return row
-        normalized = {str(k): str(v) for k, v in fresh.items() if isinstance(v, str) and v}
-        encoded = encode_dashboards(normalized)
-        if encoded == (row.get("dashboards_json") or "{}"):
-            return row
-        experiment_id = str(row.get("experiment_id"))
-        self.registry.upsert(experiment_id=experiment_id, dashboards_json=encoded)
-        return self.registry.load_row(experiment_id=experiment_id)
+        out = dict(row)
+        out["dashboards_json"] = merged
+        return out
 
     def ensure_local(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """Expose in-sandbox dashboards through daemon-owned SSH local forwards.
 
         Modal returns native HTTPS tunnel URLs from the backend. Lambda Labs VMs
         do not have a provider tunnel surface, but they do have SSH. Backends can
-        advertise dashboard ports with ``local_dashboard_ports()``; the registry
-        then publishes loopback URLs only after the forwarded dashboard responds.
+        advertise dashboard ports with ``local_dashboard_ports()``; loopback
+        URLs are published only after the forwarded dashboard responds.
         """
         if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
-            return row
+            return self.merged_row(row=row)
+        experiment_id = str(row.get("experiment_id") or "")
         sandbox_id = str(row.get("sandbox_id") or "")
         ssh_host = str(row.get("ssh_host") or "")
-        key_path = str(
-            row.get("key_path")
-            or self._key_path(experiment_id=str(row.get("experiment_id") or ""))
-        )
+        key_path = str(self._key_path(experiment_id=experiment_id))
         if not sandbox_id or not ssh_host or not key_path:
-            return row
+            return self.merged_row(row=row)
         try:
             ports = self.backend.local_dashboard_ports()
         except Exception:  # noqa: BLE001 — dashboard tunnels are best-effort
-            return row
+            return self.merged_row(row=row)
         if not isinstance(ports, dict) or not ports:
-            return row
+            return self.merged_row(row=row)
 
-        dashboards = decode_dashboards(row.get("dashboards_json"))
+        provider = _provider_dashboards(row=row)
+        local = self.local_state.dashboards_local(experiment_id=experiment_id)
         changed = False
         for raw_name, raw_port in ports.items():
             name = str(raw_name)
@@ -119,10 +128,9 @@ class DashboardTunnels:
                 continue
             if remote_port <= 0:
                 continue
-            current_url = dashboards.get(name, "")
             # Native provider URLs win. Local tunnels are only the fallback for
             # backends that cannot expose a public dashboard URL themselves.
-            if current_url and not _is_local_dashboard_url(current_url):
+            if provider.get(name):
                 continue
 
             key = (sandbox_id, name)
@@ -131,13 +139,13 @@ class DashboardTunnels:
                 display_url = self._display_url(
                     name=name, base_url=tunnel.url, sandbox_id=sandbox_id
                 )
-                if dashboards.get(name) != display_url:
-                    dashboards[name] = display_url
+                if local.get(name) != display_url:
+                    local[name] = display_url
                     changed = True
                 continue
 
-            if current_url:
-                dashboards.pop(name, None)
+            if local.get(name):
+                local.pop(name, None)
                 changed = True
             last_attempt = self._tunnel_attempts.get(key, 0.0)
             if time.monotonic() - last_attempt < 10.0:
@@ -147,7 +155,7 @@ class DashboardTunnels:
             tunnel = self._start_tunnel(
                 name=name,
                 project_id=str(row.get("project_id") or ""),
-                experiment_id=str(row.get("experiment_id") or ""),
+                experiment_id=experiment_id,
                 sandbox_id=sandbox_id,
                 ssh_host=ssh_host,
                 ssh_port=int(row.get("ssh_port") or 22),
@@ -159,17 +167,21 @@ class DashboardTunnels:
                 continue
             with self._tunnels_lock:
                 self._tunnels[key] = tunnel
-            dashboards[name] = self._display_url(
+            local[name] = self._display_url(
                 name=name, base_url=tunnel.url, sandbox_id=sandbox_id
             )
             changed = True
 
-        encoded = encode_dashboards(dashboards)
-        if not changed and encoded == (row.get("dashboards_json") or "{}"):
+        if changed:
+            self.local_state.record(
+                experiment_id=experiment_id, dashboards_local=local
+            )
+        merged = encode_dashboards({**provider, **local})
+        if merged == (row.get("dashboards_json") or "{}"):
             return row
-        experiment_id = str(row.get("experiment_id"))
-        self.registry.upsert(experiment_id=experiment_id, dashboards_json=encoded)
-        return self.registry.load_row(experiment_id=experiment_id)
+        out = dict(row)
+        out["dashboards_json"] = merged
+        return out
 
     def stop(self, *, sandbox_id: str = "") -> None:
         """Tear down tunnels for one sandbox, or every tunnel when id is ''."""
@@ -264,17 +276,18 @@ class DashboardTunnels:
         if not _tunnel_ready(proc, local_port, tunnel.url):
             self._terminate_process(proc)
             return None
-        self.registry.emit_event(
-            project_id=project_id,
-            event_type="sandbox.dashboard_tunneled",
-            experiment_id=experiment_id,
-            payload={
-                "sandbox_id": sandbox_id,
-                "dashboard": name,
-                "local_port": local_port,
-                "remote_port": remote_port,
-            },
-        )
+        if self.emit_event is not None:
+            self.emit_event(
+                project_id=project_id,
+                event_type="sandbox.dashboard_tunneled",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": sandbox_id,
+                    "dashboard": name,
+                    "local_port": local_port,
+                    "remote_port": remote_port,
+                },
+            )
         return tunnel
 
     @staticmethod
@@ -299,6 +312,16 @@ def _free_local_port() -> int:
 
 def _is_local_dashboard_url(url: str) -> bool:
     return url.startswith("http://127.0.0.1:") or url.startswith("http://localhost:")
+
+
+def _provider_dashboards(*, row: dict[str, Any]) -> dict[str, str]:
+    """Provider-portable URLs from the row; loopback entries (legacy rows
+    written before the split) are dropped — the worker store owns those."""
+    return {
+        name: url
+        for name, url in decode_dashboards(row.get("dashboards_json")).items()
+        if not _is_local_dashboard_url(url)
+    }
 
 
 def _dashboard_url_ready(url: str) -> bool:
