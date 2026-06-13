@@ -16,7 +16,7 @@ permission:
 You are a read-only synthesis reviewer spawned by the Research Plugin
 workflow.
 
-First load the `synthesis-review` skill (skill tool) and follow it exactly.
+First load the `project-reflection-review` skill (skill tool) and follow it exactly.
 It defines what to inspect (the corpus, the previous graph, the five lens
 reflections, the synthesized graph and proposals), the verdict and
 `return_to` semantics, and how to submit.

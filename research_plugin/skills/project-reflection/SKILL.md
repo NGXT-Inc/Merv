@@ -1,5 +1,5 @@
 ---
-name: research-reflection
+name: project-reflection
 description: >-
   Use when the project should reflect across all of its experiments: distill
   what has actually been learned into the living 16-node project logic graph
@@ -41,7 +41,7 @@ synthesis.create (declare the 5-lens roster; corpus is snapshotted)
   → synthesizing:  reconcile the reflections; update the living project
                    graph (role 'graph') + write proposals (role 'proposals')
   → submit_synthesis
-  → synthesis_review: launch the synthesis-review agent (read-only)
+  → synthesis_review: launch the project-reflection-review agent (read-only)
   → publish        (or return_to 'synthesizing' / 'reflecting' on rejection)
 ```
 
@@ -149,7 +149,7 @@ Then `synthesis.transition(submit_synthesis)`.
 Request the review with
 `review.request(target_type='synthesis', target_id=<syn_id>,
 role='synthesis_reviewer', producer_session_id=<your session>)` and hand the
-capability to a **separate** read-only `synthesis-review` agent (the producer
+capability to a **separate** read-only `project-reflection-review` agent (the producer
 session cannot start it). The reviewer sees the corpus, the previous graph,
 all five reflections, and your synthesis — and verdicts route:
 

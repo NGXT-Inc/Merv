@@ -239,7 +239,7 @@ Gates (envelope-only, same philosophy as experiment gates):
 On publish the record pins `published_graph_version_id`, so the single living
 graph file still yields an immutable per-wave history. The diversity
 heuristics (anti-overlap lens briefs, ambition quota, dead-end
-differentiation) live in the `research-reflection` skill, not in gates.
+differentiation) live in the `project-reflection` skill, not in gates.
 
 Staleness is computed on read, never stored: `workflow.status_and_next`
 carries a `project_reflection` block when a wave is open (slim state + gate

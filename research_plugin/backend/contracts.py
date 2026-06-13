@@ -288,7 +288,7 @@ class ReviewSubmitInput(ContractModel):
             "the results show the plan itself is flawed; 'running' if the plan "
             "stands but execution or the conclusion is flawed (fix and re-run "
             "without redoing design review). Design-review rejections always "
-            "return to 'planned'. REQUIRED on synthesis-review rejections: "
+            "return to 'planned'. REQUIRED on project-reflection-review rejections: "
             "'reflecting' to re-launch the reflection fan-out (every lens "
             "re-submits for the new attempt), or 'synthesizing' if the "
             "reflections stand but the synthesis (project graph and/or "
@@ -486,7 +486,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "dead_ends, coverage; plus 2 you design with charter + "
             "why_distinct) and snapshots the corpus of finished experiments "
             "the wave covers. One wave may be open at a time. See the "
-            "research-reflection skill."
+            "project-reflection skill."
         ),
     ),
     "synthesis.get": ToolContract(

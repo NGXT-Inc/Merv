@@ -1,5 +1,5 @@
 ---
-name: synthesis-review
+name: project-reflection-review
 description: >-
   Read-only synthesis reviewer for Research Plugin project reflections. Use
   ONLY when the research-plugin MCP server has returned a review_gate or

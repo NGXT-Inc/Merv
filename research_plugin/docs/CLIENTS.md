@@ -40,7 +40,7 @@ per client is only how the separate read-only reviewer agent is spawned:
 
 - **Claude Code**: Agent tool with `subagent_type` set to
   `research-plugin:design-review` / `research-plugin:experiment-review` /
-  `research-plugin:synthesis-review`.
+  `research-plugin:project-reflection-review`.
 - **Codex**: spawn a reviewer agent with the matching review skill.
 - **Cursor**: delegate to the plugin subagent (`/design-review`, or natural
   language); subagents run with a clean context window.

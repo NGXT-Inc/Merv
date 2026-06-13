@@ -15,10 +15,10 @@ Operating rules:
 - Local file edits are not research state. A file only becomes a research
   resource after `resource.register_file` + `resource.associate`.
 - For the full operating procedure, load the `research-workflow` skill. For
-  project-level reflection waves, load the `research-reflection` skill.
+  project-level reflection waves, load the `project-reflection` skill.
 - When `workflow.status_and_next` asks for a design, experiment, or synthesis
   review, delegate to the matching bundled subagent (`design-review`,
-  `experiment-review`, or `synthesis-review`), passing the target id,
+  `experiment-review`, or `project-reflection-review`), passing the target id,
   `review_request_id`, and `reviewer_capability` in the prompt. Reviewers are
   read-only and submit verdicts themselves via `review.start` / `review.submit`.
 - Expensive or GPU work runs in a sandbox over SSH (`sandbox.request` /

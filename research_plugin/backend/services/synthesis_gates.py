@@ -25,7 +25,7 @@ two workflows cannot drift in shape.
 All gates here check envelopes only (files exist, the roster is covered, the
 graph parses within budget). Whether the synthesis is honest and the
 proposals are real is the reviewer's call, and the diversity heuristics live
-in the research-reflection skill, not in gates.
+in the project-reflection skill, not in gates.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ SYNTHESIS_TERMINAL_STATUSES = frozenset({"published", "abandoned"})
 # Engineered diversity: every wave fans out exactly five lenses — the three
 # core ones below plus two the orchestrator designs for this specific project
 # (each with a stated reason it is distinct). The full lens briefs live in
-# skills/research-reflection; these charters are the durable one-line versions
+# skills/project-reflection; these charters are the durable one-line versions
 # recorded on the roster when the agent does not supply its own wording.
 ROSTER_SIZE = 5
 
@@ -147,7 +147,7 @@ SYNTHESIS_GATE_TABLE: dict[str, ForwardTransition] = {
                     "(each with a hypothesis, builds_on refs, and the claim it "
                     "would move), register it, and associate it with role "
                     "'proposals' — see "
-                    "skills/research-reflection/synthesis-template.md"
+                    "skills/project-reflection/synthesis-template.md"
                 ),
                 validator="prose",
                 gate="proposals_required",
@@ -172,7 +172,7 @@ SYNTHESIS_GATE_TABLE: dict[str, ForwardTransition] = {
         requires_prose="a passing synthesis_reviewer review",
         review=ReviewRequirement(
             role="synthesis_reviewer",
-            skill="synthesis-review",
+            skill="project-reflection-review",
             action_name="synthesis_review",
             error="synthesis review must pass before publish",
             pass_action="publish_synthesis",

@@ -726,7 +726,7 @@ class SynthesisService:
             return (
                 "Consider running the project's first reflection — "
                 f"{signal['terminal_experiments']} experiments have finished and "
-                "no project synthesis exists yet. Use the research-reflection "
+                "no project synthesis exists yet. Use the project-reflection "
                 "skill (synthesis.create) when you judge the time is right."
             )
         pieces = [
@@ -747,5 +747,5 @@ class SynthesisService:
         return (
             "; ".join(pieces)
             + ". Whether these developments change the project's logic state is "
-            "your call (research-reflection skill, synthesis.create)."
+            "your call (project-reflection skill, synthesis.create)."
         )

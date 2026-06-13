@@ -1,5 +1,5 @@
 ---
-name: synthesis-review
+name: project-reflection-review
 description: >-
   Use for read-only adversarial review of a Research Plugin project synthesis
   (reflection wave). The reviewer checks the synthesized project logic graph
