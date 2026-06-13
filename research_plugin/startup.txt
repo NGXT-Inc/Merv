@@ -1,2 +1,21 @@
 cd research_plugin
 python3 scripts/dev_http_reload.py --host 127.0.0.1 --port 8787
+
+# Backend development loop
+# Most backend Python changes should be picked up by the reload daemon above.
+# Reinstall the plugin only after changing packaging, manifests, MCP config,
+# skills, or agents.
+
+# Codex plugin refresh
+codex plugin marketplace add /Users/guraltoo/Documents/dev/proj/experiments/research-suite
+codex plugin remove research-plugin@research-suite-local
+codex plugin add research-plugin@research-suite-local
+
+# Claude Code plugin refresh
+claude plugin marketplace add /Users/guraltoo/Documents/dev/proj/experiments/research-suite
+claude plugin marketplace update research-suite
+claude plugin uninstall --keep-data research-plugin@research-suite
+claude plugin install research-plugin@research-suite
+
+# Claude Code direct source mode for local development
+claude --plugin-dir /Users/guraltoo/Documents/dev/proj/experiments/research-suite/research_plugin
