@@ -1,0 +1,186 @@
+import { Link } from 'react-router-dom';
+import {
+  useProjectStore,
+  selectProject,
+  selectActiveExperiments,
+  selectReviewRequests,
+  selectSandboxes,
+  selectExperiments,
+  selectEvents,
+} from '../store/useProjectStore';
+import EventTimeline from '../components/EventTimeline';
+import FSMStrip from '../components/FSMStrip';
+import StatusPill from '../components/StatusPill';
+import { expName } from '../utils/experiment';
+import { fmtDuration } from '../utils/format';
+
+const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
+const SOON_MS = 30 * 60 * 1000;
+
+/**
+ * The mobile landing: one needs-attention stack, then what's in flight.
+ * Everything renders from the already-polled /home + /sandboxes payloads —
+ * no new requests. The empty state IS the product: "nothing needs you" is
+ * a successful glance.
+ */
+export default function NowScreen() {
+  const project = useProjectStore(selectProject);
+  const lastSyncError = useProjectStore(s => s.lastSyncError);
+  const activeExperiments = useProjectStore(selectActiveExperiments);
+  const reviewRequests = useProjectStore(selectReviewRequests);
+  const sandboxes = useProjectStore(selectSandboxes);
+  const experiments = useProjectStore(selectExperiments);
+  const events = useProjectStore(selectEvents);
+
+  if (!project) {
+    return <div className="page-stage"><div className="empty-state">Loading project…</div></div>;
+  }
+
+  const now = Date.now();
+  const expById = Object.fromEntries(experiments.map(e => [e.id, e]));
+
+  // ── Attention items, most urgent first ──────────────────────────────
+  const items = [];
+
+  const running = sandboxes.filter(s => s.status === 'running');
+  for (const s of running) {
+    if (!s.expires_at) continue;
+    const left = Date.parse(s.expires_at) - now;
+    if (Number.isFinite(left) && left <= SOON_MS) {
+      const exp = expById[s.experiment_id];
+      items.push({
+        key: `sbx-${s.experiment_id}`,
+        danger: left <= 5 * 60 * 1000,
+        to: `/sandboxes`,
+        title: `Sandbox expiring ${left <= 0 ? 'now' : `in ${fmtDuration(left)}`}`,
+        sub: `${exp ? expName(exp) : s.experiment_id}${s.gpu ? ` · ${s.gpu}` : ''} — final sync runs before termination`,
+        pill: 'running',
+      });
+    }
+  }
+
+  for (const e of activeExperiments) {
+    if (!REVIEW_STATES.has(e.status)) continue;
+    const wf = e.workflow || {};
+    items.push({
+      key: `rev-${e.id}`,
+      to: `/experiments/${e.id}`,
+      title: expName(e),
+      sub: wf.next_action && wf.next_action !== 'none'
+        ? `next: ${wf.next_action}`
+        : 'awaiting review',
+      pill: e.status,
+    });
+  }
+
+  // Only requests still waiting on a reviewer count as attention —
+  // 'submitted' means the verdict is in (the gate shows it elsewhere).
+  const openRequests = reviewRequests.filter(
+    r => r.status === 'requested' || r.status === 'started',
+  );
+  for (const r of openRequests) {
+    const exp = r.target_type === 'experiment' ? expById[r.target_id] : null;
+    items.push({
+      key: `req-${r.id}`,
+      to: exp ? `/experiments/${exp.id}` : '/reviews',
+      title: `${(r.role || 'review').replace(/_/g, ' ')} ${r.status || 'requested'}`,
+      sub: exp ? expName(exp) : r.target_id,
+      pill: r.status || 'requested',
+    });
+  }
+
+  const inFlight = activeExperiments.filter(e => !REVIEW_STATES.has(e.status));
+
+  return (
+    <div className="page-stage">
+      {lastSyncError && (
+        <div className="mbanner">
+          Backend unreachable — showing last known state. {lastSyncError}
+        </div>
+      )}
+
+      <section className="section">
+        <div className="section-title">Needs you</div>
+        {items.length === 0 ? (
+          <div className="mclear">
+            <span className="mclear-glyph" aria-hidden="true">✓</span>
+            Nothing needs you right now.
+          </div>
+        ) : (
+          <div className="mcard-list">
+            {items.map(it => (
+              <Link key={it.key} to={it.to} className={`mcard ${it.danger ? 'mcard--danger' : 'mcard--attn'}`}>
+                <div className="mcard-head">
+                  <div className="mcard-title">{it.title}</div>
+                  <StatusPill value={it.pill} />
+                </div>
+                {it.sub && <div className="mcard-sub">{it.sub}</div>}
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {inFlight.length > 0 && (
+        <section className="section">
+          <div className="section-title">In flight</div>
+          <div className="mcard-list">
+            {inFlight.map(e => (
+              <Link key={e.id} to={`/experiments/${e.id}`} className="mcard">
+                <div className="mcard-head">
+                  <div className="mcard-title">{expName(e)}</div>
+                  <StatusPill value={e.status} />
+                </div>
+                {e.intent && <div className="mcard-sub">{e.intent}</div>}
+                <FSMStrip status={e.status} />
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="section">
+        <div className="section-title">
+          Sandboxes
+          {running.length > 0 && (
+            <span className="section-title-badge">
+              <span className="sidebar-live-dot" />{running.length} running
+            </span>
+          )}
+        </div>
+        {running.length === 0 ? (
+          <div className="empty-state empty-state--compact"><p>No running sandboxes.</p></div>
+        ) : (
+          <div className="mcard-list">
+            {running.map(s => {
+              const exp = expById[s.experiment_id];
+              const up = s.requested_at ? now - Date.parse(s.requested_at) : null;
+              const left = s.expires_at ? Date.parse(s.expires_at) - now : null;
+              return (
+                <Link key={s.experiment_id} to={`/experiments/${s.experiment_id}`} className="mcard">
+                  <div className="mcard-head">
+                    <div className="mcard-title">{exp ? expName(exp) : s.experiment_id}</div>
+                    <StatusPill value={s.status} />
+                  </div>
+                  <div className="mcard-meta">
+                    {s.gpu && <span className="mono">{s.gpu}</span>}
+                    {up != null && <span>up {fmtDuration(up)}</span>}
+                    {left != null && <span>expires in {left <= 0 ? 'soon' : fmtDuration(left)}</span>}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="section">
+        <div className="cluster--between" style={{ marginBottom: 12 }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>Recent</div>
+          <Link to="/events" className="btn btn--sm btn--ghost">Timeline →</Link>
+        </div>
+        <EventTimeline events={events} limit={8} />
+      </section>
+    </div>
+  );
+}

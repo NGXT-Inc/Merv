@@ -1,6 +1,16 @@
 import { Link } from 'react-router-dom';
 import ObjId from './ObjId';
 
+// Sandbox parachute lifecycle (results rescued to cloud when the daemon was
+// offline) reads poorly as a raw type string, so each gets a human label
+// rendered as a .parachute-chip beside the mono type. The failed variant uses
+// the existing --failed (danger) treatment so data-loss reads LOUD.
+const PARACHUTE_CHIPS = {
+  'sandbox.parachuted':         { variant: 'parachuted', label: 'Results parachuted to cloud' },
+  'sandbox.parachute_restored': { variant: 'restored',   label: 'Results restored from parachute' },
+  'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed — possible data loss' },
+};
+
 function shortTime(iso) {
   if (!iso) return '';
   try {
@@ -36,12 +46,14 @@ export default function EventTimeline({ events, limit = 20 }) {
     <div className="timeline">
       {rows.map((e, i) => {
         const type = e.event_type || e.type;
+        const chip = PARACHUTE_CHIPS[type];
         const href = targetHref(e.target_type, e.target_id);
         return (
           <div key={e.id || i} className="timeline-row">
             <div className="timeline-time">{shortTime(e.created_at)}</div>
             <div className="timeline-event">
               <span className="timeline-event-type">{type}</span>
+              {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.label}</span>}
               {e.target_id && (
                 href
                   ? <Link to={href}><ObjId id={e.target_id} className="timeline-event-target timeline-event-target--link" /></Link>

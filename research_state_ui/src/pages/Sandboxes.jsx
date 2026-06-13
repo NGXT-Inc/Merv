@@ -1,12 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useProjectStore, selectExperiments } from '../store/useProjectStore';
+import { useProjectStore, selectExperiments, selectEventsAll } from '../store/useProjectStore';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
 import SandboxTerminal from '../components/SandboxTerminal';
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
 
 const STATUS_TABS = ['all', 'running', 'provisioning', 'terminated'];
+
+// Parachute = results rescued to cloud object storage when a sandbox expired
+// while the local daemon was offline. Map each lifecycle event to a chip.
+const PARACHUTE_CHIPS = {
+  'sandbox.parachuted':         { variant: 'parachuted', label: 'Parachuted' },
+  'sandbox.parachute_restored': { variant: 'restored',   label: 'Restored' },
+  'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed' },
+};
+
+// Newest parachute-lifecycle event type for an experiment/sandbox, or null.
+// Scans the deep events window and matches on either the experiment target or
+// the sandbox_id in the payload; picks the latest by id/created_at so ordering
+// of the feed doesn't matter.
+function latestParachute(events, experimentId, sandboxId) {
+  let best = null;
+  for (const ev of events) {
+    const type = ev.event_type || ev.type;
+    if (!PARACHUTE_CHIPS[type]) continue;
+    if (ev.target_id !== experimentId && ev.payload?.sandbox_id !== sandboxId) continue;
+    if (!best || String(ev.id ?? ev.created_at ?? '') > String(best.id ?? best.created_at ?? '')) {
+      best = ev;
+    }
+  }
+  return best ? (best.event_type || best.type) : null;
+}
 
 // Column template (chevron · status · experiment · hardware · uptime · expires
 // · endpoint · links) lives in CSS as --sbxt-cols so the head and every row
@@ -23,6 +48,7 @@ const STATUS_TABS = ['all', 'running', 'provisioning', 'terminated'];
 export default function Sandboxes() {
   const projectId = useProjectStore(s => s.projectId);
   const experiments = useProjectStore(selectExperiments);
+  const events = useProjectStore(selectEventsAll);
   const [sandboxes, setSandboxes] = useState(null);
   const [error, setError] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all');
@@ -124,6 +150,7 @@ export default function Sandboxes() {
                 experiment={expById[s.experiment_id]}
                 projectId={projectId}
                 now={now}
+                parachute={latestParachute(events, s.experiment_id, s.sandbox_id)}
                 open={expanded === s.experiment_id}
                 onToggle={() => setExpanded(expanded === s.experiment_id ? null : s.experiment_id)}
               />
@@ -135,10 +162,11 @@ export default function Sandboxes() {
   );
 }
 
-function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
+function SandboxRow({ sandbox, experiment, projectId, now, parachute, open, onToggle }) {
   const s = sandbox;
   const live = s.status === 'running';
-  const title = experiment ? (parseIntent(experiment.intent).title || experiment.intent) : s.experiment_id;
+  const chip = parachute ? PARACHUTE_CHIPS[parachute] : null;
+  const title = experiment ? expName(experiment) : s.experiment_id;
   const hardware = [
     s.gpu,
     s.cpu && `${s.cpu} cpu`,
@@ -167,6 +195,7 @@ function SandboxRow({ sandbox, experiment, projectId, now, open, onToggle }) {
         <span className="sbxt-status">
           <span className={`sbxt-dot sbxt-dot--${s.status}`} />
           <span className="sbxt-status-label">{s.status}</span>
+          {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.label}</span>}
         </span>
         <span className="sbxt-exp">
           <span className="sbxt-exp-title">{title}</span>

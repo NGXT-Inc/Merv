@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import PlanBody from './PlanBody';
 import ReviewEvolutionStepper from './ReviewEvolutionStepper';
+import SourceBadge from './SourceBadge';
 import { formatBytes } from '../utils/format';
 
 /**
@@ -86,10 +87,18 @@ export default function PlanSpotlight({
           ) : error ? (
             <div className="error-message">{error}</div>
           ) : content ? (
-            content.is_binary ? (
+            content.available === false ? (
+              <div className="content-unavailable">
+                <div className="content-unavailable-title">Content unavailable in this mode</div>
+                <div className="content-unavailable-detail">{content.detail || content.reason}</div>
+              </div>
+            ) : content.is_binary ? (
               <div className="empty">Binary plan file</div>
             ) : (
-              <PlanBody text={content.content ?? ''} path={planResource.path} />
+              <>
+                <SourceBadge source={content.source} versionId={content.version_id} />
+                <PlanBody text={content.content ?? ''} path={planResource.path} />
+              </>
             )
           ) : null}
         </div>

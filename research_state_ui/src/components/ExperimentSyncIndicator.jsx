@@ -6,7 +6,7 @@ import {
   selectEventsAll,
   selectExperiments,
 } from '../store/useProjectStore';
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
 import { fmtAgo } from '../utils/format';
 import ExperimentSyncDetailsModal from './ExperimentSyncDetailsModal';
 
@@ -58,7 +58,7 @@ export default function ExperimentSyncIndicator() {
 
   const titleFor = useMemo(() => {
     const map = {};
-    for (const e of experiments) map[e.id] = parseIntent(e.intent).title || e.intent || e.id;
+    for (const e of experiments) map[e.id] = expName(e);
     return (eid) => map[eid] || eid;
   }, [experiments]);
 

@@ -24,29 +24,47 @@ const STAGES = [
 const GATE_STATES = new Set(['design_review', 'experiment_review']);
 const TERMINAL = new Set(['complete', 'failed', 'abandoned']);
 
-export default function FSMStrip({ status, badge = null, expanded = false, onToggle = null, children = null }) {
+// The synthesis (project reflection wave) lifecycle, renderable through the
+// same strip: pass stages={SYNTHESIS_STAGES} gateStates={SYNTHESIS_GATES}.
+export const SYNTHESIS_STAGES = [
+  { id: 'reflecting',       label: 'Reflecting' },
+  { id: 'synthesizing',     label: 'Synthesizing' },
+  { id: 'synthesis_review', label: 'Synth. review' },
+  { id: 'published',        label: 'Published' },
+];
+export const SYNTHESIS_GATES = new Set(['synthesis_review']);
+export const SYNTHESIS_TERMINAL = new Set(['published', 'abandoned']);
+
+export default function FSMStrip({
+  status, badge = null, expanded = false, onToggle = null, children = null,
+  stages = STAGES, gateStates = GATE_STATES, terminal = TERMINAL,
+  ariaLabel = 'Experiment lifecycle',
+}) {
+  const STAGES_LIST = stages;
+  const GATE_SET = gateStates;
+  const TERMINAL_SET = terminal;
   const s = String(status || '').toLowerCase();
-  const isFailed = s === 'failed' || s === 'abandoned';
-  const currentIdx = STAGES.findIndex(x => x.id === s);
+  const isFailed = (s === 'failed' || s === 'abandoned') && !STAGES_LIST.some(x => x.id === s);
+  const currentIdx = STAGES_LIST.findIndex(x => x.id === s);
   const idx = currentIdx >= 0 ? currentIdx : 0;
 
   return (
     <div className="fsm-strip-wrap">
-      <ol className="fsm-strip" aria-label="Experiment lifecycle">
-        {STAGES.map((stage, i) => {
+      <ol className="fsm-strip" aria-label={ariaLabel}>
+        {STAGES_LIST.map((stage, i) => {
           let state;
           if (isFailed) {
-            state = i < STAGES.length - 1 ? 'past' : 'failed';
+            state = i < STAGES_LIST.length - 1 ? 'past' : 'failed';
           } else if (i < idx) {
             state = 'past';
           } else if (i === idx) {
-            state = GATE_STATES.has(stage.id) ? 'gate' : 'current';
+            state = GATE_SET.has(stage.id) ? 'gate' : 'current';
           } else {
             state = 'future';
           }
           const isCurrent = i === idx && !isFailed;
           const sub =
-            i === idx && !TERMINAL.has(s)
+            i === idx && !TERMINAL_SET.has(s)
               ? state === 'gate' ? 'awaiting review' : 'in progress'
               : null;
           const label = state === 'failed' ? (isFailed ? s : 'Failed') : stage.label;

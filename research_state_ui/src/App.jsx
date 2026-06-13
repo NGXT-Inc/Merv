@@ -1,8 +1,16 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import { useProjectStore } from './store/useProjectStore';
 import { usePolling } from './store/usePolling';
+import { useViewport } from './store/useViewport';
 import Sidebar from './components/Sidebar';
+import CompatBanner from './components/CompatBanner';
+import MobileShell from './mobile/MobileShell';
+import NowScreen from './mobile/NowScreen';
+import ExperimentCardList from './mobile/ExperimentCardList';
+import MobileExperimentDetail from './mobile/MobileExperimentDetail';
+import SandboxCardList from './mobile/SandboxCardList';
+import MobileResources from './mobile/MobileResources';
 import Home from './pages/Home';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
@@ -25,7 +33,9 @@ export default function App() {
   const bootError = useProjectStore(s => s.bootError);
   const loadProjects = useProjectStore(s => s.loadProjects);
   const refreshHome = useProjectStore(s => s.refreshHome);
-  usePolling(3000);
+  const isMobile = useViewport();
+  // Mobile polls slower: cellular radio wakeups dominate battery cost.
+  usePolling(isMobile ? 5000 : 3000);
 
   useEffect(() => { loadProjects(); }, [loadProjects]);
 
@@ -56,10 +66,40 @@ export default function App() {
     return <FullPageStatus>Selecting project…</FullPageStatus>;
   }
 
+  // Mobile surface: same router, same store — different shell and landing,
+  // with card/segment screens replacing the desktop-physics pages
+  // (min-width tables, hover tooltips, side panels). Desktop is untouched.
+  if (isMobile) {
+    return (
+      <MobileShell onRefresh={refreshHome}>
+        <CompatBanner />
+        <Routes>
+          <Route path="/" element={<NowScreen />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/projects/new" element={<CreateProject />} />
+          <Route path="/claims" element={<Claims />} />
+          <Route path="/claims/:claimId" element={<ClaimDetail />} />
+          <Route path="/experiments" element={<ExperimentCardList />} />
+          <Route path="/experiments/:experimentId" element={<MobileExperimentDetail />} />
+          <Route path="/resources" element={<MobileResources />} />
+          <Route path="/resources/:resourceId" element={<MobileResources />} />
+          <Route path="/reviews" element={<Reviews />} />
+          <Route path="/events" element={<Events />} />
+          <Route path="/sandboxes" element={<SandboxCardList />} />
+          <Route path="/activity" element={<Activity />} />
+          <Route path="/debug" element={<Debug />} />
+          <Route path="/visual/dag" element={<MobileDagNotice />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </MobileShell>
+    );
+  }
+
   return (
     <div className="shell">
       <Sidebar onRefresh={refreshHome} />
       <main className="shell-main">
+        <CompatBanner />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/projects" element={<Projects />} />
@@ -79,6 +119,24 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+    </div>
+  );
+}
+
+// The 1600×820 hover-driven DAG has no touch story; say so instead of
+// rendering an illegible chart (see docs/MOBILE_PLAN.md — deferred until
+// the desktop canvas redesign settles what it absorbs).
+function MobileDagNotice() {
+  return (
+    <div className="page-stage">
+      <header className="page-header">
+        <div className="page-eyebrow">Logic DAG</div>
+        <h1 className="page-title">Desktop only</h1>
+      </header>
+      <div className="empty-state">
+        <p>The interactive lineage map is hover-driven and sized for a wide canvas. Open it on desktop, or browse the same evidence per experiment.</p>
+        <Link to="/experiments" className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
+      </div>
     </div>
   );
 }

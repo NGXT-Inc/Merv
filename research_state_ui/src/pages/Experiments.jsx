@@ -1,35 +1,73 @@
-import { Fragment, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useProjectStore, selectExperiments, selectClaims } from '../store/useProjectStore';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
+import { fmtDayTime, fmtDuration } from '../utils/format';
 
 const LIFECYCLE = ['planned', 'design_review', 'ready_to_run', 'running', 'experiment_review', 'complete'];
 const TERMINAL = ['failed', 'abandoned'];
+// Sort rank for the status column: lifecycle order, then terminal states.
+const STATUS_ORDER = [...LIFECYCLE, ...TERMINAL];
+
+function isTerminal(status) {
+  return status === 'complete' || TERMINAL.includes(status);
+}
+
+/**
+ * Per-row derived facts the table sorts and renders on. Duration is
+ * created→last transition for settled experiments, created→now for ones
+ * still in flight (the 3s home poll keeps the live value ticking).
+ */
+function rowFacts(e, nowMs) {
+  const status = (e.status || 'planned').toLowerCase();
+  const createdMs = e.created_at ? Date.parse(e.created_at) : NaN;
+  const settled = isTerminal(status);
+  const endMs = settled && e.updated_at ? Date.parse(e.updated_at) : nowMs;
+  const durationMs = Number.isFinite(createdMs) ? Math.max(0, endMs - createdMs) : NaN;
+  return { status, createdMs, settled, endMs, durationMs };
+}
+
+const SORTS = {
+  created: (a, b) => (a.facts.createdMs || 0) - (b.facts.createdMs || 0),
+  finished: (a, b) => (a.facts.settled ? a.facts.endMs : 0) - (b.facts.settled ? b.facts.endMs : 0),
+  duration: (a, b) => (a.facts.durationMs || 0) - (b.facts.durationMs || 0),
+  status: (a, b) => STATUS_ORDER.indexOf(a.facts.status) - STATUS_ORDER.indexOf(b.facts.status),
+  title: (a, b) => a.title.localeCompare(b.title),
+};
 
 export default function Experiments() {
   const projectId = useProjectStore(s => s.projectId);
   const refreshHome = useProjectStore(s => s.refreshHome);
   const experiments = useProjectStore(selectExperiments);
   const claims = useProjectStore(selectClaims);
-  const [filter, setFilter] = useState('all');
   const [showForm, setShowForm] = useState(false);
+  const [sortKey, setSortKey] = useState('created');
+  const [sortDir, setSortDir] = useState('desc');
 
-  const counts = useMemo(() => {
-    const map = { all: experiments.length };
-    for (const e of experiments) {
-      const k = (e.status || 'planned').toLowerCase();
-      map[k] = (map[k] || 0) + 1;
+  const rows = useMemo(() => {
+    const nowMs = Date.now();
+    const list = experiments.map(e => ({
+      exp: e,
+      title: expName(e),
+      facts: rowFacts(e, nowMs),
+    }));
+    const cmp = SORTS[sortKey] || SORTS.created;
+    list.sort((a, b) => (sortDir === 'asc' ? cmp(a, b) : cmp(b, a)));
+    return list;
+  }, [experiments, sortKey, sortDir]);
+
+  function toggleSort(key) {
+    if (key === sortKey) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      // Time-ish columns read best newest/longest first; title A→Z.
+      setSortDir(key === 'title' ? 'asc' : 'desc');
     }
-    return map;
-  }, [experiments]);
-
-  const filtered = useMemo(() => {
-    if (filter === 'all') return experiments;
-    return experiments.filter(e => (e.status || 'planned').toLowerCase() === filter);
-  }, [experiments, filter]);
+  }
 
   return (
     <div className="page-stage">
@@ -45,41 +83,6 @@ export default function Experiments() {
             </button>
           </div>
         </div>
-        <div className="tab-row lifecycle-row">
-          <button
-            className={`tab${filter === 'all' ? ' active' : ''}`}
-            onClick={() => setFilter('all')}
-          >
-            all
-            <span className="tab-count">{counts.all || 0}</span>
-          </button>
-          <span className="lc-divider" aria-hidden="true" />
-          {LIFECYCLE.map((s, i) => (
-            <Fragment key={s}>
-              <button
-                className={`tab${filter === s ? ' active' : ''}`}
-                onClick={() => setFilter(s)}
-              >
-                {s.replace(/_/g, ' ')}
-                <span className="tab-count">{counts[s] || 0}</span>
-              </button>
-              {i < LIFECYCLE.length - 1 && (
-                <span className="lc-arrow" aria-hidden="true">→</span>
-              )}
-            </Fragment>
-          ))}
-          <span className="lc-divider" aria-hidden="true" />
-          {TERMINAL.map(s => (
-            <button
-              key={s}
-              className={`tab tab--terminal${filter === s ? ' active' : ''}`}
-              onClick={() => setFilter(s)}
-            >
-              {s}
-              <span className="tab-count">{counts[s] || 0}</span>
-            </button>
-          ))}
-        </div>
       </header>
 
       {showForm && (
@@ -91,41 +94,123 @@ export default function Experiments() {
         />
       )}
 
-      {filtered.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="empty-state">
           <h2>No experiments yet</h2>
-          <p>{filter === 'all' ? 'Create one to test a claim.' : `No experiments with status "${filter.replace(/_/g, ' ')}".`}</p>
+          <p>Create one to test a claim.</p>
         </div>
       ) : (
-        <div className="list card card--flush" style={{ marginTop: 16 }}>
-          {filtered.map(e => (
-            <Link key={e.id} to={`/experiments/${e.id}`} className="list-row">
-              <div className="list-row-main">
-                <div className="list-row-title">{parseIntent(e.intent).title || e.id}</div>
-                <div className="list-row-sub">
-                  <ObjId id={e.id} />
-                  {' · attempt '}{e.attempt_index}
-                  {Array.isArray(e.tested_claims) && e.tested_claims.length > 0 && (
-                    <> · tests {e.tested_claims.length} claim{e.tested_claims.length === 1 ? '' : 's'}</>
-                  )}
-                </div>
-              </div>
-              <div className="list-row-aside">
-                <StatusPill value={e.status} />
-              </div>
-            </Link>
-          ))}
-        </div>
+        <ExperimentTable
+          rows={rows}
+          sortKey={sortKey}
+          sortDir={sortDir}
+          onSort={toggleSort}
+        />
       )}
     </div>
   );
 }
 
+const COLUMNS = [
+  { key: 'title', label: 'Experiment' },
+  { key: 'status', label: 'Status' },
+  { key: 'created', label: 'Created' },
+  { key: 'finished', label: 'Finished' },
+  { key: 'duration', label: 'Duration', right: true },
+];
+
+function WhenCell({ parts, title }) {
+  if (!parts) return <div className="expt-when expt-when--none">—</div>;
+  return (
+    <div className="expt-when" title={title}>
+      <span className="expt-when-day">{parts.day}</span>
+      <span className="expt-when-time">{parts.time}</span>
+    </div>
+  );
+}
+
+function ExperimentTable({ rows, sortKey, sortDir, onSort }) {
+  const navigate = useNavigate();
+  return (
+    <div className="expt-scroll">
+      <div className="expt" role="table" aria-label="Experiments">
+        <div className="expt-head" role="row">
+          {COLUMNS.map(col => (
+            <button
+              key={col.key}
+              type="button"
+              role="columnheader"
+              aria-sort={sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+              className={[
+                'expt-th',
+                col.right ? 'expt-th--r' : '',
+                sortKey === col.key ? 'active' : '',
+              ].filter(Boolean).join(' ')}
+              onClick={() => onSort(col.key)}
+            >
+              {col.label}
+              <span className="expt-sort" aria-hidden="true">
+                {sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : ''}
+              </span>
+            </button>
+          ))}
+        </div>
+        {rows.map(({ exp: e, title, facts }) => {
+          const claimCount = Array.isArray(e.tested_claims) ? e.tested_claims.length : 0;
+          const reviewCount = Array.isArray(e.reviews) ? e.reviews.length : 0;
+          const created = fmtDayTime(e.created_at);
+          const finished = facts.settled ? fmtDayTime(e.updated_at) : null;
+          return (
+            <div
+              key={e.id}
+              className="expt-row"
+              role="row"
+              tabIndex={0}
+              onClick={() => navigate(`/experiments/${e.id}`)}
+              onKeyDown={ev => { if (ev.key === 'Enter') navigate(`/experiments/${e.id}`); }}
+            >
+              <div className="expt-main">
+                <div className="expt-title" title={title}>{title}</div>
+                {e.intent && <div className="expt-desc" title={e.intent}>{e.intent}</div>}
+                <div className="expt-sub">
+                  attempt {e.attempt_index}
+                  {claimCount > 0 && <> · tests {claimCount} claim{claimCount === 1 ? '' : 's'}</>}
+                  {reviewCount > 0 && <> · {reviewCount} review{reviewCount === 1 ? '' : 's'}</>}
+                </div>
+              </div>
+              <div><StatusPill value={e.status} /></div>
+              <WhenCell parts={created} title={e.created_at || ''} />
+              {finished ? (
+                <WhenCell parts={finished} title={e.updated_at || ''} />
+              ) : (
+                <div className="expt-when expt-when--none" title="still in progress">—</div>
+              )}
+              <div
+                className={`expt-dur${facts.settled ? '' : ' expt-dur--live'}`}
+                title={facts.settled ? 'created → last transition' : 'elapsed since created'}
+              >
+                {fmtDuration(facts.durationMs)}
+                {!facts.settled && <span className="expt-live-dot" aria-hidden="true" />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Mirrors the backend rule: folder-safe, starts with a letter/digit, ≤48 chars.
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/;
+
 function NewExperimentForm({ projectId, claims, onCancel, onCreated }) {
+  const [name, setName] = useState('');
   const [intent, setIntent] = useState('');
   const [selectedClaims, setSelectedClaims] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const nameOk = NAME_RE.test(name);
 
   function toggleClaim(id) {
     setSelectedClaims(prev => {
@@ -137,11 +222,12 @@ function NewExperimentForm({ projectId, claims, onCancel, onCreated }) {
 
   async function submit(e) {
     e.preventDefault();
-    if (!intent.trim()) return;
+    if (!nameOk || !intent.trim()) return;
     setBusy(true);
     setError(null);
     try {
       await api.createExperiment(projectId, {
+        name: name.trim(),
         intent: intent.trim(),
         claim_ids: Array.from(selectedClaims),
       });
@@ -156,13 +242,34 @@ function NewExperimentForm({ projectId, claims, onCancel, onCreated }) {
   return (
     <form className="form-card" onSubmit={submit} style={{ marginBottom: 18 }}>
       <div className="form-row">
+        <label className="label">Name</label>
+        <input
+          className="input"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder="lora-rank-sweep"
+          maxLength={48}
+          autoFocus
+          required
+        />
+        <div className="form-hint">
+          Becomes the experiment folder <code>experiments/{nameOk ? name : '<name>'}/</code> —
+          letters, digits, dots, dashes, underscores; unique within the project.
+        </div>
+        {name && !nameOk && (
+          <div className="error-message">
+            Folder-safe names start with a letter or digit and use only letters,
+            digits, '.', '_' and '-'.
+          </div>
+        )}
+      </div>
+      <div className="form-row">
         <label className="label">Intent</label>
         <textarea
           className="textarea"
           value={intent}
           onChange={e => setIntent(e.target.value)}
           placeholder="Compare threshold rule against majority baseline on toy.csv."
-          autoFocus
           required
         />
       </div>
@@ -190,7 +297,7 @@ function NewExperimentForm({ projectId, claims, onCancel, onCreated }) {
       {error && <div className="error-message">{error}</div>}
       <div className="form-actions">
         <button type="button" className="btn btn--ghost" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="btn btn--primary" disabled={busy || !intent.trim()}>
+        <button type="submit" className="btn btn--primary" disabled={busy || !nameOk || !intent.trim()}>
           {busy ? 'Creating…' : 'Create experiment'}
         </button>
       </div>

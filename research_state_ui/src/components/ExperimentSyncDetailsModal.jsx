@@ -6,11 +6,12 @@ import { fmtAgo } from '../utils/format';
  * ExperimentSyncDetailsModal — minimal drill-in for one experiment's sandbox
  * rsync. Signal only: status, what maps where, last-sync state, errors, action.
  *
- * Sync model (services/sandboxes.py + execution/ssh_rsync.py): local files are
- * pushed once at provision, then the remote sync dir is pulled back every ~5s
- * (remote wins, --delete mirrors). Derived entirely from data the store already
- * polls — the sandbox row (dir paths, status) and this experiment's `sandbox.*`
- * rsync events.
+ * Sync model (services/sandboxes.py + execution/ssh_rsync.py): the whole local
+ * experiment folder is pushed once at provision, then the remote experiment
+ * folder is mirrored back every ~5s (remote wins, --delete mirrors). Anything
+ * outside the experiment folder on the VM is never synced. Derived entirely
+ * from data the store already polls — the sandbox row (dir paths, status) and
+ * this experiment's `sandbox.*` rsync events.
  */
 
 const PULL_EVENTS = new Set(['sandbox.rsynced', 'sandbox.synced']);
@@ -24,7 +25,7 @@ const STATUS_KIND = {
 };
 
 // Friendly dir label → existing chip color (pull=green, del=red, push=blue).
-const DIR_CHIP = { synced: 'pull', unsynced: 'del', keep: 'push' };
+const DIR_CHIP = { experiment: 'pull', 'vm-only': 'del', keep: 'push' };
 
 function evType(e) {
   return e.event_type || e.type;
@@ -61,8 +62,8 @@ export default function ExperimentSyncDetailsModal({
   const lastError = events.find((e) => evType(e) === 'sandbox.rsync_error') || null;
   const errorActive = Boolean(lastError && (!events[0] || events[0] === lastError));
 
-  const syncDir = stripSlash(sandbox.sync_dir || sandbox.workdir || '/workspace/synced');
-  const unsyncedDir = stripSlash(sandbox.unsynced_dir || sandbox.sandbox_data_dir || '/workspace/unsynced');
+  const syncDir = stripSlash(sandbox.sync_dir || sandbox.workdir || '');
+  const dataDir = stripSlash(sandbox.sandbox_data_dir || sandbox.unsynced_dir || '/workspace/data');
   const localSyncDir = stripSlash(sandbox.local_sync_dir || '');
 
   const lastPullLabel = lastPull
@@ -95,8 +96,8 @@ export default function ExperimentSyncDetailsModal({
         )}
 
         <div className="vsdm-dirs">
-          <DirRow label="synced" remote={syncDir} local={localSyncDir} />
-          <DirRow label="unsynced" remote={unsyncedDir} />
+          <DirRow label="experiment" remote={syncDir} local={localSyncDir} />
+          <DirRow label="vm-only" remote={dataDir} />
           <DirRow label="keep" remote={`${syncDir}/artifacts_to_keep`} local={localSyncDir ? `${localSyncDir}/artifacts_to_keep` : ''} />
         </div>
 

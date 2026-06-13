@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import FileRenderer from './FileRenderer';
 import PdfView from './PdfView';
+import SourceBadge from './SourceBadge';
 import { formatBytes } from '../utils/format';
 
 function isPdfPath(path) {
@@ -69,12 +70,25 @@ export default function ResourceContentView({ projectId, resourceId, size, path 
   }
   if (!content) return null;
 
+  if (content.available === false) {
+    return (
+      <div className="content-unavailable">
+        <div className="content-unavailable-title">Content unavailable in this mode</div>
+        <div className="content-unavailable-detail">{content.detail || content.reason}</div>
+        <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">
+          Open raw file
+        </a>
+      </div>
+    );
+  }
+
   const isBinary = content.is_binary || !('content' in content);
   const text = content.content ?? '';
   const meta = content.size_bytes ?? size;
 
   return (
     <div>
+      <SourceBadge source={content.source} versionId={content.version_id} />
       {content.truncated && (
         <div className="content-truncated-note">File is large — preview is truncated.</div>
       )}

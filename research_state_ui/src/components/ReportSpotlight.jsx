@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import MarkdownView from './MarkdownView';
 import FileRenderer from './FileRenderer';
+import SourceBadge from './SourceBadge';
 import { formatBytes, isMarkdown } from '../utils/format';
 
 /**
@@ -80,15 +81,26 @@ export default function ReportSpotlight({
           ) : error ? (
             <div className="error-message">{error}</div>
           ) : content ? (
-            content.is_binary ? (
+            content.available === false ? (
+              <div className="content-unavailable">
+                <div className="content-unavailable-title">Content unavailable in this mode</div>
+                <div className="content-unavailable-detail">{content.detail || content.reason}</div>
+              </div>
+            ) : content.is_binary ? (
               <div className="empty">Binary report file</div>
             ) : isMarkdown(reportResource.path) ? (
-              <MarkdownView
-                text={content.content ?? ''}
-                resolveImageSrc={(src) => api.resourceFileUrl(projectId, reportResource.id, src)}
-              />
+              <>
+                <SourceBadge source={content.source} versionId={content.version_id} />
+                <MarkdownView
+                  text={content.content ?? ''}
+                  resolveImageSrc={(src) => api.resourceFileUrl(projectId, reportResource.id, src)}
+                />
+              </>
             ) : (
-              <FileRenderer text={content.content ?? ''} path={reportResource.path} />
+              <>
+                <SourceBadge source={content.source} versionId={content.version_id} />
+                <FileRenderer text={content.content ?? ''} path={reportResource.path} />
+              </>
             )
           ) : null}
         </div>

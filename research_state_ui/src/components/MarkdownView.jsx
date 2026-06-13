@@ -1,6 +1,28 @@
+import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
+
+/**
+ * Renders a single markdown image. Report figures resolve to blob-store bytes
+ * that may 404 (or, in cloud mode, be unavailable) when the figure was never
+ * submitted / pinned. Instead of a broken <img>, fall back to an inline
+ * placeholder explaining the figure isn't in the submitted set.
+ */
+function FigureImg({ src, alt, title }) {
+  const [failed, setFailed] = useState(false);
+  const filename = ((src || alt || '').split('/').pop()) || 'figure';
+  if (failed) {
+    return (
+      <span className="figure-missing">
+        <span>Figure not available</span>
+        <span className="figure-missing-name">{filename}</span>
+        <span>not in the submitted set — re-associate the report to include it</span>
+      </span>
+    );
+  }
+  return <img src={src} alt={alt || ''} title={title} loading="lazy" onError={() => setFailed(true)} />;
+}
 
 /**
  * Markdown renderer for .md / .markdown files.
@@ -28,7 +50,7 @@ export default function MarkdownView({ text, resolveImageSrc }) {
               || /^(https?:|data:|blob:)/i.test(src)
               || src.startsWith('/');
             const resolved = passthrough || !resolveImageSrc ? src : resolveImageSrc(src);
-            return <img src={resolved} alt={alt || ''} title={title} loading="lazy" />;
+            return <FigureImg src={resolved} alt={alt} title={title} />;
           },
           // Fenced code blocks land here. The child is the `code` element
           // with the language hint as className.

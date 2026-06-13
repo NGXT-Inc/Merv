@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useProjectStore, selectClaims, selectExperiments } from '../store/useProjectStore';
 import { api } from '../api';
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
 
 const TABS = ['all', 'active', 'supported', 'weakened', 'contradicted', 'draft', 'abandoned'];
 const CONFIDENCE_LEVELS = { low: 1, medium: 2, high: 3 };
@@ -116,7 +116,7 @@ function ClaimEntry({ claim, linkedExperiments }) {
       {linkedExperiments.length > 0 && (
         <ul className="claim-entry-tests">
           {linkedExperiments.map(e => {
-            const { title } = parseIntent(e.intent);
+            const title = expName(e);
             const cat = categorize(e.status);
             return (
               <li key={e.id}>

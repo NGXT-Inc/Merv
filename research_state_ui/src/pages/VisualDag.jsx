@@ -18,7 +18,7 @@ import {
   projectTimeScale,
   summarizeClaim,
 } from '../utils/graph';
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
 
 const STATUS_FILL = {
   active:       'var(--active)',
@@ -379,7 +379,7 @@ function DagNode({ node, dim, isHover, onWinning, onHover, onClaimClick, summary
   if (node.kind === 'experiment') {
     const w = 150;
     const h = 44;
-    const title = parseIntent(node.ref.intent).title || node.ref.id;
+    const title = expName(node.ref);
     const lines = wrapLabel(title, 22, 2);
     const fill = outcomeColor(node.outcome);
     const created = node.ref.created_at ? formatDate(Date.parse(node.ref.created_at)) : null;
@@ -590,16 +590,15 @@ function HoverInfo({ node, summary }) {
       : `status ${node.status || 'active'}`;
     link = `/claims/${node.ref.id}`;
   } else if (node.kind === 'experiment') {
-    const intent = parseIntent(node.ref.intent);
     title = `Approach · ${outcomeLabel(node.outcome)}`;
-    body = intent.title || node.ref.intent;
+    body = node.ref.intent || expName(node.ref);
     sub = `status ${node.status} · ${node.attempt_index} attempt${node.attempt_index === 1 ? '' : 's'} so far`;
     link = `/experiments/${node.ref.id}`;
   } else if (node.kind === 'attempt') {
     title = node.isFinal
       ? `Final attempt · v${node.attempt} · ${outcomeLabel(node.outcome)}`
       : `Earlier attempt · v${node.attempt}`;
-    body = parseIntent(node.ref.intent).title || node.ref.id;
+    body = expName(node.ref);
     sub = node.isFinal
       ? 'The chain landed here.'
       : 'An earlier revision — work moved on after this attempt.';

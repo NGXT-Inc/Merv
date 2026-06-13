@@ -18,8 +18,8 @@ import ObjId from '../components/ObjId';
 import FSMStrip from '../components/FSMStrip';
 import StatusPill from '../components/StatusPill';
 import ActiveExperimentPager from '../components/ActiveExperimentPager';
-import IntentBlock from '../components/IntentBlock';
-import { parseIntent } from '../utils/intent';
+import ProjectSynthesisPanel from '../components/ProjectSynthesisPanel';
+import { expName } from '../utils/experiment';
 
 export default function Home() {
   const project = useProjectStore(selectProject);
@@ -103,14 +103,15 @@ export default function Home() {
               to={`/experiments/${activeExp.id}`}
               className="active-exp-card active-exp-card--bounded"
             >
-              {activeExp.intent
-                ? <IntentBlock intent={activeExp.intent} compact />
-                : <div className="intent-lead">{activeExp.id}</div>}
+              <div className="intent-lead">{expName(activeExp)}</div>
+              {activeExp.intent && <p className="active-exp-intent">{activeExp.intent}</p>}
               <FSMStrip status={activeExp.status} />
             </Link>
           )}
         </section>
       )}
+
+      <ProjectSynthesisPanel projectId={project.id} />
 
       <section className="section">
         <div className="section-title">Counts</div>
@@ -154,7 +155,7 @@ function ActiveSandboxes({ sandboxes, experiments }) {
           <Link to={`/experiments/${s.experiment_id}#execution`} key={s.experiment_id} className="sbx-row">
             <div className="sbx-row-main">
               <StatusPill value={s.status} />
-              <span className="sbx-row-intent">{exp ? parseIntent(exp.intent).title || exp.intent : s.experiment_id}</span>
+              <span className="sbx-row-intent">{exp ? expName(exp) : s.experiment_id}</span>
             </div>
             <div className="sbx-row-meta mono">
               {s.gpu ? `${s.gpu} · ` : ''}{s.sandbox_id || '—'}

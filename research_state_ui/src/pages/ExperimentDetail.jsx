@@ -9,9 +9,10 @@ import ReportSpotlight from '../components/ReportSpotlight';
 import ExperimentGraphs from '../components/ExperimentGraphs';
 import SandboxTerminal from '../components/SandboxTerminal';
 import OutcomesSection from '../components/OutcomesSection';
+import ResultsMetricsPanel from '../components/ResultsMetricsPanel';
 import ResourceList from '../components/ResourceList';
 import AddResourceToExperiment from '../components/AddResourceToExperiment';
-import IntentBlock from '../components/IntentBlock';
+import { expName } from '../utils/experiment';
 import { gateToSectionId, useScrollToHash } from '../utils/useScrollToHash';
 
 const NEXT_ACTION_TO_TRANSITION = {
@@ -196,9 +197,8 @@ export default function ExperimentDetail() {
           <Link to="/experiments">Experiments</Link>
           {' · '}<span className="exp-orient-attempt">attempt {currentAttempt}</span>
         </div>
-        {experiment.intent
-          ? <IntentBlock intent={experiment.intent} />
-          : <h1 className="page-title">{experiment.id}</h1>}
+        <h1 className="page-title exp-title-name">{expName(experiment)}</h1>
+        {experiment.intent && <p className="exp-intent">{experiment.intent}</p>}
       </header>
 
       {/* ─────────────  GRAPHS (one slot: figure ⇄ logic graph)  ────── */}
@@ -295,6 +295,10 @@ export default function ExperimentDetail() {
         experimentReviews={experimentReviews}
         experimentStatus={experiment.status}
       />
+
+      {/* Durable archived metrics — final MLflow numbers that survive sandbox
+          teardown (renders nothing until something has been recorded). */}
+      <ResultsMetricsPanel projectId={projectId} experimentId={experimentId} />
 
       {!reportRes && experiment.status === 'running' && (
         <div id="report" className="spotlight-followup">

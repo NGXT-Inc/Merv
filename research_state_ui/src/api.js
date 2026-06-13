@@ -5,10 +5,36 @@
  * the UI is intended to run alongside the backend on the same host; allow
  * an override via VITE_API_BASE.
  */
-const BASE = import.meta.env.VITE_API_BASE || '';
+// Resolution order: build-time override, then a runtime dev override
+// (localStorage 'rsui:apiBase' — handy for pointing the UI at a working-tree
+// daemon on another port; the backend allows cross-origin reads), then the
+// same-origin default (Vite dev proxy / production co-hosting).
+const BASE =
+  import.meta.env.VITE_API_BASE
+  || (typeof localStorage !== 'undefined' && localStorage.getItem('rsui:apiBase'))
+  || '';
+
+// The UI build's wire version, stamped on every request as X-RP-Client-Version
+// (the cloud control plane reads it for the compat handshake; local mode
+// ignores it). Kept in lockstep with the research_plugin package version.
+export const CLIENT_VERSION = '0.0008';
+
+// Bearer token for the hosted control plane. Dormant in local mode: with no
+// token configured no Authorization header is sent, and the local backend
+// (auth=None) serves every request as the implicit local principal. Resolution
+// mirrors BASE — build-time override, then a runtime override.
+function authToken() {
+  return (
+    import.meta.env.VITE_API_TOKEN
+    || (typeof localStorage !== 'undefined' && localStorage.getItem('rsui:apiToken'))
+    || ''
+  );
+}
 
 async function request(path, { method = 'GET', body, signal } = {}) {
-  const init = { method, signal, headers: {} };
+  const init = { method, signal, headers: { 'X-RP-Client-Version': CLIENT_VERSION } };
+  const token = authToken();
+  if (token) init.headers['Authorization'] = `Bearer ${token}`;
   if (body !== undefined) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
@@ -23,12 +49,23 @@ async function request(path, { method = 'GET', body, signal } = {}) {
     const err = new Error((data && (data.message || data.detail || data.error)) || `HTTP ${res.status} on ${method} ${path}`);
     err.status = res.status;
     err.data = data;
+    // Typed codes for the two control-plane gates so callers can react
+    // (login prompt / upgrade banner) instead of showing a raw HTTP error.
+    // Both are inert in local mode, which never returns 401/426.
+    if (res.status === 401) err.code = 'unauthorized';
+    else if (res.status === 426) err.code = 'client_too_old';
+    else if (data && data.error_code) err.code = data.error_code;
     throw err;
   }
   return data;
 }
 
 export const api = {
+  // Server identity + compat floor (version handshake). Returns
+  // { server_version, min_daemon_version, min_proxy_version }; identical in
+  // every mode. Used to show the live backend version and an upgrade hint.
+  getMeta: () => request('/api/meta'),
+
   // Projects
   listProjects: () => request('/api/projects'),
   createProject: ({ name, summary, repo_root }) => request('/api/projects', { method: 'POST', body: { name, summary: summary || '', repo_root } }),
@@ -44,10 +81,10 @@ export const api = {
   getClaim: (pid, cid) => request(`/api/projects/${encodeURIComponent(pid)}/claims/${encodeURIComponent(cid)}`),
 
   // Experiments
-  createExperiment: (pid, { intent, claim_ids }) =>
+  createExperiment: (pid, { name, intent, claim_ids }) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments`, {
       method: 'POST',
-      body: { intent, claim_ids: claim_ids || [] },
+      body: { name, intent, claim_ids: claim_ids || [] },
     }),
   getExperimentStatus: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/status`),
@@ -62,6 +99,16 @@ export const api = {
       method: 'POST',
       body: { transition, ...(evidence ? { evidence } : {}) },
     }),
+
+  // Syntheses (project reflection waves)
+  // List + staleness/coverage signal for the Home panel.
+  getSyntheses: (pid, signal) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/syntheses`, { signal }),
+  getSynthesis: (pid, sid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(sid)}`),
+  // The living project logic graph (same payload shape as the experiment one).
+  getProjectLogicGraph: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/current/graph`),
 
   // Resources
   registerResource: (pid, { path, kind, title }) =>
@@ -157,6 +204,12 @@ export const api = {
   // came back empty (e.g. a CPU-only image without nvidia-smi).
   getSandboxMetrics: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/metrics`),
+  // Durable archived MLflow metrics that OUTLIVE the sandbox VM (captured on
+  // sync and right before release, recorded control-plane side). Distinct from
+  // getSandboxMetrics (live in-container CPU/RAM/GPU, gone once the VM stops).
+  // Returns { available, sandbox_status, experiments:[{name, runs:[...]}], hint? }.
+  getResultsMetrics: (pid, eid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/results/metrics`),
   syncSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/sync`, { method: 'POST' }),
   releaseSandbox: (pid, eid) =>

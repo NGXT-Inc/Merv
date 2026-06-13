@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useProjectStore, selectStats, selectResources, selectSandboxes } from '../store/useProjectStore';
+import { CLIENT_VERSION } from '../api';
 import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
@@ -54,12 +55,15 @@ export default function Sidebar({ onRefresh }) {
   const syncLabel = lastSyncError ? 'stale' : (isPolling ? 'live' : 'paused');
 
   const resourcesCount = stats.resources ?? home?.resources?.length ?? 0;
+  // Live backend version from the /api/meta handshake; fall back to the UI's
+  // own build version before the first handshake lands.
+  const serverVersion = useProjectStore(s => s.serverMeta?.server_version);
 
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
         Research State
-        <small>research_plugin · v0.0001</small>
+        <small>research_plugin · v{serverVersion || CLIENT_VERSION}</small>
       </div>
 
       <ProjectSwitcher />

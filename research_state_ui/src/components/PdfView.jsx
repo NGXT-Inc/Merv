@@ -30,11 +30,14 @@ function filenameOf(path) {
 export default function PdfView({ projectId, resourceId, path }) {
   const url = api.resourceFileUrl(projectId, resourceId);
   return (
-    <iframe
-      src={`${url}#toolbar=0&navpanes=0&view=FitH`}
-      title={filenameOf(path)}
-      className="pdf-view-frame"
-      loading="lazy"
-    />
+    <>
+      <iframe
+        src={`${url}#toolbar=0&navpanes=0&view=FitH`}
+        title={filenameOf(path)}
+        className="pdf-view-frame"
+        loading="lazy"
+      />
+      <div className="content-truncated-note">If the PDF does not load, the bytes may be unavailable in this mode — <a href={url} target="_blank" rel="noreferrer">open raw</a>.</div>
+    </>
   );
 }

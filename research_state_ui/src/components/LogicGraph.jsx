@@ -58,15 +58,25 @@ function LogicNode({ data, selected }) {
 const nodeTypes = { logic: LogicNode };
 
 function toFlow(graph) {
-  if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) {
+  // Render only well-formed nodes (object, non-empty string id, first
+  // occurrence wins on duplicates). The server lint reports the malformed
+  // ones; react-flow must never see an undefined or repeated node id.
+  const seen = new Set();
+  const safeNodes = (Array.isArray(graph?.nodes) ? graph.nodes : []).filter(n => {
+    if (!n || typeof n !== 'object' || typeof n.id !== 'string' || !n.id) return false;
+    if (seen.has(n.id)) return false;
+    seen.add(n.id);
+    return true;
+  });
+  if (!safeNodes.length) {
     return { nodes: [], edges: [] };
   }
   const colors = kindColorMap(graph);
-  const ids = new Set(graph.nodes.map(n => n.id));
+  const ids = new Set(safeNodes.map(n => n.id));
   const rawEdges = (Array.isArray(graph.edges) ? graph.edges : [])
     .filter(e => e && ids.has(e.from) && ids.has(e.to) && e.from !== e.to)
     .map((e, i) => ({ ...e, id: `${e.from}->${e.to}:${i}` }));
-  const laid = layoutFigure({ nodes: graph.nodes, edges: rawEdges });
+  const laid = layoutFigure({ nodes: safeNodes, edges: rawEdges });
   const nodes = laid.nodes.map(n => ({
     id: n.id,
     type: 'logic',
@@ -127,6 +137,14 @@ function NodeRef({ refString, resolution }) {
       </span>
     );
   }
+  if (r.type === 'synthesis' && r.resolved) {
+    // No synthesis detail page yet; render the wave as a static chip.
+    return (
+      <span className="lgr-ref lgr-ref--static">
+        <span className="fig-node-type">synthesis</span> {r.title || r.synthesis_id} · {r.status}
+      </span>
+    );
+  }
   return (
     <span className="lgr-ref lgr-ref--unresolved" title={r.hint || 'not resolvable in this project'}>
       {refString}
@@ -172,6 +190,14 @@ export default function LogicGraph({
   projectId, experimentId, experimentStatus, attemptIndex,
   active = true, titleTabs = null, onAvailability = null,
   expanded = false, onToggleExpand = null,
+  // Reuse hooks: the project-level synthesis panel renders the SAME component
+  // against the project graph endpoint. `fetcher` overrides the data source,
+  // `live` overrides the keep-polling decision, and the two text props swap
+  // the experiment phrasing for project phrasing.
+  fetcher = null,
+  live = null,
+  storyHint = "the experiment's story, told by the agent · click a node for detail",
+  problemsGate = 'submit_results',
 }) {
   // Same identity trick as ExperimentFigure: keep the payload as a JSON
   // string so unchanged polls never recreate node objects (react-flow keys
@@ -182,21 +208,25 @@ export default function LogicGraph({
 
   const fetchGraph = useCallback(async () => {
     try {
-      const data = await api.getExperimentLogicGraph(projectId, experimentId);
+      const data = fetcher
+        ? await fetcher()
+        : await api.getExperimentLogicGraph(projectId, experimentId);
       const json = JSON.stringify(data);
       setPayloadJson(prev => (prev === json ? prev : json));
     } catch {
-      // Non-fatal: the rest of the page still works without the story.
-      setPayloadJson(null);
+      // Non-fatal: keep the last good payload. A transient fetch failure
+      // (poll race with sandbox sync, daemon restart) must not blank the
+      // story or flip the canvas back to the figure view for one tick.
     }
-  }, [projectId, experimentId]);
+  }, [projectId, experimentId, fetcher]);
 
+  const keepPolling = live != null ? live : !TERMINAL_STATUSES.includes(experimentStatus);
   useEffect(() => {
     fetchGraph();
-    if (TERMINAL_STATUSES.includes(experimentStatus)) return undefined;
+    if (!keepPolling) return undefined;
     const t = setInterval(fetchGraph, 3000);
     return () => clearInterval(t);
-  }, [fetchGraph, experimentStatus, attemptIndex]);
+  }, [fetchGraph, keepPolling, attemptIndex]);
 
   const payload = useMemo(() => (payloadJson ? JSON.parse(payloadJson) : null), [payloadJson]);
   const graph = payload?.available ? payload.graph : null;
@@ -216,7 +246,17 @@ export default function LogicGraph({
     [graph, selectedId],
   );
 
-  const available = Boolean(graph && nodes.length);
+  const hasStory = Boolean(graph && nodes.length);
+  // A graph resource exists but nothing is drawable (unparseable JSON, empty
+  // or malformed nodes): stay visible and surface the lint problems instead
+  // of silently disabling the tab as if no graph had been written.
+  const broken = Boolean(payload?.available && !hasStory);
+  // Degraded re-associate case: a graph WAS associated yet its bytes were
+  // never submitted, so the server returns available:false WITH problems.
+  // Staying visible (rather than returning null) is the difference between
+  // "no graph" and "graph needs re-associating" — surface the latter.
+  const needsResubmit = Boolean(payload?.available === false && (payload?.problems?.length > 0));
+  const available = hasStory || broken || needsResubmit;
   useEffect(() => { onAvailability?.(available); }, [available, onAvailability]);
 
   // Refit after the canvas resizes between inline and expanded modes.
@@ -235,10 +275,10 @@ export default function LogicGraph({
     <section className={`exp-figure${expanded ? ' exp-figure--expanded' : ''}`} id="logic-graph">
       <div className="fig-head">
         <div className="fig-title">
-          {titleTabs || (graph.title || 'Logic graph')}
+          {titleTabs || (graph?.title || 'Logic graph')}
           <span className="fig-title-hint">
-            {titleTabs && graph.title ? `${graph.title} · ` : ''}
-            the experiment's story, told by the agent · click a node for detail
+            {titleTabs && graph?.title ? `${graph.title} · ` : ''}
+            {storyHint}
           </span>
         </div>
         <div className="fig-head-right">
@@ -249,7 +289,7 @@ export default function LogicGraph({
                 {kind}
               </span>
             ))}
-            <span className="lgr-badge">{(graph.nodes || []).length} / {maxNodes} nodes</span>
+            <span className="lgr-badge">{(graph?.nodes || []).length} / {maxNodes} nodes</span>
           </div>
           {onToggleExpand && (
             <button
@@ -263,11 +303,26 @@ export default function LogicGraph({
           )}
         </div>
       </div>
-      {problems.length > 0 && (
+      {problems.length > 0 && !needsResubmit && (
         <div className="lgr-problems">
-          graph has envelope problems — the agent must fix these before submit_results: {problems.join('; ')}
+          graph has envelope problems — the agent must fix these before {problemsGate}: {problems.join('; ')}
         </div>
       )}
+      {needsResubmit && (
+        <div className="lgr-broken">
+          The graph file{payload?.path ? ` (${payload.path})` : ''} was associated
+          but has no submitted content — re-associate it (role 'graph') to render
+          the story here.
+        </div>
+      )}
+      {broken && (
+        <div className="lgr-broken">
+          The graph file{payload?.path ? ` (${payload.path})` : ''} exists but
+          cannot be drawn yet — once the problems above are fixed and the file
+          is synced, the story renders here.
+        </div>
+      )}
+      {hasStory && (
       <div className={`fig-body${selected ? ' fig-body--split' : ''}`}>
         <div className="fig-canvas">
           <ReactFlow
@@ -306,6 +361,7 @@ export default function LogicGraph({
           />
         )}
       </div>
+      )}
     </section>
   );
 }

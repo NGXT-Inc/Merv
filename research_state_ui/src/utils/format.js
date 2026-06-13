@@ -26,6 +26,35 @@ export function fmtAgo(ms) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+export function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
+// Split timestamp for compact two-line table cells: "Jun 11" over "1:36 PM".
+export function fmtDayTime(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return {
+      day: d.toLocaleDateString([], {
+        month: 'short',
+        day: 'numeric',
+        ...(sameYear ? {} : { year: 'numeric' }),
+      }),
+      time: d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+    };
+  } catch { return null; }
+}
+
 export function isMarkdown(path) {
   const ext = (path || '').split('.').pop().toLowerCase();
   return ext === 'md' || ext === 'markdown' || ext === 'mdx';

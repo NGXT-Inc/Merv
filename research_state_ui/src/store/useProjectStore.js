@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '../api';
+import { api, CLIENT_VERSION } from '../api';
 
 const PROJECT_KEY = 'rsui:projectId';
 
@@ -18,6 +18,13 @@ export const useProjectStore = create((set, get) => ({
   // Bootstrap state
   bootError: null,
 
+  // Version/compat handshake (GET /api/meta). serverMeta holds the backend's
+  // reported versions; compat is a {level, message, action?} banner descriptor
+  // or null. Both are inert in local mode (versions match, no auth gate).
+  serverMeta: null,
+  compat: null,
+  compatDismissed: false,
+
   // Live snapshot from GET /home
   home: null,            // {project, claims, experiments, resources, reviews, recent_events, stats, workflow, active_experiment, active_experiments, active_processes}
   sandboxes: [],         // project-wide sandbox list from GET /sandboxes (one per experiment)
@@ -34,7 +41,38 @@ export const useProjectStore = create((set, get) => ({
     set({ projectId: pid, home: null, sandboxes: [], events: [], lastSyncedAt: null, lastSyncError: null });
   },
 
+  // Fetch the backend version/compat floor and derive a banner descriptor.
+  // Best-effort: a backend too old to serve /api/meta just leaves it null.
+  // The check is informational in local mode (versions match); it earns its
+  // keep against a hosted control plane that has been upgraded under a stale
+  // browser bundle, or one that hard-gates an old client (426).
+  async checkMeta() {
+    try {
+      const meta = await api.getMeta();
+      const server = meta?.server_version;
+      let compat = null;
+      if (server && server !== CLIENT_VERSION) {
+        compat = {
+          level: 'info',
+          message: `Backend is v${server}; this UI was built for v${CLIENT_VERSION}. Reload to pick up the latest UI.`,
+          action: 'reload',
+        };
+      }
+      set({ serverMeta: meta, compat: compat && !get().compatDismissed ? compat : get().compat });
+      return meta;
+    } catch (err) {
+      // A 426 means the control plane refuses this client version outright.
+      if (err.code === 'client_too_old') {
+        set({ compat: { level: 'error', message: err.message || 'This UI is too old for the backend; upgrade required.', action: 'reload' } });
+      }
+      return null;
+    }
+  },
+
   async loadProjects() {
+    // Kick the version handshake alongside the first data fetch (fire and
+    // forget — it never blocks project loading).
+    get().checkMeta();
     try {
       const data = await api.listProjects();
       const list = data.projects || [];
@@ -48,10 +86,19 @@ export const useProjectStore = create((set, get) => ({
       }
       return list;
     } catch (err) {
+      // Distinguish the control-plane auth/version gates from a dead backend
+      // so the banner can say something actionable instead of "not reachable".
+      if (err.code === 'unauthorized') {
+        set({ compat: { level: 'error', message: 'The backend requires sign-in. Set an API token to continue.', action: null } });
+      } else if (err.code === 'client_too_old') {
+        set({ compat: { level: 'error', message: err.message, action: 'reload' } });
+      }
       set({ bootError: err.message, projectsLoaded: true });
       return [];
     }
   },
+
+  dismissCompat() { set({ compat: null, compatDismissed: true }); },
 
   async createProject({ name, summary, repo_root }) {
     const created = await api.createProject({ name, summary, repo_root });

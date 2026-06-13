@@ -1,4 +1,4 @@
-import { parseIntent } from '../utils/intent';
+import { expName } from '../utils/experiment';
 
 /**
  * Pager for the "What's going on now" spotlight when there are multiple
@@ -35,7 +35,7 @@ export default function ActiveExperimentPager({ items, index, onChange }) {
       <div className="exp-pager-dots">
         {items.map((exp, i) => {
           const status = String(exp?.status || '').toLowerCase();
-          const { title } = parseIntent(exp?.intent);
+          const title = expName(exp);
           const cls = [
             'exp-pager-dot',
             `exp-pager-dot--${status || 'unknown'}`,
