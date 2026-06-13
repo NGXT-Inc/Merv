@@ -8,9 +8,10 @@ import {
   selectClaims,
   selectExperiments,
   selectSandboxes,
+  selectEventsAll,
 } from '../store/useProjectStore';
 import FSMStrip from '../components/FSMStrip';
-import StatusPill from '../components/StatusPill';
+import SandboxTable from '../components/SandboxTable';
 import ActiveExperimentPager from '../components/ActiveExperimentPager';
 import ProjectSynthesisPanel from '../components/ProjectSynthesisPanel';
 import { expName } from '../utils/experiment';
@@ -22,6 +23,7 @@ export default function Home() {
   const claims = useProjectStore(selectClaims);
   const experiments = useProjectStore(selectExperiments);
   const sandboxes = useProjectStore(selectSandboxes);
+  const events = useProjectStore(selectEventsAll);
   const runningSandboxes = sandboxes.filter(s => s.status === 'running').length;
 
   // Pager state for the spotlight. Clamp on list shrink (e.g. an experiment
@@ -97,7 +99,17 @@ export default function Home() {
             </span>
           )}
         </div>
-        <ActiveSandboxes sandboxes={sandboxes} experiments={experiments} />
+        <SandboxTable
+          sandboxes={sandboxes}
+          experiments={experiments}
+          events={events}
+          projectId={project.id}
+          empty={(
+            <div className="empty-state empty-state--compact">
+              <p>No sandboxes yet. The agent provisions one per experiment with <span className="mono">sandbox.request</span> and runs it over SSH.</p>
+            </div>
+          )}
+        />
       </section>
 
       <section className="section">
@@ -110,38 +122,6 @@ export default function Home() {
           <StatCard label="Open reviews" value={stats.open_reviews ?? stats.reviews ?? 0} />
         </div>
       </section>
-    </div>
-  );
-}
-
-function ActiveSandboxes({ sandboxes, experiments }) {
-  const expById = Object.fromEntries((experiments || []).map(e => [e.id, e]));
-  const rows = (sandboxes || [])
-    .slice()
-    .sort((a, b) => (a.status === 'running' ? -1 : 1) - (b.status === 'running' ? -1 : 1));
-  if (rows.length === 0) {
-    return (
-      <div className="empty-state empty-state--compact">
-        <p>No sandboxes yet. The agent provisions one per experiment with <span className="mono">sandbox.request</span> and runs it over SSH.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="stack">
-      {rows.map((s) => {
-        const exp = expById[s.experiment_id];
-        return (
-          <Link to={`/experiments/${s.experiment_id}#execution`} key={s.experiment_id} className="sbx-row">
-            <div className="sbx-row-main">
-              <StatusPill value={s.status} />
-              <span className="sbx-row-intent">{exp ? expName(exp) : s.experiment_id}</span>
-            </div>
-            <div className="sbx-row-meta mono">
-              {s.gpu ? `${s.gpu} · ` : ''}{s.sandbox_id || '—'}
-            </div>
-          </Link>
-        );
-      })}
     </div>
   );
 }
