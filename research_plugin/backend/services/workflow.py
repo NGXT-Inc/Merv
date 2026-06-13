@@ -512,7 +512,7 @@ class WorkflowService:
             gate="reflection_suggested",
             action=(
                 "consider_project_reflection (start a reflection wave with "
-                "synthesis.create via the research-reflection skill — or "
+                "synthesis.create via the project-reflection skill — or "
                 "proceed with claim.create / experiment.create if you judge "
                 "the project's logic state current)"
             ),
@@ -537,7 +537,7 @@ class WorkflowService:
             drift = f"{finished} and no project synthesis exists yet"
         return (
             f"No experiments are active and {drift} — a good moment for a "
-            "project reflection (synthesis.create, research-reflection "
+            "project reflection (synthesis.create, project-reflection "
             "skill), or start the next experiment if the logic state is "
             "current."
         )
@@ -614,7 +614,7 @@ class WorkflowService:
                 "reflection to a file named <lens_id>.md (e.g. "
                 "syntheses/<syn_id>/reflections/<lens_id>.md), registers it, and "
                 "associates it with role 'reflection' for this synthesis. See "
-                "the research-reflection skill for the lens briefs."
+                "the project-reflection skill for the lens briefs."
             ),
         }
 
@@ -641,7 +641,7 @@ class WorkflowService:
             return {
                 "target_type": "synthesis",
                 "association_role": "proposals",
-                "template": "skills/research-reflection/synthesis-template.md",
+                "template": "skills/project-reflection/synthesis-template.md",
                 "guidance": (
                     "Write the what's-next proposals file: one block per "
                     "proposed experiment with a hypothesis, builds_on refs, and "

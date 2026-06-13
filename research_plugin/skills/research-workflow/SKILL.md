@@ -358,7 +358,7 @@ When MCP says the next action is `launch_design_reviewer` or
 Spawn an independent reviewer named by `reviewer_handoff.skill` or
 `workflow.review_gate.skill`. For design reviews, this is `design-review`. For
 full experiment reviews, this is `experiment-review`. For project synthesis
-reviews, this is `synthesis-review`. Use your client's
+reviews, this is `project-reflection-review`. Use your client's
 subagent or skill-spawn mechanism — the name is identical in both. In Claude
 Code, call the Agent tool with `subagent_type` set to this name (or
 `research-plugin:<name>` if your client namespaces plugin subagents). In Codex,
@@ -395,7 +395,7 @@ project graph plus a what's-next proposals file, and passes a synthesis
 review before publishing. When `workflow.status_and_next` carries a
 `project_reflection` block — either an open wave's guidance or a soft
 "Consider running a project reflection" staleness hint — see the
-`research-reflection` skill. When the project is idle (no active
+`project-reflection` skill. When the project is idle (no active
 experiments) and at least one experiment has finished since the last
 published synthesis, the project-level call goes further and suggests the
 reflection as the next action (`current_gate: reflection_suggested`) — the

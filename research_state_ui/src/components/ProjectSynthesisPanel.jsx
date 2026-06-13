@@ -113,7 +113,7 @@ export default function ProjectSynthesisPanel({ projectId }) {
             <p>
               No project synthesis yet. When enough experiments have finished,
               the agent runs a reflection wave (the{' '}
-              <span className="mono">research-reflection</span> skill): five
+              <span className="mono">project-reflection</span> skill): five
               lenses read the project, the agent distills them into a 16-node
               project logic graph, and a reviewer checks the story before it
               publishes here.

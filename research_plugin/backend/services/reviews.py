@@ -523,7 +523,7 @@ class ReviewService:
         skill = {
             "design_reviewer": "design-review",
             "experiment_reviewer": "experiment-review",
-            "synthesis_reviewer": "synthesis-review",
+            "synthesis_reviewer": "project-reflection-review",
         }.get(role, "")
         return {
             "role": role,
@@ -611,7 +611,7 @@ class ReviewService:
         if target_type == "synthesis":
             if role == "synthesis_reviewer" and not return_to:
                 raise ValidationError(
-                    "synthesis-review rejections must set return_to: 'reflecting' "
+                    "project-reflection-review rejections must set return_to: 'reflecting' "
                     "to re-launch the reflection fan-out (the reflections "
                     "themselves are inadequate), or 'synthesizing' if the "
                     "reflections stand but the synthesis must be revised"

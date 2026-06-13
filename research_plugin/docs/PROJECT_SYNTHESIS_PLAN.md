@@ -305,7 +305,7 @@ reflecting ──all 5 submitted──▶ synthesizing ──graph+proposals─�
 
 ---
 
-## 7. The skill — `research-reflection`
+## 7. The skill — `project-reflection`
 
 A user-invocable skill (plus a soft nudge from `workflow_status_and_next`; see §8). It orchestrates
 the wave; it does **not** gate process — only the artifacts are gated, in keeping with the plugin's
@@ -428,7 +428,7 @@ visible, and the soft reminder applies one level up from the existing experiment
    review `target_kind` polymorphism. *(Skill and UI both bind to this surface.)*
 2. Roles (`reflection`, `proposals`), ref resolver `syn_`, MCP surface, HTTP endpoints.
 3. Freshness/staleness signal + nudge in `workflow_status_and_next` (§8).
-4. Skill `research-reflection` + `synthesis-template.md` + `synthesis-review` agent/skill.
+4. Skill `project-reflection` + `synthesis-template.md` + `project-reflection-review` agent/skill.
 5. UI: Home "Project synthesis" panel (reuse `LogicGraph`) + FSM strip + staleness/coverage badge.
 6. Tests at each layer (gate enforcement, roster coverage, review polymorphism, staleness signal).
 
