@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
 import { tsToTime } from '../utils/format';
+import { expName } from '../utils/experiment';
+import { useProjectStore, selectExperiments } from '../store/useProjectStore';
 
 /**
  * Activity — live telemetry of HTTP requests and MCP tool calls.
@@ -67,13 +69,20 @@ export default function Activity() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [expandedKey, setExpandedKey] = useState(null);
 
+  const projectId = useProjectStore(s => s.projectId);
+  const experiments = useProjectStore(selectExperiments);
+  const expById = useMemo(
+    () => Object.fromEntries(experiments.map(e => [e.id, e])),
+    [experiments],
+  );
+
   const inFlightRef = useRef(false);
 
   const fetchNow = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const fresh = await api.listActivity(DEFAULT_LIMIT, filterSource);
+      const fresh = await api.listActivity(DEFAULT_LIMIT, filterSource, projectId);
       setData(fresh);
       setError(null);
     } catch (err) {
@@ -81,7 +90,7 @@ export default function Activity() {
     } finally {
       inFlightRef.current = false;
     }
-  }, [filterSource]);
+  }, [filterSource, projectId]);
 
   useEffect(() => {
     fetchNow();
@@ -205,13 +214,21 @@ export default function Activity() {
                   )}
                   <span className="act-dur tabular">{Number(ev.duration_ms ?? 0)} ms</span>
                 </button>
-                {target && (
-                  <span className="act-target" onClick={e => e.stopPropagation()}>
-                    {href
-                      ? <Link to={href}><ObjId id={target.id} className="timeline-event-target--link" /></Link>
-                      : <ObjId id={target.id} />}
-                  </span>
-                )}
+                {target && (() => {
+                  const exp = target.type === 'experiment' ? expById[target.id] : null;
+                  const linked = href
+                    ? (exp
+                        ? <Link to={href}><span className="timeline-event-target--link">{expName(exp)}</span></Link>
+                        : <Link to={href}><ObjId id={target.id} className="timeline-event-target--link" /></Link>)
+                    : (exp
+                        ? <span className="timeline-event-target">{expName(exp)}</span>
+                        : <ObjId id={target.id} />);
+                  return (
+                    <span className="act-target" onClick={e => e.stopPropagation()}>
+                      {linked}
+                    </span>
+                  );
+                })()}
                 {open && <ActivityDetail ev={ev} />}
               </div>
             );

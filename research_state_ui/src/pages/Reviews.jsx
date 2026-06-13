@@ -5,6 +5,7 @@ import { api } from '../api';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
 import ReviewCard from '../components/ReviewCard';
+import { expName } from '../utils/experiment';
 
 /**
  * Reviews page. Shows:
@@ -74,7 +75,7 @@ export default function Reviews() {
                       {req.role.replace(/_/g, ' ')} · {exp?.intent || req.target_id}
                     </div>
                     <div className="list-row-sub">
-                      <ObjId id={req.id} /> · target: <ObjId id={req.target_id} />
+                      <ObjId id={req.id} /> · target: {exp ? expName(exp) : <ObjId id={req.target_id} />}
                       {req.reason && <> · {req.reason}</>}
                     </div>
                   </div>
@@ -101,7 +102,7 @@ export default function Reviews() {
                 <div key={eid}>
                   <div className="cluster--between" style={{ marginBottom: 10 }}>
                     <div className="cluster">
-                      <ObjId id={eid} accent />
+                      {exp ? <span style={{ fontWeight: 600 }}>{expName(exp)}</span> : <ObjId id={eid} accent />}
                       {exp && <span style={{ fontSize: 'var(--text-base)' }}>{exp.intent}</span>}
                     </div>
                     {exp && <Link to={`/experiments/${eid}`} className="btn btn--sm btn--ghost">Open experiment →</Link>}

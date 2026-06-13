@@ -156,10 +156,11 @@ export const api = {
   // `source` filter is applied server-side BEFORE `limit` so a request for
   // 300 mcp events returns 300 mcp events, not 300 mixed events of which mcp
   // is a sliver.
-  listActivity: (limit = 200, source = null) => {
+  listActivity: (limit = 200, source = null, projectId = null) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
     if (source && source !== 'all') params.set('source', source);
+    if (projectId) params.set('project_id', projectId);
     return request(`/api/activity?${params.toString()}`);
   },
 

@@ -123,7 +123,7 @@ function ClaimEntry({ claim, linkedExperiments }) {
                   <span className={`claim-exp-mark claim-exp-mark--${cat}`} aria-hidden="true">
                     {cat === 'success' ? '✓' : cat === 'against' ? '✗' : '·'}
                   </span>
-                  <span className="claim-exp-title">{title || e.id}</span>
+                  <span className="claim-exp-title">{title}</span>
                   <span className="claim-exp-status">{(e.status || '').replace(/_/g, ' ')}</span>
                 </Link>
               </li>

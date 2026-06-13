@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useProjectStore } from '../store/useProjectStore';
+import { useProjectStore, selectExperiments } from '../store/useProjectStore';
 import { api } from '../api';
 import EventTimeline from '../components/EventTimeline';
 
@@ -27,6 +27,7 @@ function inCategory(category, type) {
  */
 export default function Events() {
   const projectId = useProjectStore(s => s.projectId);
+  const experiments = useProjectStore(selectExperiments);
   const [events, setEvents] = useState(null);
   const [error, setError] = useState(null);
   const [category, setCategory] = useState('all');
@@ -127,7 +128,7 @@ export default function Events() {
         ? <div className="empty">Loading…</div>
         : filtered.length === 0
           ? <div className="empty">No events match these filters.</div>
-          : <EventTimeline events={filtered} limit={500} />
+          : <EventTimeline events={filtered} limit={500} experiments={experiments} />
       }
     </div>
   );

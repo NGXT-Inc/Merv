@@ -179,7 +179,7 @@ export default function NowScreen() {
           <div className="section-title" style={{ marginBottom: 0 }}>Recent</div>
           <Link to="/events" className="btn btn--sm btn--ghost">Timeline →</Link>
         </div>
-        <EventTimeline events={events} limit={8} />
+        <EventTimeline events={events} limit={8} experiments={experiments} />
       </section>
     </div>
   );

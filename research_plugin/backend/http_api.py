@@ -85,12 +85,26 @@ class ResearchHttpApi:
             "activity_log": str(self.app.activity.log_path),
         }
 
-    def activity(self, limit: int, source: str | None = None) -> dict[str, Any]:
+    def activity(self, limit: int, source: str | None = None, project_id: str | None = None) -> dict[str, Any]:
         result = self.app.activity.recent(limit=limit, source=source)
+        events = result["events"]
+        if project_id is not None:
+            # Single-app mode serves one repo (one project), so this only drops
+            # the rare cross-project tool.call carrying a different project_id in
+            # its arguments. Events with no project attribution (e.g.
+            # http.request) belong to this app and are kept.
+            def _belongs(ev: dict[str, Any]) -> bool:
+                pid = ev.get("project_id")
+                if not pid:
+                    args = ev.get("args")
+                    pid = args.get("project_id") if isinstance(args, dict) else None
+                return pid in (None, project_id)
+
+            events = [ev for ev in events if _belongs(ev)]
         return {
             "activity_log": str(self.app.activity.log_path),
-            "filter": {"source": source} if source else {},
-            "events": result["events"],
+            "filter": {key: value for key, value in (("source", source), ("project_id", project_id)) if value},
+            "events": events,
             "summary": result["summary"],
         }
 
@@ -1000,11 +1014,13 @@ def create_fastapi_app(
         return meta()
 
     @http.get("/api/activity")
-    def activity(limit: int = Query(100, ge=1), source: str | None = None) -> dict[str, Any]:
+    def activity(
+        limit: int = Query(100, ge=1), source: str | None = None, project_id: str | None = None
+    ) -> dict[str, Any]:
         if router is not None:
-            return router.activity_recent(limit=limit, source=source)
+            return router.activity_recent(limit=limit, source=source, project_id=project_id)
         assert api is not None
-        return api.activity(limit=limit, source=source)
+        return api.activity(limit=limit, source=source, project_id=project_id)
 
     # /api/debug/* expose tool-call internals. In control mode the principal
     # middleware above already requires a valid bearer on every route, so these

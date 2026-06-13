@@ -248,20 +248,42 @@ class ProjectRouter:
         # serve schemas).
         return static_tool_catalog()
 
-    def activity_recent(self, *, limit: int, source: str | None = None) -> dict[str, Any]:
+    def activity_recent(
+        self, *, limit: int, source: str | None = None, project_id: str | None = None
+    ) -> dict[str, Any]:
+        # Project-scoped view: each project keeps its own activity log, so we can
+        # serve a single project's last `limit` events directly. Merging every
+        # workspace and truncating to `limit` (the unscoped path below) starves a
+        # quiet project of rows whenever a busier one dominates the tail — which
+        # is why the Activity page must pass project_id. Returns that project's
+        # own summary so the source/status counts reflect just it.
+        if project_id is not None:
+            route = self._routes_by_project.get(project_id)
+            if route is None:
+                return {
+                    "events": [],
+                    "summary": {"total": 0, "count": 0, "source_counts": {}, "event_counts": {}, "status_counts": {"ok": 0, "error": 0}},
+                }
+            result = self.app_for_project(route.project_id).activity.recent(limit=limit, source=source)
+            events = [self._tag_event(event=event, route=route) for event in result["events"]]
+            return {"events": events, "summary": {**result["summary"], "count": len(events)}}
+
         events: list[dict[str, Any]] = []
         summaries: list[dict[str, Any]] = []
         for route in list(self._routes_by_project.values()):
             app = self.app_for_project(route.project_id)
             result = app.activity.recent(limit=limit, source=source)
-            for event in result["events"]:
-                item = dict(event)
-                item.setdefault("project_id", route.project_id)
-                item.setdefault("repo_root", str(route.repo_root))
-                events.append(item)
+            events.extend(self._tag_event(event=event, route=route) for event in result["events"])
             summaries.append(result["summary"])
         events = events[-limit:]
         return {"events": events, "summary": {"workspaces": summaries, "count": len(events)}}
+
+    @staticmethod
+    def _tag_event(*, event: dict[str, Any], route: ProjectRoute) -> dict[str, Any]:
+        item = dict(event)
+        item.setdefault("project_id", route.project_id)
+        item.setdefault("repo_root", str(route.repo_root))
+        return item
 
     def any_app(self) -> ResearchPluginApp | None:
         """An already-instantiated app, or None — never creates one."""

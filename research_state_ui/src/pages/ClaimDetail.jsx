@@ -5,6 +5,7 @@ import { useProjectStore, selectExperiments } from '../store/useProjectStore';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
 import KvList from '../components/KvList';
+import { expName } from '../utils/experiment';
 
 export default function ClaimDetail() {
   const { claimId } = useParams();
@@ -72,7 +73,7 @@ export default function ClaimDetail() {
                 <div className="list-row-main">
                   <div className="list-row-title">{e.intent}</div>
                   <div className="list-row-sub">
-                    <ObjId id={e.id} /> · attempt {e.attempt_index}
+                    {expName(e)} · attempt {e.attempt_index}
                   </div>
                 </div>
                 <div className="list-row-aside">

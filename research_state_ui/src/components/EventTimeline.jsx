@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import ObjId from './ObjId';
 import { PARACHUTE_CHIPS } from '../utils/parachute';
+import { expName } from '../utils/experiment';
 
 function shortTime(iso) {
   if (!iso) return '';
@@ -28,8 +29,9 @@ function targetHref(targetType, targetId) {
   }
 }
 
-export default function EventTimeline({ events, limit = 20 }) {
+export default function EventTimeline({ events, limit = 20, experiments = [] }) {
   const rows = (events || []).slice(0, limit);
+  const expById = Object.fromEntries((experiments || []).map(x => [x.id, x]));
   if (rows.length === 0) {
     return <div className="empty">No events yet.</div>;
   }
@@ -39,6 +41,7 @@ export default function EventTimeline({ events, limit = 20 }) {
         const type = e.event_type || e.type;
         const chip = PARACHUTE_CHIPS[type];
         const href = targetHref(e.target_type, e.target_id);
+        const exp = e.target_type === 'experiment' ? expById[e.target_id] : null;
         return (
           <div key={e.id || i} className="timeline-row">
             <div className="timeline-time">{shortTime(e.created_at)}</div>
@@ -47,8 +50,14 @@ export default function EventTimeline({ events, limit = 20 }) {
               {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.label}</span>}
               {e.target_id && (
                 href
-                  ? <Link to={href}><ObjId id={e.target_id} className="timeline-event-target timeline-event-target--link" /></Link>
-                  : <ObjId id={e.target_id} className="timeline-event-target" />
+                  ? <Link to={href}>{
+                      exp
+                        ? <span className="timeline-event-target timeline-event-target--link">{expName(exp)}</span>
+                        : <ObjId id={e.target_id} className="timeline-event-target timeline-event-target--link" />
+                    }</Link>
+                  : (exp
+                      ? <span className="timeline-event-target">{expName(exp)}</span>
+                      : <ObjId id={e.target_id} className="timeline-event-target" />)
               )}
             </div>
           </div>

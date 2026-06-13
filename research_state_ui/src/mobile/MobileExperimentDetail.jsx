@@ -9,7 +9,6 @@ import ReportSpotlight from '../components/ReportSpotlight';
 import OutcomesSection from '../components/OutcomesSection';
 import ResultsMetricsPanel from '../components/ResultsMetricsPanel';
 import SandboxTerminal from '../components/SandboxTerminal';
-import ObjId from '../components/ObjId';
 import { expName } from '../utils/experiment';
 
 const SEGMENTS = [
@@ -221,7 +220,6 @@ function StatusSegment({ experiment, workflow, currentRes, reviewCount }) {
         <div className="section-title">At a glance</div>
         <div className="mcard">
           <div className="mcard-meta">
-            <span><ObjId id={experiment.id} /></span>
             <span>{currentRes.length} current-attempt resource{currentRes.length === 1 ? '' : 's'}</span>
             {claimCount > 0 && <span>tests {claimCount} claim{claimCount === 1 ? '' : 's'}</span>}
             {reviewCount > 0 && <span>{reviewCount} review{reviewCount === 1 ? '' : 's'}</span>}

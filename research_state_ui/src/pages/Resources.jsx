@@ -5,6 +5,7 @@ import { api } from '../api';
 import ObjId from '../components/ObjId';
 import ResourceContentView from '../components/ResourceContentView';
 import { formatBytes } from '../utils/format';
+import { expName } from '../utils/experiment';
 
 const KINDS = ['plan', 'code', 'config', 'input', 'dataset', 'result', 'note', 'model', 'other'];
 const ROLES = ['plan', 'code', 'config', 'input', 'result', 'note', 'model'];
@@ -382,7 +383,7 @@ function AssociateForm({ projectId, resourceId, experiments, onCancel, onDone })
   return (
     <form onSubmit={submit} className="cluster" style={{ flexWrap: 'wrap', gap: 8 }}>
       <select className="select" value={targetId} onChange={e => setTargetId(e.target.value)} style={{ minWidth: 280, flex: 1 }}>
-        {experiments.map(e => <option key={e.id} value={e.id}>{e.id} — {e.intent.slice(0, 70)}</option>)}
+        {experiments.map(e => <option key={e.id} value={e.id}>{expName(e)} — {e.intent.slice(0, 70)}</option>)}
       </select>
       <select className="select" value={role} onChange={e => setRole(e.target.value)} style={{ width: 140 }}>
         {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
