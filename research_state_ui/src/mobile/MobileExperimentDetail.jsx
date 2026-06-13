@@ -10,6 +10,7 @@ import OutcomesSection from '../components/OutcomesSection';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
 import MobileMetricsPanel from './MobileMetricsPanel';
+import { Skeleton } from './Skeleton';
 import { expName } from '../utils/experiment';
 
 const SEGMENTS = [
@@ -93,7 +94,12 @@ export default function MobileExperimentDetail() {
     );
   }
   if (!experiment) {
-    return <div className="page-stage"><div className="empty">Loading…</div></div>;
+    return (
+      <div className="page-stage">
+        <header className="page-header"><Skeleton lines={1} /></header>
+        <Skeleton lines={5} />
+      </div>
+    );
   }
 
   const currentAttempt = experiment.attempt_index;

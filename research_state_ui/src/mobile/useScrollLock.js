@@ -1,32 +1,51 @@
 import { useEffect } from 'react';
 
 /**
- * Lock body scroll while `active`, preserving and restoring the scroll
- * position. Uses the position:fixed body technique so iOS Safari does not
- * rubber-band the page *behind* an overlay (the scroll-leak the mobile plan
- * calls out). See docs/MOBILE_UX_REVIEW.md §3.2.
+ * Reference-counted body scroll lock. Uses the position:fixed technique so iOS
+ * Safari doesn't rubber-band the page *behind* an overlay (the scroll-leak the
+ * mobile plan calls out). Counting makes nesting safe — a node-detail sheet
+ * opened from inside another sheet won't prematurely restore scroll.
+ * docs/MOBILE_UX_REVIEW.md §3.2.
  */
-export function useScrollLock(active) {
-  useEffect(() => {
-    if (!active) return undefined;
-    const scrollY = window.scrollY;
+let lockCount = 0;
+let savedScrollY = 0;
+let savedStyles = null;
+
+function lock() {
+  if (lockCount === 0) {
+    savedScrollY = window.scrollY;
     const body = document.body;
-    const prev = {
+    savedStyles = {
       position: body.style.position,
       top: body.style.top,
       width: body.style.width,
       overflow: body.style.overflow,
     };
     body.style.position = 'fixed';
-    body.style.top = `-${scrollY}px`;
+    body.style.top = `-${savedScrollY}px`;
     body.style.width = '100%';
     body.style.overflow = 'hidden';
-    return () => {
-      body.style.position = prev.position;
-      body.style.top = prev.top;
-      body.style.width = prev.width;
-      body.style.overflow = prev.overflow;
-      window.scrollTo(0, scrollY);
-    };
+  }
+  lockCount++;
+}
+
+function unlock() {
+  lockCount = Math.max(0, lockCount - 1);
+  if (lockCount === 0 && savedStyles) {
+    const body = document.body;
+    body.style.position = savedStyles.position;
+    body.style.top = savedStyles.top;
+    body.style.width = savedStyles.width;
+    body.style.overflow = savedStyles.overflow;
+    savedStyles = null;
+    window.scrollTo(0, savedScrollY);
+  }
+}
+
+export function useScrollLock(active) {
+  useEffect(() => {
+    if (!active) return undefined;
+    lock();
+    return unlock;
   }, [active]);
 }

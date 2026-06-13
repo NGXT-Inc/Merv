@@ -11,6 +11,10 @@ import ExperimentCardList from './mobile/ExperimentCardList';
 import MobileExperimentDetail from './mobile/MobileExperimentDetail';
 import SandboxCardList from './mobile/SandboxCardList';
 import MobileResources from './mobile/MobileResources';
+import MobileClaims from './mobile/MobileClaims';
+import MobileReviews from './mobile/MobileReviews';
+import MobileProjects from './mobile/MobileProjects';
+import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
 import Home from './pages/Home';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
@@ -67,8 +71,9 @@ export default function App() {
     );
   }
   // Bootstrap: no projects yet → render bare CreateProject without the shell.
+  // On mobile the directory-path form is unfillable, so show an honest notice.
   if (projects.length === 0) {
-    return <CreateProject bootstrap />;
+    return isMobile ? <MobileProjectCreateNotice bootstrap /> : <CreateProject bootstrap />;
   }
   // Have projects but no active selection (race during setProjectId clearing) → wait.
   if (!projectId) {
@@ -84,15 +89,15 @@ export default function App() {
         <CompatBanner />
         <Routes>
           <Route path="/" element={<NowScreen />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/projects/new" element={<CreateProject />} />
-          <Route path="/claims" element={<Claims />} />
+          <Route path="/projects" element={<MobileProjects />} />
+          <Route path="/projects/new" element={<MobileProjectCreateNotice />} />
+          <Route path="/claims" element={<MobileClaims />} />
           <Route path="/claims/:claimId" element={<ClaimDetail />} />
           <Route path="/experiments" element={<ExperimentCardList />} />
           <Route path="/experiments/:experimentId" element={<MobileExperimentDetail />} />
           <Route path="/resources" element={<MobileResources />} />
           <Route path="/resources/:resourceId" element={<MobileResources />} />
-          <Route path="/reviews" element={<Reviews />} />
+          <Route path="/reviews" element={<MobileReviews />} />
           <Route path="/events" element={<Events />} />
           <Route path="/sandboxes" element={<SandboxCardList />} />
           <Route path="/activity" element={<Activity />} />

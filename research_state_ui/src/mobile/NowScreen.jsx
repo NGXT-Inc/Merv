@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import {
   useProjectStore,
   selectProject,
+  selectStats,
+  selectClaims,
   selectActiveExperiments,
   selectReviewRequests,
   selectSandboxes,
@@ -11,6 +13,7 @@ import {
 import EventTimeline from '../components/EventTimeline';
 import FSMStrip from '../components/FSMStrip';
 import StatusPill from '../components/StatusPill';
+import MobileSynthesisCard from './MobileSynthesisCard';
 import { expName } from '../utils/experiment';
 import { fmtDuration } from '../utils/format';
 
@@ -25,6 +28,8 @@ const SOON_MS = 30 * 60 * 1000;
  */
 export default function NowScreen() {
   const project = useProjectStore(selectProject);
+  const stats = useProjectStore(selectStats);
+  const claims = useProjectStore(selectClaims);
   const lastSyncError = useProjectStore(s => s.lastSyncError);
   const activeExperiments = useProjectStore(selectActiveExperiments);
   const reviewRequests = useProjectStore(selectReviewRequests);
@@ -99,6 +104,13 @@ export default function NowScreen() {
         </div>
       )}
 
+      <div className="mcounts">
+        <CountPill to="/claims" label="Claims" value={stats.claims ?? claims.length} />
+        <CountPill to="/experiments" label="Experiments" value={stats.experiments ?? experiments.length} />
+        <CountPill to="/reviews" label="Reviews" value={stats.open_reviews ?? stats.reviews ?? 0} />
+        <CountPill to="/sandboxes" label="Running" value={running.length} accent={running.length > 0} />
+      </div>
+
       <section className="section">
         <div className="section-title">Needs you</div>
         {items.length === 0 ? (
@@ -138,6 +150,8 @@ export default function NowScreen() {
           </div>
         </section>
       )}
+
+      <MobileSynthesisCard projectId={project.id} />
 
       <section className="section">
         <div className="section-title">
@@ -182,5 +196,14 @@ export default function NowScreen() {
         <EventTimeline events={events} limit={8} experiments={experiments} />
       </section>
     </div>
+  );
+}
+
+function CountPill({ to, label, value, accent = false }) {
+  return (
+    <Link to={to} className={`mcount${accent ? ' mcount--accent' : ''}`}>
+      <span className="mcount-value tabular">{value}</span>
+      <span className="mcount-label">{label}</span>
+    </Link>
   );
 }

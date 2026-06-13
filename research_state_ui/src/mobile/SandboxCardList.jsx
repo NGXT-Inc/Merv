@@ -5,6 +5,9 @@ import { api } from '../api';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
 import SandboxTerminal from '../components/SandboxTerminal';
+import SlideToConfirm from './SlideToConfirm';
+import { SkeletonCards } from './Skeleton';
+import { toast } from './toastStore';
 import { expName } from '../utils/experiment';
 import { fmtDuration } from '../utils/format';
 import { PARACHUTE_CHIPS, latestParachute } from '../utils/parachute';
@@ -28,10 +31,20 @@ export default function SandboxCardList() {
   const sandboxes = useProjectStore(selectSandboxes);
   const experiments = useProjectStore(selectExperiments);
   const events = useProjectStore(selectEventsAll);
+  const home = useProjectStore(s => s.home);
   const expById = Object.fromEntries(experiments.map(e => [e.id, e]));
   // One drawer open at a time (mirrors the desktop table) — the panel polls
   // sandbox/metrics/terminal while mounted, so don't stack them.
   const [expandedId, setExpandedId] = useState(null);
+
+  if (!home) {
+    return (
+      <div className="page-stage">
+        <header className="page-header"><h1 className="page-title">Compute fleet</h1></header>
+        <SkeletonCards count={2} />
+      </div>
+    );
+  }
 
   const rank = (st) => (st === 'running' ? 0 : st === 'provisioning' ? 1 : 2);
   const rows = sandboxes.slice().sort((a, b) => {
@@ -98,9 +111,11 @@ function SandboxCard({ sandbox: s, experiment, parachute, open, onToggle }) {
     try {
       await api.releaseSandbox(projectId, s.experiment_id);
       setConfirming(false);
+      toast('Sandbox released', { variant: 'success' });
       await refreshHome();
     } catch (err) {
       setError(err.message);
+      toast(`Release failed: ${err.message}`, { variant: 'error' });
     } finally {
       setBusy(false);
     }
@@ -153,15 +168,13 @@ function SandboxCard({ sandbox: s, experiment, parachute, open, onToggle }) {
               ⚠ {expName(experiment)} is RUNNING on this sandbox — releasing terminates the VM under it.
             </div>
           )}
-          <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 10 }}>
             Terminate this sandbox? A final sync runs first; the VM and everything outside the experiment folder are gone after that.
           </div>
-          <div className="mconfirm-actions">
-            <button type="button" className="btn btn--sm" onClick={() => setConfirming(false)} disabled={busy}>
+          <SlideToConfirm busy={busy} onConfirm={release} label="Slide to release" busyLabel="Releasing…" />
+          <div className="mconfirm-actions" style={{ marginTop: 8 }}>
+            <button type="button" className="btn btn--sm btn--ghost" onClick={() => setConfirming(false)} disabled={busy}>
               Keep it
-            </button>
-            <button type="button" className="btn btn--sm btn--primary" onClick={release} disabled={busy}>
-              {busy ? 'Releasing…' : 'Release sandbox'}
             </button>
           </div>
           {error && <div className="error-message" style={{ marginTop: 8 }}>{error}</div>}
