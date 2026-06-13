@@ -47,7 +47,6 @@ export default function Claims() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <div className="page-eyebrow">Claims</div>
             <h1 className="page-title">What we think</h1>
             <p className="page-summary">
               Claims are the durable statements about your domain. Experiments test them; reviews accept or weaken them.

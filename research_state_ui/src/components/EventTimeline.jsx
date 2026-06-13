@@ -1,15 +1,6 @@
 import { Link } from 'react-router-dom';
 import ObjId from './ObjId';
-
-// Sandbox parachute lifecycle (results rescued to cloud when the daemon was
-// offline) reads poorly as a raw type string, so each gets a human label
-// rendered as a .parachute-chip beside the mono type. The failed variant uses
-// the existing --failed (danger) treatment so data-loss reads LOUD.
-const PARACHUTE_CHIPS = {
-  'sandbox.parachuted':         { variant: 'parachuted', label: 'Results parachuted to cloud' },
-  'sandbox.parachute_restored': { variant: 'restored',   label: 'Results restored from parachute' },
-  'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed — possible data loss' },
-};
+import { PARACHUTE_CHIPS } from '../utils/parachute';
 
 function shortTime(iso) {
   if (!iso) return '';

@@ -5,8 +5,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import StatusPill from './StatusPill';
 import { layoutFigure, FIG_NODE_W } from '../utils/figureLayout';
-
-const TERMINAL_STATUSES = ['complete', 'failed', 'abandoned'];
+import { TERMINAL_STATUSES } from '../utils/experiment';
 
 const TYPE_GLYPH = {
   attempt: '◇',

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import LogicGraph from './LogicGraph';
 import FSMStrip, { SYNTHESIS_STAGES, SYNTHESIS_GATES, SYNTHESIS_TERMINAL } from './FSMStrip';
-import ObjId from './ObjId';
 
 /**
  * ProjectSynthesisPanel — the project's logic state, on Home.
@@ -55,21 +54,14 @@ export default function ProjectSynthesisPanel({ projectId }) {
   const signal = data?.signal || null;
   const hasAnyWave = (data?.syntheses || []).length > 0;
   const coverage = open?.reflection_coverage;
+  // The coverage/staleness signal rides in the graph header instead of taking
+  // its own heading row — empty until a wave has published.
+  const coverageHint = signal?.last_published_at
+    ? `covers ${signal.covered_terminal_experiments} of ${signal.terminal_experiments} finished experiments`
+    : '';
 
   return (
     <section className="section" id="project-synthesis">
-      <div className="cluster--between" style={{ marginBottom: 12 }}>
-        <div className="section-title" style={{ marginBottom: 0 }}>
-          Project synthesis
-          {signal?.last_published_at && (
-            <span className="section-title-badge">
-              covers {signal.covered_terminal_experiments} of {signal.terminal_experiments} finished experiments
-            </span>
-          )}
-        </div>
-        {open && <ObjId id={open.id} />}
-      </div>
-
       {open && (
         <div className="syn-wave">
           <FSMStrip
@@ -103,7 +95,7 @@ export default function ProjectSynthesisPanel({ projectId }) {
         projectId={projectId}
         fetcher={graphFetcher}
         live={Boolean(open)}
-        storyHint="the project's logic state, distilled by reflection waves · click a node for detail"
+        storyHint={coverageHint}
         problemsGate="submit_synthesis"
         onAvailability={setGraphAvailable}
         expanded={expanded}

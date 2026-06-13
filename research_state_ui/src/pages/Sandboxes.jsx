@@ -5,33 +5,10 @@ import { api } from '../api';
 import ObjId from '../components/ObjId';
 import SandboxTerminal from '../components/SandboxTerminal';
 import { expName } from '../utils/experiment';
+import { fmtDuration } from '../utils/format';
+import { PARACHUTE_CHIPS, latestParachute } from '../utils/parachute';
 
 const STATUS_TABS = ['all', 'running', 'provisioning', 'terminated'];
-
-// Parachute = results rescued to cloud object storage when a sandbox expired
-// while the local daemon was offline. Map each lifecycle event to a chip.
-const PARACHUTE_CHIPS = {
-  'sandbox.parachuted':         { variant: 'parachuted', label: 'Parachuted' },
-  'sandbox.parachute_restored': { variant: 'restored',   label: 'Restored' },
-  'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed' },
-};
-
-// Newest parachute-lifecycle event type for an experiment/sandbox, or null.
-// Scans the deep events window and matches on either the experiment target or
-// the sandbox_id in the payload; picks the latest by id/created_at so ordering
-// of the feed doesn't matter.
-function latestParachute(events, experimentId, sandboxId) {
-  let best = null;
-  for (const ev of events) {
-    const type = ev.event_type || ev.type;
-    if (!PARACHUTE_CHIPS[type]) continue;
-    if (ev.target_id !== experimentId && ev.payload?.sandbox_id !== sandboxId) continue;
-    if (!best || String(ev.id ?? ev.created_at ?? '') > String(best.id ?? best.created_at ?? '')) {
-      best = ev;
-    }
-  }
-  return best ? (best.event_type || best.type) : null;
-}
 
 // Column template (chevron · status · experiment · hardware · uptime · expires
 // · endpoint · links) lives in CSS as --sbxt-cols so the head and every row
@@ -104,7 +81,6 @@ export default function Sandboxes() {
   return (
     <div className="page-stage">
       <header className="page-header">
-        <div className="page-eyebrow">Sandboxes</div>
         <h1 className="page-title">Compute fleet</h1>
         <div className="tab-row" style={{ marginTop: 12 }}>
           {STATUS_TABS.map(s => (
@@ -195,16 +171,16 @@ function SandboxRow({ sandbox, experiment, projectId, now, parachute, open, onTo
         <span className="sbxt-status">
           <span className={`sbxt-dot sbxt-dot--${s.status}`} />
           <span className="sbxt-status-label">{s.status}</span>
-          {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.label}</span>}
+          {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.short}</span>}
         </span>
         <span className="sbxt-exp">
           <span className="sbxt-exp-title">{title}</span>
           <span className="sbxt-exp-id"><ObjId id={s.experiment_id} /></span>
         </span>
         <span className="sbxt-hw mono" title={hardware}>{hardware || '—'}</span>
-        <span className="sbxt-num">{live && s.requested_at ? fmtDur(now - Date.parse(s.requested_at)) : '—'}</span>
+        <span className="sbxt-num">{live && s.requested_at ? fmtDuration(now - Date.parse(s.requested_at)) : '—'}</span>
         <span className={`sbxt-num${expiresCls}`}>
-          {expiresMs == null ? '—' : expiresMs <= 0 ? 'soon' : fmtDur(expiresMs)}
+          {expiresMs == null ? '—' : expiresMs <= 0 ? 'soon' : fmtDuration(expiresMs)}
         </span>
         <span className="sbxt-ep mono" title={endpoint || ''}>{endpoint || '—'}</span>
         <span className="sbxt-links" onClick={(e) => e.stopPropagation()}>
@@ -244,13 +220,4 @@ function DashboardChips({ dashboards }) {
       ))}
     </>
   );
-}
-
-function fmtDur(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return `${h}h${m % 60 ? ` ${m % 60}m` : ''}`;
 }

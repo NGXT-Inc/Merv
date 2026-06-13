@@ -116,7 +116,6 @@ export default function VisualDag() {
   return (
     <div className="page-stage">
       <header className="page-header page-header--lg">
-        <div className="page-eyebrow">Logic DAG</div>
         <h1 className="page-title">What we tried, in what order, with what result</h1>
         <p className="page-summary">
           Top-down view of every claim, the approaches we tried for it, every

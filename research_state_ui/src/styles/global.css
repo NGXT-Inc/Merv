@@ -325,28 +325,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   font-variant-numeric: tabular-nums;
 }
 .tab.active .tab-count { color: var(--muted); }
-.tab--terminal { color: var(--faint); }
-.tab--terminal.active { color: var(--text); }
-
-/* Lifecycle filter row — the pills themselves visually convey the FSM */
-.lifecycle-row {
-  align-items: center;
-  margin-top: 18px;
-  gap: 4px;
-}
-.lc-divider {
-  display: inline-block;
-  width: 1px;
-  height: 14px;
-  background: var(--line);
-  margin: 0 6px;
-}
-.lc-arrow {
-  color: var(--faint);
-  font-size: 11px;
-  user-select: none;
-  padding: 0 1px;
-}
 
 /* --- DS: STATUS PILL ------------------------------------------------- */
 .status {
@@ -437,7 +415,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
 .stack--lg { gap: var(--space-5); }
 .cluster { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .cluster--between { display: flex; justify-content: space-between; align-items: center; }
-.divider { height: 1px; background: var(--line-soft); border: 0; margin: var(--space-4) 0; }
 
 /* --- INPUTS ---------------------------------------------------------- */
 .input, .select, .textarea {
@@ -734,8 +711,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
 .vsdm-pill--idle    { background: rgba(var(--supports-rgb), 0.10);  color: var(--supports);  border-color: rgba(var(--supports-rgb), 0.25); }
 .vsdm-pill--active  { background: rgba(var(--active-rgb), 0.10);  color: var(--active);    border-color: rgba(var(--active-rgb), 0.25); }
 .vsdm-pill--error   { background: rgba(var(--refutes-rgb), 0.10);  color: var(--refutes);   border-color: rgba(var(--refutes-rgb), 0.25); }
-.vsdm-pill--conflict{ background: rgba(var(--qualifies-rgb), 0.10);  color: var(--qualifies); border-color: rgba(var(--qualifies-rgb), 0.25); }
-.vsdm-pill--paused  { background: var(--bg-soft);           color: var(--muted);     border-color: var(--line); }
 .vsdm-pill--pending { background: var(--bg-soft);           color: var(--faint);     border-color: var(--line); }
 
 /* Minimal variant — signal only: status, dir mapping, sync state, errors. */
@@ -829,7 +804,6 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
 .vsdm-chip--push     { background: rgba(var(--active-rgb), 0.10); color: var(--active);    border-color: rgba(var(--active-rgb), 0.22); }
 .vsdm-chip--pull     { background: rgba(var(--supports-rgb), 0.10); color: var(--supports);  border-color: rgba(var(--supports-rgb), 0.22); }
 .vsdm-chip--del      { background: rgba(var(--refutes-rgb), 0.08); color: var(--refutes);   border-color: rgba(var(--refutes-rgb), 0.22); }
-.vsdm-chip--conflict { background: rgba(var(--qualifies-rgb), 0.10); color: var(--qualifies); border-color: rgba(var(--qualifies-rgb), 0.25); }
 
 
 .shell-main { flex: 1; min-width: 0; }
@@ -3864,10 +3838,6 @@ button.review-stepper-version:hover {
   font-size: var(--text-xs); line-height: 1;
   padding: 4px 8px; border-radius: var(--radius-pill);
   border: 1px solid var(--line); color: var(--muted); background: var(--bg-soft);
-}
-.lgr-chip-dot {
-  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-right: 5px;
 }
 .lgr-node--dead { border-style: dashed; opacity: .6; }
 .lgr-problems {

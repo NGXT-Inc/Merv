@@ -92,7 +92,6 @@ export default function Events() {
   return (
     <div className="page-stage">
       <header className="page-header page-header--lg">
-        <div className="page-eyebrow">Events</div>
         <h1 className="page-title">Append-only event log</h1>
         <p className="page-summary">
           Every accepted mutation lands here. Click a target ID to jump to its

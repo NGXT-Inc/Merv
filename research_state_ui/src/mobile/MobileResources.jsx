@@ -26,7 +26,6 @@ export default function MobileResources() {
   return (
     <div className="page-stage">
       <header className="page-header">
-        <div className="page-eyebrow">Resources</div>
         <h1 className="page-title">Repo files</h1>
       </header>
 

@@ -7,28 +7,7 @@ import StatusPill from '../components/StatusPill';
 import SandboxTerminal from '../components/SandboxTerminal';
 import { expName } from '../utils/experiment';
 import { fmtDuration } from '../utils/format';
-
-// Parachute = results rescued to cloud object storage when a sandbox expired
-// while the local daemon was offline. Map each lifecycle event to a chip.
-const PARACHUTE_CHIPS = {
-  'sandbox.parachuted':         { variant: 'parachuted', label: 'Parachuted' },
-  'sandbox.parachute_restored': { variant: 'restored',   label: 'Restored' },
-  'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed' },
-};
-
-// Newest parachute-lifecycle event type for an experiment/sandbox, or null.
-function latestParachute(events, experimentId, sandboxId) {
-  let best = null;
-  for (const ev of events) {
-    const type = ev.event_type || ev.type;
-    if (!PARACHUTE_CHIPS[type]) continue;
-    if (ev.target_id !== experimentId && ev.payload?.sandbox_id !== sandboxId) continue;
-    if (!best || String(ev.id ?? ev.created_at ?? '') > String(best.id ?? best.created_at ?? '')) {
-      best = ev;
-    }
-  }
-  return best ? (best.event_type || best.type) : null;
-}
+import { PARACHUTE_CHIPS, latestParachute } from '../utils/parachute';
 
 // A daemon-owned SSH local forward (Lambda Labs dashboards) only resolves on
 // the desktop that owns the tunnel — never offer it as a tappable link here.
@@ -64,7 +43,6 @@ export default function SandboxCardList() {
   return (
     <div className="page-stage">
       <header className="page-header">
-        <div className="page-eyebrow">Sandboxes</div>
         <h1 className="page-title">Compute fleet</h1>
       </header>
 
@@ -132,7 +110,7 @@ function SandboxCard({ sandbox: s, experiment, parachute, open, onToggle }) {
     <div className={`mcard${left != null && left < 30 * 60 * 1000 ? ' mcard--attn' : ''}`}>
       <div className="mcard-head">
         <div className="mcard-title">{experiment ? expName(experiment) : s.experiment_id}</div>
-        {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.label}</span>}
+        {chip && <span className={`parachute-chip parachute-chip--${chip.variant}`}>{chip.short}</span>}
         <StatusPill value={s.status} />
       </div>
       <div className="mcard-meta">

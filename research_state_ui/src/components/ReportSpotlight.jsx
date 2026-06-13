@@ -3,6 +3,7 @@ import { api } from '../api';
 import MarkdownView from './MarkdownView';
 import FileRenderer from './FileRenderer';
 import SourceBadge from './SourceBadge';
+import ContentUnavailable from './ContentUnavailable';
 import { formatBytes, isMarkdown } from '../utils/format';
 
 /**
@@ -82,10 +83,7 @@ export default function ReportSpotlight({
             <div className="error-message">{error}</div>
           ) : content ? (
             content.available === false ? (
-              <div className="content-unavailable">
-                <div className="content-unavailable-title">Content unavailable in this mode</div>
-                <div className="content-unavailable-detail">{content.detail || content.reason}</div>
-              </div>
+              <ContentUnavailable content={content} />
             ) : content.is_binary ? (
               <div className="empty">Binary report file</div>
             ) : isMarkdown(reportResource.path) ? (

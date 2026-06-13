@@ -5,12 +5,11 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { MeasureSync } from './ExperimentFigure';
 import { layoutFigure, FIG_NODE_W } from '../utils/figureLayout';
-
-const TERMINAL_STATUSES = ['complete', 'failed', 'abandoned'];
+import { TERMINAL_STATUSES } from '../utils/experiment';
 
 // Node `kind` is the agent's own vocabulary — there is no fixed taxonomy, so
-// colors are assigned by order of first appearance and the legend is built
-// from whatever kinds the agent used.
+// each kind gets an accent color by order of first appearance, used as the
+// node's left border (each node also prints its kind as text).
 const KIND_COLORS = [
   'var(--active)',
   'var(--supports)',
@@ -178,8 +177,8 @@ function LogicPanel({ node, refIndex, onClose }) {
  * Renders GET /experiments/{id}/graph: the decisions, problems, pivots, and
  * lessons the agent chose to record, as a small DAG (16-node budget). The
  * agent designs the graph — kinds, edge labels, and structure are its own
- * vocabulary, so the legend is derived from the data rather than a fixed
- * taxonomy. Polls while the experiment is live so the story grows on screen.
+ * vocabulary, with kind accent colors derived from the data rather than a
+ * fixed taxonomy. Polls while the experiment is live so the story grows on screen.
  *
  * Shares the canvas slot with ExperimentFigure via ExperimentGraphs:
  * `active` decides whether this view renders, `headerExtra` carries the
@@ -231,7 +230,6 @@ export default function LogicGraph({
   const payload = useMemo(() => (payloadJson ? JSON.parse(payloadJson) : null), [payloadJson]);
   const graph = payload?.available ? payload.graph : null;
   const { nodes, edges } = useMemo(() => toFlow(graph), [graph]);
-  const kinds = useMemo(() => [...kindColorMap(graph).entries()], [graph]);
 
   const topologyKey = useMemo(() => nodes.map(n => n.id).sort().join('|'), [nodes]);
   // Expanded mode may zoom past 1x so the graph actually uses the space.
@@ -282,15 +280,7 @@ export default function LogicGraph({
           </span>
         </div>
         <div className="fig-head-right">
-          <div className="fig-legend">
-            {kinds.map(([kind, color]) => (
-              <span key={kind} className="fig-chip">
-                <span className="lgr-chip-dot" style={{ background: color }} aria-hidden="true" />
-                {kind}
-              </span>
-            ))}
-            <span className="lgr-badge">{(graph?.nodes || []).length} / {maxNodes} nodes</span>
-          </div>
+          <span className="lgr-badge">{(graph?.nodes || []).length} / {maxNodes} nodes</span>
           {onToggleExpand && (
             <button
               type="button"

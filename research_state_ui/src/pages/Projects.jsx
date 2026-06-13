@@ -32,7 +32,6 @@ export default function Projects() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <div className="page-eyebrow">Workspace</div>
             <h1 className="page-title">Projects</h1>
             <p className="page-summary">
               Every research project known to this backend. Each project owns a local directory

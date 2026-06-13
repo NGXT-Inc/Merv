@@ -45,7 +45,6 @@ export default function ExperimentCardList() {
   return (
     <div className="page-stage">
       <header className="page-header">
-        <div className="page-eyebrow">Experiments</div>
         <h1 className="page-title">What we try</h1>
       </header>
 

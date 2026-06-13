@@ -74,7 +74,6 @@ export default function Experiments() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <div className="page-eyebrow">Experiments</div>
             <h1 className="page-title">What we try</h1>
           </div>
           <div className="page-actions">

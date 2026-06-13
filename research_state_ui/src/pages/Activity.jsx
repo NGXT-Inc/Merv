@@ -132,7 +132,6 @@ export default function Activity() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <div className="page-eyebrow">Activity</div>
             <h1 className="page-title">Live MCP traffic</h1>
             <p className="page-summary">
               What the agent is calling, in real time. Defaults to <span className="mono">source = mcp</span>{' '}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink, Link, useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, Link, useLocation } from 'react-router-dom';
 import { useProjectStore, selectStats, selectSandboxes, selectActiveExperiments, selectReviewRequests } from '../store/useProjectStore';
 import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from '../components/ProjectSwitcher';

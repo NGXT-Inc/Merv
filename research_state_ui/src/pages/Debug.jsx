@@ -139,7 +139,6 @@ export default function Debug() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <div className="page-eyebrow">Debug</div>
             <h1 className="page-title">Tool I/O</h1>
             <p className="page-summary">
               Every MCP tool call with the exact bytes it <strong>sent</strong> and{' '}

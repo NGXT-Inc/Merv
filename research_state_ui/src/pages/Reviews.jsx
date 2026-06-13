@@ -50,7 +50,6 @@ export default function Reviews() {
   return (
     <div className="page-stage">
       <header className="page-header page-header--lg">
-        <div className="page-eyebrow">Reviews</div>
         <h1 className="page-title">Design & experiment review history</h1>
         <p className="page-summary">
           Reviewers (separate Codex sub-agents) submit verdicts through MCP. This page

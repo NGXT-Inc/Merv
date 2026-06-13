@@ -5,16 +5,10 @@ import {
   selectProject,
   selectStats,
   selectActiveExperiments,
-  selectActiveProcesses,
   selectClaims,
   selectExperiments,
-  selectEvents,
-  selectEventsAll,
   selectSandboxes,
-  selectReviewRequests,
 } from '../store/useProjectStore';
-import EventTimeline from '../components/EventTimeline';
-import ObjId from '../components/ObjId';
 import FSMStrip from '../components/FSMStrip';
 import StatusPill from '../components/StatusPill';
 import ActiveExperimentPager from '../components/ActiveExperimentPager';
@@ -25,12 +19,8 @@ export default function Home() {
   const project = useProjectStore(selectProject);
   const stats = useProjectStore(selectStats);
   const activeExperiments = useProjectStore(selectActiveExperiments);
-  const activeProcesses = useProjectStore(selectActiveProcesses);
-  const reviewRequests = useProjectStore(selectReviewRequests);
   const claims = useProjectStore(selectClaims);
   const experiments = useProjectStore(selectExperiments);
-  const events = useProjectStore(selectEvents);
-  const eventsAll = useProjectStore(selectEventsAll);
   const sandboxes = useProjectStore(selectSandboxes);
   const runningSandboxes = sandboxes.filter(s => s.status === 'running').length;
 
@@ -69,24 +59,9 @@ export default function Home() {
   return (
     <div className="page-stage">
       <header className="page-header page-header--lg">
-        <div className="page-eyebrow">
-          Project <ObjId id={project.id} className="page-eyebrow-id" />
-        </div>
         <h1 className="page-title">{project.name}</h1>
         {project.summary && <p className="page-summary">{project.summary}</p>}
       </header>
-
-      <section className="section">
-        <div className="section-title">
-          Sandboxes
-          {runningSandboxes > 0 && (
-            <span className="section-title-badge">
-              <span className="sidebar-live-dot" />{runningSandboxes} running
-            </span>
-          )}
-        </div>
-        <ActiveSandboxes sandboxes={sandboxes} experiments={experiments} />
-      </section>
 
       {workflow && (
         <section className="section section--focused-exp">
@@ -114,6 +89,18 @@ export default function Home() {
       <ProjectSynthesisPanel projectId={project.id} />
 
       <section className="section">
+        <div className="section-title">
+          Sandboxes
+          {runningSandboxes > 0 && (
+            <span className="section-title-badge">
+              <span className="sidebar-live-dot" />{runningSandboxes} running
+            </span>
+          )}
+        </div>
+        <ActiveSandboxes sandboxes={sandboxes} experiments={experiments} />
+      </section>
+
+      <section className="section">
         <div className="section-title">Counts</div>
         <div className="stat-grid">
           <StatCard label="Claims" value={stats.claims ?? claims.length} sub={countOf(claims, 'status', 'active') + ' active'} />
@@ -122,14 +109,6 @@ export default function Home() {
           <StatCard label="Sandboxes" value={runningSandboxes} sub="running" />
           <StatCard label="Open reviews" value={stats.open_reviews ?? stats.reviews ?? 0} />
         </div>
-      </section>
-
-      <section className="section">
-        <div className="cluster--between" style={{ marginBottom: 12 }}>
-          <div className="section-title" style={{ marginBottom: 0 }}>Recent events</div>
-          <Link to="/events" className="btn btn--sm btn--ghost">Full timeline →</Link>
-        </div>
-        <EventTimeline events={events} limit={15} />
       </section>
     </div>
   );

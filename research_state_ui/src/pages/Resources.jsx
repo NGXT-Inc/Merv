@@ -42,7 +42,6 @@ export default function Resources() {
           <header className="page-header page-header--lg">
             <div className="page-head-row">
               <div>
-                <div className="page-eyebrow">Resources</div>
                 <h1 className="page-title">Files we use or produce</h1>
                 <p className="page-summary">
                   Pick a file from the sidebar to preview it here. A resource is a regular file in

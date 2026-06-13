@@ -104,8 +104,6 @@ export const api = {
   // List + staleness/coverage signal for the Home panel.
   getSyntheses: (pid, signal) =>
     request(`/api/projects/${encodeURIComponent(pid)}/syntheses`, { signal }),
-  getSynthesis: (pid, sid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(sid)}`),
   // The living project logic graph (same payload shape as the experiment one).
   getProjectLogicGraph: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/syntheses/current/graph`),
