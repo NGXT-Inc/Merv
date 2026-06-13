@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate, Link } from 'react-router-dom';
-import { useProjectStore } from './store/useProjectStore';
+import { useProjectStore, selectActiveExperiments, selectSandboxes } from './store/useProjectStore';
 import { usePolling } from './store/usePolling';
 import { useViewport } from './store/useViewport';
 import Sidebar from './components/Sidebar';
@@ -34,8 +34,17 @@ export default function App() {
   const loadProjects = useProjectStore(s => s.loadProjects);
   const refreshHome = useProjectStore(s => s.refreshHome);
   const isMobile = useViewport();
-  // Mobile polls slower: cellular radio wakeups dominate battery cost.
-  usePolling(isMobile ? 5000 : 3000);
+  const activeExperiments = useProjectStore(selectActiveExperiments);
+  const sandboxes = useProjectStore(selectSandboxes);
+  // Adaptive cadence on mobile (review §1.3 / MOBILE_PLAN §3.5): poll fast only
+  // while something is live (a running experiment / sandbox), and decay to 30s
+  // on a quiet Now screen where each cellular radio wakeup is the dominant
+  // battery cost. Pull-to-refresh is the instant override. Desktop stays 3s.
+  const somethingLive =
+    activeExperiments.some(e => e.status === 'running') ||
+    sandboxes.some(s => s.status === 'running' || s.status === 'provisioning');
+  const interval = isMobile ? (somethingLive ? 5000 : 30000) : 3000;
+  usePolling(interval);
 
   useEffect(() => { loadProjects(); }, [loadProjects]);
 

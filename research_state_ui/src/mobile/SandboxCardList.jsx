@@ -142,7 +142,7 @@ function SandboxCard({ sandbox: s, experiment, parachute, open, onToggle }) {
 
       {open && (
         <div className="mcard-drawer">
-          <SandboxTerminal projectId={projectId} experimentId={s.experiment_id} />
+          <SandboxTerminal projectId={projectId} experimentId={s.experiment_id} readOnly />
         </div>
       )}
 

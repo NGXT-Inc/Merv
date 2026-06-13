@@ -460,3 +460,131 @@ html[data-surface="mobile"] .mfiles-body {
 }
 /* File-tree rows are 26px on desktop — bump to touch size here only. */
 html[data-surface="mobile"] .mfiles-body .ft-row { padding: 9px 6px; }
+
+/* =====================================================================
+   MOBILE-NATIVE PRIMITIVES (review §3) — bottom sheet, pull-to-refresh,
+   toasts, skeletons, slide-to-confirm, graph outline, sparkline charts.
+   ===================================================================== */
+
+/* ── BottomSheet: drag-to-dismiss + enlarged grip zone ─────────────── */
+html[data-surface="mobile"] .msheet {
+  transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+html[data-surface="mobile"] .msheet-grip-zone {
+  padding: 6px 0 8px;
+  margin: -10px -16px 2px;
+  touch-action: none;
+  cursor: grab;
+}
+html[data-surface="mobile"] .msheet-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 2px 0 8px;
+}
+
+/* ── Pull-to-refresh indicator ─────────────────────────────────────── */
+html[data-surface="mobile"] .mptr {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mptr-icon {
+  font-size: 20px;
+  line-height: 1;
+  padding-bottom: 8px;
+  display: inline-block;
+}
+html[data-surface="mobile"] .mptr-icon.is-spinning {
+  animation: mptr-spin 0.7s linear infinite;
+}
+@keyframes mptr-spin { to { transform: rotate(360deg); } }
+
+/* ── Toasts ────────────────────────────────────────────────────────── */
+html[data-surface="mobile"] .mtoast-host {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  pointer-events: none;
+}
+html[data-surface="mobile"] .mtoast {
+  max-width: 92%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--text);
+  color: var(--bg);
+  font-size: var(--text-sm);
+  box-shadow: var(--shadow-md);
+  animation: mtoast-in 0.18s ease;
+}
+html[data-surface="mobile"] .mtoast--error { background: var(--refutes); color: #fff; }
+html[data-surface="mobile"] .mtoast--success { background: var(--supports); color: #fff; }
+@keyframes mtoast-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* ── Skeletons ─────────────────────────────────────────────────────── */
+html[data-surface="mobile"] .mskel { display: flex; flex-direction: column; gap: 8px; }
+html[data-surface="mobile"] .mskel-card { display: flex; flex-direction: column; gap: 8px; }
+html[data-surface="mobile"] .mskel-line {
+  height: 11px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg-soft) 25%, var(--line) 50%, var(--bg-soft) 75%);
+  background-size: 200% 100%;
+  animation: mskel-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes mskel-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  html[data-surface="mobile"] .mskel-line,
+  html[data-surface="mobile"] .mptr-icon.is-spinning { animation: none; }
+}
+
+/* ── Slide-to-confirm ──────────────────────────────────────────────── */
+html[data-surface="mobile"] .slide-confirm {
+  position: relative;
+  height: 52px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(var(--refutes-rgb), 0.5);
+  background: rgba(var(--refutes-rgb), 0.07);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  user-select: none;
+  touch-action: pan-y;
+}
+html[data-surface="mobile"] .slide-confirm.is-armed {
+  border-color: var(--refutes);
+  background: rgba(var(--refutes-rgb), 0.16);
+}
+html[data-surface="mobile"] .slide-confirm-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--refutes);
+  pointer-events: none;
+}
+html[data-surface="mobile"] .slide-confirm-knob {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: var(--refutes);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.18s ease;
+  touch-action: none;
+}

@@ -54,6 +54,15 @@ export default function MobileExperimentDetail() {
     }
   }, [projectId, experimentId]);
 
+  // Navigating experiment→experiment keeps this component mounted; without a
+  // reset the old experiment flashes for a tick and the landing segment never
+  // re-defaults to the new one's lifecycle (docs/MOBILE_UX_REVIEW.md §1.8).
+  useEffect(() => {
+    setStatusData(null);
+    setSegment(null);
+    setError(null);
+  }, [experimentId]);
+
   useEffect(() => {
     let cancelled = false;
     fetchStatus();
@@ -174,7 +183,7 @@ export default function MobileExperimentDetail() {
       )}
 
       {seg === 'run' && (
-        <SandboxTerminal projectId={projectId} experimentId={experimentId} />
+        <SandboxTerminal projectId={projectId} experimentId={experimentId} readOnly />
       )}
 
       {seg === 'outcomes' && (
