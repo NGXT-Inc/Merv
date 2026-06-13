@@ -485,6 +485,7 @@ html[data-surface="mobile"] .msheet-title {
 /* ── Pull-to-refresh indicator ─────────────────────────────────────── */
 html[data-surface="mobile"] .mptr {
   display: flex;
+  flex-shrink: 0;
   align-items: flex-end;
   justify-content: center;
   overflow: hidden;

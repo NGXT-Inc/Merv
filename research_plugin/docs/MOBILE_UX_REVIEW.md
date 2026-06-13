@@ -11,6 +11,19 @@ shipped against a real phone viewport, finds the gaps between plan and code, and
 turns them into concrete, prioritized work. Where the plan already anticipated a
 problem, this review marks it **[plan-known]** and reports its current status.
 
+> **Implementation status — 2026-06-13.** The P0/P1/most-P2 items in this review
+> were implemented (all in `src/mobile/` + the surface-scoped `mobile.css`, plus
+> the one shared `SandboxTerminal` visibility-pause that lands on desktop too).
+> Delivered: read-only embedded terminal + iframe suppression + poller pause;
+> the `BottomSheet`/`useScrollLock`/`usePullToRefresh`/`toast`/`Skeleton`/
+> `SlideToConfirm`/SVG-icon primitives; adaptive polling; on-device graphs
+> (`GraphOutline` + lazy fullscreen `GraphCanvasOverlay`, new Graph segment);
+> SVG metric curves (`Sparkline`/`MobileMetricsPanel`); read-only `MobileClaims`/
+> `MobileReviews`/`MobileProjects` + bootstrap notice; slide-to-confirm release;
+> the synthesis card + counts strip on Now; reused-page CSS fixes; and a minimal
+> PWA manifest. Still open: a true Web Push/badge channel, a service worker, the
+> VisualDag node-list fallback, and a full card treatment for Debug — see §5.
+
 ---
 
 ## 0. What shipped vs. what was planned
@@ -25,14 +38,14 @@ through the "one app, two shells" gate (`useViewport` → `MobileShell`):
 | NowScreen (needs-you / in-flight / sandboxes / recent) | 1 | ✅ | `mobile/NowScreen.jsx` |
 | ExperimentCardList + filter chips | 1 | ✅ | `mobile/ExperimentCardList.jsx` |
 | MobileExperimentDetail (segmented control) | 2 | ✅ | Status / Plan / Run / Outcomes |
-| SandboxCardList + slide-to-confirm release | 2 | ◑ | inline two-step confirm, not a *slide* (§3.5) |
+| SandboxCardList + slide-to-confirm release | 2 | ✅ | now a real `SlideToConfirm` + toast/haptic (§3.5) |
 | MobileResources (in-page FileTree) | 3 | ✅ | `mobile/MobileResources.jsx` |
-| **Adaptive polling** (5s live → 30–60s idle) | 1 | ❌ | fixed `usePolling(5000)` in `App.jsx:38` |
-| **Pull-to-refresh** | 1 | ❌ | only a "Refresh now" button in the More sheet |
-| **MetricsChart** (SVG curves, no iframe) | 2 | ❌ | only final-value grid (`ResultsMetricsPanel`) |
-| **No iframes on mobile** | 2 | ❌ | `SandboxTerminal` still embeds MLflow/TensorBoard iframes |
-| **GraphOutline + fullscreen graph** | 3 | ❌ | figure & logic graph are *absent* on mobile |
-| PWA manifest / service worker / badges | 3 | ❌ | not present |
+| **Adaptive polling** (5s live → 30–60s idle) | 1 | ✅ | derived interval in `App.jsx`; 30s when idle |
+| **Pull-to-refresh** | 1 | ✅ | `usePullToRefresh` wired in the shell |
+| **MetricsChart** (SVG curves, no iframe) | 2 | ✅ | `Sparkline` + `MobileMetricsPanel` in Outcomes |
+| **No iframes on mobile** | 2 | ✅ | `SandboxTerminal readOnly` drops the iframe tabs |
+| **GraphOutline + fullscreen graph** | 3 | ✅ | `GraphOutline` + lazy `GraphCanvasOverlay`, Graph segment |
+| PWA manifest / service worker / badges | 3 | ◑ | manifest + icon + apple/theme metas; no SW/badges |
 | VisualDag node-list fallback | 3 (cut) | ❌ | "desktop only" notice only |
 
 **Headline:** the *navigation and triage* story (Phase 1) is solid and genuinely
