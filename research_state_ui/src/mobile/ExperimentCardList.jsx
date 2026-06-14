@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useProjectStore, selectExperiments } from '../store/useProjectStore';
 import StatusPill from '../components/StatusPill';
+import { SkeletonCards } from './Skeleton';
 import { expName } from '../utils/experiment';
 import { fmtDayTime, fmtDuration } from '../utils/format';
 import { classifyExperiment, outcomeColor, outcomeGlyph } from '../utils/evidence';
@@ -23,6 +24,7 @@ function isTerminal(status) {
  */
 export default function ExperimentCardList() {
   const experiments = useProjectStore(selectExperiments);
+  const home = useProjectStore(s => s.home);
   const [filter, setFilter] = useState('all');
 
   const counts = useMemo(() => {
@@ -41,6 +43,15 @@ export default function ExperimentCardList() {
   }, [experiments, filter]);
 
   const chips = ['all', ...STATUS_ORDER.filter(s => counts[s])];
+
+  if (!home) {
+    return (
+      <div className="page-stage">
+        <header className="page-header"><h1 className="page-title">What we try</h1></header>
+        <SkeletonCards />
+      </div>
+    );
+  }
 
   return (
     <div className="page-stage">

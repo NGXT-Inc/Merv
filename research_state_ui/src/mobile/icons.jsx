@@ -1,0 +1,64 @@
+/**
+ * Inline SVG nav/glyph icons — replace the Unicode symbols (◉ ⚗ ≋ ⋯) that
+ * render inconsistently across Android/iOS system fonts. Stroke uses
+ * currentColor so the active-tab color flows through unchanged.
+ * docs/MOBILE_UX_REVIEW.md §2.1 / §3.1.
+ */
+const base = {
+  width: 22,
+  height: 22,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.8,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true,
+};
+
+export function IconNow(props) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function IconExperiments(props) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M9 3h6" />
+      <path d="M10 3v6.5L5.5 17.5A2 2 0 0 0 7.3 20.5h9.4a2 2 0 0 0 1.8-3L14 9.5V3" />
+      <path d="M8 15h8" />
+    </svg>
+  );
+}
+
+export function IconActivity(props) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 12h3l2.5-7 4 14 2.5-9 2 2H21" />
+    </svg>
+  );
+}
+
+export function IconMore(props) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+export function IconChevron({ dir = 'right', ...props }) {
+  const d = {
+    right: 'M9 6l6 6-6 6',
+    left: 'M15 6l-6 6 6 6',
+    down: 'M6 9l6 6 6-6',
+    up: 'M6 15l6-6 6 6',
+  }[dir];
+  return <svg {...base} width={16} height={16} {...props}><path d={d} /></svg>;
+}

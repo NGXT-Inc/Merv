@@ -32,7 +32,7 @@ const TERMINAL_POLL_MS = 1500;
 // Client-side scrollback cap: keep memory bounded on day-long sandboxes.
 const MAX_ACCUMULATED_CHARS = 2_000_000;
 
-export default function SandboxTerminal({ projectId, experimentId }) {
+export default function SandboxTerminal({ projectId, experimentId, readOnly = false }) {
   const [sandbox, setSandbox] = useState(null);
   const [transcript, setTranscript] = useState(null);
   const [termMeta, setTermMeta] = useState(null);
@@ -113,24 +113,35 @@ export default function SandboxTerminal({ projectId, experimentId }) {
     }
   }, [projectId, experimentId, sandboxId]);
 
+  // Pause polling while the tab/app is backgrounded and refresh on return.
+  // Without this the 3s sandbox poll keeps the radio awake on a locked phone
+  // (and the 1.5s terminal poll below is worse) — a live battery bug on every
+  // surface, called out in docs/MOBILE_UX_REVIEW.md §1.4.
   useEffect(() => {
     let cancelled = false;
     fetchOnce();
-    const tick = () => { if (!cancelled) fetchOnce(); };
+    const tick = () => { if (!cancelled && document.visibilityState === 'visible') fetchOnce(); };
     const t = setInterval(tick, 3000);
-    return () => { cancelled = true; clearInterval(t); };
+    const onVis = () => { if (document.visibilityState === 'visible') fetchOnce(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { cancelled = true; clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
   }, [fetchOnce]);
 
   // Terminal poll: fast incremental while the sandbox is live, a single fetch
-  // otherwise (a dead sandbox's transcript no longer changes).
+  // otherwise (a dead sandbox's transcript no longer changes). Also paused on
+  // hide, with an immediate catch-up on return.
   useEffect(() => {
     if (!sandboxId) return undefined;
     let cancelled = false;
-    const tick = () => { if (!cancelled) pollTerminal(); };
+    const tick = () => { if (!cancelled && document.visibilityState === 'visible') pollTerminal(); };
     tick();
-    if (!isLiveSandbox) return () => { cancelled = true; };
+    const onVis = () => { if (document.visibilityState === 'visible') pollTerminal(); };
+    document.addEventListener('visibilitychange', onVis);
+    if (!isLiveSandbox) {
+      return () => { cancelled = true; document.removeEventListener('visibilitychange', onVis); };
+    }
     const t = setInterval(tick, TERMINAL_POLL_MS);
-    return () => { cancelled = true; clearInterval(t); };
+    return () => { cancelled = true; clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
   }, [pollTerminal, sandboxId, isLiveSandbox]);
 
   const onRelease = useCallback(async () => {
@@ -159,7 +170,10 @@ export default function SandboxTerminal({ projectId, experimentId }) {
           {hasPanel && <StatusPill value={status} />}
           {isLive && <span className="log-tail-live-dot" title="live" />}
         </div>
-        {(isLive || isProvisioning) && (
+        {/* readOnly hides the release path here so it flows only through the
+            guarded slide-to-confirm on the Sandboxes screen (mobile) — see
+            docs/MOBILE_UX_REVIEW.md §1.2. */}
+        {!readOnly && (isLive || isProvisioning) && (
           <button className="btn btn--sm btn--ghost" onClick={onRelease} disabled={releasing}>
             {releasing ? 'Releasing…' : isProvisioning ? 'Cancel' : 'Release sandbox'}
           </button>
@@ -206,6 +220,7 @@ export default function SandboxTerminal({ projectId, experimentId }) {
             setShowRaw={setShowRaw}
             activeTab={activeTab}
             setActiveTab={setActiveTab}
+            readOnly={readOnly}
           />
         </>
       )}
@@ -230,11 +245,15 @@ function SandboxPanelTabs({
   setShowRaw,
   activeTab,
   setActiveTab,
+  readOnly = false,
 }) {
   const dashboards = sandbox?.dashboards || {};
-  const availableTabs = PANEL_TABS.filter(
-    (t) => t.key === 'terminal' || dashboards[t.key],
-  );
+  // readOnly (mobile) drops the MLflow/TensorBoard iframe tabs: those URLs are
+  // usually 127.0.0.1 SSH forwards owned by the desktop and never load on the
+  // phone — see docs/MOBILE_UX_REVIEW.md §1.5.
+  const availableTabs = readOnly
+    ? PANEL_TABS.filter((t) => t.key === 'terminal')
+    : PANEL_TABS.filter((t) => t.key === 'terminal' || dashboards[t.key]);
   const effectiveTab = availableTabs.some((t) => t.key === activeTab)
     ? activeTab
     : 'terminal';

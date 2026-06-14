@@ -7,12 +7,15 @@ import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
 import ReportSpotlight from '../components/ReportSpotlight';
 import OutcomesSection from '../components/OutcomesSection';
-import ResultsMetricsPanel from '../components/ResultsMetricsPanel';
 import SandboxTerminal from '../components/SandboxTerminal';
+import MobileGraphSection from './MobileGraphSection';
+import MobileMetricsPanel from './MobileMetricsPanel';
+import { Skeleton } from './Skeleton';
 import { expName } from '../utils/experiment';
 
 const SEGMENTS = [
   { id: 'status',   label: 'Status' },
+  { id: 'graph',    label: 'Graph' },
   { id: 'plan',     label: 'Plan' },
   { id: 'run',      label: 'Run' },
   { id: 'outcomes', label: 'Outcomes' },
@@ -54,6 +57,15 @@ export default function MobileExperimentDetail() {
     }
   }, [projectId, experimentId]);
 
+  // Navigating experiment→experiment keeps this component mounted; without a
+  // reset the old experiment flashes for a tick and the landing segment never
+  // re-defaults to the new one's lifecycle (docs/MOBILE_UX_REVIEW.md §1.8).
+  useEffect(() => {
+    setStatusData(null);
+    setSegment(null);
+    setError(null);
+  }, [experimentId]);
+
   useEffect(() => {
     let cancelled = false;
     fetchStatus();
@@ -82,7 +94,12 @@ export default function MobileExperimentDetail() {
     );
   }
   if (!experiment) {
-    return <div className="page-stage"><div className="empty">Loading…</div></div>;
+    return (
+      <div className="page-stage">
+        <header className="page-header"><Skeleton lines={1} /></header>
+        <Skeleton lines={5} />
+      </div>
+    );
   }
 
   const currentAttempt = experiment.attempt_index;
@@ -155,6 +172,15 @@ export default function MobileExperimentDetail() {
         />
       )}
 
+      {seg === 'graph' && (
+        <MobileGraphSection
+          projectId={projectId}
+          experimentId={experimentId}
+          experimentStatus={experiment.status}
+          attemptIndex={currentAttempt}
+        />
+      )}
+
       {seg === 'plan' && (
         <>
           <PlanSpotlight
@@ -174,7 +200,7 @@ export default function MobileExperimentDetail() {
       )}
 
       {seg === 'run' && (
-        <SandboxTerminal projectId={projectId} experimentId={experimentId} />
+        <SandboxTerminal projectId={projectId} experimentId={experimentId} readOnly />
       )}
 
       {seg === 'outcomes' && (
@@ -193,7 +219,7 @@ export default function MobileExperimentDetail() {
             experimentReviews={experimentReviews}
             experimentStatus={experiment.status}
           />
-          <ResultsMetricsPanel projectId={projectId} experimentId={experimentId} />
+          <MobileMetricsPanel projectId={projectId} experimentId={experimentId} />
         </>
       )}
     </div>

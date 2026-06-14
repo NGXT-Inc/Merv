@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate, Link } from 'react-router-dom';
-import { useProjectStore } from './store/useProjectStore';
+import { useProjectStore, selectActiveExperiments, selectSandboxes } from './store/useProjectStore';
 import { usePolling } from './store/usePolling';
 import { useViewport } from './store/useViewport';
 import Sidebar from './components/Sidebar';
@@ -11,6 +11,10 @@ import ExperimentCardList from './mobile/ExperimentCardList';
 import MobileExperimentDetail from './mobile/MobileExperimentDetail';
 import SandboxCardList from './mobile/SandboxCardList';
 import MobileResources from './mobile/MobileResources';
+import MobileClaims from './mobile/MobileClaims';
+import MobileReviews from './mobile/MobileReviews';
+import MobileProjects from './mobile/MobileProjects';
+import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
 import Home from './pages/Home';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
@@ -34,8 +38,17 @@ export default function App() {
   const loadProjects = useProjectStore(s => s.loadProjects);
   const refreshHome = useProjectStore(s => s.refreshHome);
   const isMobile = useViewport();
-  // Mobile polls slower: cellular radio wakeups dominate battery cost.
-  usePolling(isMobile ? 5000 : 3000);
+  const activeExperiments = useProjectStore(selectActiveExperiments);
+  const sandboxes = useProjectStore(selectSandboxes);
+  // Adaptive cadence on mobile (review §1.3 / MOBILE_PLAN §3.5): poll fast only
+  // while something is live (a running experiment / sandbox), and decay to 30s
+  // on a quiet Now screen where each cellular radio wakeup is the dominant
+  // battery cost. Pull-to-refresh is the instant override. Desktop stays 3s.
+  const somethingLive =
+    activeExperiments.some(e => e.status === 'running') ||
+    sandboxes.some(s => s.status === 'running' || s.status === 'provisioning');
+  const interval = isMobile ? (somethingLive ? 5000 : 30000) : 3000;
+  usePolling(interval);
 
   useEffect(() => { loadProjects(); }, [loadProjects]);
 
@@ -58,8 +71,9 @@ export default function App() {
     );
   }
   // Bootstrap: no projects yet → render bare CreateProject without the shell.
+  // On mobile the directory-path form is unfillable, so show an honest notice.
   if (projects.length === 0) {
-    return <CreateProject bootstrap />;
+    return isMobile ? <MobileProjectCreateNotice bootstrap /> : <CreateProject bootstrap />;
   }
   // Have projects but no active selection (race during setProjectId clearing) → wait.
   if (!projectId) {
@@ -75,15 +89,15 @@ export default function App() {
         <CompatBanner />
         <Routes>
           <Route path="/" element={<NowScreen />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/projects/new" element={<CreateProject />} />
-          <Route path="/claims" element={<Claims />} />
+          <Route path="/projects" element={<MobileProjects />} />
+          <Route path="/projects/new" element={<MobileProjectCreateNotice />} />
+          <Route path="/claims" element={<MobileClaims />} />
           <Route path="/claims/:claimId" element={<ClaimDetail />} />
           <Route path="/experiments" element={<ExperimentCardList />} />
           <Route path="/experiments/:experimentId" element={<MobileExperimentDetail />} />
           <Route path="/resources" element={<MobileResources />} />
           <Route path="/resources/:resourceId" element={<MobileResources />} />
-          <Route path="/reviews" element={<Reviews />} />
+          <Route path="/reviews" element={<MobileReviews />} />
           <Route path="/events" element={<Events />} />
           <Route path="/sandboxes" element={<SandboxCardList />} />
           <Route path="/activity" element={<Activity />} />

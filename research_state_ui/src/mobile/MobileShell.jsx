@@ -4,6 +4,10 @@ import { useProjectStore, selectStats, selectSandboxes, selectActiveExperiments,
 import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from '../components/ProjectSwitcher';
 import { setSurfaceOverride } from '../store/useViewport';
+import BottomSheet from './BottomSheet';
+import ToastHost from './Toast';
+import { usePullToRefresh } from './usePullToRefresh';
+import { IconNow, IconExperiments, IconActivity, IconMore } from './icons';
 
 const NEXT_THEME_MODE = { light: 'dark', dark: 'system', system: 'light' };
 
@@ -22,10 +26,11 @@ function fmtSyncedAgo(ms, now) {
 }
 
 /**
- * Mobile app shell: top bar (project · freshness · theme), routed content,
- * 4-tab bottom nav, and a More sheet hosting everything that lives in the
- * desktop sidebar. While mounted it tags <html data-surface="mobile"> so
- * mobile.css applies — desktop styling is untouched by construction.
+ * Mobile app shell: top bar (project · freshness · theme), pull-to-refresh,
+ * routed content, 4-tab bottom nav, and a More sheet hosting everything that
+ * lives in the desktop sidebar. While mounted it tags <html
+ * data-surface="mobile"> so mobile.css applies — desktop styling is untouched
+ * by construction.
  */
 export default function MobileShell({ children, onRefresh }) {
   const location = useLocation();
@@ -36,6 +41,7 @@ export default function MobileShell({ children, onRefresh }) {
   const activeExperiments = useProjectStore(selectActiveExperiments);
   const reviewRequests = useProjectStore(selectReviewRequests);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const { distance, refreshing } = usePullToRefresh(onRefresh);
   // 10s tick so the "synced Xs" label and staleness stay honest even when
   // polling has stopped delivering new store state (unreachable daemon).
   const [now, setNow] = useState(Date.now());
@@ -71,20 +77,26 @@ export default function MobileShell({ children, onRefresh }) {
         <ThemeButton />
       </header>
 
+      {(distance > 0 || refreshing) && (
+        <div className="mptr" style={{ height: refreshing ? 44 : distance }} aria-hidden="true">
+          <span className={`mptr-icon${refreshing ? ' is-spinning' : ''}`}>↻</span>
+        </div>
+      )}
+
       <main className="mshell-main">{children}</main>
 
       <nav className="mnav" aria-label="Primary">
         <NavLink to="/" end className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
-          <span className="mnav-glyph" aria-hidden="true">◉</span>
+          <IconNow className="mnav-glyph" />
           Now
           {attentionCount > 0 && <span className="mnav-badge">{attentionCount}</span>}
         </NavLink>
         <NavLink to="/experiments" className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
-          <span className="mnav-glyph" aria-hidden="true">⚗</span>
+          <IconExperiments className="mnav-glyph" />
           Experiments
         </NavLink>
         <NavLink to="/events" className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
-          <span className="mnav-glyph" aria-hidden="true">≋</span>
+          <IconActivity className="mnav-glyph" />
           Activity
         </NavLink>
         <button
@@ -93,12 +105,13 @@ export default function MobileShell({ children, onRefresh }) {
           onClick={() => setSheetOpen(v => !v)}
           aria-expanded={sheetOpen}
         >
-          <span className="mnav-glyph" aria-hidden="true">⋯</span>
+          <IconMore className="mnav-glyph" />
           More
         </button>
       </nav>
 
-      {sheetOpen && <MoreSheet onClose={() => setSheetOpen(false)} onRefresh={onRefresh} />}
+      <MoreSheet open={sheetOpen} onClose={() => setSheetOpen(false)} onRefresh={onRefresh} />
+      <ToastHost />
     </div>
   );
 }
@@ -117,46 +130,44 @@ function ThemeButton() {
   );
 }
 
-function MoreSheet({ onClose, onRefresh }) {
+function MoreSheet({ open, onClose, onRefresh }) {
   const stats = useProjectStore(selectStats);
   const home = useProjectStore(s => s.home);
   const lastSyncError = useProjectStore(s => s.lastSyncError);
   const sandboxes = useProjectStore(selectSandboxes);
   const runningSandboxes = sandboxes.filter(s => s.status === 'running').length;
 
-  return (
+  const footer = (
     <>
-      <div className="msheet-backdrop" onClick={onClose} />
-      <div className="msheet" role="dialog" aria-label="More">
-        <div className="msheet-grip" aria-hidden="true" />
-
-        <ProjectSwitcher />
-
-        <div className="msheet-section">Browse</div>
-        <SheetLink to="/claims" label="Claims" count={stats.claims ?? home?.claims?.length ?? 0} />
-        <SheetLink to="/reviews" label="Reviews" count={stats.open_reviews ?? stats.reviews ?? 0} />
-        <SheetLink to="/resources" label="Resources" count={stats.resources ?? 0} />
-        <SheetLink to="/sandboxes" label="Sandboxes" count={runningSandboxes ? `${runningSandboxes} running` : null} />
-        <SheetLink to="/projects" label="Projects" />
-
-        <div className="msheet-section">Forensics</div>
-        <SheetLink to="/activity" label="Live traffic" />
-        <SheetLink to="/debug" label="Tool I/O" note="desktop recommended" />
-        <SheetLink to="/visual/dag" label="Logic DAG" note="desktop recommended" />
-
-        <div className="msheet-foot">
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => { onRefresh?.(); onClose(); }}>
-            Refresh now
-          </button>
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setSurfaceOverride('desktop')}>
-            Use desktop layout
-          </button>
-        </div>
-        {lastSyncError && (
-          <div className="error-message" style={{ marginTop: 10, fontSize: 11 }}>{lastSyncError}</div>
-        )}
-      </div>
+      <button type="button" className="btn btn--ghost btn--sm" onClick={() => { onRefresh?.(); onClose(); }}>
+        Refresh now
+      </button>
+      <button type="button" className="btn btn--ghost btn--sm" onClick={() => setSurfaceOverride('desktop')}>
+        Use desktop layout
+      </button>
     </>
+  );
+
+  return (
+    <BottomSheet open={open} onClose={onClose} label="More" footer={footer}>
+      <ProjectSwitcher />
+
+      <div className="msheet-section">Browse</div>
+      <SheetLink to="/claims" label="Claims" count={stats.claims ?? home?.claims?.length ?? 0} />
+      <SheetLink to="/reviews" label="Reviews" count={stats.open_reviews ?? stats.reviews ?? 0} />
+      <SheetLink to="/resources" label="Resources" count={stats.resources ?? 0} />
+      <SheetLink to="/sandboxes" label="Sandboxes" count={runningSandboxes ? `${runningSandboxes} running` : null} />
+      <SheetLink to="/projects" label="Projects" />
+
+      <div className="msheet-section">Forensics</div>
+      <SheetLink to="/activity" label="Live traffic" />
+      <SheetLink to="/debug" label="Tool I/O" note="desktop recommended" />
+      <SheetLink to="/visual/dag" label="Logic DAG" note="desktop recommended" />
+
+      {lastSyncError && (
+        <div className="error-message" style={{ marginTop: 10, fontSize: 11 }}>{lastSyncError}</div>
+      )}
+    </BottomSheet>
   );
 }
 

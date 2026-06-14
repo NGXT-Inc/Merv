@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import JsonView from '../components/JsonView';
 import { tsToTime } from '../utils/format';
+import { useViewport } from '../store/useViewport';
 
 /**
  * Debug — MCP tool I/O analyzer.
@@ -50,6 +51,7 @@ const CALL_COLS = [
 ];
 
 export default function Debug() {
+  const isMobile = useViewport();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [paused, setPaused] = useState(false);
@@ -155,7 +157,9 @@ export default function Debug() {
               {paused ? 'Resume' : 'Pause'}
             </button>
             <button className="btn btn--sm btn--ghost" onClick={fetchNow}>Refresh</button>
-            <button className="btn btn--sm btn--ghost" onClick={onClear}>Clear</button>
+            {/* Clear wipes the recorded tool-call ring — a mutation; mobile is
+                read-only (docs/MOBILE_UX_REVIEW.md §1.2). */}
+            {!isMobile && <button className="btn btn--sm btn--ghost" onClick={onClear}>Clear</button>}
           </div>
         </div>
 
