@@ -28,6 +28,7 @@ from .sandbox_registry import SandboxRegistry
 from .sandbox_support import (
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     DEFAULT_REAPER_INTERVAL_SECONDS,
+    DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
     env_float,
     parse_iso,
 )
@@ -122,9 +123,25 @@ class SandboxDaemons:
             None,
             DEFAULT_REAPER_INTERVAL_SECONDS,
         )
+        stale_deadline = env_float(
+            "RESEARCH_PLUGIN_SANDBOX_STALE_PROVISION_DEADLINE",
+            None,
+            DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
+        )
         while not self._reaper_stop.wait(interval):
             try:
                 self.reap_expired()
+            except Exception:  # noqa: BLE001 — the reaper must never die
+                pass
+            # The reaper handles `running` rows by expires_at; a provision that
+            # wedged before reaching `running` (daemon crash mid-provision) has
+            # no expires_at, so without this its billing VM would leak until the
+            # agent happened to re-poll. In local mode this thread is the only
+            # proactive billing backstop (CleanupService runs only in the cloud).
+            try:
+                self.provisioner.reap_stale_provisions(
+                    now=datetime.now(tz=UTC), deadline_seconds=stale_deadline
+                )
             except Exception:  # noqa: BLE001 — the reaper must never die
                 pass
 

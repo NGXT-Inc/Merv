@@ -49,6 +49,14 @@ DEFAULT_REQUEST_WAIT_SECONDS = 45.0
 # Backstop: a `provisioning` row this old whose job is no longer in this process
 # (daemon restart, or a wedged acquire) is reconciled to `failed`.
 DEFAULT_STALE_PROVISION_SECONDS = 15 * 60.0
+# Billing backstop for a provision that wedged before reaching `running` (daemon
+# crash, host reboot, OOM): a `provisioning` row older than this whose job is
+# gone has its provider VM reaped, in ANY pre-running phase (the VM exists from
+# `creating` onward). Generous enough to clear a slow Lambda cold boot + first
+# sync, well under an hour. Drives both the reaper thread (every mode) and the
+# control-plane stale-provision sweep, so a wedged provision is bounded, never
+# an indefinite billing leak.
+DEFAULT_STALE_PROVISION_DEADLINE_SECONDS = 10 * 60.0
 # Cadence hint handed to the agent while provisioning. Lambda VMs commonly
 # take 5-15 minutes to boot and bootstrap, so a tighter cadence just burns
 # calls without learning anything new.

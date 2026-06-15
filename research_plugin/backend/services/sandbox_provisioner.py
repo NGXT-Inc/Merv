@@ -450,6 +450,68 @@ class SandboxProvisioner:
             fields["sandbox_name"] = sandbox_name
         self.registry.upsert(experiment_id=experiment_id, **fields)
 
+    def reap_stale_provisions(
+        self, *, now: datetime, deadline_seconds: float
+    ) -> int:
+        """Terminate billing VMs left by provisions that wedged past the deadline.
+
+        A provisioning row is written *before* ``acquire`` runs, and the provider
+        VM can exist from the ``creating`` phase onward (Lambda launches the
+        instance there; Modal creates the sandbox just before ``on_created``). If
+        the job dies — daemon crash/restart, OOM, host reboot — the row stays
+        ``provisioning`` with a live, billing VM behind it. ``cleanup_orphan``
+        reaps it whether or not the id was recorded (deterministic-name lookup),
+        but nothing *triggers* that without the agent happening to re-poll. This
+        is that trigger: any provisioning row older than ``deadline_seconds``
+        whose job is not alive in this process is wedged by definition (a healthy
+        provision flips to ``running`` in a couple of minutes) and gets reaped.
+
+        Two independent guards keep it from killing a healthy in-flight provision:
+        the in-process live-job check (covers local mode, where the job runs
+        here — Lambda's 5-15 min cold boot must not be reaped from under itself)
+        and the wall-clock deadline (covers the control plane, which cannot see
+        the data-plane job thread). Idempotent and best-effort per row; returns
+        how many were reaped.
+        """
+        reaped = 0
+        for row in self.registry.list_rows_by_status(status="provisioning"):
+            experiment_id = str(row.get("experiment_id") or "")
+            with self._jobs_lock:
+                job = self._jobs.get(experiment_id)
+                if job is not None and job.thread.is_alive():
+                    continue  # a live job in this process still owns it
+            started = parse_iso(row.get("provision_started_at"))
+            if started is None or (now - started).total_seconds() < deadline_seconds:
+                continue
+            # The job may have JUST settled the row between the list and here;
+            # only reap one that is still provisioning.
+            fresh = self.registry.load_row(experiment_id=experiment_id)
+            if fresh.get("status") != "provisioning":
+                continue
+            try:
+                self.cleanup_orphan(experiment_id=experiment_id, row=fresh)
+                self.registry.mark_failed(
+                    experiment_id=experiment_id,
+                    error=(
+                        "provisioning wedged past deadline (daemon offline?); "
+                        "the sandbox was terminated — call sandbox.request again"
+                    ),
+                )
+                self.registry.emit_event(
+                    project_id=str(fresh.get("project_id") or ""),
+                    event_type="sandbox.failed",
+                    experiment_id=experiment_id,
+                    payload={
+                        "error": "stale provision reaped",
+                        "phase": fresh.get("phase", ""),
+                        "sandbox_id": fresh.get("sandbox_id", ""),
+                    },
+                )
+                reaped += 1
+            except Exception:  # noqa: BLE001 — one bad row never aborts the pass
+                continue
+        return reaped
+
     def cleanup_orphan(self, *, experiment_id: str, row: dict[str, Any] | None) -> None:
         """Best-effort terminate any sandbox tied to this experiment.
 

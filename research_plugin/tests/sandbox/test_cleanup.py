@@ -167,6 +167,53 @@ class CleanupSweepTest(unittest.TestCase):
         # The billing VM was terminated by cleanup_orphan.
         self.assertIn("sb-wedged", self.backend.terminated)
 
+    def test_stale_provision_reaped_in_earlier_phase(self) -> None:
+        # A daemon crash during `connecting` (Lambda waiting for boot + SSH)
+        # leaves a billing VM in a provisioning phase that is NOT
+        # awaiting_initial_push. The sweep must still reap it — the VM exists
+        # from `creating` onward, so the old phase guard would have leaked it.
+        exp_id = self._experiment()
+        self.app.sandboxes.registry.upsert(
+            experiment_id=exp_id,
+            project_id=self.project_id,
+            sandbox_id="sb-connecting",
+            status="provisioning",
+            phase="connecting",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.backend.alive["sb-connecting"] = True
+        self.backend.by_experiment[exp_id] = "sb-connecting"
+        now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
+        reaped = self.cleanup.sweep_stale_provisions(now=now)
+        self.assertEqual(reaped, 1)
+        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("sb-connecting", self.backend.terminated)
+
+    def test_stale_provision_reaped_before_id_recorded(self) -> None:
+        # Crash in the narrow window after the provider created the VM but
+        # before on_created persisted its id: the row has an empty sandbox_id,
+        # so the reap can only find the VM by its deterministic name
+        # (cleanup_orphan -> backend.find_sandbox_id). It must still be killed.
+        exp_id = self._experiment()
+        self.app.sandboxes.registry.upsert(
+            experiment_id=exp_id,
+            project_id=self.project_id,
+            sandbox_id="",
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        # Only the deterministic-name lookup knows about this VM.
+        self.backend.alive["sb-unrecorded"] = True
+        self.backend.by_experiment[exp_id] = "sb-unrecorded"
+        now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
+        reaped = self.cleanup.sweep_stale_provisions(now=now)
+        self.assertEqual(reaped, 1)
+        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("sb-unrecorded", self.backend.terminated)
+
     def test_stale_awaiting_push_left_alone_within_deadline(self) -> None:
         exp_id = self._experiment()
         self.app.sandboxes.registry.upsert(

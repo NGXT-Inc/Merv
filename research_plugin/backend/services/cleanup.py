@@ -32,15 +32,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from .sandbox_support import parse_iso
+from .sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 
 
-# How long a row may sit in the explicit ``awaiting_initial_push`` phase before
-# the stale-provision sweep declares the daemon dead and reaps it. The provider
-# VM exists and is billing by this point (it was created before the push), so
-# this is the billing-protection deadline for risk 8 (daemon offline
-# mid-provision). Comfortably above a slow first rsync; well below an hour.
-DEFAULT_AWAITING_PUSH_DEADLINE_SECONDS = 10 * 60.0
+# How long a row may sit in a pre-running provisioning phase before the
+# stale-provision sweep declares the daemon dead and reaps it. The provider VM
+# exists and is billing by this point (created from the ``creating`` phase
+# onward), so this is the billing-protection deadline for risk 8 (daemon offline
+# mid-provision). Single-sourced with the reaper thread's deadline so the two
+# never disagree. Comfortably above a slow first sync; well below an hour.
+DEFAULT_AWAITING_PUSH_DEADLINE_SECONDS = DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -129,48 +130,17 @@ class CleanupService:
             return 0
 
     def sweep_stale_provisions(self, *, now: datetime | None = None) -> int:
-        """Reap rows stuck in ``awaiting_initial_push`` past the deadline.
+        """Reap rows wedged in ANY pre-running provisioning phase past the deadline.
 
-        Risk 8 (daemon offline mid-provision → billing VM, no files): the VM was
-        created, but the initial push never confirmed, so the row sits in
-        ``provisioning`` / phase ``awaiting_initial_push``. After the deadline,
-        terminate any orphan VM and mark the row failed so it stops being a
-        billing ghost and the agent can request a fresh sandbox. Idempotent —
-        a row that already settled is skipped.
+        Risk 8 (daemon offline mid-provision → billing VM): a provision can wedge
+        in any pre-running phase — ``creating`` / ``connecting`` /
+        ``awaiting_initial_push`` — and the provider VM already exists from
+        ``creating`` onward, so the reap must not be restricted to the push phase.
+        Delegates to the shared ``provisioner.reap_stale_provisions`` so this
+        sweep and the always-running reaper thread can never disagree about what
+        'wedged' means. Idempotent — a row that already settled is skipped.
         """
         now_dt = now or datetime.now(tz=UTC)
-        reaped = 0
-        for row in self.sandboxes.registry.list_rows_by_status(status="provisioning"):
-            if str(row.get("phase") or "") != "awaiting_initial_push":
-                continue
-            started = parse_iso(row.get("provision_started_at"))
-            if started is None:
-                continue
-            age = (now_dt - started).total_seconds()
-            if age < self.awaiting_push_deadline_seconds:
-                continue
-            experiment_id = str(row.get("experiment_id") or "")
-            try:
-                self.sandboxes.provisioner.cleanup_orphan(
-                    experiment_id=experiment_id, row=row
-                )
-                self.sandboxes.registry.mark_failed(
-                    experiment_id=experiment_id,
-                    error=(
-                        "initial push never completed (daemon offline?); "
-                        "the sandbox was terminated — call sandbox.request again"
-                    ),
-                )
-                self.sandboxes.registry.emit_event(
-                    project_id=str(row.get("project_id") or ""),
-                    event_type="sandbox.failed",
-                    experiment_id=experiment_id,
-                    payload={
-                        "error": "awaiting_initial_push stale-reaped",
-                        "sandbox_id": row.get("sandbox_id", ""),
-                    },
-                )
-                reaped += 1
-            except Exception:  # noqa: BLE001 — best-effort per row
-                continue
-        return reaped
+        return self.sandboxes.provisioner.reap_stale_provisions(
+            now=now_dt, deadline_seconds=self.awaiting_push_deadline_seconds
+        )
