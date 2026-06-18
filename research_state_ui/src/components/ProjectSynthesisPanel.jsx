@@ -1,20 +1,118 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import LogicGraph from './LogicGraph';
+import ReviewCard from './ReviewCard';
+import ResourceContentView from './ResourceContentView';
 import FSMStrip, { SYNTHESIS_STAGES, SYNTHESIS_GATES, SYNTHESIS_TERMINAL } from './FSMStrip';
+import WaveSelector from './synthesis/WaveSelector';
+import LensReflectionCard from './synthesis/LensReflectionCard';
 
 /**
- * ProjectSynthesisPanel — the project's logic state, on Home.
+ * ProjectSynthesisPanel — the reflection wave, on Home.
  *
- * Renders the living project logic graph (GET /syntheses/current/graph)
- * through the same LogicGraph canvas the experiment page uses, plus the
- * reflection-wave lifecycle around it: the synthesis FSM strip and per-lens
- * reflection coverage while a wave is open, and the coverage/staleness
- * signal ("covers X of Y finished experiments", the soft "Consider running
- * a project reflection" hint) once waves have published.
+ * Attention order, top to bottom: the project logic GRAPH (front and center),
+ * the REFLECTION document directly under it (role reflection_doc, rendered
+ * inline with its images like an experiment report), then the per-lens
+ * REFLECTIONS that fed it. The machine
+ * change-spec and the review sit below as quiet disclosures, and the wave
+ * "version control" (pan back to older waves) is a muted footer that does not
+ * compete with the graph and synthesis.
+ *
+ * The current wave (open, else latest published) shows by default; panning to a
+ * past wave renders it FAITHFULLY from the bytes it pinned (the per-wave /graph
+ * endpoint and `?version=` content), not the living files a later wave
+ * overwrote. Everything is driven from one polled GET /syntheses call.
  */
+
+const TERMINAL_WAVE = new Set(['published', 'abandoned']);
+
+// Roles with their own dedicated section above; everything else a wave
+// associates falls through to the quiet "change_spec / other docs" disclosures.
+// Two renames happened: the prose doc synthesis_doc -> reflection_doc, and the
+// per-lens doc reflection -> reflection_lens_doc. Both are excluded here (and
+// resolved with a fallback below) so old and new waves render either way.
+const REFLECTION_DOC_ROLES = ['reflection_doc', 'synthesis_doc'];
+const LENS_DOC_ROLES = ['reflection_lens_doc', 'reflection'];
+const PRIMARY_ROLES = new Set(['graph', ...LENS_DOC_ROLES, ...REFLECTION_DOC_ROLES]);
+
+// Nice labels for known secondary doc roles; anything else is humanized so a
+// new backend role never goes unrendered as the synthesis model evolves.
+const DOC_ROLE_META = {
+  change_spec: { label: 'Change spec — belief-state update', order: 0 },
+  proposals: { label: "What's next — proposals", order: 1 },
+};
+
+function humanizeRole(role) {
+  return role.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function shortDateTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  } catch { return ''; }
+}
+
+// Resolve each roster lens to its reflection resource for the wave's current
+// attempt. reflection_coverage already matched <lens_id>.md → path + pinned
+// version server-side; here we just look up the resource id by that path.
+function reflectionsByLens(wave) {
+  const byPath = {};
+  for (const r of wave?.current_attempt_resources || []) {
+    if (LENS_DOC_ROLES.includes(r.association_role) && r.path) byPath[r.path] = r;
+  }
+  const map = {};
+  for (const lens of wave?.reflection_coverage?.lenses || []) {
+    const res = lens.path ? byPath[lens.path] : null;
+    map[lens.lens_id] = {
+      covered: Boolean(lens.covered),
+      resourceId: res?.id || null,
+      versionId: lens.version_id || res?.association_version_id || null,
+      path: lens.path || res?.path || null,
+    };
+  }
+  return map;
+}
+
+// The secondary docs (everything that isn't graph / reflection / reflection_doc):
+// today just the change_spec, but derived from the resources so new roles render
+// automatically. First association per role wins.
+function secondaryDocs(resources) {
+  const seen = new Set();
+  const docs = [];
+  for (const r of resources) {
+    const role = r.association_role;
+    if (!role || PRIMARY_ROLES.has(role) || seen.has(role)) continue;
+    seen.add(role);
+    const meta = DOC_ROLE_META[role] || {};
+    docs.push({ role, res: r, label: meta.label || humanizeRole(role), order: meta.order ?? 100 });
+  }
+  return docs.sort((a, b) => a.order - b.order || a.role.localeCompare(b.role));
+}
+
+// Quiet disclosure for the secondary artifacts (change_spec, review).
+function Collapsible({ label, count, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="refl-collapsible">
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm refl-collapsible-toggle"
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+      >
+        {open ? '▾' : '▸'} {label}{count != null ? ` (${count})` : ''}
+      </button>
+      {open && <div className="refl-collapsible-body">{children}</div>}
+    </div>
+  );
+}
+
 export default function ProjectSynthesisPanel({ projectId }) {
   const [data, setData] = useState(null);
+  const [pinnedId, setPinnedId] = useState(null); // null = follow the live wave
   const [graphAvailable, setGraphAvailable] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const toggleExpand = useCallback(() => setExpanded(v => !v), []);
@@ -48,79 +146,202 @@ export default function ProjectSynthesisPanel({ projectId }) {
     };
   }, [expanded]);
 
-  const graphFetcher = useCallback(() => api.getProjectLogicGraph(projectId), [projectId]);
-
-  const open = data?.open_synthesis || null;
+  const waves = data?.syntheses || [];
   const signal = data?.signal || null;
-  const hasAnyWave = (data?.syntheses || []).length > 0;
-  const coverage = open?.reflection_coverage;
-  // The coverage/staleness signal rides in the graph header instead of taking
-  // its own heading row — empty until a wave has published.
+  const hasAnyWave = waves.length > 0;
+  // syntheses arrive oldest-first; current = open wave else latest published.
+  const currentId = data?.current?.id || (waves.length ? waves[waves.length - 1].id : null);
+  // Follow the live wave unless the user pinned a still-present past wave.
+  const selectedId = (pinnedId && waves.some(w => w.id === pinnedId)) ? pinnedId : currentId;
+  const selectedIndex = waves.findIndex(w => w.id === selectedId);
+  const wave = selectedIndex >= 0 ? waves[selectedIndex] : null;
+  const isCurrent = Boolean(wave && wave.id === currentId);
+  const isOpen = Boolean(wave && !TERMINAL_WAVE.has(String(wave.status)));
+
+  const onSelectWave = useCallback((id) => {
+    // Selecting the current wave resumes "follow live"; any other pins it.
+    setPinnedId(id === currentId ? null : id);
+  }, [currentId]);
+  const backToCurrent = useCallback(() => setPinnedId(null), []);
+
+  const graphFetcher = useCallback(
+    () => api.getSynthesisGraph(projectId, selectedId),
+    [projectId, selectedId],
+  );
+
+  const reflections = useMemo(() => (wave ? reflectionsByLens(wave) : {}), [wave]);
+  const roster = wave?.roster || [];
+  const waveResources = wave?.current_attempt_resources || [];
+  const reviews = wave?.reviews || [];
+  // Prefer the new reflection_doc role, fall back to legacy synthesis_doc so a
+  // wave published before the rename still renders. Mirrors app.py's resolution.
+  const reflectionDoc = REFLECTION_DOC_ROLES
+    .map(role => waveResources.find(r => r.association_role === role))
+    .find(Boolean) || null;
+  // Pin every rendered doc to the exact version THIS wave associated. The living
+  // files (reflection_doc, change_spec, proposals) are one resource shared across
+  // waves, so the server's default "latest" can resolve to another wave's bytes —
+  // pinning keeps each wave faithful, the current one included.
+  const docVersion = res => res.association_version_id || null;
+
+  // The coverage/staleness signal rides in the graph header — empty until a
+  // wave has published.
   const coverageHint = signal?.last_published_at
     ? `covers ${signal.covered_terminal_experiments} of ${signal.terminal_experiments} finished experiments`
     : '';
 
+  if (!hasAnyWave) {
+    return (
+      <section className="section" id="project-synthesis">
+        <div className="section-title">Project synthesis</div>
+        <div className="empty-state empty-state--compact">
+          <p>
+            No project synthesis yet. When enough experiments have finished, the
+            agent runs a reflection wave (the{' '}
+            <span className="mono">project-reflection</span> skill): five lenses
+            read the project, the agent distills them into a 16-node project
+            logic graph, and a reviewer checks the story before it publishes here.
+          </p>
+        </div>
+        {signal?.hint && <div className="syn-hint">{signal.hint}</div>}
+      </section>
+    );
+  }
+
   return (
     <section className="section" id="project-synthesis">
-      {open && (
-        <div className="syn-wave">
-          <FSMStrip
-            status={open.status}
-            stages={SYNTHESIS_STAGES}
-            gateStates={SYNTHESIS_GATES}
-            terminal={SYNTHESIS_TERMINAL}
-            ariaLabel="Synthesis lifecycle"
-          />
-          {open.status === 'reflecting' && coverage && (
-            <div className="syn-lenses" title="Each roster lens submits its own reflection before the wave can synthesize">
-              {coverage.lenses.map(lens => (
-                <span
-                  key={lens.lens_id}
-                  className={`syn-lens-chip${lens.covered ? ' syn-lens-chip--done' : ''}`}
-                >
-                  {lens.covered ? '✓' : '○'} {lens.lens_id}
-                </span>
-              ))}
-            </div>
-          )}
+      <div className="cluster--between" style={{ marginBottom: 10 }}>
+        <div className="section-title" style={{ marginBottom: 0 }}>Project synthesis</div>
+        {wave && (
+          <span className="muted" style={{ fontSize: 'var(--text-xs)' }}>
+            Wave {selectedIndex + 1} of {waves.length}
+          </span>
+        )}
+      </div>
+
+      {wave && !isCurrent && (
+        <div className="refl-hist-banner">
+          <span>Viewing an earlier wave (Wave {selectedIndex + 1}).</span>
+          <button type="button" className="refl-hist-back" onClick={backToCurrent}>
+            Back to current →
+          </button>
         </div>
       )}
-
-      {signal?.hint && <div className="syn-hint">{signal.hint}</div>}
 
       {expanded && (
         <div className="fig-backdrop" onClick={() => setExpanded(false)} aria-hidden="true" />
       )}
-      <LogicGraph
-        projectId={projectId}
-        fetcher={graphFetcher}
-        live={Boolean(open)}
-        storyHint={coverageHint}
-        problemsGate="submit_synthesis"
-        onAvailability={setGraphAvailable}
-        expanded={expanded}
-        onToggleExpand={toggleExpand}
-      />
 
-      {!graphAvailable && (
+      {/* 1 — the graph, front and center */}
+      {wave && (
+        <LogicGraph
+          key={selectedId}
+          projectId={projectId}
+          fetcher={graphFetcher}
+          live={isOpen}
+          attemptIndex={wave.attempt_index}
+          storyHint={coverageHint}
+          problemsGate="submit_synthesis"
+          onAvailability={setGraphAvailable}
+          expanded={expanded}
+          onToggleExpand={toggleExpand}
+          readableFit
+        />
+      )}
+      {wave && !graphAvailable && (
         <div className="empty-state empty-state--compact">
-          {hasAnyWave ? (
-            <p>
-              A reflection wave is underway but its project graph isn't written
-              yet. It will appear here the moment the agent associates it.
-            </p>
-          ) : (
-            <p>
-              No project synthesis yet. When enough experiments have finished,
-              the agent runs a reflection wave (the{' '}
-              <span className="mono">project-reflection</span> skill): five
-              lenses read the project, the agent distills them into a 16-node
-              project logic graph, and a reviewer checks the story before it
-              publishes here.
-            </p>
-          )}
+          <p>
+            {isOpen
+              ? "Project graph isn't written yet — the lenses are still reflecting. It appears here the moment the agent associates it."
+              : 'This wave published no project graph.'}
+          </p>
         </div>
       )}
+
+      {/* 2 — the reflection document, prominent (with its images) */}
+      {wave && reflectionDoc && (
+        <div className="refl-doc">
+          <div className="refl-eyebrow">Reflection</div>
+          <ResourceContentView
+            projectId={projectId}
+            resourceId={reflectionDoc.id}
+            path={reflectionDoc.path}
+            version={docVersion(reflectionDoc)}
+            hideSource
+            stripTitle
+          />
+        </div>
+      )}
+
+      {/* 3 — the per-lens reflections (inputs to the reflection doc above) */}
+      {wave && roster.length > 0 && (
+        <div className="refl-block">
+          <div className="refl-eyebrow">Lens reflections · {roster.length}</div>
+          <div className="refl-roster">
+            {roster.map(lens => (
+              <LensReflectionCard
+                key={lens.id}
+                projectId={projectId}
+                lens={lens}
+                reflection={reflections[lens.id]}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* secondary, quiet: change spec + other docs, then the review */}
+      {wave && secondaryDocs(waveResources).map(({ role, res, label }) => (
+        <Collapsible key={role} label={label}>
+          <ResourceContentView
+            projectId={projectId}
+            resourceId={res.id}
+            path={res.path}
+            version={docVersion(res)}
+            hideSource
+          />
+        </Collapsible>
+      ))}
+      {wave && reviews.length > 0 && (
+        <Collapsible label="Synthesis review" count={reviews.length}>
+          {reviews.map(r => <ReviewCard key={r.id} review={r} />)}
+        </Collapsible>
+      )}
+
+      {/* version control — muted, pan back to older waves */}
+      <div className="refl-versions">
+        <div className="refl-eyebrow refl-eyebrow--muted">Reflection history</div>
+        <WaveSelector
+          waves={waves}
+          selectedId={selectedId}
+          currentId={currentId}
+          onSelect={onSelectWave}
+        />
+        {wave && (
+          <div className="refl-versions-meta">
+            <FSMStrip
+              status={wave.status}
+              stages={SYNTHESIS_STAGES}
+              gateStates={SYNTHESIS_GATES}
+              terminal={SYNTHESIS_TERMINAL}
+              ariaLabel="Synthesis lifecycle"
+            />
+            <div className="refl-meta">
+              {wave.attempt_index > 1 && (
+                <span className="refl-meta-item">attempt {wave.attempt_index}</span>
+              )}
+              {wave.published_at
+                ? <span className="refl-meta-item">published {shortDateTime(wave.published_at)}</span>
+                : wave.created_at && <span className="refl-meta-item">started {shortDateTime(wave.created_at)}</span>}
+            </div>
+            {wave.revision_context && (
+              <div className="refl-revision">↩ {wave.revision_context}</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {signal?.hint && <div className="syn-hint">{signal.hint}</div>}
     </section>
   );
 }

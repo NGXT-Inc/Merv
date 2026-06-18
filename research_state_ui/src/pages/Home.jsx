@@ -60,10 +60,14 @@ export default function Home() {
 
   return (
     <div className="page-stage">
-      <header className="page-header page-header--lg">
-        <h1 className="page-title">{project.name}</h1>
-        {project.summary && <p className="page-summary">{project.summary}</p>}
-      </header>
+      {/* The project name is always in the sidebar's project chip — repeating it
+          as the page title is noise. Lead with the summary (real content) when
+          there is one; otherwise go straight to the work below. */}
+      {project.summary && (
+        <header className="page-header page-header--lg">
+          <p className="page-summary page-summary--lead">{project.summary}</p>
+        </header>
+      )}
 
       {workflow && (
         <section className="section section--focused-exp">

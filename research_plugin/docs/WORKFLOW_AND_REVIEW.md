@@ -203,11 +203,11 @@ holding the project's current logic state — through gated **synthesis**
 records (`syn_…`), one per reflection wave:
 
 ```text
-reflecting -> synthesizing -> synthesis_review -> published
+reflecting -> synthesizing -> reflection_review -> published
     ^               ^                |
     |               |                v
     |               +--- return_to=synthesizing (reflections stand;
-    |                     revise graph/proposals; attempt unchanged)
+    |                     revise graph/doc/spec; attempt unchanged)
     +------------------- return_to=reflecting (re-launch the fan-out;
                           attempt advances)
 
@@ -216,34 +216,43 @@ abandoned is the terminal exit. One wave may be open per project at a time.
 
 Gates (envelope-only, same philosophy as experiment gates):
 
-1. Roster gate: `synthesis.create` requires exactly five lenses — the three
-   core ids (`outcomes`, `dead_ends`, `coverage`) plus two wave-authored
+1. Roster gate: `reflection.create` requires exactly five lenses — the three
+   core ids (`amplify`, `avoid`, `entropy`) plus two wave-authored
    lenses, each with a charter and a stated `why_distinct`. The corpus
    (terminal experiments + claim statuses) is snapshotted at create.
 2. Reflection coverage gate: `submit_reflections` is blocked until every
-   roster lens has a current-attempt role-`reflection` resource whose
+   roster lens has a current-attempt role-`reflection_lens_doc` resource whose
    filename is `<lens_id>.md`, non-empty on disk. Each reflection is
    authored and submitted by its own read-only subagent.
-3. Synthesis artifacts gate: `submit_synthesis` requires the project logic
-   graph (role `graph`, the shared `graph_lint` envelope) and a non-empty
-   what's-next proposals file (role `proposals`), both associated to the
-   wave's current attempt.
-4. Synthesis review gate: `publish` requires a passing `synthesis_reviewer`
+3. Synthesis artifacts gate: `submit_reflection_artifacts` requires the project logic
+   graph (role `project_graph`, the shared `graph_lint` envelope), a concise reflection
+   document (role `reflection_doc`, required sections: Summary, Critical
+   reading, Decision / future directions, under 16 KB, with any relative image
+   links submitted alongside the markdown), and a materializable change spec
+   (role `change_spec`), all associated to the wave's current attempt. The
+   change spec is the reviewed belief-state update: claim creations/updates
+   plus exactly one decision — `hard_stop` or `create_experiments` with 2-3
+   planned experiments.
+4. Synthesis review gate: `publish` requires a passing `reflection_reviewer`
    review pinned to the wave's snapshot. The reviewer judges substance —
    does the story reconcile with the corpus, were the lenses genuinely
-   diverse, are the proposals grounded — through the same capability
-   machinery (one-time token, snapshot pinning, producer-session rejection,
-   read-only funnel) as experiment reviews. Rejections must route via
-   `return_to`: `synthesizing` or `reflecting`.
+   diverse, is the belief-state update warranted, are the concrete experiments
+   or hard stop justified — through the same capability machinery (one-time
+   token, snapshot pinning, producer-session rejection, read-only funnel) as
+   experiment reviews. Rejections must route via `return_to`: `synthesizing`
+   or `reflecting`.
 
 On publish the record pins `published_graph_version_id`, so the single living
-graph file still yields an immutable per-wave history. The diversity
-heuristics (anti-overlap lens briefs, ambition quota, dead-end
-differentiation) live in the `project-reflection` skill, not in gates.
+graph file still yields an immutable per-wave history. The same publish
+transaction applies approved claim changes and either marks the project
+stopped or creates the approved planned experiments. Rejected reflection waves do not
+mutate claims or create experiments. The diversity heuristics (anti-overlap
+lens briefs, ambition quota, dead-end differentiation) live in the
+`project-reflection` skill, not in gates.
 
 Staleness is computed on read, never stored: `workflow.status_and_next`
 carries a `project_reflection` block when a wave is open (slim state + gate
-guidance) or when the project has drifted from the last published synthesis.
+guidance) or when the project has drifted from the last published reflection.
 Drift surfaces at two advisory tiers:
 
 - **Nudge** (any time): once drift crosses the staleness threshold (≥3
@@ -251,10 +260,10 @@ Drift surfaces at two advisory tiers:
   block carries the soft hint — "Consider running a project reflection…" —
   whatever else is in flight.
 - **Recommendation** (idle only): when no experiment is active and at least
-  one has finished since the last published synthesis, a project-level call
+  one has finished since the last published reflection, a project-level call
   (no explicit `experiment_id`) also escalates the workflow block itself:
   `current_gate: reflection_suggested`, `next_action:
-  consider_project_reflection`, with `synthesis.create` alongside
+  consider_project_reflection`, with `reflection.create` alongside
   `claim.create` / `experiment.create` in the allowed actions. An open wave
   wins that slot instead (its gate guidance becomes the workflow block), so
   an idle orientation call always points at the project-level work rather

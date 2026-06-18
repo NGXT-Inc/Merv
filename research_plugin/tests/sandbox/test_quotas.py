@@ -35,7 +35,7 @@ class QuotaAdmissionTest(unittest.TestCase):
         )
         self.store = self.app.store
         self.quotas = QuotaService(store=self.store)
-        self.project_id = self.app.call_tool("project.create", {"name": "Q"})["id"]
+        self.project_id = self.app.call_tool("project.create", {"name": "Proj Q"})["id"]
         self._set_tenant(self.project_id, "tenant_q")
 
     def tearDown(self) -> None:
@@ -275,7 +275,7 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
             rsync_syncer=FakeRsyncSyncer(),
         )
         self.store = self.app.store
-        self.project_id = self.app.call_tool("project.create", {"name": "P"})["id"]
+        self.project_id = self.app.call_tool("project.create", {"name": "Proj P"})["id"]
 
     def tearDown(self) -> None:
         self.app.shutdown()

@@ -154,14 +154,7 @@ export default function NowScreen() {
       <MobileSynthesisCard projectId={project.id} />
 
       <section className="section">
-        <div className="section-title">
-          Sandboxes
-          {running.length > 0 && (
-            <span className="section-title-badge">
-              <span className="sidebar-live-dot" />{running.length} running
-            </span>
-          )}
-        </div>
+        <div className="section-title">Sandboxes</div>
         {running.length === 0 ? (
           <div className="empty-state empty-state--compact"><p>No running sandboxes.</p></div>
         ) : (

@@ -53,7 +53,7 @@ Activity is appended as JSONL beside the state DB:
 ```
 
 The UI can read recent activity through `GET /api/activity?limit=100`. For live
-terminal visibility across both HTTP and Codex-started MCP tool calls, use:
+terminal visibility of MCP tool-call activity, use:
 
 ```bash
 tail -f /path/to/research-repo/.research_plugin/activity.jsonl
@@ -96,11 +96,11 @@ GET /api/activity?limit=100
 ```
 
 Returns recent backend activity events from `.research_plugin/activity.jsonl`.
-Events include HTTP requests and MCP/HTTP tool calls. Tool-call arguments are
-summarized to IDs and workflow fields. Successful tool-call events include the
-full tool `result` returned to Codex or the HTTP adapter. This is intentionally
-not truncated by the backend; the UI should use progressive disclosure or a
-scrolling detail panel for large responses.
+Events are MCP tool calls. Tool-call arguments are summarized to IDs and
+workflow fields. Successful tool-call events include the full tool `result`
+returned to Codex or the HTTP adapter. This is intentionally not truncated by
+the backend; the UI should use progressive disclosure or a scrolling detail panel
+for large responses.
 
 Reviewer capabilities can appear in `result` for `review.request`, because that
 is part of the actual response sent to Codex. Treat the activity log as local
@@ -305,6 +305,66 @@ Review gates stay as user-facing stages such as `design_review` and
 The UI should render this as detail inside the review stage, not as a separate
 top-level stage.
 
+## Syntheses
+
+Project reflection waves. Each wave reconciles five lens reflections into the
+living project logic graph (role `project_graph`), a concise reflection document (role
+`reflection_doc`; legacy waves may show `synthesis_doc`), and a change spec
+(role `change_spec`), gated by a synthesis review before publish (see the
+`project-reflection` skill).
+
+```http
+GET /api/projects/{project_id}/syntheses
+GET /api/projects/{project_id}/syntheses/{synthesis_id}
+GET /api/projects/{project_id}/syntheses/current/graph
+GET /api/projects/{project_id}/syntheses/{synthesis_id}/graph
+```
+
+`GET /syntheses` returns the whole history in one call (each entry is a full
+wave state, so the UI drives the panel off this alone):
+
+```json
+{
+  "syntheses": [ /* full wave states, oldest-first */ ],
+  "current": { /* open wave, else latest published, else null */ },
+  "open_synthesis": { /* the one non-terminal wave, or null */ },
+  "latest_published": { /* or null */ },
+  "signal": { /* staleness/coverage: hint, terminal_experiments, covered_terminal_experiments, last_published_at */ }
+}
+```
+
+Each wave state (also returned by `/syntheses/{synthesis_id}`) carries:
+
+- `id`, `title`, `status` (`reflecting` → `synthesizing` → `synthesis_review` →
+  `published`; `abandoned` is terminal), `attempt_index`, `revision_context`
+  (set when a review sent the wave back), `created_at`, `published_at`;
+- `roster`: the five lenses, each `{ id, title, charter, core, why_distinct }`
+  (three core — `amplify`, `avoid`, `entropy` — plus two authored);
+- `corpus`: the snapshot of terminal experiments + claims the wave covers;
+- `resources` / `current_attempt_resources`: associated files, each with
+  `association_role` (`reflection_lens_doc` | `project_graph` |
+  `reflection_doc` | `change_spec`; legacy `reflection` | `graph` |
+  `synthesis_doc`),
+  `association_attempt_index`, `association_version_id`, `path`, `id`;
+- `reviews`: synthesis reviews, each with `verdict`, `return_to`
+  (`reflecting` | `synthesizing`), `notes`, `findings`, `evidence`, `role`,
+  `attempt_index`, `created_at`;
+- `reflection_coverage`: `{ lenses: [{ lens_id, covered, path, version_id }],
+  missing, complete }` — per-lens reflection coverage for the current attempt;
+- `allowed_transitions`.
+
+`GET /syntheses/current/graph` renders the open wave's project graph (else the
+latest published one); `GET /syntheses/{synthesis_id}/graph` renders that
+specific wave's graph from the bytes it pinned, so a past wave shows faithfully
+even after a later wave overwrites the living `project/logic_graph.json`. Both
+share the per-experiment graph payload shape — `{ available, graph, problems,
+max_nodes, ref_index, path, synthesis }` — and the `current` endpoint also
+includes `signal`. Lens reflection doc, reflection document, and change spec file
+content is read through the Resources `/content` endpoint, with `?version=`
+for faithful historical waves. Relative image links in reflection documents use
+the same Resources `/file?rel=...` endpoint as report figures; submitted image
+bytes are served from the blob store when available.
+
 ## Resources
 
 ```http
@@ -314,6 +374,7 @@ GET /api/projects/{project_id}/resources/tree
 GET /api/projects/{project_id}/resources/{resource_id}
 GET /api/projects/{project_id}/resources/{resource_id}/history
 GET /api/projects/{project_id}/resources/{resource_id}/content
+GET /api/projects/{project_id}/resources/{resource_id}/content?version={version_id}
 GET /api/projects/{project_id}/resources/{resource_id}/file
 POST /api/projects/{project_id}/resources
 POST /api/projects/{project_id}/resources/{resource_id}/associate
@@ -341,12 +402,24 @@ Associate payload:
 ```
 
 Experiment resource associations are attempt-scoped by the backend and include
-the exact `version_id` associated to that attempt. `/content` and `/file` read
-the current live file. Historical version content is not served by the backend —
-`history` returns version metadata (sha256, size, mtime, content_type) only.
-Deleting a resource removes it from active lists and workflow associations, but
-keeps observed version metadata; registering the same path again revives the
-resource.
+the exact `version_id` associated to that attempt. Without `?version=`, `/content`
+serves the latest submitted bytes for gated roles (plan/report/graph/
+reflection_doc/change_spec/reflection; legacy synthesis_doc) and the current
+live file for other roles; `/file` reads the current live file. "Latest
+submitted bytes" resolves to the resource's `current_version_id` — so a living
+file that several targets pin (e.g. `project/reflection.md` across reflection
+waves) serves its newest version, not whichever association carries the highest
+per-target attempt index. Passing
+`?version={version_id}`
+serves the exact submitted bytes of that version from the blob store — the
+version must be associated to the resource (else 404), and a missing or
+undecodable blob degrades to
+`{ "available": false, "reason": "version_unavailable" }`. This is how the
+reflection-wave UI renders a past wave's reflection artifacts faithfully (the
+living files have since moved on). `history` returns version metadata (sha256,
+size, mtime, content_type) only. Deleting a resource removes it from active
+lists and workflow associations, but keeps observed version metadata;
+registering the same path again revives the resource.
 
 ## Reviews
 

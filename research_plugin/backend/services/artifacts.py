@@ -103,11 +103,13 @@ def _has_markdown_table(text: str) -> bool:
     return False
 
 
-def report_figure_links(report_text: str) -> list[str]:
-    """The report's relative image links, in order (external/absolute/data:
-    URLs are not the report's figures and are skipped). These are the figures
-    that must be submitted alongside the report for it to be reviewable."""
-    stripped = _HTML_COMMENT_RE.sub("", report_text)
+def markdown_image_links(markdown_text: str) -> list[str]:
+    """Relative markdown image links, in order.
+
+    External, absolute, and data: URLs are skipped; only repo-relative image
+    links need submitted bytes alongside the markdown artifact.
+    """
+    stripped = _HTML_COMMENT_RE.sub("", markdown_text)
     links: list[str] = []
     for match in _IMAGE_LINK_RE.finditer(stripped):
         target = match.group(1)
@@ -115,6 +117,11 @@ def report_figure_links(report_text: str) -> list[str]:
             continue
         links.append(target)
     return links
+
+
+def report_figure_links(report_text: str) -> list[str]:
+    """Compatibility wrapper for callers/tests that still use report wording."""
+    return markdown_image_links(report_text)
 
 
 def report_problems(

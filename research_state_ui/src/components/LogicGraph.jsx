@@ -44,13 +44,9 @@ function LogicNode({ data, selected }) {
       style={{ width: FIG_NODE_W, borderLeftColor: data.color }}
     >
       <Handle type="target" position={Position.Left} className="fig-handle" />
-      {data.kind && (
-        <div className="fig-node-head">
-          <span className="fig-node-type">{data.kind}</span>
-        </div>
-      )}
-      <div className="fig-node-label" title={data.label}>{data.label}</div>
-      {data.detail ? <div className="fig-node-sub" title={data.detail}>{data.detail}</div> : null}
+      {/* Color (left accent) carries the kind; the kind label and detail text
+          are decluttered off the canvas and remain in the click-to-open panel. */}
+      <div className="fig-node-label fig-node-label--full">{data.label}</div>
       <Handle type="source" position={Position.Right} className="fig-handle" />
     </div>
   );
@@ -97,7 +93,6 @@ function toFlow(graph) {
     target: e.to,
     type: 'smoothstep',
     className: 'fig-edge',
-    label: e.label || undefined,
     markerEnd: { type: MarkerType.ArrowClosed, width: 13, height: 13 },
   }));
   return { nodes, edges };
@@ -194,6 +189,13 @@ export default function LogicGraph({
   live = null,
   storyHint = "written by the agent",
   problemsGate = 'submit_results',
+  // The agent's story graphs tend to be wide, flat ribbons (a left→right
+  // chain of ranks). fitView fits that to WIDTH, crushing the zoom so node
+  // text becomes unreadable while most of the canvas height sits empty. When
+  // `readableFit` is set, the inline view instead fills the canvas vertically
+  // up to 1× (never below a legible floor), anchors the story's start at the
+  // left, and lets the reader pan / Expand to follow it.
+  readableFit = false,
 }) {
   // Same identity trick as ExperimentFigure: keep the payload as a JSON
   // string so unchanged polls never recreate node objects (react-flow keys
@@ -201,6 +203,7 @@ export default function LogicGraph({
   const [payloadJson, setPayloadJson] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const rfRef = useRef(null);
+  const canvasRef = useRef(null);
   const { width: panelWidth, startResize } = usePanelWidth();
 
   const fetchGraph = useCallback(async () => {
@@ -230,12 +233,41 @@ export default function LogicGraph({
   const { nodes, edges } = useMemo(() => toFlow(graph), [graph]);
 
   const topologyKey = useMemo(() => nodes.map(n => n.id).sort().join('|'), [nodes]);
-  // Expanded mode may zoom past 1x so the graph actually uses the space.
-  const fitMaxZoom = expanded ? 1.6 : 1;
+  // Readable framing only matters for the cramped inline view; expanded mode
+  // has room, so it keeps the plain fit-everything behavior (up to 1.6×).
+  const useReadable = readableFit && !expanded;
+
+  const applyView = useCallback(() => {
+    const inst = rfRef.current;
+    if (!inst) return;
+    if (!useReadable) {
+      inst.fitView({ padding: 0.18, maxZoom: expanded ? 1.6 : 1 });
+      return;
+    }
+    const xs = nodes.map(n => n.position.x);
+    const ys = nodes.map(n => n.position.y);
+    if (!xs.length) return;
+    const cw = canvasRef.current?.clientWidth || 1000;
+    const ch = canvasRef.current?.clientHeight || 400;
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const gW = Math.max(1, Math.max(...xs) + FIG_NODE_W - minX);
+    const gH = Math.max(1, Math.max(...ys) + 72 - minY);
+    const pad = 28;
+    // Fill the tighter dimension (height, for a wide ribbon), but never zoom
+    // out below a legible floor or in past 1×. Anchor the start at the left
+    // and center vertically; the rest of the story is a pan away.
+    const zoom = Math.min(1, Math.max(0.8, Math.max((cw - pad * 2) / gW, (ch - pad * 2) / gH)));
+    inst.setViewport(
+      { x: pad - minX * zoom, y: (ch - gH * zoom) / 2 - minY * zoom, zoom },
+      { duration: 200 },
+    );
+  }, [useReadable, expanded, nodes]);
+
   useEffect(() => {
-    const t = setTimeout(() => rfRef.current?.fitView({ padding: 0.18, maxZoom: fitMaxZoom }), 350);
+    const t = setTimeout(applyView, 350);
     return () => clearTimeout(t);
-  }, [topologyKey, fitMaxZoom]);
+  }, [topologyKey, applyView]);
 
   const selected = useMemo(
     () => (graph?.nodes || []).find(n => n.id === selectedId) || null,
@@ -257,10 +289,9 @@ export default function LogicGraph({
 
   // Refit after the canvas resizes between inline and expanded modes.
   useEffect(() => {
-    const maxZoom = expanded ? 1.6 : 1;
-    const t = setTimeout(() => rfRef.current?.fitView({ padding: 0.18, maxZoom }), 120);
+    const t = setTimeout(applyView, 120);
     return () => clearTimeout(t);
-  }, [expanded]);
+  }, [expanded, applyView]);
 
   if (!available || !active) return null;
 
@@ -312,18 +343,18 @@ export default function LogicGraph({
         className={`fig-body${selected ? ' fig-body--split' : ''}`}
         style={{ '--fig-panel-w': `${panelWidth}px` }}
       >
-        <div className="fig-canvas">
+        <div className="fig-canvas" ref={canvasRef}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
-            onInit={inst => { rfRef.current = inst; }}
+            onInit={inst => { rfRef.current = inst; applyView(); }}
             onNodeClick={(event, node) => {
               event.stopPropagation();
               setSelectedId(node.id);
             }}
             onPaneClick={() => setSelectedId(null)}
-            fitView
+            fitView={!useReadable}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={false}
             nodesConnectable={false}

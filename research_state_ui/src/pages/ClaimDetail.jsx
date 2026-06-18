@@ -53,11 +53,11 @@ export default function ClaimDetail() {
         </div>
       </header>
 
+      {/* Status + confidence already sit in the header cluster above — the
+          KvList carries only what isn't shown there. */}
       <KvList
         rows={[
           { key: 'Scope', value: claim.scope || <span className="faint">—</span> },
-          { key: 'Status', value: <StatusPill value={claim.status} pill={false} /> },
-          { key: 'Confidence', value: claim.confidence },
           { key: 'Created', value: <span className="mono" style={{ fontSize: 'var(--text-xs)' }}>{claim.created_at}</span> },
         ]}
       />

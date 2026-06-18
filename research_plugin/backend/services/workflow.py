@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from .experiments import ExperimentService
-from .permissions import RESOURCE_ROLES
+from .permissions import (
+    PROJECT_GRAPH_ROLE,
+    PROJECT_GRAPH_ROLES,
+    REFLECTION_LENS_DOC_ROLE,
+    RESOURCE_ROLES,
+)
 from .resources import ResourceService
 from .reviews import ReviewService
 from .sandboxes import SandboxService
@@ -106,13 +111,29 @@ class WorkflowService:
                     allowed=["claim.create", "experiment.create"],
                 )
             )
+            if (project or {}).get("status") == "stopped":
+                workflow = self._next(
+                    gate="project_stopped",
+                    action="none",
+                    allowed=[],
+                    blocked=[
+                        {
+                            "action": "create_claim_or_experiment",
+                            "reason": "project was hard-stopped by a published reflection",
+                        }
+                    ],
+                )
             idle = all(
                 str(row["status"]) in TERMINAL_STATUSES for row in exp_rows
             )
             reflection = self._project_reflection(
                 conn=conn, project_id=project_id, idle=idle
             )
-            if requested_experiment_id is None and idle:
+            if (
+                (project or {}).get("status") != "stopped"
+                and requested_experiment_id is None
+                and idle
+            ):
                 takeover = self._reflection_workflow_takeover(reflection=reflection)
                 if takeover is not None:
                     workflow = takeover
@@ -352,9 +373,13 @@ class WorkflowService:
     ) -> dict[str, Any]:
         target_id = target["id"]
         gate = target["status"]
+        if target_type == "synthesis" and gate == "synthesis_review":
+            gate = "reflection_review"
         role, skill, action_name = review.role, review.skill, review.action_name
         transition_tool = (
-            "synthesis.transition" if target_type == "synthesis" else "experiment.transition"
+            "reflection.transition"
+            if target_type == "synthesis"
+            else "experiment.transition"
         )
         verdict = self.reviews.latest_verdict(
             conn=conn,
@@ -434,7 +459,7 @@ class WorkflowService:
         gate = {
             "role": role,
             "skill": skill,
-            "target_type": target_type,
+            "target_type": "reflection" if target_type == "synthesis" else target_type,
             "target_id": target_id,
             "status": status,
             "label": labels.get(status, status),
@@ -455,10 +480,10 @@ class WorkflowService:
         signal decides, at two advisory tiers:
 
         - stale (>= 3 newly-terminal experiments since the last published
-          synthesis, or a claim flipped to contradicted): the soft
+          reflection, or a claim flipped to contradicted): the soft
           "Consider…" hint, whatever else is in flight.
         - recommended (the project is idle AND at least one experiment has
-          finished since the last published synthesis): nothing is running
+          finished since the last published reflection): nothing is running
           and there is something new to reflect on, so reflection is worth
           suggesting as the next action (_reflection_workflow_takeover).
 
@@ -470,7 +495,7 @@ class WorkflowService:
         open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
         if open_wave is not None:
             return {
-                "synthesis": slim_synthesis(open_wave),
+                "reflection": slim_synthesis(open_wave),
                 "workflow": self._synthesis_workflow_for(conn=conn, synthesis=open_wave),
             }
         signal = self.syntheses.reflection_signal(project_id=project_id, conn=conn)
@@ -481,9 +506,9 @@ class WorkflowService:
         if not signal["stale"] and not recommended:
             return None
         block: dict[str, Any] = {
-            "synthesis": None,
+            "reflection": None,
             "hint": signal["hint"] or self._idle_reflection_hint(signal=signal),
-            "signal": signal,
+            "signal": self._external_reflection_signal(signal),
         }
         if recommended:
             block["recommended"] = True
@@ -504,7 +529,7 @@ class WorkflowService:
         """
         if reflection is None:
             return None
-        if reflection.get("synthesis") is not None:
+        if reflection.get("reflection") is not None:
             return reflection["workflow"]
         if not reflection.get("recommended"):
             return None
@@ -512,13 +537,23 @@ class WorkflowService:
             gate="reflection_suggested",
             action=(
                 "consider_project_reflection (start a reflection wave with "
-                "synthesis.create via the project-reflection skill — or "
+                "reflection.create via the project-reflection skill — or "
                 "proceed with claim.create / experiment.create if you judge "
                 "the project's logic state current)"
             ),
-            allowed=["synthesis.create", "claim.create", "experiment.create"],
+            allowed=["reflection.create", "claim.create", "experiment.create"],
             missing=[reflection["hint"]] if reflection.get("hint") else [],
         )
+
+    def _external_reflection_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
+        output = dict(signal)
+        if "last_published_synthesis_id" in output:
+            output["last_published_reflection_id"] = output.pop(
+                "last_published_synthesis_id"
+            )
+        if "open_synthesis_id" in output:
+            output["open_reflection_id"] = output.pop("open_synthesis_id")
+        return output
 
     def _idle_reflection_hint(self, *, signal: dict[str, Any]) -> str:
         """Hint for the idle 'recommended' tier while the project is still
@@ -527,17 +562,17 @@ class WorkflowService:
         new = signal["new_terminal_since_publish"]
         finished = f"{new} experiment{'s have' if new != 1 else ' has'} finished"
         if signal["last_published_synthesis_id"]:
-            drift = f"{finished} since the last published synthesis"
+            drift = f"{finished} since the last published reflection"
             if signal["claims_changed_since_publish"]:
                 drift += (
                     f" and {signal['claims_changed_since_publish']} claims "
                     "have changed"
                 )
         else:
-            drift = f"{finished} and no project synthesis exists yet"
+            drift = f"{finished} and no project reflection exists yet"
         return (
             f"No experiments are active and {drift} — a good moment for a "
-            "project reflection (synthesis.create, project-reflection "
+            "project reflection (reflection.create, project-reflection "
             "skill), or start the next experiment if the logic state is "
             "current."
         )
@@ -566,7 +601,8 @@ class WorkflowService:
                     action=requirement.action,
                     allowed=list(requirement.allowed),
                     missing=[
-                        f"reflection for lens '{lens_id}' (role 'reflection', file <lens_id>.md)"
+                        "reflection doc for lens "
+                        f"'{lens_id}' (role 'reflection_lens_doc', file <lens_id>.md)"
                         for lens_id in coverage.get("missing", [])
                     ],
                     resource_guidance=self._reflection_resource_guidance(),
@@ -584,7 +620,12 @@ class WorkflowService:
             if not res.get("missing")
         }
         for requirement in forward.requirements:
-            if requirement.role in roles:
+            if requirement.role in roles or (
+                requirement.role == "reflection_doc" and "synthesis_doc" in roles
+            ) or (
+                requirement.role == PROJECT_GRAPH_ROLE
+                and bool(set(PROJECT_GRAPH_ROLES) & roles)
+            ):
                 continue
             return self._next(
                 gate=requirement.gate,
@@ -605,24 +646,24 @@ class WorkflowService:
 
     def _reflection_resource_guidance(self) -> dict[str, Any]:
         return {
-            "target_type": "synthesis",
-            "association_role": "reflection",
+            "target_type": "reflection",
+            "association_role": REFLECTION_LENS_DOC_ROLE,
             "guidance": (
                 "Fan out one read-only subagent per missing lens. Each subagent "
                 "reads the project through its lens only (tell it which other "
                 "lenses are running so it stays in its lane), writes its "
                 "reflection to a file named <lens_id>.md (e.g. "
                 "syntheses/<syn_id>/reflections/<lens_id>.md), registers it, and "
-                "associates it with role 'reflection' for this synthesis. See "
-                "the project-reflection skill for the lens briefs."
+                "associates it with role 'reflection_lens_doc' for this "
+                "reflection wave. See the project-reflection skill for the lens briefs."
             ),
         }
 
     def _synthesis_resource_guidance(self, *, key: str) -> dict[str, Any] | None:
         if key == "project_graph":
             return {
-                "target_type": "synthesis",
-                "association_role": "graph",
+                "target_type": "reflection",
+                "association_role": PROJECT_GRAPH_ROLE,
                 "template": "skills/research-workflow/graph-template.md",
                 "guidance": (
                     "Update the living project logic graph (one JSON file, e.g. "
@@ -633,20 +674,39 @@ class WorkflowService:
                     "them against the actual records, don't average them. Edit "
                     "the living graph in place and prune within the budget; "
                     "node refs may point at exp_/claim_/rev_/syn_ ids or files. "
-                    "Then register the file and associate it with role 'graph' "
-                    "for this synthesis."
+                    "Then register the file and associate it with role "
+                    "'project_graph' for this reflection wave."
                 ),
             }
-        if key == "proposals":
+        if key in {"reflection_doc", "synthesis_doc"}:
             return {
-                "target_type": "synthesis",
-                "association_role": "proposals",
-                "template": "skills/project-reflection/synthesis-template.md",
+                "target_type": "reflection",
+                "association_role": "reflection_doc",
+                "template": "skills/project-reflection/reflection-artifacts-template.md",
                 "guidance": (
-                    "Write the what's-next proposals file: one block per "
-                    "proposed experiment with a hypothesis, builds_on refs, and "
-                    "the claim it would move. Then register it and associate it "
-                    "with role 'proposals' for this synthesis."
+                    "Write the short reflection document as markdown: a critical "
+                    "scientific reading of the five lens reflections with Summary, "
+                    "Critical reading, and Decision / future directions "
+                    "sections. Keep it under 16 KB. You may reference a few "
+                    "figures with relative markdown image links (e.g. "
+                    "![project graph](figures/project_graph.png)); every linked "
+                    "image must exist before association. Then register the file "
+                    "and associate it with role 'reflection_doc' for this reflection wave."
+                ),
+            }
+        if key == "change_spec":
+            return {
+                "target_type": "reflection",
+                "association_role": "change_spec",
+                "template": "skills/project-reflection/reflection-artifacts-template.md",
+                "guidance": (
+                    "Write the change spec as JSON: claim_changes plus a "
+                    "decision of either hard_stop or create_experiments. For "
+                    "create_experiments, include 2-3 planned experiment specs "
+                    "with names, intents, tested claim refs, and a parallelism "
+                    "note. Publish will apply this only after the reflection "
+                    "reviewer passes it. Then register the file and associate "
+                    "it with role 'change_spec' for this reflection wave."
                 ),
             }
         return None

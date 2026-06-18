@@ -8,8 +8,6 @@ import PlanSpotlight from '../components/PlanSpotlight';
 import ReportSpotlight from '../components/ReportSpotlight';
 import ExperimentGraphs from '../components/ExperimentGraphs';
 import SandboxTerminal from '../components/SandboxTerminal';
-import OutcomesSection from '../components/OutcomesSection';
-import ResultsMetricsPanel from '../components/ResultsMetricsPanel';
 import ResourceList from '../components/ResourceList';
 import AddResourceToExperiment from '../components/AddResourceToExperiment';
 import { expName } from '../utils/experiment';
@@ -53,8 +51,6 @@ export default function ExperimentDetail() {
   const [gateOpen, setGateOpen] = useState(false);
   const [showAddPlan, setShowAddPlan] = useState(false);
   const [showAddInput, setShowAddInput] = useState(false);
-  const [showAddOutcome, setShowAddOutcome] = useState(false);
-  const [showAddReport, setShowAddReport] = useState(false);
 
   // Cross-page deep links (e.g. /experiments/:id#execution) — once the
   // experiment has loaded and its sections rendered, scroll the matching id
@@ -143,8 +139,9 @@ export default function ExperimentDetail() {
     ? (allProjectResources.find(r => r.id === reportResBare.id) || reportResBare)
     : null;
   const execRes    = currentRes.filter(r => ['code', 'config', 'input'].includes(r.association_role));
-  const outcomeRes = currentRes.filter(r => ['result', 'model'].includes(r.association_role));
-  const otherRes   = currentRes.filter(r => !['plan', 'report', 'code', 'config', 'input', 'result', 'model'].includes(r.association_role));
+  // `result`-type resources are intentionally not surfaced on this page. Model
+  // artifacts (a distinct type) fall through to "Other resources" below.
+  const otherRes   = currentRes.filter(r => !['plan', 'report', 'code', 'config', 'input', 'result'].includes(r.association_role));
 
   // Historical (deduped by id).
   const historicalRes = (experiment.resources || [])
@@ -212,8 +209,9 @@ export default function ExperimentDetail() {
       {/* ═════════════  RESULTS  ════════════════════════════════════════
           Newest-first: the executed experiment's output leads the page. The
           report (with its experiment review behind a "Show review" disclosure)
-          comes first, then durable metrics and result files. Each piece is
-          simply absent until it exists — the order itself never changes. */}
+          comes first, then durable metrics. Each piece is simply absent until
+          it exists — the order itself never changes. (Raw `result`-type
+          resources are intentionally not surfaced here.) */}
       {reportRes && (
         <ReportSpotlight
           projectId={projectId}
@@ -221,72 +219,6 @@ export default function ExperimentDetail() {
           experimentReviews={experimentReviews}
           experimentStatus={experiment.status}
         />
-      )}
-
-      {!reportRes && experiment.status === 'running' && (
-        <div id="report" className="spotlight-followup">
-          <button
-            type="button"
-            className="btn btn--sm btn--primary"
-            onClick={() => setShowAddReport(v => !v)}
-          >
-            {showAddReport ? 'Cancel' : '+ Add results report'}
-          </button>
-          {showAddReport && (
-            <div style={{ marginTop: 10 }}>
-              <AddResourceToExperiment
-                projectId={projectId}
-                experimentId={experimentId}
-                attemptIndex={currentAttempt}
-                currentResources={currentRes}
-                allResources={allProjectResources}
-                defaultRole="report"
-                onCancel={() => setShowAddReport(false)}
-                onDone={async () => { setShowAddReport(false); await refresh(); }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Durable archived metrics — final MLflow numbers that survive sandbox
-          teardown (renders nothing until something has been recorded). */}
-      <ResultsMetricsPanel projectId={projectId} experimentId={experimentId} />
-
-      {/* Result files. The experiment review is suppressed here when a report
-          hosts it in its "Show review" disclosure (no double-render). */}
-      <OutcomesSection
-        projectId={projectId}
-        outcomeResources={outcomeRes}
-        experimentReviews={experimentReviews}
-        experimentStatus={experiment.status}
-        hideReviews={!!reportRes}
-      />
-
-      {!['complete', 'failed', 'abandoned'].includes(experiment.status) && experiment.status !== 'planned' && (
-        <div className="spotlight-followup">
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            onClick={() => setShowAddOutcome(v => !v)}
-          >
-            {showAddOutcome ? 'Cancel' : '+ Add result resource'}
-          </button>
-          {showAddOutcome && (
-            <div style={{ marginTop: 10 }}>
-              <AddResourceToExperiment
-                projectId={projectId}
-                experimentId={experimentId}
-                attemptIndex={currentAttempt}
-                currentResources={currentRes}
-                allResources={allProjectResources}
-                defaultRole="result"
-                onCancel={() => setShowAddOutcome(false)}
-                onDone={async () => { setShowAddOutcome(false); await refresh(); }}
-              />
-            </div>
-          )}
-        </div>
       )}
 
       {/* ═════════════  EXECUTION  ══════════════════════════════════════

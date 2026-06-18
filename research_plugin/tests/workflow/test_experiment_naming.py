@@ -38,7 +38,7 @@ class ExperimentNamingTest(unittest.TestCase):
         self.assertIn("name is required", str(ctx.exception))
 
     def test_name_must_be_folder_safe(self) -> None:
-        for bad in ("has space", "slash/inside", "trail/", ".hidden", "a" * 49):
+        for bad in ("ab", "has space", "slash/inside", "trail/", ".hidden", "a" * 49):
             with self.assertRaises(ValidationError, msg=bad):
                 self._create(name=bad, intent="Bad name.")
 

@@ -13,7 +13,7 @@ from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..workspace import LocalWorkspace
-from .artifacts import report_figure_links
+from .artifacts import markdown_image_links
 from .permissions import GATED_ROLE_BYTE_CAPS, PermissionService
 
 
@@ -219,6 +219,9 @@ class ResourceService:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         self.permissions.validate_resource_association(target_type=target_type, role=role)
+        storage_target_type = self.permissions.storage_resource_target_type(
+            target_type=target_type
+        )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             resource = conn.execute("SELECT * FROM resources WHERE id = ? AND deleted = 0", (resource_id,)).fetchone()
@@ -234,10 +237,18 @@ class ResourceService:
                 version_id=version_id,
                 project_id=project_id,
             )
-            target_project_id = self._ensure_target_exists(conn=conn, target_type=target_type, target_id=target_id)
+            target_project_id = self._ensure_target_exists(
+                conn=conn,
+                target_type=storage_target_type,
+                target_id=target_id,
+            )
             if target_project_id is not None and target_project_id != project_id:
                 raise NotFoundError(f"{target_type} not found in project {project_id}: {target_id}")
-            attempt_index = self._association_attempt_index(conn=conn, target_type=target_type, target_id=target_id)
+            attempt_index = self._association_attempt_index(
+                conn=conn,
+                target_type=storage_target_type,
+                target_id=target_id,
+            )
             assoc_id = new_id(prefix="assoc")
             conn.execute(
                 """
@@ -251,7 +262,7 @@ class ResourceService:
                     assoc_id,
                     resource_id,
                     version_id,
-                    target_type,
+                    storage_target_type,
                     target_id,
                     role,
                     attempt_index,
@@ -264,7 +275,7 @@ class ResourceService:
                 conn=conn,
                 project_id=project_id,
                 event_type="resource.associated",
-                target_type=target_type,
+                target_type=storage_target_type,
                 target_id=target_id,
                 payload={"resource_id": resource_id, "version_id": version_id, "role": role, "attempt_index": attempt_index},
             )
@@ -459,14 +470,15 @@ class ResourceService:
                     content_type=str(row["content_type"]),
                 )
                 backfilled += 1
-                if str(row["role"]) == "report":
+                if str(row["role"]) in {"report", "reflection_doc", "synthesis_doc"}:
                     try:
-                        self._capture_report_figures(
+                        self._capture_markdown_figures(
                             conn=conn,
                             version_id=str(row["version_id"]),
                             project_id=namespace,
-                            report_rel_path=str(row["path"]),
-                            report_text=data.decode("utf-8", errors="replace"),
+                            markdown_rel_path=str(row["path"]),
+                            markdown_text=data.decode("utf-8", errors="replace"),
+                            label=str(row["role"]),
                         )
                     except ValidationError:
                         pass  # bad figure links surface via the lint, not the backfill
@@ -494,7 +506,11 @@ class ResourceService:
             """,
             (data["id"],),
         ).fetchall()
-        data["associations"] = rows_to_dicts(rows=assoc_rows)
+        associations = rows_to_dicts(rows=assoc_rows)
+        for assoc in associations:
+            if assoc.get("target_type") == "synthesis":
+                assoc["target_type"] = "reflection"
+        data["associations"] = associations
         if data.get("current_version_id"):
             row = conn.execute("SELECT * FROM resource_versions WHERE id = ?", (data["current_version_id"],)).fetchone()
             data["current_version"] = self._hydrate_version(row=row, conn=conn) if row else None
@@ -566,9 +582,11 @@ class ResourceService:
         """Snapshot a gated-role file's bytes into the blob store at associate.
 
         Decision 6 of the cloud migration plan: gated artifacts (plan, report,
-        graph, proposals, reflection) submit their content when associated, so
-        gates can lint immutable pinned bytes instead of live files. Size caps
-        are enforced here — before any bytes are stored — with the version's
+        graph, project_graph, reflection_doc (legacy synthesis_doc),
+        reflection_lens_doc (legacy reflection), change_spec; legacy proposals)
+        submit their content when associated, so gates can lint immutable pinned
+        bytes instead of live files. Size caps are
+        enforced here — before any bytes are stored — with the version's
         content_sha256 as the blob key, so blob and pin cannot disagree.
         """
         cap = GATED_ROLE_BYTE_CAPS.get(role)
@@ -601,43 +619,46 @@ class ResourceService:
             data=data,
             content_type=str(version["content_type"]),
         )
-        if role == "report":
-            self._capture_report_figures(
+        if role in {"report", "reflection_doc", "synthesis_doc"}:
+            self._capture_markdown_figures(
                 conn=conn,
                 version_id=version_id,
                 project_id=project_id,
-                report_rel_path=rel_path,
-                report_text=data.decode("utf-8", errors="replace"),
+                markdown_rel_path=rel_path,
+                markdown_text=data.decode("utf-8", errors="replace"),
+                label=role,
             )
 
-    # Figures referenced by a report can be real images; cap each upload.
+    # Figures referenced by markdown gated artifacts can be real images; cap
+    # each upload.
     FIGURE_MAX_BYTES = 5_000_000
 
-    def _capture_report_figures(
+    def _capture_markdown_figures(
         self,
         *,
         conn: sqlite3.Connection,
         version_id: str,
         project_id: str,
-        report_rel_path: str,
-        report_text: str,
+        markdown_rel_path: str,
+        markdown_text: str,
+        label: str,
     ) -> None:
-        """Submit the report's relative figure links alongside the report.
+        """Submit a markdown artifact's relative figure links alongside it.
 
         Each resolvable, repo-jailed, size-capped figure file is captured as a
-        blob and recorded in report_figures keyed by the report's version — the
-        mapping the report lint and the UI use. A link whose file is missing or
-        oversize is simply not recorded; the lint names it with re-associate
-        guidance. A link escaping the repo is rejected outright."""
-        report_dir = (self.workspace.repo_root / report_rel_path).parent
-        for link in report_figure_links(report_text):
-            resolved = (report_dir / link).resolve()
+        blob and recorded in report_figures keyed by the artifact's version —
+        the mapping markdown lints and the UI use. A link whose file is
+        missing or oversize is simply not recorded; the lint names it with
+        re-associate guidance. A link escaping the repo is rejected outright."""
+        markdown_dir = (self.workspace.repo_root / markdown_rel_path).parent
+        for link in markdown_image_links(markdown_text):
+            resolved = (markdown_dir / link).resolve()
             try:
                 resolved.relative_to(self.workspace.repo_root)
             except ValueError as exc:
                 raise ValidationError(
-                    f"report figure link escapes the repo: {link}",
-                    details={"link": link, "report": report_rel_path},
+                    f"{label} image link escapes the repo: {link}",
+                    details={"link": link, "resource": markdown_rel_path, "role": label},
                 ) from exc
             if not resolved.is_file():
                 continue
@@ -790,7 +811,11 @@ class ResourceService:
             """,
             (data["id"],),
         ).fetchall()
-        data["associations"] = rows_to_dicts(rows=assoc_rows)
+        associations = rows_to_dicts(rows=assoc_rows)
+        for assoc in associations:
+            if assoc.get("target_type") == "synthesis":
+                assoc["target_type"] = "reflection"
+        data["associations"] = associations
         return data
 
     def _get_version(self, *, conn: sqlite3.Connection, project_id: str, resource_id: str, version_id: str) -> dict[str, Any]:

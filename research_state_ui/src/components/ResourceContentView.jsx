@@ -19,6 +19,16 @@ function stripMatchingH1(md, title) {
   return md;
 }
 
+// Drop the doc's leading "# <title>" unconditionally — used when the panel
+// already labels the section (e.g. the reflection doc under its "Reflection"
+// eyebrow), so the file's self-title would just be a redundant third header
+// before the real content. The raw-file link still serves the untouched bytes.
+function stripLeadingH1(md) {
+  if (!md) return md;
+  const m = md.match(/^\s*#\s+.+?\s*#*\s*(?:\r?\n|$)/);
+  return m ? md.slice(m[0].length).replace(/^\s+/, '') : md;
+}
+
 function extOf(path) {
   if (!path) return '';
   const name = path.split('/').pop() || '';
@@ -64,9 +74,14 @@ const MAX_PREVIEW_CHARS = 200_000;
 
 export default function ResourceContentView({
   projectId, resourceId, size, path,
-  // Panel-context trims: hide the provenance badge entirely, and drop a
-  // leading H1 that just echoes the title shown in the panel header.
-  hideSource = false, dedupeTitle = null,
+  // Pin a specific submitted version (faithful historical rendering for a past
+  // reflection wave's graph/proposals). Null → latest submitted bytes / live file.
+  version = null,
+  // Panel-context trims: hide the provenance badge entirely, drop a leading H1
+  // that just echoes the title shown in the panel header (dedupeTitle), or drop
+  // the leading H1 unconditionally when the panel already labels the section
+  // (stripTitle).
+  hideSource = false, dedupeTitle = null, stripTitle = false,
 }) {
   // PDFs render directly via the file endpoint (the browser's PDF viewer
   // streams the bytes). Known-binary types (model weights, archives, media)
@@ -96,7 +111,7 @@ export default function ResourceContentView({
     setLoading(true);
     setError(null);
     setContent(null);
-    api.getResourceContent(projectId, resourceId)
+    api.getResourceContent(projectId, resourceId, version)
       .then(data => {
         if (cancelled) return;
         setContent(data);
@@ -107,7 +122,7 @@ export default function ResourceContentView({
       })
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [projectId, resourceId, renderPdf, renderImage, renderBinary]);
+  }, [projectId, resourceId, version, renderPdf, renderImage, renderBinary]);
 
   if (renderPdf) {
     return (
@@ -166,8 +181,9 @@ export default function ResourceContentView({
   const fullText = content.content ?? '';
   const overCap = fullText.length > MAX_PREVIEW_CHARS;
   let text = overCap ? fullText.slice(0, MAX_PREVIEW_CHARS) : fullText;
-  if (dedupeTitle && isMarkdown(path || content.path)) {
-    text = stripMatchingH1(text, dedupeTitle);
+  if (isMarkdown(path || content.path)) {
+    if (dedupeTitle) text = stripMatchingH1(text, dedupeTitle);
+    else if (stripTitle) text = stripLeadingH1(text);
   }
   const meta = content.size_bytes ?? size;
 

@@ -17,20 +17,58 @@ VALID_PROJECT_GRAPH = (
     ' "edges": [{"from": "lesson", "to": "open", "label": "raises"}]}\n'
 )
 
-VALID_PROPOSALS = (
-    "## Proposal 1 — scale check\n"
-    "Hypothesis: the LR-schedule win survives a 10x larger model.\n"
-    "builds_on: exp_a\n"
-    "Moves claim: claim_b\n"
+VALID_REFLECTION_DOC = (
+    "# Synthesis\n\n"
+    "## Summary\n"
+    "The wave reconciles the lens reflections into the current project state.\n\n"
+    "## Critical reading\n"
+    "The LR-schedule direction remains live, while prior optimizer swaps are compressed as dead ends.\n\n"
+    "## Decision / future directions\n"
+    "Create a small parallel wave to test transfer and mechanism questions.\n"
+)
+
+VALID_CHANGE_SPEC = json.dumps(
+    {
+        "version": 1,
+        "claim_changes": [
+            {
+                "op": "create",
+                "key": "claim_schedule_transfer",
+                "statement": "The LR-schedule effect transfers at larger scale.",
+                "scope": "Toy gate-test project.",
+                "confidence": "medium",
+                "rationale": "The reflection wave surfaced this as the next belief to test.",
+            }
+        ],
+        "decision": {
+            "type": "create_experiments",
+            "experiments": [
+                {
+                    "key": "scale_check",
+                    "name": "scale-check",
+                    "intent": "Test whether the LR-schedule effect transfers at larger scale.",
+                    "tested_claim_refs": ["claim_schedule_transfer"],
+                    "parallelism": "Independent scale axis; can run beside mechanism-probe.",
+                },
+                {
+                    "key": "mechanism_probe",
+                    "name": "mechanism-probe",
+                    "intent": "Probe whether clipping interaction explains the LR-schedule effect.",
+                    "tested_claim_refs": ["claim_schedule_transfer"],
+                    "parallelism": "Independent mechanism axis; no dependency on scale-check.",
+                },
+            ],
+        },
+    }
 )
 
 # A full 5-lens roster: the three core lenses plus two wave-authored ones,
 # each with a charter and a stated distinctness reason.
 def full_roster() -> list[dict[str, str]]:
     return [
-        {"id": "outcomes"},
-        {"id": "dead_ends"},
-        {"id": "coverage"},
+        {"id": "amplify"},
+        {"id": "avoid"},
+        {"id": "entropy"},
         {
             "id": "rigor",
             "charter": "Methodological soundness of the experiments.",
@@ -44,7 +82,7 @@ def full_roster() -> list[dict[str, str]]:
     ]
 
 
-ALL_LENS_IDS = ("outcomes", "dead_ends", "coverage", "rigor", "cost")
+ALL_LENS_IDS = ("amplify", "avoid", "entropy", "rigor", "cost")
 
 
 class SynthesisGateTest(unittest.TestCase):
@@ -67,7 +105,7 @@ class SynthesisGateTest(unittest.TestCase):
 
     def _create_wave(self, *, title: str = "Wave") -> str:
         return self.call(
-            "synthesis.create", project_id=self.project_id, title=title, lenses=full_roster()
+            "reflection.create", project_id=self.project_id, title=title, lenses=full_roster()
         )["id"]
 
     def _associate_file(self, *, syn_id: str, path: str, role: str, body: str) -> str:
@@ -79,7 +117,7 @@ class SynthesisGateTest(unittest.TestCase):
             "resource.associate",
             project_id=self.project_id,
             resource_id=res["id"],
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
             role=role,
         )
@@ -89,7 +127,7 @@ class SynthesisGateTest(unittest.TestCase):
         self._associate_file(
             syn_id=syn_id,
             path=f"syntheses/{syn_id}/reflections/{lens_id}.md",
-            role="reflection",
+            role="reflection_lens_doc",
             body=f"# {lens_id}\nFindings through the {lens_id} lens.\n",
         )
 
@@ -98,26 +136,42 @@ class SynthesisGateTest(unittest.TestCase):
         for lens_id in ALL_LENS_IDS:
             self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="submit_reflections",
         )
         return syn_id
 
+    def _associate_synthesis_artifacts(
+        self,
+        *,
+        syn_id: str,
+        graph: str = VALID_PROJECT_GRAPH,
+        doc: str = VALID_REFLECTION_DOC,
+        change_spec: str = VALID_CHANGE_SPEC,
+    ) -> None:
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=graph
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
+        )
+        self._associate_file(
+            syn_id=syn_id,
+            path="project/change_spec.json",
+            role="change_spec",
+            body=change_spec,
+        )
+
     def _drive_to_synthesis_review(self) -> str:
         syn_id = self._drive_to_synthesizing()
-        self._associate_file(
-            syn_id=syn_id, path="project/logic_graph.json", role="graph", body=VALID_PROJECT_GRAPH
-        )
-        self._associate_file(
-            syn_id=syn_id, path="project/proposals.md", role="proposals", body=VALID_PROPOSALS
-        )
+        self._associate_synthesis_artifacts(syn_id=syn_id)
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
-            transition="submit_synthesis",
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
         )
         return syn_id
 
@@ -125,9 +179,9 @@ class SynthesisGateTest(unittest.TestCase):
         req = self.call(
             "review.request",
             project_id=self.project_id,
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
-            role="synthesis_reviewer",
+            role="reflection_reviewer",
         )
         session = self.call(
             "review.start",
@@ -142,25 +196,25 @@ class SynthesisGateTest(unittest.TestCase):
         session_id = self._open_review_session(syn_id=syn_id)
         self.call("review.submit", review_session_id=session_id, verdict="pass")
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="publish",
         )
         return syn_id
 
     def _state(self, syn_id: str) -> dict:
-        return self.call("synthesis.get", project_id=self.project_id, synthesis_id=syn_id)
+        return self.call("reflection.get", project_id=self.project_id, reflection_id=syn_id)
 
     # ---- roster envelope ----
 
     def test_roster_must_be_exactly_five_lenses(self) -> None:
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=[])
+            self.call("reflection.create", project_id=self.project_id, lenses=[])
         self.assertIn("exactly 5 lenses", str(ctx.exception))
         with self.assertRaises(ValidationError):
             self.call(
-                "synthesis.create", project_id=self.project_id, lenses=full_roster()[:4]
+                "reflection.create", project_id=self.project_id, lenses=full_roster()[:4]
             )
 
     def test_roster_requires_all_core_lenses(self) -> None:
@@ -171,39 +225,66 @@ class SynthesisGateTest(unittest.TestCase):
             "why_distinct": "It is vibes.",
         }
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=roster)
-        self.assertIn("missing core lens(es): outcomes", str(ctx.exception))
+            self.call("reflection.create", project_id=self.project_id, lenses=roster)
+        self.assertIn("missing core lens(es): amplify", str(ctx.exception))
 
     def test_authored_lenses_require_charter_and_why_distinct(self) -> None:
         roster = full_roster()
         roster[3] = {"id": "rigor", "charter": "Method soundness."}  # no why_distinct
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=roster)
+            self.call("reflection.create", project_id=self.project_id, lenses=roster)
         self.assertIn("why_distinct", str(ctx.exception))
         roster[3] = {"id": "rigor", "why_distinct": "Different."}  # no charter
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=roster)
+            self.call("reflection.create", project_id=self.project_id, lenses=roster)
         self.assertIn("charter", str(ctx.exception))
 
     def test_roster_rejects_duplicate_and_malformed_ids(self) -> None:
         roster = full_roster()
         roster[4] = dict(roster[3])
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=roster)
+            self.call("reflection.create", project_id=self.project_id, lenses=roster)
         self.assertIn("duplicate lens id", str(ctx.exception))
         roster = full_roster()
         roster[4]["id"] = "Not A Slug!"
         with self.assertRaises(ValidationError) as ctx:
-            self.call("synthesis.create", project_id=self.project_id, lenses=roster)
+            self.call("reflection.create", project_id=self.project_id, lenses=roster)
         self.assertIn("invalid lens id", str(ctx.exception))
 
     def test_core_lenses_default_their_charters(self) -> None:
         syn = self._state(self._create_wave())
         by_id = {lens["id"]: lens for lens in syn["roster"]}
-        self.assertTrue(by_id["outcomes"]["core"])
-        self.assertIn("verified knowledge state", by_id["outcomes"]["charter"])
-        self.assertIn("negative-knowledge ledger", by_id["dead_ends"]["charter"])
+        self.assertTrue(by_id["amplify"]["core"])
+        self.assertIn("positive signal", by_id["amplify"]["charter"])
+        self.assertIn("negative-knowledge ledger", by_id["avoid"]["charter"])
         self.assertFalse(by_id["rigor"]["core"])
+
+    def test_reflection_tool_namespace_exposes_wave_tools(self) -> None:
+        syn_id = self.call(
+            "reflection.create",
+            project_id=self.project_id,
+            title="Canonical namespace",
+            lenses=full_roster(),
+        )["id"]
+        self.assertEqual(
+            self.call(
+                "reflection.get",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+            )["id"],
+            syn_id,
+        )
+        listed = self.call("reflection.list", project_id=self.project_id)["reflections"]
+        self.assertEqual([row["id"] for row in listed], [syn_id])
+        self.assertEqual(
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="abandon",
+            )["status"],
+            "abandoned",
+        )
 
     def test_only_one_wave_may_be_open(self) -> None:
         self._create_wave()
@@ -212,15 +293,15 @@ class SynthesisGateTest(unittest.TestCase):
         self.assertIn("already open", str(ctx.exception))
         # A terminal wave (here: abandoned) frees the slot.
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=self._state_id_of_open_wave(),
+            reflection_id=self._state_id_of_open_wave(),
             transition="abandon",
         )
         self._create_wave(title="Third")
 
     def _state_id_of_open_wave(self) -> str:
-        syntheses = self.call("synthesis.list", project_id=self.project_id)["syntheses"]
+        syntheses = self.call("reflection.list", project_id=self.project_id)["reflections"]
         open_waves = [
             syn for syn in syntheses if syn["status"] not in {"published", "abandoned"}
         ]
@@ -233,9 +314,9 @@ class SynthesisGateTest(unittest.TestCase):
         syn_id = self._create_wave()
         with self.assertRaises(WorkflowError):
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="submit_reflections",
             )
         # Four of five: the error names exactly the missing lens.
@@ -243,18 +324,18 @@ class SynthesisGateTest(unittest.TestCase):
             self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="submit_reflections",
             )
         self.assertIn("cost", str(ctx.exception))
-        self.assertNotIn("outcomes,", str(ctx.exception))
+        self.assertNotIn("amplify,", str(ctx.exception))
         self._submit_reflection(syn_id=syn_id, lens_id="cost")
         out = self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="submit_reflections",
         )
         self.assertEqual(out["status"], "synthesizing")
@@ -263,18 +344,18 @@ class SynthesisGateTest(unittest.TestCase):
         syn_id = self._create_wave()
         for lens_id in ALL_LENS_IDS[:-1]:
             self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
-        # role 'reflection' but the filename stem matches no lens ⇒ not coverage.
+        # role 'reflection_lens_doc' but the filename stem matches no lens ⇒ not coverage.
         self._associate_file(
             syn_id=syn_id,
             path=f"syntheses/{syn_id}/reflections/notes.md",
-            role="reflection",
+            role="reflection_lens_doc",
             body="loose notes\n",
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="submit_reflections",
             )
         self.assertIn("cost", str(ctx.exception))
@@ -289,62 +370,112 @@ class SynthesisGateTest(unittest.TestCase):
                 self._associate_file(
                     syn_id=syn_id,
                     path=f"syntheses/{syn_id}/reflections/rigor.md",
-                    role="reflection",
+                    role="reflection_lens_doc",
                     body="   \n",
                 )
             else:
                 self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="submit_reflections",
             )
         self.assertIn("empty", str(ctx.exception))
 
     def test_get_state_reports_reflection_coverage(self) -> None:
         syn_id = self._create_wave()
-        self._submit_reflection(syn_id=syn_id, lens_id="outcomes")
+        self._submit_reflection(syn_id=syn_id, lens_id="amplify")
         coverage = self._state(syn_id)["reflection_coverage"]
         self.assertFalse(coverage["complete"])
         self.assertEqual(
-            set(coverage["missing"]), {"dead_ends", "coverage", "rigor", "cost"}
+            set(coverage["missing"]), {"avoid", "entropy", "rigor", "cost"}
         )
+
+    def test_legacy_reflection_role_is_rejected_for_new_associations(self) -> None:
+        syn_id = self._create_wave()
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate_file(
+                syn_id=syn_id,
+                path=f"syntheses/{syn_id}/reflections/amplify.md",
+                role="reflection",
+                body="# amplify\nLegacy role output.\n",
+            )
+        self.assertIn("legacy resource role 'reflection'", str(ctx.exception))
 
     # ---- synthesis artifacts gate ----
 
-    def test_submit_synthesis_requires_graph_then_proposals(self) -> None:
+    def test_submit_reflection_artifacts_requires_graph_doc_then_change_spec(self) -> None:
         syn_id = self._drive_to_synthesizing()
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
-                transition="submit_synthesis",
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
             )
         self.assertIn("project logic graph", str(ctx.exception))
         self._associate_file(
-            syn_id=syn_id, path="project/logic_graph.json", role="graph", body=VALID_PROJECT_GRAPH
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
-                transition="submit_synthesis",
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
             )
-        self.assertIn("proposals", str(ctx.exception))
+        self.assertIn("reflection document", str(ctx.exception))
         self._associate_file(
-            syn_id=syn_id, path="project/proposals.md", role="proposals", body=VALID_PROPOSALS
+            syn_id=syn_id,
+            path="project/reflection.md",
+            role="reflection_doc",
+            body=VALID_REFLECTION_DOC,
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
+            )
+        self.assertIn("change spec", str(ctx.exception))
+        self._associate_file(
+            syn_id=syn_id,
+            path="project/change_spec.json",
+            role="change_spec",
+            body=VALID_CHANGE_SPEC,
         )
         out = self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
-            transition="submit_synthesis",
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
         )
-        self.assertEqual(out["status"], "synthesis_review")
+        self.assertEqual(out["status"], "reflection_review")
+
+    def test_legacy_synthesis_doc_role_is_rejected_for_new_associations(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate_file(
+                syn_id=syn_id,
+                path="project/synthesis.md",
+                role="synthesis_doc",
+                body=VALID_REFLECTION_DOC,
+            )
+        self.assertIn("legacy resource role 'synthesis_doc'", str(ctx.exception))
+
+    def test_legacy_project_graph_role_is_rejected_for_reflection_waves(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate_file(
+                syn_id=syn_id,
+                path="project/logic_graph.json",
+                role="graph",
+                body=VALID_PROJECT_GRAPH,
+            )
+        self.assertIn("use role 'project_graph'", str(ctx.exception))
 
     def test_project_graph_over_budget_is_rejected_plainly(self) -> None:
         syn_id = self._drive_to_synthesizing()
@@ -352,40 +483,304 @@ class SynthesisGateTest(unittest.TestCase):
         self._associate_file(
             syn_id=syn_id,
             path="project/logic_graph.json",
-            role="graph",
+            role="project_graph",
             body=json.dumps({"version": 1, "nodes": nodes}),
         )
         self._associate_file(
-            syn_id=syn_id, path="project/proposals.md", role="proposals", body=VALID_PROPOSALS
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=VALID_REFLECTION_DOC
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
-                transition="submit_synthesis",
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
             )
         message = str(ctx.exception)
         self.assertIn("reduce the graph", message)
         self.assertNotIn("collapse", message)
         self.assertNotIn("merge", message)
 
-    def test_empty_proposals_file_is_rejected(self) -> None:
+    def test_empty_reflection_doc_is_rejected(self) -> None:
         syn_id = self._drive_to_synthesizing()
         self._associate_file(
-            syn_id=syn_id, path="project/logic_graph.json", role="graph", body=VALID_PROJECT_GRAPH
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
         )
         self._associate_file(
-            syn_id=syn_id, path="project/proposals.md", role="proposals", body="  \n"
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body="  \n"
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
-                transition="submit_synthesis",
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
             )
         self.assertIn("empty", str(ctx.exception))
+
+    def test_reflection_doc_requires_critical_reading_section(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        doc = (
+            "# Synthesis\n\n"
+            "## Summary\nShort summary.\n\n"
+            "## Decision / future directions\nCreate the approved wave.\n"
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
+            )
+        self.assertIn("Critical reading", str(ctx.exception))
+
+    def test_verbose_reflection_doc_is_rejected(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        verbose_doc = (
+            "# Synthesis\n\n"
+            "## Summary\n"
+            "Short summary.\n\n"
+            "## Critical reading\n"
+            + ("This paragraph is intentionally too long for the reflection document. " * 260)
+            + "\n\n## Decision / future directions\n"
+            "Create the approved parallel wave.\n"
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate_file(
+                syn_id=syn_id,
+                path="project/reflection.md",
+                role="reflection_doc",
+                body=verbose_doc,
+            )
+        self.assertIn("maximum", str(ctx.exception))
+
+    def test_reflection_doc_requires_submitted_relative_images(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        doc = (
+            "# Synthesis\n\n"
+            "## Summary\nShort summary.\n\n"
+            "![project graph](figures/project_graph.png)\n\n"
+            "## Critical reading\nThe visual is needed for this reading.\n\n"
+            "## Decision / future directions\nCreate the approved wave.\n"
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
+            )
+        self.assertIn("image 'figures/project_graph.png' has no submitted content", str(ctx.exception))
+
+    def test_reflection_doc_submits_relative_images(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        (self.repo / "project" / "figures").mkdir(parents=True, exist_ok=True)
+        (self.repo / "project" / "figures" / "project_graph.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nfake"
+        )
+        doc = (
+            "# Synthesis\n\n"
+            "## Summary\nShort summary.\n\n"
+            "![project graph](figures/project_graph.png)\n\n"
+            "## Critical reading\nThe visual is submitted with the reflection doc.\n\n"
+            "## Decision / future directions\nCreate the approved wave.\n"
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
+        )
+        with self.app.store.connect() as conn:
+            row = conn.execute(
+                "SELECT sha256 FROM report_figures WHERE link_path = ?",
+                ("figures/project_graph.png",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        out = self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
+        )
+        self.assertEqual(out["status"], "reflection_review")
+
+    def test_change_spec_must_be_materializable(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        self._associate_file(
+            syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
+        )
+        self._associate_file(
+            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=VALID_REFLECTION_DOC
+        )
+        self._associate_file(
+            syn_id=syn_id,
+            path="project/change_spec.json",
+            role="change_spec",
+            body="## old markdown change spec\n",
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
+            )
+        self.assertIn("not valid JSON", str(ctx.exception))
+
+    def test_publish_materializes_claim_changes_and_experiment_wave(self) -> None:
+        existing = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="Schedule effect appears local.",
+        )
+        outcome = {
+            "version": 1,
+            "claim_changes": [
+                {
+                    "op": "update",
+                    "claim_id": existing["id"],
+                    "status": "supported",
+                    "confidence": "high",
+                    "rationale": "The published synthesis reconciles the evidence.",
+                },
+                {
+                    "op": "create",
+                    "key": "claim_transfer",
+                    "statement": "Schedule effect transfers across scale.",
+                    "confidence": "medium",
+                    "rationale": "This is the next belief to test.",
+                },
+            ],
+            "decision": {
+                "type": "create_experiments",
+                "experiments": [
+                    {
+                        "key": "scale",
+                        "name": "scale-transfer",
+                        "intent": "Test scale transfer.",
+                        "tested_claim_refs": ["claim_transfer"],
+                        "parallelism": "Independent scale axis.",
+                    },
+                    {
+                        "key": "data",
+                        "name": "data-transfer",
+                        "intent": "Test data transfer.",
+                        "tested_claim_refs": ["claim_transfer"],
+                        "parallelism": "Independent data axis.",
+                    },
+                ],
+            },
+        }
+        syn_id = self._drive_to_synthesizing()
+        self._associate_synthesis_artifacts(syn_id=syn_id, change_spec=json.dumps(outcome))
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
+        )
+        session_id = self._open_review_session(syn_id=syn_id)
+        self.call("review.submit", review_session_id=session_id, verdict="pass")
+        published = self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="publish",
+        )
+        self.assertEqual(published["status"], "published")
+        claims = self.call("claim.list", project_id=self.project_id)["claims"]
+        by_statement = {claim["statement"]: claim for claim in claims}
+        self.assertEqual(by_statement["Schedule effect appears local."]["status"], "supported")
+        created_claim = by_statement["Schedule effect transfers across scale."]
+        experiments = self.call("experiment.list", project_id=self.project_id)["experiments"]
+        self.assertEqual({exp["name"] for exp in experiments}, {"scale-transfer", "data-transfer"})
+        for exp in experiments:
+            self.assertEqual(exp["status"], "planned")
+            self.assertEqual([claim["id"] for claim in exp["tested_claims"]], [created_claim["id"]])
+        detail = self._state(syn_id)
+        self.assertEqual(len(detail["materialized_claims"]), 2)
+        self.assertEqual(len(detail["materialized_experiments"]), 2)
+
+    def test_rejected_synthesis_does_not_materialize_change_spec(self) -> None:
+        syn_id = self._drive_to_synthesis_review()
+        session_id = self._open_review_session(syn_id=syn_id)
+        self.call(
+            "review.submit",
+            review_session_id=session_id,
+            verdict="needs_changes",
+            return_to="synthesizing",
+            notes="change spec is not justified yet",
+        )
+        self.assertEqual(self.call("claim.list", project_id=self.project_id)["claims"], [])
+        self.assertEqual(self.call("experiment.list", project_id=self.project_id)["experiments"], [])
+
+    def test_publish_hard_stop_marks_project_and_blocks_new_work(self) -> None:
+        outcome = {
+            "version": 1,
+            "claim_changes": [],
+            "decision": {
+                "type": "hard_stop",
+                "rationale": "All viable directions are ruled out by reviewed dead ends.",
+            },
+        }
+        syn_id = self._drive_to_synthesizing()
+        self._associate_synthesis_artifacts(syn_id=syn_id, change_spec=json.dumps(outcome))
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
+        )
+        session_id = self._open_review_session(syn_id=syn_id)
+        self.call("review.submit", review_session_id=session_id, verdict="pass")
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="publish",
+        )
+        project = self.call("project.get", project_id=self.project_id)
+        self.assertEqual(project["status"], "stopped")
+        self.assertEqual(project["hard_stop_reflection_id"], syn_id)
+        self.assertEqual(self.call("experiment.list", project_id=self.project_id)["experiments"], [])
+        with self.assertRaises(ValidationError):
+            self.call(
+                "experiment.create",
+                project_id=self.project_id,
+                name="after-stop",
+                intent="Should not be created.",
+            )
 
     # ---- review gate + routing ----
 
@@ -393,17 +788,17 @@ class SynthesisGateTest(unittest.TestCase):
         syn_id = self._drive_to_synthesis_review()
         with self.assertRaises(WorkflowError):
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="publish",
             )
         session_id = self._open_review_session(syn_id=syn_id)
         self.call("review.submit", review_session_id=session_id, verdict="pass")
         out = self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="publish",
         )
         self.assertEqual(out["status"], "published")
@@ -416,40 +811,35 @@ class SynthesisGateTest(unittest.TestCase):
             self.call(
                 "review.request",
                 project_id=self.project_id,
-                target_type="synthesis",
+                target_type="reflection",
                 target_id=syn_id,
-                role="synthesis_reviewer",
+                role="reflection_reviewer",
             )
         # Only one wave may be open, so drive this same one forward.
         for lens_id in ALL_LENS_IDS:
             self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="submit_reflections",
         )
-        self._associate_file(
-            syn_id=syn_id, path="project/logic_graph.json", role="graph", body=VALID_PROJECT_GRAPH
-        )
-        self._associate_file(
-            syn_id=syn_id, path="project/proposals.md", role="proposals", body=VALID_PROPOSALS
-        )
+        self._associate_synthesis_artifacts(syn_id=syn_id)
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
-            transition="submit_synthesis",
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
         )
         with self.assertRaises(PermissionDeniedError) as ctx:
             self.call(
                 "review.request",
                 project_id=self.project_id,
-                target_type="synthesis",
+                target_type="reflection",
                 target_id=syn_id,
                 role="experiment_reviewer",
             )
-        self.assertIn("synthesis_reviewer", str(ctx.exception))
+        self.assertIn("reflection_reviewer", str(ctx.exception))
 
     def test_synthesis_rejection_requires_explicit_return_to(self) -> None:
         syn_id = self._drive_to_synthesis_review()
@@ -488,14 +878,14 @@ class SynthesisGateTest(unittest.TestCase):
         self.assertTrue(state["reflection_coverage"]["complete"])
         self.assertIn("reflections stand", state["revision_context"])
         self.assertIn("Consider revising", state["revision_context"])
-        # The graph + proposals associations stand too: resubmit directly.
+        # The graph + reflection-doc + change-spec associations stand too: resubmit directly.
         out = self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
-            transition="submit_synthesis",
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
         )
-        self.assertEqual(out["status"], "synthesis_review")
+        self.assertEqual(out["status"], "reflection_review")
 
     def test_redo_reflection_bumps_attempt_and_resets_coverage(self) -> None:
         syn_id = self._drive_to_synthesis_review()
@@ -515,17 +905,17 @@ class SynthesisGateTest(unittest.TestCase):
         self.assertIn("re-launch the reflection fan-out", state["revision_context"])
         with self.assertRaises(WorkflowError):
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="submit_reflections",
             )
         for lens_id in ALL_LENS_IDS:
             self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
         out = self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="submit_reflections",
         )
         self.assertEqual(out["status"], "synthesizing")
@@ -535,9 +925,9 @@ class SynthesisGateTest(unittest.TestCase):
         req = self.call(
             "review.request",
             project_id=self.project_id,
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
-            role="synthesis_reviewer",
+            role="reflection_reviewer",
             producer_session_id="orchestrator",
         )
         with self.assertRaises(PermissionDeniedError):
@@ -553,9 +943,9 @@ class SynthesisGateTest(unittest.TestCase):
         req = self.call(
             "review.request",
             project_id=self.project_id,
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
-            role="synthesis_reviewer",
+            role="reflection_reviewer",
         )
         # The producer edits + re-registers the graph after the capability was
         # issued: the association version moves, so the snapshot no longer
@@ -570,9 +960,9 @@ class SynthesisGateTest(unittest.TestCase):
             "resource.associate",
             project_id=self.project_id,
             resource_id=res["id"],
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
-            role="graph",
+            role="project_graph",
         )
         with self.assertRaises(PermissionDeniedError) as ctx:
             self.call(
@@ -589,9 +979,9 @@ class SynthesisGateTest(unittest.TestCase):
         syn_id = self._drive_to_published()
         with self.assertRaises(WorkflowError):
             self.call(
-                "synthesis.transition",
+                "reflection.transition",
                 project_id=self.project_id,
-                synthesis_id=syn_id,
+                reflection_id=syn_id,
                 transition="abandon",
             )
         # A published wave frees the slot for the next one.
@@ -619,7 +1009,9 @@ class ReflectionSignalTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.project_id = self.call("project.create", name="Signal Test")["id"]
+        current = self.call("project.current")
+        self.project_id = current["project"]["id"]
+        self.call("project.update", project_id=self.project_id, name="Signal Test")
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -645,7 +1037,7 @@ class ReflectionSignalTest(unittest.TestCase):
 
     def _publish_wave(self) -> str:
         syn = self.call(
-            "synthesis.create",
+            "reflection.create",
             project_id=self.project_id,
             title="Wave",
             lenses=full_roster(),
@@ -664,19 +1056,20 @@ class ReflectionSignalTest(unittest.TestCase):
                 "resource.associate",
                 project_id=self.project_id,
                 resource_id=res["id"],
-                target_type="synthesis",
+                target_type="reflection",
                 target_id=syn_id,
-                role="reflection",
+                role="reflection_lens_doc",
             )
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="submit_reflections",
         )
         for path, role, body in (
-            ("project/logic_graph.json", "graph", VALID_PROJECT_GRAPH),
-            ("project/proposals.md", "proposals", VALID_PROPOSALS),
+            ("project/logic_graph.json", "project_graph", VALID_PROJECT_GRAPH),
+            ("project/reflection.md", "reflection_doc", VALID_REFLECTION_DOC),
+            ("project/change_spec.json", "change_spec", VALID_CHANGE_SPEC),
         ):
             full = self.repo / path
             full.parent.mkdir(parents=True, exist_ok=True)
@@ -686,22 +1079,22 @@ class ReflectionSignalTest(unittest.TestCase):
                 "resource.associate",
                 project_id=self.project_id,
                 resource_id=res["id"],
-                target_type="synthesis",
+                target_type="reflection",
                 target_id=syn_id,
                 role=role,
             )
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
-            transition="submit_synthesis",
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
         )
         req = self.call(
             "review.request",
             project_id=self.project_id,
-            target_type="synthesis",
+            target_type="reflection",
             target_id=syn_id,
-            role="synthesis_reviewer",
+            role="reflection_reviewer",
         )
         session = self.call(
             "review.start",
@@ -711,9 +1104,9 @@ class ReflectionSignalTest(unittest.TestCase):
         )
         self.call("review.submit", review_session_id=session["review_session_id"], verdict="pass")
         self.call(
-            "synthesis.transition",
+            "reflection.transition",
             project_id=self.project_id,
-            synthesis_id=syn_id,
+            reflection_id=syn_id,
             transition="publish",
         )
         return syn_id
@@ -750,6 +1143,33 @@ class ReflectionSignalTest(unittest.TestCase):
         self.assertTrue(signal["hint"].startswith("Consider running a project reflection"))
         self.assertIn("covers 3 of 6", signal["hint"])
 
+    def test_project_current_includes_reflection_at_a_glance(self) -> None:
+        self._finish_experiment(intent="before reflection")
+        syn_id = self._publish_wave()
+        after_id = self._finish_experiment(intent="after reflection")
+
+        current = self.call("project.current")
+        glance = current["at_a_glance"]
+        recent = glance["recent"]
+        project_reflection = glance["project_reflection"]
+        since_reflection = glance["since_reflection"]
+
+        self.assertIn("Latest reflection covers 1/2 finished experiments", glance["summary"])
+        self.assertIn(after_id, {item["id"] for item in recent["experiments"]})
+        self.assertTrue(
+            {"id", "name", "status"}.issubset(recent["experiments"][0])
+        )
+        self.assertTrue(recent["claims"])
+        self.assertTrue(
+            {"id", "status", "confidence", "statement"}.issubset(recent["claims"][0])
+        )
+        self.assertEqual(project_reflection["reflection_id"], syn_id)
+        self.assertTrue(project_reflection["reflection_doc_resource_id"])
+        self.assertTrue(project_reflection["project_graph_resource_id"])
+        self.assertIn(after_id, since_reflection["finished_experiment_ids"])
+        self.assertGreaterEqual(len(since_reflection["active_experiment_ids"]), 2)
+        self.assertIsNone(glance["open_reflection_id"])
+
     def test_contradicted_claim_flip_triggers_the_nudge(self) -> None:
         claim = self.call(
             "claim.create", project_id=self.project_id, statement="X helps", confidence="medium"
@@ -774,7 +1194,7 @@ class ReflectionSignalTest(unittest.TestCase):
             self._finish_experiment(intent=f"exp {i}")
         self.assertTrue(self._signal()["stale"])
         self.call(
-            "synthesis.create",
+            "reflection.create",
             project_id=self.project_id,
             title="Wave",
             lenses=full_roster(),
@@ -830,7 +1250,7 @@ class StatusAndNextReflectionTest(unittest.TestCase):
             self._finish_experiment(f"stale-{i}")
         out = self.call("workflow.status_and_next", project_id=self.project_id)
         reflection = out["project_reflection"]
-        self.assertIsNone(reflection["synthesis"])
+        self.assertIsNone(reflection["reflection"])
         self.assertIn("Consider", reflection["hint"])
         # Stale AND idle: the workflow block recommends the reflection too.
         self.assertTrue(reflection["recommended"])
@@ -848,7 +1268,7 @@ class StatusAndNextReflectionTest(unittest.TestCase):
         self.assertIn("No experiments are active", reflection["hint"])
         workflow = out["workflow"]
         self.assertEqual(workflow["current_gate"], "reflection_suggested")
-        self.assertIn("synthesis.create", workflow["allowed_actions"])
+        self.assertIn("reflection.create", workflow["allowed_actions"])
         # Never a gate: creating the next claim/experiment stays allowed.
         self.assertIn("claim.create", workflow["allowed_actions"])
         self.assertIn("experiment.create", workflow["allowed_actions"])
@@ -892,18 +1312,18 @@ class StatusAndNextReflectionTest(unittest.TestCase):
 
     def test_open_wave_carries_gate_guidance(self) -> None:
         self.call(
-            "synthesis.create",
+            "reflection.create",
             project_id=self.project_id,
             title="Wave",
             lenses=full_roster(),
         )
         out = self.call("workflow.status_and_next", project_id=self.project_id)
         reflection = out["project_reflection"]
-        self.assertEqual(reflection["synthesis"]["status"], "reflecting")
+        self.assertEqual(reflection["reflection"]["status"], "reflecting")
         workflow = reflection["workflow"]
         self.assertEqual(workflow["current_gate"], "reflection_roster_incomplete")
         self.assertEqual(len(workflow["missing_evidence"]), 5)
-        self.assertEqual(len(reflection["synthesis"]["roster"]), 5)
+        self.assertEqual(len(reflection["reflection"]["roster"]), 5)
         # Idle project-level call: the wave's guidance also takes the
         # top-level workflow slot, so the orientation call drives the wave.
         self.assertEqual(out["workflow"]["current_gate"], "reflection_roster_incomplete")

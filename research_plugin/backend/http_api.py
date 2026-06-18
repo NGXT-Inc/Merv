@@ -25,12 +25,14 @@ from .project_router import ProjectRouter
 from .services.figure_view import build_experiment_figure
 from .services.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .services.identity import LOCAL_PRINCIPAL, AuthError, AuthService
-from .services.permissions import GATED_ROLES
+from .services.permissions import GATED_ROLES, PROJECT_GRAPH_ROLES
+from .services.pinned import pinned_text_for_version
 from .utils import (
     ContentUnavailableError,
     NotFoundError,
     ResearchPluginError,
     ValidationError,
+    WorkflowError,
 )
 from .state import monotonic_ms
 
@@ -51,20 +53,30 @@ JsonBody = dict[str, Any] | None
 
 
 def _latest_graph_resource(
-    *, resources: list[dict[str, Any]], attempt: Any
+    *,
+    resources: list[dict[str, Any]],
+    attempt: Any,
+    roles: tuple[str, ...] = ("graph",),
 ) -> dict[str, Any] | None:
     """The graph association to render: current attempt preferred (prior
-    attempts keep the story visible right after an attempt bump), most
-    recently associated within the pool. Recency matches the transition
-    validator's ORDER BY a.created_seq DESC, so the UI never renders a
-    different file than the gate lints (the association_rowid key kept its
-    historical name when created_seq replaced rowid ordering)."""
-    candidates = [r for r in resources if r.get("association_role") == "graph"]
+    attempts keep the story visible right after an attempt bump), canonical
+    role preferred, most recently associated within that role. Recency matches
+    the transition validator's ORDER BY a.created_seq DESC, so the UI never
+    renders a different file than the gate lints (the association_rowid key
+    kept its historical name when created_seq replaced rowid ordering)."""
+    candidates = [r for r in resources if r.get("association_role") in roles]
     if not candidates:
         return None
     current = [r for r in candidates if r.get("association_attempt_index") == attempt]
     pool = current or candidates
-    return max(pool, key=lambda r: r.get("association_rowid") or 0)
+    role_rank = {role: index for index, role in enumerate(roles)}
+    return min(
+        pool,
+        key=lambda r: (
+            role_rank.get(str(r.get("association_role")), len(roles)),
+            -(r.get("association_rowid") or 0),
+        ),
+    )
 
 
 class ResearchHttpApi:
@@ -115,6 +127,7 @@ class ResearchHttpApi:
         source: str | None,
         status: str | None,
         tool: str | None,
+        project_id: str | None,
         limit: int,
         sort: str,
         order: str,
@@ -124,6 +137,7 @@ class ResearchHttpApi:
             source=source,
             status=status,
             tool=tool,
+            project_id=project_id,
             limit=limit,
             sort=sort,
             order=order,
@@ -225,8 +239,18 @@ class ResearchHttpApi:
                 return claim
         raise NotFoundError(f"claim not found: {claim_id}")
 
-    def resource_content(self, project_id: str, resource_id: str) -> dict[str, Any]:
+    def resource_content(
+        self, project_id: str, resource_id: str, version: str | None = None
+    ) -> dict[str, Any]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
+        # An explicit version pins the EXACT submitted bytes of one resource
+        # version (used by the reflection-wave UI to render a past wave's
+        # graph, reflection doc, or change spec faithfully, not the latest
+        # living file).
+        if version:
+            return self._resource_content_at_version(
+                project_id=project_id, resource=resource, version_id=version
+            )
         # Gated-role artifacts render their SUBMITTED bytes (the content the
         # gates lint and reviewers grade); other roles read the live file —
         # a local-mode convenience the cloud profile will not have.
@@ -273,6 +297,62 @@ class ResearchHttpApi:
             "available": True,
         }
 
+    def _resource_content_at_version(
+        self, *, project_id: str, resource: dict[str, Any], version_id: str
+    ) -> dict[str, Any]:
+        """Serve the exact submitted bytes of one pinned resource version.
+
+        The version must belong to this resource — its current version or any
+        of its associations' versions — otherwise 404 (so a cross-resource
+        version_id can't be used to read arbitrary blobs). A missing/undecodable
+        blob degrades to the same {available: False} shape the control-mode and
+        live paths use, so the UI renders ContentUnavailable instead of a 500."""
+        valid = {
+            str(a.get("version_id"))
+            for a in resource.get("associations", [])
+            if a.get("version_id")
+        }
+        current_version = resource.get("current_version_id")
+        if current_version:
+            valid.add(str(current_version))
+        if version_id not in valid:
+            raise NotFoundError(
+                f"version {version_id} is not associated with resource {resource.get('id')}"
+            )
+        conn = self.app.store.connect()
+        try:
+            text = pinned_text_for_version(
+                conn=conn,
+                blobs=self.app.blobs,
+                version_id=version_id,
+                what="resource content",
+                role="",
+            )
+        except WorkflowError as exc:
+            return {
+                "resource": resource,
+                "path": resource.get("path"),
+                "content": None,
+                "text": None,
+                "available": False,
+                "source": "unavailable",
+                "reason": "version_unavailable",
+                "detail": str(exc),
+                "version_id": version_id,
+            }
+        finally:
+            conn.close()
+        return {
+            "resource": resource,
+            "path": resource.get("path"),
+            "content": text,
+            "text": text,
+            "size_bytes": len(text.encode("utf-8")),
+            "source": "submitted",
+            "version_id": version_id,
+            "available": True,
+        }
+
     def _latest_gated_version_id(self, *, resource: dict[str, Any]) -> str | None:
         best: tuple[int, str] | None = None
         for assoc in resource.get("associations", []):
@@ -288,14 +368,46 @@ class ResearchHttpApi:
     def _pinned_gated_text(
         self, *, project_id: str, resource: dict[str, Any]
     ) -> tuple[str, str] | None:
-        version_id = self._latest_gated_version_id(resource=resource)
-        if version_id is None:
+        """The latest submitted bytes for a gated-role resource (decoded) plus
+        the version id they came from, or None when the resource has no gated
+        association (the caller then reads the live file).
+
+        The documented no-version default is the *latest* submitted bytes, so
+        this resolves to the resource's ``current_version_id`` — the newest
+        observed version, whose bytes are captured into the blob store when it
+        is associated as a gated artifact. That keeps a living file pinned by
+        several targets (e.g. ``project/reflection.md`` associated by multiple
+        reflection waves) serving its newest version rather than whichever
+        association happens to carry the highest per-target attempt index. It
+        falls back to the latest gated association only when the current
+        version's own bytes were never submitted (a live edit observed but not
+        re-associated)."""
+        latest_assoc = self._latest_gated_version_id(resource=resource)
+        if latest_assoc is None:
+            return None
+        candidates: list[str] = []
+        current = resource.get("current_version_id")
+        if current:
+            candidates.append(str(current))
+        if latest_assoc not in candidates:
+            candidates.append(latest_assoc)
+        for version_id in candidates:
+            text = self._submitted_text_for_version(version_id=version_id)
+            if text is not None:
+                return text, version_id
+        return None
+
+    def _submitted_text_for_version(self, *, version_id: str | None) -> str | None:
+        """The submitted bytes captured for one resource version (decoded), or
+        None when the version is unknown or its bytes were never blob-captured.
+        Shared by the no-version content default and the association readers."""
+        if not version_id:
             return None
         conn = self.app.store.connect()
         try:
             row = conn.execute(
                 "SELECT project_id, content_sha256 FROM resource_versions WHERE id = ?",
-                (version_id,),
+                (str(version_id),),
             ).fetchone()
         finally:
             conn.close()
@@ -307,16 +419,16 @@ class ResearchHttpApi:
             )
         except NotFoundError:
             return None
-        return data.decode("utf-8", errors="replace"), version_id
+        return data.decode("utf-8", errors="replace")
 
     def resource_file(
         self, project_id: str, resource_id: str, rel: str | None = None
     ) -> tuple[bytes, dict[str, str]]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
         if rel:
-            # A file referenced by the resource — e.g. a report's relative
-            # figure link. Submitted figures (captured at associate, keyed by
-            # the report's pinned version) serve from the blob store; only
+            # A file referenced by the resource — e.g. a markdown relative
+            # image link. Submitted figures (captured at associate, keyed by
+            # the resource's pinned version) serve from the blob store; only
             # un-submitted links fall back to a repo-jailed live read, a
             # local-mode convenience.
             blob = self._submitted_figure(project_id=project_id, resource=resource, rel=rel)
@@ -553,7 +665,7 @@ class ResearchHttpApi:
         return self.app.syntheses.get_state(synthesis_id=synthesis_id, project_id=project_id)
 
     def project_logic_graph(self, *, project_id: str) -> dict[str, Any]:
-        """The living project logic graph (role 'graph' on a synthesis).
+        """The living project logic graph (role 'project_graph' on a synthesis).
 
         Chooses the open wave's graph when one exists (so the user can watch
         the synthesis being written), else the latest published one. The same
@@ -570,10 +682,37 @@ class ResearchHttpApi:
                     synthesis = published
         finally:
             conn.close()
-        base: dict[str, Any] = {
-            "max_nodes": MAX_GRAPH_NODES,
-            "signal": signal,
-        }
+        return self._graph_payload_for_synthesis(
+            project_id=project_id, synthesis=synthesis, extra_base={"signal": signal}
+        )
+
+    def synthesis_graph(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
+        """The logic graph of one specific reflection wave, rendered from the
+        bytes that wave pinned (role 'project_graph'). Lets the UI show a past
+        wave's graph faithfully even though project/logic_graph.json is a
+        living file the next wave overwrites. Same payload shape as
+        project_logic_graph
+        (minus the project-wide staleness signal)."""
+        synthesis = self.app.syntheses.get_state(
+            synthesis_id=synthesis_id, project_id=project_id
+        )
+        return self._graph_payload_for_synthesis(
+            project_id=project_id, synthesis=synthesis
+        )
+
+    def _graph_payload_for_synthesis(
+        self,
+        *,
+        project_id: str,
+        synthesis: dict[str, Any] | None,
+        extra_base: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Shared graph shaping for the project-current and per-wave endpoints:
+        pick the synthesis's graph association, load its pinned bytes, then
+        parse + lint + resolve refs into the common payload the LogicGraph
+        component renders. `extra_base` injects endpoint-specific fields (the
+        project-current endpoint adds the staleness `signal`)."""
+        base: dict[str, Any] = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
         chosen = self._synthesis_graph_resource(synthesis=synthesis) if synthesis else None
         if synthesis is None or chosen is None:
             return {**base, "available": False, "synthesis": None, "graph": None, "problems": []}
@@ -590,7 +729,10 @@ class ResearchHttpApi:
                 **base,
                 "available": False,
                 "graph": None,
-                "problems": ["graph has no submitted content — re-associate it (role 'graph')"],
+                "problems": [
+                    "graph has no submitted content — re-associate it "
+                    "(role 'project_graph')"
+                ],
                 "path": chosen.get("path"),
             }
         graph: dict[str, Any] | None = None
@@ -614,26 +756,9 @@ class ResearchHttpApi:
     def _association_pinned_text(self, resource: dict[str, Any]) -> str | None:
         """The submitted bytes behind a resources_for_target row (associated
         version → blob), or None when nothing was submitted."""
-        version_id = resource.get("association_version_id")
-        if not version_id:
-            return None
-        conn = self.app.store.connect()
-        try:
-            row = conn.execute(
-                "SELECT project_id, content_sha256 FROM resource_versions WHERE id = ?",
-                (str(version_id),),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
-            return None
-        try:
-            data = self.app.blobs.get(
-                namespace=str(row["project_id"]), sha256=str(row["content_sha256"])
-            )
-        except NotFoundError:
-            return None
-        return data.decode("utf-8", errors="replace")
+        return self._submitted_text_for_version(
+            version_id=resource.get("association_version_id")
+        )
 
     def _synthesis_graph_resource(
         self, *, synthesis: dict[str, Any] | None
@@ -645,6 +770,7 @@ class ResearchHttpApi:
         return _latest_graph_resource(
             resources=synthesis.get("resources", []),
             attempt=synthesis.get("attempt_index"),
+            roles=PROJECT_GRAPH_ROLES,
         )
 
     def _resolve_graph_refs(
@@ -961,12 +1087,8 @@ def create_fastapi_app(
             path = str(request.url.path) + (f"?{request.url.query}" if request.url.query else "")
             duration_ms = monotonic_ms() - started
             if api is not None:
-                api.app.activity.http_request(
-                    method=request.method,
-                    path=path,
-                    status=status,
-                    duration_ms=duration_ms,
-                )
+                # Intentionally only collect MCP tool-call events in the shared
+                # activity log (HTTP request telemetry was disabled per request).
                 # Structured cloud log line (control mode only; dormant locally).
                 # tenant_id comes from the resolved principal when present.
                 principal = getattr(request.state, "principal", None)
@@ -1032,23 +1154,24 @@ def create_fastapi_app(
         source: str | None = None,
         status: str | None = None,
         tool: str | None = None,
+        project_id: str | None = None,
         limit: int = Query(200, ge=1, le=2000),
         sort: str = "ts",
         order: str = "desc",
     ) -> dict[str, Any]:
         target = default_api()
         if target is None:
-            # Mirror ToolCallStore.stats' empty `base` shape so the Debug UI
-            # renders the same whether the store is empty or no app exists yet.
+            # Mirror ToolCallStore.stats' empty `base` shape so the UI renders
+            # the same whether the store is empty or no app exists yet.
             return {
                 "calls": [],
                 "by_tool": [],
                 "totals": {"calls": 0, "sent_chars": 0, "received_chars": 0, "error_calls": 0},
                 "coverage": {"calls": 0, "stored": 0, "oldest_ts": None, "newest_ts": None, "capped": False},
-                "filter": {"minutes": minutes, "source": source, "status": status, "tool": tool},
+                "filter": {"minutes": minutes, "source": source, "status": status, "tool": tool, "project_id": project_id},
             }
         return target.tool_call_stats(
-            minutes=minutes, source=source, status=status, tool=tool,
+            minutes=minutes, source=source, status=status, tool=tool, project_id=project_id,
             limit=limit, sort=sort, order=order,
         )
 
@@ -1172,6 +1295,17 @@ def create_fastapi_app(
         # per-experiment graph endpoint. UI-only read, no agent tool.
         return api_for_project(project_id).project_logic_graph(project_id=project_id)
 
+    @http.get("/api/projects/{project_id}/syntheses/{synthesis_id}/graph")
+    def synthesis_graph(project_id: str, synthesis_id: str) -> dict[str, Any]:
+        # One wave's logic graph, rendered from the bytes that wave pinned, so
+        # a past wave shows faithfully even after later waves overwrite the
+        # living file. Same payload shape as /syntheses/current/graph (minus
+        # signal). Registered after the literal current/graph route so
+        # "current" is not captured as a synthesis_id. UI-only read.
+        return api_for_project(project_id).synthesis_graph(
+            project_id=project_id, synthesis_id=synthesis_id
+        )
+
     @http.get("/api/projects/{project_id}/syntheses/{synthesis_id}")
     def get_synthesis(project_id: str, synthesis_id: str) -> dict[str, Any]:
         return api_for_project(project_id).synthesis_detail(
@@ -1211,8 +1345,14 @@ def create_fastapi_app(
         return api_for_project(project_id).call_tool(name="resource.delete", arguments={"project_id": project_id, "resource_id": resource_id})
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/content")
-    def resource_content(project_id: str, resource_id: str) -> dict[str, Any]:
-        return api_for_project(project_id).resource_content(project_id=project_id, resource_id=resource_id)
+    def resource_content(project_id: str, resource_id: str, version: str | None = None) -> dict[str, Any]:
+        # `version` pins the exact submitted bytes of one resource version
+        # (faithful historical rendering for reflection-wave synthesis
+        # artifacts).
+        # Omitted → unchanged behavior (latest gated bytes / live file).
+        return api_for_project(project_id).resource_content(
+            project_id=project_id, resource_id=resource_id, version=version
+        )
 
     @http.get("/api/projects/{project_id}/resources/{resource_id}/file")
     def resource_file(project_id: str, resource_id: str, rel: str | None = None) -> Response:

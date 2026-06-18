@@ -1,11 +1,12 @@
-"""Declarative gate table for the project-synthesis (reflection wave) workflow.
+"""Declarative gate table for the project reflection-wave workflow.
 
-A synthesis record is one project-level reflection wave: a roster of
-differentiated reflection lenses fans out, each lens submits its own
-reflection, the orchestrator reconciles them into the living project logic
-graph plus a what's-next proposals file, and a synthesis reviewer judges the
-result against the corpus. The FSM is deliberately smaller than the
-experiment one — nothing executes, so there is no sandbox lifecycle:
+The storage model still calls the row a synthesis, but the agent workflow is
+one project-level reflection wave: a roster of differentiated reflection
+lenses fans out, each lens submits its own reflection, the orchestrator
+reconciles them into the living project logic graph, a concise reflection
+document, and a belief-state change spec. A reflection reviewer judges all
+three against the corpus. The FSM is deliberately smaller than the experiment
+one — nothing executes, so there is no sandbox lifecycle:
 
     reflecting ──submit_reflections──▶ synthesizing ──submit_synthesis──▶
         synthesis_review ──publish──▶ published
@@ -14,7 +15,7 @@ Review rejections route back through two distinct targets (mirroring the
 experiment planned/running split): ``return_to='reflecting'`` re-launches the
 fan-out (attempt bump — every lens must submit a fresh reflection), while
 ``return_to='synthesizing'`` keeps the reflections standing and only the
-synthesis (graph + proposals) is revised.
+reflection artifacts (graph + reflection doc + change spec) are revised.
 
 The same three consumers as ``workflow_gates.GATE_TABLE`` read this table —
 enforcement (``SynthesisService._next_status``), guidance
@@ -23,15 +24,20 @@ enforcement (``SynthesisService._next_status``), guidance
 two workflows cannot drift in shape.
 
 All gates here check envelopes only (files exist, the roster is covered, the
-graph parses within budget). Whether the synthesis is honest and the
-proposals are real is the reviewer's call, and the diversity heuristics live
-in the project-reflection skill, not in gates.
+graph parses within budget, the reflection doc is concise, and the change spec
+is materializable). Whether the reflection is honest and the proposed
+belief-state update is warranted is the reviewer's call, and the diversity
+heuristics live in the project-reflection skill, not in gates.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .permissions import (
+    PROJECT_GRAPH_ROLE,
+    REFLECTION_LENS_DOC_ROLE,
+)
 from .workflow_gates import ForwardTransition, ReviewRequirement, RoleRequirement
 
 
@@ -46,33 +52,32 @@ ROSTER_SIZE = 5
 
 CORE_LENSES: tuple[dict[str, str], ...] = (
     {
-        "id": "outcomes",
-        "title": "Outcomes & evidence",
+        "id": "amplify",
+        "title": "Amplify what works",
         "charter": (
-            "What do we actually know? Assemble the verified knowledge state "
-            "from claims, experiment outcomes, and review verdicts: what is "
-            "established, what is contested, and any claim leaned on harder "
-            "than its evidence supports."
+            "What worked, and what should we do more of? Identify positive "
+            "signal, repeated wins, promising mechanisms, and directions where "
+            "additional investment is justified."
         ),
     },
     {
-        "id": "dead_ends",
-        "title": "Dead-ends & negative results",
+        "id": "avoid",
+        "title": "Avoid what failed",
         "charter": (
-            "What did we rule out, and why? Build the negative-knowledge "
-            "ledger from dead_end graph nodes, abandoned attempts and "
-            "experiments, and needs_changes review histories: direction "
-            "tested, setting, what happened, why it failed."
+            "What did not work, and what should we avoid? Build the "
+            "negative-knowledge ledger from dead_end graph nodes, abandoned "
+            "attempts and experiments, and needs_changes review histories: "
+            "direction tested, setting, what happened, why it failed."
         ),
     },
     {
-        "id": "coverage",
-        "title": "Coverage & untested axes",
+        "id": "entropy",
+        "title": "Entropy & weird bets",
         "charter": (
-            "What haven't we tried? Audit the project's stated intent against "
-            "what experiments actually varied: which axes are cold, which look "
-            "saturated, and where goals and actual exploration have drifted "
-            "apart."
+            "What unlikely, high-variance things should we try to escape the "
+            "project's current local optimum? Generate strange but testable "
+            "ideas, surprising pivots, and experiments the other lenses would "
+            "probably dismiss too quickly."
         ),
     },
 )
@@ -86,96 +91,119 @@ SYNTHESIS_GATE_TABLE: dict[str, ForwardTransition] = {
         to_status="synthesizing",
         requires_prose=(
             "every roster lens must have its own reflection synced & associated "
-            "to this synthesis (role 'reflection') for the current attempt, in a "
-            "file named <lens_id>.md — each reflection is authored and submitted "
-            "by its own subagent"
+            "to this reflection wave (role 'reflection_lens_doc') for the current "
+            "attempt, in a file named <lens_id>.md — each reflection document "
+            "is authored and submitted by its own subagent"
         ),
         requirements=(
             RoleRequirement(
-                role="reflection",
+                role=REFLECTION_LENS_DOC_ROLE,
                 error=(
                     "no reflections are associated yet: fan out one read-only "
                     "subagent per roster lens; each subagent writes its "
                     "reflection (e.g. syntheses/<syn_id>/reflections/"
                     "<lens_id>.md), registers it, and associates it with role "
-                    "'reflection' for this synthesis"
+                    "'reflection_lens_doc' for this reflection wave"
                 ),
                 validator="roster",
                 gate="reflection_roster_incomplete",
                 action="fan_out_reflection_subagents",
                 allowed=("resource.register_file", "resource.associate"),
-                missing="one reflection per roster lens (role 'reflection')",
+                missing=(
+                    "one reflection document per roster lens "
+                    "(role 'reflection_lens_doc')"
+                ),
                 guidance_key="reflection",
             ),
         ),
         ready_gate="reflections_complete",
         ready_action="submit_reflections",
-        ready_allowed=("synthesis.transition",),
+        ready_allowed=("reflection.transition",),
     ),
     "synthesizing": ForwardTransition(
         name="submit_synthesis",
         to_status="synthesis_review",
         requires_prose=(
-            "the updated project logic graph (role 'graph', valid JSON DAG of at "
-            "most 16 nodes) AND a what's-next proposals file (role 'proposals') "
-            "must be synced & associated to this synthesis for the current "
-            "attempt"
+            "the updated project logic graph (role 'project_graph', valid JSON "
+            "DAG of at most 16 nodes), a concise reflection document (role "
+            "'reflection_doc'), AND a machine-actionable change spec (role "
+            "'change_spec') must be synced & associated to this reflection wave for "
+            "the current attempt; after approval, publish applies the claim "
+            "changes and either stops the project or creates the next "
+            "experiment wave"
         ),
         requirements=(
             RoleRequirement(
-                role="graph",
+                role=PROJECT_GRAPH_ROLE,
                 error=(
                     "the project logic graph must be synced before "
-                    "synthesis_review: update the living project graph (e.g. "
+                    "reflection review: update the living project graph (e.g. "
                     "project/logic_graph.json — the current logic state of the "
                     "whole project as a DAG of at most 16 nodes), register it, "
-                    "and associate it with role 'graph' — see "
+                    "and associate it with role 'project_graph' — see "
                     "skills/research-workflow/graph-template.md"
                 ),
                 validator="graph",
                 gate="project_graph_required",
                 action="update_and_associate_project_graph",
                 allowed=("resource.register_file", "resource.associate"),
-                missing="project logic graph resource (role 'graph')",
+                missing="project logic graph resource (role 'project_graph')",
                 guidance_key="project_graph",
             ),
             RoleRequirement(
-                role="proposals",
+                role="reflection_doc",
                 error=(
-                    "a what's-next proposals file must be synced before "
-                    "synthesis_review: write the next-wave experiment proposals "
-                    "(each with a hypothesis, builds_on refs, and the claim it "
-                    "would move), register it, and associate it with role "
-                    "'proposals' — see "
-                    "skills/project-reflection/synthesis-template.md"
+                    "a concise reflection document must be synced before "
+                    "reflection review: write the main agent's short markdown "
+                    "reflection on the five lens reflections, register it, "
+                    "and associate it with role 'reflection_doc' — see "
+                    "skills/project-reflection/reflection-artifacts-template.md"
                 ),
-                validator="prose",
-                gate="proposals_required",
-                action="write_and_associate_proposals",
+                validator="reflection_doc",
+                gate="reflection_doc_required",
+                action="write_and_associate_reflection_doc",
                 allowed=("resource.register_file", "resource.associate"),
-                missing="what's-next proposals resource (role 'proposals')",
-                guidance_key="proposals",
+                missing="reflection document resource (role 'reflection_doc')",
+                guidance_key="reflection_doc",
+            ),
+            RoleRequirement(
+                role="change_spec",
+                error=(
+                    "a change spec must be synced before reflection review: write "
+                    "JSON with claim_changes plus a decision of either hard_stop "
+                    "or create_experiments (2-3 experiments), register it, and "
+                    "associate it with role 'change_spec' — see "
+                    "skills/project-reflection/reflection-artifacts-template.md"
+                ),
+                validator="change_spec",
+                gate="change_spec_required",
+                action="write_and_associate_change_spec",
+                allowed=("resource.register_file", "resource.associate"),
+                missing="change spec resource (role 'change_spec')",
+                guidance_key="change_spec",
             ),
         ),
-        ready_gate="synthesis_review_required",
+        ready_gate="reflection_review_required",
         ready_action=(
-            "submit_synthesis (call only once the project graph reflects the "
-            "reconciled story and the proposals are real; if revision_context "
-            "is present, the last review rejected this attempt — address it "
+            "submit_reflection_artifacts (call only once the project graph reflects the "
+            "reconciled reasoning state, the reflection doc explains the "
+            "scientific argument concisely, and the change spec represents the "
+            "intended belief-state update; if revision_context is present, the "
+            "last review rejected this attempt — address it "
             "before resubmitting)"
         ),
-        ready_allowed=("synthesis.transition",),
+        ready_allowed=("reflection.transition",),
     ),
     "synthesis_review": ForwardTransition(
         name="publish",
         to_status="published",
-        requires_prose="a passing synthesis_reviewer review",
+        requires_prose="a passing reflection_reviewer review",
         review=ReviewRequirement(
-            role="synthesis_reviewer",
+            role="reflection_reviewer",
             skill="project-reflection-review",
-            action_name="synthesis_review",
-            error="synthesis review must pass before publish",
-            pass_action="publish_synthesis",
+            action_name="reflection_review",
+            error="reflection review must pass before publish",
+            pass_action="publish_reflection",
         ),
     ),
 }

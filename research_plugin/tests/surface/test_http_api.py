@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -588,9 +589,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # Drive a wave to published via the tool surface (the same path the
         # MCP proxy exercises); read everything back over HTTP.
         lenses = [
-            {"id": "outcomes"},
-            {"id": "dead_ends"},
-            {"id": "coverage"},
+            {"id": "amplify"},
+            {"id": "avoid"},
+            {"id": "entropy"},
             {
                 "id": "rigor",
                 "charter": "Method soundness.",
@@ -603,7 +604,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             },
         ]
         syn = self.app.call_tool(
-            "synthesis.create",
+            "reflection.create",
             {"project_id": pid, "title": "Wave 1", "lenses": lenses},
         )
         syn_id = syn["id"]
@@ -617,7 +618,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         empty = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
         self.assertFalse(empty["available"])
 
-        for lens in ("outcomes", "dead_ends", "coverage", "rigor", "cost"):
+        for lens in ("amplify", "avoid", "entropy", "rigor", "cost"):
             path = self.repo / f"syntheses/{syn_id}/reflections/{lens}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{lens} findings\n")
@@ -629,11 +630,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             self.request(
                 "POST",
                 f"/api/projects/{pid}/resources/{res['id']}/associate",
-                {"target_type": "synthesis", "target_id": syn_id, "role": "reflection"},
+                {"target_type": "reflection", "target_id": syn_id, "role": "reflection_lens_doc"},
             )
         self.app.call_tool(
-            "synthesis.transition",
-            {"project_id": pid, "synthesis_id": syn_id, "transition": "submit_reflections"},
+            "reflection.transition",
+            {"project_id": pid, "reflection_id": syn_id, "transition": "submit_reflections"},
         )
 
         # The project graph refs the wave itself (syn_) and a reflection file.
@@ -642,20 +643,80 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             '{"version": 1, "title": "Project logic", "nodes": ['
             '{"id": "a", "kind": "lesson", "label": "Lesson", "refs": ["' + syn_id + '"]},'
             '{"id": "b", "kind": "open", "label": "Open question", '
-            '"refs": ["syntheses/' + syn_id + '/reflections/dead_ends.md"]}],'
+            '"refs": ["syntheses/' + syn_id + '/reflections/avoid.md"]}],'
             ' "edges": [{"from": "a", "to": "b"}]}'
         )
-        (self.repo / "project/proposals.md").write_text("## P1\nHypothesis.\n")
-        for path, role in (("project/logic_graph.json", "graph"), ("project/proposals.md", "proposals")):
+        (self.repo / "project" / "figures").mkdir()
+        (self.repo / "project" / "figures" / "project_graph.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nfake"
+        )
+        (self.repo / "project/reflection.md").write_text(
+            "# Synthesis\n\n"
+            "## Summary\nHTTP synthesis test wave.\n\n"
+            "![project graph](figures/project_graph.png)\n\n"
+            "## Critical reading\nThe test wave adds one claim and two planned experiments.\n\n"
+            "## Decision / future directions\nCreate both HTTP experiments in parallel.\n"
+        )
+        (self.repo / "project/change_spec.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "claim_changes": [
+                        {
+                            "op": "create",
+                            "key": "claim_http_wave",
+                            "statement": "HTTP synthesis wave claim.",
+                            "confidence": "medium",
+                            "rationale": "The HTTP synthesis test needs a materializable claim.",
+                        }
+                    ],
+                    "decision": {
+                        "type": "create_experiments",
+                        "experiments": [
+                            {
+                                "key": "http_a",
+                                "name": "http-wave-a",
+                                "intent": "HTTP-created experiment A.",
+                                "tested_claim_refs": ["claim_http_wave"],
+                                "parallelism": "Independent HTTP test axis A.",
+                            },
+                            {
+                                "key": "http_b",
+                                "name": "http-wave-b",
+                                "intent": "HTTP-created experiment B.",
+                                "tested_claim_refs": ["claim_http_wave"],
+                                "parallelism": "Independent HTTP test axis B.",
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        reflection_doc_res_id = ""
+        for path, role in (
+            ("project/logic_graph.json", "project_graph"),
+            ("project/reflection.md", "reflection_doc"),
+            ("project/change_spec.json", "change_spec"),
+        ):
             res = self.request("POST", f"/api/projects/{pid}/resources", {"path": path})
+            if role == "reflection_doc":
+                reflection_doc_res_id = res["id"]
             self.request(
                 "POST",
                 f"/api/projects/{pid}/resources/{res['id']}/associate",
-                {"target_type": "synthesis", "target_id": syn_id, "role": role},
+                {"target_type": "reflection", "target_id": syn_id, "role": role},
             )
+        (self.repo / "project" / "figures" / "project_graph.png").unlink()
+        figure = self.client.get(
+            f"/api/projects/{pid}/resources/{reflection_doc_res_id}/file",
+            params={"rel": "figures/project_graph.png"},
+        )
+        self.assertEqual(figure.status_code, 200)
+        self.assertEqual(figure.headers["content-type"], "image/png")
+        self.assertTrue(figure.content.startswith(b"\x89PNG"))
         self.app.call_tool(
-            "synthesis.transition",
-            {"project_id": pid, "synthesis_id": syn_id, "transition": "submit_synthesis"},
+            "reflection.transition",
+            {"project_id": pid, "reflection_id": syn_id, "transition": "submit_reflection_artifacts"},
         )
 
         # The open wave's graph renders while still under review.
@@ -668,14 +729,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(refs[syn_id]["type"], "synthesis")
         self.assertTrue(refs[syn_id]["resolved"])
         self.assertEqual(refs[syn_id]["title"], "Wave 1")
-        reflection_ref = refs[f"syntheses/{syn_id}/reflections/dead_ends.md"]
+        reflection_ref = refs[f"syntheses/{syn_id}/reflections/avoid.md"]
         self.assertEqual(reflection_ref["type"], "resource")
 
         # Review over the HTTP review endpoints (target-polymorphic).
         req = self.request(
             "POST",
             f"/api/projects/{pid}/reviews/request",
-            {"target_type": "synthesis", "target_id": syn_id, "role": "synthesis_reviewer"},
+            {"target_type": "reflection", "target_id": syn_id, "role": "reflection_reviewer"},
         )
         session = self.request(
             "POST",
@@ -692,8 +753,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"review_session_id": session["review_session_id"], "verdict": "pass"},
         )
         self.app.call_tool(
-            "synthesis.transition",
-            {"project_id": pid, "synthesis_id": syn_id, "transition": "publish"},
+            "reflection.transition",
+            {"project_id": pid, "reflection_id": syn_id, "transition": "publish"},
         )
 
         detail = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}")
@@ -709,6 +770,177 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIsNone(listing["open_synthesis"])
         self.assertEqual(listing["latest_published"]["id"], syn_id)
         self.assertEqual(listing["current"]["id"], syn_id)
+
+    def test_per_wave_graph_and_versioned_content_endpoints(self) -> None:
+        # The reflection-wave UI renders a SPECIFIC wave's graph + content from
+        # the bytes it pinned, so it stays faithful after later waves overwrite
+        # the living files. Exercise the two endpoints that back that.
+        project = self.request("POST", "/api/projects", {"name": "Pin"})
+        pid = project["id"]
+        syn = self.app.call_tool(
+            "reflection.create",
+            {
+                "project_id": pid,
+                "title": "Wave 1",
+                "lenses": [
+                    {"id": "amplify"},
+                    {"id": "avoid"},
+                    {"id": "entropy"},
+                    {"id": "rigor", "charter": "Method soundness.", "why_distinct": "How, not what."},
+                    {"id": "cost", "charter": "Compute spent.", "why_distinct": "Prices exploration."},
+                ],
+            },
+        )
+        syn_id = syn["id"]
+
+        # Before any graph is associated, the per-wave endpoint degrades cleanly.
+        empty = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}/graph")
+        self.assertFalse(empty["available"])
+
+        (self.repo / "project").mkdir()
+        graph_text = (
+            '{"version": 1, "title": "Wave 1 logic", "nodes": ['
+            '{"id": "a", "kind": "lesson", "label": "A lesson"}], "edges": []}'
+        )
+        (self.repo / "project/logic_graph.json").write_text(graph_text)
+        graph_res = self.request(
+            "POST", f"/api/projects/{pid}/resources", {"path": "project/logic_graph.json"}
+        )
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/resources/{graph_res['id']}/associate",
+            {"target_type": "reflection", "target_id": syn_id, "role": "project_graph"},
+        )
+
+        # The per-wave graph renders the wave's pinned bytes.
+        payload = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}/graph")
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["synthesis"]["id"], syn_id)
+        self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
+        self.assertEqual(payload["problems"], [])
+
+        # Find the graph association's pinned version_id off the wave detail.
+        detail = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}")
+        graph_row = next(
+            r for r in detail["resources"] if r["association_role"] == "project_graph"
+        )
+        version_id = graph_row["association_version_id"]
+        self.assertTrue(version_id)
+
+        # Versioned content serves the exact submitted bytes.
+        pinned = self.request(
+            "GET",
+            f"/api/projects/{pid}/resources/{graph_res['id']}/content?version={version_id}",
+        )
+        self.assertEqual(pinned["content"], graph_text)
+        self.assertEqual(pinned["source"], "submitted")
+        self.assertEqual(pinned["version_id"], version_id)
+
+        # No version → unchanged behavior (still serves the gated bytes).
+        plain = self.request(
+            "GET", f"/api/projects/{pid}/resources/{graph_res['id']}/content"
+        )
+        self.assertEqual(plain["content"], graph_text)
+
+        # A version that is not this resource's is rejected, not served.
+        bad = self.client.get(
+            f"/api/projects/{pid}/resources/{graph_res['id']}/content?version=ver_bogus"
+        )
+        self.assertEqual(bad.status_code, 404)
+
+        # The literal current/graph route still resolves (not captured by the
+        # {synthesis_id}/graph param route).
+        current = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
+        self.assertTrue(current["available"])
+        self.assertEqual(current["synthesis"]["id"], syn_id)
+
+    def test_no_version_content_serves_current_version_not_oldest_pin(self) -> None:
+        # A living file (project/reflection.md) pinned by two reflection waves is
+        # one resource with two versions. The no-version content default is
+        # documented as the latest submitted bytes, so it must resolve to the
+        # resource's current_version_id (wave 2), NOT whichever association
+        # carries the highest per-target attempt index — wave 1 here, simulating
+        # a wave that needed extra review rounds, would otherwise win and serve
+        # stale bytes. The explicit ?version= path must still serve wave 1's.
+        roster = [
+            {"id": "amplify"},
+            {"id": "avoid"},
+            {"id": "entropy"},
+            {"id": "rigor", "charter": "Method soundness.", "why_distinct": "How, not what."},
+            {"id": "cost", "charter": "Compute spent.", "why_distinct": "Prices exploration."},
+        ]
+        project = self.request("POST", "/api/projects", {"name": "Pin2"})
+        pid = project["id"]
+        wave1_id = self.app.call_tool(
+            "reflection.create", {"project_id": pid, "title": "Wave 1", "lenses": roster}
+        )["id"]
+        # Wave 1 went through extra review rounds → a higher attempt index than a
+        # fresh wave. Set it before associating so the association row records it.
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE syntheses SET attempt_index = 5 WHERE id = ?", (wave1_id,)
+            )
+
+        (self.repo / "project").mkdir()
+        refl = self.repo / "project/reflection.md"
+        old_text = "# Reflection\n\nWave 1 lessons.\n"
+        refl.write_text(old_text)
+        res = self.request(
+            "POST", f"/api/projects/{pid}/resources", {"path": "project/reflection.md"}
+        )
+        rid = res["id"]
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/resources/{rid}/associate",
+            {"target_type": "reflection", "target_id": wave1_id, "role": "reflection_doc"},
+        )
+        detail1 = self.request("GET", f"/api/projects/{pid}/syntheses/{wave1_id}")
+        old_version = next(
+            r for r in detail1["resources"] if r["association_role"] == "reflection_doc"
+        )["association_version_id"]
+        self.assertTrue(old_version)
+
+        # Close wave 1 so a second wave may open (only one wave edits the living
+        # project graph at a time); the content endpoint under test is
+        # status-agnostic, so publishing the full gated path is unnecessary here.
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE syntheses SET status = 'published' WHERE id = ?", (wave1_id,)
+            )
+
+        wave2_id = self.app.call_tool(
+            "reflection.create", {"project_id": pid, "title": "Wave 2", "lenses": roster}
+        )["id"]
+        new_text = "# Reflection\n\nWave 2 lessons — supersedes wave 1 entirely.\n"
+        refl.write_text(new_text)
+        self.request(
+            "POST",
+            f"/api/projects/{pid}/resources/{rid}/associate",
+            {"target_type": "reflection", "target_id": wave2_id, "role": "reflection_doc"},
+        )
+        detail2 = self.request("GET", f"/api/projects/{pid}/syntheses/{wave2_id}")
+        new_version = next(
+            r for r in detail2["resources"] if r["association_role"] == "reflection_doc"
+        )["association_version_id"]
+        self.assertTrue(new_version)
+        self.assertNotEqual(new_version, old_version)
+
+        # No version → the latest submitted bytes (wave 2 / current_version_id),
+        # even though wave 1's association carries the higher attempt index.
+        plain = self.request(
+            "GET", f"/api/projects/{pid}/resources/{rid}/content"
+        )
+        self.assertEqual(plain["content"], new_text)
+        self.assertEqual(plain["source"], "submitted")
+        self.assertEqual(plain["version_id"], new_version)
+
+        # Explicit old version still serves wave 1's pinned bytes faithfully.
+        old = self.request(
+            "GET", f"/api/projects/{pid}/resources/{rid}/content?version={old_version}"
+        )
+        self.assertEqual(old["content"], old_text)
+        self.assertEqual(old["source"], "submitted")
+        self.assertEqual(old["version_id"], old_version)
 
 
 class ResourceRelFileTest(unittest.TestCase):
@@ -900,7 +1132,7 @@ class DegradedStatesTest(unittest.TestCase):
 
     def _result_resource(self) -> tuple[str, str]:
         project = self.client.post(
-            "/api/projects", json={"name": "P", "summary": "s"}
+            "/api/projects", json={"name": "Proj P", "summary": "s"}
         ).json()
         pid = project["id"]
         # A result-role file exists on disk locally so registration succeeds...

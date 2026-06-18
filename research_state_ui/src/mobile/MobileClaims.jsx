@@ -87,7 +87,6 @@ export default function MobileClaims() {
       {rows.length === 0 ? (
         <div className="empty-state">
           <h2>No claims{filter !== 'all' ? ` in ${filter}` : ' yet'}</h2>
-          {filter === 'all' && <p>The agent records claims to state what the project believes.</p>}
         </div>
       ) : (
         <div className="mcard-list">

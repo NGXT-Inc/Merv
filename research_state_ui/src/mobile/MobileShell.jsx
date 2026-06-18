@@ -160,8 +160,7 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <SheetLink to="/projects" label="Projects" />
 
       <div className="msheet-section">Forensics</div>
-      <SheetLink to="/activity" label="Live traffic" />
-      <SheetLink to="/debug" label="Tool I/O" note="desktop recommended" />
+      <SheetLink to="/activity" label="Traffic & Tool I/O" />
       <SheetLink to="/visual/dag" label="Logic DAG" note="desktop recommended" />
 
       {lastSyncError && (

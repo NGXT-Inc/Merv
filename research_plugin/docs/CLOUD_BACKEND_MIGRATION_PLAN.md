@@ -40,10 +40,12 @@ evolution), relay byte transport (fallback only), broad RBAC.
 5. **Expiry parachute:** at reap, signal the daemon to final-pull within a deadline; if unreachable, run a
    pre-installed tar script on the VM via the management channel and upload to a single-use presigned PUT;
    record `{object_key, sha256, size, expires_at}` on the row; daemon restores on reconnect; TTL backstop.
-6. **Artifact submission model:** gated-role files (plan, report, graph, proposals, reflection) upload
-   bytes at `resource.associate`; associations pin a `version_id`; lints run on pinned bytes; semantics
-   change from "fix the live file clears the gate" to "fix and resubmit". Figures upload via a presigned
-   tier driven by the report lint. Result files stay metadata-only. No background file sync, no watchers.
+6. **Artifact submission model:** gated-role files (plan, report, graph, project_graph,
+   reflection_doc, reflection_lens_doc, change_spec; legacy synthesis_doc/reflection/proposals)
+   upload bytes at `resource.associate`; associations pin a `version_id`;
+   lints run on pinned bytes; semantics change from "fix the live file clears the gate" to "fix and
+   resubmit". Figures upload via a presigned tier driven by the report lint. Result files stay
+   metadata-only. No background file sync, no watchers.
 7. **Blob store:** content-addressed by sha256, per-tenant namespace, TTL support; one service shared by
    submissions, figures, metrics snapshots, and parachute objects. Local impl: a `.research_plugin/blobs/`
    directory.
@@ -52,9 +54,10 @@ evolution), relay byte transport (fallback only), broad RBAC.
 
 Two corrections discovered during inventory, now part of the plan's premises:
 
-- The "<16 KB by existing lints" premise of decision 6 is **false today** for plan/reflection/proposals
-  (no byte caps in code — only report 16 KB at `artifacts.py:41` and graph 16 KB at `graph_lint.py:24-27`).
-  Caps for all five gated roles are added *before* any inline-upload contract exists (Phase 1).
+- The "<16 KB by existing lints" premise of decision 6 is **false today** for plan/reflection/change-spec
+  style artifacts (no byte caps in code — only report 16 KB at `artifacts.py:41` and graph 16 KB at
+  `graph_lint.py:24-27`). Caps for all gated roles are added *before* any inline-upload contract exists
+  (Phase 1), with gated markdown/json artifacts using the universal 16 KB limit.
 - There are **34** MCP tools in `TOOL_CONTRACTS`, and the routing table and partition tests are derived
   from that count, not hand-maintained lists.
 
@@ -189,7 +192,8 @@ free; ledger exists.
 ### Phase 1 — Blob store + byte capture at associate (additive, dual-write)
 
 - `BlobStore` protocol + `LocalDirBlobStore` + `FakeBlobStore` (tests/fakes.py) + contract-pattern suite.
-- `GATED_ROLES = {plan, report, graph, proposals, reflection}` next to `RESOURCE_ROLES`.
+- `GATED_ROLES = {plan, report, graph, reflection_doc, change_spec, reflection}` plus legacy
+  `synthesis_doc` and `proposals`, next to `RESOURCE_ROLES`.
 - `resources.associate` (`resources.py:196-237`): for gated roles, read bytes, enforce per-role size caps
   (16 KB each), `blob.put`, and pin the association to the minted `version_id`. **Live-file gate
   semantics unchanged this phase** — storage is additive, so this ships with near-zero risk and the caps
@@ -218,15 +222,17 @@ The one intentional user-visible change of the whole migration. Soak in local mo
   version's `content_sha256` (the same rule as the Phase 8 import tool); the rest surface as
   `resubmit_required` rather than wedging.
 - Figures: `artifacts.report_problems` (`:105-144`) split into pure link extraction + a
-  `figure_exists` callback against figure blobs; associate(report) resolves links and uploads figures
-  (local mode: same-process; split mode: the same list drives presigned PUTs). New `report_figures` table.
+  `figure_exists` callback against figure blobs; associating markdown gated artifacts such as reports and
+  reflection docs resolves links and uploads figures (local mode: same-process; split mode: the same list
+  drives presigned PUTs). New `report_figures` table.
 - **Delete the read-repair sweep** `refresh_target_resources` (`resources.py:388-441`) and all call sites
   in `workflow.py`; remove the `resource_refresh` block from `status_and_next`.
 - Snapshot ids become version_id-backed; the `version_token` fallback survives only for metadata-only
   roles. One-time effect: in-flight review requests may need re-requesting (release-noted).
 - `review.start` hydrates pinned gated-role bytes so reviewers review the snapshot, not the working tree.
-- UI/HTTP endpoints re-pointed: gated-role `/content`, both graph endpoints, and report-figure `/file?rel=`
-  serve pinned blob bytes; result-role content stays a live-disk read explicitly tagged local-only.
+- UI/HTTP endpoints re-pointed: gated-role `/content`, both graph endpoints, and markdown-figure
+  `/file?rel=` serve pinned blob bytes; result-role content stays a live-disk read explicitly tagged
+  local-only.
   `published_graph_version_id` now renders from immutable bytes — the dangling-pin problem closes.
   The graph endpoints' ref-index also stops probing the working tree (`_repo_file_exists`,
   `http_api.py:576,595-601`): node refs resolve against resource records / blob existence, and bare

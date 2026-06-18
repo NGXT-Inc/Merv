@@ -29,6 +29,7 @@ from .workflow_gates import (
 # must be short and filesystem-safe as written — no sanitization, what the
 # agent names is what appears on disk.
 MAX_EXPERIMENT_NAME_LEN = 48
+MIN_EXPERIMENT_NAME_LEN = 3
 _EXPERIMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
@@ -91,6 +92,7 @@ class ExperimentService:
             raise ValidationError("intent is required")
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            self._reject_stopped_project(conn=conn, project_id=project_id)
             duplicate = conn.execute(
                 "SELECT id FROM experiments WHERE project_id = ? AND lower(name) = lower(?)",
                 (project_id, name),
@@ -146,13 +148,22 @@ class ExperimentService:
                 "name is required: a short, folder-safe experiment name — it "
                 "becomes the experiment folder experiments/<name>/"
             )
-        if len(name) > MAX_EXPERIMENT_NAME_LEN or not _EXPERIMENT_NAME_RE.fullmatch(name):
+        if (
+            len(name) < MIN_EXPERIMENT_NAME_LEN
+            or len(name) > MAX_EXPERIMENT_NAME_LEN
+            or not _EXPERIMENT_NAME_RE.fullmatch(name)
+        ):
             raise ValidationError(
                 "experiment name must work as a folder name: start with a letter "
-                "or digit and use only letters, digits, '.', '_' and '-', at most "
-                f"{MAX_EXPERIMENT_NAME_LEN} characters"
+                "or digit and use only letters, digits, '.', '_' and '-', between "
+                f"{MIN_EXPERIMENT_NAME_LEN} and {MAX_EXPERIMENT_NAME_LEN} characters"
             )
         return name
+
+    def _reject_stopped_project(self, *, conn, project_id: str) -> None:
+        row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is not None and row["status"] == "stopped":
+            raise ValidationError("project is stopped; new experiments are not allowed")
 
     def _compose_intent(
         self,

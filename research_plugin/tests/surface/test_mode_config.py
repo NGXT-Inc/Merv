@@ -66,7 +66,7 @@ class LocalModeAuthParityTest(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertIn("repo_root", health.json())
 
-        project = self.client.post("/api/projects", json={"name": "P"})
+        project = self.client.post("/api/projects", json={"name": "Proj P"})
         self.assertEqual(project.status_code, 201, project.text)
         project_id = project.json()["id"]
         claim = self.client.post(

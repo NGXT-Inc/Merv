@@ -32,6 +32,7 @@ class ClaimService:
             raise ValidationError("statement is required")
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            self._reject_stopped_project(conn=conn, project_id=project_id)
             claim_id = new_id(prefix="claim")
             conn.execute(
                 """
@@ -71,6 +72,7 @@ class ClaimService:
             )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            self._reject_stopped_project(conn=conn, project_id=project_id)
             row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
             if row is None:
                 raise NotFoundError(f"claim not found: {claim_id}")
@@ -117,3 +119,8 @@ class ClaimService:
             return {"claims": rows_to_dicts(rows=rows)}
         finally:
             conn.close()
+
+    def _reject_stopped_project(self, *, conn, project_id: str) -> None:
+        row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is not None and row["status"] == "stopped":
+            raise ValidationError("project is stopped; claim mutations are not allowed")

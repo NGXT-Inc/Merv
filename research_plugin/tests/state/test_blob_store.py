@@ -158,8 +158,24 @@ class GatedRoleCapAlignmentTest(unittest.TestCase):
     def test_caps_mirror_lint_constants(self) -> None:
         self.assertEqual(GATED_ROLE_BYTE_CAPS["report"], MAX_REPORT_BYTES)
         self.assertEqual(GATED_ROLE_BYTE_CAPS["graph"], MAX_GRAPH_BYTES)
+        self.assertEqual(GATED_ROLE_BYTE_CAPS["project_graph"], MAX_GRAPH_BYTES)
+        self.assertEqual(GATED_ROLE_BYTE_CAPS["reflection_lens_doc"], 16_000)
+        self.assertEqual(GATED_ROLE_BYTE_CAPS["reflection_doc"], 16_000)
+        self.assertEqual(GATED_ROLE_BYTE_CAPS["synthesis_doc"], 16_000)
         self.assertEqual(
-            GATED_ROLES, {"plan", "report", "graph", "proposals", "reflection"}
+            GATED_ROLES,
+            {
+                "plan",
+                "report",
+                "graph",
+                "project_graph",
+                "reflection_lens_doc",
+                "reflection_doc",
+                "synthesis_doc",
+                "change_spec",
+                "proposals",
+                "reflection",
+            },
         )
 
 

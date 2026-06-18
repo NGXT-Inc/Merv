@@ -40,7 +40,6 @@ export default function GraphCanvasOverlay({ title, nodes, edges, onClose }) {
       source: e.from,
       target: e.to,
       type: 'smoothstep',
-      label: e.label || undefined,
       markerEnd: { type: MarkerType.ArrowClosed, width: 12, height: 12 },
     }));
     return { rfNodes, rfEdges };

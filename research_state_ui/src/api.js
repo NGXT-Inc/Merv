@@ -101,12 +101,22 @@ export const api = {
     }),
 
   // Syntheses (project reflection waves)
-  // List + staleness/coverage signal for the Home panel.
+  // List + staleness/coverage signal for the Home panel. Each entry is the
+  // full wave state (roster, resources, reviews, reflection_coverage), so the
+  // panel drives the whole history off this one call.
   getSyntheses: (pid, signal) =>
     request(`/api/projects/${encodeURIComponent(pid)}/syntheses`, { signal }),
+  // One wave, fully hydrated (deep-link / single-wave refresh).
+  getSynthesis: (pid, synId, signal) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(synId)}`, { signal }),
   // The living project logic graph (same payload shape as the experiment one).
   getProjectLogicGraph: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/syntheses/current/graph`),
+  // The logic graph of ONE specific wave, rendered from the bytes that wave
+  // pinned — so a past wave shows faithfully even after a later wave overwrote
+  // the living file. Same payload shape as getProjectLogicGraph.
+  getSynthesisGraph: (pid, synId) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(synId)}/graph`),
 
   // Resources
   registerResource: (pid, { path, kind, title }) =>
@@ -123,8 +133,13 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}`, {
       method: 'DELETE',
     }),
-  getResourceContent: (pid, rid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/content`),
+  // `version` pins the exact submitted bytes of one resource version (faithful
+  // historical rendering for past reflection-wave graphs/proposals). Omitted →
+  // unchanged behavior (latest submitted bytes / live file).
+  getResourceContent: (pid, rid, version = null) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/resources/${encodeURIComponent(rid)}/content${
+      version ? `?version=${encodeURIComponent(version)}` : ''
+    }`),
   // rel: optional path relative to the resource's own directory (locked inside
   // the repo root server-side) — used to resolve a report's figure links.
   resourceFileUrl: (pid, rid, rel = null) =>
@@ -151,11 +166,11 @@ export const api = {
   listEvents: (pid, limit = 100) =>
     request(`/api/projects/${encodeURIComponent(pid)}/events?limit=${limit}`),
 
-  // Activity — workspace-scoped (http.request + tool.call telemetry).
-  // Returns { activity_log, events, summary } oldest-first. The optional
-  // `source` filter is applied server-side BEFORE `limit` so a request for
-  // 300 mcp events returns 300 mcp events, not 300 mixed events of which mcp
-  // is a sliver.
+  // Activity ring — project-scoped, cross-project MCP tool-call telemetry.
+  // Returns { activity_log, events, summary } oldest-first. This is the source
+  // for the merged Traffic & Tool I/O page (/activity): the ring carries every
+  // project's tool calls, whereas tool_calls.sqlite only holds the local
+  // workspace's. The `source` filter is applied server-side BEFORE `limit`.
   listActivity: (limit = 200, source = null, projectId = null) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
@@ -164,15 +179,16 @@ export const api = {
     return request(`/api/activity?${params.toString()}`);
   },
 
-  // Tool-call I/O analyzer. Per-tool aggregate (avg/p50/p95/max received) plus a
-  // filtered, sortable slice of individual calls — each drillable to its full
-  // raw request/response via getToolCall(). Powers the Debug page.
-  toolCallStats: ({ minutes, source, status, tool, limit = 300, sort = 'ts', order = 'desc' } = {}) => {
+  // Tool-call I/O analyzer (legacy, sqlite-backed). Per-tool aggregate plus a
+  // sortable slice of calls, each drillable to its FULL raw request/response.
+  // Local-workspace only — retained for full-payload drill-down.
+  toolCallStats: ({ minutes, source, status, tool, projectId, limit = 300, sort = 'ts', order = 'desc' } = {}) => {
     const p = new URLSearchParams();
     if (minutes) p.set('minutes', String(minutes));
     if (source && source !== 'all') p.set('source', source);
     if (status && status !== 'all') p.set('status', status);
     if (tool) p.set('tool', tool);
+    if (projectId) p.set('project_id', projectId);
     p.set('limit', String(limit));
     p.set('sort', sort);
     p.set('order', order);

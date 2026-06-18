@@ -50,7 +50,18 @@ _COPY_TABLES = (
     "report_figures",
 )
 
-_GATED_ROLES = ("plan", "report", "graph", "proposals", "reflection")
+_GATED_ROLES = (
+    "plan",
+    "report",
+    "graph",
+    "project_graph",
+    "reflection_doc",
+    "reflection_lens_doc",
+    "synthesis_doc",
+    "change_spec",
+    "proposals",
+    "reflection",
+)
 
 # Marker key written into the local store's schema_migrations-style meta so a
 # re-import or a daemon mutation can detect the one-way flip.

@@ -31,10 +31,14 @@ service calls still carry explicit `project_id`.
 In shared-daemon mode, `project.current` through MCP is folder-scoped and
 returns the project registered for the folder where the MCP proxy was started,
 or `exists: false` if that folder does not have a project yet. It never lists
-projects from other folders and does not create a project as a side effect. If
-`exists` is false, the agent should ask the user what project name and summary
-to use before calling `project.create`, unless the user already supplied that
-information.
+projects from other folders and does not create a project as a side effect. When
+`exists` is true, it also returns a compact `at_a_glance`: a one-line summary
+of how old the latest reflection is, recent experiments and claims capped at 5
+each, the latest reflection/project-graph resource ids, ids for finished
+experiments or claim changes since that reflection, active experiment ids, and
+any open reflection id. If `exists` is false, the agent should
+ask the user what project name and summary to use before calling
+`project.create`, unless the user already supplied that information.
 
 ## Tool groups
 
@@ -101,41 +105,49 @@ reference existing nodes and form a DAG, file under 16 KB. Vocabulary,
 structure, and what deserves a node are the agent's editorial calls; the
 experiment reviewer judges the story's substance.
 
-### Synthesis tools (project reflection waves)
+### Reflection tools (project reflection waves)
 
 ```text
-synthesis.create(project_id, title?, lenses)   # lenses: exactly 5 (3 core + 2 authored)
-synthesis.get(project_id, synthesis_id)
-synthesis.list(project_id)
-synthesis.transition(project_id, synthesis_id, transition)
+reflection.create(project_id, title?, lenses)   # lenses: exactly 5 (3 core + 2 authored)
+reflection.get(project_id, reflection_id)
+reflection.list(project_id)
+reflection.transition(project_id, reflection_id, transition)
 ```
 
-A synthesis (`syn_…`) is the project-level reflection record:
-`reflecting → synthesizing → synthesis_review → published` (plus `abandoned`).
-One wave may be open per project. `synthesis.create` validates the roster
-envelope (the core lens ids `outcomes`/`dead_ends`/`coverage` plus two
+A reflection wave (`syn_…`) is the project-level reflection record:
+`reflecting → synthesizing → reflection_review → published` (plus `abandoned`).
+One wave may be open per project. `reflection.create` validates the roster
+envelope (the core lens ids `amplify`/`avoid`/`entropy` plus two
 authored lenses, each with `charter` + `why_distinct`) and snapshots the
-corpus. `submit_reflections` requires a current-attempt role-`reflection`
+corpus. `submit_reflections` requires a current-attempt role-`reflection_lens_doc`
 resource named `<lens_id>.md` for every roster lens — each submitted by its
-own subagent. `submit_synthesis` requires the project logic graph (role
-`graph`, the same `graph_lint` envelope as experiment graphs — ≤16 nodes,
-DAG) and a non-empty `proposals` resource. `publish` requires a passing
-`synthesis_reviewer` review at the current snapshot and pins the published
-graph version. Resource associations on syntheses are attempt-scoped, exactly
-like experiments, so a `return_to: "reflecting"` rejection (attempt bump)
+own subagent. `submit_reflection_artifacts` requires the project logic graph (role
+`project_graph`, the same `graph_lint` envelope as experiment graphs — ≤16 nodes,
+DAG), a concise reflection document (role `reflection_doc`), and a
+materializable change spec (role `change_spec`). The change spec is the
+reviewed belief-state update: `claim_changes` plus a decision of either
+`hard_stop` or `create_experiments` with 2-3 planned experiments. The
+reflection document is a 16 KB markdown artifact and may include relative image
+links; linked image bytes are captured when the document is associated.
+`publish`
+requires a passing `reflection_reviewer` review at the current snapshot; only
+then does it apply claim changes and either mark the project stopped or create
+the approved planned experiments, while also pinning the published graph
+version. Resource associations on reflection waves are attempt-scoped, exactly like
+experiments, so a `return_to: "reflecting"` rejection (attempt bump)
 invalidates the prior reflections.
 
 Graph node `refs` resolve `syn_` ids too, so experiment graphs and the
-project graph can cross-link to the synthesis that motivated them.
+project graph can cross-link to the reflection that motivated them.
 `workflow.status_and_next` carries a `project_reflection` block while a wave
 is open (slim wave state + gate guidance) or when the project has drifted
-from the last published synthesis (a soft "Consider running a project
+from the last published reflection (a soft "Consider running a project
 reflection…" hint; computed on read, never stored). When the project is idle
 (no non-terminal experiments) and at least one experiment has finished since
-the last published synthesis, a project-level call (no explicit
+the last published reflection, a project-level call (no explicit
 `experiment_id`) additionally makes reflection the suggested next action:
 the workflow block becomes `current_gate: reflection_suggested` (or the open
-wave's gate guidance, if one is open). Advisory either way — `synthesis.create`
+wave's gate guidance, if one is open). Advisory either way — `reflection.create`
 joins `claim.create`/`experiment.create` in `allowed_actions`, nothing is
 blocked, and explicitly experiment-scoped calls are never taken over.
 
@@ -428,9 +440,10 @@ Reviewer roles:
 - `design_reviewer`: reviews experiment plan before execution.
 - `experiment_reviewer`: reviews executed attempt, result resources, metrics,
   and conclusion before completion or claim update.
-- `synthesis_reviewer`: reviews a project reflection wave — the synthesized
-  project logic graph and what's-next proposals against the corpus and the
-  five lens reflections — before publish. Rejections route via `return_to`:
+- `reflection_reviewer`: reviews a project reflection wave — the reflected
+  project logic graph, concise reflection document, and change spec against the
+  corpus and the five lens reflections — before publish. Rejections route via
+  `return_to`:
   `synthesizing` (reflections stand) or `reflecting` (re-launch the fan-out).
 - `human`: records a human decision with the same mechanism.
 - `automated_check`: records deterministic checks or audit scripts.

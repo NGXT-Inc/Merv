@@ -134,10 +134,7 @@ export default function Sidebar({ onRefresh }) {
         Events
       </NavLink>
       <NavLink to="/activity" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-        Live traffic
-      </NavLink>
-      <NavLink to="/debug" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-        Tool I/O
+        Traffic &amp; Tool I/O
       </NavLink>
       <NavLink to="/projects" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
         Projects

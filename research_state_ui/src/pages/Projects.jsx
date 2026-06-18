@@ -32,8 +32,9 @@ export default function Projects() {
       <header className="page-header page-header--lg">
         <div className="page-head-row">
           <div>
-            <h1 className="page-title">Projects</h1>
-            <p className="page-summary">
+            {/* "Projects" already labels the active sidebar nav item — lead with
+                the description instead of echoing it. */}
+            <p className="page-summary page-summary--lead">
               Every research project known to this backend. Each project owns a local directory
               with its own files, claims, experiments, resources, and review history.
             </p>

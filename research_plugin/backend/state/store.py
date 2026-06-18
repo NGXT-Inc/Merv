@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  hard_stop_reflection_id TEXT,
+  hard_stop_rationale TEXT NOT NULL DEFAULT '',
+  stopped_at TEXT,
   -- Tenancy (cloud plan Phase 6): ownership lives on the project row; every
   -- other table reaches its tenant through project_id. Local mode is the
   -- fixed 'local' tenant. Denormalized per-table tenant columns and
@@ -224,6 +228,27 @@ CREATE TABLE IF NOT EXISTS syntheses (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+CREATE TABLE IF NOT EXISTS synthesis_claim_changes (
+  synthesis_id TEXT NOT NULL,
+  claim_id TEXT NOT NULL,
+  op TEXT NOT NULL,
+  claim_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(synthesis_id, claim_id),
+  FOREIGN KEY(synthesis_id) REFERENCES syntheses(id),
+  FOREIGN KEY(claim_id) REFERENCES claims(id)
+);
+
+CREATE TABLE IF NOT EXISTS synthesis_experiments (
+  synthesis_id TEXT NOT NULL,
+  experiment_id TEXT NOT NULL,
+  proposal_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(synthesis_id, experiment_id),
+  FOREIGN KEY(synthesis_id) REFERENCES syntheses(id),
+  FOREIGN KEY(experiment_id) REFERENCES experiments(id)
+);
+
 CREATE TABLE IF NOT EXISTS sandboxes (
   experiment_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -288,10 +313,11 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
--- Figures submitted alongside a report (cloud plan Phase 2): when a report is
--- associated, each resolvable relative image link's bytes are captured to the
--- blob store and recorded here, keyed by the report's pinned version. The
--- report lint checks THIS mapping (submitted figures), never the disk.
+-- Figures submitted alongside a markdown gated artifact (cloud plan Phase 2):
+-- when a report or reflection_doc (legacy synthesis_doc) is associated, each resolvable relative image
+-- link's bytes are captured to the blob store and recorded here, keyed by the
+-- artifact's pinned version. Markdown lints check THIS mapping (submitted
+-- figures), never the disk.
 CREATE TABLE IF NOT EXISTS report_figures (
   report_version_id TEXT NOT NULL,
   link_path TEXT NOT NULL,
@@ -663,11 +689,31 @@ class StateStore(BaseStateStore):
         # Cloud-split Phase 6 (June 2026): tenancy column — projects carry
         # ownership; local mode is the fixed 'local' tenant (which is also the
         # column default, so older rows converge to it).
+        existing_project_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(projects)").fetchall()
+        }
         self._ensure_columns(
             conn=conn,
             table="projects",
-            columns={"tenant_id": "TEXT NOT NULL DEFAULT 'local'"},
+            columns={
+                "tenant_id": "TEXT NOT NULL DEFAULT 'local'",
+                "status": "TEXT NOT NULL DEFAULT 'active'",
+                "hard_stop_reflection_id": "TEXT",
+                "hard_stop_rationale": "TEXT NOT NULL DEFAULT ''",
+                "stopped_at": "TEXT",
+            },
         )
+        if "hard_stop_synthesis_id" in existing_project_columns:
+            conn.execute(
+                """
+                UPDATE projects
+                SET hard_stop_reflection_id = COALESCE(
+                    hard_stop_reflection_id,
+                    hard_stop_synthesis_id
+                )
+                """
+            )
         # Experiments now persist the accepted conclusion on `complete`; older
         # databases predate the column. Named experiments (June 2026): the
         # short unique name doubles as the experiment folder name; empty on

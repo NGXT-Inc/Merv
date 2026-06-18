@@ -187,7 +187,14 @@ class ProjectRouter:
                     "then call project.create before using project-scoped tools."
                 ),
             }
-        return {"exists": True, "project": project, "repo_root": str(repo)}
+        app = self.app_for_project(str(project["id"]))
+        current = dict(app.current_project())
+        current["repo_root"] = str(repo)
+        if current.get("project"):
+            scoped_project = dict(current["project"])
+            scoped_project["repo_root"] = str(repo)
+            current["project"] = scoped_project
+        return current
 
     def app_for_project(self, project_id: str) -> ResearchPluginApp:
         with self._lock:

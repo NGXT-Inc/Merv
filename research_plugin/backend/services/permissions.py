@@ -8,28 +8,53 @@ from ..utils import PermissionDeniedError, ValidationError
 REVIEW_ROLES = {
     "design_reviewer",
     "experiment_reviewer",
-    "synthesis_reviewer",
+    "reflection_reviewer",
     "human",
     "automated_check",
 }
 REVIEW_VERDICTS = {"pass", "needs_changes", "fail"}
-RESOURCE_TARGET_TYPES = {"experiment", "synthesis", "claim", "review", "attempt"}
+RESOURCE_TARGET_TYPES = {"experiment", "reflection", "claim", "review", "attempt"}
+PROJECT_GRAPH_ROLE = "project_graph"
+LEGACY_PROJECT_GRAPH_ROLE = "graph"
+PROJECT_GRAPH_ROLES = (PROJECT_GRAPH_ROLE, LEGACY_PROJECT_GRAPH_ROLE)
+REFLECTION_LENS_DOC_ROLE = "reflection_lens_doc"
+LEGACY_REFLECTION_LENS_DOC_ROLE = "reflection"
+REFLECTION_LENS_DOC_ROLES = (
+    REFLECTION_LENS_DOC_ROLE,
+    LEGACY_REFLECTION_LENS_DOC_ROLE,
+)
+LEGACY_REFLECTION_DOC_ROLE = "synthesis_doc"
+LEGACY_PROPOSALS_ROLE = "proposals"
+LEGACY_RESOURCE_ROLES = {
+    LEGACY_REFLECTION_LENS_DOC_ROLE,
+    LEGACY_REFLECTION_DOC_ROLE,
+    LEGACY_PROPOSALS_ROLE,
+}
 RESOURCE_ROLES = {
     "plan", "input", "code", "config", "result", "report", "graph",
-    "reflection", "proposals", "note", "model", "other",
+    PROJECT_GRAPH_ROLE,
+    REFLECTION_LENS_DOC_ROLE, "reflection_doc",
+    "change_spec",
+    "note", "model", "other",
 }
 
 # Gated roles: the artifacts workflow gates lint. Associating one of these
 # captures the file's bytes into the blob store (size-capped), pinning the
 # association to immutable content (docs/CLOUD_BACKEND_MIGRATION_PLAN.md
 # decision 6). The report/graph caps mirror artifacts.MAX_REPORT_BYTES and
-# graph_lint.MAX_GRAPH_BYTES (alignment pinned by a structure test); plan/
-# proposals/reflection previously had no cap at all.
+# graph_lint.MAX_GRAPH_BYTES (alignment pinned by a structure test).
 GATED_ROLE_BYTE_CAPS: dict[str, int] = {
     "plan": 16_000,
     "report": 16_000,
     "graph": 16_000,
+    PROJECT_GRAPH_ROLE: 16_000,
+    REFLECTION_LENS_DOC_ROLE: 16_000,
+    "reflection_doc": 16_000,
+    # Legacy alias accepted for waves created before the rename.
+    "synthesis_doc": 16_000,
+    "change_spec": 16_000,
     "proposals": 16_000,
+    # Legacy alias accepted for per-lens docs created before the rename.
     "reflection": 16_000,
 }
 GATED_ROLES = frozenset(GATED_ROLE_BYTE_CAPS)
@@ -37,6 +62,11 @@ GATED_ROLES = frozenset(GATED_ROLE_BYTE_CAPS)
 
 class PermissionService:
     """Small policy layer, intentionally separate from workflow and persistence."""
+
+    def storage_resource_target_type(self, *, target_type: str) -> str:
+        if target_type == "reflection":
+            return "synthesis"
+        return target_type
 
     def validate_review_role(self, *, role: str) -> None:
         if role not in REVIEW_ROLES:
@@ -52,6 +82,29 @@ class PermissionService:
             raise ValidationError(
                 f"unknown resource target type: {target_type}. Allowed target types: {', '.join(allowed)}",
                 details={"allowed_target_types": allowed},
+            )
+        if role in LEGACY_RESOURCE_ROLES:
+            replacements = {
+                LEGACY_REFLECTION_LENS_DOC_ROLE: REFLECTION_LENS_DOC_ROLE,
+                LEGACY_REFLECTION_DOC_ROLE: "reflection_doc",
+                LEGACY_PROPOSALS_ROLE: "change_spec",
+            }
+            replacement = replacements[role]
+            raise ValidationError(
+                f"legacy resource role {role!r} is read-only for old records; use {replacement!r}",
+                details={
+                    "legacy_role": role,
+                    "replacement_role": replacement,
+                },
+            )
+        if target_type == "reflection" and role == LEGACY_PROJECT_GRAPH_ROLE:
+            raise ValidationError(
+                "use role 'project_graph' for reflection-wave project graphs; "
+                "role 'graph' is only for experiment logic graphs",
+                details={
+                    "legacy_role": LEGACY_PROJECT_GRAPH_ROLE,
+                    "replacement_role": PROJECT_GRAPH_ROLE,
+                },
             )
         if role not in RESOURCE_ROLES:
             allowed = sorted(RESOURCE_ROLES)

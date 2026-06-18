@@ -36,14 +36,14 @@ export default function MobileResources() {
           onClick={() => setTreeOpen(v => !v)}
           aria-expanded={treeOpen}
         >
-          <span>{selected ? selected.path : `${resources.length} registered file${resources.length === 1 ? '' : 's'}`}</span>
+          <span>{selected ? selected.path : `${resources.length} file${resources.length === 1 ? '' : 's'}`}</span>
           <span aria-hidden="true">{treeOpen ? '▾' : '▸'}</span>
         </button>
         {treeOpen && (
           <div className="mfiles-body">
             {resources.length === 0 ? (
               <div className="empty-state empty-state--compact">
-                <p>No files registered. The agent syncs repo files with <span className="mono">resource.register_file</span>.</p>
+                <p>No files registered yet.</p>
               </div>
             ) : (
               <FileTree

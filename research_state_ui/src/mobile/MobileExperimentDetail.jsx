@@ -6,10 +6,8 @@ import FSMStrip from '../components/FSMStrip';
 import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
 import ReportSpotlight from '../components/ReportSpotlight';
-import OutcomesSection from '../components/OutcomesSection';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
-import MobileMetricsPanel from './MobileMetricsPanel';
 import { Skeleton } from './Skeleton';
 import { expName } from '../utils/experiment';
 
@@ -118,7 +116,6 @@ export default function MobileExperimentDetail() {
       a => a.target_type === 'experiment' && a.target_id === experimentId && a.role === 'plan',
     )) || null;
   const reportRes = enrich(currentRes.find(r => r.association_role === 'report') || null);
-  const outcomeRes = currentRes.filter(r => ['result', 'model'].includes(r.association_role));
 
   const allReviews = (experiment.reviews || []).slice().sort((a, b) =>
     (a.created_at || '').localeCompare(b.created_at || ''),
@@ -193,7 +190,7 @@ export default function MobileExperimentDetail() {
           />
           {!planRes && (
             <div className="empty-state empty-state--compact">
-              <p>No plan synced yet — the agent registers <span className="mono">plan.md</span> before design review.</p>
+              <p>No plan synced yet.</p>
             </div>
           )}
         </>
@@ -213,14 +210,6 @@ export default function MobileExperimentDetail() {
               experimentStatus={experiment.status}
             />
           )}
-          <OutcomesSection
-            projectId={projectId}
-            outcomeResources={outcomeRes}
-            experimentReviews={experimentReviews}
-            experimentStatus={experiment.status}
-            hideReviews={!!reportRes}
-          />
-          <MobileMetricsPanel projectId={projectId} experimentId={experimentId} />
         </>
       )}
     </div>

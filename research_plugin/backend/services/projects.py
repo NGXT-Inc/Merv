@@ -10,6 +10,9 @@ from ..state.store import StateStore, row_to_dict
 from ..utils import now_iso
 
 
+MIN_PROJECT_NAME_LEN = 3
+
+
 class ProjectService:
     """Owns project metadata."""
 
@@ -22,8 +25,7 @@ class ProjectService:
         name: str,
         summary: str = "",
     ) -> dict[str, Any]:
-        if not name.strip():
-            raise ValidationError("name is required")
+        name = self._validate_name(name)
         with self.store.transaction() as conn:
             project_id = new_id(prefix="proj")
             conn.execute(
@@ -33,7 +35,7 @@ class ProjectService:
                 """,
                 (
                     project_id,
-                    name.strip(),
+                    name,
                     summary.strip(),
                     now_iso(),
                 ),
@@ -61,7 +63,7 @@ class ProjectService:
             row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
             if row is None:
                 raise NotFoundError(f"project not found: {project_id}")
-            next_name = row["name"] if name is None else name.strip()
+            next_name = row["name"] if name is None else self._validate_name(name)
             next_summary = row["summary"] if summary is None else summary.strip()
             conn.execute(
                 """
@@ -128,8 +130,38 @@ class ProjectService:
 
     def _project_view(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        return {
+        view = {
             key: data[key]
-            for key in ("id", "name", "summary", "created_at")
+            for key in (
+                "id",
+                "name",
+                "summary",
+                "status",
+                "created_at",
+            )
             if key in data
         }
+        if data.get("status") == "stopped":
+            view.update(
+                {
+                    key: data[key]
+                    for key in (
+                        "hard_stop_reflection_id",
+                        "hard_stop_rationale",
+                        "stopped_at",
+                    )
+                    if key in data
+                }
+            )
+        return view
+
+    @staticmethod
+    def _validate_name(name: str) -> str:
+        name = (name or "").strip()
+        if not name:
+            raise ValidationError("name is required")
+        if len(name) < MIN_PROJECT_NAME_LEN:
+            raise ValidationError(
+                f"name must be at least {MIN_PROJECT_NAME_LEN} characters"
+            )
+        return name

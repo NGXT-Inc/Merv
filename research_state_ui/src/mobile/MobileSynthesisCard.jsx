@@ -1,68 +1,69 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
-import BottomSheet from './BottomSheet';
-import GraphOutline from './GraphOutline';
-import { normalizeLogic, makeLogicDetail } from './graphModel';
 
 /**
- * MobileSynthesisCard — surfaces the project synthesis (desktop Home only) on
- * the mobile Now screen: a one-line headline that opens the living project
- * logic graph as a GraphOutline in a bottom sheet. docs/MOBILE_UX_REVIEW.md §4.2.
+ * MobileSynthesisCard — the project synthesis at a glance on the Now screen.
+ *
+ * One summary card: the current wave's status (or a coverage line), a glance at
+ * how many waves exist, and a tap target that pushes the full reflection-wave
+ * screen (/synthesis) — graph, reflection doc, lens reflections, and history.
+ * When there is no wave at all (only a nudge to run one) it stays a static,
+ * non-navigating card. docs/MOBILE_UX_REVIEW.md §4.2.
  */
 export default function MobileSynthesisCard({ projectId }) {
   const [meta, setMeta] = useState(null);
-  const [graph, setGraph] = useState(null);
-  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     api.getSyntheses(projectId).then(d => { if (!cancelled) setMeta(d); }).catch(() => {});
-    api.getProjectLogicGraph(projectId).then(d => { if (!cancelled) setGraph(d); }).catch(() => {});
     return () => { cancelled = true; };
   }, [projectId]);
 
-  const g = graph?.available ? graph.graph : null;
-  const model = useMemo(() => normalizeLogic(g), [g]);
-  const refIndex = graph?.ref_index || {};
-  const hasGraph = model.nodes.length > 0;
-
+  const waves = meta?.syntheses || [];
   const signal = meta?.signal || null;
   const openWave = meta?.open_synthesis || null;
-  const hasAnyWave = (meta?.syntheses || []).length > 0 || Boolean(openWave);
+  const hasAnyWave = waves.length > 0 || Boolean(openWave);
 
-  // Render nothing until there's a story or a wave/hint worth a glance.
-  if (!hasGraph && !hasAnyWave && !signal?.hint) return null;
+  // Render nothing until there's a wave or a hint worth a glance.
+  if (!hasAnyWave && !signal?.hint) return null;
 
   const headline = openWave
     ? `Reflection ${String(openWave.status || 'in progress').replace(/_/g, ' ')}`
-    : signal?.last_published_at
-      ? `Covers ${signal.covered_terminal_experiments} of ${signal.terminal_experiments} finished experiments`
-      : 'Project synthesis';
+    : 'Project synthesis';
+
+  const coverage = signal?.last_published_at && signal.terminal_experiments > 0
+    ? `covers ${signal.covered_terminal_experiments} of ${signal.terminal_experiments} finished`
+    : null;
+  const waveCount = waves.length
+    ? `${waves.length} wave${waves.length > 1 ? 's' : ''}`
+    : null;
+
+  const inner = (
+    <>
+      <div className="mcard-head">
+        <div className="mcard-title">{headline}</div>
+        {hasAnyWave && <span className="mcard-glyph" style={{ color: 'var(--mcp)' }} aria-hidden="true">◆</span>}
+      </div>
+      {signal?.hint && <div className="mcard-sub">{signal.hint}</div>}
+      {hasAnyWave && (
+        <div className="mcard-meta">
+          {coverage && <span>{coverage}</span>}
+          {waveCount && <span>{waveCount}</span>}
+          <span>tap to open →</span>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <section className="section">
       <div className="section-title">Synthesis</div>
-      <button
-        type="button"
-        className="mcard"
-        onClick={() => hasGraph && setOpen(true)}
-        disabled={!hasGraph}
-      >
-        <div className="mcard-head">
-          <div className="mcard-title">{headline}</div>
-          {hasGraph && <span className="mcard-glyph" style={{ color: 'var(--mcp)' }} aria-hidden="true">◆</span>}
-        </div>
-        {signal?.hint && <div className="mcard-sub">{signal.hint}</div>}
-        {hasGraph && (
-          <div className="mcard-meta">
-            <span>{model.nodes.length} nodes · tap to read the project story</span>
-          </div>
-        )}
-      </button>
-
-      <BottomSheet open={open} onClose={() => setOpen(false)} label="Project synthesis" title={g?.title || 'Project synthesis'}>
-        {hasGraph && <GraphOutline nodes={model.nodes} edges={model.edges} renderDetail={makeLogicDetail(refIndex)} />}
-      </BottomSheet>
+      {hasAnyWave ? (
+        <Link to="/synthesis" className="mcard">{inner}</Link>
+      ) : (
+        <div className="mcard" aria-disabled="true">{inner}</div>
+      )}
     </section>
   );
 }

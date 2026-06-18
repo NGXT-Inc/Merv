@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate, Link } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useSearchParams } from 'react-router-dom';
 import { useProjectStore, selectActiveExperiments, selectSandboxes } from './store/useProjectStore';
 import { usePolling } from './store/usePolling';
 import { useViewport } from './store/useViewport';
@@ -15,6 +15,7 @@ import MobileClaims from './mobile/MobileClaims';
 import MobileReviews from './mobile/MobileReviews';
 import MobileProjects from './mobile/MobileProjects';
 import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
+import MobileSynthesisScreen from './mobile/MobileSynthesisScreen';
 import Home from './pages/Home';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
@@ -26,9 +27,15 @@ import Resources from './pages/Resources';
 import Reviews from './pages/Reviews';
 import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
-import Activity from './pages/Activity';
 import Debug from './pages/Debug';
 import VisualDag from './pages/VisualDag';
+
+// /debug merged into /activity. Preserve ?tool= (v6 <Navigate> drops search).
+function DebugRedirect() {
+  const [sp] = useSearchParams();
+  const q = sp.toString();
+  return <Navigate to={`/activity${q ? `?${q}` : ''}`} replace />;
+}
 
 export default function App() {
   const projectId = useProjectStore(s => s.projectId);
@@ -95,13 +102,14 @@ export default function App() {
           <Route path="/claims/:claimId" element={<ClaimDetail />} />
           <Route path="/experiments" element={<ExperimentCardList />} />
           <Route path="/experiments/:experimentId" element={<MobileExperimentDetail />} />
+          <Route path="/synthesis" element={<MobileSynthesisScreen />} />
           <Route path="/resources" element={<MobileResources />} />
           <Route path="/resources/:resourceId" element={<MobileResources />} />
           <Route path="/reviews" element={<MobileReviews />} />
           <Route path="/events" element={<Events />} />
           <Route path="/sandboxes" element={<SandboxCardList />} />
-          <Route path="/activity" element={<Activity />} />
-          <Route path="/debug" element={<Debug />} />
+          <Route path="/activity" element={<Debug />} />
+          <Route path="/debug" element={<DebugRedirect />} />
           <Route path="/visual/dag" element={<MobileDagNotice />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
@@ -127,8 +135,8 @@ export default function App() {
           <Route path="/reviews" element={<Reviews />} />
           <Route path="/events" element={<Events />} />
           <Route path="/sandboxes" element={<Sandboxes />} />
-          <Route path="/activity" element={<Activity />} />
-          <Route path="/debug" element={<Debug />} />
+          <Route path="/activity" element={<Debug />} />
+          <Route path="/debug" element={<DebugRedirect />} />
           <Route path="/visual/dag" element={<VisualDag />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

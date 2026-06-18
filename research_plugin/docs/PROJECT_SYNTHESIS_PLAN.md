@@ -1,9 +1,11 @@
 # Project Synthesis & Reflection — Build Plan
 
-**Status:** implemented (backend + skills + UI), 2026-06-11. Open questions §9
-were taken at their noted leanings: redo_reflection re-runs all five lenses
-(the reviewer's notes can tell the orchestrator which were weak), and
-proposals are their own role-`proposals` file.
+**Status:** implemented (backend + skills + UI), 2026-06-11; amended
+2026-06-17. The active workflow now submits three reviewed reflection artifacts:
+project graph (role `project_graph`), concise reflection document (role
+`reflection_doc`), and change spec (role `change_spec`). The older
+role-`proposals` proposal-file design below is historical context, not the
+current contract.
 **Authored:** 2026-06-11.
 **Scope:** a new project-level, gated reflection workflow that periodically distills the whole
 project into one living 16-node "project logic graph" plus a "what's next" proposal set, via a
@@ -245,9 +247,9 @@ Three schema-determining forks were put to the user; their answers:
   one is "the current synthesis." Carries: the declared **roster** (5 lens ids + charters), the
   **corpus snapshot** (terminal experiments at id+attempt at create time), attempt index, status,
   and — on publish — the pinned project-graph version token.
-- **`reflection`** (new resource role): one per lens, a prose repo file at
+- **`reflection_lens_doc`** (resource role): one per lens, a prose repo file at
   `syntheses/<syn_id>/reflections/<lens_id>.md`, authored and submitted by its own subagent.
-- **project `graph`** (reuse role `graph`): the single living project logic graph file (e.g.
+- **project `project_graph`**: the single living project logic graph file (e.g.
   `project/logic_graph.json`). Same JSON shape, same `graph_lint`, same 16-node budget, same `refs`
   resolution as experiment graphs. Nodes are lessons / themes / dead-end patterns / open questions.
 - **`proposals`** (new resource role): the "what's next" file — one block per proposed experiment
@@ -273,10 +275,10 @@ reflecting ──all 5 submitted──▶ synthesizing ──graph+proposals─�
 ### 6.3 Gates (declarative, second gate table)
 
 - **`reflecting → synthesizing`** (`submit_reflections`): a new **roster-coverage validator** — every
-  declared lens id must have an associated role-`reflection` resource for the current attempt. This is
+  declared lens id must have an associated role-`reflection_lens_doc` resource for the current attempt. This is
   the hard "only once all N have submitted" requirement. Blocked message lists the missing lenses.
 - **`synthesizing → synthesis_review`** (`submit_synthesis`): two `RoleRequirement`s —
-  - role `graph`, validator `graph` (reuse `graph_lint`), and the living project graph must have been
+  - role `project_graph`, validator `graph` (reuse `graph_lint`), and the living project graph must have been
     updated this wave (its version token advanced, or re-associated for the current attempt);
   - role `proposals`, validator `prose` (dumb existence + non-empty).
   Plus a `ReviewRequirement` for role `synthesis_reviewer`.
@@ -285,7 +287,8 @@ reflecting ──all 5 submitted──▶ synthesizing ──graph+proposals─�
 
 ### 6.4 Roles, resolution, surface (additions)
 
-- `RESOURCE_ROLES += {"reflection", "proposals"}` (role `graph` reused for the project graph).
+- `RESOURCE_ROLES += {"reflection_lens_doc", "project_graph"}` (`reflection` and project `graph`
+  remain legacy aliases for older waves).
 - Ref resolver `+= "syn_"` so experiment graphs (and the project graph) can point back at the
   synthesis that motivated them.
 - MCP surface: `synthesis_create`, `synthesis_get`, `synthesis_list`, `synthesis_transition`.
@@ -320,23 +323,22 @@ of the *other* lenses running (anti-overlap — the fix for the 1/3-wasted-budge
 project access, and instructions to **submit its own reflection** (register + associate the file under
 its lens id). The three mandated briefs:
 
-> **Core 1 · Outcomes & evidence — "what do we actually know?"**
-> Read the claims (supported / weakened / contradicted / active), experiment outcomes, and review
-> verdicts. Assemble the *verified* knowledge state: what's established, what's contested, and any
-> claim being leaned on harder than its evidence supports. You are the verification lens; do not
-> speculate about untried directions — that's another agent's job.
+> **Core 1 · `amplify` — "where is the project getting traction, and how should we double down?"**
+> Read claims, experiment outcomes, reports, logic graphs, and review verdicts for positive signal:
+> repeated wins, promising mechanisms, surprisingly robust settings, productive methods,
+> under-exploited partial successes, and directions where more investment is justified.
 
-> **Core 2 · Dead-ends & negative results — "what did we rule out, and why?"**
+> **Core 2 · `avoid` — "what should the project stop doing or avoid repeating?"**
 > Read every `dead_end` node across the experiment logic graphs, abandoned attempts and experiments,
-> and `needs_changes` review histories. Produce the negative-knowledge ledger as a table: direction
-> tested · setting · what happened · why it failed. This is the project's highest-value memory — the
-> thing that stops the next wave from re-running a known dead end.
+> failed or inconclusive reports, and `needs_changes` review histories. Produce the
+> negative-knowledge ledger as a table: direction tested · setting · what happened · why it failed ·
+> what would have to change before trying again.
 
-> **Core 3 · Coverage & untested axes — "what haven't we tried?"**
-> Compare the project's stated intent against what experiments actually varied. Run a coverage audit:
-> which axes are cold (touched by few or no experiments), which look saturated (recent variation below
-> the noise the experiments themselves report), and where the project's goals and its actual
-> exploration have drifted apart. You map the frontier; you don't adjudicate past results.
+> **Core 3 · `entropy` — "what strange, high-variance things should we try?"**
+> Deliberately inject unlikely-to-work ideas that might reveal a new axis: weird mechanisms,
+> surprising adjacent methods, contrarian pivots, cheap stress tests, assumptions to invert, and
+> experiments the other agents would probably dismiss too quickly. Each idea must still be testable,
+> scoped, and marked with the cheapest decisive probe.
 
 The two authored lenses come with a menu, not a mandate (methodological-rigor, cross-experiment
 pattern, cost/resource, a domain-specific angle, an explicit devil's-advocate lens) and the

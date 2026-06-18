@@ -67,8 +67,12 @@ class ReviewService:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         self.permissions.validate_review_role(role=role)
+        external_target_type = target_type
+        target_type = (
+            "synthesis" if external_target_type == "reflection" else external_target_type
+        )
         if target_type not in {"experiment", "synthesis"}:
-            raise ValidationError("review targets must be 'experiment' or 'synthesis'")
+            raise ValidationError("review targets must be 'experiment' or 'reflection'")
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if target_type == "experiment":
@@ -124,7 +128,11 @@ class ReviewService:
                 "target_snapshot_id": snapshot_id,
                 "target_snapshot": self.snapshot_from_id(snapshot_id=snapshot_id),
                 "expires_at": expires_at,
-                "reviewer_handoff": self.reviewer_handoff(role=role, target_type=target_type, target_id=target_id),
+                "reviewer_handoff": self.reviewer_handoff(
+                    role=role,
+                    target_type=external_target_type,
+                    target_id=target_id,
+                ),
             }
 
     def start(
@@ -191,10 +199,12 @@ class ReviewService:
             return {
                 "review_session_id": session_id,
                 "role": req["role"],
-                "target_type": req["target_type"],
+                "target_type": (
+                    "reflection" if req["target_type"] == "synthesis" else req["target_type"]
+                ),
                 "target_id": req["target_id"],
                 "independence": independence,
-                "read_scope": ["claim", "experiment", "synthesis", "resource", "review"],
+                "read_scope": ["claim", "experiment", "reflection", "resource", "review"],
                 # The reviewer grades the SUBMITTED artifacts — the bytes
                 # pinned at associate — not whatever the working tree holds
                 # now. Hydrated here so a reviewer never has to trust disk.
@@ -359,6 +369,7 @@ class ReviewService:
             return self._hydrate_review(row=review)
 
     def status(self, *, target_type: str, target_id: str, project_id: str | None = None) -> dict[str, Any]:
+        target_type = "synthesis" if target_type == "reflection" else target_type
         conn = self.store.connect()
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -516,6 +527,8 @@ class ReviewService:
 
     def _with_snapshot(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
+        if data.get("target_type") == "synthesis":
+            data["target_type"] = "reflection"
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
         return data
 
@@ -523,12 +536,12 @@ class ReviewService:
         skill = {
             "design_reviewer": "experiment-design-review",
             "experiment_reviewer": "experiment-attempt-review",
-            "synthesis_reviewer": "project-reflection-review",
+            "reflection_reviewer": "project-reflection-review",
         }.get(role, "")
         return {
             "role": role,
             "skill": skill,
-            "target_type": target_type,
+            "target_type": "reflection" if target_type == "synthesis" else target_type,
             "target_id": target_id,
             "read_only": True,
             "start_tool": "review.start",
@@ -587,10 +600,10 @@ class ReviewService:
         revealed a flaw in the plan itself, 'running' when the plan stands but
         execution or the conclusion is flawed. Design rejections can only go
         back to 'planned' — a flawed plan is never fixed by re-running it.
-        Synthesis reviewers choose explicitly too: 'reflecting' when the
+        Reflection reviewers choose explicitly too: 'reflecting' when the
         reflections themselves are inadequate (the fan-out re-runs),
-        'synthesizing' when the reflections stand but the synthesis — graph
-        and/or proposals — must be revised.
+        'synthesizing' when the reflections stand but the reflection artifacts
+        — graph, reflection doc, and/or change spec — must be revised.
         """
         return_to = (return_to or "").strip()
         allowed = (
@@ -600,7 +613,7 @@ class ReviewService:
         )
         if return_to not in allowed:
             raise ValidationError(
-                "return_to must be 'reflecting' or 'synthesizing' for synthesis reviews"
+                "return_to must be 'reflecting' or 'synthesizing' for reflection reviews"
                 if target_type == "synthesis"
                 else "return_to must be 'planned' or 'running'"
             )
@@ -609,12 +622,12 @@ class ReviewService:
                 raise ValidationError("return_to only applies when the verdict is needs_changes or fail")
             return ""
         if target_type == "synthesis":
-            if role == "synthesis_reviewer" and not return_to:
+            if role == "reflection_reviewer" and not return_to:
                 raise ValidationError(
                     "project-reflection-review rejections must set return_to: 'reflecting' "
                     "to re-launch the reflection fan-out (the reflections "
                     "themselves are inadequate), or 'synthesizing' if the "
-                    "reflections stand but the synthesis must be revised"
+                    "reflections stand but the reflection artifacts must be revised"
                 )
             return return_to or "synthesizing"
         if role == "experiment_reviewer" and not return_to:
@@ -636,7 +649,7 @@ class ReviewService:
         if role in {"human", "automated_check"}:
             return
         expected_by_status = (
-            {"synthesis_review": "synthesis_reviewer"}
+            {"synthesis_review": "reflection_reviewer"}
             if target_type == "synthesis"
             else {
                 "design_review": "design_reviewer",
@@ -696,7 +709,8 @@ class ReviewService:
             else:
                 pieces.append(
                     "Sent back to synthesizing: the reflections stand; revise "
-                    "the synthesis (project graph and/or proposals) and resubmit"
+                    "the reflection artifacts (project graph, reflection doc, "
+                    "and/or change spec) and resubmit"
                 )
         if notes:
             pieces.append(notes)
@@ -706,9 +720,9 @@ class ReviewService:
         # the agent's editorial call.
         if target_type == "synthesis":
             pieces.append(
-                "Consider revising the project logic graph and proposals where "
-                "this review changes the project's story; the 16-node budget "
-                "still applies"
+                "Consider revising the project graph, reflection doc, and/or "
+                "change spec where this review changes the project's story; "
+                "the 16-node graph budget still applies"
             )
         else:
             pieces.append(
@@ -720,11 +734,15 @@ class ReviewService:
 
     def _hydrate_request(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
+        if data.get("target_type") == "synthesis":
+            data["target_type"] = "reflection"
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
         return data
 
     def _hydrate_review(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
+        if data.get("target_type") == "synthesis":
+            data["target_type"] = "reflection"
         data["findings"] = json.loads(data.pop("findings_json", "[]"))
         data["evidence"] = json.loads(data.pop("evidence_json", "{}"))
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))

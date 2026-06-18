@@ -60,7 +60,7 @@ maintained through reflection waves. When `workflow.status_and_next` includes
 Reflection nudges are advisory unless MCP reports an active reflection gate:
 creating the next claim or experiment may still be allowed, but consider whether
 finished experiments should first be distilled into the project graph and
-next-experiment proposals.
+reviewed change spec.
 
 ## The experiment folder
 
@@ -81,7 +81,11 @@ needs manually.
    for the current folder, or `exists: false` if the folder does not have a
    project yet. If `exists` is false, do not invent a placeholder project. Ask
    the user what project name and short summary to use, unless the current user
-   request already provided that information, then call `project.create`.
+   request already provided that information, then call `project.create`. If
+   `exists` is true, read `at_a_glance`: it links the latest reflection
+   document and project graph, shows whether newer experiments or claim changes
+   happened since that reflection, and gives the recommended `resource.resolve`
+   / `reflection.get` calls for more context.
 2. Ask MCP for `workflow.status_and_next(experiment_id?)` before acting.
 3. Identify the claim or experiment being worked on.
 4. Follow MCP's `next_action`, allowed actions, blocked actions, and gate state.
@@ -331,8 +335,9 @@ When the agent creates or changes files during an experiment:
   `graph`)
 - gates and lints judge the SUBMITTED bytes (pinned at `resource.associate`),
   never the live working tree: after fixing a gated artifact (plan, report,
-  graph, proposals, reflection), re-associate it to submit the fix — editing
-  the file alone changes nothing the workflow can see
+  graph, project_graph, reflection_lens_doc, reflection_doc, change_spec),
+  re-associate it to submit the
+  fix — editing the file alone changes nothing the workflow can see
 - do not create artifact manifests or content-addressed resource objects
 - do not restore old versions through MCP; edit the live file normally and
   re-associate it to submit a new version

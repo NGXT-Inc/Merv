@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -27,9 +28,18 @@ from .services import (
     WorkflowService,
 )
 from .services.sandbox_mgmt_keys import LocalMgmtKeyStore
-from .state import ActivityLogger, BaseStateStore, StateStore, ToolCallStore, monotonic_ms
+from .state import (
+    ActivityLogger,
+    BaseStateStore,
+    StateStore,
+    ToolCallStore,
+    monotonic_ms,
+    rows_to_dicts,
+)
 from .state.blobs import BlobStore, LocalDirBlobStore
 from .observability import StructuredLogger
+from .services.workflow_gates import TERMINAL_STATUSES as EXPERIMENT_TERMINAL_STATUSES
+from .services.permissions import PROJECT_GRAPH_ROLES
 
 
 @dataclass(frozen=True)
@@ -147,7 +157,11 @@ class ResearchPluginApp:
         # One-time local upgrade: capture bytes for gated associations made
         # before byte capture existed (idempotent, skips present blobs).
         self.resources.backfill_gated_blobs()
-        self.syntheses = SynthesisService(store=self.store, blobs=self.blobs)
+        self.syntheses = SynthesisService(
+            store=self.store,
+            blobs=self.blobs,
+            ensure_workspace=self.worker.ensure_workspace,
+        )
         self.reviews = ReviewService(
             store=self.store,
             permissions=self.permissions,
@@ -187,7 +201,7 @@ class ResearchPluginApp:
             "project.create": self.projects.create,
             "project.update": self.projects.update,
             "project.get": self.projects.get,
-            "project.current": self.projects.current,
+            "project.current": self.current_project,
             "project.list": self.projects.list_projects,
             "claim.create": self.claims.create,
             "claim.list": self.claims.list_claims,
@@ -196,10 +210,10 @@ class ResearchPluginApp:
             "experiment.list": self.experiments.list_experiments_agent,
             "experiment.get_state": self.experiments.get_state_agent,
             "experiment.transition": self.experiments.transition,
-            "synthesis.create": self.syntheses.create,
-            "synthesis.get": self.syntheses.get_state,
-            "synthesis.list": self.syntheses.list_syntheses,
-            "synthesis.transition": self.syntheses.transition,
+            "reflection.create": self.reflection_create,
+            "reflection.get": self.reflection_get,
+            "reflection.list": self.reflection_list,
+            "reflection.transition": self.reflection_transition,
             "resource.register_file": self.resources.register_file,
             "resource.associate": self.resources.associate,
             "resource.delete": self.resources.delete,
@@ -228,6 +242,355 @@ class ResearchPluginApp:
         self._tool_planes = {
             name: contract.plane for name, contract in TOOL_CONTRACTS.items()
         }
+
+    def reflection_create(
+        self,
+        *,
+        project_id: str,
+        title: str = "",
+        lenses: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return self._external_reflection_state(
+            self.syntheses.create(project_id=project_id, title=title, lenses=lenses or [])
+        )
+
+    def reflection_get(
+        self, *, project_id: str, reflection_id: str
+    ) -> dict[str, Any]:
+        return self._external_reflection_state(
+            self.syntheses.get_state(synthesis_id=reflection_id, project_id=project_id)
+        )
+
+    def reflection_list(self, *, project_id: str) -> dict[str, Any]:
+        state = self.syntheses.list_syntheses(project_id=project_id)
+        return {
+            "count": state.get("count", len(state.get("syntheses", []))),
+            "reflections": [
+                self._external_reflection_state(item)
+                for item in state.get("syntheses", [])
+            ],
+        }
+
+    def reflection_transition(
+        self, *, project_id: str, reflection_id: str, transition: str
+    ) -> dict[str, Any]:
+        internal_transition = (
+            "submit_synthesis"
+            if transition == "submit_reflection_artifacts"
+            else transition
+        )
+        return self._external_reflection_state(
+            self.syntheses.transition(
+                project_id=project_id,
+                synthesis_id=reflection_id,
+                transition=internal_transition,
+            )
+        )
+
+    def _external_reflection_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        output = dict(state)
+        if output.get("status") == "synthesis_review":
+            output["status"] = "reflection_review"
+        if "allowed_transitions" in output:
+            output["allowed_transitions"] = [
+                self._external_reflection_transition(item)
+                for item in output.get("allowed_transitions", [])
+            ]
+        return output
+
+    def _external_reflection_transition(self, item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        output = dict(item)
+        if output.get("transition") == "submit_synthesis":
+            output["transition"] = "submit_reflection_artifacts"
+        if output.get("leads_to") == "synthesis_review":
+            output["leads_to"] = "reflection_review"
+        text_fields = ("requires", "description")
+        for field in text_fields:
+            if isinstance(output.get(field), str):
+                output[field] = output[field].replace(
+                    "synthesis_reviewer",
+                    "reflection_reviewer",
+                ).replace(
+                    "submit_synthesis",
+                    "submit_reflection_artifacts",
+                )
+        return output
+
+    def current_project(self) -> dict[str, Any]:
+        """Project identity plus the small orientation block every agent sees.
+
+        The base shape stays compatible (`exists`, `project`, `hint`). When a
+        project exists, `at_a_glance` points to the latest reflection artifacts
+        and names what project work is newer than that reflection.
+        """
+        current = self.projects.current()
+        if not current.get("exists"):
+            return current
+        project = current.get("project") or {}
+        project_id = str(project.get("id") or "")
+        if not project_id:
+            return current
+        return {
+            **current,
+            "at_a_glance": self._project_at_a_glance(project_id=project_id),
+        }
+
+    def _project_at_a_glance(self, *, project_id: str) -> dict[str, Any]:
+        conn = self.store.connect()
+        try:
+            latest = self.syntheses.latest_published(conn=conn, project_id=project_id)
+            open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
+            experiments = rows_to_dicts(
+                rows=conn.execute(
+                    """
+                    SELECT id, name, intent, status, attempt_index, created_at, updated_at
+                    FROM experiments
+                    WHERE project_id = ?
+                    ORDER BY created_at
+                    """,
+                    (project_id,),
+                ).fetchall()
+            )
+            recent_claims = rows_to_dicts(
+                rows=conn.execute(
+                    """
+                    SELECT c.id, c.statement, c.status, c.confidence
+                    FROM claims c
+                    LEFT JOIN events e
+                      ON e.project_id = c.project_id
+                     AND e.target_type = 'claim'
+                     AND e.target_id = c.id
+                     AND e.type IN ('claim.created', 'claim.updated')
+                    WHERE c.project_id = ?
+                    GROUP BY c.id
+                    ORDER BY COALESCE(MAX(e.created_at), c.created_at) DESC, c.created_at DESC
+                    LIMIT 5
+                    """,
+                    (project_id,),
+                ).fetchall()
+            )
+            claim_events: list[dict[str, Any]] = []
+            if latest is not None:
+                publish_event = conn.execute(
+                    """
+                    SELECT id FROM events
+                    WHERE project_id = ? AND type = 'synthesis.transitioned'
+                      AND target_type = 'synthesis' AND target_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (project_id, latest.get("id")),
+                ).fetchone()
+                if publish_event is not None:
+                    claim_events = rows_to_dicts(
+                        rows=conn.execute(
+                            """
+                            SELECT id, type, target_id, payload_json, created_at
+                            FROM events
+                            WHERE project_id = ? AND target_type = 'claim'
+                              AND type IN ('claim.created', 'claim.updated')
+                              AND id > ?
+                            ORDER BY id
+                            """,
+                            (project_id, publish_event["id"]),
+                        ).fetchall()
+                    )
+                elif latest.get("published_at"):
+                    claim_events = rows_to_dicts(
+                        rows=conn.execute(
+                            """
+                            SELECT id, type, target_id, payload_json, created_at
+                            FROM events
+                            WHERE project_id = ? AND target_type = 'claim'
+                              AND type IN ('claim.created', 'claim.updated')
+                              AND created_at >= ?
+                            ORDER BY id
+                            """,
+                            (project_id, latest.get("published_at")),
+                        ).fetchall()
+                    )
+        finally:
+            conn.close()
+
+        terminal_statuses = set(EXPERIMENT_TERMINAL_STATUSES)
+        terminal_experiments = [
+            exp for exp in experiments if str(exp.get("status")) in terminal_statuses
+        ]
+        active_experiments = [
+            exp for exp in experiments if str(exp.get("status")) not in terminal_statuses
+        ]
+        corpus = (latest or {}).get("corpus") or {}
+        covered_ids = {
+            str(exp.get("id"))
+            for exp in corpus.get("terminal_experiments", [])
+        }
+        experiments_since_reflection = [
+            exp for exp in terminal_experiments if str(exp.get("id")) not in covered_ids
+        ]
+        changed_claim_ids = [
+            str(event.get("target_id"))
+            for event in claim_events
+            if event.get("target_id")
+            and self._event_payload(event).get("source_synthesis_id") != (latest or {}).get("id")
+        ]
+        seen_claim_ids: set[str] = set()
+        changed_claim_ids = [
+            claim_id
+            for claim_id in changed_claim_ids
+            if not (claim_id in seen_claim_ids or seen_claim_ids.add(claim_id))
+        ]
+
+        project_reflection = None
+        if latest is not None:
+            graph = self._resource_link_for_role(
+                synthesis=latest,
+                roles=PROJECT_GRAPH_ROLES,
+                label="Current project graph",
+                canonical_role="project_graph",
+            )
+            reflection_doc = self._resource_link_for_role(
+                synthesis=latest,
+                roles=("reflection_doc", "synthesis_doc"),
+                label="Latest reflection doc",
+                canonical_role="reflection_doc",
+            )
+            project_reflection = {
+                "reflection_id": latest.get("id"),
+                "time": latest.get("published_at"),
+                "reflection_doc_resource_id": (
+                    reflection_doc.get("resource_id") if reflection_doc else None
+                ),
+                "project_graph_resource_id": graph.get("resource_id") if graph else None,
+            }
+
+        covered_count = len(
+            covered_ids & {str(exp.get("id")) for exp in terminal_experiments}
+        )
+        return {
+            "summary": self._at_a_glance_summary(
+                latest=latest,
+                terminal_count=len(terminal_experiments),
+                covered_count=covered_count,
+                experiments_since=len(experiments_since_reflection),
+                claims_changed=len(changed_claim_ids),
+            ),
+            "recent": {
+                "experiments": [
+                    {
+                        "id": exp.get("id"),
+                        "name": exp.get("name"),
+                        "status": exp.get("status"),
+                    }
+                    for exp in sorted(
+                        experiments,
+                        key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+                        reverse=True,
+                    )[:5]
+                ],
+                "claims": [
+                    {
+                        "id": claim.get("id"),
+                        "status": claim.get("status"),
+                        "confidence": claim.get("confidence"),
+                        "statement": claim.get("statement"),
+                    }
+                    for claim in recent_claims
+                ],
+            },
+            "project_reflection": project_reflection,
+            "since_reflection": {
+                "finished_experiment_ids": [
+                    str(exp.get("id")) for exp in experiments_since_reflection
+                ],
+                "changed_claim_ids": changed_claim_ids,
+                "active_experiment_ids": [
+                    str(exp.get("id")) for exp in active_experiments
+                ],
+            },
+            "open_reflection_id": open_wave.get("id") if open_wave else None,
+        }
+
+    def _event_payload(self, event: dict[str, Any]) -> dict[str, Any]:
+        raw = event.get("payload_json")
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _resource_link_for_role(
+        self,
+        *,
+        synthesis: dict[str, Any],
+        roles: tuple[str, ...],
+        label: str,
+        canonical_role: str,
+    ) -> dict[str, Any] | None:
+        attempt = synthesis.get("attempt_index")
+        candidates = [
+            res
+            for res in synthesis.get("resources", [])
+            if res.get("association_role") in roles
+            and res.get("association_attempt_index") == attempt
+        ]
+        if not candidates:
+            return None
+        role_rank = {role: index for index, role in enumerate(roles)}
+        res = min(
+            candidates,
+            key=lambda item: (
+                role_rank.get(str(item.get("association_role")), len(roles)),
+                -(item.get("association_rowid") or 0),
+            ),
+        )
+        return {
+            "label": label,
+            "kind": "resource",
+            "role": canonical_role,
+            "legacy_role": (
+                res.get("association_role")
+                if res.get("association_role") != canonical_role
+                else None
+            ),
+            "resource_id": res.get("id"),
+            "path": res.get("path"),
+            "version_id": res.get("association_version_id"),
+            "read_with": "resource.resolve",
+            "read_args": {"resource_id": res.get("id"), "include_history": True},
+        }
+
+    def _at_a_glance_summary(
+        self,
+        *,
+        latest: dict[str, Any] | None,
+        terminal_count: int,
+        covered_count: int,
+        experiments_since: int,
+        claims_changed: int,
+    ) -> str:
+        if latest is None:
+            summary = (
+                f"No published reflection; 0/{terminal_count} finished "
+                f"experiments covered; {terminal_count} finished experiments since."
+            )
+            if terminal_count >= 3:
+                summary += " New reflection recommended."
+            return summary
+        pieces = [f"Latest reflection covers {covered_count}/{terminal_count} finished experiments"]
+        if experiments_since:
+            pieces.append(f"{experiments_since} finished experiments since")
+        if claims_changed:
+            pieces.append(f"{claims_changed} claims changed since")
+        if len(pieces) == 1:
+            pieces.append("no newer experiment or claim changes detected")
+        summary = "; ".join(pieces) + "."
+        if experiments_since >= 3:
+            summary += " New reflection recommended."
+        return summary
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [

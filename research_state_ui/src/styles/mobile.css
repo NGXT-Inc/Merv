@@ -211,6 +211,17 @@ html[data-surface="mobile"] .page-stage {
 html[data-surface="mobile"] .page-title { font-size: var(--text-xl); }
 html[data-surface="mobile"] .page-header { margin-bottom: 14px; }
 
+/* The persistent top bar already names the project and the sole-context <h1>
+   says where you are; the desktop explainer paragraph (.page-summary) is pure
+   vertical noise on a compact phone. Drop it, and flatten the oversized --lg
+   header rhythm to the mobile base. Desktop keeps both. */
+html[data-surface="mobile"] .page-summary { display: none; }
+html[data-surface="mobile"] .page-header--lg {
+  margin-bottom: 14px;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
 /* Comfortable touch targets — scoped to the mobile surface only. */
 html[data-surface="mobile"] .btn { min-height: 38px; padding: 6px 14px; }
 html[data-surface="mobile"] .btn--sm { min-height: 34px; padding: 4px 12px; }
@@ -853,6 +864,19 @@ html[data-surface="mobile"] .act-tool .mono { white-space: normal; overflow-wrap
 html[data-surface="mobile"] .dbg-table { -webkit-overflow-scrolling: touch; }
 html[data-surface="mobile"] .dbg-detail { -webkit-overflow-scrolling: touch; }
 
+/* Forensics control bar (Debug): the dense horizontal row of segmented
+   controls + search inputs wraps into tiny-target rows on a phone. Stack it
+   and let inputs fill the width. */
+html[data-surface="mobile"] .dbg-controls { flex-direction: column; align-items: stretch; gap: 10px; }
+html[data-surface="mobile"] .dbg-search { width: 100%; }
+html[data-surface="mobile"] .dbg-search-input { width: 100%; }
+html[data-surface="mobile"] .dbg-seg-btn { min-height: 34px; }
+
+/* Self-evident interaction hints in section heads ("click a row to filter…",
+   "newest first · click to inspect I/O") wrap to 2–3 lines on a phone; desktop
+   keeps them for power-user scanning. */
+html[data-surface="mobile"] .dbg-hint { display: none; }
+
 /* Claim confidence dots + linked-test marks (MobileClaims). */
 html[data-surface="mobile"] .mconf { display: inline-flex; gap: 3px; align-items: center; }
 html[data-surface="mobile"] .mconf-dot {
@@ -887,6 +911,207 @@ html[data-surface="mobile"] button.mcard {
   cursor: pointer;
 }
 html[data-surface="mobile"] button.mcard:disabled { cursor: default; opacity: 0.85; }
+
+/* =====================================================================
+   PROJECT SYNTHESIS SCREEN (/synthesis) — the reflection wave on a phone.
+   One scrollable column: graph → reflection doc → lens reflections →
+   quiet change-spec/review → a muted history strip. Mirrors the desktop
+   attention order; tuned for touch, low-noise. (§4.2)
+   ===================================================================== */
+
+html[data-surface="mobile"] .msyn-head { margin-bottom: 14px; }
+
+/* Tighter section rhythm than the global 56px — five stacked sections on a
+   phone read as mostly empty otherwise. Scoped to this screen only. */
+html[data-surface="mobile"] .msyn .section { margin-bottom: 24px; }
+
+/* Small section labels — quieter than the single page title. */
+html[data-surface="mobile"] .msyn-eyebrow {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+html[data-surface="mobile"] .msyn-eyebrow--muted { color: var(--faint); }
+html[data-surface="mobile"] .msyn-eyebrow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+html[data-surface="mobile"] .msyn-eyebrow-row .msyn-eyebrow { margin-bottom: 8px; }
+
+/* "Viewing an earlier wave" banner — slim, informational. */
+html[data-surface="mobile"] .msyn-histbanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--qualifies);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+html[data-surface="mobile"] .msyn-histback {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--active);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: var(--font-body);
+  padding: 4px 2px;
+}
+
+/* Reflection document — let images/tables behave inside the column. */
+html[data-surface="mobile"] .msyn-doc .markdown-body img,
+html[data-surface="mobile"] .msyn-lens-body .markdown-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+}
+/* The doc's self-title H1 is stripped (the eyebrow labels the section), so the
+   first real heading sits flush under the eyebrow instead of after a big gap. */
+html[data-surface="mobile"] .msyn-doc .markdown-body > :first-child { margin-top: 0; }
+
+/* ── Lens reflections: tap-to-expand accordion cards ───────────────── */
+html[data-surface="mobile"] .msyn-lenses {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+html[data-surface="mobile"] .msyn-lens {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+html[data-surface="mobile"] .msyn-lens.is-open { border-color: var(--line-strong); }
+html[data-surface="mobile"] .msyn-lens-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 11px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  color: var(--text);
+  font-family: var(--font-body);
+}
+html[data-surface="mobile"] .msyn-lens-head:active:not(:disabled) { background: var(--hover); }
+html[data-surface="mobile"] .msyn-lens-head:disabled { cursor: default; }
+html[data-surface="mobile"] .msyn-lens-cover {
+  flex-shrink: 0;
+  margin-top: 1px;
+  width: 18px;
+  font-size: var(--text-sm);
+  color: var(--faint);
+  text-align: center;
+}
+html[data-surface="mobile"] .msyn-lens-cover.is-on { color: var(--supports); }
+html[data-surface="mobile"] .msyn-lens-main { flex: 1; min-width: 0; }
+html[data-surface="mobile"] .msyn-lens-title {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* Gentle tint marks the canonical core lenses (no badge); matches desktop. */
+html[data-surface="mobile"] .msyn-lens-title--core { color: color-mix(in srgb, var(--mcp) 42%, var(--text)); }
+html[data-surface="mobile"] .msyn-lens-charter {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+html[data-surface="mobile"] .msyn-lens.is-open .msyn-lens-charter {
+  -webkit-line-clamp: none;
+}
+html[data-surface="mobile"] .msyn-lens-chev {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--faint);
+  font-size: var(--text-xs);
+}
+html[data-surface="mobile"] .msyn-lens-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+html[data-surface="mobile"] .msyn-lens-pending {
+  padding: 0 12px 11px 40px;
+  margin-top: -4px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+/* ── Quiet disclosures (change spec, review) ───────────────────────── */
+html[data-surface="mobile"] .msyn-disc { border-top: 1px solid var(--line-soft); }
+html[data-surface="mobile"] .msyn-disc:first-child { border-top: none; }
+html[data-surface="mobile"] .msyn-disc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 2px;
+  border: none;
+  background: none;
+  text-align: left;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+html[data-surface="mobile"] .msyn-disc-head:active { background: var(--hover); }
+html[data-surface="mobile"] .msyn-disc-chev { color: var(--faint); font-size: var(--text-xs); }
+html[data-surface="mobile"] .msyn-disc-body {
+  padding: 2px 2px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* ── Muted history strip: horizontal wave chips ────────────────────── */
+html[data-surface="mobile"] .msyn-history { opacity: 0.96; }
+html[data-surface="mobile"] .msyn-waves { margin-bottom: 0; }
+html[data-surface="mobile"] .msyn-wave {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 46px;
+  padding: 6px 12px;
+}
+html[data-surface="mobile"] .msyn-wave--faded { opacity: 0.55; }
+html[data-surface="mobile"] .msyn-wave-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+html[data-surface="mobile"] .msyn-wave { position: relative; padding-right: 22px; }
+html[data-surface="mobile"] .msyn-wave-label { font-weight: 600; color: var(--text); }
+html[data-surface="mobile"] .msyn-wave.active .msyn-wave-label { color: var(--active); }
+html[data-surface="mobile"] .msyn-wave-meta {
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+html[data-surface="mobile"] .msyn-revision {
+  margin-top: 10px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
 
 /* ── Now-screen counts strip ───────────────────────────────────────── */
 html[data-surface="mobile"] .mcounts {

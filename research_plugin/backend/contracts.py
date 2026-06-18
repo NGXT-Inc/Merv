@@ -52,8 +52,9 @@ class WorkflowStatusAndNextInput(ProjectScopedInput):
 class ProjectCreateInput(ContractModel):
     name: str = Field(
         description=(
-            "User-confirmed project name. Do not infer a placeholder from the "
-            "folder name unless the user explicitly asked for that."
+            "User-confirmed project name, at least 3 characters. Do not infer "
+            "a placeholder from the folder name unless the user explicitly "
+            "asked for that."
         )
     )
     summary: str = Field(
@@ -63,7 +64,10 @@ class ProjectCreateInput(ContractModel):
 
 
 class ProjectUpdateInput(ProjectScopedInput):
-    name: str | None = None
+    name: str | None = Field(
+        default=None,
+        description="New project name, at least 3 characters when provided.",
+    )
     summary: str | None = None
 
 
@@ -92,7 +96,7 @@ class ClaimUpdateInput(ProjectScopedInput):
 
 
 class ExperimentCreateInput(ProjectScopedInput):
-    name: str = Field(default="", description="REQUIRED. Short folder-safe name, unique within the project — it becomes the experiment folder experiments/<name>/. Letters, digits, '.', '_', '-' only; max 48 characters. The project supplies the shared context, so name the contrast: lead with what distinguishes this experiment from its siblings and do not repeat the project topic (next to 'released_adapters', prefer 'scratch_training' over 'lora_glue_scratch').")
+    name: str = Field(default="", description="REQUIRED. Short folder-safe name, unique within the project — it becomes the experiment folder experiments/<name>/. Letters, digits, '.', '_', '-' only; 3-48 characters. The project supplies the shared context, so name the contrast: lead with what distinguishes this experiment from its siblings and do not repeat the project topic (next to 'released_adapters', prefer 'scratch_training' over 'lora_glue_scratch').")
     intent: str = Field(default="", description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.")
     tested_claim_ids: list[str] | str | None = Field(default_factory=list)
     claim_id: str | None = Field(default=None, description="Alias for a single tested claim id.")
@@ -127,7 +131,7 @@ class ExperimentTransitionInput(ProjectScopedInput):
     evidence: dict[str, Any] | None = None
 
 
-class SynthesisLensInput(ContractModel):
+class ReflectionLensInput(ContractModel):
     id: str = Field(
         description=(
             "Lens id slug (lowercase letters/digits/'_'/'-'). It doubles as the "
@@ -139,7 +143,7 @@ class SynthesisLensInput(ContractModel):
         default="",
         description=(
             "What angle this lens reads the project from. The core lenses "
-            "(outcomes, dead_ends, coverage) default their charter; the two "
+            "(amplify, avoid, entropy) default their charter; the two "
             "wave-authored lenses must supply one."
         ),
     )
@@ -153,15 +157,15 @@ class SynthesisLensInput(ContractModel):
     )
 
 
-class SynthesisCreateInput(ProjectScopedInput):
+class ReflectionCreateInput(ProjectScopedInput):
     title: str = Field(
         default="", description="Optional short headline for this reflection wave."
     )
-    lenses: list[SynthesisLensInput] = Field(
+    lenses: list[ReflectionLensInput] = Field(
         default_factory=list,
         description=(
             "The declared reflection roster: exactly 5 lenses — the 3 core ids "
-            "(outcomes, dead_ends, coverage) plus 2 you design for this "
+            "(amplify, avoid, entropy) plus 2 you design for this "
             "project, each with a charter and why_distinct. The roster is "
             "fixed at create; every lens must submit its own reflection before "
             "submit_reflections."
@@ -169,19 +173,19 @@ class SynthesisCreateInput(ProjectScopedInput):
     )
 
 
-class SynthesisGetInput(ProjectScopedInput):
-    synthesis_id: str
+class ReflectionGetInput(ProjectScopedInput):
+    reflection_id: str
 
 
-class SynthesisListInput(ProjectScopedInput):
+class ReflectionListInput(ProjectScopedInput):
     pass
 
 
-class SynthesisTransitionInput(ProjectScopedInput):
-    synthesis_id: str
+class ReflectionTransitionInput(ProjectScopedInput):
+    reflection_id: str
     transition: Literal[
         "submit_reflections",
-        "submit_synthesis",
+        "submit_reflection_artifacts",
         "publish",
         "abandon",
     ]
@@ -257,12 +261,12 @@ class ResourceResolveInput(ProjectScopedInput):
 
 
 class ReviewRequestInput(ProjectScopedInput):
-    target_type: Literal["experiment", "synthesis"]
+    target_type: Literal["experiment", "reflection"]
     target_id: str
     role: Literal[
         "design_reviewer",
         "experiment_reviewer",
-        "synthesis_reviewer",
+        "reflection_reviewer",
         "human",
         "automated_check",
     ]
@@ -291,8 +295,8 @@ class ReviewSubmitInput(ContractModel):
             "return to 'planned'. REQUIRED on project-reflection-review rejections: "
             "'reflecting' to re-launch the reflection fan-out (every lens "
             "re-submits for the new attempt), or 'synthesizing' if the "
-            "reflections stand but the synthesis (project graph and/or "
-            "proposals) must be revised."
+            "reflections stand but the reflection artifacts (project graph, "
+            "reflection doc, and/or change spec) must be revised."
         ),
     )
     notes: str = Field(default="", description="Free-text summary of the review.")
@@ -315,7 +319,7 @@ class ReviewSubmitInput(ContractModel):
 
 
 class ReviewStatusInput(ProjectScopedInput):
-    target_type: str
+    target_type: Literal["experiment", "reflection"]
     target_id: str
 
 
@@ -432,7 +436,13 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     ),
     "project.current": ToolContract(
         input_model=EmptyInput,
-        description="Get the current folder's project, or report that none exists yet.",
+        description=(
+            "Get the current folder's project, or report that none exists yet. "
+            "When a project exists, includes a compact at_a_glance block: "
+            "reflection age summary, recent experiments/claims, latest "
+            "reflection/project graph resource ids, ids changed since "
+            "reflection, and open reflection id."
+        ),
     ),
     "project.list": ToolContract(
         input_model=EmptyInput,
@@ -478,36 +488,38 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "and their preconditions from the current status."
         ),
     ),
-    "synthesis.create": ToolContract(
-        input_model=SynthesisCreateInput,
+    "reflection.create": ToolContract(
+        input_model=ReflectionCreateInput,
         description=(
-            "Open a project reflection wave (a gated synthesis record). "
-            "Declares the 5-lens reflection roster (3 core: outcomes, "
-            "dead_ends, coverage; plus 2 you design with charter + "
+            "Open a project reflection wave. "
+            "Declares the 5-lens reflection roster (3 core: amplify, "
+            "avoid, entropy; plus 2 you design with charter + "
             "why_distinct) and snapshots the corpus of finished experiments "
             "the wave covers. One wave may be open at a time. See the "
             "project-reflection skill."
         ),
     ),
-    "synthesis.get": ToolContract(
-        input_model=SynthesisGetInput,
+    "reflection.get": ToolContract(
+        input_model=ReflectionGetInput,
         description=(
-            "Get one synthesis (reflection wave) state: roster, per-lens "
+            "Get one reflection wave state: roster, per-lens "
             "reflection coverage, current-attempt resources, reviews, and "
             "allowed_transitions with preconditions."
         ),
     ),
-    "synthesis.list": ToolContract(
-        input_model=SynthesisListInput,
-        description="List the project's syntheses (reflection waves) with state.",
+    "reflection.list": ToolContract(
+        input_model=ReflectionListInput,
+        description="List the project's reflection waves with state.",
     ),
-    "synthesis.transition": ToolContract(
-        input_model=SynthesisTransitionInput,
+    "reflection.transition": ToolContract(
+        input_model=ReflectionTransitionInput,
         description=(
-            "Apply an allowed synthesis transition (submit_reflections, "
-            "submit_synthesis, publish, abandon). See "
-            "synthesis.get.allowed_transitions for preconditions from the "
-            "current status."
+            "Apply an allowed reflection transition (submit_reflections, "
+            "submit_reflection_artifacts, publish, abandon). See "
+            "reflection.get.allowed_transitions for preconditions from the "
+            "current status. On publish, after the reflection reviewer has "
+            "passed, the reviewed change spec applies claim changes and "
+            "either stops the project or creates the approved experiment wave."
         ),
     ),
     "resource.register_file": ToolContract(
@@ -522,9 +534,10 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=ResourceAssociateInput,
         description=(
             "Associate a resource to a claim, experiment, review, or attempt. "
-            "Gated-role artifacts (plan, report, graph, proposals, reflection) "
-            "are size-capped at associate time (16KB each) — "
-            "keep them lean and reference raw data instead of inlining it."
+            "Gated-role artifacts (plan, report, graph, project_graph, "
+            "reflection_doc, reflection_lens_doc, change_spec) are "
+            "size-capped at associate time — keep them lean and reference raw "
+            "data instead of inlining it."
         ),
         plane="data",
     ),

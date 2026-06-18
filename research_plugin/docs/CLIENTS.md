@@ -35,7 +35,7 @@ Shared invariants across all clients:
 
 The daemon's `workflow.status_and_next` returns a client-neutral
 `launch_design_reviewer` / `launch_experiment_reviewer` /
-`launch_synthesis_reviewer` action plus a `reviewer_capability`. What differs
+`launch_reflection_reviewer` action plus a `reviewer_capability`. What differs
 per client is only how the separate read-only reviewer agent is spawned:
 
 - **Claude Code**: Agent tool with `subagent_type` set to

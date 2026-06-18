@@ -13,7 +13,10 @@
 export const FIG_NODE_W = 196;
 const FIG_NODE_H = 66;
 const GAP_X = 72;
-const GAP_Y = 20;
+// Generous vertical separation between stacked/branching nodes: tight rows make
+// the diagonal edges hard to follow, so give them room (the readable-fit view
+// uses the extra height the graph would otherwise leave empty).
+const GAP_Y = 80;
 
 // Vertical order within a column: inputs above the spine, verdicts/outputs below.
 const TYPE_ORDER = { resource: 0, resource_group: 1, attempt: 2, sandbox: 3, review: 4, conclusion: 5, claim: 6 };
