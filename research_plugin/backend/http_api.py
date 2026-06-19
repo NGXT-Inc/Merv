@@ -44,18 +44,6 @@ from .state import monotonic_ms
 from .state.activity import effective_source, is_event_ok
 
 
-def _control_mode() -> bool:
-    """True when running as the cloud control plane (no local checkout).
-
-    Degraded-state shaping (cloud plan Phase 9) keys off this: the control
-    plane has no disk to read result-role files or un-submitted figures from,
-    so those reads return a documented "unavailable" shape instead of a 500.
-    """
-    from .config import resolve_auth_required
-
-    return resolve_auth_required()
-
-
 JsonBody = dict[str, Any] | None
 
 
@@ -416,7 +404,7 @@ class ResearchHttpApi:
         # stay metadata-only (fixed decision 6): return a clean, documented
         # degraded shape rather than a 500/404 so the UI can render an explicit
         # "content unavailable in this mode" state (open decision F).
-        if _control_mode():
+        if not self.expose_local_data_plane:
             return {
                 "resource": resource,
                 "path": resource.get("path"),
@@ -586,7 +574,7 @@ class ResearchHttpApi:
                 }
             # Not a submitted figure: in control mode there is no checkout to
             # read the live link from. Surface the documented degraded shape.
-            if _control_mode():
+            if not self.expose_local_data_plane:
                 raise ContentUnavailableError(
                     "figure bytes are unavailable in this mode",
                     details={"rel": rel, "reason": "content_unavailable_in_this_mode"},
@@ -599,7 +587,7 @@ class ResearchHttpApi:
                 raise ValidationError("relative file path escapes repo root") from exc
             if not path.is_file():
                 raise NotFoundError(f"file not found next to resource: {rel}")
-        elif _control_mode():
+        elif not self.expose_local_data_plane:
             raise ContentUnavailableError(
                 "file bytes are unavailable in this mode",
                 details={"reason": "content_unavailable_in_this_mode"},

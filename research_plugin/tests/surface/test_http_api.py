@@ -9,9 +9,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from backend.app import ResearchPluginApp
-from backend.http_api import create_fastapi_app
+from backend.http_api import ResearchHttpApi, create_fastapi_app
 from backend.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.utils import ContentUnavailableError
 from mcp_server.time_utils import now_iso
 from tests.fakes import FakeRsyncSyncer
 
@@ -1149,11 +1150,11 @@ class DegradedStatesTest(unittest.TestCase):
 
     def test_result_content_degrades_in_control_mode(self) -> None:
         pid, rid = self._result_resource()
-        # ...but in control mode there is no checkout to read it from.
-        with patch("backend.http_api._control_mode", return_value=True):
-            resp = self.client.get(f"/api/projects/{pid}/resources/{rid}/content")
-        self.assertEqual(resp.status_code, 200, resp.text)
-        body = resp.json()
+        # ...but a hosted/control HTTP presentation has no local data plane to
+        # read it from.
+        body = ResearchHttpApi(
+            app=self.app, expose_local_data_plane=False
+        ).resource_content(project_id=pid, resource_id=rid)
         self.assertFalse(body["available"])
         self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
         self.assertIsNone(body["content"])
@@ -1168,13 +1169,11 @@ class DegradedStatesTest(unittest.TestCase):
 
     def test_figure_file_degrades_in_control_mode(self) -> None:
         pid, rid = self._result_resource()
-        with patch("backend.http_api._control_mode", return_value=True):
-            resp = self.client.get(
-                f"/api/projects/{pid}/resources/{rid}/file", params={"rel": "fig.png"}
+        with self.assertRaises(ContentUnavailableError) as ctx:
+            ResearchHttpApi(app=self.app, expose_local_data_plane=False).resource_file(
+                project_id=pid, resource_id=rid, rel="fig.png"
             )
-        self.assertEqual(resp.status_code, 404)
-        body = resp.json()
-        self.assertEqual(body["error_code"], "content_unavailable")
+        self.assertEqual(ctx.exception.error_code, "content_unavailable")
 
 
 if __name__ == "__main__":

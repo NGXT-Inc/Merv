@@ -541,6 +541,40 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertEqual(body["error_code"], "data_plane_required")
         self.assertEqual(body["tool"], "resource.register_file")
 
+    def test_hosted_resource_content_does_not_read_local_checkout(self) -> None:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        project = self.client.post(
+            "/api/projects", json={"name": "Hosted Content"}, headers=headers
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        (self.repo / "results.json").write_text('{"acc": 0.9}', encoding="utf-8")
+        resource = self.app.call_tool(
+            name="resource.register_file",
+            arguments={
+                "project_id": project_id,
+                "path": "results.json",
+                "kind": "result",
+            },
+        )
+
+        content = self.client.get(
+            f"/api/projects/{project_id}/resources/{resource['id']}/content",
+            headers=headers,
+        )
+        self.assertEqual(content.status_code, 200, content.text)
+        body = content.json()
+        self.assertFalse(body["available"])
+        self.assertEqual(body["source"], "unavailable")
+        self.assertIsNone(body["content"])
+
+        file_resp = self.client.get(
+            f"/api/projects/{project_id}/resources/{resource['id']}/file",
+            headers=headers,
+        )
+        self.assertEqual(file_resp.status_code, 404, file_resp.text)
+        self.assertEqual(file_resp.json()["error_code"], "content_unavailable")
+
     def test_hosted_release_skips_final_pull(self) -> None:
         headers = {"Authorization": f"Bearer {self.token}"}
         project = self.client.post(
