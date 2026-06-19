@@ -575,6 +575,14 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertEqual(file_resp.status_code, 404, file_resp.text)
         self.assertEqual(file_resp.json()["error_code"], "content_unavailable")
 
+        rel_resp = self.client.get(
+            f"/api/projects/{project_id}/resources/{resource['id']}/file",
+            params={"rel": "fig.png"},
+            headers=headers,
+        )
+        self.assertEqual(rel_resp.status_code, 404, rel_resp.text)
+        self.assertEqual(rel_resp.json()["error_code"], "content_unavailable")
+
     def test_hosted_release_skips_final_pull(self) -> None:
         headers = {"Authorization": f"Bearer {self.token}"}
         project = self.client.post(
