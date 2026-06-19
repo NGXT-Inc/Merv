@@ -43,7 +43,7 @@ from backend.config import build_state_store, resolve_db_url
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.metrics_records import MetricsSnapshotStore
 from backend.state.dialects import PostgresStateStore, translate_schema_to_postgres
-from backend.state.store import SCHEMA, StateStore, next_created_seq
+from backend.state.store import MIGRATIONS, SCHEMA, StateStore, next_created_seq
 from backend.utils import ValidationError, now_iso
 from tests.fakes import FakeRsyncSyncer
 from tests.surface.test_control_plane_contract import (
@@ -157,6 +157,20 @@ def _postgres_harness() -> ClientHarness:
     )
 
 
+def _schema_without_sandbox_tenant() -> str:
+    legacy = re.sub(
+        r"(CREATE TABLE IF NOT EXISTS sandboxes \(\n"
+        r"\s*experiment_id TEXT PRIMARY KEY,\n"
+        r"\s*project_id TEXT NOT NULL,\n)"
+        r"\s*tenant_id TEXT NOT NULL DEFAULT 'local',\n",
+        r"\1",
+        SCHEMA,
+    )
+    if legacy == SCHEMA:
+        raise AssertionError("failed to remove sandboxes.tenant_id from legacy schema")
+    return legacy
+
+
 @unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
 class PostgresControlPlaneContractTest(
     ControlPlaneContractScenarios, unittest.TestCase
@@ -198,7 +212,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             ).fetchall()
             self.assertEqual(
                 [(int(r["version"]), str(r["name"])) for r in ledger],
-                [(1, "drop_legacy_jobs_table")],
+                [(version, name) for version, name, _statement in MIGRATIONS],
             )
             # No default-project bootstrap: that is local-mode-only behavior.
             count = conn.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
@@ -217,6 +231,65 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
             self.assertEqual(row["tenant_id"], "local")
+        finally:
+            conn.close()
+
+    def test_legacy_postgres_store_adds_sandbox_tenant_id(self) -> None:
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_sandbox_tenant()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES (%s, %s, %s)
+                """,
+                (1, "drop_legacy_jobs_table", now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO projects (id, name, summary, tenant_id, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                ("proj_old", "Old", "", "tenant_pg", now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, status, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                ("exp_old", "proj_old", "failed", now_iso(), now_iso()),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            col = conn.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'sandboxes'
+                  AND column_name = 'tenant_id'
+                """
+            ).fetchone()
+            self.assertIsNotNone(col)
+            row = conn.execute(
+                "SELECT tenant_id FROM sandboxes WHERE experiment_id = ?",
+                ("exp_old",),
+            ).fetchone()
+            self.assertEqual(row["tenant_id"], "tenant_pg")
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
         finally:
             conn.close()
 

@@ -153,7 +153,7 @@ class HttpTaskQueue:
             task = self._in_flight.get(task_id)
         if task is None:
             return
-        if tenant_id and task.tenant_id and task.tenant_id != tenant_id:
+        if tenant_id and task.tenant_id != tenant_id:
             raise PermissionDeniedError(
                 "daemon task ack does not belong to this tenant",
                 details={"task_id": task_id},
@@ -183,7 +183,7 @@ class HttpTaskQueue:
 
     def _next_waiting_index(self, *, tenant_id: str) -> int | None:
         for index, task in enumerate(self._waiting):
-            if not tenant_id or not task.tenant_id or task.tenant_id == tenant_id:
+            if not tenant_id or task.tenant_id == tenant_id:
                 return index
         return None
 

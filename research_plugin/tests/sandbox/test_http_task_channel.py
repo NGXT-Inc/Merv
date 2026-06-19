@@ -20,7 +20,7 @@ from backend.dataplane.http_channel import (
     HttpTaskChannel,
     HttpTaskQueue,
 )
-from backend.utils import ValidationError
+from backend.utils import PermissionDeniedError, ValidationError
 
 
 class HttpTaskQueueRoundTripTest(unittest.TestCase):
@@ -90,6 +90,26 @@ class HttpTaskQueueRoundTripTest(unittest.TestCase):
     def test_poll_returns_none_on_timeout_with_no_tasks(self) -> None:
         queue = HttpTaskQueue()
         self.assertIsNone(queue.poll(wait_seconds=0.05))
+
+    def test_tenant_poll_does_not_claim_untenantized_tasks(self) -> None:
+        queue = HttpTaskQueue()
+        queue.enqueue(task_type="final_pull", payload={"session": {"experiment_id": "x"}})
+        self.assertIsNone(queue.poll(wait_seconds=0.05, tenant_id="tenant_a"))
+        task = queue.poll(wait_seconds=0.05)
+        self.assertIsNotNone(task)
+        self.assertEqual(task["type"], "final_pull")
+
+    def test_tenant_ack_rejects_untenantized_task(self) -> None:
+        queue = HttpTaskQueue()
+        queued = queue.enqueue(
+            task_type="final_pull",
+            payload={"session": {"experiment_id": "x"}},
+        )
+        task = queue.poll(wait_seconds=0.05)
+        self.assertEqual(task["id"], queued.id)
+        with self.assertRaises(PermissionDeniedError):
+            queue.ack(task_id=queued.id, ok=True, tenant_id="tenant_a")
+        queue.ack(task_id=queued.id, ok=True)
 
 
 if __name__ == "__main__":

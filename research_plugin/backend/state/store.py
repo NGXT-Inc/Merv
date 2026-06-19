@@ -450,6 +450,9 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # The defunct `jobs` table predates the sandbox model. Dropping it lived in
     # the every-boot SCHEMA constant; destructive DDL belongs in the ledger.
     (1, "drop_legacy_jobs_table", "DROP TABLE IF EXISTS jobs"),
+    # Existing hosted Postgres control stores predate sandboxes.tenant_id; fresh
+    # schemas have it, and this idempotent migration backfills existing rows.
+    (2, "add_sandbox_tenant_id", ""),
 )
 
 
@@ -536,11 +539,48 @@ class BaseStateStore:
         for version, name, statement in MIGRATIONS:
             if version in applied:
                 continue
-            conn.execute(statement)
+            if name == "add_sandbox_tenant_id":
+                self._ensure_sandbox_tenant_id(conn=conn)
+            else:
+                conn.execute(statement)
             conn.execute(
                 "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
                 (version, name, now_iso()),
             )
+
+    def _ensure_sandbox_tenant_id(self, *, conn: sqlite3.Connection) -> None:
+        if not self._has_column(conn=conn, table="sandboxes", column="tenant_id"):
+            conn.execute(
+                "ALTER TABLE sandboxes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'local'"
+            )
+        conn.execute(
+            """
+            UPDATE sandboxes
+            SET tenant_id = COALESCE(
+              (SELECT tenant_id FROM projects WHERE projects.id = sandboxes.project_id),
+              tenant_id,
+              'local'
+            )
+            WHERE project_id != ''
+            """
+        )
+
+    def _has_column(self, *, conn: sqlite3.Connection, table: str, column: str) -> bool:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            if rows:
+                return any(str(row["name"]) == column for row in rows)
+        except Exception:  # noqa: BLE001 - Postgres has no PRAGMA
+            pass
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
+            """,
+            (table, column),
+        ).fetchone()
+        return row is not None
 
     def require_project_id(
         self,

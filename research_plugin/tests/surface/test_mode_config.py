@@ -93,6 +93,7 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.auth = AuthService(store=self.app.store)
         self.token = self.auth.mint_token(tenant_id="acme")
+        self.other_token = self.auth.mint_token(tenant_id="other")
         self.daemon_token = self.auth.mint_token(
             tenant_id="acme", client_id="daemon", label="daemon"
         )
@@ -395,6 +396,44 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertEqual(resp.json()["error_code"], "data_plane_required")
+
+    def test_mcp_sandbox_get_is_tenant_scoped(self) -> None:
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Sandbox Tenant"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        self.app.sandboxes.registry.upsert(
+            experiment_id="exp_acme",
+            project_id=project_id,
+            status="failed",
+            sandbox_id="sbx_acme",
+            workdir="/workspace/experiments/acme",
+            sync_dir="/workspace/experiments/acme",
+        )
+
+        denied = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "sandbox.get",
+                "arguments": {"project_id": project_id, "experiment_id": "exp_acme"},
+            },
+            headers={"Authorization": f"Bearer {self.other_token}"},
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+        ok = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "sandbox.get",
+                "arguments": {"project_id": project_id, "experiment_id": "exp_acme"},
+            },
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(ok.json()["result"]["experiment_id"], "exp_acme")
 
 
 class SecretStoreCredentialsTest(unittest.TestCase):
