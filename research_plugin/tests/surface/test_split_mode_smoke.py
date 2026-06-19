@@ -309,16 +309,31 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
         cloud_fastapi = create_fastapi_app(app=self.cloud_app, auth=self.auth)
         self.cloud_client = TestClient(cloud_fastapi, raise_server_exceptions=False)
         self.cloud = _HttpServerThread(fastapi_app=cloud_fastapi)
+        self.links = ProjectLinks(db_path=root / "daemon" / "links.sqlite")
+
+        class _RouteDaemon:
+            loopback_secret = "auth-proxy-secret"
+            project_links = self.links
+
+            @staticmethod
+            def list_tools():
+                return []
+
+        self.daemon_loopback = _HttpServerThread(
+            fastapi_app=create_daemon_loopback_app(daemon=_RouteDaemon())
+        )
         self.proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
+                daemon_url=self.daemon_loopback.url,
                 control_url=self.cloud.url,
                 token=self.token,
+                daemon_secret="auth-proxy-secret",
             )
         )
 
     def tearDown(self) -> None:
+        self.daemon_loopback.stop()
         self.cloud.stop()
         self.cloud_app.shutdown()
         self.tmp.cleanup()
@@ -339,6 +354,7 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
 
     def test_authenticated_proxy_sends_project_id_not_repo_context(self) -> None:
         project = self._call("project.create", name="Auth Split")
+        self.links.link(repo_root=str(self.repo), project_id=project["id"])
         captured: list[dict] = []
         original = self.proxy._http_post
 
@@ -349,7 +365,7 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
 
         self.proxy._http_post = _recording_post
         try:
-            listed = self._call("claim.list", project_id=project["id"])
+            listed = self._call("claim.list")
         finally:
             self.proxy._http_post = original
 
