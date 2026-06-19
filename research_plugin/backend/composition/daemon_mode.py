@@ -40,6 +40,7 @@ from ..dataplane.project_links import ProjectLinks
 from ..dataplane.remote_view import HttpControlPlaneView
 from ..execution import build_sandbox_backend
 from ..services.artifacts import markdown_image_links, markdown_image_targets
+from ..services.feed import MAX_IMAGE_BYTES
 from ..services.permissions import GATED_ROLE_BYTE_CAPS
 from ..services.resources import ResourceService
 from ..services import sandbox_views
@@ -51,6 +52,7 @@ IMPLEMENTED_DATA_TOOL_NAMES = frozenset(
     {
         "resource.register_file",
         "resource.associate",
+        "feed.post",
         "sandbox.request",
         "sandbox.sync",
     }
@@ -162,6 +164,8 @@ class DaemonServer:
             return self._register_resource_files(arguments=arguments, context=context)
         if name == "resource.associate":
             return self._associate_resource(arguments=arguments, context=context)
+        if name == "feed.post":
+            return self._post_feed(arguments=arguments, context=context)
         if name == "sandbox.request":
             return self._request_sandbox(arguments=arguments, context=context)
         if name == "sandbox.sync":
@@ -207,6 +211,48 @@ class DaemonServer:
         payload["project_id"] = project_id
         payload["experiment_id"] = self._required_arg(arguments, "experiment_id")
         return self.control.sync_sandbox(payload)
+
+    def _post_feed(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root = self._repo_root_from_context(context=context)
+        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        payload: dict[str, Any] = {
+            "project_id": project_id,
+            "handle": self._required_arg(arguments, "handle"),
+            "text": self._required_arg(arguments, "text"),
+        }
+        for key in ("url", "ref"):
+            if arguments.get(key) is not None:
+                payload[key] = arguments.get(key)
+        image_path = str(arguments.get("image_path") or "")
+        if image_path:
+            payload["image"] = self._feed_image_payload(
+                repo_root=repo_root, image_path=image_path
+            )
+        return self.control.submit_feed_post(payload)
+
+    def _feed_image_payload(self, *, repo_root: Path, image_path: str) -> dict[str, Any]:
+        candidate = Path(image_path)
+        if not candidate.is_absolute():
+            candidate = repo_root / candidate
+        try:
+            candidate = candidate.resolve()
+        except OSError as exc:
+            raise ValidationError(f"could not read image: {image_path}") from exc
+        if not candidate.is_file():
+            raise ValidationError(f"image not found: {image_path}")
+        size = candidate.stat().st_size
+        if size > MAX_IMAGE_BYTES:
+            raise ValidationError(
+                f"image is {size} bytes; keep feed images under {MAX_IMAGE_BYTES}"
+            )
+        return {
+            # Keep cloud-bound metadata path-shaped only enough for image sniffing;
+            # never send repo_root or an absolute local filename upstream.
+            "path": candidate.name or "feed-image",
+            "data_b64": base64.b64encode(candidate.read_bytes()).decode("ascii"),
+        }
 
     def _sandbox_get_enrichment(
         self, *, arguments: dict[str, Any], context: dict[str, Any]

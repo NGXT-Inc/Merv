@@ -29,6 +29,7 @@ if uvicorn cannot bind.
 
 from __future__ import annotations
 
+import base64
 import tempfile
 import threading
 import time
@@ -71,6 +72,10 @@ VALID_GRAPH = (
     '{"id": "out", "kind": "outcome", "label": "Met at 0.72"}],'
     ' "edges": [{"from": "obj", "to": "out", "label": "confirmed by"}]}\n'
 )
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360000002000100ffff03000006000557bff8a40000000049454e44ae426082"
+)
 
 
 class _NoopLoop:
@@ -111,7 +116,40 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("sandbox.get", names)
         self.assertIn("sandbox.request", names)
         self.assertIn("sandbox.sync", names)
-        self.assertNotIn("feed.post", names)
+        self.assertIn("feed.post", names)
+
+    def test_feed_post_reads_image_locally_and_submits_bytes(self) -> None:
+        (self.repo / "plot.png").write_bytes(_PNG)
+
+        class _Control:
+            payload = None
+
+            def list_tools(self):
+                return []
+
+            def submit_feed_post(self, payload):
+                self.payload = payload
+                return {"post": {"id": "post_1", "has_image": True}}
+
+        control = _Control()
+        result = self._server(control).call_tool(
+            name="feed.post",
+            arguments={
+                "project_id": "proj_1",
+                "handle": "Nova-7",
+                "text": "plot",
+                "image_path": "plot.png",
+            },
+            context={"repo_root": str(self.repo)},
+        )
+        self.assertTrue(result["post"]["has_image"])
+        self.assertIsNotNone(control.payload)
+        self.assertEqual(control.payload["project_id"], "proj_1")
+        self.assertEqual(control.payload["image"]["path"], "plot.png")
+        self.assertEqual(
+            base64.b64decode(control.payload["image"]["data_b64"]), _PNG
+        )
+        self.assertNotIn(str(self.repo), str(control.payload))
 
     def test_invalid_association_intent_does_not_submit_local_bytes(self) -> None:
         (self.repo / "report.md").write_text(VALID_REPORT, encoding="utf-8")
@@ -387,6 +425,21 @@ class SplitModeSmokeTest(unittest.TestCase):
 
         claim = self._call("claim.create", project_id=project_id,
                            statement="A threshold rule beats the majority baseline.")
+        self._call("feed.register", project_id=project_id, handle="Nova-7")
+        (self.repo / "feed.png").write_bytes(_PNG)
+        feed_post = self._call(
+            "feed.post",
+            project_id=project_id,
+            handle="Nova-7",
+            text="Split feed image crossed the daemon.",
+            image_path="feed.png",
+        )
+        image_bytes, image_type = self.cloud_app.feed.get_image(
+            project_id=project_id, post_id=feed_post["post"]["id"]
+        )
+        self.assertEqual(image_bytes, _PNG)
+        self.assertEqual(image_type, "image/png")
+
         exp = self._call("experiment.create", project_id=project_id, name="smoke",
                          intent="Drive the loop across the split.",
                          tested_claim_ids=[claim["id"]])

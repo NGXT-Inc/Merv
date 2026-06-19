@@ -17,10 +17,11 @@ The surface is gated by a local daemon auth secret (risk 11): the daemon holds
 the cloud token and the user private keys, so a bare loopback bind is not
 enough. A unix-socket bind is the Phase 9 upgrade.
 
-The data-plane tool EXECUTION (register_file/associate reading bytes locally and
-submitting to the cloud record half; request/sync driving the worker) crosses
-the same loopback seam. The production daemon implementation owns local file
-and sandbox-worker duties; the hosted control plane owns the persisted records.
+The data-plane tool EXECUTION (register_file/associate/feed.post reading bytes
+locally and submitting to the cloud record half; request/sync driving the
+worker) crosses the same loopback seam. The production daemon implementation
+owns local file and sandbox-worker duties; the hosted control plane owns the
+persisted records.
 """
 
 from __future__ import annotations
@@ -36,7 +37,13 @@ from .control_client import ControlPlaneUnreachableError
 from .utils import ResearchPluginError, ValidationError
 
 IMPLEMENTED_LOOPBACK_DATA_TOOL_NAMES = frozenset(
-    {"resource.register_file", "resource.associate", "sandbox.request", "sandbox.sync"}
+    {
+        "resource.register_file",
+        "resource.associate",
+        "feed.post",
+        "sandbox.request",
+        "sandbox.sync",
+    }
 )
 
 

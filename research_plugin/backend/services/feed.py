@@ -208,22 +208,83 @@ class FeedService:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Write a post. ``handle`` must already be registered in this project."""
-        handle = _validate_handle(handle)
-        text = (text or "").strip()
-        if not text:
-            raise ValidationError("post text is required")
-        if len(text) > POST_TEXT_MAX:
-            raise ValidationError(
-                f"post text is {len(text)} chars; keep it under {POST_TEXT_MAX} "
-                "(brief, like old Twitter — this is not the place for an essay)"
-            )
-        ref = (ref or "").strip()
-        if ref and not ref.startswith(_KNOWN_REF_PREFIXES):
-            raise ValidationError(
-                "ref must point at a project entity "
-                f"({', '.join(p.rstrip('_') for p in _KNOWN_REF_PREFIXES)})"
-            )
+        return self._post(
+            handle=handle,
+            text=text,
+            image_path=image_path,
+            image_bytes=None,
+            url=url,
+            ref=ref,
+            project_id=project_id,
+        )
 
+    def post_observed(
+        self,
+        *,
+        handle: str,
+        text: str,
+        image_path: str | None = None,
+        image_bytes: bytes | None = None,
+        url: str | None = None,
+        ref: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Write a post from daemon-submitted local image bytes."""
+        return self._post(
+            handle=handle,
+            text=text,
+            image_path=image_path,
+            image_bytes=image_bytes,
+            url=url,
+            ref=ref,
+            project_id=project_id,
+        )
+
+    def validate_post_intent(
+        self,
+        *,
+        handle: str,
+        text: str,
+        ref: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate feed post metadata without reading/storing image bytes."""
+        handle, text, ref = self._validate_post_fields(
+            handle=handle, text=text, ref=ref
+        )
+        with self.store.transaction() as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            author = conn.execute(
+                "SELECT role FROM feed_authors WHERE project_id = ? AND handle = ?",
+                (project_id, handle),
+            ).fetchone()
+            if author is None:
+                raise ValidationError(
+                    f"handle '{handle}' is not registered; call feed.register first"
+                )
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "handle": handle,
+                "text": text,
+                "ref": ref,
+                "author_role": str(author["role"] or "main"),
+            }
+
+    def _post(
+        self,
+        *,
+        handle: str,
+        text: str,
+        image_path: str | None,
+        image_bytes: bytes | None,
+        url: str | None,
+        ref: str | None,
+        project_id: str | None,
+    ) -> dict[str, Any]:
+        handle, text, ref = self._validate_post_fields(
+            handle=handle, text=text, ref=ref
+        )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             author = conn.execute(
@@ -238,7 +299,13 @@ class FeedService:
 
             image_sha256 = ""
             image_content_type = ""
-            if image_path:
+            if image_bytes is not None:
+                image_sha256, image_content_type = self._capture_image_bytes(
+                    project_id=project_id,
+                    image_path=image_path or "feed-image",
+                    data=image_bytes,
+                )
+            elif image_path:
                 image_sha256, image_content_type = self._capture_image(
                     project_id=project_id, image_path=image_path
                 )
@@ -297,6 +364,26 @@ class FeedService:
             row = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
             return {"post": self._post_view(row_to_dict(row=row) or {})}
 
+    def _validate_post_fields(
+        self, *, handle: str, text: str, ref: str | None
+    ) -> tuple[str, str, str]:
+        handle = _validate_handle(handle)
+        text = (text or "").strip()
+        if not text:
+            raise ValidationError("post text is required")
+        if len(text) > POST_TEXT_MAX:
+            raise ValidationError(
+                f"post text is {len(text)} chars; keep it under {POST_TEXT_MAX} "
+                "(brief, like old Twitter — this is not the place for an essay)"
+            )
+        ref = (ref or "").strip()
+        if ref and not ref.startswith(_KNOWN_REF_PREFIXES):
+            raise ValidationError(
+                "ref must point at a project entity "
+                f"({', '.join(p.rstrip('_') for p in _KNOWN_REF_PREFIXES)})"
+            )
+        return handle, text, ref
+
     def _capture_image(self, *, project_id: str, image_path: str) -> tuple[str, str]:
         """Read a local image, store its bytes in the blob store, return (sha, type)."""
         candidate = Path(image_path)
@@ -314,6 +401,19 @@ class FeedService:
                 f"image is {size} bytes; keep feed images under {MAX_IMAGE_BYTES}"
             )
         data = candidate.read_bytes()
+        return self._capture_image_bytes(
+            project_id=project_id, image_path=image_path, data=data
+        )
+
+    def _capture_image_bytes(
+        self, *, project_id: str, image_path: str, data: bytes
+    ) -> tuple[str, str]:
+        """Store already-read image bytes, returning (sha, content_type)."""
+        if len(data) > MAX_IMAGE_BYTES:
+            raise ValidationError(
+                f"image is {len(data)} bytes; keep feed images under {MAX_IMAGE_BYTES}"
+            )
+        candidate = Path(image_path or "feed-image")
         content_type = _sniff_image_type(candidate, data)
         if content_type is None:
             raise ValidationError(

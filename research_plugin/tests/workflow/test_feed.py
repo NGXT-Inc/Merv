@@ -80,6 +80,21 @@ class FeedServiceTest(unittest.TestCase):
         self.assertEqual(data, _PNG)
         self.assertEqual(ctype, "image/png")
 
+    def test_observed_image_bytes_are_captured_and_served(self) -> None:
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        result = self.app.feed.post_observed(
+            project_id=self.pid,
+            handle="Nova-7",
+            text="plot",
+            image_path="/private/path/plot.png",
+            image_bytes=_PNG,
+        )
+        data, ctype = self.app.feed.get_image(
+            project_id=self.pid, post_id=result["post"]["id"]
+        )
+        self.assertEqual(data, _PNG)
+        self.assertEqual(ctype, "image/png")
+
     def test_missing_image_rejected(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         with self.assertRaises(ValidationError):

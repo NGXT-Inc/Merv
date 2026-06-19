@@ -1733,6 +1733,39 @@ def create_fastapi_app(
                 include_data_plane_metrics=False,
             )
 
+        @http.post("/api/daemon/feed/post")
+        def daemon_post_feed(
+            request: Request, body: JsonBody = Body(default=None)
+        ) -> dict[str, Any]:
+            payload = body or {}
+            project_id = _required_text(payload, "project_id")
+            target = require_daemon_project(request, project_id)
+            target.app.feed.validate_post_intent(
+                project_id=project_id,
+                handle=_required_text(payload, "handle"),
+                text=_required_text(payload, "text"),
+                ref=payload.get("ref"),
+            )
+            image = payload.get("image")
+            image_bytes = None
+            image_path = None
+            if image is not None:
+                if not isinstance(image, dict):
+                    raise ValidationError("image must be an object")
+                image_path = str(image.get("path") or "feed-image")
+                image_bytes = _decode_b64_field(
+                    image.get("data_b64"), label="image.data_b64"
+                )
+            return target.app.feed.post_observed(
+                project_id=project_id,
+                handle=_required_text(payload, "handle"),
+                text=_required_text(payload, "text"),
+                image_path=image_path,
+                image_bytes=image_bytes,
+                url=payload.get("url"),
+                ref=payload.get("ref"),
+            )
+
     # ---- cloud cleanup sweep trigger (cloud plan Phase 9) ----
     # A scheduling SEAM, not a scheduler: a managed cron / sidecar tick POSTs
     # here to run one idempotent cleanup pass (orphan VMs, blob TTL GC, lease

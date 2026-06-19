@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,11 @@ from backend.http_api import create_fastapi_app
 from backend.services.identity import AuthService
 from backend.utils import ValidationError
 from tests.fakes import FakeRsyncSyncer
+
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360000002000100ffff03000006000557bff8a40000000049454e44ae426082"
+)
 
 
 class ModeConfigTest(unittest.TestCase):
@@ -270,6 +276,84 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertNotIn("base64", resp.json()["detail"].lower())
 
+    def test_daemon_feed_post_endpoint_requires_daemon_token_and_tenant(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        daemon_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, task_queue=HttpTaskQueue()),
+            raise_server_exceptions=False,
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Feed Daemon"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        self.app.feed.register(project_id=project_id, handle="Nova-7")
+        payload = {
+            "project_id": project_id,
+            "handle": "Nova-7",
+            "text": "daemon image",
+            "image": {
+                "path": "plot.png",
+                "data_b64": base64.b64encode(_PNG).decode("ascii"),
+            },
+        }
+
+        denied = daemon_client.post(
+            "/api/daemon/feed/post",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(denied.status_code, 400, denied.text)
+        self.assertEqual(denied.json()["error_code"], "permission_denied")
+
+        foreign = daemon_client.post(
+            "/api/daemon/feed/post",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.other_daemon_token}"},
+        )
+        self.assertEqual(foreign.status_code, 404, foreign.text)
+
+        ok = daemon_client.post(
+            "/api/daemon/feed/post",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        post_id = ok.json()["post"]["id"]
+        data, ctype = self.app.feed.get_image(project_id=project_id, post_id=post_id)
+        self.assertEqual(data, _PNG)
+        self.assertEqual(ctype, "image/png")
+
+    def test_daemon_feed_validates_intent_before_decoding_image(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        daemon_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, task_queue=HttpTaskQueue()),
+            raise_server_exceptions=False,
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Feed Byte Guard"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+
+        resp = daemon_client.post(
+            "/api/daemon/feed/post",
+            json={
+                "project_id": project.json()["id"],
+                "handle": "Ghost",
+                "text": "bad intent",
+                "image": {"path": "plot.png", "data_b64": "not base64 !!!"},
+            },
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertNotIn("base64", resp.json()["detail"].lower())
+
     def test_daemon_tasks_are_tenant_scoped(self) -> None:
         from backend.dataplane.http_channel import HttpTaskQueue
 
@@ -386,6 +470,7 @@ class ControlModeAuthTest(unittest.TestCase):
         names = {tool["name"] for tool in resp.json()["tools"]}
         self.assertNotIn("resource.register_file", names)
         self.assertNotIn("sandbox.request", names)
+        self.assertNotIn("feed.post", names)
         self.assertIn("claim.create", names)
 
     def test_data_plane_mcp_tool_is_rejected_in_control_mode(self) -> None:
@@ -396,6 +481,14 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertEqual(resp.json()["error_code"], "data_plane_required")
+
+        feed = self.client.post(
+            "/mcp/call",
+            json={"name": "feed.post", "arguments": {"handle": "Nova-7", "text": "x"}},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(feed.status_code, 400, feed.text)
+        self.assertEqual(feed.json()["error_code"], "data_plane_required")
 
     def test_mcp_sandbox_get_is_tenant_scoped(self) -> None:
         project = self.client.post(
