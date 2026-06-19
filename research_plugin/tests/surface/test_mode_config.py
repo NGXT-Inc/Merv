@@ -370,6 +370,27 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertNoLocalDataPlaneFields(scoped.json())
 
+        self.app.activity.tool_ok(
+            source="mcp",
+            tool="experiment.get_state",
+            arguments={"project_id": acme_id},
+            duration_ms=1,
+            result={
+                "repo_root": str(self.repo),
+                "local_sync_dir": "/tmp/sync",
+                "blob": "x" * 20000,
+            },
+        )
+        truncated = self.client.get(
+            f"/api/activity?project_id={acme_id}&source=mcp&limit=1",
+            headers=headers,
+        )
+        self.assertEqual(truncated.status_code, 200, truncated.text)
+        self.assertTrue(truncated.json()["events"][0]["result"]["_truncated"])
+        self.assertNotIn("repo_root", truncated.text)
+        self.assertNotIn(str(self.repo), truncated.text)
+        self.assertNotIn("local_sync_dir", truncated.text)
+
         denied = self.client.get(
             f"/api/activity?project_id={other['id']}",
             headers=headers,

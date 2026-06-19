@@ -27,6 +27,7 @@ TAIL_READ_BYTES = 16 * 1024 * 1024
 RESULT_LOG_MAX_BYTES = 16 * 1024
 
 SENSITIVE_KEYS = {"reviewer_capability", "capability"}
+LOCAL_DATA_PLANE_KEYS = {"repo_root", "local_sync_dir", "local_experiment_dir"}
 ID_KEYS = {
     "project_id",
     "claim_id",
@@ -339,8 +340,11 @@ def jsonable(*, value: Any) -> Any:
 def redact_sensitive(*, value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: "[redacted]" if key in SENSITIVE_KEYS else redact_sensitive(value=item)
+            key: "[redacted]"
+            if key in SENSITIVE_KEYS
+            else redact_sensitive(value=item)
             for key, item in value.items()
+            if key not in LOCAL_DATA_PLANE_KEYS
         }
     if isinstance(value, list):
         return [redact_sensitive(value=item) for item in value]

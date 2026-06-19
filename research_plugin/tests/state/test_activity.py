@@ -22,6 +22,7 @@ class CapResultTest(unittest.TestCase):
     def test_sensitive_result_fields_are_redacted(self) -> None:
         value = {
             "reviewer_capability": "rp_secret",
+            "repo_root": "/private/repo",
             "nested": {"capability": "rp_nested"},
         }
         self.assertEqual(
@@ -31,6 +32,20 @@ class CapResultTest(unittest.TestCase):
                 "nested": {"capability": "[redacted]"},
             },
         )
+        self.assertNotIn("repo_root", cap_result(value=value))
+
+    def test_truncated_preview_does_not_embed_local_fields(self) -> None:
+        value = {
+            "repo_root": "/private/repo",
+            "local_sync_dir": "/private/sync",
+            "blob": "x" * (RESULT_LOG_MAX_BYTES + 1000),
+        }
+        capped = cap_result(value=value)
+        self.assertTrue(capped["_truncated"])
+        self.assertNotIn("repo_root", capped["preview"])
+        self.assertNotIn("/private/repo", capped["preview"])
+        self.assertNotIn("local_sync_dir", capped["preview"])
+        self.assertNotIn("/private/sync", capped["preview"])
 
     def test_oversized_result_is_truncated(self) -> None:
         value = {"blob": "x" * (RESULT_LOG_MAX_BYTES + 1000)}
