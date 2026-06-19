@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..utils import ValidationError, new_id
+from ..utils import PermissionDeniedError, ValidationError, new_id
 from .tasks import TASK_TYPES
 
 
@@ -70,6 +70,7 @@ class _PendingTask:
     type: str
     payload: dict[str, Any]
     deadline: str | None
+    tenant_id: str = ""
     done: threading.Event = field(default_factory=threading.Event)
     result: Any = None
     error: str | None = None
@@ -90,7 +91,12 @@ class HttpTaskQueue:
         self._in_flight: dict[str, _PendingTask] = {}
 
     def enqueue(
-        self, *, task_type: str, payload: dict[str, Any], deadline: str | None = None
+        self,
+        *,
+        task_type: str,
+        payload: dict[str, Any],
+        deadline: str | None = None,
+        tenant_id: str | None = None,
     ) -> _PendingTask:
         if task_type not in TASK_TYPES:
             raise ValidationError(f"unknown task type: {task_type}")
@@ -99,23 +105,33 @@ class HttpTaskQueue:
             type=task_type,
             payload=_json_safe_payload(payload),
             deadline=deadline,
+            tenant_id=(tenant_id or "").strip(),
         )
         with self._cond:
             self._waiting.append(task)
             self._cond.notify_all()
         return task
 
-    def poll(self, *, wait_seconds: float = DEFAULT_LONG_POLL_SECONDS) -> dict[str, Any] | None:
+    def poll(
+        self,
+        *,
+        wait_seconds: float = DEFAULT_LONG_POLL_SECONDS,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any] | None:
         """Block up to ``wait_seconds`` for the next task; None if none arrives."""
         deadline = time.monotonic() + max(0.0, wait_seconds)
+        tenant_id = (tenant_id or "").strip()
         with self._cond:
-            while not self._waiting:
+            while True:
+                index = self._next_waiting_index(tenant_id=tenant_id)
+                if index is not None:
+                    task = self._waiting.pop(index)
+                    self._in_flight[task.id] = task
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
                 self._cond.wait(timeout=remaining)
-            task = self._waiting.pop(0)
-            self._in_flight[task.id] = task
         return {
             "id": task.id,
             "type": task.type,
@@ -123,7 +139,25 @@ class HttpTaskQueue:
             "deadline": task.deadline,
         }
 
-    def ack(self, *, task_id: str, ok: bool, result: Any = None, error: str | None = None) -> None:
+    def ack(
+        self,
+        *,
+        task_id: str,
+        ok: bool,
+        result: Any = None,
+        error: str | None = None,
+        tenant_id: str | None = None,
+    ) -> None:
+        tenant_id = (tenant_id or "").strip()
+        with self._cond:
+            task = self._in_flight.get(task_id)
+        if task is None:
+            return
+        if tenant_id and task.tenant_id and task.tenant_id != tenant_id:
+            raise PermissionDeniedError(
+                "daemon task ack does not belong to this tenant",
+                details={"task_id": task_id},
+            )
         with self._cond:
             task = self._in_flight.pop(task_id, None)
         if task is None:
@@ -147,6 +181,12 @@ class HttpTaskQueue:
             raise RuntimeError(task.error)
         return task.result
 
+    def _next_waiting_index(self, *, tenant_id: str) -> int | None:
+        for index, task in enumerate(self._waiting):
+            if not tenant_id or not task.tenant_id or task.tenant_id == tenant_id:
+                return index
+        return None
+
 
 class HttpTaskChannel:
     """Control-plane handle that submits a task to the daemon over HTTP.
@@ -164,9 +204,19 @@ class HttpTaskChannel:
         self.result_timeout_seconds = result_timeout_seconds
 
     def submit(
-        self, *, task_type: str, payload: dict[str, Any], deadline: str | None = None
+        self,
+        *,
+        task_type: str,
+        payload: dict[str, Any],
+        deadline: str | None = None,
+        tenant_id: str | None = None,
     ) -> Any:
-        task = self.queue.enqueue(task_type=task_type, payload=payload, deadline=deadline)
+        task = self.queue.enqueue(
+            task_type=task_type,
+            payload=payload,
+            deadline=deadline,
+            tenant_id=tenant_id,
+        )
         return self.queue.await_result(
             task=task, timeout_seconds=self.result_timeout_seconds
         )

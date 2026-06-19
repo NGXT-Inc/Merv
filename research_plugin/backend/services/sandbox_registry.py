@@ -136,6 +136,14 @@ class SandboxRegistry:
                 "SELECT 1 FROM sandboxes WHERE experiment_id = ?", (experiment_id,)
             ).fetchone()
             payload = dict(fields)
+            if payload.get("project_id") and not payload.get("tenant_id"):
+                tenant_row = conn.execute(
+                    "SELECT tenant_id FROM projects WHERE id = ?",
+                    (payload["project_id"],),
+                ).fetchone()
+                payload["tenant_id"] = (
+                    str(tenant_row["tenant_id"]) if tenant_row is not None else "local"
+                )
             payload["updated_at"] = now
             if exists is None:
                 payload["experiment_id"] = experiment_id

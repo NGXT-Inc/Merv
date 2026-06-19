@@ -24,19 +24,22 @@ class ProjectService:
         *,
         name: str,
         summary: str = "",
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         name = self._validate_name(name)
+        tenant_id = (tenant_id or "local").strip() or "local"
         with self.store.transaction() as conn:
             project_id = new_id(prefix="proj")
             conn.execute(
                 """
-                INSERT INTO projects (id, name, summary, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO projects (id, name, summary, tenant_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
                     name,
                     summary.strip(),
+                    tenant_id,
                     now_iso(),
                 ),
             )

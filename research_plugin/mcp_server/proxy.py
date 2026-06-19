@@ -349,11 +349,23 @@ class HttpProxyMcpServer:
         for key in ("command", "raw_command", "local_dir", "key_path"):
             if daemon.get(key):
                 merged[key] = daemon[key]
+        if any(daemon.get(key) for key in ("command", "raw_command", "key_path")):
+            ssh = dict(merged.get("ssh") or {})
+            if daemon.get("command"):
+                ssh["command"] = daemon["command"]
+            if daemon.get("raw_command"):
+                ssh["raw_command"] = daemon["raw_command"]
+            if daemon.get("key_path"):
+                ssh["key_path"] = daemon["key_path"]
+            merged["ssh"] = ssh
+        if daemon.get("local_dir"):
+            merged["local_experiment_dir"] = daemon["local_dir"]
+            merged["local_sync_dir"] = daemon["local_dir"]
         if cloud_err:
             merged["control_plane"] = cloud_err
         if daemon_err:
             merged["data_plane"] = daemon_err
-        return merged
+        return {key: value for key, value in merged.items() if not key.startswith("_")}
 
     def _aggregate_health(self) -> dict[str, Any]:
         # daemon self-check + cloud reachability + auth status (plan §3.3).

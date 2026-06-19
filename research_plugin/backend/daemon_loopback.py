@@ -18,10 +18,9 @@ the cloud token and the user private keys, so a bare loopback bind is not
 enough. A unix-socket bind is the Phase 9 upgrade.
 
 The data-plane tool EXECUTION (register_file/associate reading bytes locally and
-submitting to the cloud record half; request/sync driving the worker) is the
-cross-process record-forwarding seam the plan's section 3.1 names
-(resource_submit_artifact). The production daemon implementation owns the
-resource half; sandbox lifecycle/sync remains the next split milestone.
+submitting to the cloud record half; request/sync driving the worker) crosses
+the same loopback seam. The production daemon implementation owns local file
+and sandbox-worker duties; the hosted control plane owns the persisted records.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ from .control_client import ControlPlaneUnreachableError
 from .utils import ResearchPluginError, ValidationError
 
 IMPLEMENTED_LOOPBACK_DATA_TOOL_NAMES = frozenset(
-    {"resource.register_file", "resource.associate"}
+    {"resource.register_file", "resource.associate", "sandbox.request", "sandbox.sync"}
 )
 
 
@@ -115,11 +114,13 @@ def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:
         _check_secret(authorization)
         if hasattr(daemon, "list_tools"):
             tools = daemon.list_tools()
-        else:
+        elif hasattr(daemon, "call_tool"):
             allowed = IMPLEMENTED_LOOPBACK_DATA_TOOL_NAMES | AGGREGATE_TOOL_NAMES
             tools = [
                 tool for tool in static_tool_catalog() if tool.get("name") in allowed
             ]
+        else:
+            tools = []
         return {"tools": tools}
 
     @http.post("/mcp/call")
@@ -138,9 +139,11 @@ def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:
         if not isinstance(context, dict):
             raise ValidationError("context must be an object", details={"field": "context"})
         if not hasattr(daemon, "call_tool"):
-            result = _unavailable_result(name=name)
-        else:
-            result = daemon.call_tool(name=name, arguments=arguments, context=context)
+            raise ValidationError(
+                "data-plane forwarding is unavailable in this daemon build",
+                details={"tool": name, "error_code": "data_plane_forwarding_unavailable"},
+            )
+        result = daemon.call_tool(name=name, arguments=arguments, context=context)
         return {"result": result}
 
     return http
@@ -148,16 +151,3 @@ def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:
 
 class _Unauthorized(Exception):
     """Loopback secret missing or wrong (mapped to 401)."""
-
-
-def _unavailable_result(*, name: str) -> dict[str, Any]:
-    if name in AGGREGATE_TOOL_NAMES:
-        return {}
-    return {
-        "ok": False,
-        "error_code": "data_plane_forwarding_unavailable",
-        "error": (
-            f"{name} reached the data-plane daemon, but record-forwarding for "
-            "this tool is not implemented in this daemon build"
-        ),
-    }

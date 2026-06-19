@@ -394,9 +394,12 @@ class InProcessControlPlaneView:
         self.registry = registry
         self.sessions = sessions
 
-    def sync_targets(self) -> list[dict[str, Any]]:
+    def sync_targets(self, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        tenant_id = (tenant_id or "").strip()
         targets: list[dict[str, Any]] = []
         for row in self.registry.list_running_rows():
+            if tenant_id and str(row.get("tenant_id") or "") != tenant_id:
+                continue
             try:
                 session = self.sessions.grant_for_row(row=row)
             except ResearchPluginError:

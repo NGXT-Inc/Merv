@@ -96,6 +96,9 @@ class ControlModeAuthTest(unittest.TestCase):
         self.daemon_token = self.auth.mint_token(
             tenant_id="acme", client_id="daemon", label="daemon"
         )
+        self.other_daemon_token = self.auth.mint_token(
+            tenant_id="other", client_id="daemon", label="other-daemon"
+        )
         self.client = TestClient(
             create_fastapi_app(self.app, auth=self.auth),
             raise_server_exceptions=False,
@@ -197,6 +200,182 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(ok.status_code, 200, ok.text)
         self.assertEqual(ok.json()["path"], "daemon/result.txt")
+
+    def test_daemon_resource_endpoint_is_tenant_scoped(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        daemon_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, task_queue=HttpTaskQueue()),
+            raise_server_exceptions=False,
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Tenant Scoped"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        payload = {
+            "project_id": project.json()["id"],
+            "path": "daemon/result.txt",
+            "kind": "result",
+            "mtime_ns": 1,
+            "ctime_ns": 1,
+            "size_bytes": 3,
+            "content_sha256": "0" * 64,
+            "content_type": "text/plain",
+        }
+
+        denied = daemon_client.post(
+            "/api/daemon/resources/observe",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.other_daemon_token}"},
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+        ok = daemon_client.post(
+            "/api/daemon/resources/observe",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+
+    def test_daemon_associate_validates_intent_before_decoding_bytes(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        daemon_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, task_queue=HttpTaskQueue()),
+            raise_server_exceptions=False,
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Assoc Guard"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+
+        resp = daemon_client.post(
+            "/api/daemon/resources/associate",
+            json={
+                "project_id": project_id,
+                "resource_id": "res_missing",
+                "target_type": "experiment",
+                "target_id": "exp_missing",
+                "role": "not-a-valid-role",
+                "blob": {"data_b64": "not base64 !!!"},
+            },
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertNotIn("base64", resp.json()["detail"].lower())
+
+    def test_daemon_tasks_are_tenant_scoped(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        queue = HttpTaskQueue()
+        queue.enqueue(
+            task_type="final_pull",
+            payload={"session": {"experiment_id": "exp_a"}, "name": "exp-a"},
+            tenant_id="acme",
+        )
+        daemon_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, task_queue=queue),
+            raise_server_exceptions=False,
+        )
+
+        other_poll = daemon_client.get(
+            "/api/daemon/tasks?wait=0",
+            headers={"Authorization": f"Bearer {self.other_daemon_token}"},
+        )
+        self.assertEqual(other_poll.status_code, 200, other_poll.text)
+        self.assertIsNone(other_poll.json()["task"])
+
+        acme_poll = daemon_client.get(
+            "/api/daemon/tasks?wait=0",
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(acme_poll.status_code, 200, acme_poll.text)
+        task_id = acme_poll.json()["task"]["id"]
+
+        denied_ack = daemon_client.post(
+            f"/api/daemon/tasks/{task_id}/ack",
+            json={"ok": True},
+            headers={"Authorization": f"Bearer {self.other_daemon_token}"},
+        )
+        self.assertEqual(denied_ack.status_code, 400, denied_ack.text)
+        self.assertEqual(denied_ack.json()["error_code"], "permission_denied")
+
+        ok_ack = daemon_client.post(
+            f"/api/daemon/tasks/{task_id}/ack",
+            json={"ok": True, "result": {"ok": True}},
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(ok_ack.status_code, 200, ok_ack.text)
+
+    def test_daemon_sync_targets_are_tenant_scoped(self) -> None:
+        from backend.dataplane.http_channel import HttpTaskQueue
+
+        other_project = self.app.projects.create(
+            name="Other Tenant", tenant_id="other"
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Sync Target Tenant"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        acme_project_id = project.json()["id"]
+        self.app.sandboxes.registry.upsert(
+            experiment_id="exp_acme",
+            project_id=acme_project_id,
+            status="running",
+            sandbox_id="sbx_acme",
+            ssh_host="127.0.0.1",
+            ssh_port=22,
+            ssh_user="root",
+            sync_dir="/remote/acme",
+            sandbox_data_dir="/remote/acme/data",
+        )
+        self.app.sandboxes.registry.upsert(
+            experiment_id="exp_other",
+            project_id=other_project["id"],
+            status="running",
+            sandbox_id="sbx_other",
+            ssh_host="127.0.0.1",
+            ssh_port=22,
+            ssh_user="root",
+            sync_dir="/remote/other",
+            sandbox_data_dir="/remote/other/data",
+        )
+        daemon_client = TestClient(
+            create_fastapi_app(
+                self.app,
+                auth=self.auth,
+                task_queue=HttpTaskQueue(),
+                sync_targets_source=self.app.sandboxes.control_view,
+            ),
+            raise_server_exceptions=False,
+        )
+
+        acme = daemon_client.get(
+            "/api/daemon/sync-targets",
+            headers={"Authorization": f"Bearer {self.daemon_token}"},
+        )
+        self.assertEqual(acme.status_code, 200, acme.text)
+        self.assertEqual(
+            {target["experiment_id"] for target in acme.json()["targets"]},
+            {"exp_acme"},
+        )
+
+        other = daemon_client.get(
+            "/api/daemon/sync-targets",
+            headers={"Authorization": f"Bearer {self.other_daemon_token}"},
+        )
+        self.assertEqual(other.status_code, 200, other.text)
+        self.assertEqual(
+            {target["experiment_id"] for target in other.json()["targets"]},
+            {"exp_other"},
+        )
 
     def test_control_mcp_catalog_hides_data_plane_tools(self) -> None:
         resp = self.client.get(
@@ -463,8 +642,8 @@ class ModeCompositionTest(unittest.TestCase):
         tools = client.get("/mcp/tools", headers=headers)
         self.assertEqual(tools.status_code, 200, tools.text)
         names = {tool["name"] for tool in tools.json()["tools"]}
-        self.assertIn("resource.register_file", names)
-        self.assertIn("sandbox.get", names)
+        self.assertNotIn("resource.register_file", names)
+        self.assertNotIn("sandbox.get", names)
         self.assertNotIn("claim.create", names)
 
         called = client.post(
@@ -472,10 +651,8 @@ class ModeCompositionTest(unittest.TestCase):
             json={"name": "resource.register_file", "arguments": {"path": "x.txt"}},
             headers=headers,
         )
-        self.assertEqual(called.status_code, 200, called.text)
-        result = called.json()["result"]
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "data_plane_forwarding_unavailable")
+        self.assertEqual(called.status_code, 400, called.text)
+        self.assertEqual(called.json()["error_code"], "data_plane_forwarding_unavailable")
 
     def test_local_app_builder_is_a_plain_research_plugin_app(self) -> None:
         from backend.composition import build_local_app

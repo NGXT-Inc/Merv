@@ -238,6 +238,8 @@ class SandboxService:
         time_limit: int | None = None,
         instance_type: str | None = None,
         region: str | None = None,
+        public_key_override: str | None = None,
+        include_data_plane_enrichment: bool = True,
     ) -> dict[str, Any]:
         caps = self.backend.capabilities
         gpu, cpu, memory, time_limit = validate_request_inputs(
@@ -270,7 +272,10 @@ class SandboxService:
                 ).fetchone()
             )
 
-        public_key, _key_path = self._ensure_keypair(experiment_id=experiment_id)
+        if public_key_override:
+            public_key = public_key_override
+        else:
+            public_key, _key_path = self._ensure_keypair(experiment_id=experiment_id)
         # Mint the management keypair before any provision so key injection
         # always precedes the management read paths (plan Phase 5 sequencing).
         management_public_key = self.mgmt_keys.ensure(experiment_id=experiment_id)
@@ -285,14 +290,15 @@ class SandboxService:
             self.registry.touch_alive(experiment_id=experiment_id)
             self._mark_experiment_running(experiment_id=experiment_id)
             row = self._refresh_row(row=self.registry.load_row(experiment_id=experiment_id))
-            row = self.worker.ensure_local_dashboards(row=row)
+            if include_data_plane_enrichment:
+                row = self.worker.ensure_local_dashboards(row=row)
             self.registry.emit_event(
                 project_id=project_id,
                 event_type="sandbox.reused",
                 experiment_id=experiment_id,
                 payload={"sandbox_id": existing["sandbox_id"]},
             )
-            return self._agent_view(row=row, reused=True)
+            return self._agent_result(row=row, reused=True, include_data_plane_enrichment=include_data_plane_enrichment)
 
         # 2) Hardware-selection gate. A provider that bundles GPU + CPU + RAM into
         #    fixed machine types (Lambda Labs) has nothing sensible to default to,
@@ -355,7 +361,8 @@ class SandboxService:
         )
         job.done.wait(timeout=self.request_wait_seconds)
         row = self.registry.load_row(experiment_id=experiment_id)
-        row = self.worker.ensure_local_dashboards(row=row)
+        if include_data_plane_enrichment:
+            row = self.worker.ensure_local_dashboards(row=row)
         reused = False if row.get("status") == "running" else None
         # Post-boot secret delivery (plan Phase 9, risk 16): once the VM is up,
         # push provider credentials over the management channel rather than
@@ -363,9 +370,41 @@ class SandboxService:
         # (reuse already has them); never blocks or fails the request.
         if reused is False:
             self._deliver_secrets(row=row, experiment_id=experiment_id)
-        return self._agent_view(row=row, reused=reused)
+        return self._agent_result(row=row, reused=reused, include_data_plane_enrichment=include_data_plane_enrichment)
 
-    def get(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def request_from_data_plane(
+        self,
+        *,
+        experiment_id: str,
+        public_key: str,
+        project_id: str | None = None,
+        gpu: str | None = None,
+        cpu: float | None = None,
+        memory: int | None = None,
+        time_limit: int | None = None,
+        instance_type: str | None = None,
+        region: str | None = None,
+    ) -> dict[str, Any]:
+        return self.request(
+            experiment_id=experiment_id,
+            project_id=project_id,
+            gpu=gpu,
+            cpu=cpu,
+            memory=memory,
+            time_limit=time_limit,
+            instance_type=instance_type,
+            region=region,
+            public_key_override=public_key,
+            include_data_plane_enrichment=False,
+        )
+
+    def get(
+        self,
+        *,
+        experiment_id: str,
+        project_id: str | None = None,
+        include_data_plane_enrichment: bool = True,
+    ) -> dict[str, Any]:
         """Read-only poll target. Never provisions; reconciles stale state."""
         try:
             row = self.registry.fetch_scoped(
@@ -385,9 +424,14 @@ class SandboxService:
         row = self.provisioner.reconcile(row=row)
         # An unclaimed parachute lands the moment the data plane shows up
         # again (plan Phase 5): the poll target is that reconnect signal.
-        row = self._maybe_restore_parachute(row=row)
-        row = self.worker.ensure_local_dashboards(row=row)
-        return self._agent_view(row=row, reused=None)
+        if include_data_plane_enrichment:
+            row = self._maybe_restore_parachute(row=row)
+            row = self.worker.ensure_local_dashboards(row=row)
+        return self._agent_result(
+            row=row,
+            reused=None,
+            include_data_plane_enrichment=include_data_plane_enrichment,
+        )
 
     def options(
         self,
@@ -586,7 +630,13 @@ class SandboxService:
             "command_running": command_running,
         }
 
-    def sync(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def sync(
+        self,
+        *,
+        experiment_id: str,
+        project_id: str | None = None,
+        include_data_plane_metrics: bool = True,
+    ) -> dict[str, Any]:
         try:
             row = self.registry.fetch_scoped(
                 experiment_id=experiment_id, project_id=project_id
@@ -618,7 +668,8 @@ class SandboxService:
             ) from exc
         except Exception as exc:  # noqa: BLE001
             raise BackendUnavailableError(f"sandbox sync failed: {exc}") from exc
-        self._persist_metrics_row(row=row, force=True)
+        if include_data_plane_metrics:
+            self._persist_metrics_row(row=row, force=True)
         self.registry.emit_event(
             project_id=str(row["project_id"]),
             event_type="sandbox.synced",
@@ -950,6 +1001,7 @@ class SandboxService:
             self.tasks.submit(
                 task_type="teardown",
                 payload={"experiment_id": experiment_id, "sandbox_id": sandbox_id},
+                tenant_id=self._tenant_for_experiment(experiment_id=experiment_id),
             )
         except Exception:  # noqa: BLE001 — best-effort; never block the mark
             pass
@@ -1025,6 +1077,7 @@ class SandboxService:
                     "row": fresh,
                     "name": self.registry.experiment_name(experiment_id=experiment_id),
                 },
+                tenant_id=self._tenant_for_project(project_id=str(fresh.get("project_id") or "")),
             )
         except Exception:  # noqa: BLE001 — refresh must never break the caller
             pass
@@ -1052,8 +1105,14 @@ class SandboxService:
         # poller hands in the session its ControlPlaneView already granted.
         if session is None:
             session = self.sessions.grant_for_row(row=row, name=name)
-        result = self.worker.sync_pull(
-            session=session, name=name, skip_if_busy=skip_if_busy
+        result = self.tasks.submit(
+            task_type="sync_pull",
+            payload={
+                "session": session,
+                "name": name,
+                "skip_if_busy": bool(skip_if_busy),
+            },
+            tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=str(row.get("project_id") or ""))),
         )
         if not result.get("skipped"):
             self._report_pull(row=row, session=session, result=result)
@@ -1074,6 +1133,7 @@ class SandboxService:
             task_type="final_pull",
             payload={"session": session, "name": name},
             deadline=iso_after(seconds=DEFAULT_FINAL_PULL_DEADLINE_SECONDS),
+            tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=str(row.get("project_id") or ""))),
         )
         if not result.get("skipped"):
             self._report_pull(row=row, session=session, result=result)
@@ -1213,6 +1273,7 @@ class SandboxService:
             result = self.tasks.submit(
                 task_type="parachute_restore",
                 payload={"experiment_id": experiment_id, "name": name, "data": data},
+                tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=project_id)),
             )
         except Exception as exc:  # noqa: BLE001 — loud failure, no silent retry loop
             self.registry.upsert(experiment_id=experiment_id, parachute_state="failed")
@@ -1292,6 +1353,26 @@ class SandboxService:
 
     # ---------- views (delegated to sandbox_views) ----------
 
+    def _agent_result(
+        self,
+        *,
+        row: dict[str, Any],
+        reused: bool | None,
+        include_data_plane_enrichment: bool,
+    ) -> dict[str, Any]:
+        if include_data_plane_enrichment:
+            return self._agent_view(row=row, reused=reused)
+        return self._agent_facts(row=row, reused=reused)
+
+    def _agent_facts(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
+        experiment_id = str(row.get("experiment_id") or "")
+        return sandbox_views.agent_row_facts(
+            row=row,
+            env_info=self._sandbox_environment(),
+            reused=reused,
+            lease=self.leases.holder(experiment_id=experiment_id),
+        )
+
     def _agent_view(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
         # Plane decomposition (plan §3.3): provider-portable row facts are a
         # pure projection; the ssh command / key path / local folder come from
@@ -1365,6 +1446,27 @@ class SandboxService:
             row = conn.execute(
                 "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
+        finally:
+            conn.close()
+        return str(row["tenant_id"]) if row is not None else "local"
+
+    def _tenant_for_experiment(self, *, experiment_id: str) -> str:
+        conn = self.store.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT p.tenant_id
+                FROM experiments e
+                JOIN projects p ON p.id = e.project_id
+                WHERE e.id = ?
+                """,
+                (experiment_id,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT tenant_id FROM sandboxes WHERE experiment_id = ?",
+                    (experiment_id,),
+                ).fetchone()
         finally:
             conn.close()
         return str(row["tenant_id"]) if row is not None else "local"

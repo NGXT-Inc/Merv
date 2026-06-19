@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import mimetypes
 import os
 import threading
@@ -41,11 +42,19 @@ from ..execution import build_sandbox_backend
 from ..services.artifacts import markdown_image_links, markdown_image_targets
 from ..services.permissions import GATED_ROLE_BYTE_CAPS
 from ..services.resources import ResourceService
+from ..services import sandbox_views
 from ..utils import ValidationError
 from ..workspace import LocalWorkspace
 
 
-IMPLEMENTED_DATA_TOOL_NAMES = frozenset({"resource.register_file", "resource.associate"})
+IMPLEMENTED_DATA_TOOL_NAMES = frozenset(
+    {
+        "resource.register_file",
+        "resource.associate",
+        "sandbox.request",
+        "sandbox.sync",
+    }
+)
 
 
 def _ensure_loopback_secret(*, root: Path) -> str:
@@ -153,6 +162,12 @@ class DaemonServer:
             return self._register_resource_files(arguments=arguments, context=context)
         if name == "resource.associate":
             return self._associate_resource(arguments=arguments, context=context)
+        if name == "sandbox.request":
+            return self._request_sandbox(arguments=arguments, context=context)
+        if name == "sandbox.sync":
+            return self._sync_sandbox(arguments=arguments, context=context)
+        if name == "sandbox.get":
+            return self._sandbox_get_enrichment(arguments=arguments, context=context)
         if name not in (DATA_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES):
             raise ValidationError(
                 f"tool is not served by the data plane: {name}",
@@ -167,6 +182,78 @@ class DaemonServer:
             f"{name} is not implemented by this data-plane daemon",
             details={"tool": name, "error_code": "data_plane_tool_unimplemented"},
         )
+
+    def _request_sandbox(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root = self._repo_root_from_context(context=context)
+        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        experiment_id = self._required_arg(arguments, "experiment_id")
+        public_key, _key_path = self.worker.ensure_keypair(experiment_id=experiment_id)
+        payload = dict(arguments)
+        payload["project_id"] = project_id
+        payload["experiment_id"] = experiment_id
+        payload["public_key"] = public_key
+        facts = self.control.request_sandbox(payload)
+        name = str(facts.pop("_experiment_name", "") or "")
+        return self._merge_sandbox_enrichment(facts=facts, name=name)
+
+    def _sync_sandbox(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root = self._repo_root_from_context(context=context)
+        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        payload = dict(arguments)
+        payload["project_id"] = project_id
+        payload["experiment_id"] = self._required_arg(arguments, "experiment_id")
+        return self.control.sync_sandbox(payload)
+
+    def _sandbox_get_enrichment(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root = self._repo_root_from_context(context=context)
+        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        args = dict(arguments)
+        args["project_id"] = project_id
+        facts = self.control.call("sandbox.get", args)
+        name = str(facts.pop("_experiment_name", "") or "")
+        enrichment = self._sandbox_enrichment(facts=facts, name=name)
+        return {
+            "command": enrichment.get("command", ""),
+            "raw_command": enrichment.get("raw_command", ""),
+            "local_dir": enrichment.get("local_dir", ""),
+            "key_path": enrichment.get("key_path", ""),
+        }
+
+    def _merge_sandbox_enrichment(
+        self, *, facts: dict[str, Any], name: str
+    ) -> dict[str, Any]:
+        if not facts.get("experiment_id"):
+            return facts
+        enrichment = self._sandbox_enrichment(facts=facts, name=name)
+        return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
+
+    def _sandbox_enrichment(self, *, facts: dict[str, Any], name: str) -> dict[str, Any]:
+        return self.worker.sandbox_enrichment(
+            row=self._sandbox_row_from_facts(facts=facts),
+            name=name,
+        )
+
+    def _sandbox_row_from_facts(self, *, facts: dict[str, Any]) -> dict[str, Any]:
+        ssh = facts.get("ssh") if isinstance(facts.get("ssh"), dict) else {}
+        return {
+            "experiment_id": facts.get("experiment_id", ""),
+            "project_id": facts.get("project_id", ""),
+            "sandbox_id": facts.get("sandbox_id", ""),
+            "status": facts.get("status", ""),
+            "ssh_host": ssh.get("host", ""),
+            "ssh_port": ssh.get("port") or 0,
+            "ssh_user": ssh.get("user") or "root",
+            "workdir": facts.get("workdir", ""),
+            "sync_dir": facts.get("experiment_dir", ""),
+            "sandbox_data_dir": facts.get("data_dir", ""),
+            "dashboards_json": json.dumps(facts.get("dashboards") or {}, sort_keys=True),
+        }
 
     def _register_resource_files(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
@@ -431,6 +518,12 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 deadline=deadline,
+            ))
+        if task_type == "sync_pull":
+            return _relativize(worker.sync_pull(
+                session=payload["session"],
+                name=str(payload.get("name") or ""),
+                skip_if_busy=bool(payload.get("skip_if_busy")),
             ))
         if task_type == "conn_refresh":
             return worker.sandbox_enrichment(

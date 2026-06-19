@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS synthesis_experiments (
 CREATE TABLE IF NOT EXISTS sandboxes (
   experiment_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL DEFAULT 'local',
   sandbox_id TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'none',
   gpu TEXT NOT NULL DEFAULT '',
@@ -762,6 +763,7 @@ class StateStore(BaseStateStore):
             table="sandboxes",
             columns={
                 "sandbox_name": "TEXT NOT NULL DEFAULT ''",
+                "tenant_id": "TEXT NOT NULL DEFAULT 'local'",
                 "phase": "TEXT NOT NULL DEFAULT ''",
                 "detail": "TEXT NOT NULL DEFAULT ''",
                 "error": "TEXT NOT NULL DEFAULT ''",
@@ -798,6 +800,17 @@ class StateStore(BaseStateStore):
                 "parachute_size_bytes": "INTEGER NOT NULL DEFAULT 0",
                 "parachute_expires_at": "TEXT",
             },
+        )
+        conn.execute(
+            """
+            UPDATE sandboxes
+            SET tenant_id = COALESCE(
+              (SELECT tenant_id FROM projects WHERE projects.id = sandboxes.project_id),
+              tenant_id,
+              'local'
+            )
+            WHERE project_id != ''
+            """
         )
         # The shadow-git unplug (May 2026) dropped these columns from the
         # SCHEMA constant, but pre-existing databases still have them. The

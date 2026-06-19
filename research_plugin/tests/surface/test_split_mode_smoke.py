@@ -109,8 +109,8 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("resource.register_file", names)
         self.assertIn("resource.associate", names)
         self.assertIn("sandbox.get", names)
-        self.assertNotIn("sandbox.request", names)
-        self.assertNotIn("sandbox.sync", names)
+        self.assertIn("sandbox.request", names)
+        self.assertIn("sandbox.sync", names)
         self.assertNotIn("feed.post", names)
 
     def test_invalid_association_intent_does_not_submit_local_bytes(self) -> None:
@@ -318,8 +318,12 @@ class SplitModeSmokeTest(unittest.TestCase):
 
             @staticmethod
             def call_tool(*, name: str, arguments: dict, context: dict):
-                # Sandbox lifecycle/sync is owned by the CLOUD fake here; the
-                # real resource data-plane path is exercised below.
+                # Request/sync/get now use the production daemon path; release
+                # and other control-only sandbox tools still hit the cloud app.
+                if name in {"sandbox.request", "sandbox.sync", "sandbox.get"}:
+                    return daemon_server.call_tool(
+                        name=name, arguments=arguments, context=context
+                    )
                 if name.startswith("sandbox."):
                     return cloud_app.call_tool(
                         name=name, arguments=arguments, activity_source="mcp"
@@ -407,6 +411,10 @@ class SplitModeSmokeTest(unittest.TestCase):
         self._await(lambda: self._call(
             "sandbox.get", project_id=project_id, experiment_id=exp_id
         ).get("status") == "running")
+        got = self._call("sandbox.get", project_id=project_id, experiment_id=exp_id)
+        self.assertIn(str(self.repo), got["local_experiment_dir"])
+        self.assertTrue(got["ssh"]["raw_command"].startswith("ssh -i "))
+        self.assertIn(got["ssh"]["key_path"], got["ssh"]["raw_command"])
 
         # sync under lease (data plane), then results/report/graph.
         self._call("sandbox.sync", project_id=project_id, experiment_id=exp_id)

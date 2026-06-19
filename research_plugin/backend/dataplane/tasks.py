@@ -7,7 +7,7 @@ local mode ``InProcessTaskChannel`` degenerates to a synchronous dispatch the
 moment a task is enqueued, preserving today's provision/reap/teardown
 ordering exactly.
 
-Task types: ``initial_push`` | ``final_pull`` | ``conn_refresh`` |
+Task types: ``initial_push`` | ``sync_pull`` | ``final_pull`` | ``conn_refresh`` |
 ``teardown`` | ``parachute_restore``. The last unpacks a reaped sandbox's
 parachute object (plan Phase 5, fixed decision 5) into the experiment's
 local folder through the worker's normal sync-path semantics.
@@ -36,7 +36,14 @@ if TYPE_CHECKING:
 
 
 TASK_TYPES: frozenset[str] = frozenset(
-    {"initial_push", "final_pull", "conn_refresh", "teardown", "parachute_restore"}
+    {
+        "initial_push",
+        "sync_pull",
+        "final_pull",
+        "conn_refresh",
+        "teardown",
+        "parachute_restore",
+    }
 )
 
 
@@ -73,6 +80,7 @@ class InProcessTaskChannel:
         task_type: str,
         payload: dict[str, Any],
         deadline: str | None = None,
+        tenant_id: str | None = None,  # noqa: ARG002 - HTTP channel uses this
     ) -> Any:
         if task_type not in TASK_TYPES:
             raise ValidationError(f"unknown task type: {task_type}")
@@ -105,6 +113,12 @@ class InProcessTaskChannel:
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 deadline=task.deadline,
+            )
+        if task.type == "sync_pull":
+            return self.worker.sync_pull(
+                session=payload["session"],
+                name=str(payload.get("name") or ""),
+                skip_if_busy=bool(payload.get("skip_if_busy")),
             )
         if task.type == "conn_refresh":
             # Re-render the agent's conn file (and ssh command) for a row
