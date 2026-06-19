@@ -1054,6 +1054,15 @@ def create_fastapi_app(
     ) -> dict[str, Any]:
         arguments = dict(arguments or {})
         context = dict(context or {})
+        if auth_required and context.get("repo_root"):
+            raise DataPlaneRequiredError(
+                "repo_root context is local data-plane state; hosted control "
+                "requires the proxy or daemon to resolve and send project_id",
+                details={
+                    "field": "context.repo_root",
+                    "reason": "repo_root_hidden_from_cloud",
+                },
+            )
         if auth_required and name in DATA_PLANE_TOOL_NAMES:
             raise DataPlaneRequiredError(
                 f"{name} requires the local data-plane daemon; hosted control "

@@ -84,6 +84,29 @@ class LocalModeAuthParityTest(unittest.TestCase):
         self.assertEqual(home.status_code, 200, home.text)
         self.assertEqual(home.json()["project"]["id"], project_id)
 
+    def test_local_mcp_can_scope_by_repo_context(self) -> None:
+        project = self.client.post("/api/projects", json={"name": "Local MCP"})
+        self.assertEqual(project.status_code, 201, project.text)
+        claim = self.client.post(
+            f"/api/projects/{project.json()['id']}/claims",
+            json={"statement": "Local context scoping still works."},
+        )
+        self.assertEqual(claim.status_code, 201, claim.text)
+
+        resp = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "claim.list",
+                "arguments": {"project_id": project.json()["id"]},
+                "context": {"repo_root": str(self.repo)},
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(
+            [row["id"] for row in resp.json()["result"]["claims"]],
+            [claim.json()["id"]],
+        )
+
 
 class ControlModeAuthTest(unittest.TestCase):
     """With an AuthService injected: bearer auth required, /health slimmed."""
@@ -719,6 +742,29 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(feed.status_code, 400, feed.text)
         self.assertEqual(feed.json()["error_code"], "data_plane_required")
+
+    def test_control_mcp_rejects_repo_root_context(self) -> None:
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "No Repo Root Context"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+
+        resp = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "claim.list",
+                "arguments": {"project_id": project.json()["id"]},
+                "context": {"repo_root": str(self.repo)},
+            },
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        body = resp.json()
+        self.assertEqual(body["error_code"], "data_plane_required")
+        self.assertEqual(body["field"], "context.repo_root")
+        self.assertEqual(body["reason"], "repo_root_hidden_from_cloud")
 
     def test_mcp_sandbox_get_is_tenant_scoped(self) -> None:
         project = self.client.post(
