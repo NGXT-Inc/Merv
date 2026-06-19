@@ -141,15 +141,16 @@ Graph node `refs` resolve `syn_` ids too, so experiment graphs and the
 project graph can cross-link to the reflection that motivated them.
 `workflow.status_and_next` carries a `project_reflection` block while a wave
 is open (slim wave state + gate guidance) or when the project has drifted
-from the last published reflection (a soft "Consider running a project
-reflection…" hint; computed on read, never stored). When the project is idle
-(no non-terminal experiments) and at least one experiment has finished since
-the last published reflection, a project-level call (no explicit
-`experiment_id`) additionally makes reflection the suggested next action:
-the workflow block becomes `current_gate: reflection_suggested` (or the open
-wave's gate guidance, if one is open). Advisory either way — `reflection.create`
-joins `claim.create`/`experiment.create` in `allowed_actions`, nothing is
-blocked, and explicitly experiment-scoped calls are never taken over.
+from the last published reflection (computed on read, never stored). Drift has
+three levels: a soft "Consider running a project reflection…" hint once the
+advisory threshold is crossed; an idle-project recommendation where the
+workflow block becomes `current_gate: reflection_suggested`; and a hard create
+block once five newly-terminal experiments have accumulated since the last
+published reflection. At the hard threshold, `experiment.create` is removed
+from `allowed_actions`, listed in `blocked_actions`, and rejected by
+`experiment.create` until a project reflection is published. `claim.create`
+can remain allowed. Explicitly experiment-scoped calls are never taken over,
+but the `project_reflection` side block still carries the signal.
 
 ### Resource tools
 

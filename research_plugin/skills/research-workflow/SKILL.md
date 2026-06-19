@@ -57,10 +57,12 @@ maintained through reflection waves. When `workflow.status_and_next` includes
 `project_reflection`, treat it as project-level work and use the
 `project-reflection` skill for the synthesis workflow.
 
-Reflection nudges are advisory unless MCP reports an active reflection gate:
-creating the next claim or experiment may still be allowed, but consider whether
-finished experiments should first be distilled into the project graph and
-reviewed change spec.
+Reflection drift starts advisory, then becomes a gate. The project is nudged to
+reflect after the advisory threshold, but once the hard threshold is reached
+(`workflow.status_and_next` reports `experiment_create_blocked`), `experiment.create`
+is blocked until a project reflection is published. The published reflection's
+reviewed change spec may create the next experiment wave. Claim creation can
+still be allowed.
 
 ## The experiment folder
 

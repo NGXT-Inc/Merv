@@ -253,7 +253,7 @@ lens briefs, ambition quota, dead-end differentiation) live in the
 Staleness is computed on read, never stored: `workflow.status_and_next`
 carries a `project_reflection` block when a wave is open (slim state + gate
 guidance) or when the project has drifted from the last published reflection.
-Drift surfaces at two advisory tiers:
+Drift surfaces in three tiers:
 
 - **Nudge** (any time): once drift crosses the staleness threshold (≥3
   newly-terminal experiments, or any claim flipped to `contradicted`), the
@@ -268,8 +268,14 @@ Drift surfaces at two advisory tiers:
   wins that slot instead (its gate guidance becomes the workflow block), so
   an idle orientation call always points at the project-level work rather
   than answering "none" for the auto-resolved terminal experiment.
+- **Required reflection**: once five newly-terminal experiments have accumulated
+  since the last published reflection, `experiment.create` becomes a hard
+  blocker. The workflow reports `current_gate: reflection_required`, removes
+  `experiment.create` from allowed actions, and lists it in `blocked_actions`.
+  The `experiment.create` tool itself rejects until a project reflection is
+  published. Publishing a reflection applies the reviewed change spec, which can
+  create the next planned experiment wave.
 
-Neither tier blocks anything — creating claims and experiments stays allowed,
-and whether new developments change the project's logic state is the agent's
-call. Explicitly experiment-scoped calls are never taken over; they get the
-side block only.
+Explicitly experiment-scoped calls are never taken over; they get the side
+block only. Claim creation can remain allowed even when experiment creation is
+blocked.

@@ -25,6 +25,10 @@ from .experiments import ExperimentService
 from .graph_lint import graph_problems
 from .permissions import PROJECT_GRAPH_ROLES, REFLECTION_LENS_DOC_ROLES
 from .pinned import pinned_text_for_version, resubmit_hint
+from .reflection_policy import (
+    REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
+    REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
+)
 from .synthesis_gates import (
     CORE_LENSES,
     CORE_LENS_IDS,
@@ -46,13 +50,6 @@ REQUIRED_SYNTHESIS_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Critical reading", "critical"),
     ("Decision / future directions", "decision"),
 )
-
-# Staleness threshold (advisory only): nudge a reflection once this many
-# experiments have reached a terminal state since the last published
-# synthesis (or since the project began, if none was ever published), or as
-# soon as any claim flips to contradicted.
-STALE_NEW_TERMINAL_THRESHOLD = 3
-
 
 class SynthesisService:
     def __init__(
@@ -1283,15 +1280,15 @@ class SynthesisService:
             )
         return row
 
-    # ---- staleness (advisory) ----
+    # ---- reflection drift ----
 
     def reflection_signal(self, *, project_id: str, conn=None) -> dict[str, Any]:
         """How far project state has drifted from the last published reflection.
 
         Computed on read, never stored. The output backs the soft 'Consider
-        running a project reflection' nudge and the Home coverage badge —
-        always advisory: whether new developments change the project's logic
-        state is the agent's editorial call.
+        running a project reflection' nudge, the Home coverage badge, and the
+        hard experiment.create block once project reflection debt reaches the
+        blocking threshold.
         """
         owns_conn = conn is None
         if conn is None:
@@ -1341,8 +1338,12 @@ class SynthesisService:
             contradicted_flip = any(
                 change["to"] == "contradicted" for change in claims_changed
             )
+            experiment_create_blocked = (
+                len(new_terminal) >= REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
+            )
             stale = open_wave is None and (
-                len(new_terminal) >= STALE_NEW_TERMINAL_THRESHOLD or contradicted_flip
+                len(new_terminal) >= REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD
+                or contradicted_flip
             )
             signal: dict[str, Any] = {
                 "terminal_experiments": len(current_terminal),
@@ -1354,6 +1355,9 @@ class SynthesisService:
                 "last_published_synthesis_id": (published or {}).get("id"),
                 "open_synthesis_id": (open_wave or {}).get("id"),
                 "stale": stale,
+                "experiment_create_blocked": experiment_create_blocked,
+                "nudge_new_terminal_threshold": REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
+                "block_new_terminal_threshold": REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
             }
             signal["hint"] = self._staleness_hint(signal=signal, published=published)
             return signal
@@ -1366,6 +1370,36 @@ class SynthesisService:
     ) -> str:
         if not signal["stale"]:
             return ""
+        if signal.get("experiment_create_blocked"):
+            if published is None:
+                return (
+                    "Project reflection required before creating another "
+                    "experiment — "
+                    f"{signal['terminal_experiments']} experiments have finished "
+                    "and no project reflection exists yet. Use the "
+                    "project-reflection skill (reflection.create) and publish the "
+                    "wave before creating another experiment."
+                )
+            pieces = [
+                "Project reflection required before creating another experiment — "
+                f"{signal['new_terminal_since_publish']} experiments have finished "
+                "since the last published reflection"
+            ]
+            if signal["claims_changed_since_publish"]:
+                changed = f"{signal['claims_changed_since_publish']} claims have changed"
+                if signal["contradicted_flip"]:
+                    changed += " (including a claim now contradicted)"
+                pieces.append(changed)
+            pieces.append(
+                "the current reflection covers "
+                f"{signal['covered_terminal_experiments']} of "
+                f"{signal['terminal_experiments']} finished experiments"
+            )
+            return (
+                "; ".join(pieces)
+                + ". Publish a project reflection wave before creating another "
+                "experiment."
+            )
         if published is None:
             return (
                 "Consider running the project's first reflection — "

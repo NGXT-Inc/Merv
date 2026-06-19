@@ -477,7 +477,7 @@ class WorkflowService:
 
         While a reflection wave is open: the wave's slim state plus the same
         gate-table-derived guidance experiments get. Otherwise the drift
-        signal decides, at two advisory tiers:
+        signal decides, with an advisory nudge before a hard create block:
 
         - stale (>= 3 newly-terminal experiments since the last published
           reflection, or a claim flipped to contradicted): the soft
@@ -486,17 +486,28 @@ class WorkflowService:
           finished since the last published reflection): nothing is running
           and there is something new to reflect on, so reflection is worth
           suggesting as the next action (_reflection_workflow_takeover).
+        - blocked (>= 5 newly-terminal experiments since the last published
+          reflection): experiment.create is rejected until a project reflection
+          is published; a published change spec can still materialize the next
+          experiment wave.
 
         Nothing at all when there is nothing to say, so the constantly-polled
-        orientation call stays lean. Neither tier blocks anything — whether
-        new developments change the project's logic state stays the agent's
-        call.
+        orientation call stays lean until the hard threshold is reached.
+        Before that threshold, whether new developments change the project's
+        logic state stays the agent's call.
         """
         open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
         if open_wave is not None:
+            signal = self.syntheses.reflection_signal(project_id=project_id, conn=conn)
+            workflow = self._synthesis_workflow_for(conn=conn, synthesis=open_wave)
+            if signal.get("experiment_create_blocked"):
+                workflow = self._with_experiment_create_block(
+                    workflow=workflow, signal=signal
+                )
             return {
                 "reflection": slim_synthesis(open_wave),
-                "workflow": self._synthesis_workflow_for(conn=conn, synthesis=open_wave),
+                "workflow": workflow,
+                "signal": self._external_reflection_signal(signal),
             }
         signal = self.syntheses.reflection_signal(project_id=project_id, conn=conn)
         has_new_material = (
@@ -509,6 +520,7 @@ class WorkflowService:
             "reflection": None,
             "hint": signal["hint"] or self._idle_reflection_hint(signal=signal),
             "signal": self._external_reflection_signal(signal),
+            "experiment_create_blocked": bool(signal.get("experiment_create_blocked")),
         }
         if recommended:
             block["recommended"] = True
@@ -522,15 +534,32 @@ class WorkflowService:
         An idle project's auto-resolved experiment is terminal, so its gate
         answers "none" — exactly the moment the agent is deciding what to do
         next. An open reflection wave's gate guidance takes the slot;
-        otherwise the 'recommended' tier suggests starting one. Positional
-        emphasis only: claim/experiment creation stays allowed and nothing is
-        gated. Explicit experiment-scoped calls never reach this (the
+        otherwise the 'recommended' tier suggests starting one. The hard
+        create-block tier removes experiment.create until a reflection is
+        published. Explicit experiment-scoped calls never reach this (the
         project_reflection side block still carries the signal there).
         """
         if reflection is None:
             return None
         if reflection.get("reflection") is not None:
             return reflection["workflow"]
+        signal = reflection.get("signal") or {}
+        if signal.get("experiment_create_blocked"):
+            reason = reflection.get("hint") or self._reflection_create_block_reason(
+                signal=signal
+            )
+            return self._next(
+                gate="reflection_required",
+                action=(
+                    "start_project_reflection_before_next_experiment "
+                    "(run reflection.create via the project-reflection skill; "
+                    "experiment.create is blocked until a project reflection is "
+                    "published)"
+                ),
+                allowed=["reflection.create", "claim.create"],
+                blocked=[{"action": "experiment.create", "reason": reason}],
+                missing=[reason] if reason else [],
+            )
         if not reflection.get("recommended"):
             return None
         return self._next(
@@ -543,6 +572,47 @@ class WorkflowService:
             ),
             allowed=["reflection.create", "claim.create", "experiment.create"],
             missing=[reflection["hint"]] if reflection.get("hint") else [],
+        )
+
+    def _with_experiment_create_block(
+        self, *, workflow: dict[str, Any], signal: dict[str, Any]
+    ) -> dict[str, Any]:
+        reason = self._reflection_create_block_reason(signal=signal)
+        blocked = [
+            item
+            for item in workflow.get("blocked_actions", [])
+            if item.get("action") != "experiment.create"
+        ]
+        blocked.append({"action": "experiment.create", "reason": reason})
+        return {
+            **workflow,
+            "allowed_actions": [
+                action
+                for action in workflow.get("allowed_actions", [])
+                if action != "experiment.create"
+            ],
+            "blocked_actions": blocked,
+        }
+
+    def _reflection_create_block_reason(self, *, signal: dict[str, Any]) -> str:
+        count = signal.get("new_terminal_since_publish", 0)
+        threshold = signal.get("block_new_terminal_threshold", 5)
+        open_id = signal.get("open_synthesis_id") or signal.get("open_reflection_id")
+        if open_id:
+            return (
+                f"{count} experiments have finished since the last published "
+                f"reflection (threshold {threshold}); finish and publish open "
+                f"reflection wave {open_id} before creating another experiment."
+            )
+        if signal.get("last_published_synthesis_id") or signal.get(
+            "last_published_reflection_id"
+        ):
+            since = "since the last published reflection"
+        else:
+            since = "and no project reflection has been published yet"
+        return (
+            f"{count} experiments have finished {since} (threshold {threshold}); "
+            "publish a project reflection wave before creating another experiment."
         )
 
     def _external_reflection_signal(self, signal: dict[str, Any]) -> dict[str, Any]:

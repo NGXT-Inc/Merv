@@ -6,6 +6,10 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
+from backend.services.reflection_policy import (
+    REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
+    REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
+)
 from backend.utils import PermissionDeniedError, ValidationError, WorkflowError
 
 # A project logic graph that satisfies the envelope lint (valid JSON, ≤16
@@ -998,9 +1002,7 @@ class SynthesisGateTest(unittest.TestCase):
 
 
 class ReflectionSignalTest(unittest.TestCase):
-    """The staleness signal behind the soft 'Consider running a project
-    reflection' nudge. Always advisory — these tests pin the threshold and
-    the soft phrasing, not any enforcement."""
+    """The drift signal behind project reflection nudges and create blocks."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1112,36 +1114,58 @@ class ReflectionSignalTest(unittest.TestCase):
         return syn_id
 
     def test_quiet_before_threshold_then_first_reflection_nudge(self) -> None:
-        self._finish_experiment(intent="one")
-        self._finish_experiment(intent="two")
+        for i in range(REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD - 1):
+            self._finish_experiment(intent=f"quiet-{i}")
         signal = self._signal()
         self.assertFalse(signal["stale"])
         self.assertEqual(signal["hint"], "")
-        self._finish_experiment(intent="three")
+
+        self._finish_experiment(intent="nudge")
         signal = self._signal()
         self.assertTrue(signal["stale"])
+        self.assertFalse(signal["experiment_create_blocked"])
         self.assertIn("Consider running the project's first reflection", signal["hint"])
 
+        for i in range(
+            REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
+            REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
+        ):
+            self._finish_experiment(intent=f"block-{i}")
+        signal = self._signal()
+        self.assertTrue(signal["experiment_create_blocked"])
+        self.assertIn("required before creating another experiment", signal["hint"])
+
     def test_publish_resets_the_signal_and_coverage(self) -> None:
-        for i in range(3):
+        for i in range(REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD):
             self._finish_experiment(intent=f"exp {i}")
         self._publish_wave()
         signal = self._signal()
         self.assertFalse(signal["stale"])
-        self.assertEqual(signal["covered_terminal_experiments"], 3)
+        self.assertFalse(signal["experiment_create_blocked"])
+        self.assertEqual(
+            signal["covered_terminal_experiments"],
+            REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
+        )
         self.assertEqual(signal["new_terminal_since_publish"], 0)
-        # Two more finished experiments: visible but below threshold.
-        self._finish_experiment(intent="four")
-        self._finish_experiment(intent="five")
+        # Two more finished experiments: visible but below the nudge threshold.
+        self._finish_experiment(intent="post-one")
+        self._finish_experiment(intent="post-two")
         signal = self._signal()
         self.assertFalse(signal["stale"])
         self.assertEqual(signal["new_terminal_since_publish"], 2)
-        # The third crosses it; the hint stays soft ('Consider …').
-        self._finish_experiment(intent="six")
+        # The third crosses the advisory nudge threshold, but not the hard
+        # create block.
+        self._finish_experiment(intent="post-three")
         signal = self._signal()
         self.assertTrue(signal["stale"])
+        self.assertFalse(signal["experiment_create_blocked"])
         self.assertTrue(signal["hint"].startswith("Consider running a project reflection"))
-        self.assertIn("covers 3 of 6", signal["hint"])
+        self.assertIn("covers 5 of 8", signal["hint"])
+
+        self._finish_experiment(intent="post-four")
+        self._finish_experiment(intent="post-five")
+        signal = self._signal()
+        self.assertTrue(signal["experiment_create_blocked"])
 
     def test_project_current_includes_reflection_at_a_glance(self) -> None:
         self._finish_experiment(intent="before reflection")
@@ -1187,6 +1211,7 @@ class ReflectionSignalTest(unittest.TestCase):
         signal = self._signal()
         self.assertTrue(signal["stale"])
         self.assertTrue(signal["contradicted_flip"])
+        self.assertFalse(signal["experiment_create_blocked"])
         self.assertIn("contradicted", signal["hint"])
 
     def test_open_wave_suppresses_the_nudge(self) -> None:
@@ -1202,6 +1227,30 @@ class ReflectionSignalTest(unittest.TestCase):
         signal = self._signal()
         self.assertFalse(signal["stale"])
         self.assertTrue(signal["open_synthesis_id"])
+
+    def test_open_wave_does_not_bypass_hard_experiment_create_block(self) -> None:
+        for i in range(REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD):
+            self._finish_experiment(intent=f"blocked-{i}")
+        self.assertTrue(self._signal()["experiment_create_blocked"])
+        self.call(
+            "reflection.create",
+            project_id=self.project_id,
+            title="Wave",
+            lenses=full_roster(),
+        )
+        signal = self._signal()
+        self.assertFalse(signal["stale"])
+        self.assertTrue(signal["open_synthesis_id"])
+        self.assertTrue(signal["experiment_create_blocked"])
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.create",
+                project_id=self.project_id,
+                name="blocked-create",
+                intent="Should wait for reflection publish.",
+            )
+        self.assertIn("reflection wave", str(ctx.exception))
 
 
 class StatusAndNextReflectionTest(unittest.TestCase):
@@ -1252,6 +1301,7 @@ class StatusAndNextReflectionTest(unittest.TestCase):
         reflection = out["project_reflection"]
         self.assertIsNone(reflection["reflection"])
         self.assertIn("Consider", reflection["hint"])
+        self.assertFalse(reflection["experiment_create_blocked"])
         # Stale AND idle: the workflow block recommends the reflection too.
         self.assertTrue(reflection["recommended"])
         self.assertEqual(out["workflow"]["current_gate"], "reflection_suggested")
@@ -1273,6 +1323,28 @@ class StatusAndNextReflectionTest(unittest.TestCase):
         self.assertIn("claim.create", workflow["allowed_actions"])
         self.assertIn("experiment.create", workflow["allowed_actions"])
         self.assertEqual(workflow["blocked_actions"], [])
+
+    def test_blocking_threshold_requires_reflection_before_new_experiment(self) -> None:
+        for i in range(REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD):
+            self._finish_experiment(f"blocked-{i}")
+        out = self.call("workflow.status_and_next", project_id=self.project_id)
+        reflection = out["project_reflection"]
+        self.assertTrue(reflection["experiment_create_blocked"])
+        workflow = out["workflow"]
+        self.assertEqual(workflow["current_gate"], "reflection_required")
+        self.assertIn("reflection.create", workflow["allowed_actions"])
+        self.assertIn("claim.create", workflow["allowed_actions"])
+        self.assertNotIn("experiment.create", workflow["allowed_actions"])
+        self.assertEqual(workflow["blocked_actions"][0]["action"], "experiment.create")
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.create",
+                project_id=self.project_id,
+                name="blocked-create",
+                intent="Should require reflection first.",
+            )
+        self.assertIn("project reflection is required", str(ctx.exception))
 
     def test_active_experiment_suppresses_the_recommendation(self) -> None:
         # New material exists, but another experiment is in flight: no

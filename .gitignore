@@ -10,3 +10,5 @@ research_plugin/.versioning_real_user_project/
 .env.*
 **/.env
 **/.env.*
+
+logs/

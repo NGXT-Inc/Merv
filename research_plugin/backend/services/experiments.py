@@ -16,6 +16,7 @@ from .artifacts import plan_sections_missing, report_problems
 from .graph_lint import graph_problems
 from .experiment_views import slim_experiment_state
 from .pinned import pinned_artifact_text
+from .reflection_policy import REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
 from .workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
@@ -93,6 +94,9 @@ class ExperimentService:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             self._reject_stopped_project(conn=conn, project_id=project_id)
+            self._reject_reflection_blocked_experiment_create(
+                conn=conn, project_id=project_id
+            )
             duplicate = conn.execute(
                 "SELECT id FROM experiments WHERE project_id = ? AND lower(name) = lower(?)",
                 (project_id, name),
@@ -164,6 +168,78 @@ class ExperimentService:
         row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
         if row is not None and row["status"] == "stopped":
             raise ValidationError("project is stopped; new experiments are not allowed")
+
+    def _reject_reflection_blocked_experiment_create(self, *, conn, project_id: str) -> None:
+        debt, published_id = self._terminal_experiments_since_last_reflection(
+            conn=conn, project_id=project_id
+        )
+        if debt < REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD:
+            return
+
+        open_wave = conn.execute(
+            """
+            SELECT id, status FROM syntheses
+            WHERE project_id = ? AND status NOT IN ('published', 'abandoned')
+            ORDER BY created_seq DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        threshold = REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
+        if open_wave is not None:
+            raise WorkflowError(
+                "project reflection is required before creating another experiment: "
+                f"{debt} experiments have finished since the last published "
+                f"reflection (threshold {threshold}), and reflection wave "
+                f"{open_wave['id']} is {open_wave['status']!r}. Finish and publish "
+                "that reflection wave; its approved change spec will create the "
+                "next experiment wave."
+            )
+
+        if published_id:
+            since = "since the last published reflection"
+        else:
+            since = "and no project reflection has been published yet"
+        raise WorkflowError(
+            "project reflection is required before creating another experiment: "
+            f"{debt} experiments have finished {since} (threshold {threshold}). "
+            "Start a reflection wave with reflection.create and publish it before "
+            "creating another experiment."
+        )
+
+    def _terminal_experiments_since_last_reflection(
+        self, *, conn, project_id: str
+    ) -> tuple[int, str | None]:
+        terminal = ", ".join(f"'{status}'" for status in sorted(TERMINAL_STATUSES))
+        current_terminal = {
+            str(row["id"])
+            for row in conn.execute(
+                f"""
+                SELECT id FROM experiments
+                WHERE project_id = ? AND status IN ({terminal})
+                """,
+                (project_id,),
+            ).fetchall()
+        }
+        published = conn.execute(
+            """
+            SELECT id, corpus_json FROM syntheses
+            WHERE project_id = ? AND status = 'published'
+            ORDER BY published_at DESC, created_seq DESC LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if published is None:
+            return len(current_terminal), None
+        try:
+            corpus = json.loads(str(published["corpus_json"] or "{}"))
+        except json.JSONDecodeError:
+            corpus = {}
+        covered = {
+            str(exp.get("id"))
+            for exp in (corpus.get("terminal_experiments") or [])
+            if isinstance(exp, dict)
+        }
+        return len(current_terminal - covered), str(published["id"])
 
     def _compose_intent(
         self,

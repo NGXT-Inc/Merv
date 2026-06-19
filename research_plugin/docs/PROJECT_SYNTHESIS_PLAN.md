@@ -396,7 +396,7 @@ reconsider the logic state:
 - reviews resolving `needs_changes` / `fail`,
 - plus a **coverage delta**: `|current terminal experiments| − |covered by current synthesis|`.
 
-**The nudge (soft, "Consider…", never forced):** when the signal crosses a threshold,
+**The nudge (soft, "Consider…", before the hard cap):** when the signal crosses a threshold,
 `workflow_status_and_next` and a Home **staleness/coverage badge** surface a hint, e.g.:
 
 > "Consider running a project reflection — the project logic graph was last updated N days ago; X
@@ -404,9 +404,10 @@ reconsider the logic state:
 > It covers 5 of 8 completed experiments."
 
 Suggested starting threshold (tunable): **≥3 newly-terminal experiments since publish, OR any claim
-flipped to `contradicted`, OR the graph older than the team's cadence.** Always advisory — it is the
-agent's editorial call whether the new developments change the project's logic state, exactly as with
-per-experiment graphs ("if a development adds no valuable information, it may leave it out").
+flipped to `contradicted`, OR the graph older than the team's cadence.** A separate hard cap defaults
+to **5 newly-terminal experiments since publish**: at that point `experiment.create` is blocked until a
+project reflection is published, and the published change spec can create the next planned experiment
+wave.
 
 This same freshness anchor doubles as the within-wave reminder: if the agent edits experiments but
 not the project graph during a wave, the gap between `graph.last_updated_at` and project activity is

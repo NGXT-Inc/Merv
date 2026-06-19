@@ -193,6 +193,7 @@ all five reflections, and your reflection artifacts — and verdicts route:
 After publishing, the project graph is the project's current logic state and
 the UI shows it on the Home page. `workflow.status_and_next` computes drift —
 experiments finishing, claims flipping — and will nudge ("Consider running a
-project reflection…") when the published reflection has fallen behind. The
-nudge is advisory: whether new developments change the project's logic state
-is your editorial call.
+project reflection…") when the published reflection has fallen behind. Past the
+hard experiment threshold, `experiment.create` is blocked until a reflection is
+published; publish either stops the project or creates the reviewed next
+experiment wave.
