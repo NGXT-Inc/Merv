@@ -72,6 +72,9 @@ export default function Sidebar({ onRefresh }) {
         <NavLink to="/" end className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           Home
         </NavLink>
+        <NavLink to="/feed" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
+          Feed
+        </NavLink>
         <NavLink to="/claims" className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           <span>Claims</span>
           <span className="sidebar-link-count">{stats.claims ?? home?.claims?.length ?? 0}</span>

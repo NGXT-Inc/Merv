@@ -661,6 +661,15 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     ),
 }
 
+# Social feed (Feed_PRD.md) registers its tools from its own module so the feed
+# stays a liftable feature: this is the single integration point with the tool
+# manifest. The merge happens before the derived sets below so routing/catalog
+# include the feed tools. (feed_contracts imports the base classes above; this
+# bottom-of-section import is safe because they are already defined.)
+from .feed_contracts import FEED_TOOL_CONTRACTS  # noqa: E402
+
+TOOL_CONTRACTS.update(FEED_TOOL_CONTRACTS)
+
 TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
     name: contract.input_model for name, contract in TOOL_CONTRACTS.items()
 }

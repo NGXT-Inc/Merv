@@ -114,6 +114,10 @@ class ToolPlanePartitionTest(unittest.TestCase):
                 "resource.associate",
                 "sandbox.request",
                 "sandbox.sync",
+                # feed.post reads a local image file before recording the post,
+                # so it lives on the data plane (byte capture mirrors
+                # resource.associate); register/list are pure control records.
+                "feed.post",
             },
         )
         self.assertEqual(AGGREGATE_TOOL_NAMES, {"sandbox.health", "sandbox.get"})

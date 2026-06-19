@@ -7,7 +7,7 @@ import { setSurfaceOverride } from '../store/useViewport';
 import BottomSheet from './BottomSheet';
 import ToastHost from './Toast';
 import { usePullToRefresh } from './usePullToRefresh';
-import { IconNow, IconExperiments, IconActivity, IconMore } from './icons';
+import { IconFeed, IconNow, IconExperiments, IconMore } from './icons';
 
 const NEXT_THEME_MODE = { light: 'dark', dark: 'system', system: 'light' };
 
@@ -86,6 +86,10 @@ export default function MobileShell({ children, onRefresh }) {
       <main className="mshell-main">{children}</main>
 
       <nav className="mnav" aria-label="Primary">
+        <NavLink to="/feed" className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
+          <IconFeed className="mnav-glyph" />
+          Feed
+        </NavLink>
         <NavLink to="/" end className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
           <IconNow className="mnav-glyph" />
           Now
@@ -94,10 +98,6 @@ export default function MobileShell({ children, onRefresh }) {
         <NavLink to="/experiments" className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
           <IconExperiments className="mnav-glyph" />
           Experiments
-        </NavLink>
-        <NavLink to="/events" className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
-          <IconActivity className="mnav-glyph" />
-          Activity
         </NavLink>
         <button
           type="button"
@@ -160,6 +160,7 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <SheetLink to="/projects" label="Projects" />
 
       <div className="msheet-section">Forensics</div>
+      <SheetLink to="/events" label="Events" />
       <SheetLink to="/activity" label="Traffic & Tool I/O" />
       <SheetLink to="/visual/dag" label="Logic DAG" note="desktop recommended" />
 

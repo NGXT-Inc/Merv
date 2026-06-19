@@ -21,6 +21,7 @@ from . import __version__
 from .app import ResearchPluginApp
 from .version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
 from .contracts import PROJECT_SCOPED_TOOL_NAMES
+from .feed_http import register_feed_routes
 from .project_router import ProjectRouter
 from .services.figure_view import build_experiment_figure
 from .services.graph_lint import MAX_GRAPH_NODES, graph_problems
@@ -1010,7 +1011,11 @@ def create_fastapi_app(
             CORSMiddleware,
             allow_origins=["*"],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept"],
+            # The client always stamps X-RP-Client-Version (and may send a bearer
+            # token); include them so the documented cross-origin dev override
+            # (rsui:apiBase → a working-tree daemon on another port) passes
+            # preflight instead of failing with "Failed to fetch".
+            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version", "Authorization"],
         )
 
     @http.middleware("http")
@@ -1436,6 +1441,11 @@ def create_fastapi_app(
     @http.get("/api/projects/{project_id}/events")
     def events(project_id: str, limit: int = Query(100, ge=1)) -> dict[str, Any]:
         return api_for_project(project_id).events(project_id=project_id, limit=limit)
+
+    # Social feed (Feed_PRD.md) — a self-contained module: its routes register
+    # themselves here, reading only off app.feed. Removing the feed is deleting
+    # the feed package plus this one line.
+    register_feed_routes(http, app_for=lambda pid: api_for_project(pid).app)
 
     # MCP-shaped endpoints — drive the same ResearchPluginApp.call_tool path that
     # the stdio MCP server uses. The stdio MCP proxy forwards Codex tool calls

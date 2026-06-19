@@ -17,6 +17,7 @@ import MobileProjects from './mobile/MobileProjects';
 import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
 import MobileSynthesisScreen from './mobile/MobileSynthesisScreen';
 import Home from './pages/Home';
+import Feed from './feed/Feed';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
 import Claims from './pages/Claims';
@@ -96,6 +97,7 @@ export default function App() {
         <CompatBanner />
         <Routes>
           <Route path="/" element={<NowScreen />} />
+          <Route path="/feed" element={<Feed />} />
           <Route path="/projects" element={<MobileProjects />} />
           <Route path="/projects/new" element={<MobileProjectCreateNotice />} />
           <Route path="/claims" element={<MobileClaims />} />
@@ -124,6 +126,7 @@ export default function App() {
         <CompatBanner />
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/feed" element={<Feed />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/new" element={<CreateProject />} />
           <Route path="/claims" element={<Claims />} />

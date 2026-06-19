@@ -19,6 +19,7 @@ from .workspace import LocalWorkspace
 from .services import (
     ClaimService,
     ExperimentService,
+    FeedService,
     PermissionService,
     ProjectService,
     ResourceService,
@@ -196,6 +197,14 @@ class ResearchPluginApp:
             resources=self.resources,
             syntheses=self.syntheses,
         )
+        # Feed (Feed_PRD.md) is a self-contained module: it owns its schema,
+        # tools, HTTP routes, and UI, and nothing in the research workflow
+        # depends on it. Constructed here purely as a composition-root wiring.
+        self.feed = FeedService(
+            store=self.store,
+            workspace=self.workspace,
+            blobs=self.blobs,
+        )
         handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "workflow.status_and_next": self.workflow.status_and_next_agent,
             "project.create": self.projects.create,
@@ -231,6 +240,9 @@ class ResearchPluginApp:
             "sandbox.release": self.sandboxes.release,
             "sandbox.terminal": self.sandboxes.terminal,
             "sandbox.health": self.sandboxes.health,
+            "feed.register": self.feed.register,
+            "feed.post": self.feed.post,
+            "feed.list": self.feed.list_posts,
         }
         _assert_tool_contracts_match_handlers(handlers=handlers)
         self._tools = {

@@ -31,7 +31,14 @@ function authToken() {
   );
 }
 
-async function request(path, { method = 'GET', body, signal } = {}) {
+// Absolute URL for a server-provided relative media/asset path, prefixed with
+// BASE so it resolves against the daemon even when the dev UI points at another
+// origin. Exported as shared transport for self-contained feature modules.
+export function mediaUrl(relPath) {
+  return `${BASE}${relPath}`;
+}
+
+export async function request(path, { method = 'GET', body, signal } = {}) {
   const init = { method, signal, headers: { 'X-RP-Client-Version': CLIENT_VERSION } };
   const token = authToken();
   if (token) init.headers['Authorization'] = `Bearer ${token}`;

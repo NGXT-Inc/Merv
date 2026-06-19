@@ -25,6 +25,17 @@ export function IconNow(props) {
   );
 }
 
+export function IconFeed(props) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
+      <path d="M7 9h6" />
+      <path d="M7 12.5h10" />
+      <path d="M7 16h10" />
+    </svg>
+  );
+}
+
 export function IconExperiments(props) {
   return (
     <svg {...base} {...props}>
