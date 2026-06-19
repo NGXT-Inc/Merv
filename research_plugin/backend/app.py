@@ -645,7 +645,7 @@ class ResearchPluginApp:
     ) -> dict[str, Any]:
         arguments = arguments or {}
         telemetry_arguments = arguments
-        if telemetry_project_id and "project_id" not in telemetry_arguments:
+        if telemetry_project_id:
             telemetry_arguments = {
                 **arguments,
                 "project_id": telemetry_project_id,

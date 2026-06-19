@@ -368,6 +368,29 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(wrong_capability.status_code, 404, wrong_capability.text)
 
+        malformed = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "review.start",
+                "arguments": {
+                    "review_request_id": req["review_request_id"],
+                    "reviewer_capability": req["reviewer_capability"],
+                    "project_id": "proj_spoofed",
+                },
+            },
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(malformed.status_code, 400, malformed.text)
+        debug_errors = self.client.get(
+            "/api/debug/tool-calls?tool=review.start&status=error",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(debug_errors.status_code, 200, debug_errors.text)
+        self.assertEqual(
+            {call["project_id"] for call in debug_errors.json()["calls"]},
+            {project_id},
+        )
+
         ok = self.client.post(
             "/mcp/call",
             json=payload,
