@@ -52,10 +52,20 @@ export default function Resources() {
               <div>
                 <h1 className="page-title">Files we use or produce</h1>
                 <p className="page-summary">
-                  Pick a file from the sidebar to preview it here. A resource is a regular file in
-                  the local repo — the backend stores a pointer + observed version token
-                  (<span className="mono">path + mtime_ns + size_bytes</span>) and serves content
-                  directly from disk.
+                  {hasLocalDataPlane ? (
+                    <>
+                      Pick a file from the sidebar to preview it here. A resource is a regular file in
+                      the local repo — the backend stores a pointer + observed version token
+                      (<span className="mono">path + mtime_ns + size_bytes</span>) and serves content
+                      directly from disk.
+                    </>
+                  ) : (
+                    <>
+                      Pick a resource from the sidebar to inspect submitted metadata and available
+                      captured content. Local file registration, association, and raw disk reads run
+                      through the data-plane daemon.
+                    </>
+                  )}
                 </p>
               </div>
               <div className="page-actions">

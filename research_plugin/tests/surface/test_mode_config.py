@@ -139,18 +139,20 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertNotIn("repo_root", body)
         self.assertNotIn("store", body)
 
-    def test_cors_allows_authorization_header(self) -> None:
+    def test_cors_allows_spa_request_headers(self) -> None:
         resp = self.client.options(
             "/api/projects",
             headers={
                 "Origin": "https://app.example",
                 "Access-Control-Request-Method": "GET",
-                "Access-Control-Request-Headers": "Authorization",
+                "Access-Control-Request-Headers": "Authorization, X-RP-Client-Version",
             },
         )
-        # Preflight is never auth-challenged; Authorization is an allowed header.
-        allow = resp.headers.get("access-control-allow-headers", "")
-        self.assertIn("Authorization", allow)
+        # Preflight is never auth-challenged; the SPA's auth + version headers
+        # must be allowed before any observer/admin endpoint can be reached.
+        allow = resp.headers.get("access-control-allow-headers", "").lower()
+        self.assertIn("authorization", allow)
+        self.assertIn("x-rp-client-version", allow)
 
     def test_data_plane_http_mutation_is_rejected_in_control_mode(self) -> None:
         headers = {"Authorization": f"Bearer {self.token}"}
@@ -169,6 +171,58 @@ class ControlModeAuthTest(unittest.TestCase):
         body = resp.json()
         self.assertEqual(body["error_code"], "data_plane_required")
         self.assertEqual(body["tool"], "resource.register_file")
+
+    def test_hosted_release_skips_final_pull(self) -> None:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        project = self.client.post(
+            "/api/projects", json={"name": "Hosted Release"}, headers=headers
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        exp = self.client.post(
+            f"/api/projects/{project_id}/experiments",
+            json={"name": "exp", "intent": "run"},
+            headers=headers,
+        )
+        self.assertEqual(exp.status_code, 201, exp.text)
+        exp_id = exp.json()["id"]
+
+        self.app.sandboxes.registry.upsert(
+            experiment_id=exp_id,
+            project_id=project_id,
+            sandbox_id="sb-hosted-release",
+            status="running",
+            ssh_host="h",
+            ssh_port=22,
+            ssh_user="root",
+            expires_at="2999-01-01T00:00:00Z",
+        )
+        self.app.execution_backend.alive["sb-hosted-release"] = True
+        self.app.execution_backend.by_experiment[exp_id] = "sb-hosted-release"
+        called = False
+        original = self.app.sandboxes._final_pull_row
+
+        def _record_final_pull(*, row):  # noqa: ANN001
+            nonlocal called
+            called = True
+            return original(row=row)
+
+        self.app.sandboxes._final_pull_row = _record_final_pull
+        try:
+            resp = self.client.post(
+                f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release",
+                headers=headers,
+            )
+        finally:
+            self.app.sandboxes._final_pull_row = original
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "terminated")
+        self.assertTrue(body["final_pull_skipped"])
+        self.assertFalse(body["daemon_unreachable"])
+        self.assertFalse(called)
+        self.assertIn("sb-hosted-release", self.app.execution_backend.terminated)
 
     def test_daemon_resource_endpoint_requires_daemon_token(self) -> None:
         from backend.dataplane.http_channel import HttpTaskQueue

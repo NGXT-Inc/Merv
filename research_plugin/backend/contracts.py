@@ -635,9 +635,10 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.release": ToolContract(
         input_model=SandboxReleaseInput,
         description=(
-            "Terminate the experiment's sandbox after a best-effort final pull "
-            "and metrics snapshot. Prefer sandbox.sync before release for a "
-            "deliberate handoff."
+            "Terminate the experiment's sandbox and capture a best-effort "
+            "metrics snapshot. Prefer sandbox.sync before release for a "
+            "deliberate file handoff; hosted control cannot perform local "
+            "final-pull rsync."
         ),
     ),
     "sandbox.terminal": ToolContract(

@@ -8,10 +8,10 @@ import ContentUnavailable from './ContentUnavailable';
  * PlanSpotlight — the design artifact.
  *
  * The plan resource is the framing document of the experiment, so we render
- * its content inline (always the live file — the backend stores version
- * metadata only, not historical content). Above the body, a compact header
- * bar (path + size + status), and the ReviewEvolutionStepper showing
- * v1→v2→…→accepted.
+ * its content inline from the backend's available source: live local bytes in
+ * local mode, or submitted/pinned bytes in hosted mode when available. Above
+ * the body, a compact header bar (path + size + status), and the
+ * ReviewEvolutionStepper showing v1→v2→…→accepted.
  */
 export default function PlanSpotlight({
   projectId,

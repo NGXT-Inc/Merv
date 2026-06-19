@@ -68,9 +68,8 @@ export async function request(path, { method = 'GET', body, signal } = {}) {
 }
 
 export const api = {
-  // Server identity + compat floor (version handshake). Returns
-  // { server_version, min_daemon_version, min_proxy_version }; identical in
-  // every mode. Used to show the live backend version and an upgrade hint.
+  // Server identity + compat floor (version handshake). Also reports mode and
+  // capabilities so hosted-control UIs can hide local data-plane actions.
   getMeta: () => request('/api/meta'),
 
   // Projects

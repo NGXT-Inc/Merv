@@ -216,7 +216,11 @@ export default function ResourceContentView({
         <FileRenderer
           text={text}
           path={path || content.path}
-          resolveImageSrc={(src) => api.resourceFileUrl(projectId, resourceId, src)}
+          resolveImageSrc={
+            hasLocalDataPlane
+              ? (src) => api.resourceFileUrl(projectId, resourceId, src)
+              : null
+          }
         />
       )}
     </div>

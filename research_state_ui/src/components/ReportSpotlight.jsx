@@ -5,6 +5,7 @@ import FileRenderer from './FileRenderer';
 import ExperimentReviewStepper from './ExperimentReviewStepper';
 import ContentUnavailable from './ContentUnavailable';
 import { isMarkdown } from '../utils/format';
+import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 
 /**
  * ReportSpotlight — the results artifact.
@@ -15,10 +16,9 @@ import { isMarkdown } from '../utils/format';
  * treatment as PlanSpotlight: compact header bar (status + path + size +
  * toggle) above the rendered body.
  *
- * The body renders inline markdown — prose, GFM metrics tables, and figures:
- * relative image links (e.g. `figures/loss.png`) resolve through the resource
- * file endpoint's `rel` parameter, so PNGs saved next to the report display
- * inline.
+ * The body renders inline markdown — prose and GFM metrics tables. In local
+ * mode, relative image links resolve through the resource file endpoint's
+ * `rel` parameter so PNGs saved next to the report display inline.
  */
 export default function ReportSpotlight({
   projectId,
@@ -26,6 +26,7 @@ export default function ReportSpotlight({
   experimentReviews,
   experimentStatus,
 }) {
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -108,7 +109,11 @@ export default function ReportSpotlight({
             ) : isMarkdown(reportResource.path) ? (
               <MarkdownView
                 text={content.content ?? ''}
-                resolveImageSrc={(src) => api.resourceFileUrl(projectId, reportResource.id, src)}
+                resolveImageSrc={
+                  hasLocalDataPlane
+                    ? (src) => api.resourceFileUrl(projectId, reportResource.id, src)
+                    : null
+                }
               />
             ) : (
               <FileRenderer text={content.content ?? ''} path={reportResource.path} />

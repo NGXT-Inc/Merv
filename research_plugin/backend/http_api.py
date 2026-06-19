@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from . import __version__
 from .app import ResearchPluginApp
 from .version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
-from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES
+from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, SandboxReleaseInput
 from .feed_http import register_feed_routes
 from .project_router import ProjectRouter
 from .services.figure_view import build_experiment_figure
@@ -1011,6 +1011,8 @@ def create_fastapi_app(
         activity_source: str = "http",
         principal: Any | None = None,
     ) -> dict[str, Any]:
+        arguments = dict(arguments or {})
+        context = dict(context or {})
         if auth_required and name in DATA_PLANE_TOOL_NAMES:
             raise DataPlaneRequiredError(
                 f"{name} requires the local data-plane daemon; hosted control "
@@ -1020,6 +1022,23 @@ def create_fastapi_app(
                     "reason": "requires_local_data_plane",
                 },
             )
+        if auth_required and name == "sandbox.release":
+            # Browser/admin release is a control-plane lifecycle action, but a
+            # final rsync pull is data-plane work. Hosted calls terminate without
+            # the pull; reapers and local/daemon calls still use the full path.
+            request = SandboxReleaseInput.model_validate(arguments)
+            target = api_for_project(request.project_id)
+            with target.app.store.transaction() as conn:
+                target.app.store.require_project_id(
+                    conn=conn,
+                    project_id=request.project_id,
+                    tenant_id=getattr(principal, "tenant_id", "") or "",
+                )
+            return target.app.sandboxes.release(
+                experiment_id=request.experiment_id,
+                project_id=request.project_id,
+                skip_final_pull=True,
+            )
         if router is not None:
             return router.call_tool(
                 name=name,
@@ -1028,7 +1047,6 @@ def create_fastapi_app(
                 activity_source=activity_source,
             )
         assert api is not None
-        arguments = dict(arguments or {})
         if auth_required and name == "project.create":
             request = api.app._tools["project.create"].input_model.model_validate(arguments)
             return api.app.projects.create(
@@ -1104,14 +1122,13 @@ def create_fastapi_app(
     # CORS (cloud plan Phase 7): local mode keeps the wide-open `*` policy
     # (loopback-only, auth off) — unchanged. Control mode uses an explicit
     # allowed-origins list (empty by default until the hosted UI origin is
-    # configured) and allows the Authorization header so the SPA can send a
-    # bearer token.
+    # configured) and allows the headers the SPA stamps on every request.
     if auth_required:
         http.add_middleware(
             CORSMiddleware,
             allow_origins=allowed_origins or [],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept", "Authorization"],
+            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version", "Authorization"],
         )
     else:
         http.add_middleware(
@@ -1557,10 +1574,16 @@ def create_fastapi_app(
         )
 
     @http.post("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/release")
-    def release_sandbox(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api_for_project(project_id).call_tool(
+    def release_sandbox(
+        project_id: str,
+        experiment_id: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        return route_call_tool(
             name="sandbox.release",
             arguments={"project_id": project_id, "experiment_id": experiment_id},
+            activity_source="http",
+            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
         )
 
     @http.get("/api/projects/{project_id}/events")

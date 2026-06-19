@@ -469,7 +469,13 @@ class SandboxService:
             ]
         }
 
-    def release(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def release(
+        self,
+        *,
+        experiment_id: str,
+        project_id: str | None = None,
+        skip_final_pull: bool = False,
+    ) -> dict[str, Any]:
         row = self.registry.fetch_scoped(experiment_id=experiment_id, project_id=project_id)
         # Signal any in-flight provisioning job to abort. It terminates whatever
         # it created via the cancel path (acquire's cleanup), even if create is
@@ -483,7 +489,8 @@ class SandboxService:
         # but the result flags it so the UI can show a "daemon unreachable" state.
         daemon_unreachable = False
         was_active = bool(row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES)
-        if was_active:
+        final_pull_skipped = bool(was_active and skip_final_pull)
+        if was_active and not skip_final_pull:
             try:
                 self._final_pull_row(row=row)
             except Exception:  # noqa: BLE001 — release should still terminate
@@ -492,6 +499,7 @@ class SandboxService:
                 # as the reaper (plan Phase 5). Loud either way, never raises.
                 daemon_unreachable = True
                 self._parachute_row(row=row)
+        if was_active:
             # Last chance to read MLflow: the server dies with the VM.
             self._persist_metrics_row(row=row, force=True)
         if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
@@ -510,16 +518,25 @@ class SandboxService:
                 "sandbox_id": row.get("sandbox_id", ""),
                 "stopped": stopped,
                 "daemon_unreachable": daemon_unreachable,
+                "final_pull_skipped": final_pull_skipped,
             },
         )
         view = self._row_view(row=self.registry.load_row(experiment_id=experiment_id))
         view["daemon_unreachable"] = daemon_unreachable
+        view["final_pull_skipped"] = final_pull_skipped
         if daemon_unreachable:
             view["hint"] = (
                 "Sandbox terminated. The final pull failed, so local files may "
                 "be stale. Inspect the local experiment folder before "
                 "registering or associating resources, and rerun the experiment "
                 "if required outputs are missing."
+            )
+        elif final_pull_skipped:
+            view["hint"] = (
+                "Sandbox terminated. Hosted control skipped the final pull "
+                "because local files are owned by the data-plane daemon. Use "
+                "sandbox.sync from the local daemon before release when a "
+                "deliberate file handoff is required."
             )
         elif was_active:
             view["hint"] = (

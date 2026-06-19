@@ -207,7 +207,7 @@ class ControlRestartTest(unittest.TestCase):
         project_id = first.call_tool("project.create", {"name": "Cloud"})["id"]
         exp_id = first.call_tool(
             "experiment.create",
-            {"project_id": project_id, "name": "x", "intent": "y"},
+            {"project_id": project_id, "name": "exp-x", "intent": "y"},
         )["id"]
         first.sandboxes.registry.upsert(
             experiment_id=exp_id,
