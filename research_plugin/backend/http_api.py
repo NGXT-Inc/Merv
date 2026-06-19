@@ -1220,6 +1220,27 @@ def create_fastapi_app(
             )
         return principal
 
+    def require_admin_principal(request: Request) -> Any:
+        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        if not auth_required:
+            return principal
+        if getattr(principal, "client_id", "") != "admin":
+            raise PermissionDeniedError(
+                "admin-scoped bearer token required",
+                details={"required_client_id": "admin"},
+            )
+        return principal
+
+    def require_tenant_or_admin(request: Request, tenant_id: str) -> Any:
+        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        if not auth_required:
+            return principal
+        if getattr(principal, "client_id", "") == "admin":
+            return principal
+        if getattr(principal, "tenant_id", "") != tenant_id:
+            raise NotFoundError(f"tenant counters not found: {tenant_id}")
+        return principal
+
     def require_daemon_project(request: Request, project_id: str) -> ResearchHttpApi:
         principal = require_daemon_principal(request)
         target = api_for_project(project_id)
@@ -2060,17 +2081,21 @@ def create_fastapi_app(
     # counts so the caller can log/alert.
     if cleanup is not None:
         @http.post("/api/admin/cleanup")
-        def admin_cleanup() -> dict[str, Any]:
+        def admin_cleanup(request: Request) -> dict[str, Any]:
+            require_admin_principal(request)
             return {"cleaned": cleanup.run_all().as_dict()}
 
         # RED-ish per-tenant counters (cloud plan Phase 9). Control-mode admin
-        # read; principal-gated by the middleware. A tenant inspecting its own
-        # usage; an operator inspecting any. Reuses the events table + the
-        # generation ledger — no new audit store.
+        # read; principal-gated by the middleware. Tenants inspect their own
+        # usage; an explicit admin client can inspect any tenant. Reuses the
+        # events table + the generation ledger — no new audit store.
         @http.get("/api/admin/tenants/{tenant_id}/counters")
-        def admin_tenant_counters(tenant_id: str) -> dict[str, Any]:
+        def admin_tenant_counters(
+            tenant_id: str, request: Request
+        ) -> dict[str, Any]:
             from .observability import TenantCounters
 
+            require_tenant_or_admin(request, tenant_id)
             assert api is not None
             return TenantCounters(store=api.app.store).for_tenant(tenant_id=tenant_id)
 

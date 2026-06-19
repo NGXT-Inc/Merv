@@ -956,6 +956,80 @@ class ControlModeAuthTest(unittest.TestCase):
             {"exp_other"},
         )
 
+    def test_admin_counters_are_tenant_or_admin_scoped(self) -> None:
+        class _Cleanup:
+            def run_all(self):  # noqa: ANN001
+                raise AssertionError("cleanup should not run for counters")
+
+        admin_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, cleanup=_Cleanup()),
+            raise_server_exceptions=False,
+        )
+        project = self.client.post(
+            "/api/projects",
+            json={"name": "Counter Tenant"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(project.status_code, 201, project.text)
+        self.app.projects.create(name="Other Counters", tenant_id="other")
+
+        own = admin_client.get(
+            "/api/admin/tenants/acme/counters",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(own.status_code, 200, own.text)
+        self.assertEqual(own.json()["tenant_id"], "acme")
+
+        denied = admin_client.get(
+            "/api/admin/tenants/other/counters",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+        admin_token = self.auth.mint_token(tenant_id="ops", client_id="admin")
+        operator = admin_client.get(
+            "/api/admin/tenants/other/counters",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(operator.status_code, 200, operator.text)
+        self.assertEqual(operator.json()["tenant_id"], "other")
+
+    def test_admin_cleanup_requires_admin_token(self) -> None:
+        class _Report:
+            def as_dict(self):  # noqa: ANN001
+                return {"ok": True}
+
+        class _Cleanup:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run_all(self):  # noqa: ANN001
+                self.calls += 1
+                return _Report()
+
+        cleanup = _Cleanup()
+        admin_client = TestClient(
+            create_fastapi_app(self.app, auth=self.auth, cleanup=cleanup),
+            raise_server_exceptions=False,
+        )
+
+        denied = admin_client.post(
+            "/api/admin/cleanup",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(denied.status_code, 400, denied.text)
+        self.assertEqual(denied.json()["error_code"], "permission_denied")
+        self.assertEqual(cleanup.calls, 0)
+
+        admin_token = self.auth.mint_token(tenant_id="ops", client_id="admin")
+        ok = admin_client.post(
+            "/api/admin/cleanup",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(ok.json()["cleaned"], {"ok": True})
+        self.assertEqual(cleanup.calls, 1)
+
     def test_control_mcp_catalog_hides_data_plane_tools(self) -> None:
         resp = self.client.get(
             "/mcp/tools", headers={"Authorization": f"Bearer {self.token}"}
