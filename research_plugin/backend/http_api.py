@@ -18,10 +18,9 @@ from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__
-from .app import ResearchPluginApp, _contract_error_message
+from .app import ResearchPluginApp
 from .version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
 from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, SandboxReleaseInput
 from .feed_http import register_feed_routes
@@ -71,18 +70,6 @@ def _required_text(payload: dict[str, Any], key: str) -> str:
     if value is None or str(value) == "":
         raise ValidationError(f"{key} is required")
     return str(value)
-
-
-def _validated_tool_input(
-    app: ResearchPluginApp, *, name: str, arguments: dict[str, Any]
-) -> Any:
-    try:
-        return app._tools[name].input_model.model_validate(arguments)
-    except PydanticValidationError as exc:
-        raise ValidationError(
-            _contract_error_message(exc=exc),
-            details={"tool": name, "errors": exc.errors()},
-        ) from exc
 
 
 def _decode_b64_field(
@@ -317,12 +304,15 @@ class ResearchHttpApi:
         self.app.reviews.assert_request_in_project(
             project_id=project_id, review_request_id=body.get("review_request_id")
         )
-        request = _validated_tool_input(
-            self.app, name="review.start", arguments=body
-        )
-        return self.app.reviews.start(
-            **request.model_dump(),
-            tenant_id=tenant_id,
+        return self._present(
+            self.app.call_tool(
+                name="review.start",
+                arguments=body,
+                activity_source="http",
+                internal_kwargs=(
+                    {"tenant_id": tenant_id} if tenant_id is not None else None
+                ),
+            )
         )
 
     def submit_review(self, *, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1139,29 +1129,40 @@ def create_fastapi_app(
             )
         assert api is not None
         if auth_required and name == "project.create":
-            request = _validated_tool_input(
-                api.app, name="project.create", arguments=arguments
-            )
-            return api.app.projects.create(
-                name=request.name,
-                summary=request.summary,
-                tenant_id=getattr(principal, "tenant_id", "") or None,
+            return api.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source=activity_source,
+                internal_kwargs={
+                    "tenant_id": getattr(principal, "tenant_id", "") or None
+                },
             )
         if auth_required and name == "project.list":
-            return api.app.projects.list_projects(
-                tenant_id=getattr(principal, "tenant_id", "") or ""
+            return api.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source=activity_source,
+                internal_kwargs={
+                    "tenant_id": getattr(principal, "tenant_id", "") or ""
+                },
             )
         if auth_required and name == "project.current":
-            return api.app.current_project(
-                tenant_id=getattr(principal, "tenant_id", "") or ""
+            return api.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source=activity_source,
+                internal_kwargs={
+                    "tenant_id": getattr(principal, "tenant_id", "") or ""
+                },
             )
         if auth_required and name == "review.start":
-            request = _validated_tool_input(
-                api.app, name="review.start", arguments=arguments
-            )
-            return api.app.reviews.start(
-                **request.model_dump(),
-                tenant_id=getattr(principal, "tenant_id", "") or "",
+            return api.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source=activity_source,
+                internal_kwargs={
+                    "tenant_id": getattr(principal, "tenant_id", "") or ""
+                },
             )
         if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments and (context or {}).get("repo_root"):
             projects = api.app.projects.list_projects()["projects"]

@@ -153,7 +153,6 @@ class ReviewService:
             req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (review_request_id,)).fetchone()
             if req is None:
                 raise NotFoundError(f"review request not found: {review_request_id}")
-            self._validate_request_open(req=req, capability=reviewer_capability)
             if tenant_id is not None:
                 owner = conn.execute(
                     "SELECT tenant_id FROM projects WHERE id = ?", (req["project_id"],)
@@ -162,6 +161,7 @@ class ReviewService:
                     # Same shape as an unknown request: do not confirm the
                     # target exists to a foreign tenant.
                     raise NotFoundError(f"review request not found: {review_request_id}")
+            self._validate_request_open(req=req, capability=reviewer_capability)
             if caller_session_id and caller_session_id == req["producer_session_id"]:
                 raise PermissionDeniedError("reviewer session must differ from producer session")
             snapshot_now = self._target_snapshot_id(conn=conn, target_type=req["target_type"], target_id=req["target_id"])

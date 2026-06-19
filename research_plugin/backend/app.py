@@ -54,9 +54,17 @@ class ToolSpec:
         schema.pop("title", None)
         return schema
 
-    def call(self, *, raw_arguments: dict[str, Any]) -> dict[str, Any]:
+    def call(
+        self,
+        *,
+        raw_arguments: dict[str, Any],
+        internal_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         request = self.input_model.model_validate(raw_arguments)
-        return self.handler(**request.model_dump())
+        kwargs = request.model_dump()
+        if internal_kwargs:
+            kwargs.update(internal_kwargs)
+        return self.handler(**kwargs)
 
 
 def _contract_error_message(*, exc: PydanticValidationError) -> str:
@@ -632,6 +640,7 @@ class ResearchPluginApp:
         arguments: dict[str, Any] | None = None,
         *,
         activity_source: str = "app",
+        internal_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         arguments = arguments or {}
         started = monotonic_ms()
@@ -643,7 +652,10 @@ class ResearchPluginApp:
                 review_session_id=arguments.get("review_session_id"),
             )
             try:
-                result = self._tools[name].call(raw_arguments=arguments)
+                result = self._tools[name].call(
+                    raw_arguments=arguments,
+                    internal_kwargs=internal_kwargs,
+                )
             except PydanticValidationError as exc:
                 raise ToolValidationError(
                     _contract_error_message(exc=exc),

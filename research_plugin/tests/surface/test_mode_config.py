@@ -354,6 +354,20 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 404, denied.text)
 
+        wrong_capability = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "review.start",
+                "arguments": {
+                    "review_request_id": req["review_request_id"],
+                    "reviewer_capability": "rp_wrong",
+                    "declared_agent": "reviewer",
+                },
+            },
+            headers={"Authorization": f"Bearer {self.other_token}"},
+        )
+        self.assertEqual(wrong_capability.status_code, 404, wrong_capability.text)
+
         ok = self.client.post(
             "/mcp/call",
             json=payload,
