@@ -641,8 +641,15 @@ class ResearchPluginApp:
         *,
         activity_source: str = "app",
         internal_kwargs: dict[str, Any] | None = None,
+        telemetry_project_id: str | None = None,
     ) -> dict[str, Any]:
         arguments = arguments or {}
+        telemetry_arguments = arguments
+        if telemetry_project_id and "project_id" not in telemetry_arguments:
+            telemetry_arguments = {
+                **arguments,
+                "project_id": telemetry_project_id,
+            }
         started = monotonic_ms()
         try:
             if name not in self._tools:
@@ -665,7 +672,7 @@ class ResearchPluginApp:
             self.activity.tool_ok(
                 source=activity_source,
                 tool=name,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 duration_ms=duration_ms,
                 result=result,
             )
@@ -674,7 +681,7 @@ class ResearchPluginApp:
                 source=activity_source,
                 status="ok",
                 duration_ms=duration_ms,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 result=result,
             )
             return result
@@ -683,7 +690,7 @@ class ResearchPluginApp:
             self.activity.tool_error(
                 source=activity_source,
                 tool=name,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 duration_ms=duration_ms,
                 error=exc.message,
                 error_code=exc.error_code,
@@ -693,7 +700,7 @@ class ResearchPluginApp:
                 source=activity_source,
                 status="error",
                 duration_ms=duration_ms,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 error=exc.message,
                 error_code=exc.error_code,
             )
@@ -703,7 +710,7 @@ class ResearchPluginApp:
             self.activity.tool_error(
                 source=activity_source,
                 tool=name,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 duration_ms=duration_ms,
                 error=str(exc),
                 error_code="unexpected",
@@ -713,7 +720,7 @@ class ResearchPluginApp:
                 source=activity_source,
                 status="error",
                 duration_ms=duration_ms,
-                arguments=arguments,
+                arguments=telemetry_arguments,
                 error=str(exc),
                 error_code="unexpected",
             )

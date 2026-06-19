@@ -312,6 +312,7 @@ class ResearchHttpApi:
                 internal_kwargs=(
                     {"tenant_id": tenant_id} if tenant_id is not None else None
                 ),
+                telemetry_project_id=project_id,
             )
         )
 
@@ -1163,6 +1164,9 @@ def create_fastapi_app(
                 internal_kwargs={
                     "tenant_id": getattr(principal, "tenant_id", "") or ""
                 },
+                telemetry_project_id=review_request_project_id(
+                    api, arguments.get("review_request_id")
+                ),
             )
         if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments and (context or {}).get("repo_root"):
             projects = api.app.projects.list_projects()["projects"]
@@ -1266,6 +1270,21 @@ def create_fastapi_app(
                 raise NotFoundError(f"project not found: {project_id}")
             return {project_id}
         return allowed
+
+    def review_request_project_id(
+        target: ResearchHttpApi, review_request_id: Any
+    ) -> str | None:
+        if not review_request_id:
+            return None
+        conn = target.app.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id FROM review_requests WHERE id = ?",
+                (str(review_request_id),),
+            ).fetchone()
+            return str(row["project_id"]) if row else None
+        finally:
+            conn.close()
 
     http = FastAPI(title="Research Plugin API", version=__version__)
     # CORS (cloud plan Phase 7): local mode keeps the wide-open `*` policy

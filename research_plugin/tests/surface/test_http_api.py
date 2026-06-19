@@ -141,6 +141,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         recorded = self.app.tool_calls.stats(tool="review.start")
         self.assertEqual(recorded["totals"]["calls"], 1)
         self.assertEqual(recorded["calls"][0]["tool"], "review.start")
+        self.assertEqual(recorded["calls"][0]["project_id"], pid)
 
         wrong_submit = self.client.request(
             "POST",

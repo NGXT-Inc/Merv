@@ -375,6 +375,13 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(ok.status_code, 200, ok.text)
         session_id = ok.json()["result"]["review_session_id"]
+        debug = self.client.get(
+            "/api/debug/tool-calls?tool=review.start&status=ok",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(debug.status_code, 200, debug.text)
+        self.assertEqual(debug.json()["totals"]["calls"], 1)
+        self.assertEqual(debug.json()["calls"][0]["project_id"], project_id)
         conn = self.app.store.connect()
         try:
             row = conn.execute(
