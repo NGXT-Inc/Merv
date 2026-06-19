@@ -37,8 +37,10 @@ See `deploy/.env.example` for a copy-ready template. Essentials:
 
 ## Version / compatibility floor
 
-- `GET /api/meta` → `{server_version, min_daemon_version, min_proxy_version}`.
-  Unauthenticated, so a client can discover the floor before holding a token.
+- `GET /api/meta` →
+  `{server_version, min_daemon_version, min_proxy_version, mode, capabilities}`.
+  Unauthenticated, so a client can discover the floor before holding a token and
+  hide local data-plane actions when connected to hosted control.
 - Clients (daemon + stdio proxy) stamp `X-RP-Client-Version` on every request.
 - A **below-floor** client gets `426 Upgrade Required` with an actionable
   message (`error_code: client_too_old`) **before** auth. A missing header is

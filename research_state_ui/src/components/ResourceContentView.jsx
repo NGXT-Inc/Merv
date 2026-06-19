@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 import FileRenderer from './FileRenderer';
 import PdfView from './PdfView';
 import SourceBadge from './SourceBadge';
@@ -83,6 +84,7 @@ export default function ResourceContentView({
   // (stripTitle).
   hideSource = false, dedupeTitle = null, stripTitle = false,
 }) {
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
   // PDFs render directly via the file endpoint (the browser's PDF viewer
   // streams the bytes). Known-binary types (model weights, archives, media)
   // never render inline at all. Both skip /content — for PDFs it would just
@@ -125,6 +127,7 @@ export default function ResourceContentView({
   }, [projectId, resourceId, version, renderPdf, renderImage, renderBinary]);
 
   if (renderPdf) {
+    if (!hasLocalDataPlane) return <LocalFileUnavailable path={path} />;
     return (
       <div>
         <PdfView projectId={projectId} resourceId={resourceId} path={path} />
@@ -133,6 +136,7 @@ export default function ResourceContentView({
   }
 
   if (renderImage) {
+    if (!hasLocalDataPlane) return <LocalFileUnavailable path={path} />;
     return (
       <div className="image-view">
         {/* Not lazy: inside a small overflow:auto preview panel a lazy image
@@ -150,7 +154,9 @@ export default function ResourceContentView({
     return (
       <div className="empty">
         Binary file{size != null ? ` (${formatBytes(size)})` : ''}.{' '}
-        <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+        {hasLocalDataPlane ? (
+          <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+        ) : null}
       </div>
     );
   }
@@ -160,9 +166,11 @@ export default function ResourceContentView({
     return (
       <div>
         <div className="error-message">{error}</div>
-        <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">
-          Open raw file
-        </a>
+        {hasLocalDataPlane ? (
+          <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">
+            Open raw file
+          </a>
+        ) : null}
       </div>
     );
   }
@@ -172,7 +180,11 @@ export default function ResourceContentView({
     return (
       <ContentUnavailable
         content={content}
-        fallbackLink={{ href: api.resourceFileUrl(projectId, resourceId), label: 'Open raw file' }}
+        fallbackLink={
+          hasLocalDataPlane
+            ? { href: api.resourceFileUrl(projectId, resourceId), label: 'Open raw file' }
+            : null
+        }
       />
     );
   }
@@ -195,7 +207,10 @@ export default function ResourceContentView({
       )}
       {isBinary ? (
         <div className="empty">
-          Binary file ({formatBytes(meta)}). <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+          Binary file ({formatBytes(meta)}).{' '}
+          {hasLocalDataPlane ? (
+            <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+          ) : null}
         </div>
       ) : (
         <FileRenderer
@@ -205,5 +220,16 @@ export default function ResourceContentView({
         />
       )}
     </div>
+  );
+}
+
+function LocalFileUnavailable({ path }) {
+  return (
+    <ContentUnavailable
+      content={{
+        reason: 'content_unavailable_in_this_mode',
+        detail: `${path || 'This file'} lives on the local data-plane daemon.`,
+      }}
+    />
   );
 }

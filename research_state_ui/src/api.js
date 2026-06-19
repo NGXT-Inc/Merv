@@ -75,7 +75,10 @@ export const api = {
 
   // Projects
   listProjects: () => request('/api/projects'),
-  createProject: ({ name, summary, repo_root }) => request('/api/projects', { method: 'POST', body: { name, summary: summary || '', repo_root } }),
+  createProject: ({ name, summary, repo_root }) => request('/api/projects', {
+    method: 'POST',
+    body: { name, summary: summary || '', ...(repo_root ? { repo_root } : {}) },
+  }),
   patchProject: (pid, patch) => request(`/api/projects/${encodeURIComponent(pid)}`, { method: 'PATCH', body: patch }),
   getHome: (pid, signal) => request(`/api/projects/${encodeURIComponent(pid)}/home`, { signal }),
 

@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useProjectStore, selectResources, selectExperiments } from '../store/useProjectStore';
+import {
+  useProjectStore,
+  selectResources,
+  selectExperiments,
+  selectHasLocalDataPlaneHttp,
+} from '../store/useProjectStore';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
 import ResourceContentView from '../components/ResourceContentView';
@@ -17,6 +22,7 @@ export default function Resources() {
   const refreshHome = useProjectStore(s => s.refreshHome);
   const resources = useProjectStore(selectResources);
   const experiments = useProjectStore(selectExperiments);
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
 
   const [showRegister, setShowRegister] = useState(false);
 
@@ -32,6 +38,7 @@ export default function Resources() {
           projectId={projectId}
           resource={selected}
           experiments={experiments}
+          hasLocalDataPlane={hasLocalDataPlane}
           onAssociated={refreshHome}
           onDeleted={async () => {
             await refreshHome();
@@ -52,14 +59,29 @@ export default function Resources() {
                 </p>
               </div>
               <div className="page-actions">
-                <button className="btn btn--primary" onClick={() => setShowRegister(v => !v)}>
+                <button
+                  className="btn btn--primary"
+                  disabled={!hasLocalDataPlane}
+                  title={
+                    hasLocalDataPlane
+                      ? 'Register a repo file'
+                      : 'Requires the local data-plane daemon'
+                  }
+                  onClick={() => setShowRegister(v => !v)}
+                >
                   {showRegister ? 'Cancel' : 'Register file'}
                 </button>
               </div>
             </div>
           </header>
 
-          {showRegister && (
+          {!hasLocalDataPlane && (
+            <div className="empty-state empty-state--compact">
+              <p>File registration and association run through the local data-plane daemon.</p>
+            </div>
+          )}
+
+          {showRegister && hasLocalDataPlane && (
             <RegisterForm
               projectId={projectId}
               onCancel={() => setShowRegister(false)}
@@ -87,7 +109,14 @@ export default function Resources() {
   );
 }
 
-function PreviewPanel({ projectId, resource, experiments, onAssociated, onDeleted }) {
+function PreviewPanel({
+  projectId,
+  resource,
+  experiments,
+  hasLocalDataPlane,
+  onAssociated,
+  onDeleted,
+}) {
   const [associating, setAssociating] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -141,18 +170,26 @@ function PreviewPanel({ projectId, resource, experiments, onAssociated, onDelete
               <button
                 type="button"
                 className="btn btn--sm btn--ghost"
+                disabled={!hasLocalDataPlane}
                 onClick={() => setAssociating(v => !v)}
+                title={
+                  hasLocalDataPlane
+                    ? 'Associate this resource with an experiment'
+                    : 'Requires the local data-plane daemon'
+                }
               >
                 {associating ? 'Cancel' : 'Associate with experiment'}
               </button>
-              <a
-                className="btn btn--sm btn--ghost"
-                href={api.resourceFileUrl(projectId, resource.id)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open raw
-              </a>
+              {hasLocalDataPlane ? (
+                <a
+                  className="btn btn--sm btn--ghost"
+                  href={api.resourceFileUrl(projectId, resource.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open raw
+                </a>
+              ) : null}
               <button
                 type="button"
                 className="btn btn--sm btn--danger"
@@ -163,7 +200,10 @@ function PreviewPanel({ projectId, resource, experiments, onAssociated, onDelete
               </button>
             </div>
             {deleteError && <div className="error-message">{deleteError}</div>}
-            {associating && (
+            {!hasLocalDataPlane && (
+              <div className="empty">Local file actions require the data-plane daemon.</div>
+            )}
+            {associating && hasLocalDataPlane && (
               <div className="file-strip-associate">
                 <AssociateForm
                   projectId={projectId}
@@ -396,4 +436,3 @@ function AssociateForm({ projectId, resourceId, experiments, onCancel, onDone })
     </form>
   );
 }
-

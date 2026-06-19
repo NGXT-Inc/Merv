@@ -1242,10 +1242,19 @@ def create_fastapi_app(
     @http.get("/api/meta")
     def server_meta() -> dict[str, Any]:
         # Version/compat handshake (cloud plan Phase 9): the server version plus
-        # the minimum daemon/proxy versions it will serve. Identical in every
-        # mode (the floors are code constants); a client reads it to decide
-        # whether it must upgrade before its requests start getting 426'd.
-        return meta()
+        # the minimum daemon/proxy versions it will serve. Floors are code
+        # constants; mode/capabilities tell browser clients which local
+        # data-plane actions to hide before requests start getting rejected.
+        payload = meta()
+        payload["mode"] = "control" if auth_required else "local"
+        payload["capabilities"] = {
+            "hosted_control": auth_required,
+            "local_data_plane_http": not auth_required,
+            "resource_registration": not auth_required,
+            "resource_association": not auth_required,
+            "sandbox_sync": not auth_required,
+        }
+        return payload
 
     @http.get("/api/activity")
     def activity(

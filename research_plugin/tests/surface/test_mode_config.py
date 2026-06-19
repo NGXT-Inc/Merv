@@ -725,6 +725,22 @@ class VersionHandshakeTest(unittest.TestCase):
         self.assertEqual(body["min_daemon_version"], MIN_DAEMON_VERSION)
         self.assertEqual(body["min_proxy_version"], MIN_PROXY_VERSION)
 
+    def test_meta_reports_mode_capabilities(self) -> None:
+        control = self.client.get("/api/meta")
+        self.assertEqual(control.status_code, 200, control.text)
+        self.assertEqual(control.json()["mode"], "control")
+        self.assertTrue(control.json()["capabilities"]["hosted_control"])
+        self.assertFalse(control.json()["capabilities"]["local_data_plane_http"])
+        self.assertFalse(control.json()["capabilities"]["resource_registration"])
+        self.assertFalse(control.json()["capabilities"]["resource_association"])
+        self.assertFalse(control.json()["capabilities"]["sandbox_sync"])
+
+        local = self.local_client.get("/api/meta")
+        self.assertEqual(local.status_code, 200, local.text)
+        self.assertEqual(local.json()["mode"], "local")
+        self.assertFalse(local.json()["capabilities"]["hosted_control"])
+        self.assertTrue(local.json()["capabilities"]["local_data_plane_http"])
+
     def test_meta_is_unauthenticated(self) -> None:
         # A client must be able to discover the floor before holding a token.
         resp = self.client.get("/api/meta")

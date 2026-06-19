@@ -70,9 +70,9 @@ export const useProjectStore = create((set, get) => ({
   },
 
   async loadProjects() {
-    // Kick the version handshake alongside the first data fetch (fire and
-    // forget — it never blocks project loading).
-    get().checkMeta();
+    // Fetch capabilities before first render so hosted-control UIs do not
+    // briefly expose local-file actions.
+    await get().checkMeta();
     try {
       const data = await api.listProjects();
       const list = data.projects || [];
@@ -171,3 +171,8 @@ export const selectActiveProcesses = (s) => s.home?.active_processes || EMPTY_AR
 export const selectSandboxes = (s) => s.sandboxes || EMPTY_ARR;
 export const selectEventsAll = (s) => s.events || EMPTY_ARR;
 export const selectProject = (s) => s.home?.project || null;
+export const selectServerCapabilities = (s) => s.serverMeta?.capabilities || EMPTY_OBJ;
+export const selectHasLocalDataPlaneHttp = (s) =>
+  s.serverMeta?.capabilities?.local_data_plane_http !== false;
+export const selectIsHostedControl = (s) =>
+  s.serverMeta?.mode === 'control' || s.serverMeta?.capabilities?.hosted_control === true;

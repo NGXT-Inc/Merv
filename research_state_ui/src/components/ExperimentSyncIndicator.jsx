@@ -5,6 +5,7 @@ import {
   selectSandboxes,
   selectEventsAll,
   selectExperiments,
+  selectHasLocalDataPlaneHttp,
 } from '../store/useProjectStore';
 import { expName } from '../utils/experiment';
 import { fmtAgo } from '../utils/format';
@@ -45,6 +46,7 @@ export default function ExperimentSyncIndicator() {
   const experiments = useProjectStore(selectExperiments);
   const projectId = useProjectStore((s) => s.projectId);
   const refreshHome = useProjectStore((s) => s.refreshHome);
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
 
   const [now, setNow] = useState(Date.now());
   const [detailExp, setDetailExp] = useState(null);
@@ -146,7 +148,7 @@ export default function ExperimentSyncIndicator() {
         sandbox={detailSandbox}
         events={detailExp ? eventsByExp[detailExp] || [] : []}
         intervalSec={PULL_INTERVAL_SEC}
-        onSyncNow={() => onSyncNow(detailExp)}
+        onSyncNow={hasLocalDataPlane ? () => onSyncNow(detailExp) : null}
         syncing={syncingId === detailExp}
         now={now}
       />
@@ -188,4 +190,3 @@ function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-

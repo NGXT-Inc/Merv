@@ -1,12 +1,20 @@
 import { Link } from 'react-router-dom';
+import CreateProject from '../pages/CreateProject';
+import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 
 /**
- * MobileProjectCreateNotice — replaces the desktop CreateProject form on the
- * phone (and at first-run bootstrap). Project creation needs a server-local
- * absolute directory path you cannot pick from a phone, so the desktop form
- * dead-ends here; say so honestly instead. docs/MOBILE_UX_REVIEW.md §2.10.
+ * MobileProjectCreateNotice — replaces the local-mode CreateProject form on
+ * the phone. Local project creation needs a daemon-machine absolute path a
+ * phone cannot pick; hosted-control project creation has no local path field,
+ * so it can fall through to the regular form.
  */
 export default function MobileProjectCreateNotice({ bootstrap = false }) {
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
+
+  if (!hasLocalDataPlane) {
+    return <CreateProject bootstrap={bootstrap} />;
+  }
+
   return (
     <div className="page-stage">
       <header className="page-header">

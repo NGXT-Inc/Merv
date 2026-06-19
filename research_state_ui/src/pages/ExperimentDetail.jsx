@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
-import { useProjectStore, selectResources } from '../store/useProjectStore';
+import {
+  useProjectStore,
+  selectResources,
+  selectHasLocalDataPlaneHttp,
+} from '../store/useProjectStore';
 import FSMStrip from '../components/FSMStrip';
 import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
@@ -43,6 +47,7 @@ export default function ExperimentDetail() {
   const projectId = useProjectStore(s => s.projectId);
   const refreshHome = useProjectStore(s => s.refreshHome);
   const allProjectResources = useProjectStore(selectResources);
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
 
   const [statusData, setStatusData] = useState(null);
   const [error, setError] = useState(null);
@@ -235,6 +240,12 @@ export default function ExperimentDetail() {
           <button
             type="button"
             className="btn btn--sm btn--ghost"
+            disabled={!hasLocalDataPlane}
+            title={
+              hasLocalDataPlane
+                ? 'Add code, config, or input resources'
+                : 'Requires the local data-plane daemon'
+            }
             onClick={() => setShowAddInput(v => !v)}
           >
             {showAddInput ? 'Cancel' : '+ Add code / config / input'}
@@ -273,6 +284,12 @@ export default function ExperimentDetail() {
           <button
             type="button"
             className="btn btn--sm btn--primary"
+            disabled={!hasLocalDataPlane}
+            title={
+              hasLocalDataPlane
+                ? 'Register and associate a plan resource'
+                : 'Requires the local data-plane daemon'
+            }
             onClick={() => setShowAddPlan(v => !v)}
           >
             {showAddPlan ? 'Cancel' : '+ Register plan resource'}

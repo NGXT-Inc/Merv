@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { api } from '../api';
+import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 
 const KINDS = ['plan', 'code', 'config', 'input', 'dataset', 'result', 'note', 'model', 'other'];
 const ROLES = ['plan', 'code', 'config', 'input', 'result', 'report', 'note', 'model'];
@@ -25,6 +26,7 @@ export default function AddResourceToExperiment({
   onDone,
 }) {
   const [mode, setMode] = useState('register'); // 'register' | 'existing'
+  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
 
   // Resources already associated with this attempt — we hide them from "existing".
   const alreadyAssociated = useMemo(() => {
@@ -38,6 +40,19 @@ export default function AddResourceToExperiment({
   const candidates = useMemo(() => {
     return (allResources || []).filter(r => !alreadyAssociated.has(r.id));
   }, [allResources, alreadyAssociated]);
+
+  if (!hasLocalDataPlane) {
+    return (
+      <div className="form-card" style={{ marginBottom: 14 }}>
+        <div className="empty">
+          Resource registration and association require the local data-plane daemon.
+        </div>
+        <div className="form-actions" style={{ marginTop: 10 }}>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="form-card" style={{ marginBottom: 14 }}>

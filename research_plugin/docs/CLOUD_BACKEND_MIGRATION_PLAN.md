@@ -425,9 +425,10 @@ pull; killing the daemon mid-run exercises the parachute end-to-end.
   arrived in Phase 8; this phase productionizes them (lifecycle rules, alerting).
 - **Quotas/rate limits enforced** (schema from Phase 7) + spend kill-switch per tenant and global; orphan
   VM sweep (provider-list vs rows), blob TTL GC, lease expiry sweep, stale `awaiting_initial_push` reaping.
-- **Versioning/compat:** `/api/meta` returns `{server_version, min_daemon_version, min_proxy_version}`;
-  clients send their version; below-floor rejected actionably; additive-only contract changes within a
-  major.
+- **Versioning/compat:** `/api/meta` returns
+  `{server_version, min_daemon_version, min_proxy_version, mode, capabilities}`; clients send their
+  version; below-floor rejected actionably; additive-only contract changes within a major. Browser UIs use
+  capabilities to hide local data-plane actions against hosted control.
 - **Observability:** structured logs with request/tenant ids; per-tenant cloud audit (redacted) split from
   daemon-local `activity.jsonl` (never synced); RED metrics + per-tenant counters; alerts on reaper lag,
   provision failures, lease churn, parachute failures.
