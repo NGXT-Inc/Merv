@@ -332,7 +332,11 @@ class ControlModeAuthTest(unittest.TestCase):
             tool="review.request",
             arguments={"project_id": acme_id},
             duration_ms=1,
-            result={"reviewer_capability": "rp_secret"},
+            result={
+                "reviewer_capability": "rp_secret",
+                "repo_root": str(self.repo),
+                "local_sync_dir": "/tmp/sync",
+            },
         )
         self.app.activity.tool_ok(
             source="mcp",
@@ -364,6 +368,7 @@ class ControlModeAuthTest(unittest.TestCase):
             scoped.json()["events"][0]["result"]["reviewer_capability"],
             "[redacted]",
         )
+        self.assertNoLocalDataPlaneFields(scoped.json())
 
         denied = self.client.get(
             f"/api/activity?project_id={other['id']}",
@@ -371,7 +376,7 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 404, denied.text)
 
-        unscoped = self.client.get("/api/activity?source=mcp", headers=headers)
+        unscoped = self.client.get("/api/activity?source=mcp&limit=1", headers=headers)
         self.assertEqual(unscoped.status_code, 200, unscoped.text)
         self.assertEqual(
             {_project_id(event) for event in unscoped.json()["events"]},

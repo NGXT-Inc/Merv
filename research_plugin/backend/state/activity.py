@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..utils import now_iso
 
@@ -191,6 +191,7 @@ class ActivityLogger:
         *,
         limit: int = 100,
         source: str | None = None,
+        event_filter: Callable[[dict[str, Any]], bool] | None = None,
         window: int = 5000,
     ) -> dict[str, Any]:
         """Return the most recent activity events.
@@ -231,6 +232,8 @@ class ActivityLogger:
             filtered = [e for e in scanned if effective_source(event=e) == source]
         else:
             filtered = scanned
+        if event_filter is not None:
+            filtered = [e for e in filtered if event_filter(e)]
         return {
             "events": filtered[-limit:],
             "summary": {

@@ -204,9 +204,22 @@ class ResearchHttpApi:
         project_ids: set[str] | None = None,
         include_unscoped_events: bool = True,
     ) -> dict[str, Any]:
-        result = self.app.activity.recent(limit=limit, source=source)
+        event_filter = None
+        if project_ids is not None:
+            allowed = {str(pid) for pid in project_ids if str(pid)}
+
+            def _allowed(ev: dict[str, Any]) -> bool:
+                pid = _activity_event_project_id(ev)
+                if project_id is not None:
+                    return pid == project_id
+                return (pid in allowed) or (include_unscoped_events and pid is None)
+
+            event_filter = _allowed
+        result = self.app.activity.recent(
+            limit=limit, source=source, event_filter=event_filter
+        )
         events = result["events"]
-        if project_id is not None:
+        if project_id is not None and project_ids is None:
             # Single-app mode serves one repo (one project), so this only drops
             # the rare cross-project tool.call carrying a different project_id in
             # its arguments. Events with no project attribution (e.g.
@@ -216,14 +229,6 @@ class ResearchHttpApi:
                 return pid in (None, project_id)
 
             events = [ev for ev in events if _belongs(ev)]
-        if project_ids is not None:
-            allowed = {str(pid) for pid in project_ids if str(pid)}
-
-            def _allowed(ev: dict[str, Any]) -> bool:
-                pid = _activity_event_project_id(ev)
-                return (pid in allowed) or (include_unscoped_events and pid is None)
-
-            events = [ev for ev in events if _allowed(ev)]
         payload = {
             "filter": {key: value for key, value in (("source", source), ("project_id", project_id)) if value},
             "events": events,
@@ -235,7 +240,7 @@ class ResearchHttpApi:
         }
         if self.expose_local_data_plane:
             payload["activity_log"] = str(self.app.activity.log_path)
-        return payload
+        return self._present(payload)
 
     def tool_call_stats(
         self,

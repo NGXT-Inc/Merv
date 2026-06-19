@@ -63,6 +63,34 @@ class TailReadTest(unittest.TestCase):
             got = [event["i"] for event in recent["events"]]
             self.assertEqual(got, [45, 46, 47, 48, 49])
 
+    def test_event_filter_applies_before_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            logger = self._logger(tmp)
+            logger.tool_ok(
+                source="mcp",
+                tool="claim.list",
+                arguments={"project_id": "p1"},
+                duration_ms=1,
+                result={"claims": []},
+            )
+            logger.tool_ok(
+                source="mcp",
+                tool="claim.list",
+                arguments={"project_id": "p2"},
+                duration_ms=1,
+                result={"claims": []},
+            )
+
+            recent = logger.recent(
+                limit=1,
+                source="mcp",
+                event_filter=lambda event: event.get("args", {}).get("project_id") == "p1",
+            )
+
+            self.assertEqual(len(recent["events"]), 1)
+            self.assertEqual(recent["events"][0]["args"]["project_id"], "p1")
+
     def test_recent_is_bounded_by_byte_budget(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
