@@ -144,6 +144,11 @@ class DaemonServer:
                 f"tool is not served by the data plane: {name}",
                 details={"tool": name},
             )
+        if name in AGGREGATE_TOOL_NAMES:
+            # Aggregate daemon half: contribute only machine-local enrichment.
+            # No enrichment yet is a neutral result; the cloud row remains the
+            # primary answer after proxy merge.
+            return {}
         return {
             "ok": False,
             "error_code": "data_plane_forwarding_unavailable",

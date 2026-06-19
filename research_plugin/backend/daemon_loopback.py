@@ -148,6 +148,8 @@ class _Unauthorized(Exception):
 
 
 def _unavailable_result(*, name: str) -> dict[str, Any]:
+    if name in AGGREGATE_TOOL_NAMES:
+        return {}
     return {
         "ok": False,
         "error_code": "data_plane_forwarding_unavailable",

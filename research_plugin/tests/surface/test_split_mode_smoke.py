@@ -181,10 +181,11 @@ class SplitModeSmokeTest(unittest.TestCase):
 
     def _daemon_loopback_server(self, *, root: Path):
         # A loopback app that serves /local/route + /mcp/* (data tools against
-        # the checkout-rooted daemon app). We extend the daemon loopback with an
-        # /mcp/call that runs the daemon app's data tools.
+        # the checkout-rooted daemon app). The production loopback owns /mcp/call;
+        # this stub supplies the daemon's tool executor hook.
         daemon_app = self.daemon_app
         links = self.links
+        cloud_app = self.cloud_app
 
         class _Daemon:
             loopback_secret = "smoke-secret"
@@ -195,39 +196,18 @@ class SplitModeSmokeTest(unittest.TestCase):
                 def list_tools():
                     return []
 
-        app = create_daemon_loopback_app(daemon=_Daemon())
-
-        # Mount the data-plane tool surface the proxy posts to.
-        from fastapi import Body
-        from fastapi.responses import JSONResponse
-        from backend.utils import ResearchPluginError
-
-        cloud_app = self.cloud_app
-
-        @app.post("/mcp/call")
-        def mcp_call(body: dict | None = Body(default=None)):
-            payload = body or {}
-            name = payload.get("name")
-            arguments = payload.get("arguments") or {}
-            # Sandbox lifecycle/sync is owned by the CLOUD (it holds the backend
-            # + the HttpTaskChannel that drives the daemon's initial_push); the
-            # daemon's data-tool job for sandbox.* is just to be the routing
-            # target. resource.* read bytes locally on the daemon app. This
-            # mirrors the plan: provision is cloud, the push is the daemon's task.
-            target = cloud_app if str(name or "").startswith("sandbox.") else daemon_app
-            try:
-                result = target.call_tool(name=name, arguments=arguments, activity_source="mcp")
-            except ResearchPluginError as exc:
-                return JSONResponse(
-                    {"detail": exc.message, "error_code": exc.error_code, **exc.details},
-                    status_code=400,
+            @staticmethod
+            def call_tool(*, name: str, arguments: dict, context: dict):
+                del context
+                # Sandbox lifecycle/sync is owned by the CLOUD (it holds the
+                # backend + HttpTaskChannel that drives initial_push); resource.*
+                # reads bytes locally on the daemon app.
+                target = cloud_app if name.startswith("sandbox.") else daemon_app
+                return target.call_tool(
+                    name=name, arguments=arguments, activity_source="mcp"
                 )
-            return {"result": result}
 
-        @app.get("/mcp/tools")
-        def mcp_tools():
-            return {"tools": daemon_app.list_tools()}
-
+        app = create_daemon_loopback_app(daemon=_Daemon())
         return _HttpServerThread(fastapi_app=app)
 
     def tearDown(self) -> None:
