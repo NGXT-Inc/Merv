@@ -7,22 +7,22 @@ from typing import Any
 
 from ..domain.paths import experiment_folder_rel
 from ..domain.reflection_policy import REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
-from ..utils import NotFoundError, ValidationError, WorkflowError
-from ..utils import new_id
-from ..state.blobs import BlobStore
-from ..state.store import StateStore, row_to_dict, rows_to_dicts
-from ..utils import now_iso
-from .artifacts import plan_sections_missing, report_problems
-from .experiment_names import validate_experiment_name
-from .graph_lint import graph_problems
-from .pinned import pinned_artifact_text
-from .workflow_gates import (
+from ..domain.workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
     TERMINAL_STATUSES,
     TRANSITION_GRAPH,
     allowed_transitions_for,
 )
+from ..state.blobs import BlobStore
+from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from ..utils import NotFoundError, ValidationError, WorkflowError
+from ..utils import new_id
+from ..utils import now_iso
+from .artifacts import plan_sections_missing, report_problems
+from .experiment_names import validate_experiment_name
+from .graph_lint import graph_problems
+from .pinned import pinned_artifact_text
 
 
 class ExperimentService:

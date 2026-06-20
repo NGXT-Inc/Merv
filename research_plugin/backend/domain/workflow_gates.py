@@ -30,8 +30,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.gates import ForwardTransition, ReviewRequirement, RoleRequirement
-from ..domain.vocabulary import (
+from .gates import ForwardTransition, ReviewRequirement, RoleRequirement
+from .vocabulary import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
 )

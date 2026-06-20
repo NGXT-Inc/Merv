@@ -16,25 +16,11 @@ import json
 import re
 from typing import Any
 
-from ..state.blobs import BlobStore
-from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
-from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
-from .artifacts import markdown_image_links
-from .experiment_names import validate_experiment_name
-from .graph_lint import graph_problems
-from ..domain.vocabulary import (
-    CLAIM_CONFIDENCES,
-    CLAIM_STATUSES,
-    EXPERIMENT_TERMINAL_STATUSES,
-    PROJECT_GRAPH_ROLES,
-    REFLECTION_LENS_DOC_ROLES,
-)
 from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
 )
-from .pinned import pinned_text_for_version, resubmit_hint
-from .synthesis_gates import (
+from ..domain.synthesis_gates import (
     CORE_LENSES,
     CORE_LENS_IDS,
     ROSTER_SIZE,
@@ -42,6 +28,20 @@ from .synthesis_gates import (
     SYNTHESIS_TERMINAL_STATUSES,
     allowed_synthesis_transitions_for,
 )
+from ..domain.vocabulary import (
+    CLAIM_CONFIDENCES,
+    CLAIM_STATUSES,
+    EXPERIMENT_TERMINAL_STATUSES,
+    PROJECT_GRAPH_ROLES,
+    REFLECTION_LENS_DOC_ROLES,
+)
+from ..state.blobs import BlobStore
+from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
+from .artifacts import markdown_image_links
+from .experiment_names import validate_experiment_name
+from .graph_lint import graph_problems
+from .pinned import pinned_text_for_version, resubmit_hint
 
 
 _LENS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")

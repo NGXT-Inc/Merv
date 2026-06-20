@@ -39,7 +39,7 @@ metrics, views glue). The machinery lives in dedicated collaborators:
   - `sandbox_views` — row→response projections (agent view, row view, etc.).
 
 Experiment status never changes here or in the collaborators except through
-the workflow engine's system transitions (see services/workflow_gates.py).
+the workflow engine's system transitions (see domain/workflow_gates.py).
 Presentation belongs to the caller: the service returns the agent view and raw
 rows; the HTTP layer shapes the UI responses from `get_row`/`rows`/
 `sample_metrics`/`backend_health`.

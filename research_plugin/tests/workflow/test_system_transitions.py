@@ -17,7 +17,7 @@ from pathlib import Path
 
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.services.workflow_gates import (
+from backend.domain.workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
     TRANSITION_GRAPH,

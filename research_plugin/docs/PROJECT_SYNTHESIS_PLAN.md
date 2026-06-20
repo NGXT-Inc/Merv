@@ -42,7 +42,7 @@ disproportionate attention and is allowed to justify new database tables.
 
 Primitives this design reuses rather than reinvents:
 
-- **GATE_TABLE pattern** (`backend/services/workflow_gates.py`): a declarative single source of truth.
+- **GATE_TABLE pattern** (`backend/domain/workflow_gates.py`): a declarative single source of truth.
   Each status has one `ForwardTransition` carrying `RoleRequirement`s (role, validator, gate, action,
   error, guidance) and/or a `ReviewRequirement`. It is consumed by three call sites — enforcement
   (`_next_status`), guidance (`_workflow_for`), and discovery (`allowed_transitions_for`). Adding a

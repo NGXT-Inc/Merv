@@ -17,7 +17,7 @@ fan-out (attempt bump — every lens must submit a fresh reflection), while
 ``return_to='synthesizing'`` keeps the reflections standing and only the
 reflection artifacts (graph + reflection doc + change spec) are revised.
 
-The same three consumers as ``workflow_gates.GATE_TABLE`` read this table —
+The same three consumers as ``domain.workflow_gates.GATE_TABLE`` read this table —
 enforcement (``SynthesisService._next_status``), guidance
 (``WorkflowService._synthesis_workflow_for``), and discovery
 (``allowed_synthesis_transitions_for``) — reusing the same gate contract
@@ -34,8 +34,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.gates import ForwardTransition, ReviewRequirement, RoleRequirement
-from ..domain.vocabulary import (
+from .gates import ForwardTransition, ReviewRequirement, RoleRequirement
+from .vocabulary import (
     PROJECT_GRAPH_ROLE,
     REFLECTION_LENS_DOC_ROLE,
 )

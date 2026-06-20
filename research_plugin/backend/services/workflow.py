@@ -4,22 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from ..domain.gates import ReviewRequirement, RoleRequirement
+from ..domain.paths import experiment_folder_rel
+from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
 from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLE,
     PROJECT_GRAPH_ROLES,
     REFLECTION_LENS_DOC_ROLE,
     RESOURCE_ROLES,
 )
-from .synthesis_gates import SYNTHESIS_GATE_TABLE
-from .workflow_gates import (
+from ..domain.workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
     GATE_TABLE,
     TERMINAL_STATUSES,
-    ReviewRequirement,
-    RoleRequirement,
 )
 from .workflow_views import slim_status_and_next, slim_synthesis
-from ..domain.paths import experiment_folder_rel
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
 
 

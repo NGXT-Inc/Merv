@@ -239,13 +239,15 @@ class ServiceLayoutTest(unittest.TestCase):
                         f"import vocabulary from backend.domain.vocabulary, not permissions: {sorted(leaked)}",
                     )
 
-    def test_synthesis_gates_only_reuses_gate_contract_dataclasses(self) -> None:
-        # The second gate table must not grow service dependencies: it shares
-        # neutral gate dataclasses and pure domain role names only.
-        self.assertEqual(
-            _import_module_names(SERVICES / "synthesis_gates.py"),
-            {"domain.gates", "domain.vocabulary", "typing"},
-        )
+    def test_gate_tables_are_domain_policy_only(self) -> None:
+        # Workflow state machines are domain policy: they may share neutral
+        # gate dataclasses and pure vocabulary, but must not depend on services.
+        for name in ("workflow_gates.py", "synthesis_gates.py"):
+            with self.subTest(module=name):
+                self.assertEqual(
+                    _import_module_names(DOMAIN_ROOT / name),
+                    {"gates", "vocabulary", "typing"},
+                )
 
     def test_synthesis_service_uses_experiment_name_leaf(self) -> None:
         self.assertNotIn("experiments", _import_segments(SERVICES / "syntheses.py"))
