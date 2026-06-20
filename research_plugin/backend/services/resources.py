@@ -13,7 +13,6 @@ from ..state.blobs import BlobStore
 from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
-from .permissions import PermissionService
 
 
 class ResourceObserver(Protocol):
@@ -27,6 +26,14 @@ class ResourceObserver(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class ResourceAssociationPolicy(Protocol):
+    def validate_resource_association(self, *, target_type: str, role: str) -> None:
+        ...
+
+    def storage_resource_target_type(self, *, target_type: str) -> str:
+        ...
+
+
 class ResourceService:
     """Manages one-file-one-resource observation and associations."""
 
@@ -34,7 +41,7 @@ class ResourceService:
         self,
         *,
         store: StateStore,
-        permissions: PermissionService,
+        permissions: ResourceAssociationPolicy,
         observer: ResourceObserver,
         blobs: BlobStore | None = None,
     ) -> None:
