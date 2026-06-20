@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ..domain.artifacts import plan_sections_missing, report_problems
+from ..domain.experiment_names import validate_experiment_name
 from ..domain.graph_lint import graph_problems
 from ..domain.paths import experiment_folder_rel
 from ..domain.reflection_policy import REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
@@ -21,7 +22,6 @@ from ..state.store import StateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
 from ..utils import now_iso
-from .experiment_names import validate_experiment_name
 from .pinned import pinned_artifact_text
 
 

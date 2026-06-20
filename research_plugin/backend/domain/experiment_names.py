@@ -1,4 +1,4 @@
-"""Experiment naming rules shared by record services."""
+"""Experiment naming rules shared by record services and reflection proposals."""
 
 from __future__ import annotations
 

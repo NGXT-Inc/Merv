@@ -212,6 +212,17 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_feed_policy_is_domain_leaf_module(self) -> None:
         self.assertEqual(_import_module_names(DOMAIN_ROOT / "feed_policy.py"), set())
 
+    def test_experiment_names_are_domain_policy(self) -> None:
+        self.assertEqual(
+            _import_module_names(DOMAIN_ROOT / "experiment_names.py"),
+            {"re", "utils"},
+        )
+        for name in ("experiments.py", "syntheses.py"):
+            with self.subTest(module=name):
+                imports = _import_module_names(SERVICES / name)
+                self.assertIn("domain.experiment_names", imports)
+                self.assertNotIn("experiment_names", imports)
+
     def test_graph_lint_is_domain_leaf_module(self) -> None:
         self.assertEqual(_import_module_names(DOMAIN_ROOT / "graph_lint.py"), {"json"})
 
