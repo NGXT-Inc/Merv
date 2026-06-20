@@ -15,6 +15,31 @@ from backend.contracts import (
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.project_router import ProjectRouter
 from backend.tool_facade import ToolDispatcher
+from backend.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
+
+
+class _HandlerTarget:
+    def __getattr__(self, _name: str):
+        def _handler(**_kwargs):
+            return {}
+
+        return _handler
+
+
+def _handler_targets() -> dict[str, _HandlerTarget]:
+    target = _HandlerTarget()
+    return {
+        "workflow": target,
+        "projects": target,
+        "project_overview": target,
+        "claims": target,
+        "experiments": target,
+        "reflections": target,
+        "resources": target,
+        "reviews": target,
+        "sandboxes": target,
+        "feed": target,
+    }
 
 
 class ToolContractRegistryTest(unittest.TestCase):
@@ -82,6 +107,19 @@ class ToolDispatcherTest(unittest.TestCase):
         listed_names = {tool["name"] for tool in dispatcher.list_tools()}
         self.assertEqual(listed_names, tool_names)
         self.assertFalse(listed_names & DATA_PLANE_TOOL_NAMES)
+
+
+class ToolHandlerRegistryTest(unittest.TestCase):
+    def test_local_handlers_cover_every_contract(self) -> None:
+        handlers = build_local_tool_handlers(**_handler_targets())
+
+        self.assertEqual(set(handlers), set(TOOL_CONTRACTS))
+
+    def test_control_handlers_exclude_data_plane_tools(self) -> None:
+        handlers = build_control_tool_handlers(**_handler_targets())
+
+        self.assertEqual(set(handlers), CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES)
+        self.assertFalse(set(handlers) & DATA_PLANE_TOOL_NAMES)
 
 
 if __name__ == "__main__":

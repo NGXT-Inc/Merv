@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .dataplane import LocalDataPlaneWorker
 from .execution import SandboxBackend, build_sandbox_backend
@@ -31,6 +31,7 @@ from .state import (
 from .state.blobs import BlobStore, LocalDirBlobStore
 from .observability import StructuredLogger
 from .tool_facade import ToolDispatcher
+from .tool_handlers import build_local_tool_handlers
 
 
 class ResearchPluginApp:
@@ -158,47 +159,19 @@ class ResearchPluginApp:
             workspace=self.workspace,
             blobs=self.blobs,
         )
-        handlers: dict[str, Callable[..., dict[str, Any]]] = {
-            "workflow.status_and_next": self.workflow.status_and_next_agent,
-            "project.create": self.projects.create,
-            "project.update": self.projects.update,
-            "project.get": self.projects.get,
-            "project.current": self.project_overview.current_project,
-            "project.list": self.projects.list_projects,
-            "claim.create": self.claims.create,
-            "claim.list": self.claims.list_claims,
-            "claim.update": self.claims.update,
-            "experiment.create": self.experiments.create,
-            "experiment.list": self.experiments.list_experiments_agent,
-            "experiment.get_state": self.experiments.get_state_agent,
-            "experiment.transition": self.experiments.transition,
-            "reflection.create": self.reflections.create,
-            "reflection.get": self.reflections.get,
-            "reflection.list": self.reflections.list,
-            "reflection.transition": self.reflections.transition,
-            "resource.register_file": self.resources.register_file,
-            "resource.associate": self.resources.associate,
-            "resource.delete": self.resources.delete,
-            "resource.list": self.resources.list_resources,
-            "resource.resolve": self.resources.resolve,
-            "review.request": self.reviews.request,
-            "review.start": self.reviews.start,
-            "review.submit": self.reviews.submit,
-            "review.status": self.reviews.status,
-            "sandbox.request": self.sandboxes.request,
-            "sandbox.options": self.sandboxes.options,
-            "sandbox.get": self.sandboxes.get,
-            "sandbox.sync": self.sandboxes.sync,
-            "sandbox.list": self.sandboxes.list_sandboxes,
-            "sandbox.release": self.sandboxes.release,
-            "sandbox.terminal": self.sandboxes.terminal,
-            "sandbox.health": self.sandboxes.health,
-            "feed.register": self.feed.register,
-            "feed.post": self.feed.post,
-            "feed.list": self.feed.list_posts,
-        }
         self.tools = ToolDispatcher(
-            handlers=handlers,
+            handlers=build_local_tool_handlers(
+                workflow=self.workflow,
+                projects=self.projects,
+                project_overview=self.project_overview,
+                claims=self.claims,
+                experiments=self.experiments,
+                reflections=self.reflections,
+                resources=self.resources,
+                reviews=self.reviews,
+                sandboxes=self.sandboxes,
+                feed=self.feed,
+            ),
             permissions=self.permissions,
             activity=self.activity,
             tool_calls=self.tool_calls,
