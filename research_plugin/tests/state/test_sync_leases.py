@@ -16,7 +16,12 @@ from unittest import mock
 from backend.app import ResearchPluginApp
 from backend.dataplane.state import CLIENT_ID_ENV, SandboxLocalState
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.services.sync_sessions import LeaseService, build_sync_session
+from backend.services.sync_sessions import (
+    InProcessControlPlaneView,
+    LeaseService,
+    SyncSessionService,
+    build_sync_session,
+)
 from backend.state.store import StateStore
 from backend.utils import PermissionDeniedError
 from tests.fakes import FakeRsyncSyncer
@@ -227,6 +232,44 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
         self.assertEqual(got["sync_lease"]["expires_at"], foreign["expires_at"])
         # The poller's view skips the row too — no targets to double-sync.
         self.assertEqual(self.app.sandboxes.control_view.sync_targets(), [])
+
+
+class InProcessControlPlaneViewTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_sync_targets_only_requires_running_row_source(self) -> None:
+        class _Rows:
+            def list_running_rows(self) -> list[dict[str, object]]:
+                return [
+                    {
+                        "experiment_id": "exp_1",
+                        "sandbox_id": "sb-1",
+                        "ssh_host": "host.test",
+                        "ssh_port": 2222,
+                        "ssh_user": "root",
+                        "sync_dir": "/workspace/exp-one",
+                        "tenant_id": "tenant_a",
+                    }
+                ]
+
+        leases = LeaseService(store=self.store)
+        sessions = SyncSessionService(leases=leases, client_id="client_a")
+        view = InProcessControlPlaneView(registry=_Rows(), sessions=sessions)
+
+        targets = view.sync_targets(tenant_id="tenant_a")
+
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]["row"]["sandbox_id"], "sb-1")
+        self.assertEqual(targets[0]["session"]["experiment_id"], "exp_1")
+        self.assertEqual(
+            targets[0]["session"]["lease"]["holder_client_id"], "client_a"
+        )
+        self.assertEqual(view.sync_targets(tenant_id="tenant_b"), [])
 
 
 if __name__ == "__main__":

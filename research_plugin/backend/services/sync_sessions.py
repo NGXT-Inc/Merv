@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import posixpath
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from ..domain.sync_contract import (
     ARTIFACTS_TO_KEEP_DIRNAME,
@@ -42,7 +42,6 @@ from ..domain.sync_contract import (
 )
 from ..state.store import StateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
-from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import iso_after, parse_iso
 
 
@@ -58,6 +57,12 @@ DEFAULT_LEASE_TTL_SECONDS = 120
 # the expiry parachute (plan Phase 5, decision 5) fires when the pull fails
 # or a split-mode daemon misses the deadline.
 DEFAULT_FINAL_PULL_DEADLINE_SECONDS = 120
+
+
+class RunningSandboxRows(Protocol):
+    def list_running_rows(self) -> list[dict[str, Any]]:
+        ...
+
 
 def build_sync_session(
     *,
@@ -379,7 +384,7 @@ class InProcessControlPlaneView:
     """
 
     def __init__(
-        self, *, registry: SandboxRegistry, sessions: SyncSessionService
+        self, *, registry: RunningSandboxRows, sessions: SyncSessionService
     ) -> None:
         self.registry = registry
         self.sessions = sessions
