@@ -295,9 +295,10 @@ for name in (
 
     def test_project_overview_does_not_import_mutation_services(self) -> None:
         # project.current is a read-side control projection. Keep it decoupled
-        # from reflection mutation services so a future ControlApp can compose
-        # the view with a narrower reader.
+        # from mutation services so a future ControlApp can compose the view
+        # with narrower readers.
         imports = _import_segments(SERVICES_ROOT / "project_overview.py")
+        self.assertNotIn("projects", imports)
         self.assertNotIn("syntheses", imports)
 
     def test_reflection_tools_do_not_import_mutation_service(self) -> None:

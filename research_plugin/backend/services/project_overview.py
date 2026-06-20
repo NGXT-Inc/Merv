@@ -7,8 +7,12 @@ from typing import Any, Protocol
 
 from ..domain.vocabulary import PROJECT_GRAPH_ROLES
 from ..state.store import BaseStateStore, rows_to_dicts
-from .projects import ProjectService
 from .workflow_gates import TERMINAL_STATUSES as EXPERIMENT_TERMINAL_STATUSES
+
+
+class ProjectCurrentReader(Protocol):
+    def current(self, *, tenant_id: str | None = None) -> dict[str, Any]:
+        ...
 
 
 class SynthesisOverviewReader(Protocol):
@@ -26,7 +30,7 @@ class ProjectOverviewService:
         self,
         *,
         store: BaseStateStore,
-        projects: ProjectService,
+        projects: ProjectCurrentReader,
         syntheses: SynthesisOverviewReader,
     ) -> None:
         self.store = store
