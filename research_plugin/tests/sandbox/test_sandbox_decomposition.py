@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import get_type_hints
 
 from backend.app import ResearchPluginApp
 from backend.dataplane import InProcessTaskChannel, LocalDataPlaneWorker
@@ -156,6 +157,11 @@ class SandboxDecompositionTest(unittest.TestCase):
             "dataplane.tasks",
             _import_modules(FACADE.parent / "sandbox_provisioner.py"),
         )
+        self.assertNotIn("dataplane.worker", _import_modules(FACADE))
+        self.assertNotIn(
+            "dataplane.worker",
+            _import_modules(FACADE.parent / "sandbox_provisioner.py"),
+        )
         # Control-owned collaborators are injected explicitly by composition;
         # the facade must not derive them from the local worker.
         self.assertNotIn("worker.workspace", source)
@@ -183,6 +189,13 @@ for name in (
         env = dict(os.environ)
         env["PYTHONPATH"] = str(FACADE.parents[2])
         subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
+    def test_service_type_hints_resolve_without_data_plane_worker(self) -> None:
+        facade_hints = get_type_hints(SandboxService.__init__)
+        provisioner_hints = get_type_hints(SandboxProvisioner.__init__)
+
+        self.assertEqual(facade_hints["worker"].__name__, "SandboxWorker")
+        self.assertEqual(provisioner_hints["worker"].__name__, "SandboxWorker")
 
     def test_registry_module_stays_dependency_free(self) -> None:
         # The registry must not import its consumers (no cycles, no backend,

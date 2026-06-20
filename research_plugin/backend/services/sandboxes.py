@@ -26,9 +26,9 @@ metrics, views glue). The machinery lives in dedicated collaborators:
     status marks, and the sandbox event stream.
   - `sandbox_provisioner.SandboxProvisioner` — background provisioning jobs,
     cancellation, orphan cleanup, and row reconciliation.
-  - `dataplane.LocalDataPlaneWorker` — every local-IO duty: SSH keys + conn
-    files, the rsync push/pull, ssh -L dashboard tunnels, and the
-    pulled-mlflow.db metrics fallback (cloud plan §3.1).
+  - `SandboxWorker` — every data-plane duty: SSH keys + conn files, rsync
+    push/pull tasks, ssh -L dashboard tunnels, and the pulled-mlflow.db
+    metrics fallback (cloud plan §3.1).
   - `sync_sessions` — sync leases (the cross-client byte-movement authority),
     session issuance, and the poller's ControlPlaneView (cloud plan Phase 4).
   - `TaskChannel` — the control→data task seam: initial push, final pull,
@@ -52,15 +52,10 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..execution.sync_dirs import remote_experiment_dir
 
-if TYPE_CHECKING:
-    # Typing-only: a runtime import would close the package cycle
-    # services.sandboxes → dataplane.worker → services (metrics_archive) and
-    # break `import backend.dataplane` as an entry point.
-    from ..dataplane.worker import DataPlaneWorker
 from ..state.activity import ActivityLogger
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict
@@ -108,6 +103,7 @@ from .sync_sessions import (
     SyncSessionService,
 )
 from .task_channel import TaskChannel
+from .sandbox_worker import SandboxWorker
 
 
 class SandboxService:
@@ -118,7 +114,7 @@ class SandboxService:
         *,
         store: StateStore,
         sandbox_backend: SandboxBackend,
-        worker: DataPlaneWorker,
+        worker: SandboxWorker,
         mgmt_keys: MgmtKeyStore,
         metrics_archive: MetricsArchive,
         lease_client_id: str,

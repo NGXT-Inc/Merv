@@ -22,13 +22,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Callable
-
-if TYPE_CHECKING:
-    # Typing-only: runtime imports here would close the package cycle
-    # services → dataplane → services (metrics_archive) and break
-    # `import backend.dataplane` as an entry point.
-    from ..dataplane.worker import DataPlaneWorker
+from typing import Any, Callable
 
 from ..execution import (
     BackendPermissionError,
@@ -51,6 +45,7 @@ from .sandbox_support import (
 )
 from .sync_sessions import SyncSessionService
 from .task_channel import TaskChannel
+from .sandbox_worker import SandboxWorker
 
 
 RefreshRow = Callable[..., dict[str, Any]]
@@ -65,7 +60,7 @@ class SandboxProvisioner:
         registry: SandboxRegistry,
         backend: SandboxBackend,
         experiments: ExperimentService,
-        worker: DataPlaneWorker,
+        worker: SandboxWorker,
         sessions: SyncSessionService,
         tasks: TaskChannel,
         refresh_row: RefreshRow,
