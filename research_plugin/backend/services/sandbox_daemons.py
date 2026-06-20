@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
 
 from ..sandbox_backend import SandboxBackend
-from .sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
+from ..ports.sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
 from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import (
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,

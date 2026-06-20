@@ -1,4 +1,4 @@
-"""Service-side ports for sandbox lifecycle collaborators."""
+"""Ports for sandbox lifecycle collaborators."""
 
 from __future__ import annotations
 

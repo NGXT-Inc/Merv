@@ -72,11 +72,13 @@ from ..sandbox_backend import (
     SandboxBackend,
     SandboxRequest,
 )
+from ..ports.metrics_archive import MetricsArchive
+from ..ports.sandbox_lifecycle import ExperimentTransitions
+from ..ports.sandbox_worker import SandboxWorker
+from ..ports.task_channel import TaskChannel
 from . import sandbox_views
-from .metrics_archive import MetricsArchive
 from .metrics_records import MetricsSnapshotStore
 from .transcript_cache import TranscriptCache
-from .sandbox_lifecycle import ExperimentTransitions
 from .sandbox_daemons import SandboxDaemons
 from .sandbox_mgmt_keys import MgmtKeyStore
 from .sandbox_provisioner import SandboxProvisioner
@@ -101,8 +103,6 @@ from .sync_sessions import (
     LeaseService,
     SyncSessionService,
 )
-from .task_channel import TaskChannel
-from .sandbox_worker import SandboxWorker
 
 
 class QuotaAdmission(Protocol):

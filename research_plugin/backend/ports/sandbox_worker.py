@@ -1,4 +1,4 @@
-"""Service-side protocol for sandbox data-plane work."""
+"""Port for sandbox data-plane work."""
 
 from __future__ import annotations
 

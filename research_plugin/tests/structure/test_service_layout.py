@@ -4,7 +4,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, SERVICES_ROOT
+from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERVICES_ROOT
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
@@ -133,17 +133,24 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "markdown_images"},
         )
 
-    def test_metrics_archive_service_module_is_a_port(self) -> None:
-        # The concrete file/HTTP/SQLite archive lives in dataplane. Services
-        # depend on this narrow port so they do not pull local capture code
-        # into the control-safe service package.
-        self.assertEqual(_import_modules("metrics_archive.py"), {"pathlib", "typing"})
-        source = _source("metrics_archive.py")
-        for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
-            self.assertNotIn(forbidden, source)
-
-    def test_sandbox_lifecycle_module_is_a_port(self) -> None:
-        self.assertEqual(_import_modules("sandbox_lifecycle.py"), {"datetime", "typing"})
+    def test_sandbox_ports_are_neutral_and_outside_services(self) -> None:
+        expected_imports = {
+            "metrics_archive.py": {"pathlib", "typing"},
+            "sandbox_lifecycle.py": {"datetime", "typing"},
+            "sandbox_worker.py": {"pathlib", "typing"},
+            "task_channel.py": {"typing"},
+        }
+        for name, allowed_imports in expected_imports.items():
+            with self.subTest(module=name):
+                self.assertFalse((SERVICES / name).exists())
+                self.assertTrue((PORTS_ROOT / name).exists())
+                self.assertEqual(
+                    _import_module_names(PORTS_ROOT / name),
+                    allowed_imports,
+                )
+                source = (PORTS_ROOT / name).read_text(encoding="utf-8")
+                for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
+                    self.assertNotIn(forbidden, source)
 
     def test_reflection_policy_service_module_is_a_compatibility_shim(self) -> None:
         self.assertEqual(_import_modules("reflection_policy.py"), {"domain"})

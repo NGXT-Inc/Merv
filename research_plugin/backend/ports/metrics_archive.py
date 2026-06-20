@@ -1,4 +1,4 @@
-"""Service-side port for sandbox metrics archives."""
+"""Port for sandbox metrics archive storage."""
 
 from __future__ import annotations
 

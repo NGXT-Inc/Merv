@@ -7,4 +7,5 @@ TESTS_ROOT = Path(__file__).resolve().parent
 PLUGIN_ROOT = TESTS_ROOT.parent
 BACKEND_ROOT = PLUGIN_ROOT / "backend"
 DOMAIN_ROOT = BACKEND_ROOT / "domain"
+PORTS_ROOT = BACKEND_ROOT / "ports"
 SERVICES_ROOT = BACKEND_ROOT / "services"

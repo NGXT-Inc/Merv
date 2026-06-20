@@ -33,8 +33,10 @@ from ..sandbox_backend import (
     SandboxRequest,
 )
 from ..domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
+from ..ports.sandbox_lifecycle import ExperimentTransitions
+from ..ports.sandbox_worker import SandboxWorker
+from ..ports.task_channel import TaskChannel
 from ..utils import now_iso
-from .sandbox_lifecycle import ExperimentTransitions
 from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
@@ -42,8 +44,6 @@ from ..sandbox_support import (
     iso_after,
     parse_iso,
 )
-from .task_channel import TaskChannel
-from .sandbox_worker import SandboxWorker
 
 
 RefreshRow = Callable[..., dict[str, Any]]

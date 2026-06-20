@@ -23,7 +23,7 @@ from backend.contracts import (
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
 )
-from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, SERVICES_ROOT
+from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PORTS_ROOT, SERVICES_ROOT
 
 
 # The only services modules allowed to spawn local processes (ssh/rsync/
@@ -38,13 +38,14 @@ SUBPROCESS_ALLOWED = {
 # Record halves that must be servable from a cloud control plane: no local
 # processes, no rsync/conn machinery, no dataplane worker.
 DOMAIN_MODULES = tuple(sorted(DOMAIN_ROOT.glob("*.py")))
+PORT_MODULES = tuple(sorted(PORTS_ROOT.glob("*.py")))
 
 CONTROL_MODULES = (
     *DOMAIN_MODULES,
+    *PORT_MODULES,
     BACKEND_ROOT / "sandbox_backend.py",
     BACKEND_ROOT / "tool_facade.py",
     BACKEND_ROOT / "tool_handlers.py",
-    SERVICES_ROOT / "sandbox_lifecycle.py",
     SERVICES_ROOT / "projects.py",
     SERVICES_ROOT / "claims.py",
     SERVICES_ROOT / "experiments.py",
