@@ -87,6 +87,56 @@ class HttpTaskQueueRoundTripTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             queue.enqueue(task_type="reboot_vm", payload={})
 
+    def test_known_in_process_only_fields_are_stripped_from_wire_payload(self) -> None:
+        cases = [
+            (
+                "initial_push",
+                {
+                    "session": {"experiment_id": "x"},
+                    "name": "exp",
+                    "on_retry": lambda attempt, attempts: None,
+                },
+                {"session": {"experiment_id": "x"}, "name": "exp"},
+            ),
+            (
+                "parachute_restore",
+                {
+                    "experiment_id": "x",
+                    "get_url": "file:///tmp/parachute.tgz",
+                    "data": b"local-only",
+                },
+                {"experiment_id": "x", "get_url": "file:///tmp/parachute.tgz"},
+            ),
+        ]
+        for task_type, payload, expected in cases:
+            with self.subTest(task_type=task_type):
+                queue = HttpTaskQueue()
+                queue.enqueue(task_type=task_type, payload=payload)
+
+                task = queue.poll(wait_seconds=0.05)
+
+                self.assertEqual(task["payload"], expected)
+
+    def test_unknown_non_json_payload_field_is_rejected(self) -> None:
+        queue = HttpTaskQueue()
+
+        with self.assertRaisesRegex(
+            ValidationError, "not JSON-serializable: final_pull.callback"
+        ):
+            queue.enqueue(
+                task_type="final_pull",
+                payload={"session": {"experiment_id": "x"}, "callback": lambda: None},
+            )
+
+    def test_non_standard_json_number_is_rejected(self) -> None:
+        queue = HttpTaskQueue()
+
+        with self.assertRaisesRegex(ValidationError, "sync_pull.value"):
+            queue.enqueue(
+                task_type="sync_pull",
+                payload={"session": {"experiment_id": "x"}, "value": float("nan")},
+            )
+
     def test_poll_returns_none_on_timeout_with_no_tasks(self) -> None:
         queue = HttpTaskQueue()
         self.assertIsNone(queue.poll(wait_seconds=0.05))

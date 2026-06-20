@@ -1287,12 +1287,18 @@ class SandboxService:
                 raise ValidationError(
                     "no blob store is configured to hold parachute objects"
                 )
-            data = self.blobs.get(
-                namespace=project_id, sha256=str(row.get("parachute_sha256") or "")
-            )
+            sha256 = str(row.get("parachute_sha256") or "")
+            download = self.blobs.presign_get(namespace=project_id, sha256=sha256)
+            get_url = str(download.get("url") or "")
+            if not get_url:
+                raise ValidationError("blob store returned no parachute download URL")
             result = self.tasks.submit(
                 task_type="parachute_restore",
-                payload={"experiment_id": experiment_id, "name": name, "data": data},
+                payload={
+                    "experiment_id": experiment_id,
+                    "name": name,
+                    "get_url": get_url,
+                },
                 tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=project_id)),
             )
         except Exception as exc:  # noqa: BLE001 — loud failure, no silent retry loop

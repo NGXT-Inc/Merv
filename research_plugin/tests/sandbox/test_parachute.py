@@ -274,6 +274,8 @@ class ParachuteFlowTest(unittest.TestCase):
             if task.type == "parachute_restore"
         ]
         self.assertEqual(len(restore_tasks), 1)
+        self.assertNotIn("data", restore_tasks[0].payload)
+        self.assertIn("get_url", restore_tasks[0].payload)
         # A second poll does not restore again.
         self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(

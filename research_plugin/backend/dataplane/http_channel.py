@@ -34,24 +34,32 @@ from ..utils import PermissionDeniedError, ValidationError, new_id
 from .tasks import TASK_TYPES
 
 
-def _json_safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Drop non-JSON-serializable payload fields for the HTTP path.
+IN_PROCESS_ONLY_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
+    "initial_push": frozenset({"on_retry"}),
+    "parachute_restore": frozenset({"data"}),
+}
 
-    Phase 4/5 left live objects in some task payloads (e.g. the initial_push
-    ``on_retry`` progress callback; in-process parachute_restore ``data``
-    bytes). The HTTP channel serves payloads as JSON, so those fields cannot
-    cross the wire — they are dropped here. The daemon executor never needs the
-    callback (it runs the push directly), and parachute bytes become a
-    presigned ``get_url`` the daemon downloads, set by the control plane before
-    enqueue. A field that is silently load-bearing for the HTTP path would
-    surface as a KeyError in the executor, not a silent wrong result.
+
+def _wire_payload(*, task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON payload for the HTTP path.
+
+    Phase 4/5 left two live objects in task payloads: the in-process
+    ``initial_push`` retry callback and in-process ``parachute_restore`` bytes.
+    Those fields are intentionally local-only. Everything else must be JSON
+    serializable so new cross-plane leaks fail at enqueue instead of silently
+    disappearing before the daemon sees the task.
     """
+    local_only = IN_PROCESS_ONLY_PAYLOAD_FIELDS.get(task_type, frozenset())
     safe: dict[str, Any] = {}
     for key, value in payload.items():
+        if key in local_only:
+            continue
         try:
-            json.dumps(value)
+            json.dumps(value, allow_nan=False)
         except (TypeError, ValueError):
-            continue  # e.g. on_retry callback, raw bytes — not for the wire
+            raise ValidationError(
+                f"task payload field is not JSON-serializable: {task_type}.{key}"
+            ) from None
         safe[key] = value
     return safe
 
@@ -103,7 +111,7 @@ class HttpTaskQueue:
         task = _PendingTask(
             id=new_id(prefix="task"),
             type=task_type,
-            payload=_json_safe_payload(payload),
+            payload=_wire_payload(task_type=task_type, payload=payload),
             deadline=deadline,
             tenant_id=(tenant_id or "").strip(),
         )

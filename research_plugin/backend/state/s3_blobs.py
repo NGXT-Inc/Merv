@@ -96,6 +96,19 @@ class S3BlobStore:
             raise
         return obj["Body"].read()
 
+    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
+        _validate_keys(namespace=namespace, sha256=sha256)
+        key = self._key(namespace=namespace, sha256=sha256)
+        if self._head(key=key) is None:
+            raise NotFoundError(f"blob not found: {namespace}/{sha256}")
+        return {
+            "url": self._s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=self.presign_expiry_seconds,
+            )
+        }
+
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None:
         _validate_keys(namespace=namespace, sha256=sha256)
         head = self._head(key=self._key(namespace=namespace, sha256=sha256))

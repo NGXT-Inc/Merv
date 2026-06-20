@@ -13,10 +13,10 @@ would leak content existence).
 
 Single-use uploads (the parachute PUT, plan Phase 5): ``presign_put`` mints
 an upload target for bytes produced off-process and ``finalize_put`` lands
-them content-addressed, enforcing the size cap and single use. The local
-implementation's "URL" is a ``file://`` staging path — honest to the seam,
-not to the transport: real presigned HTTPS URLs arrive with ``S3BlobStore``
-in Phase 8 behind these same two verbs.
+them content-addressed, enforcing the size cap and single use. ``presign_get``
+mints the read URL a split-mode daemon uses to restore a parachute object. The
+local implementation's "URL" is a ``file://`` path — honest to the seam, not
+to the transport: real presigned HTTPS URLs arrive with ``S3BlobStore``.
 """
 
 from __future__ import annotations
@@ -64,6 +64,13 @@ class BlobStore(Protocol):
 
     def get(self, *, namespace: str, sha256: str) -> bytes:
         """Return the blob's bytes; raises NotFoundError when absent."""
+        ...
+
+    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
+        """Mint a read URL for an existing blob. Returns ``{url}``.
+
+        Local mode returns a ``file://`` URL; S3 returns a presigned HTTPS GET.
+        """
         ...
 
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None: ...
@@ -150,6 +157,13 @@ class LocalDirBlobStore:
         if not blob_path.exists():
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
         return blob_path.read_bytes()
+
+    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
+        _validate_keys(namespace=namespace, sha256=sha256)
+        blob_path = self._blob_path(namespace=namespace, sha256=sha256)
+        if not blob_path.exists():
+            raise NotFoundError(f"blob not found: {namespace}/{sha256}")
+        return {"url": blob_path.resolve().as_uri()}
 
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None:
         _validate_keys(namespace=namespace, sha256=sha256)

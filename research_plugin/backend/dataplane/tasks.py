@@ -12,12 +12,11 @@ Task types: ``initial_push`` | ``sync_pull`` | ``final_pull`` | ``conn_refresh``
 parachute object (plan Phase 5, fixed decision 5) into the experiment's
 local folder through the worker's normal sync-path semantics.
 
-Payloads carry live objects (sync sessions, row dicts, progress callbacks,
-parachute bytes) while both planes share one process; Phase 8 serializes
-them (the parachute bytes become a presigned GET the daemon downloads).
-Deadlines are cloud-minted ISO instants the data plane treats as opaque
-(plan §3.2) — unenforced in-process, where the worker is by definition
-reachable.
+Payloads carry live objects (sync sessions, row dicts, progress callbacks)
+while both planes share one process. Parachute restore is URL-first so the
+control plane never has to load the recovered archive into memory. Deadlines
+are cloud-minted ISO instants the data plane treats as opaque (plan §3.2) —
+unenforced in-process, where the worker is by definition reachable.
 """
 
 from __future__ import annotations
@@ -137,10 +136,20 @@ class InProcessTaskChannel:
             )
             return None
         # parachute_restore: unpack a reaped sandbox's parachute object into
-        # the experiment's local folder (plan Phase 5). The bytes ride the
-        # payload in-process; Phase 8 hands the daemon a presigned GET.
+        # the experiment's local folder (plan Phase 5). Prefer a read URL so
+        # control does not load the archive before dispatch; inline bytes are
+        # still accepted for old in-process tests and callers.
+        data = payload.get("data")
+        if data is None:
+            url = str(payload.get("get_url") or "")
+            if not url:
+                raise ValidationError("parachute_restore task has no get_url")
+            from urllib.request import urlopen
+
+            with urlopen(url, timeout=120) as response:  # noqa: S310
+                data = response.read()
         return self.worker.restore_parachute(
             experiment_id=str(payload["experiment_id"]),
-            data=payload["data"],
+            data=data,
             name=str(payload.get("name") or ""),
         )

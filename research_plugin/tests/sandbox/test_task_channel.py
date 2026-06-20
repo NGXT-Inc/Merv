@@ -224,6 +224,32 @@ class TaskChannelTest(TaskChannelTestBase):
         self.assertEqual(task.type, "parachute_restore")
         self.assertTrue(ack["ok"])
 
+    def test_parachute_restore_can_download_from_url(self) -> None:
+        exp_id = self._experiment()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            payload = b'{"loss": 0.1}\n'
+            info = tarfile.TarInfo(name="./metrics.json")
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+        archive = self.repo / "parachute.tgz"
+        archive.write_bytes(buffer.getvalue())
+
+        result = self.channel.submit(
+            task_type="parachute_restore",
+            payload={
+                "experiment_id": exp_id,
+                "name": "exp-1",
+                "get_url": archive.resolve().as_uri(),
+            },
+        )
+
+        self.assertEqual(result["restored"], 1)
+        self.assertEqual(
+            (self.repo / "experiments" / "exp-1" / "metrics.json").read_bytes(),
+            b'{"loss": 0.1}\n',
+        )
+
     def test_unknown_task_type_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             self.channel.submit(task_type="reboot_vm", payload={})

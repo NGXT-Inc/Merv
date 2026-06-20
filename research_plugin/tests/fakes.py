@@ -185,6 +185,17 @@ class FakeBlobStore:
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
         return self.blobs[key]
 
+    def presign_get(self, *, namespace: str, sha256: str) -> dict:
+        import tempfile
+        from pathlib import Path as _Path
+
+        data = self.get(namespace=namespace, sha256=sha256)
+        if self._staging_dir is None:
+            self._staging_dir = tempfile.mkdtemp(prefix="fake-blob-uploads-")
+        path = _Path(self._staging_dir) / f"{namespace}-{sha256}"
+        path.write_bytes(data)
+        return {"url": path.resolve().as_uri()}
+
     def stat(self, *, namespace: str, sha256: str):
         from backend.state.blobs import BlobStat
 

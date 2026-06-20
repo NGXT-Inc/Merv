@@ -374,8 +374,9 @@ class LocalDataPlaneWorker:
         normal sync target, under the same per-experiment lock the rsync
         paths take. Unlike a pull there is no ``--delete``: a parachute is a
         recovery object, not a mirror pass, so restoring never removes local
-        files. ``data`` arrives inline while both planes share one process;
-        Phase 8 replaces it with a presigned GET the daemon downloads.
+        files. The task channel is URL-first so the data plane downloads the
+        archive before calling this method; inline bytes remain a compatibility
+        path for in-process callers.
         """
         with self._sync_locks_lock:
             lock = self._sync_locks.setdefault(experiment_id, threading.Lock())

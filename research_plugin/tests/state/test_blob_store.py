@@ -108,6 +108,17 @@ class BlobStoreContractMixin:
         with self.assertRaises(NotFoundError):
             store.finalize_put(upload_id=target["upload_id"])
 
+    def test_presign_get_reads_existing_blob(self) -> None:
+        import urllib.request
+
+        store = self.make_store()
+        data = b"download me"
+        sha = store.put(namespace="proj_a", data=data)
+        target = store.presign_get(namespace="proj_a", sha256=sha)
+
+        with urllib.request.urlopen(target["url"]) as response:  # noqa: S310
+            self.assertEqual(response.read(), data)
+
     def test_finalize_enforces_the_size_cap(self) -> None:
         store = self.make_store()
         target = store.presign_put(namespace="proj_a", max_size_bytes=4)
