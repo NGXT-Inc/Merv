@@ -34,7 +34,7 @@ from ..sandbox_backend import (
 )
 from ..domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
 from ..utils import now_iso
-from .experiments import ExperimentService
+from .sandbox_lifecycle import ExperimentTransitions
 from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
@@ -71,7 +71,7 @@ class SandboxProvisioner:
         *,
         registry: SandboxRegistry,
         backend: SandboxBackend,
-        experiments: ExperimentService,
+        experiments: ExperimentTransitions,
         worker: SandboxWorker,
         sessions: SyncSessionService,
         tasks: TaskChannel,

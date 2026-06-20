@@ -44,6 +44,7 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "sandbox_backend.py",
     BACKEND_ROOT / "tool_facade.py",
     BACKEND_ROOT / "tool_handlers.py",
+    SERVICES_ROOT / "sandbox_lifecycle.py",
     SERVICES_ROOT / "projects.py",
     SERVICES_ROOT / "claims.py",
     SERVICES_ROOT / "experiments.py",

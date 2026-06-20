@@ -22,8 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable, Protocol
 
 from ..sandbox_backend import SandboxBackend
-from .experiments import ExperimentService
-from .sandbox_provisioner import SandboxProvisioner
+from .sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
 from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import (
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
@@ -54,8 +53,8 @@ class SandboxDaemons:
         *,
         registry: SandboxRegistry,
         backend: SandboxBackend,
-        provisioner: SandboxProvisioner,
-        experiments: ExperimentService,
+        provisioner: ProvisionReaper,
+        experiments: ExperimentTransitions,
         control_view: ControlPlaneView,
         sync_row: Callable[..., dict[str, Any]],
         final_pull: Callable[..., dict[str, Any]],

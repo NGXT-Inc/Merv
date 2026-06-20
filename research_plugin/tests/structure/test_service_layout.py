@@ -31,6 +31,23 @@ def _import_module_names(path: Path) -> set[str]:
     return modules
 
 
+def _import_segments(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    segments: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                segments.update(alias.name.split("."))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if node.module:
+                segments.update(node.module.split("."))
+            for alias in node.names:
+                segments.update(alias.name.split("."))
+    return segments
+
+
 VOCABULARY_NAMES = {
     "GATED_ROLES",
     "GATED_ROLE_BYTE_CAPS",
@@ -107,6 +124,17 @@ class ServiceLayoutTest(unittest.TestCase):
         source = _source("metrics_archive.py")
         for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
             self.assertNotIn(forbidden, source)
+
+    def test_sandbox_lifecycle_module_is_a_port(self) -> None:
+        self.assertEqual(_import_modules("sandbox_lifecycle.py"), {"datetime", "typing"})
+
+    def test_sandbox_lifecycle_workers_use_ports_not_concrete_services(self) -> None:
+        self.assertNotIn(
+            "experiments", _import_segments(SERVICES / "sandbox_provisioner.py")
+        )
+        daemon_imports = _import_segments(SERVICES / "sandbox_daemons.py")
+        self.assertNotIn("experiments", daemon_imports)
+        self.assertNotIn("sandbox_provisioner", daemon_imports)
 
     def test_resource_registration_observation_uses_observer_port(self) -> None:
         source = _source("resources.py")
