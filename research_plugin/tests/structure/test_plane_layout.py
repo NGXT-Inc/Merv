@@ -11,6 +11,9 @@ not know where the repository checkout lives.
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -199,6 +202,27 @@ class PlaneImportLintTest(unittest.TestCase):
         # Keep the package initializer inert so a future ControlApp can import
         # individual record/view services without loading data-plane services.
         self.assertFalse(_imports(SERVICES_ROOT / "__init__.py"))
+
+    def test_dataplane_package_init_is_import_light(self) -> None:
+        # Importing dataplane.tasks should not pull in the local worker package
+        # barrel. The worker stays available through lazy __getattr__ exports.
+        imports = _top_level_import_segments(BACKEND_ROOT / "dataplane" / "__init__.py")
+        for forbidden in ("worker", "ssh_rsync", "workspace"):
+            self.assertNotIn(forbidden, imports)
+        code = """
+import sys
+import backend.dataplane.tasks
+for name in (
+    "backend.dataplane.worker",
+    "backend.execution.ssh_rsync",
+    "backend.workspace",
+):
+    if name in sys.modules:
+        raise SystemExit(f"{name} loaded")
+"""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(BACKEND_ROOT.parent)
+        subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
     def test_project_overview_does_not_import_mutation_services(self) -> None:
         # project.current is a read-side control projection. Keep it decoupled
