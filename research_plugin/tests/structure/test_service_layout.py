@@ -130,6 +130,14 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("_ensure_current_version_for_resource", source)
         self.assertNotIn("_capture_gated_blob", source)
 
+    def test_resource_service_has_no_local_file_reads(self) -> None:
+        source = _source("resources.py")
+
+        self.assertNotIn(".read_bytes(", source)
+        self.assertNotIn("repo_root", source)
+        self.assertNotIn("self.workspace", source)
+        self.assertNotIn("backfill_gated_blobs", source)
+
     def test_feed_service_does_not_read_local_image_paths(self) -> None:
         source = _source("feed.py")
 

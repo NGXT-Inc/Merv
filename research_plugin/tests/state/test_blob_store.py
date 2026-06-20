@@ -285,6 +285,68 @@ class AssociateByteCaptureTest(unittest.TestCase):
                 self.app.blobs.stat(namespace=self.project_id, sha256=sha)
             )
 
+    def test_local_startup_backfills_missing_gated_blob(self) -> None:
+        content = b"## Plan\nBackfill me.\n"
+        (self.repo / "plan.md").write_bytes(content)
+        resource = self._associate(path="plan.md", role="plan")
+        sha = resource["current_version"]["content_sha256"]
+        self.assertTrue(self.app.blobs.delete(namespace=self.project_id, sha256=sha))
+
+        restarted = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+        )
+
+        self.assertEqual(
+            restarted.blobs.get(namespace=self.project_id, sha256=sha),
+            content,
+        )
+
+    def test_local_startup_backfill_skips_drifted_file(self) -> None:
+        (self.repo / "plan.md").write_bytes(b"## Plan\nOriginal.\n")
+        resource = self._associate(path="plan.md", role="plan")
+        sha = resource["current_version"]["content_sha256"]
+        self.assertTrue(self.app.blobs.delete(namespace=self.project_id, sha256=sha))
+        (self.repo / "plan.md").write_bytes(b"## Plan\nChanged.\n")
+
+        restarted = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+        )
+
+        self.assertIsNone(restarted.blobs.stat(namespace=self.project_id, sha256=sha))
+
+    def test_local_startup_backfills_repo_jailed_parent_figure_link(self) -> None:
+        (self.repo / "fig.png").write_bytes(b"png")
+        (self.repo / "reports").mkdir()
+        (self.repo / "reports" / "report.md").write_bytes(
+            b"# Report\n\n![figure](../fig.png)\n"
+        )
+        resource = self._associate(path="reports/report.md", role="report")
+        version_id = resource["current_version_id"]
+        sha = resource["current_version"]["content_sha256"]
+        self.assertTrue(self.app.blobs.delete(namespace=self.project_id, sha256=sha))
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM report_figures WHERE report_version_id = ?",
+                (version_id,),
+            )
+
+        restarted = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+        )
+
+        with restarted.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT sha256 FROM report_figures
+                WHERE report_version_id = ? AND link_path = ?
+                """,
+                (version_id, "../fig.png"),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
 
 if __name__ == "__main__":
     unittest.main()

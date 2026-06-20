@@ -102,13 +102,12 @@ class ResearchPluginApp:
         self.resources = ResourceService(
             store=self.store,
             permissions=self.permissions,
-            workspace=self.workspace,
             observer=self.resource_observer,
             blobs=self.blobs,
         )
         # One-time local upgrade: capture bytes for gated associations made
         # before byte capture existed (idempotent, skips present blobs).
-        self.resources.backfill_gated_blobs()
+        self._backfill_gated_blobs()
         self.syntheses = SynthesisService(
             store=self.store,
             blobs=self.blobs,
@@ -187,6 +186,25 @@ class ResearchPluginApp:
 
     def list_tools(self) -> list[dict[str, Any]]:
         return self.tools.list_tools()
+
+    def _backfill_gated_blobs(self) -> int:
+        backfilled = 0
+        for candidate in self.resources.gated_blob_backfill_candidates():
+            artifact = self.resource_artifact_reader.read_for_backfill(
+                path=str(candidate.get("path") or ""),
+                role=str(candidate.get("role") or ""),
+            )
+            if artifact is None:
+                continue
+            if self.resources.record_backfilled_gated_blob(
+                version_id=str(candidate.get("version_id") or ""),
+                project_id=str(candidate.get("project_id") or ""),
+                role=str(candidate.get("role") or ""),
+                content_bytes=artifact["content_bytes"],
+                figures=artifact.get("figures") or [],
+            ):
+                backfilled += 1
+        return backfilled
 
     def associate_resource(
         self,

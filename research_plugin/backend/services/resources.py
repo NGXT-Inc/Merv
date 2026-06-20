@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import mimetypes
 import os
 import sqlite3
 from pathlib import Path
@@ -15,10 +14,6 @@ from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dic
 from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from .permissions import PermissionService
-
-
-class WorkspaceReader(Protocol):
-    repo_root: Path
 
 
 class ResourceObserver(Protocol):
@@ -40,7 +35,6 @@ class ResourceService:
         *,
         store: StateStore,
         permissions: PermissionService,
-        workspace: WorkspaceReader,
         observer: ResourceObserver,
         blobs: BlobStore | None = None,
     ) -> None:
@@ -50,7 +44,6 @@ class ResourceService:
         # path resolution, stat, hashing, and content-type sniffing happen
         # there; this service only records the supplied observation.
         self.observer = observer
-        self.workspace = workspace
         self.blobs = blobs
 
     def register_file(
@@ -517,15 +510,15 @@ class ResourceService:
             for row in rows
         ]
 
-    def backfill_gated_blobs(self) -> int:
-        """One-time local upgrade: capture bytes for gated associations made
-        before byte capture existed (cloud plan Phase 2). Only versions whose
-        working-tree file still matches the pinned content_sha256 can be
-        recovered; anything else surfaces later as re-associate guidance from
-        the gates. Idempotent — blobs already present are skipped."""
+    def gated_blob_backfill_candidates(self) -> list[dict[str, Any]]:
+        """Gated versions whose immutable blob is missing.
+
+        The service returns record metadata only. Local composition decides
+        whether the repo file is still present and submits bytes separately.
+        """
         if self.blobs is None:
-            return 0
-        backfilled = 0
+            return []
+        candidates: list[dict[str, Any]] = []
         with self.store.transaction() as conn:
             rows = conn.execute(
                 """
@@ -544,32 +537,55 @@ class ResourceService:
                 sha = str(row["content_sha256"])
                 if self.blobs.stat(namespace=namespace, sha256=sha) is not None:
                     continue
-                full = self.workspace.repo_root / str(row["path"])
-                try:
-                    data = full.read_bytes()
-                except OSError:
-                    continue
-                if hashlib.sha256(data).hexdigest() != sha:
-                    continue
-                self.blobs.put(
-                    namespace=namespace,
-                    data=data,
-                    content_type=str(row["content_type"]),
+                candidates.append(row_to_dict(row=row) or {})
+        return candidates
+
+    def record_backfilled_gated_blob(
+        self,
+        *,
+        version_id: str,
+        project_id: str,
+        role: str,
+        content_bytes: bytes,
+        figures: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Store a locally-read backfill artifact if it still matches the pin."""
+        if self.blobs is None or role not in GATED_ROLE_BYTE_CAPS:
+            return False
+        with self.store.transaction() as conn:
+            version = conn.execute(
+                """
+                SELECT id, project_id, path, content_sha256, content_type
+                FROM resource_versions
+                WHERE id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            if version is None:
+                raise NotFoundError(f"resource version not found: {version_id}")
+            if str(version["project_id"]) != project_id:
+                raise NotFoundError(
+                    f"resource version not found in project {project_id}: {version_id}"
                 )
-                backfilled += 1
-                if str(row["role"]) in {"report", "reflection_doc", "synthesis_doc"}:
-                    try:
-                        self._capture_markdown_figures(
-                            conn=conn,
-                            version_id=str(row["version_id"]),
-                            project_id=namespace,
-                            markdown_rel_path=str(row["path"]),
-                            markdown_text=data.decode("utf-8", errors="replace"),
-                            label=str(row["role"]),
-                        )
-                    except ValidationError:
-                        pass  # bad figure links surface via the lint, not the backfill
-        return backfilled
+            sha = hashlib.sha256(content_bytes).hexdigest()
+            if sha != str(version["content_sha256"]):
+                return False
+            if self.blobs.stat(namespace=project_id, sha256=sha) is not None:
+                return False
+            self.blobs.put(
+                namespace=project_id,
+                data=content_bytes,
+                content_type=str(version["content_type"]),
+            )
+            if role in {"report", "reflection_doc", "synthesis_doc"}:
+                self._capture_submitted_markdown_figures(
+                    conn=conn,
+                    version_id=version_id,
+                    project_id=project_id,
+                    markdown_text=content_bytes.decode("utf-8", errors="replace"),
+                    figures=figures or [],
+                )
+            return True
 
     _COMPACT_FIELDS = (
         "id", "project_id", "path", "kind", "title", "current_version_id",
@@ -626,8 +642,6 @@ class ResourceService:
             raise ValidationError("figure link is required")
         if os.path.isabs(link):
             raise ValidationError("figure links must be repo-relative")
-        if any(part == ".." for part in Path(link).parts):
-            raise ValidationError("figure links may not contain '..'")
 
     def _ensure_target_exists(self, *, conn: sqlite3.Connection, target_type: str, target_id: str) -> str | None:
         table_by_type = {
@@ -711,55 +725,6 @@ class ResourceService:
                 project_id=project_id,
                 markdown_text=content_bytes.decode("utf-8", errors="replace"),
                 figures=figures,
-            )
-
-    def _capture_markdown_figures(
-        self,
-        *,
-        conn: sqlite3.Connection,
-        version_id: str,
-        project_id: str,
-        markdown_rel_path: str,
-        markdown_text: str,
-        label: str,
-    ) -> None:
-        """Submit a markdown artifact's relative figure links alongside it.
-
-        Each resolvable, repo-jailed, size-capped figure file is captured as a
-        blob and recorded in report_figures keyed by the artifact's version —
-        the mapping markdown lints and the UI use. A link whose file is
-        missing or oversize is simply not recorded; the lint names it with
-        re-associate guidance. A link escaping the repo is rejected outright."""
-        markdown_dir = (self.workspace.repo_root / markdown_rel_path).parent
-        for link in markdown_image_links(markdown_text):
-            resolved = (markdown_dir / link).resolve()
-            try:
-                resolved.relative_to(self.workspace.repo_root)
-            except ValueError as exc:
-                raise ValidationError(
-                    f"{label} image link escapes the repo: {link}",
-                    details={"link": link, "resource": markdown_rel_path, "role": label},
-                ) from exc
-            if not resolved.is_file():
-                continue
-            size = resolved.stat().st_size
-            if size > MARKDOWN_FIGURE_MAX_BYTES:
-                continue
-            figure_data = resolved.read_bytes()
-            sha = self.blobs.put(
-                namespace=project_id,
-                data=figure_data,
-                content_type=mimetypes.guess_type(link)[0] or "application/octet-stream",
-            )
-            conn.execute(
-                """
-                INSERT INTO report_figures (report_version_id, link_path, sha256, size_bytes, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(report_version_id, link_path)
-                DO UPDATE SET sha256 = excluded.sha256, size_bytes = excluded.size_bytes,
-                              created_at = excluded.created_at
-                """,
-                (version_id, link, sha, size, now_iso()),
             )
 
     def _capture_submitted_markdown_figures(
