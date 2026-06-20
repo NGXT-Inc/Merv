@@ -50,6 +50,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "workflow_views.py",
     SERVICES_ROOT / "experiment_views.py",
     SERVICES_ROOT / "permissions.py",
+    SERVICES_ROOT / "project_overview.py",
     SERVICES_ROOT / "artifacts.py",
     SERVICES_ROOT / "graph_lint.py",
     SERVICES_ROOT / "pinned.py",
@@ -171,6 +172,19 @@ class PlaneImportLintTest(unittest.TestCase):
                 source = (BACKEND_ROOT / "state" / name).read_text(encoding="utf-8")
                 self.assertNotIn("store", _imports(BACKEND_ROOT / "state" / name))
                 self.assertNotIn("StateStore", source)
+
+    def test_services_package_init_is_import_light(self) -> None:
+        # Importing a control-safe service submodule executes services/__init__.
+        # Keep the package initializer inert so a future ControlApp can import
+        # individual record/view services without loading data-plane services.
+        self.assertFalse(_imports(SERVICES_ROOT / "__init__.py"))
+
+    def test_project_overview_does_not_import_mutation_services(self) -> None:
+        # project.current is a read-side control projection. Keep it decoupled
+        # from reflection mutation services so a future ControlApp can compose
+        # the view with a narrower reader.
+        imports = _import_segments(SERVICES_ROOT / "project_overview.py")
+        self.assertNotIn("syntheses", imports)
 
 
 class ProxyStdlibOnlyTest(unittest.TestCase):
