@@ -7,7 +7,7 @@ import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from .experiments import ExperimentService
@@ -15,7 +15,6 @@ from ..utils import new_id
 from ..state.blobs import BlobStore
 from ..domain.vocabulary import GATED_ROLES
 from .identity import LOCAL_TENANT_ID
-from .permissions import PermissionService
 from ..state.store import StateStore, next_created_seq, row_to_dict
 from .syntheses import SynthesisService
 from ..utils import now_iso
@@ -32,6 +31,14 @@ def _hash_capability(capability: str) -> str:
     return hashlib.sha256(capability.encode("utf-8")).hexdigest()
 
 
+class ReviewPolicy(Protocol):
+    def validate_review_role(self, *, role: str) -> None:
+        ...
+
+    def validate_review_verdict(self, *, verdict: str) -> None:
+        ...
+
+
 class ReviewService:
     """Owns review gates and capability-scoped reviewer sessions.
 
@@ -46,7 +53,7 @@ class ReviewService:
         self,
         *,
         store: StateStore,
-        permissions: PermissionService,
+        permissions: ReviewPolicy,
         experiments: ExperimentService,
         syntheses: SynthesisService,
         blobs: BlobStore | None = None,
