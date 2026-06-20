@@ -25,11 +25,11 @@ from .version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, m
 from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, SandboxReleaseInput
 from .feed_http import register_feed_routes
 from .project_router import ProjectRouter
+from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
+from .domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES
 from .services.figure_view import build_experiment_figure
 from .services.feed import MAX_IMAGE_BYTES
-from .services.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .services.identity import LOCAL_PRINCIPAL, AuthError, AuthService
-from .domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES
 from .services.pinned import pinned_text_for_version
 from .utils import (
     ContentUnavailableError,

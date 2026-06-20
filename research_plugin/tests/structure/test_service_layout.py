@@ -203,8 +203,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("workspace", source)
         self.assertIn("post_observed", source)
 
-    def test_graph_lint_is_a_leaf_module(self) -> None:
-        self.assertEqual(_import_modules("graph_lint.py"), {"json"})
+    def test_graph_lint_is_domain_leaf_module(self) -> None:
+        self.assertEqual(_import_module_names(DOMAIN_ROOT / "graph_lint.py"), {"json"})
 
     def test_domain_modules_do_not_import_backend_layers(self) -> None:
         for path in sorted(DOMAIN_ROOT.glob("*.py")):

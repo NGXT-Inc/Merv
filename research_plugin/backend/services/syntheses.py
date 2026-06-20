@@ -16,6 +16,7 @@ import json
 import re
 from typing import Any
 
+from ..domain.graph_lint import graph_problems
 from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
@@ -40,7 +41,6 @@ from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dic
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from .artifacts import markdown_image_links
 from .experiment_names import validate_experiment_name
-from .graph_lint import graph_problems
 from .pinned import pinned_text_for_version, resubmit_hint
 
 

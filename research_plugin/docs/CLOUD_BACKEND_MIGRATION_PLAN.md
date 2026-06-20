@@ -56,7 +56,7 @@ Two corrections discovered during inventory, now part of the plan's premises:
 
 - The "<16 KB by existing lints" premise of decision 6 is **false today** for plan/reflection/change-spec
   style artifacts (no byte caps in code — only report 16 KB at `artifacts.py:41` and graph 16 KB at
-  `graph_lint.py:24-27`). Caps for all gated roles are added *before* any inline-upload contract exists
+  `domain/graph_lint.py:24-27`). Caps for all gated roles are added *before* any inline-upload contract exists
   (Phase 1), with gated markdown/json artifacts using the universal 16 KB limit.
 - There are **34** MCP tools in `TOOL_CONTRACTS`, and the routing table and partition tests are derived
   from that count, not hand-maintained lists.
@@ -214,7 +214,7 @@ The one intentional user-visible change of the whole migration. Soak in local mo
   a missing blob raises; in the guidance path (`status_and_next`) it yields a `resubmit_required` gate
   with "re-associate this artifact" prose, never an exception. Grep gate: zero `store.repo_root` use in
   the validator/lint code paths (`_read_live_file` and the three experiment validators are deleted;
-  `artifacts.py`/`graph_lint.py` stay pure-text) — the whole-module gate for `experiments.py` lands in
+  `artifacts.py`/`domain/graph_lint.py` stay pure-text) — the whole-module gate for `experiments.py` lands in
   Phase 3 with the mkdir move.
 - **One-time blob backfill at upgrade** (the Phase 1 soak leaves gated associations whose pinned versions
   predate byte capture, or were re-pinned by the still-live sweep outside `associate`): for each

@@ -53,7 +53,7 @@ Primitives this design reuses rather than reinvents:
 - **Resource model**: one repo file = one resource keyed `(project_id, path)`, observation-only
   (mtime/ctime/size/sha256), attempt-stamped associations; gates count only current-attempt
   associations. Reflections and the project graph are plain repo files under this model.
-- **Logic-graph envelope lint** (`backend/services/graph_lint.py`): leaf module; `graph_problems()`
+- **Logic-graph envelope lint** (`backend/domain/graph_lint.py`): leaf module; `graph_problems()`
   enforces valid JSON `version:1`, non-empty nodes with unique `id` + non-empty `label`, ≤16 nodes,
   edges referencing existing nodes, no self-loops, acyclic, ≤16 KB. `kind`/`detail`/`refs`/extras are
   free-form and ignored. **This lint is reused verbatim for the project graph.**
