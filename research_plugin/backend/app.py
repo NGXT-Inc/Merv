@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .local_runtime import build_local_runtime
 from .services.claims import ClaimService
 from .services.experiments import ExperimentService
 from .services.feed import FeedService
@@ -27,6 +26,7 @@ from .tool_handlers import build_local_tool_handlers
 if TYPE_CHECKING:
     from .execution import SandboxBackend
     from .execution.ssh_rsync import SshRsyncSyncer
+    from .local_runtime import LocalRuntime
 
 
 class ResearchPluginApp:
@@ -42,17 +42,28 @@ class ResearchPluginApp:
         store: BaseStateStore | None = None,
         blobs: "BlobStore | None" = None,
         task_channel: Any | None = None,
+        runtime: "LocalRuntime | None" = None,
     ) -> None:
         # The plane seam (cloud plan Phase 3): the record store knows nothing
         # about the checkout; local paths flow from the workspace and every
         # local-IO duty routes through the data-plane worker. This constructor
         # IS the local-mode composition — it binds both planes in one process.
-        runtime = build_local_runtime(
-            repo_root=repo_root,
-            execution_backend=execution_backend,
-            rsync_syncer=rsync_syncer,
-            blobs=blobs,
-        )
+        if runtime is None:
+            from .local_runtime import build_local_runtime
+
+            runtime = build_local_runtime(
+                repo_root=repo_root,
+                execution_backend=execution_backend,
+                rsync_syncer=rsync_syncer,
+                blobs=blobs,
+            )
+        elif any(
+            value is not None for value in (execution_backend, rsync_syncer, blobs)
+        ):
+            raise ValueError(
+                "runtime cannot be combined with execution_backend, "
+                "rsync_syncer, or blobs"
+            )
         self.workspace = runtime.workspace
         # Store injection (cloud plan Phase 6): the dual-dialect contract
         # tests hand in a PostgresStateStore; absent that, local mode builds

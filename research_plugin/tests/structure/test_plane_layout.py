@@ -108,6 +108,24 @@ def _import_segments(path: Path) -> set[str]:
     return segments
 
 
+def _top_level_import_segments(path: Path) -> set[str]:
+    """Every dotted segment imported from module-top-level import statements."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    segments: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                segments.update(alias.name.split("."))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if node.module:
+                segments.update(node.module.split("."))
+            for alias in node.names:
+                segments.update(alias.name.split("."))
+    return segments
+
+
 class ToolPlanePartitionTest(unittest.TestCase):
     def test_every_tool_has_a_plane(self) -> None:
         for name, contract in TOOL_CONTRACTS.items():
@@ -211,6 +229,12 @@ class PlaneImportLintTest(unittest.TestCase):
             "build_sandbox_backend",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_app_keeps_local_runtime_module_import_lazy(self) -> None:
+        # Importing backend.app should not import backend.local_runtime itself.
+        # Other local/data collaborators still need their own extraction chunks.
+        imports = _top_level_import_segments(BACKEND_ROOT / "app.py")
+        self.assertNotIn("local_runtime", imports)
 
 
 class ProxyStdlibOnlyTest(unittest.TestCase):
