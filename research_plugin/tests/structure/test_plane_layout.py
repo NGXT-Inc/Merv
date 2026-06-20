@@ -58,6 +58,8 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "artifacts.py",
     SERVICES_ROOT / "graph_lint.py",
     SERVICES_ROOT / "pinned.py",
+    SERVICES_ROOT / "resources.py",
+    SERVICES_ROOT / "feed.py",
     SERVICES_ROOT / "sync_sessions.py",
     SERVICES_ROOT / "metrics_records.py",
     BACKEND_ROOT / "state" / "store.py",
