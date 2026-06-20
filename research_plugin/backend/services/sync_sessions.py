@@ -28,14 +28,14 @@ import posixpath
 from datetime import UTC, datetime
 from typing import Any
 
-from ..execution.sync_dirs import (
+from ..domain.sync_contract import (
     ARTIFACTS_TO_KEEP_DIRNAME,
     DEFAULT_DATA_DIR,
+    TRANSFER_CONTRACT_VERSION,
     remote_experiment_dir,
     remote_root_of,
     remote_sessions_dir,
 )
-from ..execution.transfer_spec import TRANSFER_CONTRACT_VERSION
 from ..state.store import StateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
 from .sandbox_registry import SandboxRegistry
@@ -44,9 +44,8 @@ from ..sandbox_support import iso_after, parse_iso
 
 SYNC_SESSION_SCHEMA_VERSION = 1
 # TRANSFER_CONTRACT_VERSION pins the shared transfer rules (rsync excludes +
-# size caps) into every session; it lives in execution/transfer_spec.py
-# (plan Phase 5), the one module feeding both rsync and the parachute tar,
-# and is re-exported here for session consumers.
+# size caps) into every session; it lives in the domain sync contract so
+# record/session code does not import provider execution modules.
 # How long a sync lease lives between renewals. Comfortably above the
 # auto-sync poll interval (~5s), short enough that a dead client's experiment
 # is takeover-able quickly.

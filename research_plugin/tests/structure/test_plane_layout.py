@@ -187,6 +187,13 @@ class PlaneImportLintTest(unittest.TestCase):
         source = (BACKEND_ROOT / "state" / "store.py").read_text(encoding="utf-8")
         self.assertNotIn("repo_root", source)
 
+    def test_sync_record_views_do_not_import_execution(self) -> None:
+        # Remote directory names and session version pins are a control/data
+        # contract, not provider execution machinery.
+        for name in ("sync_sessions.py", "sandbox_views.py"):
+            with self.subTest(module=name):
+                self.assertNotIn("execution", _import_segments(SERVICES_ROOT / name))
+
     def test_telemetry_sinks_are_store_independent(self) -> None:
         # ActivityLogger and ToolCallStore are config-injected, machine-local
         # sinks (plan §3.2): they take explicit paths from the composition and

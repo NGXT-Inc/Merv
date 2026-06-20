@@ -54,7 +54,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..execution.sync_dirs import remote_experiment_dir
+from ..domain.sync_contract import remote_experiment_dir
 
 from ..state.activity import ActivityLogger
 from ..state.blobs import BlobStore

@@ -20,12 +20,10 @@ import fnmatch
 import shlex
 from pathlib import PurePosixPath
 
-from .sync_dirs import ARTIFACTS_TO_KEEP_DIRNAME
-
-
-# Bumping this version invalidates outstanding sync sessions (the worker
-# refuses a mismatched pin) — bump it whenever the excludes or caps change.
-TRANSFER_CONTRACT_VERSION = 1
+from ..domain.sync_contract import (
+    ARTIFACTS_TO_KEEP_DIRNAME,
+    TRANSFER_CONTRACT_VERSION,
+)
 
 
 DEFAULT_EXCLUDES: tuple[str, ...] = (

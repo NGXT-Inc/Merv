@@ -32,7 +32,7 @@ from ..execution import (
     SandboxBackend,
     SandboxRequest,
 )
-from ..execution.sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
+from ..domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
 from ..utils import now_iso
 from .experiments import ExperimentService
 from .sandbox_registry import SandboxRegistry
