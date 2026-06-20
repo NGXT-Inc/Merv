@@ -51,6 +51,8 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "experiment_views.py",
     SERVICES_ROOT / "permissions.py",
     SERVICES_ROOT / "project_overview.py",
+    SERVICES_ROOT / "reflection_projection.py",
+    SERVICES_ROOT / "reflection_tools.py",
     SERVICES_ROOT / "artifacts.py",
     SERVICES_ROOT / "graph_lint.py",
     SERVICES_ROOT / "pinned.py",
@@ -184,6 +186,13 @@ class PlaneImportLintTest(unittest.TestCase):
         # from reflection mutation services so a future ControlApp can compose
         # the view with a narrower reader.
         imports = _import_segments(SERVICES_ROOT / "project_overview.py")
+        self.assertNotIn("syntheses", imports)
+
+    def test_reflection_tools_do_not_import_mutation_service(self) -> None:
+        # reflection.* is a tool-namespace adapter. It should compose against a
+        # narrow protocol instead of importing the internal synthesis mutation
+        # service just to translate public names.
+        imports = _import_segments(SERVICES_ROOT / "reflection_tools.py")
         self.assertNotIn("syntheses", imports)
 
 

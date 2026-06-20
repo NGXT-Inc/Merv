@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from .reflection_projection import (
+    external_reflection_status,
+    external_reflection_transition,
+)
 from .workflow_gates import ACTIVE_PROCESS_STATUSES
 
 
@@ -114,7 +118,7 @@ def slim_synthesis(syn: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": syn.get("id"),
         "title": syn.get("title"),
-        "status": _external_reflection_status(syn.get("status")),
+        "status": external_reflection_status(syn.get("status")),
         "attempt_index": syn.get("attempt_index"),
         "revision_context": syn.get("revision_context"),
         "roster": [
@@ -140,34 +144,10 @@ def slim_synthesis(syn: dict[str, Any]) -> dict[str, Any]:
             for review in syn.get("reviews", [])
         ],
         "allowed_transitions": [
-            _external_reflection_transition(item)
+            external_reflection_transition(item)
             for item in syn.get("allowed_transitions", [])
         ],
     }
-
-
-def _external_reflection_status(status: Any) -> Any:
-    return "reflection_review" if status == "synthesis_review" else status
-
-
-def _external_reflection_transition(item: Any) -> Any:
-    if not isinstance(item, dict):
-        return item
-    output = dict(item)
-    if output.get("transition") == "submit_synthesis":
-        output["transition"] = "submit_reflection_artifacts"
-    if output.get("leads_to") == "synthesis_review":
-        output["leads_to"] = "reflection_review"
-    for field in ("requires", "description"):
-        if isinstance(output.get(field), str):
-            output[field] = output[field].replace(
-                "synthesis_reviewer",
-                "reflection_reviewer",
-            ).replace(
-                "submit_synthesis",
-                "submit_reflection_artifacts",
-            )
-    return output
 
 
 def _sandbox_summary(sandboxes: list[dict[str, Any]]) -> dict[str, Any]:

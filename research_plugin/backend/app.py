@@ -14,6 +14,7 @@ from .services.experiments import ExperimentService
 from .services.feed import FeedService
 from .services.permissions import PermissionService
 from .services.project_overview import ProjectOverviewService
+from .services.reflection_tools import ReflectionToolService
 from .services.projects import ProjectService
 from .services.resources import ResourceService
 from .services.reviews import ReviewService
@@ -107,6 +108,7 @@ class ResearchPluginApp:
             store=self.store,
             blobs=self.blobs,
         )
+        self.reflections = ReflectionToolService(syntheses=self.syntheses)
         self.project_overview = ProjectOverviewService(
             store=self.store,
             projects=self.projects,
@@ -170,10 +172,10 @@ class ResearchPluginApp:
             "experiment.list": self.experiments.list_experiments_agent,
             "experiment.get_state": self.experiments.get_state_agent,
             "experiment.transition": self.experiments.transition,
-            "reflection.create": self.reflection_create,
-            "reflection.get": self.reflection_get,
-            "reflection.list": self.reflection_list,
-            "reflection.transition": self.reflection_transition,
+            "reflection.create": self.reflections.create,
+            "reflection.get": self.reflections.get,
+            "reflection.list": self.reflections.list,
+            "reflection.transition": self.reflections.transition,
             "resource.register_file": self.resources.register_file,
             "resource.associate": self.resources.associate,
             "resource.delete": self.resources.delete,
@@ -201,81 +203,6 @@ class ResearchPluginApp:
             activity=self.activity,
             tool_calls=self.tool_calls,
         )
-
-    def reflection_create(
-        self,
-        *,
-        project_id: str,
-        title: str = "",
-        lenses: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        return self._external_reflection_state(
-            self.syntheses.create(project_id=project_id, title=title, lenses=lenses or [])
-        )
-
-    def reflection_get(
-        self, *, project_id: str, reflection_id: str
-    ) -> dict[str, Any]:
-        return self._external_reflection_state(
-            self.syntheses.get_state(synthesis_id=reflection_id, project_id=project_id)
-        )
-
-    def reflection_list(self, *, project_id: str) -> dict[str, Any]:
-        state = self.syntheses.list_syntheses(project_id=project_id)
-        return {
-            "count": state.get("count", len(state.get("syntheses", []))),
-            "reflections": [
-                self._external_reflection_state(item)
-                for item in state.get("syntheses", [])
-            ],
-        }
-
-    def reflection_transition(
-        self, *, project_id: str, reflection_id: str, transition: str
-    ) -> dict[str, Any]:
-        internal_transition = (
-            "submit_synthesis"
-            if transition == "submit_reflection_artifacts"
-            else transition
-        )
-        return self._external_reflection_state(
-            self.syntheses.transition(
-                project_id=project_id,
-                synthesis_id=reflection_id,
-                transition=internal_transition,
-            )
-        )
-
-    def _external_reflection_state(self, state: dict[str, Any]) -> dict[str, Any]:
-        output = dict(state)
-        if output.get("status") == "synthesis_review":
-            output["status"] = "reflection_review"
-        if "allowed_transitions" in output:
-            output["allowed_transitions"] = [
-                self._external_reflection_transition(item)
-                for item in output.get("allowed_transitions", [])
-            ]
-        return output
-
-    def _external_reflection_transition(self, item: Any) -> Any:
-        if not isinstance(item, dict):
-            return item
-        output = dict(item)
-        if output.get("transition") == "submit_synthesis":
-            output["transition"] = "submit_reflection_artifacts"
-        if output.get("leads_to") == "synthesis_review":
-            output["leads_to"] = "reflection_review"
-        text_fields = ("requires", "description")
-        for field in text_fields:
-            if isinstance(output.get(field), str):
-                output[field] = output[field].replace(
-                    "synthesis_reviewer",
-                    "reflection_reviewer",
-                ).replace(
-                    "submit_synthesis",
-                    "submit_reflection_artifacts",
-                )
-        return output
 
     def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:
         return self.project_overview.current_project(tenant_id=tenant_id)
