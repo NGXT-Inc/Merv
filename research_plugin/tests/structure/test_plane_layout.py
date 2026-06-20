@@ -57,7 +57,6 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "project_overview.py",
     SERVICES_ROOT / "reflection_projection.py",
     SERVICES_ROOT / "reflection_tools.py",
-    SERVICES_ROOT / "artifacts.py",
     SERVICES_ROOT / "pinned.py",
     SERVICES_ROOT / "resources.py",
     SERVICES_ROOT / "feed.py",

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
-from backend.services.artifacts import MAX_REPORT_BYTES
+from backend.domain.artifacts import MAX_REPORT_BYTES
 from backend.domain.graph_lint import MAX_GRAPH_BYTES
 from backend.domain.vocabulary import GATED_ROLE_BYTE_CAPS, GATED_ROLES
 from backend.state.blobs import LocalDirBlobStore

@@ -55,7 +55,7 @@ evolution), relay byte transport (fallback only), broad RBAC.
 Two corrections discovered during inventory, now part of the plan's premises:
 
 - The "<16 KB by existing lints" premise of decision 6 is **false today** for plan/reflection/change-spec
-  style artifacts (no byte caps in code — only report 16 KB at `artifacts.py:41` and graph 16 KB at
+  style artifacts (no byte caps in code — only report 16 KB at `domain/artifacts.py:41` and graph 16 KB at
   `domain/graph_lint.py:24-27`). Caps for all gated roles are added *before* any inline-upload contract exists
   (Phase 1), with gated markdown/json artifacts using the universal 16 KB limit.
 - There are **34** MCP tools in `TOOL_CONTRACTS`, and the routing table and partition tests are derived
@@ -214,14 +214,14 @@ The one intentional user-visible change of the whole migration. Soak in local mo
   a missing blob raises; in the guidance path (`status_and_next`) it yields a `resubmit_required` gate
   with "re-associate this artifact" prose, never an exception. Grep gate: zero `store.repo_root` use in
   the validator/lint code paths (`_read_live_file` and the three experiment validators are deleted;
-  `artifacts.py`/`domain/graph_lint.py` stay pure-text) — the whole-module gate for `experiments.py` lands in
+  `domain/artifacts.py`/`domain/graph_lint.py` stay pure-text) — the whole-module gate for `experiments.py` lands in
   Phase 3 with the mkdir move.
 - **One-time blob backfill at upgrade** (the Phase 1 soak leaves gated associations whose pinned versions
   predate byte capture, or were re-pinned by the still-live sweep outside `associate`): for each
   gated-role pinned version with no blob, hash the working-tree file and `blob.put` it when it matches the
   version's `content_sha256` (the same rule as the Phase 8 import tool); the rest surface as
   `resubmit_required` rather than wedging.
-- Figures: `artifacts.report_problems` (`:105-144`) split into pure link extraction + a
+- Figures: `domain.artifacts.report_problems` (`:105-144`) split into pure link extraction + a
   `figure_exists` callback against figure blobs; associating markdown gated artifacts such as reports and
   reflection docs resolves links and uploads figures (local mode: same-process; split mode: the same list
   drives presigned PUTs). New `report_figures` table.

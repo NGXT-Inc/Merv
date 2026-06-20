@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
-from backend.services.artifacts import plan_sections_missing
+from backend.domain.artifacts import plan_sections_missing
 from backend.utils import ValidationError, WorkflowError
 
 # A plan that satisfies the required spine (Summary; Objective & hypothesis;

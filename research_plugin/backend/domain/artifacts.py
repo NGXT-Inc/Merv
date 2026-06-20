@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from ..domain.markdown_images import markdown_image_links, markdown_image_targets
+from .markdown_images import markdown_image_links
 
 
 # --- Plan schema (PRD-style) -------------------------------------------------

@@ -124,11 +124,14 @@ class ServiceLayoutTest(unittest.TestCase):
             {"experiments", "reviews", "sandboxes", "syntheses"} & imports
         )
 
-    def test_artifact_lint_is_a_leaf_module(self) -> None:
+    def test_artifact_lint_is_domain_leaf_module(self) -> None:
         # Pure text lint: regexes, a callback type, and shared domain markdown
         # image parsing. No filesystem imports — figure resolution is the
         # caller's business (submission capture).
-        self.assertEqual(_import_modules("artifacts.py"), {"re", "collections", "domain"})
+        self.assertEqual(
+            _import_module_names(DOMAIN_ROOT / "artifacts.py"),
+            {"re", "collections.abc", "markdown_images"},
+        )
 
     def test_metrics_archive_service_module_is_a_port(self) -> None:
         # The concrete file/HTTP/SQLite archive lives in dataplane. Services

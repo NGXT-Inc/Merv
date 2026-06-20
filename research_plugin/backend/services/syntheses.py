@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from ..domain.graph_lint import graph_problems
+from ..domain.markdown_images import markdown_image_links
 from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
@@ -39,7 +40,6 @@ from ..domain.vocabulary import (
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
-from .artifacts import markdown_image_links
 from .experiment_names import validate_experiment_name
 from .pinned import pinned_text_for_version, resubmit_hint
 
