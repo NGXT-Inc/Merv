@@ -107,6 +107,17 @@ class ServiceLayoutTest(unittest.TestCase):
         for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
             self.assertNotIn(forbidden, source)
 
+    def test_resource_registration_observation_uses_observer_port(self) -> None:
+        source = _source("resources.py")
+        start = source.index("    def _register_one(")
+        end = source.index("    def record_observation(")
+        register_slice = source[start:end]
+
+        self.assertIn("self.observer.observe_file", register_slice)
+        self.assertNotIn("_resolve_repo_file", register_slice)
+        self.assertNotIn("_content_sha256", register_slice)
+        self.assertNotIn(".stat(", register_slice)
+
     def test_graph_lint_is_a_leaf_module(self) -> None:
         self.assertEqual(_import_modules("graph_lint.py"), {"json"})
 

@@ -22,7 +22,6 @@ already lazily imported; the daemon profile drops it entirely).
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import mimetypes
 import os
@@ -38,6 +37,7 @@ from ..dataplane import LocalDataPlaneWorker
 from ..dataplane.http_channel import DaemonTaskLoop
 from ..dataplane.project_links import ProjectLinks
 from ..dataplane.remote_view import HttpControlPlaneView
+from ..dataplane.resource_observer import LocalResourceObserver
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from ..execution import build_sandbox_backend
 from ..services.artifacts import markdown_image_links, markdown_image_targets
@@ -415,21 +415,14 @@ class DaemonServer:
         title: str,
         created_by: str,
     ) -> dict[str, Any]:
-        rel_path, file_path = self._resolve_repo_file(repo_root=repo_root, path=path)
-        stat = file_path.stat()
+        observation = LocalResourceObserver(repo_root=repo_root).observe_file(
+            path=path,
+            kind=kind,
+            title=title,
+            created_by=created_by,
+        )
         return self.control.submit_resource_observation(
-            {
-                "project_id": project_id,
-                "path": rel_path,
-                "kind": kind,
-                "title": title,
-                "created_by": created_by,
-                "mtime_ns": stat.st_mtime_ns,
-                "ctime_ns": stat.st_ctime_ns,
-                "size_bytes": stat.st_size,
-                "content_sha256": self._content_sha256(file_path),
-                "content_type": mimetypes.guess_type(rel_path)[0] or "application/octet-stream",
-            }
+            {"project_id": project_id, **observation}
         )
 
     def _submitted_figures(
@@ -516,13 +509,6 @@ class DaemonServer:
         if not full.is_file():
             raise ValidationError("v0.0001 resources must be files")
         return rel.as_posix(), full
-
-    def _content_sha256(self, file_path: Path) -> str:
-        digest = hashlib.sha256()
-        with file_path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
 
     def _auto_sync_loop(self) -> None:
         # Mirror SandboxDaemons._auto_sync_loop, but the targets come from the

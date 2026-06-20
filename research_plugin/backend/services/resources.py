@@ -21,6 +21,17 @@ class WorkspaceReader(Protocol):
     repo_root: Path
 
 
+class ResourceObserver(Protocol):
+    def observe_file(
+        self,
+        *,
+        path: str,
+        kind: str = "other",
+        title: str = "",
+        created_by: str = "codex",
+    ) -> dict[str, Any]: ...
+
+
 def _content_sha256(file_path: Path) -> str:
     digest = hashlib.sha256()
     with file_path.open("rb") as handle:
@@ -38,14 +49,15 @@ class ResourceService:
         store: StateStore,
         permissions: PermissionService,
         workspace: WorkspaceReader,
+        observer: ResourceObserver,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
-        # File observation reads the working tree through the workspace, not
-        # the record store; the split-mode reshape (plan Phase 8) moves these
-        # reads behind the worker's observe_file/read_artifact_bytes duties
-        # (plan §3.1).
+        # The observer is the local data-plane half of resource.register_file:
+        # path resolution, stat, hashing, and content-type sniffing happen
+        # there; this service only records the supplied observation.
+        self.observer = observer
         self.workspace = workspace
         self.blobs = blobs
 
@@ -90,19 +102,15 @@ class ResourceService:
         created_by: str = "codex",
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        rel_path, file_path = self._resolve_repo_file(path=path)
-        stat = file_path.stat()
-        return self.record_observation(
-            path=rel_path,
+        observation = self.observer.observe_file(
+            path=path,
             kind=kind,
             title=title,
             created_by=created_by,
+        )
+        return self.record_observation(
             project_id=project_id,
-            mtime_ns=stat.st_mtime_ns,
-            ctime_ns=stat.st_ctime_ns,
-            size_bytes=stat.st_size,
-            content_sha256=_content_sha256(file_path),
-            content_type=mimetypes.guess_type(rel_path)[0] or "application/octet-stream",
+            **observation,
         )
 
     def record_observation(

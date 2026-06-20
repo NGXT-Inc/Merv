@@ -99,6 +99,7 @@ class ResearchPluginApp:
             store=self.store,
             permissions=self.permissions,
             workspace=self.workspace,
+            observer=runtime.resource_observer,
             blobs=self.blobs,
         )
         # One-time local upgrade: capture bytes for gated associations made
