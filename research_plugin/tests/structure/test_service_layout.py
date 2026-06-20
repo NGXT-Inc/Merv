@@ -98,6 +98,15 @@ class ServiceLayoutTest(unittest.TestCase):
         # figure resolution is the caller's business (submission capture).
         self.assertEqual(_import_modules("artifacts.py"), {"re", "collections"})
 
+    def test_metrics_archive_service_module_is_a_port(self) -> None:
+        # The concrete file/HTTP/SQLite archive lives in dataplane. Services
+        # depend on this narrow port so they do not pull local capture code
+        # into the control-safe service package.
+        self.assertEqual(_import_modules("metrics_archive.py"), {"pathlib", "typing"})
+        source = _source("metrics_archive.py")
+        for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
+            self.assertNotIn(forbidden, source)
+
     def test_graph_lint_is_a_leaf_module(self) -> None:
         self.assertEqual(_import_modules("graph_lint.py"), {"json"})
 

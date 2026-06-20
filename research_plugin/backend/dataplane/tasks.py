@@ -27,10 +27,9 @@ from typing import TYPE_CHECKING, Any
 from ..utils import ValidationError, new_id
 
 if TYPE_CHECKING:
-    # Typing-only: a runtime import would close the package cycle
-    # dataplane.tasks → dataplane.worker → services (metrics_archive) →
-    # services.sandboxes → dataplane.tasks and break `import
-    # backend.dataplane` as an entry point.
+    # Typing-only: a runtime import would load the local worker stack
+    # (workspace, rsync, dashboard tunnels) and break import-time separation
+    # for `backend.dataplane` as an entry point.
     from .worker import DataPlaneWorker
 
 
@@ -108,17 +107,19 @@ class InProcessTaskChannel:
                 on_retry=payload.get("on_retry"),
             )
         if task.type == "final_pull":
-            return self.worker.final_pull(
+            result = self.worker.final_pull(
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 deadline=task.deadline,
             )
+            return self._with_metrics_snapshot(result=result, payload=payload)
         if task.type == "sync_pull":
-            return self.worker.sync_pull(
+            result = self.worker.sync_pull(
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 skip_if_busy=bool(payload.get("skip_if_busy")),
             )
+            return self._with_metrics_snapshot(result=result, payload=payload)
         if task.type == "conn_refresh":
             # Re-render the agent's conn file (and ssh command) for a row
             # whose tunnel endpoint moved.
@@ -153,3 +154,22 @@ class InProcessTaskChannel:
             data=data,
             name=str(payload.get("name") or ""),
         )
+
+    def _with_metrics_snapshot(self, *, result: Any, payload: dict[str, Any]) -> Any:
+        if not isinstance(result, dict):
+            return result
+        result = dict(result)
+        result["metrics_snapshot"] = None
+        if result.get("skipped"):
+            return result
+        row = payload.get("row")
+        if not isinstance(row, dict):
+            return result
+        try:
+            result["metrics_snapshot"] = self.worker.capture_metrics_snapshot(
+                row=row,
+                name=str(payload.get("name") or ""),
+            )
+        except Exception:  # noqa: BLE001 — metrics capture must not fail sync
+            result["metrics_snapshot"] = None
+        return result

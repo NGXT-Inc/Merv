@@ -7,7 +7,7 @@ links, and moves bytes for the cloud. It runs:
 - an ``HttpControlPlaneClient`` upstream to the cloud (bearer token from the
   0600 token file),
 - a ``DaemonTaskLoop`` long-polling the cloud for data-plane tasks
-  (initial_push | final_pull | conn_refresh | teardown | parachute_restore),
+  (initial_push | sync_pull | final_pull | conn_refresh | teardown | parachute_restore),
 - an auto-sync loop that asks the cloud "my running sandboxes + lease grants"
   and rsyncs each (the HTTP ControlPlaneView),
 - a small loopback HTTP surface for the proxy (local data-plane tool subset +
@@ -536,7 +536,26 @@ class DaemonServer:
                 continue
             for target in targets:
                 try:
-                    self.worker.sync_pull(session=target["session"], skip_if_busy=True)
+                    result = self.worker.sync_pull(
+                        session=target["session"], skip_if_busy=True
+                    )
+                    snapshot = None
+                    row = target.get("row")
+                    if isinstance(row, dict) and not (
+                        isinstance(result, dict) and result.get("skipped")
+                    ):
+                        try:
+                            snapshot = self.worker.capture_metrics_snapshot(row=row)
+                        except Exception:  # noqa: BLE001 — auto-sync stays best-effort
+                            snapshot = None
+                    if snapshot is not None:
+                        self.control.submit_sandbox_metrics(
+                            {
+                                "project_id": str(row.get("project_id") or ""),
+                                "experiment_id": str(target.get("experiment_id") or ""),
+                                "metrics_snapshot": snapshot,
+                            }
+                        )
                 except Exception:  # noqa: BLE001 — per-target best-effort
                     continue
 
@@ -561,23 +580,43 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
             result["local_dir"] = worker.repo_relative(result["local_dir"])
         return result
 
+    def _with_metrics_snapshot(result: Any, payload: dict[str, Any]) -> Any:
+        result = _relativize(result)
+        if not isinstance(result, dict):
+            return result
+        result = dict(result)
+        result["metrics_snapshot"] = None
+        if result.get("skipped"):
+            return result
+        row = payload.get("row")
+        if not isinstance(row, dict):
+            return result
+        try:
+            result["metrics_snapshot"] = worker.capture_metrics_snapshot(
+                row=row,
+                name=str(payload.get("name") or ""),
+            )
+        except Exception:  # noqa: BLE001 — metrics capture must not fail sync
+            result["metrics_snapshot"] = None
+        return result
+
     def execute(task_type: str, payload: dict[str, Any], deadline: str | None) -> Any:
         if task_type == "initial_push":
             return _relativize(worker.push_initial(
                 session=payload["session"], name=str(payload.get("name") or "")
             ))
         if task_type == "final_pull":
-            return _relativize(worker.final_pull(
+            return _with_metrics_snapshot(worker.final_pull(
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 deadline=deadline,
-            ))
+            ), payload)
         if task_type == "sync_pull":
-            return _relativize(worker.sync_pull(
+            return _with_metrics_snapshot(worker.sync_pull(
                 session=payload["session"],
                 name=str(payload.get("name") or ""),
                 skip_if_busy=bool(payload.get("skip_if_busy")),
-            ))
+            ), payload)
         if task_type == "conn_refresh":
             return worker.sandbox_enrichment(
                 row=payload["row"], name=str(payload.get("name") or "")

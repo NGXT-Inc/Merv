@@ -474,7 +474,7 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with patch(
-            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+            "backend.dataplane.worker.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
         ) as snap:
             self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
         snap.assert_called_once()
@@ -499,7 +499,7 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with patch(
-            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+            "backend.dataplane.worker.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
         ):
             self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
         result = self.app.sandboxes.results_metrics(
@@ -515,10 +515,10 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with patch(
-            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+            "backend.dataplane.worker.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
         ):
             self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
-        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=None):
+        with patch("backend.dataplane.worker.snapshot_mlflow", return_value=None):
             self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
         result = self.app.sandboxes.results_metrics(
             experiment_id=exp_id, project_id=self.project_id
@@ -533,7 +533,7 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with patch(
-            "backend.services.sandboxes.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
+            "backend.dataplane.worker.snapshot_mlflow", return_value=dict(self.SNAPSHOT)
         ):
             self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
         archive_path = self.app.sandboxes.metrics_archive.path_for(exp_id)

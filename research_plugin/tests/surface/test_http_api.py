@@ -269,14 +269,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 }
             ],
         }
-        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=snapshot):
+        with patch("backend.dataplane.worker.snapshot_mlflow", return_value=snapshot):
             self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
         live = self.request("GET", url)
         self.assertTrue(live["available"])
         self.assertEqual(live["sandbox_status"], "running")
 
         # Release with MLflow already unreachable — the last good archive serves on.
-        with patch("backend.services.sandboxes.snapshot_mlflow", return_value=None):
+        with patch("backend.dataplane.worker.snapshot_mlflow", return_value=None):
             self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
         durable = self.request("GET", url)
         self.assertTrue(durable["available"])

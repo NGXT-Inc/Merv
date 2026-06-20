@@ -29,7 +29,7 @@ class MetricsSnapshotStore:
     ) -> None:
         """Upsert the experiment's snapshot record.
 
-        ``snapshot`` is the extracted MLflow shape (see metrics_archive);
+        ``snapshot`` is the extracted MLflow shape (see dataplane.metrics_archive);
         the stored record gains ``captured_at`` exactly like the file cache
         does at persist time, so both read paths serve the same shape.
         """

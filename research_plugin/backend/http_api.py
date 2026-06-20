@@ -2086,7 +2086,22 @@ def create_fastapi_app(
             return target.app.sandboxes.sync(
                 project_id=project_id,
                 experiment_id=_required_text(payload, "experiment_id"),
-                include_data_plane_metrics=False,
+                daemon_metrics_snapshot=payload.get("metrics_snapshot"),
+                daemon_metrics_snapshot_provided="metrics_snapshot" in payload,
+            )
+
+        @http.post("/api/daemon/sandboxes/metrics")
+        def daemon_sandbox_metrics(
+            request: Request, body: JsonBody = Body(default=None)
+        ) -> dict[str, Any]:
+            payload = body or {}
+            project_id = _required_text(payload, "project_id")
+            target = require_daemon_project(request, project_id)
+            snapshot = payload.get("metrics_snapshot")
+            return target.app.sandboxes.record_daemon_metrics(
+                project_id=project_id,
+                experiment_id=_required_text(payload, "experiment_id"),
+                snapshot=snapshot if isinstance(snapshot, dict) else None,
             )
 
         @http.post("/api/daemon/feed/post")
@@ -2167,6 +2182,7 @@ def create_fastapi_app(
                 "targets": [
                     {
                         "experiment_id": str(t["row"].get("experiment_id") or ""),
+                        "row": t["row"],
                         "session": t["session"],
                     }
                     for t in targets

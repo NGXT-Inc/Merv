@@ -298,6 +298,7 @@ for name in (
     "backend.local_runtime",
     "backend.workspace",
     "backend.dataplane.worker",
+    "backend.dataplane.metrics_archive",
     "backend.dataplane.sandbox_dashboards",
     "backend.dataplane.sandbox_conn",
     "backend.execution.ssh_rsync",

@@ -172,11 +172,17 @@ class SandboxDaemons:
         # exercised by injecting a failing final_pull; parachute() itself
         # never raises (loud sandbox.parachute_failed event) and reaping
         # always proceeds to terminate — billing protection comes first.
+        final_result: dict[str, Any] = {}
         try:
-            self._final_pull(row=row)
+            final_result = self._final_pull(row=row)
         except Exception:  # noqa: BLE001 — reaping must still terminate
             self._parachute(row=row)
-        self._persist_metrics(row=row, force=True)
+        self._persist_metrics(
+            row=row,
+            force=True,
+            snapshot=final_result.get("metrics_snapshot"),
+            snapshot_provided=True,
+        )
         sandbox_id = str(row.get("sandbox_id") or "")
         stopped = False
         if sandbox_id:

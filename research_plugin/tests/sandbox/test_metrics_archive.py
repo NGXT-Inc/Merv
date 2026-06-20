@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.services.metrics_archive import (
+from backend.dataplane.metrics_archive import (
     MAX_HISTORY_POINTS,
     MetricsArchive,
     _downsample,
@@ -65,7 +65,7 @@ class FakeClient:
 
 def _client_patch(client: FakeClient):
     return patch(
-        "backend.services.metrics_archive.httpx.Client",
+        "backend.dataplane.metrics_archive.httpx.Client",
         return_value=client,
     )
 

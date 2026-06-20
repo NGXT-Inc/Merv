@@ -35,6 +35,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -75,6 +76,26 @@ VALID_GRAPH = (
     '{"id": "out", "kind": "outcome", "label": "Met at 0.72"}],'
     ' "edges": [{"from": "obj", "to": "out", "label": "confirmed by"}]}\n'
 )
+SPLIT_METRICS = {
+    "source": "mlflow",
+    "base_url": "http://127.0.0.1:5000",
+    "experiments": [
+        {
+            "experiment_id": "1",
+            "name": "smoke",
+            "runs": [
+                {
+                    "run_id": "r1",
+                    "run_name": "seed_0",
+                    "status": "FINISHED",
+                    "params": {},
+                    "metrics": {"accuracy": {"last": 0.72}},
+                    "history": {"accuracy": [[1, 0.72]]},
+                }
+            ],
+        }
+    ],
+}
 _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000100ffff03000006000557bff8a40000000049454e44ae426082"
@@ -601,8 +622,26 @@ class SplitModeSmokeTest(unittest.TestCase):
         self.assertTrue(got["ssh"]["raw_command"].startswith("ssh -i "))
         self.assertIn(got["ssh"]["key_path"], got["ssh"]["raw_command"])
 
-        # sync under lease (data plane), then results/report/graph.
-        self._call("sandbox.sync", project_id=project_id, experiment_id=exp_id)
+        # sync under lease (data plane), then results/report/graph. Metrics
+        # capture is patched on the DAEMON worker only; if control captures
+        # through its own worker, no archived metrics will appear here.
+        with patch.object(
+            self.daemon_worker,
+            "capture_metrics_snapshot",
+            return_value=dict(SPLIT_METRICS),
+        ) as capture_metrics:
+            self._call("sandbox.sync", project_id=project_id, experiment_id=exp_id)
+        capture_metrics.assert_called_once()
+        archived_metrics = self.cloud_app.sandboxes.results_metrics(
+            experiment_id=exp_id,
+            project_id=project_id,
+        )
+        self.assertTrue(archived_metrics["available"])
+        self.assertNotIn("base_url", archived_metrics)
+        self.assertEqual(
+            archived_metrics["experiments"][0]["runs"][0]["metrics"]["accuracy"]["last"],
+            0.72,
+        )
         self._associate(project_id=project_id, exp_id=exp_id,
                         path="experiments/smoke/results.json", role="result",
                         body='{"accuracy": 0.72}\n')
@@ -618,6 +657,12 @@ class SplitModeSmokeTest(unittest.TestCase):
 
         # release (control surface) — terminates the sandbox.
         self._call("sandbox.release", project_id=project_id, experiment_id=exp_id)
+        durable_metrics = self.cloud_app.sandboxes.results_metrics(
+            experiment_id=exp_id,
+            project_id=project_id,
+        )
+        self.assertTrue(durable_metrics["available"])
+        self.assertEqual(durable_metrics["sandbox_status"], "terminated")
 
         # ---- assertions ----
         conn = self.store.connect()

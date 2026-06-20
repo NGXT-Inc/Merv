@@ -73,7 +73,7 @@ from ..execution import (
 )
 from . import sandbox_views
 from .experiments import ExperimentService
-from .metrics_archive import MetricsArchive, snapshot_mlflow
+from .metrics_archive import MetricsArchive
 from .metrics_records import MetricsSnapshotStore
 from .quotas import AdmissionRequest, QuotaService
 from .transcript_cache import TranscriptCache
@@ -89,7 +89,6 @@ from ..sandbox_support import (
     METRICS_PERSIST_TTL_SECONDS,
     PARACHUTE_MAX_OBJECT_BYTES,
     PARACHUTE_TTL_SECONDS,
-    decode_dashboards,
     encode_dashboards,
     env_float,
     iso_after,
@@ -493,18 +492,25 @@ class SandboxService:
         daemon_unreachable = False
         was_active = bool(row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES)
         final_pull_skipped = bool(was_active and skip_final_pull)
+        final_result: dict[str, Any] = {}
         if was_active and not skip_final_pull:
             try:
-                self._final_pull_row(row=row)
+                final_result = self._final_pull_row(row=row)
             except Exception:  # noqa: BLE001 — release should still terminate
                 # The agent is present at release, so the parachute only
                 # fires when the pull itself failed — same injectable branch
                 # as the reaper (plan Phase 5). Loud either way, never raises.
                 daemon_unreachable = True
                 self._parachute_row(row=row)
+                final_result = {}
         if was_active:
             # Last chance to read MLflow: the server dies with the VM.
-            self._persist_metrics_row(row=row, force=True)
+            self._persist_metrics_row(
+                row=row,
+                force=True,
+                snapshot=final_result.get("metrics_snapshot"),
+                snapshot_provided=True,
+            )
         if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
             try:
                 stopped = self.backend.terminate(sandbox_id=str(row["sandbox_id"]))
@@ -656,6 +662,8 @@ class SandboxService:
         experiment_id: str,
         project_id: str | None = None,
         include_data_plane_metrics: bool = True,
+        daemon_metrics_snapshot: dict[str, Any] | None = None,
+        daemon_metrics_snapshot_provided: bool = False,
     ) -> dict[str, Any]:
         try:
             row = self.registry.fetch_scoped(
@@ -689,7 +697,17 @@ class SandboxService:
         except Exception as exc:  # noqa: BLE001
             raise BackendUnavailableError(f"sandbox sync failed: {exc}") from exc
         if include_data_plane_metrics:
-            self._persist_metrics_row(row=row, force=True)
+            snapshot = (
+                daemon_metrics_snapshot
+                if daemon_metrics_snapshot_provided
+                else result.get("metrics_snapshot")
+            )
+            self._persist_metrics_row(
+                row=row,
+                force=True,
+                snapshot=snapshot if isinstance(snapshot, dict) else None,
+                snapshot_provided=True,
+            )
         self.registry.emit_event(
             project_id=str(row["project_id"]),
             event_type="sandbox.synced",
@@ -731,6 +749,25 @@ class SandboxService:
             "sync": result,
             "hint": hint,
         }
+
+    def record_daemon_metrics(
+        self,
+        *,
+        experiment_id: str,
+        project_id: str,
+        snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        row = self.registry.fetch_scoped(
+            experiment_id=experiment_id,
+            project_id=project_id,
+        )
+        self._persist_metrics_row(
+            row=row,
+            force=True,
+            snapshot=snapshot if isinstance(snapshot, dict) else None,
+            snapshot_provided=True,
+        )
+        return {"experiment_id": experiment_id, "recorded": isinstance(snapshot, dict)}
 
     def results_metrics(
         self, *, experiment_id: str, project_id: str | None = None
@@ -795,7 +832,14 @@ class SandboxService:
             **data,
         }
 
-    def _persist_metrics_row(self, *, row: dict[str, Any], force: bool = False) -> None:
+    def _persist_metrics_row(
+        self,
+        *,
+        row: dict[str, Any],
+        force: bool = False,
+        snapshot: dict[str, Any] | None = None,
+        snapshot_provided: bool = False,
+    ) -> None:
         """Best-effort: archive the sandbox's MLflow metrics on the daemon's disk.
 
         The MLflow server dies with the VM; this snapshot is what makes results
@@ -812,21 +856,15 @@ class SandboxService:
             last = self._metrics_persisted_at.get(experiment_id)
             if not force and last is not None and now - last < METRICS_PERSIST_TTL_SECONDS:
                 return
-            try:
-                live = self.worker.ensure_local_dashboards(row=row)
-            except Exception:  # noqa: BLE001 — fall back to the stored URLs
-                live = row
-            base_url = decode_dashboards(live.get("dashboards_json")).get("mlflow", "")
-            snapshot = snapshot_mlflow(base_url) if base_url else None
-            if snapshot is None:
-                # REST unreachable (tunnel died, server crashed): fall back to
-                # the mlflow.db the rsync pull just brought down.
-                snapshot = self.worker.capture_metrics_fallback(
-                    experiment_id=experiment_id,
+            if not snapshot_provided:
+                snapshot = self.worker.capture_metrics_snapshot(
+                    row=row,
                     name=self.registry.experiment_name(experiment_id=experiment_id),
                 )
-            if snapshot is None:
+            if not isinstance(snapshot, dict):
                 return
+            snapshot = dict(snapshot)
+            snapshot.pop("base_url", None)
             self._metrics_persisted_at[experiment_id] = now
             path = self.metrics_archive.persist(
                 experiment_id=experiment_id, snapshot=snapshot
@@ -1131,6 +1169,7 @@ class SandboxService:
                 "session": session,
                 "name": name,
                 "skip_if_busy": bool(skip_if_busy),
+                "row": row,
             },
             tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=str(row.get("project_id") or ""))),
         )
@@ -1151,7 +1190,7 @@ class SandboxService:
         session = self.sessions.grant_for_row(row=row, name=name)
         result = self.tasks.submit(
             task_type="final_pull",
-            payload={"session": session, "name": name},
+            payload={"session": session, "name": name, "row": row},
             deadline=iso_after(seconds=DEFAULT_FINAL_PULL_DEADLINE_SECONDS),
             tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=str(row.get("project_id") or ""))),
         )

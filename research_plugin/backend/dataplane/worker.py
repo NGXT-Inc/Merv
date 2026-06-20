@@ -32,12 +32,13 @@ from typing import Any, Callable, Protocol
 
 from ..execution.ssh_rsync import SshRsyncSyncer
 from ..execution.types import SandboxBackend
-from ..services.metrics_archive import MetricsArchive, snapshot_mlflow_db
+from .metrics_archive import MetricsArchive, snapshot_mlflow, snapshot_mlflow_db
 from .sandbox_dashboards import DashboardTunnels
 from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_INITIAL_PUSH_ATTEMPTS,
     DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
+    decode_dashboards,
     env_float,
 )
 from ..services.sync_sessions import (
@@ -140,6 +141,10 @@ class DataPlaneWorker(Protocol):
 
     def capture_metrics_fallback(
         self, *, experiment_id: str, name: str = ""
+    ) -> dict[str, Any] | None: ...
+
+    def capture_metrics_snapshot(
+        self, *, row: dict[str, Any], name: str = ""
     ) -> dict[str, Any] | None: ...
 
     def set_event_sink(self, emit_event: Callable[..., None]) -> None: ...
@@ -440,9 +445,37 @@ class LocalDataPlaneWorker:
     def capture_metrics_fallback(
         self, *, experiment_id: str, name: str = ""
     ) -> dict[str, Any] | None:
-        return snapshot_mlflow_db(
+        snapshot = snapshot_mlflow_db(
             self.pulled_mlflow_db_path(experiment_id=experiment_id, name=name)
         )
+        return self._portable_metrics_snapshot(snapshot=snapshot)
+
+    def capture_metrics_snapshot(
+        self, *, row: dict[str, Any], name: str = ""
+    ) -> dict[str, Any] | None:
+        experiment_id = str(row.get("experiment_id") or "")
+        try:
+            live = self.ensure_local_dashboards(row=row)
+        except Exception:  # noqa: BLE001 — fall back to the stored URLs
+            live = row
+        base_url = decode_dashboards(live.get("dashboards_json")).get("mlflow", "")
+        snapshot = snapshot_mlflow(base_url) if base_url else None
+        if snapshot is not None:
+            return snapshot
+        return self.capture_metrics_fallback(experiment_id=experiment_id, name=name)
+
+    def _portable_metrics_snapshot(
+        self, *, snapshot: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if not isinstance(snapshot, dict):
+            return None
+        portable = dict(snapshot)
+        portable.pop("base_url", None)
+        extracted_from = snapshot.get("extracted_from")
+        if not isinstance(extracted_from, str) or not extracted_from:
+            return portable
+        portable["extracted_from"] = self.repo_relative(extracted_from)
+        return portable
 
     # ---------- record-sink wiring ----------
 

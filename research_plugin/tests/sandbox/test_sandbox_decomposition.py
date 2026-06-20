@@ -180,6 +180,7 @@ import backend.services.sandboxes
 for name in (
     "backend.dataplane.tasks",
     "backend.dataplane.worker",
+    "backend.dataplane.metrics_archive",
     "backend.dataplane.sandbox_dashboards",
     "backend.execution.ssh_rsync",
     "backend.workspace",
