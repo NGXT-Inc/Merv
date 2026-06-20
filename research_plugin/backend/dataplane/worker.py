@@ -34,7 +34,7 @@ from ..execution.ssh_rsync import SshRsyncSyncer
 from ..execution.types import SandboxBackend
 from ..services.metrics_archive import MetricsArchive, snapshot_mlflow_db
 from ..services.sandbox_dashboards import DashboardTunnels
-from ..services.sandbox_support import (
+from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_INITIAL_PUSH_ATTEMPTS,
     DEFAULT_INITIAL_PUSH_RETRY_SECONDS,

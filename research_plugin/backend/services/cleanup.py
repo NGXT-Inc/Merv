@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from .sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
+from ..sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 
 
 # How long a row may sit in a pre-running provisioning phase before the

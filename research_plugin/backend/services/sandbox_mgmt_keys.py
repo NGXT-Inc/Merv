@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..utils import ValidationError
-from .sandbox_support import _safe_name
+from ..sandbox_support import _safe_name
 
 
 class MgmtKeyStore(Protocol):

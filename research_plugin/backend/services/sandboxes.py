@@ -81,7 +81,7 @@ from .sandbox_daemons import SandboxDaemons
 from .sandbox_mgmt_keys import MgmtKeyStore
 from .sandbox_provisioner import SandboxProvisioner
 from .sandbox_registry import SandboxRegistry
-from .sandbox_support import (
+from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,

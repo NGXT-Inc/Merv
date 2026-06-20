@@ -1,9 +1,9 @@
-"""Pure helpers, constants, and value types for the sandbox service.
+"""Pure helpers, constants, and value types for the sandbox stack.
 
 Everything here is free of ``SandboxService`` state — module-level functions,
-tunables, the SSH dispatcher template, and the small dataclasses the provisioner
-passes around. Split out of ``sandboxes.py`` so the service module carries only
-the state machine, not the boilerplate it leans on.
+tunables, the SSH dispatcher template, and pure projection helpers. It lives
+outside ``services`` so the data plane can share the same vocabulary without
+importing the service package.
 """
 
 from __future__ import annotations
@@ -11,25 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..utils import ValidationError
-
-
-class _Canceled(Exception):
-    """Raised inside a provisioning callback to abort acquire on release."""
-
-
-@dataclass
-class _ProvisionJob:
-    """A background provisioning thread plus its control signals."""
-
-    thread: threading.Thread
-    cancel: threading.Event
-    done: threading.Event
+from .utils import ValidationError
 
 
 VALID_GPUS: frozenset[str] = frozenset(

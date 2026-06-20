@@ -25,7 +25,7 @@ from ..execution.types import SandboxBackend
 from .experiments import ExperimentService
 from .sandbox_provisioner import SandboxProvisioner
 from .sandbox_registry import SandboxRegistry
-from .sandbox_support import (
+from ..sandbox_support import (
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     DEFAULT_REAPER_INTERVAL_SECONDS,
     DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,

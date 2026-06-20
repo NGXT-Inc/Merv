@@ -202,6 +202,36 @@ class PlaneImportLintTest(unittest.TestCase):
         # individual record/view services without loading data-plane services.
         self.assertFalse(_imports(SERVICES_ROOT / "__init__.py"))
 
+    def test_sandbox_support_is_neutral(self) -> None:
+        # Shared sandbox constants/helpers are used by both services and the
+        # data plane. Keep this module below both packages so it cannot become
+        # a backdoor import path between them.
+        imports = _import_segments(BACKEND_ROOT / "sandbox_support.py")
+        for forbidden in (
+            "services",
+            "dataplane",
+            "workspace",
+            "ssh_rsync",
+            "subprocess",
+            "threading",
+        ):
+            self.assertNotIn(forbidden, imports)
+        code = """
+import sys
+import backend.sandbox_support
+for name in (
+    "backend.services.sandboxes",
+    "backend.dataplane.worker",
+    "backend.execution.ssh_rsync",
+    "backend.workspace",
+):
+    if name in sys.modules:
+        raise SystemExit(f"{name} loaded")
+"""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(BACKEND_ROOT.parent)
+        subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
     def test_dataplane_package_init_is_import_light(self) -> None:
         # Importing dataplane.tasks should not pull in the local worker package
         # barrel. The worker stays available through lazy __getattr__ exports.

@@ -21,6 +21,7 @@ with no files unaccounted for.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -35,10 +36,8 @@ from ..execution.sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
 from ..utils import now_iso
 from .experiments import ExperimentService
 from .sandbox_registry import SandboxRegistry
-from .sandbox_support import (
+from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
-    _Canceled,
-    _ProvisionJob,
     encode_dashboards,
     iso_after,
     parse_iso,
@@ -49,6 +48,19 @@ from .sandbox_worker import SandboxWorker
 
 
 RefreshRow = Callable[..., dict[str, Any]]
+
+
+class _Canceled(Exception):
+    """Raised inside a provisioning callback to abort acquire on release."""
+
+
+@dataclass
+class _ProvisionJob:
+    """A background provisioning thread plus its control signals."""
+
+    thread: threading.Thread
+    cancel: threading.Event
+    done: threading.Event
 
 
 class SandboxProvisioner:

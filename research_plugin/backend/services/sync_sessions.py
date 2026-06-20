@@ -39,7 +39,7 @@ from ..execution.transfer_spec import TRANSFER_CONTRACT_VERSION
 from ..state.store import StateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
 from .sandbox_registry import SandboxRegistry
-from .sandbox_support import iso_after, parse_iso
+from ..sandbox_support import iso_after, parse_iso
 
 
 SYNC_SESSION_SCHEMA_VERSION = 1

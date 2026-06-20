@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
-from .sandbox_support import ACTIVE_SANDBOX_STATUSES
+from ..sandbox_support import ACTIVE_SANDBOX_STATUSES
 
 FIGURE_SCHEMA_VERSION = 1
 

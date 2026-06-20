@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..services.sandbox_support import SBX_DISPATCHER, _safe_name, _shq
+from ..sandbox_support import SBX_DISPATCHER, _safe_name, _shq
 from ..utils import ValidationError
 
 

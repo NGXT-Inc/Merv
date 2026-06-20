@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..execution.sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
-from .sandbox_support import (
+from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     POLL_AFTER_SECONDS,
