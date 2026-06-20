@@ -41,7 +41,7 @@ from ..sandbox_support import (
     decode_dashboards,
     env_float,
 )
-from ..services.sync_sessions import (
+from ..domain.sync_contract import (
     DIRECTION_POLICY,
     SYNC_SESSION_SCHEMA_VERSION,
     TRANSFER_CONTRACT_VERSION,

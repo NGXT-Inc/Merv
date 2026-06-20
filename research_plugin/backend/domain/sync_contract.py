@@ -17,6 +17,20 @@ ARTIFACTS_TO_KEEP_DIRNAME = "artifacts_to_keep"
 # Bumping this version invalidates outstanding sync sessions. Bump it whenever
 # the shared transfer excludes, caps, or remote directory contract changes.
 TRANSFER_CONTRACT_VERSION = 1
+# Bumping this version invalidates outstanding sync sessions. Bump it whenever
+# the session payload shape changes.
+SYNC_SESSION_SCHEMA_VERSION = 1
+
+# Per-subtree authority (plan §3.1 / fixed decision 8). These name what the
+# rsync flags implement: the experiment dir is mirrored with the remote as the
+# authority while a sandbox lives (pull --delete), and artifacts_to_keep rides
+# its own append-only-shaped 5 GB pass.
+EXPERIMENT_DIR_POLICY = "remote_authoritative_for_results"
+ARTIFACTS_TO_KEEP_POLICY = "remote_append_only"
+DIRECTION_POLICY: dict[str, str] = {
+    "experiment_dir": EXPERIMENT_DIR_POLICY,
+    "artifacts_to_keep": ARTIFACTS_TO_KEEP_POLICY,
+}
 
 
 def remote_experiment_dir(

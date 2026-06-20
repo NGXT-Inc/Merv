@@ -285,6 +285,13 @@ for name in (
         env["PYTHONPATH"] = str(BACKEND_ROOT.parent)
         subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
+    def test_dataplane_modules_do_not_import_services(self) -> None:
+        # The data plane executes contracts minted by control services; it
+        # should not import those services to learn the contract shape.
+        for path in sorted((BACKEND_ROOT / "dataplane").glob("*.py")):
+            with self.subTest(module=path.name):
+                self.assertNotIn("services", _import_segments(path))
+
     def test_project_overview_does_not_import_mutation_services(self) -> None:
         # project.current is a read-side control projection. Keep it decoupled
         # from reflection mutation services so a future ControlApp can compose

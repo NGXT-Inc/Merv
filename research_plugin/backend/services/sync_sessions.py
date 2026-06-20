@@ -30,7 +30,11 @@ from typing import Any
 
 from ..domain.sync_contract import (
     ARTIFACTS_TO_KEEP_DIRNAME,
+    ARTIFACTS_TO_KEEP_POLICY,
     DEFAULT_DATA_DIR,
+    DIRECTION_POLICY,
+    EXPERIMENT_DIR_POLICY,
+    SYNC_SESSION_SCHEMA_VERSION,
     TRANSFER_CONTRACT_VERSION,
     remote_experiment_dir,
     remote_root_of,
@@ -42,7 +46,6 @@ from .sandbox_registry import SandboxRegistry
 from ..sandbox_support import iso_after, parse_iso
 
 
-SYNC_SESSION_SCHEMA_VERSION = 1
 # TRANSFER_CONTRACT_VERSION pins the shared transfer rules (rsync excludes +
 # size caps) into every session; it lives in the domain sync contract so
 # record/session code does not import provider execution modules.
@@ -55,18 +58,6 @@ DEFAULT_LEASE_TTL_SECONDS = 120
 # the expiry parachute (plan Phase 5, decision 5) fires when the pull fails
 # or a split-mode daemon misses the deadline.
 DEFAULT_FINAL_PULL_DEADLINE_SECONDS = 120
-
-# Per-subtree authority (plan §3.1 / fixed decision 8). These name what the
-# rsync flags already implement: the experiment dir is mirrored with the
-# remote as the authority while a sandbox lives (pull --delete), and
-# artifacts_to_keep rides its own append-only-shaped 5 GB pass.
-EXPERIMENT_DIR_POLICY = "remote_authoritative_for_results"
-ARTIFACTS_TO_KEEP_POLICY = "remote_append_only"
-DIRECTION_POLICY: dict[str, str] = {
-    "experiment_dir": EXPERIMENT_DIR_POLICY,
-    "artifacts_to_keep": ARTIFACTS_TO_KEEP_POLICY,
-}
-
 
 def build_sync_session(
     *,
