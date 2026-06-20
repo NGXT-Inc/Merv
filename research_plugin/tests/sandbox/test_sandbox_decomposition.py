@@ -226,6 +226,10 @@ class SandboxDecompositionTest(unittest.TestCase):
             "sandbox_registry",
             _import_modules(FACADE.parent / "sync_sessions.py"),
         )
+        self.assertNotIn(
+            "sync_sessions",
+            _import_modules(FACADE.parent / "sandbox_provisioner.py"),
+        )
         # Control-owned collaborators are injected explicitly by composition;
         # the facade must not derive them from the local worker.
         self.assertNotIn("worker.workspace", source)
