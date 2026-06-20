@@ -21,7 +21,7 @@ from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dic
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from .artifacts import markdown_image_links
 from .claims import CLAIM_CONFIDENCES, CLAIM_STATUSES
-from .experiments import ExperimentService
+from .experiment_names import validate_experiment_name
 from .graph_lint import graph_problems
 from ..domain.vocabulary import PROJECT_GRAPH_ROLES, REFLECTION_LENS_DOC_ROLES
 from .pinned import pinned_text_for_version, resubmit_hint
@@ -838,7 +838,7 @@ class SynthesisService:
                 )
             name = str(proposal.get("name") or "").strip()
             try:
-                name = ExperimentService._validate_name(name)
+                name = validate_experiment_name(name)
             except ValidationError as exc:
                 problems.append(f"{label}.name invalid: {exc}")
                 name = ""
@@ -1080,7 +1080,7 @@ class SynthesisService:
         experiments: list[dict[str, Any]],
     ) -> None:
         for proposal in experiments:
-            name = ExperimentService._validate_name(str(proposal.get("name") or ""))
+            name = validate_experiment_name(str(proposal.get("name") or ""))
             intent = str(proposal.get("intent") or "").strip()
             claim_ids = [
                 key_to_claim_id.get(ref, ref)

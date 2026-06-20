@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from ..domain.paths import experiment_folder_rel
@@ -13,6 +12,7 @@ from ..state.blobs import BlobStore
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
 from ..utils import now_iso
 from .artifacts import plan_sections_missing, report_problems
+from .experiment_names import validate_experiment_name
 from .graph_lint import graph_problems
 from .experiment_views import slim_experiment_state
 from .pinned import pinned_artifact_text
@@ -24,14 +24,6 @@ from .workflow_gates import (
     TRANSITION_GRAPH,
     allowed_transitions_for,
 )
-
-
-# The experiment name doubles as its folder name (experiments/<name>/), so it
-# must be short and filesystem-safe as written — no sanitization, what the
-# agent names is what appears on disk.
-MAX_EXPERIMENT_NAME_LEN = 48
-MIN_EXPERIMENT_NAME_LEN = 3
-_EXPERIMENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class ExperimentService:
@@ -81,7 +73,7 @@ class ExperimentService:
             claim_id=claim_id,
             claim_ids=claim_ids,
         )
-        name = self._validate_name(name)
+        name = validate_experiment_name(name)
         if not intent.strip():
             raise ValidationError("intent is required")
         with self.store.transaction() as conn:
@@ -135,26 +127,6 @@ class ExperimentService:
                 "sandbox.request."
             )
             return state
-
-    @staticmethod
-    def _validate_name(name: str) -> str:
-        name = (name or "").strip()
-        if not name:
-            raise ValidationError(
-                "name is required: a short, folder-safe experiment name — it "
-                "becomes the experiment folder experiments/<name>/"
-            )
-        if (
-            len(name) < MIN_EXPERIMENT_NAME_LEN
-            or len(name) > MAX_EXPERIMENT_NAME_LEN
-            or not _EXPERIMENT_NAME_RE.fullmatch(name)
-        ):
-            raise ValidationError(
-                "experiment name must work as a folder name: start with a letter "
-                "or digit and use only letters, digits, '.', '_' and '-', between "
-                f"{MIN_EXPERIMENT_NAME_LEN} and {MAX_EXPERIMENT_NAME_LEN} characters"
-            )
-        return name
 
     def _reject_stopped_project(self, *, conn, project_id: str) -> None:
         row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
