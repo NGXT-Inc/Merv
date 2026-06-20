@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLE,
@@ -10,10 +10,6 @@ from ..domain.vocabulary import (
     REFLECTION_LENS_DOC_ROLE,
     RESOURCE_ROLES,
 )
-from .experiments import ExperimentService
-from .reviews import ReviewService
-from .sandboxes import SandboxService
-from .syntheses import SynthesisService
 from .synthesis_gates import SYNTHESIS_GATE_TABLE
 from .workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
@@ -40,6 +36,52 @@ PROCESS_STATUS_PRIORITY = {
 }
 
 
+class ExperimentWorkflowReader(Protocol):
+    def get_state(
+        self, *, experiment_id: str, project_id: str | None = None, conn: Any = None
+    ) -> dict[str, Any]:
+        ...
+
+    def validator_problems(
+        self, *, conn: Any, experiment_id: str, name: str
+    ) -> list[str]:
+        ...
+
+
+class ReviewWorkflowReader(Protocol):
+    def latest_verdict(
+        self, *, conn: Any, target_type: str, target_id: str, role: str
+    ) -> str | None:
+        ...
+
+    def open_request(
+        self, *, conn: Any, target_type: str, target_id: str, role: str
+    ) -> dict[str, Any] | None:
+        ...
+
+
+class SandboxWorkflowReader(Protocol):
+    def sandboxes_for_experiment(
+        self, *, conn: Any, experiment_id: str
+    ) -> list[dict[str, Any]]:
+        ...
+
+    def sandboxes_for_project(
+        self, *, conn: Any, project_id: str
+    ) -> list[dict[str, Any]]:
+        ...
+
+
+class ReflectionWorkflowReader(Protocol):
+    def open_synthesis(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
+        ...
+
+    def reflection_signal(
+        self, *, project_id: str, conn: Any = None
+    ) -> dict[str, Any]:
+        ...
+
+
 class WorkflowService:
     """Computes status and next actions from durable state."""
 
@@ -47,10 +89,10 @@ class WorkflowService:
         self,
         *,
         store: StateStore,
-        experiments: ExperimentService,
-        reviews: ReviewService,
-        sandboxes: SandboxService,
-        syntheses: SynthesisService,
+        experiments: ExperimentWorkflowReader,
+        reviews: ReviewWorkflowReader,
+        sandboxes: SandboxWorkflowReader,
+        syntheses: ReflectionWorkflowReader,
     ) -> None:
         self.store = store
         self.experiments = experiments

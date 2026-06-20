@@ -118,6 +118,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("TERMINAL_EXPERIMENT_STATUSES", source)
         self.assertNotIn("ACTIVE_PROCESS_STATUSES =", source)
         self.assertNotIn("resources", imports)
+        self.assertFalse(
+            {"experiments", "reviews", "sandboxes", "syntheses"} & imports
+        )
 
     def test_artifact_lint_is_a_leaf_module(self) -> None:
         # Pure text lint: regexes, a callback type, and shared domain markdown
