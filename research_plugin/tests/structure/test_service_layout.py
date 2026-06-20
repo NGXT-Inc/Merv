@@ -255,6 +255,9 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn("experiments", modules)
                 self.assertNotIn("workflow", modules)
 
+    def test_experiment_view_is_a_leaf_projection(self) -> None:
+        self.assertEqual(_import_modules("experiment_views.py"), {"typing"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .workflow_gates import allowed_transitions_for
-
 
 # Agent-facing projection of get_state. get_state is the "give me the detail"
 # call, so unlike status_and_next we KEEP the substance (review findings/notes,
@@ -43,9 +41,7 @@ def slim_experiment_state(full: dict[str, Any]) -> dict[str, Any]:
         "revision_context": full.get("revision_context"),
         "created_at": full.get("created_at"),
         "updated_at": full.get("updated_at"),
-        "allowed_transitions": full.get(
-            "allowed_transitions", allowed_transitions_for(str(full.get("status", "")))
-        ),
+        "allowed_transitions": full.get("allowed_transitions", []),
         "tested_claims": [
             {field: claim.get(field) for field in _SLIM_CLAIM_FIELDS}
             for claim in full.get("tested_claims", [])
