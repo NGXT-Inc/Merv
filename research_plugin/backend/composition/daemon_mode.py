@@ -39,6 +39,7 @@ from ..dataplane.remote_view import HttpControlPlaneView
 from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
 from ..execution import build_sandbox_backend
+from ..sandbox_autosync import run_auto_sync_target
 from ..services import sandbox_views
 from ..utils import ValidationError
 from ..workspace import LocalWorkspace
@@ -418,10 +419,9 @@ class DaemonServer:
         return str(value)
 
     def _auto_sync_loop(self) -> None:
-        # Mirror SandboxDaemons._auto_sync_loop, but the targets come from the
-        # cloud over HTTP (the ControlPlaneView poll, plan Phase 4) and the sync
-        # completion is reported back over HTTP. A row leased to another client
-        # is simply absent from the targets.
+        # Same per-target sync step as SandboxDaemons, but targets come from
+        # the cloud over HTTP and metrics completion is reported back over HTTP.
+        # A row leased to another client is simply absent from the targets.
         while not self._auto_sync_stop.wait(self._auto_sync_interval):
             try:
                 targets = self.view.sync_targets()
@@ -429,23 +429,17 @@ class DaemonServer:
                 continue
             for target in targets:
                 try:
-                    result = self.worker.sync_pull(
-                        session=target["session"], skip_if_busy=True
-                    )
-                    snapshot = None
                     row = target.get("row")
-                    if isinstance(row, dict) and not (
-                        isinstance(result, dict) and result.get("skipped")
-                    ):
-                        try:
-                            snapshot = self.worker.capture_metrics_snapshot(row=row)
-                        except Exception:  # noqa: BLE001 — auto-sync stays best-effort
-                            snapshot = None
-                    if snapshot is not None:
+                    _, snapshot = run_auto_sync_target(
+                        target=target,
+                        sync_pull=self.worker.sync_pull,
+                        after_sync=self.worker.capture_metrics_snapshot,
+                    )
+                    if snapshot is not None and isinstance(row, dict):
                         self.control.submit_sandbox_metrics(
                             {
                                 "project_id": str(row.get("project_id") or ""),
-                                "experiment_id": str(target.get("experiment_id") or ""),
+                                "experiment_id": str(row.get("experiment_id") or ""),
                                 "metrics_snapshot": snapshot,
                             }
                         )

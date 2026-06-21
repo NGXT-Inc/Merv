@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from ..sandbox_backend import SandboxBackend
+from ..sandbox_autosync import run_auto_sync_target
 from ..ports.sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
 from ..ports.sandbox_sync import ControlPlaneView
 from .sandbox_registry import SandboxRegistry
@@ -243,12 +244,14 @@ class SandboxDaemons:
                 row = target["row"]
                 experiment_id = str(row.get("experiment_id"))
                 try:
-                    result = self._sync_row(
-                        row=row, session=target["session"], skip_if_busy=True
+                    result, _ = run_auto_sync_target(
+                        target=target,
+                        sync_pull=self._sync_row,
+                        sync_includes_row=True,
+                        after_sync=self._persist_metrics,
                     )
                     if not result.get("skipped"):
                         last_errors.pop(experiment_id, None)
-                        self._persist_metrics(row=row)
                 except Exception as exc:  # noqa: BLE001
                     message = str(exc)
                     if last_errors.get(experiment_id) == message:

@@ -470,6 +470,22 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("list_running_rows", source)
         self.assertNotIn("class RunningSandboxRows", source)
 
+    def test_auto_sync_loops_share_target_step(self) -> None:
+        helper = BACKEND_ROOT / "sandbox_autosync.py"
+        daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
+        daemon_source = daemon_mode.read_text(encoding="utf-8")
+        local_source = _source("sandbox_daemons.py")
+
+        self.assertEqual(_import_module_names(helper), {"collections.abc", "typing"})
+        self.assertIn("run_auto_sync_target", daemon_source)
+        self.assertIn("run_auto_sync_target", local_source)
+        self.assertNotIn("Mirror SandboxDaemons._auto_sync_loop", daemon_source)
+        self.assertIn(
+            '"experiment_id": str(row.get("experiment_id") or "")',
+            daemon_source,
+        )
+        self.assertNotIn('target.get("experiment_id")', daemon_source)
+
     def test_resource_service_records_observations_without_local_observer(self) -> None:
         source = _source("resources.py")
         imports = _import_segments(SERVICES / "resources.py")
