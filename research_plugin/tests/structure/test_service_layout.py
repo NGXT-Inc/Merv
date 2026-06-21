@@ -833,7 +833,8 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertIn(f'"{tool_name}": _HostedToolPolicy', source)
             self.assertNotIn(f'if auth_required and name == "{tool_name}"', source)
         self.assertIn("telemetry_from_review_request=True", source)
-        self.assertIn("review_request_project_id(", source)
+        self.assertIn("api.app.reviews.request_project_id(", source)
+        self.assertNotIn("SELECT project_id FROM review_requests", source)
 
     def test_transport_delegates_submitted_resource_blob_reads_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")

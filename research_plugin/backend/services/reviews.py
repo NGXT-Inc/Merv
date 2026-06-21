@@ -472,6 +472,19 @@ class ReviewService:
         finally:
             conn.close()
 
+    def request_project_id(self, *, review_request_id: Any) -> str | None:
+        if not review_request_id:
+            return None
+        conn = self.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id FROM review_requests WHERE id = ?",
+                (str(review_request_id),),
+            ).fetchone()
+            return str(row["project_id"]) if row else None
+        finally:
+            conn.close()
+
     def assert_session_in_project(
         self, *, project_id: str | None, review_session_id: Any
     ) -> None:
