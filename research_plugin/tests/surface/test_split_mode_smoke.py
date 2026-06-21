@@ -619,6 +619,8 @@ class SplitModeSmokeTest(unittest.TestCase):
         ).get("status") == "running")
         got = self._call("sandbox.get", project_id=project_id, experiment_id=exp_id)
         self.assertIn(str(self.repo), got["local_experiment_dir"])
+        for key in ("command", "raw_command", "key_path", "local_dir", "local_sync_dir"):
+            self.assertNotIn(key, got)
         self.assertTrue(got["ssh"]["raw_command"].startswith("ssh -i "))
         self.assertIn(got["ssh"]["key_path"], got["ssh"]["raw_command"])
 

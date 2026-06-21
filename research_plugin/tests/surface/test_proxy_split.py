@@ -178,6 +178,41 @@ class DualUpstreamProxyTest(unittest.TestCase):
         self.assertFalse(local.config.split_mode)
 
 
+class AggregateMergeTest(unittest.TestCase):
+    def test_sandbox_get_uses_canonical_local_experiment_dir_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proxy = HttpProxyMcpServer(
+                config=ProxyConfig(
+                    repo_root=Path(tmp),
+                    daemon_url="http://daemon.invalid",
+                    control_url="http://control.invalid",
+                )
+            )
+
+        proxy._call_cloud = lambda **_: {
+            "experiment_id": "exp_1",
+            "status": "running",
+            "ssh": {"host": "example", "port": 22, "user": "root"},
+        }
+        proxy._call_daemon = lambda **_: {
+            "command": "ssh example",
+            "raw_command": "ssh -i key root@example",
+            "key_path": "/tmp/key",
+            "local_dir": "/tmp/repo/experiments/x",
+        }
+
+        merged = proxy._call_aggregate(
+            name="sandbox.get", arguments={"experiment_id": "exp_1"}
+        )
+
+        self.assertEqual(merged["local_experiment_dir"], "/tmp/repo/experiments/x")
+        for key in ("command", "raw_command", "key_path", "local_dir", "local_sync_dir"):
+            self.assertNotIn(key, merged)
+        self.assertEqual(merged["ssh"]["command"], "ssh example")
+        self.assertEqual(merged["ssh"]["raw_command"], "ssh -i key root@example")
+        self.assertEqual(merged["ssh"]["key_path"], "/tmp/key")
+
+
 class ProxyIdentityResolutionTest(unittest.TestCase):
     """The proxy resolves repo_root→project_id via the daemon's /local/route,
     so the cloud receives an explicit project_id and never a filesystem path

@@ -343,12 +343,10 @@ class HttpProxyMcpServer:
             daemon = self._call_daemon(name=name, arguments=arguments)
         except _UpstreamError as exc:
             daemon_err = {"error": exc.message, "error_code": exc.error_code}
-        merged = {**daemon, **cloud}  # cloud row facts win on shared keys
-        # Daemon enrichment fields override cloud placeholders (the daemon owns
-        # the ssh command + local dir; the cloud cannot render them).
-        for key in ("command", "raw_command", "local_dir", "key_path"):
-            if daemon.get(key):
-                merged[key] = daemon[key]
+        # Cloud row facts are the base view. The daemon contributes only
+        # machine-local enrichment, matching backend.services.sandbox_views'
+        # agent view shape without importing backend code into the stdlib proxy.
+        merged = dict(cloud)
         if any(daemon.get(key) for key in ("command", "raw_command", "key_path")):
             ssh = dict(merged.get("ssh") or {})
             if daemon.get("command"):
@@ -360,7 +358,6 @@ class HttpProxyMcpServer:
             merged["ssh"] = ssh
         if daemon.get("local_dir"):
             merged["local_experiment_dir"] = daemon["local_dir"]
-            merged["local_sync_dir"] = daemon["local_dir"]
         if cloud_err:
             merged["control_plane"] = cloud_err
         if daemon_err:
