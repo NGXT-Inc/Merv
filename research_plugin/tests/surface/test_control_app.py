@@ -255,6 +255,21 @@ class ControlAppTest(unittest.TestCase):
                 "https://evil.example.com",
             )
 
+    def test_control_server_warns_when_allowed_origins_empty(self) -> None:
+        from backend.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertLogs(
+                "backend.composition.control_mode", level="WARNING"
+            ) as logs:
+                server = build_control_server(
+                    repo_root=root,
+                    env=_mounted_mgmt_key_env(root),
+                )
+            self.addCleanup(server.shutdown)
+            self.assertIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
+
 
 if __name__ == "__main__":
     unittest.main()

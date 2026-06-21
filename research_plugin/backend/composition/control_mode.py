@@ -22,6 +22,7 @@ resumes the reaper — a control restart must never leave billing VMs unreaped.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from ..config import (
+    ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
@@ -52,6 +54,7 @@ from ..utils import ValidationError
 
 
 CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/research-plugin-control")
+LOGGER = logging.getLogger(__name__)
 
 
 class ControlPlaneServer:
@@ -141,6 +144,11 @@ def build_control_server(
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
     )
+    if not origins:
+        LOGGER.warning(
+            "%s is empty; browser clients will be blocked by hosted-control CORS",
+            ALLOWED_ORIGINS_ENV_VAR,
+        )
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs)
     fastapi_app = create_fastapi_app(
         app=app,
