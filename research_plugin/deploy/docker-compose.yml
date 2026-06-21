@@ -57,6 +57,27 @@ services:
       echo 'bucket ready';
       "
 
+  # One-shot: create a dev-only management SSH key in a named volume. Managed
+  # deploys should replace this with an orchestrator/secret-manager mount.
+  mgmtkey:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    user: "0:0"
+    entrypoint: >
+      /bin/sh -c "
+      mkdir -p /run/secrets/research_plugin_mgmt_key &&
+      if [ ! -f /run/secrets/research_plugin_mgmt_key/key ]; then
+        ssh-keygen -t ed25519 -N '' -q -C research-plugin-dev-mgmt -f /run/secrets/research_plugin_mgmt_key/key;
+      fi &&
+      chown 10001:10001 /run/secrets/research_plugin_mgmt_key/key /run/secrets/research_plugin_mgmt_key/key.pub &&
+      chmod 600 /run/secrets/research_plugin_mgmt_key/key &&
+      chmod 644 /run/secrets/research_plugin_mgmt_key/key.pub &&
+      echo 'management key ready';
+      "
+    volumes:
+      - mgmtkey:/run/secrets/research_plugin_mgmt_key
+
   control:
     build:
       context: ..
@@ -65,6 +86,8 @@ services:
       postgres:
         condition: service_healthy
       createbucket:
+        condition: service_completed_successfully
+      mgmtkey:
         condition: service_completed_successfully
     environment:
       RESEARCH_PLUGIN_MODE: control
@@ -75,6 +98,8 @@ services:
       # Blob store: the S3-shape bucket on MinIO (cloud plan Phase 8). boto3
       # reads these standard AWS env vars; the endpoint URL points it at MinIO.
       RESEARCH_PLUGIN_BLOB_BUCKET: research-plugin-blobs
+      # Dev-only mounted management key from the mgmtkey one-shot above.
+      RESEARCH_PLUGIN_MGMT_KEY_PATH: /run/secrets/research_plugin_mgmt_key/key
       AWS_ACCESS_KEY_ID: rpminio
       AWS_SECRET_ACCESS_KEY: rpminio_dev_password
       AWS_DEFAULT_REGION: us-east-1
@@ -84,7 +109,10 @@ services:
       # set MODAL_* / LAMBDA_* (and HF_TOKEN) to actually provision sandboxes.
     ports:
       - "8787:8787"
+    volumes:
+      - mgmtkey:/run/secrets/research_plugin_mgmt_key:ro
 
 volumes:
   pgdata:
   miniodata:
+  mgmtkey:

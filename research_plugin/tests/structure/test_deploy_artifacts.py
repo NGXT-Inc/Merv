@@ -41,6 +41,11 @@ class DeployArtifactsTest(unittest.TestCase):
         # HEALTHCHECK hits the version handshake (or /health).
         self.assertIn("HEALTHCHECK", text)
         self.assertTrue("/api/meta" in text or "/health" in text)
+        # Hosted control needs ssh for Lambda management operations, and the
+        # reference compose key-init job needs ssh-keygen.
+        self.assertIn("openssh-client", text)
+        # The hosted control entrypoint now runs without a checkout/staging dir.
+        self.assertNotIn("RESEARCH_PLUGIN_REPO_ROOT", text)
 
     def test_control_entrypoint_exists_in_pyproject(self) -> None:
         with (PLUGIN_ROOT / "pyproject.toml").open("rb") as handle:
@@ -57,15 +62,18 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("psycopg", control_extra)
         self.assertIn("boto3", control_extra)
 
-    def test_compose_wires_control_postgres_and_object_store(self) -> None:
+    def test_compose_wires_control_postgres_object_store_and_management_key(self) -> None:
         text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
         # The three legs of the reference stack.
-        for service in ("control:", "postgres:", "minio:"):
+        for service in ("control:", "postgres:", "minio:", "mgmtkey:"):
             self.assertIn(service, text)
         # Control points at the Postgres dialect and the blob bucket (§3.4).
         self.assertIn("RESEARCH_PLUGIN_DB_URL", text)
         self.assertIn("postgresql://", text)
         self.assertIn("RESEARCH_PLUGIN_BLOB_BUCKET", text)
+        self.assertIn("RESEARCH_PLUGIN_MGMT_KEY_PATH", text)
+        self.assertIn("ssh-keygen", text)
+        self.assertIn("mgmtkey:/run/secrets/research_plugin_mgmt_key:ro", text)
         # Builds from the deploy Dockerfile.
         self.assertIn("dockerfile: deploy/Dockerfile", text)
 

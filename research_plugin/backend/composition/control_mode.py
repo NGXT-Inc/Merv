@@ -2,14 +2,14 @@
 
 Builds the multi-tenant control plane: record services + workflow + reviews +
 sandbox lifecycle/provisioner/reaper + blob store + leases + quotas + auth.
-Store from build_state_store (Postgres when RESEARCH_PLUGIN_DB_URL is set, else
-SQLite — documented: a control plane with no DB runs on SQLite, fine for dev,
-not for multi-tenant production). Blob store from build_blob_store (a bucket is
-required for a real deployment so the parachute presign is a reachable HTTPS
-PUT). NO DataPlaneWorker rsync runs here — the cloud never touches a user
-checkout; data-plane tool calls are routed to the daemon by the proxy. The
-control plane enqueues data-plane work to the daemon via the HttpTaskQueue and
-serves the daemon's task long-poll + sync-target poll over HTTP.
+Store from build_state_store (Postgres in hosted/no-repo-root control; SQLite
+only when an explicit dev/test repo_root is supplied). Blob store from
+build_blob_store (a bucket is required for hosted/no-repo-root control so the
+parachute presign is a reachable HTTPS PUT). NO DataPlaneWorker rsync runs
+here — the cloud never touches a user checkout; data-plane tool calls are
+routed to the daemon by the proxy. The control plane enqueues data-plane work to
+the daemon via the HttpTaskQueue and serves the daemon's task long-poll +
+sync-target poll over HTTP.
 
 Provider creds resolve here (platform-owned keys, fixed decision 3). The cloud
 NEVER dials a user machine: every cloud→daemon signal is a daemon-initiated
@@ -22,7 +22,6 @@ resumes the reaper — a control restart must never leave billing VMs unreaped.
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -30,8 +29,13 @@ from typing import Any
 from fastapi import FastAPI
 
 from ..config import (
+    BLOB_BUCKET_ENV_VAR,
+    DB_URL_ENV_VAR,
+    MGMT_KEY_PATH_ENV_VAR,
     build_blob_store,
     build_state_store,
+    resolve_blob_bucket,
+    resolve_db_url,
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
 )
@@ -43,6 +47,9 @@ from ..services.cleanup import CleanupService
 from ..services.identity import AuthService
 from ..state.managed_mgmt_keys import MountedMgmtKeyStore
 from ..utils import ValidationError
+
+
+CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/research-plugin-control")
 
 
 class ControlPlaneServer:
@@ -84,14 +91,13 @@ def build_control_app(
 ) -> tuple[ControlApp, HttpTaskQueue, AuthService]:
     """Build the control-plane app, its daemon task queue, and AuthService.
 
-    ``repo_root`` is a throwaway control-side staging dir for the SQLite/blob
-    defaults and compatibility-local sinks; it is never a USER checkout and is
-    never served over the edge (the proxy strips repo_root). Tests pass an
-    explicit dir; production sets DB_URL + BLOB_BUCKET so durable records/blobs
-    do not depend on it. ``execution_backend`` lets the crash-recovery test
-    inject a reaper-capable fake backend.
+    ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
+    production omits it and must provide DB_URL + BLOB_BUCKET + a mounted
+    management key. The compatibility ``repo_root`` on that production path is
+    a stable sentinel, not a created checkout or temp dir. ``execution_backend``
+    lets the crash-recovery test inject a reaper-capable fake backend.
     """
-    staging = repo_root or Path(tempfile.mkdtemp(prefix="rp-control-"))
+    staging = _control_repo_root(repo_root=repo_root, env=env)
     db_path = staging / ".research_plugin" / "state.sqlite"
     store = build_state_store(db_path=db_path, env=env)
     blobs = build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
@@ -150,7 +156,30 @@ def build_control_server(
     )
 
 
-def _build_mgmt_key_store(*, staging: Path, env: Mapping[str, str] | None = None):
+def _control_repo_root(
+    *, repo_root: Path | None, env: Mapping[str, str] | None = None
+) -> Path:
+    if repo_root is not None:
+        return repo_root
+    missing = []
+    if not resolve_db_url(env):
+        missing.append(DB_URL_ENV_VAR)
+    if not resolve_blob_bucket(env):
+        missing.append(BLOB_BUCKET_ENV_VAR)
+    if not resolve_mgmt_key_path(env):
+        missing.append(MGMT_KEY_PATH_ENV_VAR)
+    if missing:
+        raise ValidationError(
+            "control mode without repo_root requires durable control-plane "
+            f"configuration: {', '.join(missing)}",
+            details={"missing": missing},
+        )
+    return CONTROL_COMPAT_REPO_ROOT
+
+
+def _build_mgmt_key_store(
+    *, staging: Path, env: Mapping[str, str] | None = None
+):
     key_path = resolve_mgmt_key_path(env)
     public_key = resolve_mgmt_public_key(env)
     if key_path or public_key:

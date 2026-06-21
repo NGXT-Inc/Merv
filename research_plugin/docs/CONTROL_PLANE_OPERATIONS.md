@@ -41,6 +41,10 @@ See `deploy/.env.example` for a copy-ready template. Essentials:
   (`SandboxBackend.write_secrets` → `/opt/rp/secrets.env`), never embedded in VM
   `user_data` (risk 16).
 
+The hosted control entrypoint does not create a throwaway staging repo. Without
+an explicit dev/test `repo_root`, startup requires the durable DB, durable blob
+store, and mounted management key config above.
+
 ## Version / compatibility floor
 
 - `GET /api/meta` →

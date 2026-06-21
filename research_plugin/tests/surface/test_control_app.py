@@ -3,13 +3,22 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from backend.composition.control_mode import build_control_app
-from backend.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
+from backend.composition import control_mode
+from backend.config import (
+    BLOB_BUCKET_ENV_VAR,
+    DB_URL_ENV_VAR,
+    MGMT_KEY_PATH_ENV_VAR,
+    MGMT_PUBLIC_KEY_ENV_VAR,
+)
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.http_api import create_fastapi_app
+from backend.state import StateStore
+from backend.state.blobs import LocalDirBlobStore
 from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
 from backend.utils import ValidationError
 
@@ -111,6 +120,59 @@ class ControlAppTest(unittest.TestCase):
                     env={MGMT_PUBLIC_KEY_ENV_VAR: "ssh-ed25519 AAAAmanaged"},
                     execution_backend=FakeSandboxBackend(),
                 )
+
+    def test_control_app_without_repo_root_requires_durable_config(self) -> None:
+        with self.assertRaises(ValidationError) as ctx:
+            build_control_app(repo_root=None, env={}, execution_backend=FakeSandboxBackend())
+
+        self.assertIn(DB_URL_ENV_VAR, ctx.exception.message)
+        self.assertIn(BLOB_BUCKET_ENV_VAR, ctx.exception.message)
+        self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
+
+    def test_control_app_without_repo_root_uses_non_created_compat_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key_path = root / "managed_key"
+            key_path.write_text("PRIVATE KEY\n", encoding="utf-8")
+            key_path.chmod(0o600)
+            store = StateStore(db_path=root / "state.sqlite")
+            blobs = LocalDirBlobStore(root=root / "blobs")
+            env = {
+                DB_URL_ENV_VAR: "postgresql://user:pass@db/research_plugin",
+                BLOB_BUCKET_ENV_VAR: "research-plugin-blobs",
+                MGMT_KEY_PATH_ENV_VAR: str(key_path),
+                MGMT_PUBLIC_KEY_ENV_VAR: "ssh-ed25519 AAAAmanaged",
+            }
+            with (
+                patch(
+                    "backend.composition.control_mode.build_state_store",
+                    return_value=store,
+                ) as state_factory,
+                patch(
+                    "backend.composition.control_mode.build_blob_store",
+                    return_value=blobs,
+                ) as blob_factory,
+            ):
+                app, _queue, _auth = build_control_app(
+                    repo_root=None,
+                    env=env,
+                    execution_backend=FakeSandboxBackend(),
+                )
+            self.addCleanup(app.shutdown)
+
+            self.assertEqual(
+                app.workspace.repo_root, control_mode.CONTROL_COMPAT_REPO_ROOT
+            )
+            self.assertEqual(
+                state_factory.call_args.kwargs["db_path"],
+                control_mode.CONTROL_COMPAT_REPO_ROOT
+                / ".research_plugin"
+                / "state.sqlite",
+            )
+            self.assertEqual(
+                blob_factory.call_args.kwargs["default_root"],
+                control_mode.CONTROL_COMPAT_REPO_ROOT / ".research_plugin" / "blobs",
+            )
 
 
 if __name__ == "__main__":

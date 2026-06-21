@@ -17,10 +17,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# curl is only for the HEALTHCHECK probe; everything else the control plane
-# needs is a wheel.
+# curl is for the HEALTHCHECK probe. openssh-client is for the management SSH
+# channel (Lambda transcript/metrics/parachute/secret delivery) and the local
+# compose key-init job.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,17 +34,13 @@ COPY mcp_server ./mcp_server
 RUN pip install ".[control]"
 
 # Run as a non-root user (the control plane never needs root; it holds no user
-# checkout). A writable staging dir for the SQLite/blob defaults that a real
-# deploy overrides with RESEARCH_PLUGIN_DB_URL + RESEARCH_PLUGIN_BLOB_BUCKET.
-RUN useradd --create-home --uid 10001 rpcontrol \
-    && mkdir -p /var/lib/research-plugin \
-    && chown -R rpcontrol:rpcontrol /var/lib/research-plugin
+# checkout).
+RUN useradd --create-home --uid 10001 rpcontrol
 USER rpcontrol
 
 ENV RESEARCH_PLUGIN_MODE=control \
     RESEARCH_PLUGIN_HTTP_HOST=0.0.0.0 \
-    RESEARCH_PLUGIN_HTTP_PORT=8787 \
-    RESEARCH_PLUGIN_REPO_ROOT=/var/lib/research-plugin
+    RESEARCH_PLUGIN_HTTP_PORT=8787
 
 EXPOSE 8787
 

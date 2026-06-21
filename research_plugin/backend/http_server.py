@@ -139,8 +139,8 @@ def _serve_uvicorn(*, fastapi_app, host: str, port: int) -> tuple[str, int, "uvi
 def _serve_control(*, host: str, port: int) -> int:
     """Run the cloud control-plane composition (cloud plan Phase 8).
 
-    Postgres when RESEARCH_PLUGIN_DB_URL is set, else SQLite (fine for dev, not
-    multi-tenant production — documented in the composition root). Auth is ON.
+    Hosted/no-repo-root control requires durable DB, durable blob store, and a
+    mounted management key. Auth is ON.
     """
     from .composition import build_control_server
 

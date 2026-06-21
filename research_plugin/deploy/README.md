@@ -26,6 +26,9 @@ This brings up:
 - **Postgres** on `localhost:5432` — the record store (Postgres dialect).
 - **MinIO** on `localhost:9000` (console `:9001`) — the S3-shape blob store; the
   `createbucket` job makes the `research-plugin-blobs` bucket.
+- **mgmtkey** one-shot — creates a dev-only management SSH key in a named volume
+  and mounts it read-only into control. Managed deploys should use a real secret
+  manager instead.
 - **control** on `localhost:8787` — auth ON, daemon task/sync-target endpoints
   ON, reaper ON.
 
@@ -52,6 +55,11 @@ control-mode variables (full list in `.env.example`):
 | `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` | prod | object store; presign must be a reachable HTTPS PUT |
 | `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
 | `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
+
+The production control entrypoint runs without a checkout/staging repo. Startup
+therefore fails fast unless the durable DB, durable blob store, and mounted
+management key variables are present. Passing an explicit `repo_root` is only
+for dev/test compatibility.
 
 ## Operating
 

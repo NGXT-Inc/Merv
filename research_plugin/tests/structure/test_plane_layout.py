@@ -775,6 +775,8 @@ for name in (
         self.assertIn("MountedMgmtKeyStore", source)
         self.assertIn("resolve_mgmt_key_path", source)
         self.assertNotIn("mgmt_keys", top_level_imports)
+        self.assertIn("CONTROL_COMPAT_REPO_ROOT", source)
+        self.assertNotIn("tempfile", _import_segments(path))
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
