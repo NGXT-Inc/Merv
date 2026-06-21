@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any
 
 from ..domain.gates import ReviewRequirement, RoleRequirement
 from ..domain.paths import experiment_folder_rel
@@ -17,6 +17,12 @@ from ..domain.workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
     GATE_TABLE,
     TERMINAL_STATUSES,
+)
+from ..ports.workflow_readers import (
+    ExperimentWorkflowReader,
+    ReflectionWorkflowReader,
+    ReviewWorkflowReader,
+    SandboxWorkflowReader,
 )
 from .workflow_views import slim_status_and_next, slim_synthesis
 from ..state.store import StateStore, row_to_dict, rows_to_dicts
@@ -33,52 +39,6 @@ PROCESS_STATUS_PRIORITY = {
     "running": 0,
     "provisioning": 1,
 }
-
-
-class ExperimentWorkflowReader(Protocol):
-    def get_state(
-        self, *, experiment_id: str, project_id: str | None = None, conn: Any = None
-    ) -> dict[str, Any]:
-        ...
-
-    def validator_problems(
-        self, *, conn: Any, experiment_id: str, name: str
-    ) -> list[str]:
-        ...
-
-
-class ReviewWorkflowReader(Protocol):
-    def latest_verdict(
-        self, *, conn: Any, target_type: str, target_id: str, role: str
-    ) -> str | None:
-        ...
-
-    def open_request(
-        self, *, conn: Any, target_type: str, target_id: str, role: str
-    ) -> dict[str, Any] | None:
-        ...
-
-
-class SandboxWorkflowReader(Protocol):
-    def sandboxes_for_experiment(
-        self, *, conn: Any, experiment_id: str
-    ) -> list[dict[str, Any]]:
-        ...
-
-    def sandboxes_for_project(
-        self, *, conn: Any, project_id: str
-    ) -> list[dict[str, Any]]:
-        ...
-
-
-class ReflectionWorkflowReader(Protocol):
-    def open_synthesis(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
-        ...
-
-    def reflection_signal(
-        self, *, project_id: str, conn: Any = None
-    ) -> dict[str, Any]:
-        ...
 
 
 class WorkflowService:

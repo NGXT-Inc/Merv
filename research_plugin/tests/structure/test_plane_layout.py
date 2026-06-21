@@ -305,6 +305,22 @@ for name in (
         self.assertNotIn("class ProjectCurrentReader", source)
         self.assertNotIn("class SynthesisOverviewReader", source)
 
+    def test_workflow_service_uses_reader_ports(self) -> None:
+        # workflow.status_and_next is a control-safe orientation view. It
+        # should compose against narrow read ports instead of redeclaring
+        # collaborator protocols inside the workflow service module.
+        imports = _import_segments(SERVICES_ROOT / "workflow.py")
+        self.assertFalse(
+            {"experiments", "reviews", "sandboxes", "syntheses"} & imports
+        )
+        self.assertIn("workflow_readers", imports)
+        source = (SERVICES_ROOT / "workflow.py").read_text(encoding="utf-8")
+        self.assertIn("experiments: ExperimentWorkflowReader", source)
+        self.assertNotIn("class ExperimentWorkflowReader", source)
+        self.assertNotIn("class ReviewWorkflowReader", source)
+        self.assertNotIn("class SandboxWorkflowReader", source)
+        self.assertNotIn("class ReflectionWorkflowReader", source)
+
     def test_reflection_tools_do_not_import_mutation_service(self) -> None:
         # reflection.* is a tool-namespace adapter. It should compose against a
         # narrow protocol instead of importing the internal synthesis mutation

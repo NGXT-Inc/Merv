@@ -49,6 +49,18 @@ def _import_segments(path: Path) -> set[str]:
     return segments
 
 
+def _class_method_names(path: Path, class_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                item.name
+                for item in node.body
+                if isinstance(item, ast.FunctionDef)
+            }
+    raise AssertionError(f"{class_name} not found in {path}")
+
+
 VOCABULARY_NAMES = {
     "CLAIM_CONFIDENCES",
     "CLAIM_STATUSES",
@@ -124,6 +136,19 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse(
             {"experiments", "reviews", "sandboxes", "syntheses"} & imports
         )
+        self.assertIn("workflow_readers", imports)
+        for protocol_name in (
+            "class ExperimentWorkflowReader",
+            "class ReviewWorkflowReader",
+            "class SandboxWorkflowReader",
+            "class ReflectionWorkflowReader",
+        ):
+            self.assertNotIn(protocol_name, source)
+        self.assertIn("experiments: ExperimentWorkflowReader", source)
+
+        from backend.services.workflow import WorkflowService
+
+        get_type_hints(WorkflowService.__init__)
 
     def test_artifact_lint_is_domain_leaf_module(self) -> None:
         # Pure text lint: regexes, a callback type, and shared domain markdown
@@ -146,6 +171,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "sandbox_sync.py": {"typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
             "task_channel.py": {"typing"},
+            "workflow_readers.py": {"typing"},
         }
         for name, allowed_imports in expected_imports.items():
             with self.subTest(module=name):
@@ -187,6 +213,33 @@ class ServiceLayoutTest(unittest.TestCase):
             "def transition(",
         ):
             self.assertIn(signature, reflection_wave_source)
+        workflow_reader_source = (PORTS_ROOT / "workflow_readers.py").read_text(
+            encoding="utf-8"
+        )
+        for class_name in (
+            "class ExperimentWorkflowReader",
+            "class ReviewWorkflowReader",
+            "class SandboxWorkflowReader",
+            "class ReflectionWorkflowReader",
+        ):
+            self.assertIn(class_name, workflow_reader_source)
+        workflow_reader_path = PORTS_ROOT / "workflow_readers.py"
+        self.assertEqual(
+            _class_method_names(workflow_reader_path, "ExperimentWorkflowReader"),
+            {"get_state", "validator_problems"},
+        )
+        self.assertEqual(
+            _class_method_names(workflow_reader_path, "ReviewWorkflowReader"),
+            {"latest_verdict", "open_request"},
+        )
+        self.assertEqual(
+            _class_method_names(workflow_reader_path, "SandboxWorkflowReader"),
+            {"sandboxes_for_experiment", "sandboxes_for_project"},
+        )
+        self.assertEqual(
+            _class_method_names(workflow_reader_path, "ReflectionWorkflowReader"),
+            {"open_synthesis", "reflection_signal"},
+        )
 
     def test_reflection_policy_service_module_is_a_compatibility_shim(self) -> None:
         self.assertEqual(_import_modules("reflection_policy.py"), {"domain"})
