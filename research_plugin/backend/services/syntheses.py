@@ -22,6 +22,7 @@ from ..domain.markdown_images import markdown_image_links
 from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
+    covered_terminal_ids,
 )
 from ..domain.resource_selection import preferred_associated_resource
 from ..domain.synthesis_gates import (
@@ -1307,15 +1308,13 @@ class SynthesisService:
             published = self.latest_published(conn=conn, project_id=project_id)
             open_wave = self.open_synthesis(conn=conn, project_id=project_id)
 
+            covered_ids = covered_terminal_ids(
+                None if published is None else (published.get("corpus") or {})
+            )
             if published is None:
-                covered_ids: set[str] = set()
                 snapshot_claims: dict[str, str] = {}
             else:
                 corpus = published.get("corpus") or {}
-                covered_ids = {
-                    str(exp.get("id"))
-                    for exp in corpus.get("terminal_experiments", [])
-                }
                 snapshot_claims = {
                     str(claim.get("id")): str(claim.get("status"))
                     for claim in corpus.get("claims", [])

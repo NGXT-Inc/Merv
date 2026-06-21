@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..domain.reflection_policy import covered_terminal_ids
 from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES, PROJECT_GRAPH_ROLES
 from .projects import ProjectService
 from .syntheses import SynthesisService
@@ -123,10 +124,7 @@ class ProjectOverviewService:
         active_experiments = [
             exp for exp in experiments if str(exp.get("status")) not in terminal_statuses
         ]
-        corpus = (latest or {}).get("corpus") or {}
-        covered_ids = {
-            str(exp.get("id")) for exp in corpus.get("terminal_experiments", [])
-        }
+        covered_ids = covered_terminal_ids((latest or {}).get("corpus"))
         experiments_since_reflection = [
             exp for exp in terminal_experiments if str(exp.get("id")) not in covered_ids
         ]

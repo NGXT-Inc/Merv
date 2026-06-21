@@ -9,7 +9,10 @@ from ..domain.artifacts import plan_sections_missing, report_problems
 from ..domain.experiment_names import validate_experiment_name
 from ..domain.graph_lint import graph_problems
 from ..domain.paths import experiment_folder_rel
-from ..domain.reflection_policy import REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
+from ..domain.reflection_policy import (
+    REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
+    covered_terminal_ids,
+)
 from ..domain.workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
@@ -243,11 +246,7 @@ class ExperimentService:
             corpus = json.loads(str(published["corpus_json"] or "{}"))
         except json.JSONDecodeError:
             corpus = {}
-        covered = {
-            str(exp.get("id"))
-            for exp in (corpus.get("terminal_experiments") or [])
-            if isinstance(exp, dict)
-        }
+        covered = covered_terminal_ids(corpus)
         return len(current_terminal - covered), str(published["id"])
 
     def _compose_intent(
