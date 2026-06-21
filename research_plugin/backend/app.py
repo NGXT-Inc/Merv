@@ -111,6 +111,7 @@ class ResearchPluginApp:
         self._backfill_gated_blobs()
         self.syntheses = SynthesisService(
             store=self.store,
+            claims=self.claims,
             blobs=self.blobs,
         )
         self.reflections = ReflectionToolService(syntheses=self.syntheses)

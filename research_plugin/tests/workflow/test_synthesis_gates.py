@@ -736,6 +736,51 @@ class SynthesisGateTest(unittest.TestCase):
         self.assertEqual(len(detail["materialized_claims"]), 2)
         self.assertEqual(len(detail["materialized_experiments"]), 2)
 
+    def test_publish_claim_update_null_status_confidence_preserves_existing(self) -> None:
+        existing = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="Schedule effect survives null updates.",
+            confidence="high",
+        )
+        outcome = {
+            "version": 1,
+            "claim_changes": [
+                {
+                    "op": "update",
+                    "claim_id": existing["id"],
+                    "status": None,
+                    "confidence": None,
+                    "rationale": "A null update should preserve existing values.",
+                }
+            ],
+            "decision": {
+                "type": "hard_stop",
+                "rationale": "No new experiment is needed for this regression check.",
+            },
+        }
+        syn_id = self._drive_to_synthesizing()
+        self._associate_synthesis_artifacts(syn_id=syn_id, change_spec=json.dumps(outcome))
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="submit_reflection_artifacts",
+        )
+        session_id = self._open_review_session(syn_id=syn_id)
+        self.call("review.submit", review_session_id=session_id, verdict="pass")
+        self.call(
+            "reflection.transition",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            transition="publish",
+        )
+
+        claims = self.call("claim.list", project_id=self.project_id)["claims"]
+        [claim] = [claim for claim in claims if claim["id"] == existing["id"]]
+        self.assertEqual(claim["status"], "active")
+        self.assertEqual(claim["confidence"], "high")
+
     def test_rejected_synthesis_does_not_materialize_change_spec(self) -> None:
         syn_id = self._drive_to_synthesis_review()
         session_id = self._open_review_session(syn_id=syn_id)

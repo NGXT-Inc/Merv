@@ -103,6 +103,97 @@ class ClaimService:
             updated = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
             return row_to_dict(row=updated) or {}
 
+    def create_from_synthesis(
+        self,
+        *,
+        conn,
+        project_id: str,
+        synthesis_id: str,
+        statement: str,
+        scope: str,
+        status: str,
+        confidence: str,
+        rationale: str,
+    ) -> str:
+        claim_id = new_id(prefix="claim")
+        statement = statement.strip()
+        conn.execute(
+            """
+            INSERT INTO claims (id, project_id, statement, scope, status, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                claim_id,
+                project_id,
+                statement,
+                scope.strip(),
+                status,
+                confidence,
+                now_iso(),
+            ),
+        )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="claim.created",
+            target_type="claim",
+            target_id=claim_id,
+            payload={
+                "statement": statement,
+                "source_synthesis_id": synthesis_id,
+                "rationale": rationale.strip(),
+            },
+        )
+        return claim_id
+
+    def update_from_synthesis(
+        self,
+        *,
+        conn,
+        project_id: str,
+        synthesis_id: str,
+        claim_id: str,
+        statement: str | None = None,
+        scope: str | None = None,
+        status: str | None = None,
+        confidence: str | None = None,
+        rationale: str,
+    ) -> str:
+        row = conn.execute(
+            "SELECT * FROM claims WHERE id = ? AND project_id = ?",
+            (claim_id, project_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"claim not found: {claim_id}")
+        next_statement = str(row["statement"]) if statement is None else statement.strip()
+        next_scope = str(row["scope"]) if scope is None else scope.strip()
+        next_status = str(row["status"]) if status is None else status
+        next_confidence = str(row["confidence"]) if confidence is None else confidence
+        conn.execute(
+            """
+            UPDATE claims
+            SET statement = ?, scope = ?, status = ?, confidence = ?
+            WHERE id = ?
+            """,
+            (next_statement, next_scope, next_status, next_confidence, claim_id),
+        )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="claim.updated",
+            target_type="claim",
+            target_id=claim_id,
+            payload={
+                "statement": next_statement,
+                "scope": next_scope,
+                "status": next_status,
+                "confidence": next_confidence,
+                "source_synthesis_id": synthesis_id,
+                "rationale": rationale.strip(),
+            },
+        )
+        return claim_id
+
     def list_claims(self, *, project_id: str | None = None) -> dict[str, Any]:
         conn = self.store.connect()
         try:

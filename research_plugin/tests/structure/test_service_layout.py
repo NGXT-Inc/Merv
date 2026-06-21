@@ -198,6 +198,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_sync.py": {"typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
+            "synthesis_writers.py": {"typing"},
             "task_channel.py": {"typing"},
             "workflow_readers.py": {"typing"},
         }
@@ -373,6 +374,14 @@ class ServiceLayoutTest(unittest.TestCase):
             get_type_hints(ResourceObserver.observe_file)["return"],
             ResourceObservation,
         )
+        synthesis_writer_path = PORTS_ROOT / "synthesis_writers.py"
+        self.assertEqual(
+            _class_method_names(synthesis_writer_path, "SynthesisClaimWriter"),
+            {"create_from_synthesis", "update_from_synthesis"},
+        )
+        from backend.ports.synthesis_writers import SynthesisClaimWriter
+
+        self.assertIn(Protocol, SynthesisClaimWriter.__mro__)
 
     def test_reflection_policy_service_module_is_a_compatibility_shim(self) -> None:
         self.assertEqual(_import_modules("reflection_policy.py"), {"domain"})
@@ -566,6 +575,11 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_synthesis_service_uses_claim_vocabulary(self) -> None:
         self.assertNotIn("claims", _import_segments(SERVICES / "syntheses.py"))
+        source = _source("syntheses.py")
+        self.assertIn("synthesis_writers", _import_segments(SERVICES / "syntheses.py"))
+        self.assertIn("claims: SynthesisClaimWriter", source)
+        self.assertNotIn("INSERT INTO claims", source)
+        self.assertNotIn("UPDATE claims", source)
 
     def test_status_views_use_domain_vocabulary(self) -> None:
         for name in ("project_overview.py", "workflow_views.py", "syntheses.py"):

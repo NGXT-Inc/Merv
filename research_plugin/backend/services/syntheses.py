@@ -38,6 +38,7 @@ from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLES,
     REFLECTION_LENS_DOC_ROLES,
 )
+from ..ports.synthesis_writers import SynthesisClaimWriter
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
@@ -60,9 +61,11 @@ class SynthesisService:
         self,
         *,
         store: StateStore,
+        claims: SynthesisClaimWriter,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
+        self.claims = claims
         # Gate lints read submitted (pinned) bytes from here, never the
         # working tree (see services/pinned.py).
         self.blobs = blobs
@@ -946,87 +949,45 @@ class SynthesisService:
         synthesis_id: str,
         changes: list[dict[str, Any]],
     ) -> dict[str, str]:
-        now = now_iso()
         key_to_claim_id: dict[str, str] = {}
         for change in changes:
             op = str(change["op"])
             key = str(change.get("key") or "").strip()
             if op == "create":
-                claim_id = new_id(prefix="claim")
-                status = str(change.get("status") or "active")
-                confidence = str(change.get("confidence") or "medium")
-                conn.execute(
-                    """
-                    INSERT INTO claims
-                      (id, project_id, statement, scope, status, confidence, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        claim_id,
-                        project_id,
-                        str(change.get("statement") or "").strip(),
-                        str(change.get("scope") or "").strip(),
-                        status,
-                        confidence,
-                        now,
-                    ),
-                )
-                self.store.record_event(
+                claim_id = self.claims.create_from_synthesis(
                     conn=conn,
                     project_id=project_id,
-                    event_type="claim.created",
-                    target_type="claim",
-                    target_id=claim_id,
-                    payload={
-                        "statement": str(change.get("statement") or "").strip(),
-                        "source_synthesis_id": synthesis_id,
-                        "rationale": str(change.get("rationale") or "").strip(),
-                    },
+                    synthesis_id=synthesis_id,
+                    statement=str(change.get("statement") or ""),
+                    scope=str(change.get("scope") or ""),
+                    status=str(change.get("status") or "active"),
+                    confidence=str(change.get("confidence") or "medium"),
+                    rationale=str(change.get("rationale") or ""),
                 )
                 if key:
                     key_to_claim_id[key] = claim_id
             else:
                 claim_id = str(change["claim_id"]).strip()
-                row = conn.execute(
-                    "SELECT * FROM claims WHERE id = ? AND project_id = ?",
-                    (claim_id, project_id),
-                ).fetchone()
-                if row is None:
-                    raise NotFoundError(f"claim not found: {claim_id}")
-                next_statement = (
-                    str(change["statement"]).strip()
-                    if "statement" in change
-                    else str(row["statement"])
-                )
-                next_scope = (
-                    str(change["scope"]).strip()
-                    if "scope" in change
-                    else str(row["scope"])
-                )
-                next_status = str(change.get("status") or row["status"])
-                next_confidence = str(change.get("confidence") or row["confidence"])
-                conn.execute(
-                    """
-                    UPDATE claims
-                    SET statement = ?, scope = ?, status = ?, confidence = ?
-                    WHERE id = ?
-                    """,
-                    (next_statement, next_scope, next_status, next_confidence, claim_id),
-                )
-                self.store.record_event(
+                self.claims.update_from_synthesis(
                     conn=conn,
                     project_id=project_id,
-                    event_type="claim.updated",
-                    target_type="claim",
-                    target_id=claim_id,
-                    payload={
-                        "statement": next_statement,
-                        "scope": next_scope,
-                        "status": next_status,
-                        "confidence": next_confidence,
-                        "source_synthesis_id": synthesis_id,
-                        "rationale": str(change.get("rationale") or "").strip(),
-                    },
+                    synthesis_id=synthesis_id,
+                    claim_id=claim_id,
+                    statement=(
+                        str(change["statement"]) if "statement" in change else None
+                    ),
+                    scope=str(change["scope"]) if "scope" in change else None,
+                    status=(
+                        str(change["status"])
+                        if change.get("status") is not None
+                        else None
+                    ),
+                    confidence=(
+                        str(change["confidence"])
+                        if change.get("confidence") is not None
+                        else None
+                    ),
+                    rationale=str(change.get("rationale") or ""),
                 )
             conn.execute(
                 """
