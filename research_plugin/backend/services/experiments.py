@@ -13,6 +13,7 @@ from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     covered_terminal_ids,
 )
+from ..domain.review_snapshot import review_snapshot_id
 from ..domain.workflow_gates import (
     GATE_TABLE,
     SYSTEM_TRANSITIONS,
@@ -715,16 +716,4 @@ class ExperimentService:
 
     def _target_snapshot_id(self, *, conn, experiment_id: str) -> str:
         experiment = self.get_state(experiment_id=experiment_id, conn=conn)
-        resource_tokens = [
-            f"{res['id']}:{res.get('association_version_id') or res['version_token']}:{res.get('association_role', '')}:{res.get('association_attempt_index', 0)}"
-            for res in experiment.get("current_attempt_resources", [])
-        ]
-        return "|".join(
-            [
-                "experiment",
-                experiment["id"],
-                experiment["status"],
-                str(experiment["attempt_index"]),
-                ",".join(sorted(resource_tokens)),
-            ]
-        )
+        return review_snapshot_id(target_type="experiment", target=experiment)

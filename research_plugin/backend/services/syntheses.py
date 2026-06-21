@@ -25,6 +25,7 @@ from ..domain.reflection_policy import (
     covered_terminal_ids,
 )
 from ..domain.resource_selection import preferred_associated_resource
+from ..domain.review_snapshot import review_snapshot_id
 from ..domain.synthesis_gates import (
     CORE_LENSES,
     CORE_LENS_IDS,
@@ -1204,19 +1205,7 @@ class SynthesisService:
 
     def _target_snapshot_id(self, *, conn, synthesis_id: str) -> str:
         synthesis = self.get_state(synthesis_id=synthesis_id, conn=conn)
-        resource_tokens = [
-            f"{res['id']}:{res.get('association_version_id') or res['version_token']}:{res.get('association_role', '')}:{res.get('association_attempt_index', 0)}"
-            for res in synthesis.get("current_attempt_resources", [])
-        ]
-        return "|".join(
-            [
-                "synthesis",
-                synthesis["id"],
-                synthesis["status"],
-                str(synthesis["attempt_index"]),
-                ",".join(sorted(resource_tokens)),
-            ]
-        )
+        return review_snapshot_id(target_type="synthesis", target=synthesis)
 
     # ---- review return routing ----
 
