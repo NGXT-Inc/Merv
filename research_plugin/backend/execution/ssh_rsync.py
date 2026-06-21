@@ -182,10 +182,9 @@ class SshRsyncSyncer:
             raise RuntimeError("missing remote experiment dir for rsync")
         self._ensure_rsync_usable()
         local_sync_dir.mkdir(parents=True, exist_ok=True)
-        start = time.monotonic()
         commands = [
             (
-                self._pull_command(
+                self._rsync_command(
                     ssh_host=ssh_host,
                     ssh_port=ssh_port,
                     ssh_user=ssh_user,
@@ -194,11 +193,12 @@ class SshRsyncSyncer:
                     local_dir=local_sync_dir,
                     max_size=SYNC_MAX_FILE_SIZE,
                     excludes=DEFAULT_EXCLUDES + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/",),
+                    push=False,
                 ),
                 False,
             ),
             (
-                self._pull_command(
+                self._rsync_command(
                     ssh_host=ssh_host,
                     ssh_port=ssh_port,
                     ssh_user=ssh_user,
@@ -207,6 +207,7 @@ class SshRsyncSyncer:
                     local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
                     max_size=ARTIFACTS_MAX_FILE_SIZE,
                     excludes=(),
+                    push=False,
                 ),
                 True,
             ),
@@ -218,7 +219,7 @@ class SshRsyncSyncer:
             # synced folder) simply has nothing at this path.
             commands.append(
                 (
-                    self._pull_command(
+                    self._rsync_command(
                         ssh_host=ssh_host,
                         ssh_port=ssh_port,
                         ssh_user=ssh_user,
@@ -227,35 +228,15 @@ class SshRsyncSyncer:
                         local_dir=local_sessions_dir,
                         max_size=SYNC_MAX_FILE_SIZE,
                         excludes=DEFAULT_EXCLUDES,
+                        push=False,
                     ),
                     True,
                 )
             )
-        stdout_parts: list[str] = []
-        stderr_parts: list[str] = []
-        pulled = 0
-        ran = 0
-        for command, optional in commands:
-            result = self.runner(command)
-            ran += 1
-            stdout_parts.append(result.stdout or "")
-            stderr_parts.append(result.stderr or "")
-            if result.returncode != 0:
-                # rsync returns 23 when one source path does not exist; tolerate
-                # that only for the optional artifacts_to_keep pass.
-                if not optional or result.returncode != 23:
-                    raise RuntimeError(
-                        f"rsync failed with exit {result.returncode}: {(result.stderr or '').strip()}"
-                    )
-            pulled += _count_changed(result.stdout or "")
-        return SshRsyncResult(
-            pulled=pulled,
-            duration_seconds=time.monotonic() - start,
-            local_dir=str(local_sync_dir),
-            remote_dir=remote_sync_dir,
-            command_count=ran,
-            stdout="\n".join(stdout_parts),
-            stderr="\n".join(stderr_parts),
+        return self._run_passes(
+            commands,
+            remote_sync_dir=remote_sync_dir,
+            local_sync_dir=local_sync_dir,
             direction="pull",
         )
 
@@ -278,10 +259,9 @@ class SshRsyncSyncer:
             raise RuntimeError("missing remote experiment dir for rsync")
         self._ensure_rsync_usable()
         local_sync_dir.mkdir(parents=True, exist_ok=True)
-        start = time.monotonic()
         commands = [
             (
-                self._push_command(
+                self._rsync_command(
                     ssh_host=ssh_host,
                     ssh_port=ssh_port,
                     ssh_user=ssh_user,
@@ -291,11 +271,12 @@ class SshRsyncSyncer:
                     max_size=SYNC_MAX_FILE_SIZE,
                     excludes=DEFAULT_EXCLUDES
                     + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/", SESSIONS_DIR_EXCLUDE),
+                    push=True,
                 ),
                 False,
             ),
             (
-                self._push_command(
+                self._rsync_command(
                     ssh_host=ssh_host,
                     ssh_port=ssh_port,
                     ssh_user=ssh_user,
@@ -304,13 +285,67 @@ class SshRsyncSyncer:
                     local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
                     max_size=ARTIFACTS_MAX_FILE_SIZE,
                     excludes=(),
+                    push=True,
                 ),
                 True,
             ),
         ]
+        return self._run_passes(
+            commands,
+            remote_sync_dir=remote_sync_dir,
+            local_sync_dir=local_sync_dir,
+            direction="push",
+        )
+
+    def _rsync_command(
+        self,
+        *,
+        ssh_host: str,
+        ssh_port: int,
+        ssh_user: str,
+        key_path: Path,
+        remote_dir: str,
+        local_dir: Path,
+        max_size: str,
+        excludes: tuple[str, ...],
+        push: bool,
+    ) -> list[str]:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        ssh = (
+            f"ssh -i {shlex.quote(os.fspath(key_path))} -p {ssh_port} -o BatchMode=yes "
+            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=10"
+        )
+        command = [
+            resolve_rsync().path,
+            "-az",
+            "--delete",
+            "--prune-empty-dirs",
+            "--itemize-changes",
+            "--out-format=%n",
+            f"--max-size={max_size}",
+            "-e",
+            ssh,
+        ]
+        for pattern in excludes:
+            command.extend(["--exclude", pattern])
+        remote = f"{ssh_user}@{ssh_host}:{remote_dir.rstrip('/')}/"
+        local = os.fspath(local_dir) + "/"
+        command.extend([local, remote] if push else [remote, local])
+        return command
+
+    def _run_passes(
+        self,
+        commands: list[tuple[list[str], bool]],
+        *,
+        remote_sync_dir: str,
+        local_sync_dir: Path,
+        direction: str,
+    ) -> SshRsyncResult:
+        start = time.monotonic()
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
-        pushed = 0
+        changed = 0
         ran = 0
         for command, optional in commands:
             result = self.runner(command)
@@ -318,95 +353,22 @@ class SshRsyncSyncer:
             stdout_parts.append(result.stdout or "")
             stderr_parts.append(result.stderr or "")
             if result.returncode != 0:
+                # rsync 23 == a source path is missing; tolerate only for optional passes.
                 if not optional or result.returncode != 23:
                     raise RuntimeError(
                         f"rsync failed with exit {result.returncode}: {(result.stderr or '').strip()}"
                     )
-            pushed += _count_changed(result.stdout or "")
+            changed += _count_changed(result.stdout or "")
         return SshRsyncResult(
-            pulled=pushed,
+            pulled=changed,
             duration_seconds=time.monotonic() - start,
             local_dir=str(local_sync_dir),
             remote_dir=remote_sync_dir,
             command_count=ran,
             stdout="\n".join(stdout_parts),
             stderr="\n".join(stderr_parts),
-            direction="push",
+            direction=direction,
         )
-
-    def _pull_command(
-        self,
-        *,
-        ssh_host: str,
-        ssh_port: int,
-        ssh_user: str,
-        key_path: Path,
-        remote_dir: str,
-        local_dir: Path,
-        max_size: str,
-        excludes: tuple[str, ...],
-    ) -> list[str]:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        ssh = (
-            f"ssh -i {shlex.quote(os.fspath(key_path))} -p {ssh_port} -o BatchMode=yes "
-            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            "-o ConnectTimeout=10"
-        )
-        command = [
-            resolve_rsync().path,
-            "-az",
-            "--delete",
-            "--prune-empty-dirs",
-            "--itemize-changes",
-            "--out-format=%n",
-            f"--max-size={max_size}",
-            "-e",
-            ssh,
-        ]
-        for pattern in excludes:
-            command.extend(["--exclude", pattern])
-        command.extend([
-            f"{ssh_user}@{ssh_host}:{remote_dir.rstrip('/')}/",
-            os.fspath(local_dir) + "/",
-        ])
-        return command
-
-    def _push_command(
-        self,
-        *,
-        ssh_host: str,
-        ssh_port: int,
-        ssh_user: str,
-        key_path: Path,
-        remote_dir: str,
-        local_dir: Path,
-        max_size: str,
-        excludes: tuple[str, ...],
-    ) -> list[str]:
-        local_dir.mkdir(parents=True, exist_ok=True)
-        ssh = (
-            f"ssh -i {shlex.quote(os.fspath(key_path))} -p {ssh_port} -o BatchMode=yes "
-            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
-            "-o ConnectTimeout=10"
-        )
-        command = [
-            resolve_rsync().path,
-            "-az",
-            "--delete",
-            "--prune-empty-dirs",
-            "--itemize-changes",
-            "--out-format=%n",
-            f"--max-size={max_size}",
-            "-e",
-            ssh,
-        ]
-        for pattern in excludes:
-            command.extend(["--exclude", pattern])
-        command.extend([
-            os.fspath(local_dir) + "/",
-            f"{ssh_user}@{ssh_host}:{remote_dir.rstrip('/')}/",
-        ])
-        return command
 
     @staticmethod
     def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
