@@ -11,7 +11,6 @@ import base64
 import binascii
 import json
 import mimetypes
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,7 @@ from .project_router import ProjectRouter
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .domain.resource_selection import preferred_associated_resource
 from .domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES
+from .http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .services.figure_view import build_experiment_figure
 from .services.feed import MAX_IMAGE_BYTES
 from .services.identity import LOCAL_PRINCIPAL, AuthError, AuthService
@@ -46,50 +46,6 @@ from .state.activity import effective_source, is_event_ok
 
 
 JsonBody = dict[str, Any] | None
-
-
-@dataclass(frozen=True)
-class _HostedToolPolicy:
-    tenant_id_fallback: str | None = ""
-    telemetry_from_review_request: bool = False
-
-
-@dataclass(frozen=True)
-class _HttpSurfacePolicy:
-    require_bearer_auth: bool
-    restrict_cors: bool
-    hosted_control: bool
-    expose_local_data_plane: bool
-    accept_repo_root_context: bool
-    allow_data_plane_http: bool
-    allow_data_plane_tool_calls: bool
-    use_hosted_tool_policies: bool
-    enforce_project_scope: bool
-    release_uses_final_pull: bool
-
-    @classmethod
-    def for_auth(cls, auth: AuthService | None) -> "_HttpSurfacePolicy":
-        control_mode = auth is not None
-        return cls(
-            require_bearer_auth=control_mode,
-            restrict_cors=control_mode,
-            hosted_control=control_mode,
-            expose_local_data_plane=not control_mode,
-            accept_repo_root_context=not control_mode,
-            allow_data_plane_http=not control_mode,
-            allow_data_plane_tool_calls=not control_mode,
-            use_hosted_tool_policies=control_mode,
-            enforce_project_scope=control_mode,
-            release_uses_final_pull=not control_mode,
-        )
-
-
-HOSTED_CONTROL_TOOL_POLICIES = {
-    "project.create": _HostedToolPolicy(tenant_id_fallback=None),
-    "project.list": _HostedToolPolicy(),
-    "project.current": _HostedToolPolicy(),
-    "review.start": _HostedToolPolicy(telemetry_from_review_request=True),
-}
 
 
 def _project_id_from_api_path(path: str) -> str | None:
@@ -930,7 +886,7 @@ def create_fastapi_app(
     # (control mode). Every existing caller passes neither, so nothing changes.
     if (app is None) == (router is None):
         raise ValueError("provide exactly one of app or router")
-    surface = _HttpSurfacePolicy.for_auth(auth)
+    surface = HttpSurfacePolicy.for_auth_present(auth is not None)
     api = (
         ResearchHttpApi(app=app, expose_local_data_plane=surface.expose_local_data_plane)
         if app is not None

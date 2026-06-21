@@ -277,6 +277,11 @@ class ServiceLayoutTest(unittest.TestCase):
             {"typing"},
         )
 
+    def test_http_policy_is_fastapi_free(self) -> None:
+        imports = _import_module_names(BACKEND_ROOT / "http_policy.py")
+
+        self.assertEqual(imports, {"dataclasses"})
+
     def test_ports_are_neutral_and_outside_services(self) -> None:
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
@@ -851,9 +856,14 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_http_surface_policy_keeps_mode_decisions_named(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
+        policy_source = (BACKEND_ROOT / "http_policy.py").read_text(encoding="utf-8")
 
-        self.assertIn("class _HttpSurfacePolicy", source)
-        self.assertIn("surface = _HttpSurfacePolicy.for_auth(auth)", source)
+        self.assertNotIn("class _HttpSurfacePolicy", source)
+        self.assertIn(
+            "surface = HttpSurfacePolicy.for_auth_present(auth is not None)",
+            source,
+        )
+        self.assertIn("class HttpSurfacePolicy", policy_source)
         self.assertNotIn("auth_required", source)
         for field_name in (
             "require_bearer_auth",
@@ -867,7 +877,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "release_uses_final_pull",
         ):
             with self.subTest(field_name=field_name):
-                self.assertIn(field_name, source)
+                self.assertIn(field_name, policy_source)
 
     def test_http_transport_centralizes_project_scope_gate(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
@@ -878,7 +888,8 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
-        from backend.http_api import HOSTED_CONTROL_TOOL_POLICIES
+        policy_source = (BACKEND_ROOT / "http_policy.py").read_text(encoding="utf-8")
+        from backend.http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
         self.assertEqual(
             set(HOSTED_CONTROL_TOOL_POLICIES),
@@ -895,16 +906,18 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertTrue(
             HOSTED_CONTROL_TOOL_POLICIES["review.start"].telemetry_from_review_request
         )
+        self.assertNotIn("class _HostedToolPolicy", source)
         self.assertIn("HOSTED_CONTROL_TOOL_POLICIES", source)
+        self.assertIn("HOSTED_CONTROL_TOOL_POLICIES", policy_source)
         for tool_name in (
             "project.create",
             "project.list",
             "project.current",
             "review.start",
         ):
-            self.assertIn(f'"{tool_name}": _HostedToolPolicy', source)
+            self.assertIn(f'"{tool_name}": HostedToolPolicy', policy_source)
             self.assertNotIn(f'if surface.hosted_control and name == "{tool_name}"', source)
-        self.assertIn("telemetry_from_review_request=True", source)
+        self.assertIn("telemetry_from_review_request=True", policy_source)
         self.assertIn("api.app.reviews.request_project_id(", source)
         self.assertNotIn("SELECT project_id FROM review_requests", source)
 
