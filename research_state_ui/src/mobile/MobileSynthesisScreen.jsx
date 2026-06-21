@@ -6,6 +6,7 @@ import ResourceContentView from '../components/ResourceContentView';
 import ReviewCard from '../components/ReviewCard';
 import GraphOutline from './GraphOutline';
 import { normalizeLogic, makeLogicDetail } from './graphModel';
+import { TERMINAL_WAVE, reflectionsByLens, secondaryDocs, resolveReflectionDoc, docVersion } from '../components/synthesis/waveModel';
 
 const GraphCanvasOverlay = lazy(() => import('./GraphCanvasOverlay'));
 
@@ -21,22 +22,6 @@ const GraphCanvasOverlay = lazy(() => import('./GraphCanvasOverlay'));
  *   later wave overwrote. Reached by tapping the Now-screen synthesis card.
  */
 
-const TERMINAL_WAVE = new Set(['published', 'abandoned']);
-
-// The prose doc role was renamed synthesis_doc -> reflection_doc; the per-lens
-// doc role reflection -> reflection_lens_doc. Resolve each with a fallback so
-// waves from before either rename still render.
-const REFLECTION_DOC_ROLES = ['reflection_doc', 'synthesis_doc'];
-const LENS_DOC_ROLES = ['reflection_lens_doc', 'reflection'];
-const PRIMARY_ROLES = new Set(['graph', ...REFLECTION_DOC_ROLES, ...LENS_DOC_ROLES]);
-
-// Known secondary doc roles get a friendly label; anything else is humanized so
-// a new backend role still renders as the synthesis model evolves.
-const DOC_ROLE_META = {
-  change_spec: { label: 'Change spec — belief-state update', order: 0 },
-  proposals: { label: "What's next — proposals", order: 1 },
-};
-
 // Small status → dot color for the history chips.
 const WAVE_DOT = {
   published: 'var(--supports)',
@@ -44,52 +29,11 @@ const WAVE_DOT = {
   synthesis_review: 'var(--qualifies)',
 };
 
-function humanizeRole(role) {
-  return role.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
 function shortDate(iso) {
   if (!iso) return '';
   try {
     return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
   } catch { return ''; }
-}
-
-// Resolve each roster lens to its reflection resource for the current attempt.
-// reflection_coverage already matched <lens_id>.md → path + pinned version
-// server-side (across both lens-doc roles); here we look up the resource id by
-// that path so ResourceContentView can render it.
-function reflectionsByLens(wave) {
-  const byPath = {};
-  for (const r of wave?.current_attempt_resources || []) {
-    if (LENS_DOC_ROLES.includes(r.association_role) && r.path) byPath[r.path] = r;
-  }
-  const map = {};
-  for (const lens of wave?.reflection_coverage?.lenses || []) {
-    const res = lens.path ? byPath[lens.path] : null;
-    map[lens.lens_id] = {
-      covered: Boolean(lens.covered),
-      resourceId: res?.id || null,
-      versionId: lens.version_id || res?.association_version_id || null,
-      path: lens.path || res?.path || null,
-    };
-  }
-  return map;
-}
-
-// Everything a wave associates that isn't graph / reflection_doc / lens doc —
-// today just the change_spec, derived from resources so new roles render too.
-function secondaryDocs(resources) {
-  const seen = new Set();
-  const docs = [];
-  for (const r of resources) {
-    const role = r.association_role;
-    if (!role || PRIMARY_ROLES.has(role) || seen.has(role)) continue;
-    seen.add(role);
-    const meta = DOC_ROLE_META[role] || {};
-    docs.push({ role, res: r, label: meta.label || humanizeRole(role), order: meta.order ?? 100 });
-  }
-  return docs.sort((a, b) => a.order - b.order || a.role.localeCompare(b.role));
 }
 
 export default function MobileSynthesisScreen() {
@@ -154,14 +98,7 @@ export default function MobileSynthesisScreen() {
   const reflections = useMemo(() => (wave ? reflectionsByLens(wave) : {}), [wave]);
   const roster = wave?.roster || [];
   const reviews = wave?.reviews || [];
-  const reflectionDoc = REFLECTION_DOC_ROLES
-    .map(role => waveResources.find(r => r.association_role === role))
-    .find(Boolean) || null;
-  // Pin every rendered doc to the exact version THIS wave associated. The living
-  // files (reflection_doc, change_spec, proposals) are one resource shared across
-  // waves, so the server's default "latest" can resolve to another wave's bytes —
-  // pinning keeps each wave faithful, the current one included.
-  const docVersion = res => res.association_version_id || null;
+  const reflectionDoc = resolveReflectionDoc(waveResources);
   const secondary = secondaryDocs(waveResources);
 
   const header = (
