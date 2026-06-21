@@ -576,16 +576,82 @@ for name in (
         self.assertIn("resource_register_file=self.register_resource_file", app_source)
         self.assertIn("self.resource_observer.observe_file", app_source)
 
-    def test_reflection_tools_do_not_import_mutation_service(self) -> None:
-        # reflection.* is a tool-namespace adapter. It should compose against a
-        # narrow protocol instead of importing the internal synthesis mutation
-        # service just to translate public names.
+    def test_reflection_tools_uses_direct_concrete_collaborator(self) -> None:
+        # reflection.* has one adapter and one implementation today. Keep it
+        # lean by avoiding a single-impl port, but pin the narrow method surface
+        # the adapter is allowed to use.
         imports = _import_segments(SERVICES_ROOT / "reflection_tools.py")
-        self.assertNotIn("syntheses", imports)
-        self.assertIn("reflection_waves", imports)
+        self.assertIn("syntheses", imports)
+        self.assertNotIn("reflection_waves", imports)
         source = (SERVICES_ROOT / "reflection_tools.py").read_text(encoding="utf-8")
-        self.assertIn("syntheses: ReflectionWaveStore", source)
+        self.assertIn("syntheses: SynthesisService", source)
         self.assertNotIn("class ReflectionWaveStore", source)
+        from backend.services.reflection_tools import ReflectionToolService
+        from backend.services.syntheses import SynthesisService
+
+        self.assertIs(
+            get_type_hints(ReflectionToolService.__init__)["syntheses"],
+            SynthesisService,
+        )
+
+        tree = ast.parse(source)
+        parents: dict[ast.AST, ast.AST] = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+
+        def enclosing_function(node: ast.AST) -> str | None:
+            parent = parents.get(node)
+            while parent is not None:
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return parent.name
+                parent = parents.get(parent)
+            return None
+
+        calls: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "self"
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value == "syntheses"
+            ):
+                self.fail("reflection_tools must not dynamically access self.syntheses")
+            if not isinstance(node, ast.Attribute):
+                continue
+            if isinstance(node.value, ast.Name) and node.value.id == "self":
+                if node.attr == "syntheses":
+                    parent = parents.get(node)
+                    if (
+                        isinstance(parent, ast.Assign)
+                        and node in parent.targets
+                        and enclosing_function(node) == "__init__"
+                    ):
+                        continue
+                    self.assertIsInstance(parent, ast.Attribute)
+                    continue
+            owner = node.value
+            if not (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "syntheses"
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "self"
+            ):
+                continue
+            self.assertIn(
+                node.attr, {"create", "get_state", "list_syntheses", "transition"}
+            )
+            parent = parents.get(node)
+            self.assertIsInstance(parent, ast.Call)
+            self.assertIs(getattr(parent, "func", None), node)
+            calls.add(node.attr)
+        self.assertEqual(
+            calls, {"create", "get_state", "list_syntheses", "transition"}
+        )
 
     def test_app_keeps_concrete_local_runtime_wiring_in_one_module(self) -> None:
         # This is an incremental local-mode extraction, not a ControlApp split:

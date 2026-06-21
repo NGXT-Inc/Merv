@@ -191,7 +191,6 @@ class ServiceLayoutTest(unittest.TestCase):
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"domain.quota_contract", "typing"},
-            "reflection_waves.py": {"typing"},
             "resource_records.py": {"typing"},
             "review_targets.py": {"typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
@@ -213,6 +212,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
                     self.assertNotIn(forbidden, source)
         self.assertFalse((PORTS_ROOT / "project_readers.py").exists())
+        self.assertFalse((PORTS_ROOT / "reflection_waves.py").exists())
         self.assertIn(
             "def sync_targets(self, *, tenant_id: str | None = None)",
             (PORTS_ROOT / "sandbox_sync.py").read_text(encoding="utf-8"),
@@ -288,16 +288,6 @@ class ServiceLayoutTest(unittest.TestCase):
         for name in list(grant_params)[1:]:
             self.assertEqual(grant_params[name].kind, Parameter.KEYWORD_ONLY)
         self.assertEqual(grant_params["data_dir"].default, "")
-        reflection_wave_source = (PORTS_ROOT / "reflection_waves.py").read_text(
-            encoding="utf-8"
-        )
-        for signature in (
-            "def create(",
-            "def get_state(",
-            "def list_syntheses(self, *, project_id: str | None = None)",
-            "def transition(",
-        ):
-            self.assertIn(signature, reflection_wave_source)
         workflow_reader_source = (PORTS_ROOT / "workflow_readers.py").read_text(
             encoding="utf-8"
         )
@@ -515,12 +505,18 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertIn("domain.reflection_projection", imports)
                 self.assertNotIn("reflection_projection", imports)
         reflection_imports = _import_segments(SERVICES / "reflection_tools.py")
-        self.assertIn("reflection_waves", reflection_imports)
+        self.assertIn("syntheses", reflection_imports)
+        self.assertNotIn("reflection_waves", reflection_imports)
         reflection_source = _source("reflection_tools.py")
-        self.assertIn("syntheses: ReflectionWaveStore", reflection_source)
+        self.assertIn("syntheses: SynthesisService", reflection_source)
         self.assertNotIn("class ReflectionWaveStore", reflection_source)
         from backend.services.reflection_tools import ReflectionToolService
+        from backend.services.syntheses import SynthesisService
 
+        self.assertIs(
+            get_type_hints(ReflectionToolService.__init__)["syntheses"],
+            SynthesisService,
+        )
         get_type_hints(ReflectionToolService.create)
 
     def test_graph_lint_is_domain_leaf_module(self) -> None:

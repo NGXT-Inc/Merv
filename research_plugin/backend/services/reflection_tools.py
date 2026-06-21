@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..domain.reflection_projection import external_reflection_state
-from ..ports.reflection_waves import ReflectionWaveStore
+from .syntheses import SynthesisService
 
 
 class ReflectionToolService:
     """External reflection tool names backed by internal synthesis records."""
 
-    def __init__(self, *, syntheses: ReflectionWaveStore) -> None:
+    def __init__(self, *, syntheses: SynthesisService) -> None:
         self.syntheses = syntheses
 
     def create(
