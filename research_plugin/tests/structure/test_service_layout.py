@@ -859,15 +859,29 @@ class ServiceLayoutTest(unittest.TestCase):
         policy_source = (BACKEND_ROOT / "http_policy.py").read_text(encoding="utf-8")
 
         self.assertNotIn("class _HttpSurfacePolicy", source)
-        self.assertIn("surface = HttpSurfacePolicy.for_surface(", source)
+        self.assertIn("surface_policy: HttpSurfacePolicy | None = None", source)
+        self.assertIn(
+            "surface = surface_policy or HttpSurfacePolicy.for_surface(", source
+        )
+        control_source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("surface_policy=surface", control_source)
         for decision in (
-            "require_bearer_auth=auth is not None",
-            "restrict_cors=auth is not None",
-            "hosted_control=auth is not None",
-            "expose_local_data_plane=auth is None",
+            "CONTROL_REQUIRE_AUTH_ENV_VAR",
+            "CONTROL_RESTRICT_CORS_ENV_VAR",
+            "require_privileged_bearer_auth=True",
+            "enforce_project_scope=True",
+            "hosted_control=True",
+            "expose_local_data_plane=False",
         ):
             with self.subTest(decision=decision):
-                self.assertIn(decision, source)
+                self.assertIn(decision, control_source)
+        control_builder = control_source[
+            control_source.index("def _control_http_surface(") :
+        ]
+        self.assertNotIn("auth is not None", control_builder)
+        self.assertNotIn("auth is None", control_builder)
         self.assertIn("class HttpSurfacePolicy", policy_source)
         self.assertIn("def for_surface(", policy_source)
         self.assertNotIn("for_auth_present", source)
@@ -875,6 +889,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("auth_required", source)
         for field_name in (
             "require_bearer_auth",
+            "require_privileged_bearer_auth",
             "restrict_cors",
             "hosted_control",
             "expose_local_data_plane",

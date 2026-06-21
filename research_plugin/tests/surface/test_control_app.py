@@ -12,6 +12,8 @@ from backend.composition import control_mode
 from backend.config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
+    CONTROL_REQUIRE_AUTH_ENV_VAR,
+    CONTROL_RESTRICT_CORS_ENV_VAR,
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
@@ -22,6 +24,7 @@ from backend.state import StateStore
 from backend.state.blobs import LocalDirBlobStore
 from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
 from backend.utils import ValidationError
+from backend.version import CLIENT_VERSION_HEADER
 
 
 def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:
@@ -269,6 +272,114 @@ class ControlAppTest(unittest.TestCase):
                 )
             self.addCleanup(server.shutdown)
             self.assertIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
+
+    def test_control_server_surface_auth_and_cors_are_configured_independently(self) -> None:
+        from backend.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertNoLogs("backend.composition.control_mode", level="WARNING"):
+                server = build_control_server(
+                    repo_root=root,
+                    env={
+                        **_mounted_mgmt_key_env(root),
+                        CONTROL_REQUIRE_AUTH_ENV_VAR: "false",
+                        CONTROL_RESTRICT_CORS_ENV_VAR: "false",
+                    },
+                )
+            self.addCleanup(server.shutdown)
+            client = TestClient(server.fastapi_app, raise_server_exceptions=False)
+
+            projects = client.get("/api/projects")
+            self.assertEqual(projects.status_code, 200, projects.text)
+
+            daemon_without_token = client.get("/api/daemon/tasks?wait=0")
+            self.assertEqual(daemon_without_token.status_code, 400)
+            self.assertEqual(
+                daemon_without_token.json()["error_code"], "permission_denied"
+            )
+
+            admin_without_token = client.post("/api/admin/cleanup")
+            self.assertEqual(admin_without_token.status_code, 400)
+            self.assertEqual(
+                admin_without_token.json()["error_code"], "permission_denied"
+            )
+
+            counters_without_token = client.get("/api/admin/tenants/local/counters")
+            self.assertEqual(counters_without_token.status_code, 400)
+            self.assertEqual(
+                counters_without_token.json()["error_code"], "permission_denied"
+            )
+
+            daemon_token = server.auth.mint_token(
+                tenant_id="local", client_id="daemon"
+            )
+            daemon = client.get(
+                "/api/daemon/tasks?wait=0",
+                headers={"Authorization": f"Bearer {daemon_token}"},
+            )
+            self.assertEqual(daemon.status_code, 200, daemon.text)
+
+            old_daemon = client.get(
+                "/api/daemon/tasks?wait=0",
+                headers={
+                    "Authorization": f"Bearer {daemon_token}",
+                    CLIENT_VERSION_HEADER: "0.0001",
+                },
+            )
+            self.assertEqual(old_daemon.status_code, 426, old_daemon.text)
+
+            acme_project = server.app.projects.create(
+                name="Acme Hosted", tenant_id="acme"
+            )
+            other_daemon_token = server.auth.mint_token(
+                tenant_id="other", client_id="daemon"
+            )
+            wrong_tenant = client.post(
+                "/api/daemon/resources/observe",
+                headers={"Authorization": f"Bearer {other_daemon_token}"},
+                json={
+                    "project_id": acme_project["id"],
+                    "path": "results.txt",
+                    "content_sha256": "0" * 64,
+                    "mtime_ns": 1,
+                    "ctime_ns": 1,
+                    "size_bytes": 1,
+                },
+            )
+            self.assertEqual(wrong_tenant.status_code, 404, wrong_tenant.text)
+
+            admin_token = server.auth.mint_token(tenant_id="ops", client_id="admin")
+            admin = client.post(
+                "/api/admin/cleanup",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            self.assertEqual(admin.status_code, 200, admin.text)
+
+            local_token = server.auth.mint_token(tenant_id="local")
+            tenant_counters = client.get(
+                "/api/admin/tenants/local/counters",
+                headers={"Authorization": f"Bearer {local_token}"},
+            )
+            self.assertEqual(tenant_counters.status_code, 200, tenant_counters.text)
+
+            meta = client.get("/api/meta")
+            self.assertEqual(meta.status_code, 200, meta.text)
+            body = meta.json()
+            self.assertEqual(body["mode"], "control")
+            self.assertTrue(body["capabilities"]["hosted_control"])
+            self.assertFalse(body["capabilities"]["local_data_plane_http"])
+
+            preflight = client.options(
+                "/api/projects",
+                headers={
+                    "Origin": "https://dev.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            self.assertEqual(
+                preflight.headers.get("access-control-allow-origin"), "*"
+            )
 
 
 if __name__ == "__main__":

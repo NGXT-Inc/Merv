@@ -32,6 +32,8 @@ from fastapi import FastAPI
 from ..config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
+    CONTROL_REQUIRE_AUTH_ENV_VAR,
+    CONTROL_RESTRICT_CORS_ENV_VAR,
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     build_blob_store,
@@ -44,9 +46,10 @@ from ..config import (
 )
 from ..control_app import ControlApp
 from ..dataplane.http_channel import HttpTaskChannel, HttpTaskQueue
-from ..env import env_float
+from ..env import env_bool, env_float
 from ..execution import build_sandbox_backend
 from ..http_api import create_fastapi_app
+from ..http_policy import HttpSurfacePolicy
 from ..services.cleanup import CleanupService
 from ..services.identity import AuthService
 from ..state.managed_mgmt_keys import MountedMgmtKeyStore
@@ -144,7 +147,8 @@ def build_control_server(
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
     )
-    if not origins:
+    surface = _control_http_surface(env=env)
+    if surface.restrict_cors and not origins:
         LOGGER.warning(
             "%s is empty; browser clients will be blocked by hosted-control CORS",
             ALLOWED_ORIGINS_ENV_VAR,
@@ -157,6 +161,7 @@ def build_control_server(
         task_queue=task_queue,
         sync_targets_source=app.sandboxes.control_view,
         cleanup=cleanup,
+        surface_policy=surface,
     )
     return ControlPlaneServer(
         app=app,
@@ -186,6 +191,21 @@ def _control_repo_root(
             details={"missing": missing},
         )
     return CONTROL_COMPAT_REPO_ROOT
+
+
+def _control_http_surface(
+    *, env: Mapping[str, str] | None = None
+) -> HttpSurfacePolicy:
+    return HttpSurfacePolicy.for_surface(
+        require_bearer_auth=env_bool(
+            CONTROL_REQUIRE_AUTH_ENV_VAR, True, env=env
+        ),
+        require_privileged_bearer_auth=True,
+        enforce_project_scope=True,
+        restrict_cors=env_bool(CONTROL_RESTRICT_CORS_ENV_VAR, True, env=env),
+        hosted_control=True,
+        expose_local_data_plane=False,
+    )
 
 
 def _build_mgmt_key_store(*, env: Mapping[str, str] | None = None):

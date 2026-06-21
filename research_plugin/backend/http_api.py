@@ -853,6 +853,7 @@ def create_fastapi_app(
     task_queue: Any | None = None,
     sync_targets_source: Any | None = None,
     cleanup: Any | None = None,
+    surface_policy: HttpSurfacePolicy | None = None,
 ) -> FastAPI:
     # HTTP surface seam (cloud plan Phase 7). ``auth=None`` is local mode:
     # auth OFF, the implicit LOCAL_PRINCIPAL on every request, CORS wide open,
@@ -862,7 +863,7 @@ def create_fastapi_app(
     # routes.
     if (app is None) == (router is None):
         raise ValueError("provide exactly one of app or router")
-    surface = HttpSurfacePolicy.for_surface(
+    surface = surface_policy or HttpSurfacePolicy.for_surface(
         require_bearer_auth=auth is not None,
         restrict_cors=auth is not None,
         hosted_control=auth is not None,
@@ -1034,7 +1035,7 @@ def create_fastapi_app(
 
     def require_daemon_principal(request: Request) -> Any:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_bearer_auth:
+        if not surface.require_privileged_bearer_auth:
             return principal
         if getattr(principal, "client_id", "") != "daemon":
             raise PermissionDeniedError(
@@ -1045,7 +1046,7 @@ def create_fastapi_app(
 
     def require_admin_principal(request: Request) -> Any:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_bearer_auth:
+        if not surface.require_privileged_bearer_auth:
             return principal
         if getattr(principal, "client_id", "") != "admin":
             raise PermissionDeniedError(
@@ -1056,8 +1057,13 @@ def create_fastapi_app(
 
     def require_tenant_or_admin(request: Request, tenant_id: str) -> Any:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_bearer_auth:
+        if not surface.require_privileged_bearer_auth:
             return principal
+        if not getattr(request.state, "authenticated", False):
+            raise PermissionDeniedError(
+                "tenant/admin bearer token required",
+                details={"required_client_id": "admin"},
+            )
         if getattr(principal, "client_id", "") == "admin":
             return principal
         if getattr(principal, "tenant_id", "") != tenant_id:
@@ -1129,9 +1135,6 @@ def create_fastapi_app(
         # mode): a valid `Authorization: Bearer` is required; missing/invalid/
         # expired/revoked returns 401 before any handler runs. CORS preflights
         # (OPTIONS) are never authenticated.
-        if not surface.require_bearer_auth:
-            request.state.principal = LOCAL_PRINCIPAL
-            return await call_next(request)
         if request.method == "OPTIONS":
             return await call_next(request)
         # /health is unauthenticated liveness (load balancers probe it before a
@@ -1148,7 +1151,7 @@ def create_fastapi_app(
         # partial failure deeper in. A missing header is TOLERATED (pre-Phase-9
         # clients predate the handshake — see backend.version).
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
-        if client_version and is_below_floor(
+        if surface.hosted_control and client_version and is_below_floor(
             client_version=client_version, floor=MIN_PROXY_VERSION
         ):
             return JSONResponse(
@@ -1164,11 +1167,28 @@ def create_fastapi_app(
                 },
                 status_code=426,
             )
+        if not surface.require_bearer_auth:
+            request.state.principal = LOCAL_PRINCIPAL
+            request.state.authenticated = False
+            if auth is not None:
+                header = request.headers.get("authorization") or ""
+                token = header[7:].strip() if header[:7].lower() == "bearer " else None
+                if token:
+                    try:
+                        request.state.principal = auth.resolve(token=token)
+                        request.state.authenticated = True
+                    except AuthError as exc:
+                        return JSONResponse(
+                            {"detail": str(exc), "error_code": "unauthorized"},
+                            status_code=401,
+                        )
+            return await call_next(request)
         header = request.headers.get("authorization") or ""
         token = header[7:].strip() if header[:7].lower() == "bearer " else None
         try:
             assert auth is not None
             request.state.principal = auth.resolve(token=token)
+            request.state.authenticated = True
         except AuthError as exc:
             return JSONResponse(
                 {"detail": str(exc), "error_code": "unauthorized"},
