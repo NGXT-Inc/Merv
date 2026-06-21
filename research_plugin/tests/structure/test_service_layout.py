@@ -804,6 +804,17 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("FROM reviews", source)
         self.assertNotIn("FROM syntheses", source)
 
+    def test_graph_ref_resolver_uses_reference_type_registry(self) -> None:
+        source = (SERVICES / "graph_refs.py").read_text(encoding="utf-8")
+        self.assertIn("class GraphRefType:", source)
+        self.assertIn("GRAPH_REF_TYPES: tuple[GraphRefType, ...]", source)
+        self.assertEqual(source.count("GraphRefType("), 5)
+        self.assertIn("for ref_type in GRAPH_REF_TYPES:", source)
+        for prefix in ("res_", "rev_", "claim_", "exp_", "syn_"):
+            self.assertIn(f'prefix="{prefix}"', source)
+            self.assertNotIn(f'if ref.startswith("{prefix}")', source)
+            self.assertNotIn(f'elif ref.startswith("{prefix}")', source)
+
     def test_transport_delegates_visible_project_lookup_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
         self.assertIn("target.app.projects.project_ids_for_tenant", source)
