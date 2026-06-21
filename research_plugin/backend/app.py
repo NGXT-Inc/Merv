@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .services.claims import ClaimService
 from .services.experiments import ExperimentService
 from .services.feed import FeedService
+from .services.graph_refs import GraphRefResolver
 from .services.permissions import PermissionService
 from .services.project_overview import ProjectOverviewService
 from .services.quotas import QuotaService
@@ -106,6 +107,7 @@ class ResearchPluginApp:
             permissions=self.permissions,
             blobs=self.blobs,
         )
+        self.graph_refs = GraphRefResolver(store=self.store)
         # One-time local upgrade: capture bytes for gated associations made
         # before byte capture existed (idempotent, skips present blobs).
         self._backfill_gated_blobs()

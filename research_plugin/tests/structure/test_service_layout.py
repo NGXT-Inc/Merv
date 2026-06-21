@@ -633,6 +633,20 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn(".store.transaction", block)
         self.assertNotIn("require_project_id", block)
 
+    def test_transport_delegates_graph_ref_resolution_to_service(self) -> None:
+        source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
+        self.assertIn("self.app.graph_refs.resolve_index", source)
+        self.assertEqual(
+            source.count('"ref_index": self.app.graph_refs.resolve_index('), 2
+        )
+        self.assertNotIn("_resolve_graph_refs", source)
+        self.assertNotIn("_resolve_one_graph_ref", source)
+        self.assertNotIn("_graph_ref_resource", source)
+        self.assertNotIn("FROM claims WHERE id = ?", source)
+        self.assertNotIn("FROM experiments WHERE id = ?", source)
+        self.assertNotIn("FROM reviews", source)
+        self.assertNotIn("FROM syntheses", source)
+
     def test_vocabulary_imports_bypass_permission_service(self) -> None:
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             if path == SERVICES / "permissions.py":
