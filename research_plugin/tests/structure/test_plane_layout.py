@@ -298,6 +298,12 @@ for name in (
         imports = _import_segments(SERVICES_ROOT / "project_overview.py")
         self.assertNotIn("projects", imports)
         self.assertNotIn("syntheses", imports)
+        self.assertIn("project_readers", imports)
+        source = (SERVICES_ROOT / "project_overview.py").read_text(encoding="utf-8")
+        self.assertIn("projects: ProjectCurrentReader", source)
+        self.assertIn("syntheses: SynthesisOverviewReader", source)
+        self.assertNotIn("class ProjectCurrentReader", source)
+        self.assertNotIn("class SynthesisOverviewReader", source)
 
     def test_reflection_tools_do_not_import_mutation_service(self) -> None:
         # reflection.* is a tool-namespace adapter. It should compose against a

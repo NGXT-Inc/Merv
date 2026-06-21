@@ -137,6 +137,7 @@ class ServiceLayoutTest(unittest.TestCase):
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
+            "project_readers.py": {"typing"},
             "quota_admission.py": {"domain.quota_contract", "typing"},
             "review_targets.py": {"typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
@@ -158,6 +159,21 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn(
             "def sync_targets(self, *, tenant_id: str | None = None)",
             (PORTS_ROOT / "sandbox_sync.py").read_text(encoding="utf-8"),
+        )
+        project_reader_source = (PORTS_ROOT / "project_readers.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "def current(self, *, tenant_id: str | None = None)",
+            project_reader_source,
+        )
+        self.assertIn(
+            "def latest_published(self, *, conn: Any, project_id: str)",
+            project_reader_source,
+        )
+        self.assertIn(
+            "def open_synthesis(self, *, conn: Any, project_id: str)",
+            project_reader_source,
         )
 
     def test_reflection_policy_service_module_is_a_compatibility_shim(self) -> None:

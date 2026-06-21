@@ -3,23 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import Any
 
 from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES, PROJECT_GRAPH_ROLES
+from ..ports.project_readers import ProjectCurrentReader, SynthesisOverviewReader
 from ..state.store import BaseStateStore, rows_to_dicts
-
-
-class ProjectCurrentReader(Protocol):
-    def current(self, *, tenant_id: str | None = None) -> dict[str, Any]:
-        ...
-
-
-class SynthesisOverviewReader(Protocol):
-    def latest_published(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
-        ...
-
-    def open_synthesis(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
-        ...
 
 
 class ProjectOverviewService:
