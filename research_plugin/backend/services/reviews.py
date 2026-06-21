@@ -12,6 +12,7 @@ from typing import Any
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from ..utils import new_id
 from ..state.blobs import BlobStore
+from ..domain.review_returns import resolve_review_return
 from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict
@@ -594,54 +595,15 @@ class ReviewService:
     def _validate_return_to(
         self, *, target_type: str, role: str, verdict: str, return_to: str
     ) -> str:
-        """Resolve where a rejection sends the target.
-
-        Experiment reviewers choose explicitly: 'planned' when the results
-        revealed a flaw in the plan itself, 'running' when the plan stands but
-        execution or the conclusion is flawed. Design rejections can only go
-        back to 'planned' — a flawed plan is never fixed by re-running it.
-        Reflection reviewers choose explicitly too: 'reflecting' when the
-        reflections themselves are inadequate (the fan-out re-runs),
-        'synthesizing' when the reflections stand but the reflection artifacts
-        — graph, reflection doc, and/or change spec — must be revised.
-        """
-        return_to = (return_to or "").strip()
-        allowed = (
-            {"", "reflecting", "synthesizing"}
-            if target_type == "synthesis"
-            else {"", "planned", "running"}
-        )
-        if return_to not in allowed:
-            raise ValidationError(
-                "return_to must be 'reflecting' or 'synthesizing' for reflection reviews"
-                if target_type == "synthesis"
-                else "return_to must be 'planned' or 'running'"
+        try:
+            return resolve_review_return(
+                target_type=target_type,
+                role=role,
+                verdict=verdict,
+                return_to=return_to,
             )
-        if verdict == "pass":
-            if return_to:
-                raise ValidationError("return_to only applies when the verdict is needs_changes or fail")
-            return ""
-        if target_type == "synthesis":
-            if role == "reflection_reviewer" and not return_to:
-                raise ValidationError(
-                    "project-reflection-review rejections must set return_to: 'reflecting' "
-                    "to re-launch the reflection fan-out (the reflections "
-                    "themselves are inadequate), or 'synthesizing' if the "
-                    "reflections stand but the reflection artifacts must be revised"
-                )
-            return return_to or "synthesizing"
-        if role == "experiment_reviewer" and not return_to:
-            raise ValidationError(
-                "experiment-attempt-review rejections must set return_to: 'planned' if the "
-                "results show the plan itself is flawed, or 'running' if the plan "
-                "stands but execution or the conclusion is flawed"
-            )
-        if role == "design_reviewer" and return_to == "running":
-            raise ValidationError(
-                "experiment-design-review rejections cannot return_to 'running'; a flawed plan "
-                "goes back to 'planned'"
-            )
-        return return_to or "planned"
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     def _validate_role_matches_gate(
         self, *, target_type: str, target_status: str, role: str

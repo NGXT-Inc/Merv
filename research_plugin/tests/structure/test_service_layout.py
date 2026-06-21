@@ -543,6 +543,20 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("permissions: ReviewPolicy", source)
         self.assertNotIn("class ReviewPolicy", source)
 
+    def test_review_return_policy_is_domain_leaf_module(self) -> None:
+        self.assertEqual(
+            _import_module_names(DOMAIN_ROOT / "review_returns.py"),
+            {"dataclasses"},
+        )
+        imports = _import_module_names(SERVICES / "reviews.py")
+        source = _source("reviews.py")
+
+        self.assertIn("domain.review_returns", imports)
+        self.assertIn("resolve_review_return", source)
+        self.assertNotIn("experiment-attempt-review rejections must set", source)
+        self.assertNotIn("project-reflection-review rejections must set", source)
+        self.assertNotIn("experiment-design-review rejections cannot return_to", source)
+
     def test_review_service_uses_direct_concrete_targets(self) -> None:
         imports = _import_segments(SERVICES / "reviews.py")
 
