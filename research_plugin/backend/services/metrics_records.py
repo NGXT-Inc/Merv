@@ -14,14 +14,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..state.store import StateStore
+from ..state.store import BaseStateStore
 from ..utils import now_iso
 
 
 class MetricsSnapshotStore:
     """Latest-per-experiment metrics snapshot records."""
 
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
 
     def record(

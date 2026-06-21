@@ -18,7 +18,7 @@ from ..domain.workflow_gates import (
     allowed_transitions_for,
 )
 from ..state.blobs import BlobStore
-from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
 from ..utils import now_iso
@@ -29,7 +29,7 @@ class ExperimentService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store

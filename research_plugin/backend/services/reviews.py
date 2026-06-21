@@ -18,7 +18,7 @@ from ..ports.review_targets import (
     ReviewPolicy,
     SynthesisReviewTarget,
 )
-from ..state.store import StateStore, next_created_seq, row_to_dict
+from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..utils import now_iso
 
 
@@ -46,7 +46,7 @@ class ReviewService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         permissions: ReviewPolicy,
         experiments: ExperimentReviewTarget,
         syntheses: SynthesisReviewTarget,

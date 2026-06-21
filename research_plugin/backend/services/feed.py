@@ -24,7 +24,7 @@ from ..domain.feed_images import (
     SERVEABLE_IMAGE_TYPES,
     sniff_image_type,
 )
-from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from .feed_unfurl import UnfurlError, fetch_preview_image, unfurl
 
@@ -100,7 +100,7 @@ def _validate_handle(handle: str) -> str:
 
 
 class FeedService:
-    def __init__(self, *, store: StateStore, blobs: Any) -> None:
+    def __init__(self, *, store: BaseStateStore, blobs: Any) -> None:
         self.store = store
         self.blobs = blobs
         self._ensure_schema()

@@ -40,7 +40,7 @@ from ..domain.sync_contract import (
     remote_root_of,
     remote_sessions_dir,
 )
-from ..state.store import StateStore, row_to_dict
+from ..state.store import BaseStateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
 from ..sandbox_support import iso_after, parse_iso
 from ..ports.sandbox_sync import RunningSandboxRows, RunningSandboxSyncRow, SyncTarget
@@ -114,7 +114,7 @@ class LeaseService:
     can see why it isn't syncing.
     """
 
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
 
     def acquire(

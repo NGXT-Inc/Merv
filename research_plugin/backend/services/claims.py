@@ -7,12 +7,12 @@ from typing import Any
 from ..domain.vocabulary import CLAIM_CONFIDENCES, CLAIM_STATUSES
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
-from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..utils import now_iso
 
 
 class ClaimService:
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
 
     def create(

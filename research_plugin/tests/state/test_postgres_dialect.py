@@ -546,6 +546,33 @@ class SchemaParityTest(unittest.TestCase):
         self.assertNotRegex(translated, r"\bINTEGER\b")  # 32-bit on Postgres
         self.assertIn("BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY", translated)
 
+    def test_postgres_has_column_uses_information_schema_directly(self) -> None:
+        class _Rows:
+            def fetchone(self):
+                return {"exists": 1}
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple[str, ...] | None]] = []
+
+            def execute(self, sql: str, params: tuple[str, ...] | None = None):
+                self.calls.append((sql, params))
+                return _Rows()
+
+        conn = _Conn()
+        store = object.__new__(PostgresStateStore)
+
+        self.assertTrue(
+            store._has_column(
+                conn=conn, table="projects", column="hard_stop_synthesis_id"
+            )
+        )
+        self.assertEqual(len(conn.calls), 1)
+        sql, params = conn.calls[0]
+        self.assertNotIn("PRAGMA", sql.upper())
+        self.assertIn("information_schema.columns", sql)
+        self.assertEqual(params, ("projects", "hard_stop_synthesis_id"))
+
     def test_no_question_marks_inside_sql_string_literals(self) -> None:
         """The dialect's '?' → '%s' translation is string-level; it is only
         sound while no SQL keeps a literal '?' or '%' inside quotes. Walk

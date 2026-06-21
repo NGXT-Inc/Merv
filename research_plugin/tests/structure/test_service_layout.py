@@ -571,6 +571,56 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("def resolve_repo_path", repo_path_source)
         self.assertIn("def repo_relative_path", repo_path_source)
 
+    def test_services_type_against_base_state_store(self) -> None:
+        concrete_store_names = {"StateStore", "SqliteStateStore"}
+        for path in sorted(SERVICES.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            with self.subTest(module=path.name):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            module = alias.name.split(".")
+                            self.assertFalse(
+                                module[-2:] == ["state", "store"]
+                                or module[-1:] == ["state"],
+                                "services should not import concrete state modules",
+                            )
+                        continue
+                    if isinstance(node, ast.ImportFrom):
+                        imported = {alias.name for alias in node.names}
+                        module = node.module.split(".") if node.module else []
+                        if "state" in imported and (
+                            not module or module[-1] in {"backend", "research_plugin"}
+                        ):
+                            self.fail(
+                                "services should not import the state package directly"
+                            )
+                        if not node.module:
+                            continue
+                        module = node.module.split(".")
+                        if not (
+                            module[-2:] == ["state", "store"]
+                            or module[-1:] == ["state"]
+                        ):
+                            continue
+                        self.assertNotIn(
+                            "*",
+                            imported,
+                            "services should not star-import state modules",
+                        )
+                        self.assertNotIn(
+                            "store",
+                            imported,
+                            "services should not import the concrete store module",
+                        )
+                        concrete = concrete_store_names & imported
+                        self.assertFalse(
+                            concrete,
+                            "services should type store dependencies against BaseStateStore",
+                        )
+
     def test_vocabulary_imports_bypass_permission_service(self) -> None:
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             if path == SERVICES / "permissions.py":

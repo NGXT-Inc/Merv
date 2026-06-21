@@ -44,7 +44,7 @@ from ..ports.synthesis_writers import (
     SynthesisProjectWriter,
 )
 from ..state.blobs import BlobStore
-from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from .pinned import pinned_text_for_version, resubmit_hint
 
@@ -64,7 +64,7 @@ class SynthesisService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         claims: SynthesisClaimWriter,
         experiment_writer: SynthesisExperimentWriter,
         project_writer: SynthesisProjectWriter,

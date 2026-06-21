@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ..ports.sandbox_sync import RunningSandboxSyncRow
-from ..state.store import StateStore, next_created_seq, row_to_dict
+from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..utils import NotFoundError, new_id, now_iso
 
 
@@ -25,7 +25,7 @@ TerminalHook = Callable[[str, str | None], None]
 class SandboxRegistry:
     """Owns sandbox-row persistence: upserts, scoping, status marks, events."""
 
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
         self.on_terminal: TerminalHook | None = None
 

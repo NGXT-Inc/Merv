@@ -6,7 +6,7 @@ from typing import Any
 
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
-from ..state.store import StateStore, row_to_dict
+from ..state.store import BaseStateStore, row_to_dict
 from ..utils import now_iso
 
 
@@ -16,7 +16,7 @@ MIN_PROJECT_NAME_LEN = 3
 class ProjectService:
     """Owns project metadata."""
 
-    def __init__(self, *, store: StateStore) -> None:
+    def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
 
     def create(
@@ -114,10 +114,6 @@ class ProjectService:
         rationale: str,
     ) -> None:
         now = now_iso()
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(projects)").fetchall()
-        }
         assignments = [
             "status = 'stopped'",
             "hard_stop_reflection_id = ?",
@@ -125,7 +121,9 @@ class ProjectService:
             "stopped_at = ?",
         ]
         params: list[Any] = [synthesis_id, rationale, now]
-        if "hard_stop_synthesis_id" in columns:
+        if self.store._has_column(
+            conn=conn, table="projects", column="hard_stop_synthesis_id"
+        ):
             assignments.insert(2, "hard_stop_synthesis_id = ?")
             params.insert(1, synthesis_id)
         params.append(project_id)

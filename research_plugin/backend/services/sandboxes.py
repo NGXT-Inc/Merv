@@ -59,7 +59,7 @@ from ..domain.sync_contract import remote_experiment_dir
 
 from ..state.activity import ActivityLogger
 from ..state.blobs import BlobStore
-from ..state.store import StateStore, row_to_dict
+from ..state.store import BaseStateStore, row_to_dict
 from ..utils import (
     NotFoundError,
     PermissionDeniedError,
@@ -112,7 +112,7 @@ class SandboxService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         sandbox_backend: SandboxBackend,
         worker: SandboxWorker,
         mgmt_keys: MgmtKeyStore,

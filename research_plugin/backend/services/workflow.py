@@ -25,7 +25,7 @@ from ..ports.workflow_readers import (
     SandboxWorkflowReader,
 )
 from .workflow_views import slim_status_and_next, slim_synthesis
-from ..state.store import StateStore, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 
 
 EXPERIMENT_STATUS_PRIORITY = {
@@ -47,7 +47,7 @@ class WorkflowService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         experiments: ExperimentWorkflowReader,
         reviews: ReviewWorkflowReader,
         sandboxes: SandboxWorkflowReader,

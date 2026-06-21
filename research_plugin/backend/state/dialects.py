@@ -160,6 +160,17 @@ class PostgresStateStore(BaseStateStore):
         finally:
             conn.close()
 
+    def _has_column(self, *, conn: Any, table: str, column: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
+            """,
+            (table, column),
+        ).fetchone()
+        return row is not None
+
     def _initialize(self) -> None:
         conn = self.connect()
         try:

@@ -11,7 +11,7 @@ from typing import Any
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from ..ports.resource_records import ResourceAssociationPolicy
 from ..state.blobs import BlobStore
-from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 
@@ -22,7 +22,7 @@ class ResourceService:
     def __init__(
         self,
         *,
-        store: StateStore,
+        store: BaseStateStore,
         permissions: ResourceAssociationPolicy,
         blobs: BlobStore | None = None,
     ) -> None:
@@ -329,16 +329,18 @@ class ResourceService:
                 )
                 params.insert(0, experiment_id)  # join param precedes WHERE params
             base = f"FROM resources r{join} WHERE {' AND '.join(where)}"
-            total = int(
-                conn.execute(f"SELECT count(DISTINCT r.id) {base}", params).fetchone()[0]
-            )
+            total_row = conn.execute(
+                f"SELECT count(DISTINCT r.id) AS total {base}", params
+            ).fetchone()
+            total = int(total_row["total"] if total_row is not None else 0)
             query = f"SELECT DISTINCT r.* {base} ORDER BY r.path"
             page_params = list(params)
             if limit is not None:
                 query += " LIMIT ? OFFSET ?"
                 page_params += [int(limit), int(offset)]
             elif offset:
-                query += " LIMIT -1 OFFSET ?"
+                query += " LIMIT ? OFFSET ?"
+                page_params.append(2_147_483_647)
                 page_params.append(int(offset))
             rows = conn.execute(query, page_params).fetchall()
             resources = [
