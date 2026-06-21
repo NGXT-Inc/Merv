@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
@@ -718,6 +719,18 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn(
                     "fromisoformat",
                     path.read_text(encoding="utf-8"),
+                )
+
+    def test_iso_formatting_is_single_sourced(self) -> None:
+        for path in sorted(BACKEND_ROOT.rglob("*.py")):
+            if path.name == "utils.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
+                self.assertNotIn('replace("+00:00", "Z")', source)
+                self.assertNotIn("replace('+00:00', 'Z')", source)
+                self.assertIsNone(
+                    re.search(r"datetime\.now\([^)]*UTC[^)]*\)\.isoformat\(", source)
                 )
 
     def test_services_type_against_base_state_store(self) -> None:

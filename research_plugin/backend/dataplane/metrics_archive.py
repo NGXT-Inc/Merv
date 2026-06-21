@@ -40,6 +40,8 @@ from typing import Any
 
 import httpx
 
+from ..utils import format_iso
+
 # Extraction bounds: the archive is a results record, not a full MLflow
 # mirror. History is downsampled; final values are always exact.
 MAX_EXPERIMENTS = 20
@@ -301,7 +303,7 @@ class MetricsArchive:
         return self.root / f"{experiment_id}.json"
 
     def persist(self, *, experiment_id: str, snapshot: dict[str, Any]) -> Path:
-        record = {"captured_at": datetime.now(tz=UTC).isoformat(), **snapshot}
+        record = {"captured_at": format_iso(datetime.now(tz=UTC)), **snapshot}
         path = self.path_for(experiment_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{experiment_id}.", suffix=".tmp")

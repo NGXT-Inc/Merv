@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
+from ..utils import format_iso
 
 
 # How long a row may sit in a pre-running provisioning phase before the
@@ -116,7 +117,7 @@ class CleanupService:
 
     def sweep_expired_blobs(self, *, now: datetime | None = None) -> int:
         """Delete blobs past their TTL across all tenants (blob TTL GC)."""
-        now_iso = (now or datetime.now(tz=UTC)).isoformat()
+        now_iso = format_iso(now or datetime.now(tz=UTC))
         try:
             return int(self.blobs.sweep_expired(now=now_iso))
         except Exception:  # noqa: BLE001 — a GC failure must not abort the pass

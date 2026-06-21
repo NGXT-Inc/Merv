@@ -7,14 +7,21 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..secret_tokens import hash_secret, mint_secret, secret_digest_matches
-from ..utils import NotFoundError, PermissionDeniedError, ValidationError, new_id, parse_iso
+from ..utils import (
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+    format_iso,
+    new_id,
+    now_iso,
+    parse_iso,
+)
 from ..state.blobs import BlobStore
 from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
 from ..domain.review_returns import resolve_review_return
 from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict
-from ..utils import now_iso
 from .experiments import ExperimentService
 from .syntheses import SynthesisService
 
@@ -75,7 +82,7 @@ class ReviewService:
             # caller, and never stored — only its sha256 lands in the row (cloud
             # plan Phase 7). review.start resolves by hashing the presented token.
             capability = mint_secret(prefix="rp_", nbytes=24)
-            expires_at = (datetime.now(UTC) + timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            expires_at = format_iso(datetime.now(UTC) + timedelta(hours=1))
             snapshot_id = self._target_snapshot_id(conn=conn, target_type=target_type, target_id=target_id)
             conn.execute(
                 """

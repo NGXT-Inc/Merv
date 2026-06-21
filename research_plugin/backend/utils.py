@@ -5,7 +5,8 @@ Holds the small, dependency-free utilities every layer needs:
   - Domain error hierarchy (``ResearchPluginError`` and subclasses) used by
     services and surfaced through the MCP / HTTP boundary.
   - ``new_id(prefix=...)`` for opaque, prefixed entity ids.
-  - ``now_iso()`` / ``parse_iso()`` for consistent ISO-8601 timestamp handling.
+  - ``now_iso()`` / ``format_iso()`` / ``parse_iso()`` for consistent ISO-8601
+    timestamp handling.
 
 Keeping these in one module means every service can ``from ..utils import …``
 once instead of three times.
@@ -79,7 +80,16 @@ def new_id(*, prefix: str) -> str:
 
 def now_iso() -> str:
     """Return the current UTC instant as an ISO-8601 string (``…Z``)."""
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return format_iso(datetime.now(UTC))
+
+
+def format_iso(value: datetime) -> str:
+    """Return an ISO-8601 UTC timestamp string with second precision."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    else:
+        value = value.astimezone(UTC)
+    return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_iso(value: object) -> datetime | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -191,7 +192,10 @@ class MetricsArchiveTest(unittest.TestCase):
             self.assertIn(".research_plugin", str(path))
             loaded = archive.load(experiment_id="exp_abc")
             self.assertEqual(loaded["experiments"], snapshot["experiments"])
-            self.assertIn("captured_at", loaded)
+            self.assertRegex(
+                loaded["captured_at"],
+                re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"),
+            )
             # No leftover temp files from the atomic write.
             leftovers = [p for p in path.parent.iterdir() if p.suffix == ".tmp"]
             self.assertEqual(leftovers, [])

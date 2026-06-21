@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..domain.tool_call_stats import by_tool, tool_call_totals
-from ..utils import now_iso, parse_iso
+from ..utils import format_iso, now_iso, parse_iso
 from .activity import SENSITIVE_KEYS, jsonable, payload_chars
 
 
@@ -410,9 +410,9 @@ class ToolCallStore:
         clauses: list[str] = []
         params: list[Any] = []
         if minutes and minutes > 0:
-            cutoff = (datetime.now(tz=UTC) - timedelta(minutes=minutes)).replace(microsecond=0)
+            cutoff = datetime.now(tz=UTC) - timedelta(minutes=minutes)
             clauses.append("ts >= ?")
-            params.append(cutoff.isoformat().replace("+00:00", "Z"))
+            params.append(format_iso(cutoff))
         if project_id:
             clauses.append("project_id = ?")
             params.append(project_id)

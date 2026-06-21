@@ -14,7 +14,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .utils import ValidationError, parse_iso as _parse_iso
+from .utils import ValidationError, format_iso, parse_iso as _parse_iso
 
 
 VALID_GPUS: frozenset[str] = frozenset(
@@ -232,12 +232,7 @@ def validate_request_inputs(
 
 
 def iso_after(*, seconds: int) -> str:
-    return (
-        (datetime.now(UTC) + timedelta(seconds=seconds))
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return format_iso(datetime.now(UTC) + timedelta(seconds=seconds))
 
 
 def parse_iso(value: Any) -> datetime | None:
