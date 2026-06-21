@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .contracts import AGGREGATE_TOOL_NAMES, CONTROL_PLANE_TOOL_NAMES
+from .tools.contracts import AGGREGATE_TOOL_NAMES, CONTROL_PLANE_TOOL_NAMES
 from .control_runtime import (
     ControlActivitySink,
     ControlMetricsArchive,
@@ -16,13 +16,13 @@ from .control_runtime import (
 from .observability import StructuredLogger
 from .ports.mgmt_keys import MgmtKeyStore
 from .record_core import build_record_core
-from .sandbox_backend import SandboxBackend
+from .sandbox.sandbox_backend import SandboxBackend
 from .services.sandbox.sandboxes import SandboxService
 from .services.workflow import WorkflowService
 from .state import BaseStateStore
 from .state.blobs import BlobStore
-from .tool_facade import ToolDispatcher
-from .tool_handlers import build_control_tool_handlers
+from .tools.tool_facade import ToolDispatcher
+from .tools.tool_handlers import build_control_tool_handlers
 
 
 class ControlApp:

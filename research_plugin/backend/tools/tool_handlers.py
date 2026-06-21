@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .services.experiment_views import slim_experiment_state
+from ..services.experiment_views import slim_experiment_state
 
 
 def _experiment_get_state_agent(

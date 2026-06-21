@@ -23,7 +23,7 @@ from .admin_http import register_admin_routes
 from ..app import ResearchPluginApp
 from .daemon_http import register_daemon_routes
 from ..version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
-from ..contracts import (
+from ..tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     PROJECT_SCOPED_TOOL_NAMES,
     TOOL_CONTRACTS,

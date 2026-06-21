@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..sandbox_support import _safe_name
+from ..sandbox.sandbox_support import _safe_name
 from ..ssh_keys import ensure_ed25519_keypair
 
 

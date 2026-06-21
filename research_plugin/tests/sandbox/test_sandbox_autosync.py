@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.sandbox_autosync import run_auto_sync_target
+from backend.sandbox.sandbox_autosync import run_auto_sync_target
 
 
 class SandboxAutoSyncTest(unittest.TestCase):

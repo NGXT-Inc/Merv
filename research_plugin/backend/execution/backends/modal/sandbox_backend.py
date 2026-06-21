@@ -35,9 +35,9 @@ from backend.execution.usage_metrics import (
     METRICS_SCRIPT,
     parse_metrics,
 )
-from ....sandbox_backend import BackendUnavailableError, BackendValidationError
+from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ....sandbox_backend import (
+from ....sandbox.sandbox_backend import (
     BackendCapabilities,
     OnCreated,
     OnPhase,

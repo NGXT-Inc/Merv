@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 from backend.app import ResearchPluginApp
 from backend.transport.http_api import ResearchHttpApi
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.sandbox_backend import SandboxRequest
+from backend.sandbox.sandbox_backend import SandboxRequest
 from backend.utils import NotFoundError, PermissionDeniedError, ValidationError
 from tests.fakes import FakeProcess, FakeRsyncSyncer, write_fake_mlflow_db
 
@@ -927,7 +927,7 @@ class SandboxServiceTest(unittest.TestCase):
 
     def _require_hardware_selection(self) -> None:
         """Flip the fake backend into Lambda-style bundled-hardware behavior."""
-        from backend.sandbox_backend import BackendCapabilities
+        from backend.sandbox.sandbox_backend import BackendCapabilities
 
         self.backend.capabilities = BackendCapabilities(
             name="fake",

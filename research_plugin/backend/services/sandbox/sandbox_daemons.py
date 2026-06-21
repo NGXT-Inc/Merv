@@ -20,13 +20,13 @@ import threading
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from ...sandbox_backend import SandboxBackend
-from ...sandbox_autosync import run_auto_sync_target
+from ...sandbox.sandbox_backend import SandboxBackend
+from ...sandbox.sandbox_autosync import run_auto_sync_target
 from ...env import env_bool, env_float
 from ...ports.sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
 from ...ports.sandbox_sync import ControlPlaneView
 from .sandbox_registry import SandboxRegistry
-from ...sandbox_support import (
+from ...sandbox.sandbox_support import (
     DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     DEFAULT_REAPER_INTERVAL_SECONDS,
     DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,

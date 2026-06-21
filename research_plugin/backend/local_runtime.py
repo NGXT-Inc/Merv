@@ -12,7 +12,7 @@ from .dataplane.resource_observer import LocalResourceObserver
 from .dataplane.tasks import InProcessTaskChannel
 from .execution import build_sandbox_backend
 from .execution.ssh_rsync import SshRsyncSyncer
-from .sandbox_backend import SandboxBackend
+from .sandbox.sandbox_backend import SandboxBackend
 from .state import ActivityLogger, ToolCallStore
 from .state.blobs import BlobStore, LocalDirBlobStore
 from .state.mgmt_keys import LocalMgmtKeyStore

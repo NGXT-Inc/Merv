@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .domain.vocabulary import (
+from ..domain.vocabulary import (
     RESOURCE_ROLES,
     RESOURCE_TARGET_TYPES,
     REVIEW_VERDICT_VALUES,

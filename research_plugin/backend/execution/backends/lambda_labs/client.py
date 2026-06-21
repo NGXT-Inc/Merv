@@ -7,7 +7,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from ....sandbox_backend import BackendUnavailableError
+from ....sandbox.sandbox_backend import BackendUnavailableError
 from .config import LambdaCloudConfig
 
 

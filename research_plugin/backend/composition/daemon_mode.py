@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
+from ..tools.contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
 from ..control_client import HttpControlPlaneClient
 from ..dataplane import LocalDataPlaneWorker
 from ..dataplane.feed_images import LocalFeedImageReader
@@ -39,7 +39,7 @@ from ..dataplane.remote_view import HttpControlPlaneView
 from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
 from ..execution import build_sandbox_backend
-from ..sandbox_autosync import run_auto_sync_target
+from ..sandbox.sandbox_autosync import run_auto_sync_target
 from ..secret_tokens import mint_secret
 from ..services.sandbox import sandbox_views
 from ..utils import ValidationError

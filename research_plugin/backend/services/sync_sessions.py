@@ -42,7 +42,7 @@ from ..domain.sync_contract import (
 )
 from ..state.store import BaseStateStore, row_to_dict
 from ..utils import PermissionDeniedError, ResearchPluginError, new_id, now_iso
-from ..sandbox_support import iso_after, parse_iso
+from ..sandbox.sandbox_support import iso_after, parse_iso
 from ..ports.sandbox_sync import RunningSandboxRows, RunningSandboxSyncRow, SyncTarget
 
 

@@ -32,7 +32,7 @@ from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
+from .tools.contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
 from .control_client import ControlPlaneUnreachableError
 from .transport.mcp_http import register_mcp_routes
 from .utils import ResearchPluginError, ValidationError

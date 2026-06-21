@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
-from backend.contracts import (
+from backend.tools.contracts import (
     AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
@@ -14,8 +14,8 @@ from backend.contracts import (
 )
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.project_router import ProjectRouter
-from backend.tool_facade import ToolDispatcher
-from backend.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
+from backend.tools.tool_facade import ToolDispatcher
+from backend.tools.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
 
 
 class _HandlerTarget:

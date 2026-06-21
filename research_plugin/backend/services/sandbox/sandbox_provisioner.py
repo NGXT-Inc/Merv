@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from ...sandbox_backend import (
+from ...sandbox.sandbox_backend import (
     BackendPermissionError,
     BackendUnavailableError,
     BackendValidationError,
@@ -39,7 +39,7 @@ from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
 from ...utils import now_iso
 from .sandbox_registry import SandboxRegistry
-from ...sandbox_support import (
+from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     encode_dashboards,
     iso_after,

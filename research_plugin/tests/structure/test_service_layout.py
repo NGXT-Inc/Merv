@@ -506,7 +506,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("class RunningSandboxRows", source)
 
     def test_auto_sync_loops_share_target_step(self) -> None:
-        helper = BACKEND_ROOT / "sandbox_autosync.py"
+        helper = BACKEND_ROOT / "sandbox" / "sandbox_autosync.py"
         daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
         daemon_source = daemon_mode.read_text(encoding="utf-8")
         local_source = _source("sandbox/sandbox_daemons.py")
@@ -868,7 +868,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_transport_uses_contract_capabilities_for_sandbox_lifecycle_specials(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
-        contracts_source = (BACKEND_ROOT / "contracts.py").read_text(encoding="utf-8")
+        contracts_source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
 
         self.assertNotIn('name == "sandbox.get"', source)
         self.assertNotIn('name != "sandbox.get"', source)
@@ -1233,7 +1233,7 @@ class ServiceLayoutTest(unittest.TestCase):
                     )
 
     def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
-        from backend.contracts import ReviewSubmitInput
+        from backend.tools.contracts import ReviewSubmitInput
         from backend.domain.vocabulary import REVIEW_VERDICT_VALUES, REVIEW_VERDICTS
 
         self.assertEqual(REVIEW_VERDICTS, frozenset(REVIEW_VERDICT_VALUES))
@@ -1241,7 +1241,7 @@ class ServiceLayoutTest(unittest.TestCase):
             set(ReviewSubmitInput.model_fields["verdict"].annotation.__args__),
             set(REVIEW_VERDICT_VALUES),
         )
-        source = (BACKEND_ROOT / "contracts.py").read_text(encoding="utf-8")
+        source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
         self.assertIn("REVIEW_VERDICT_VALUES", source)
         self.assertIn("verdict: Literal[*REVIEW_VERDICT_VALUES]", source)
         self.assertNotIn('verdict: Literal["pass", "needs_changes", "fail"]', source)

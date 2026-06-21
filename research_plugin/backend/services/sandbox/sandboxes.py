@@ -64,7 +64,7 @@ from ...utils import (
     ResearchPluginError,
     ValidationError,
 )
-from ...sandbox_backend import (
+from ...sandbox.sandbox_backend import (
     BackendUnavailableError,
     SandboxBackend,
     SandboxRequest,
@@ -82,7 +82,7 @@ from ..transcript_cache import TranscriptCache
 from .sandbox_daemons import SandboxDaemons
 from .sandbox_provisioner import SandboxProvisioner
 from .sandbox_registry import SandboxRegistry
-from ...sandbox_support import (
+from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,

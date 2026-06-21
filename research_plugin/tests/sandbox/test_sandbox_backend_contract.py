@@ -8,7 +8,7 @@ from unittest import mock
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.execution.backends.lambda_labs import LambdaLabsSandboxBackend
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
-from backend.sandbox_backend import (
+from backend.sandbox.sandbox_backend import (
     BackendCapabilities,
     ProvisionedSandbox,
     SandboxBackendBase,

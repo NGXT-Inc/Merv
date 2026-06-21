@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..sandbox_support import SBX_DISPATCHER, _safe_name, _shq
+from ..sandbox.sandbox_support import SBX_DISPATCHER, _safe_name, _shq
 from ..ssh_keys import ensure_ed25519_keypair
 
 

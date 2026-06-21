@@ -1,6 +1,6 @@
 """Sandbox backend factory and compatibility exports.
 
-The backend port lives in ``backend.sandbox_backend``. Backend implementations
+The backend port lives in ``backend.sandbox.sandbox_backend``. Backend implementations
 and their factory live under this execution package.
 """
 
@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from ..sandbox_backend import (
+from ..sandbox.sandbox_backend import (
     SANDBOX_STATES,
     BackendCapabilities,
     BackendPermissionError,

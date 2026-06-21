@@ -22,8 +22,8 @@ from backend.execution.backends.lambda_labs.sandbox_backend import (
     _sandbox_name,
 )
 from backend.execution.backends.lambda_labs.config import LambdaSandboxConfig
-from backend.sandbox_backend import BackendUnavailableError, BackendValidationError
-from backend.sandbox_backend import SandboxRequest
+from backend.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
+from backend.sandbox.sandbox_backend import SandboxRequest
 
 
 INSTANCE_TYPES = {

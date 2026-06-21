@@ -21,8 +21,8 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
-from ..sandbox_backend import SandboxBackend
-from ..sandbox_support import (
+from ..sandbox.sandbox_backend import SandboxBackend
+from ..sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     decode_dashboards,
     encode_dashboards,

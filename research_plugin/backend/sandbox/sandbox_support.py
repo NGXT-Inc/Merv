@@ -13,7 +13,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .utils import ValidationError, format_iso, parse_iso as _parse_iso
+from ..utils import ValidationError, format_iso, parse_iso as _parse_iso
 
 
 VALID_GPUS: frozenset[str] = frozenset(

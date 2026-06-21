@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from ..sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
+from ..sandbox.sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 from ..utils import format_iso
 
 

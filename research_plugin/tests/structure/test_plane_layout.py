@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from typing import Protocol, get_type_hints
 
-from backend.contracts import (
+from backend.tools.contracts import (
     AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
@@ -36,9 +36,9 @@ PORT_MODULES = tuple(sorted(PORTS_ROOT.glob("*.py")))
 CONTROL_MODULES = (
     *DOMAIN_MODULES,
     *PORT_MODULES,
-    BACKEND_ROOT / "sandbox_backend.py",
-    BACKEND_ROOT / "tool_facade.py",
-    BACKEND_ROOT / "tool_handlers.py",
+    BACKEND_ROOT / "sandbox" / "sandbox_backend.py",
+    BACKEND_ROOT / "tools" / "tool_facade.py",
+    BACKEND_ROOT / "tools" / "tool_handlers.py",
     SERVICES_ROOT / "projects.py",
     SERVICES_ROOT / "claims.py",
     SERVICES_ROOT / "experiments.py",
@@ -403,12 +403,12 @@ load("subprocess")
                 )
 
     def test_tool_dispatcher_uses_narrow_permission_policy(self) -> None:
-        from backend.tool_facade import ToolDispatcher, ToolPermissionPolicy
+        from backend.tools.tool_facade import ToolDispatcher, ToolPermissionPolicy
 
         hints = get_type_hints(ToolDispatcher.__init__)
         self.assertIs(hints["permissions"], ToolPermissionPolicy)
         self.assertIn(Protocol, ToolPermissionPolicy.__mro__)
-        path = BACKEND_ROOT / "tool_facade.py"
+        path = BACKEND_ROOT / "tools" / "tool_facade.py"
         source = path.read_text(encoding="utf-8")
         self.assertNotIn("permissions: Any", source)
         self.assertEqual(
@@ -460,7 +460,7 @@ load("subprocess")
                 )
 
     def test_sandbox_backend_port_is_neutral(self) -> None:
-        imports = _import_segments(BACKEND_ROOT / "sandbox_backend.py")
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_backend.py")
         forbidden = imports & {
             "dataplane",
             "execution",
@@ -495,7 +495,7 @@ load("subprocess")
         # Shared sandbox constants/helpers are used by both services and the
         # data plane. Keep this module below both packages so it cannot become
         # a backdoor import path between them.
-        imports = _import_segments(BACKEND_ROOT / "sandbox_support.py")
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_support.py")
         for forbidden in (
             "services",
             "dataplane",
@@ -507,7 +507,7 @@ load("subprocess")
             self.assertNotIn(forbidden, imports)
         code = """
 import sys
-import backend.sandbox_support
+import backend.sandbox.sandbox_support
 for name in (
     "backend.services.sandbox.sandboxes",
     "backend.dataplane.worker",

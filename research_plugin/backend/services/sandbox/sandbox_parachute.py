@@ -9,8 +9,8 @@ from typing import Any
 from ...ports.mgmt_keys import MgmtKeyStore
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
-from ...sandbox_backend import SandboxBackend
-from ...sandbox_support import (
+from ...sandbox.sandbox_backend import SandboxBackend
+from ...sandbox.sandbox_support import (
     PARACHUTE_MAX_OBJECT_BYTES,
     PARACHUTE_TTL_SECONDS,
     iso_after,
