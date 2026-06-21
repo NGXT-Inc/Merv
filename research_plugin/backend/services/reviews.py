@@ -13,13 +13,11 @@ from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from ..utils import new_id
 from ..state.blobs import BlobStore
 from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
-from ..ports.review_targets import (
-    ExperimentReviewTarget,
-    ReviewPolicy,
-    SynthesisReviewTarget,
-)
+from ..ports.review_policy import ReviewPolicy
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..utils import now_iso
+from .experiments import ExperimentService
+from .syntheses import SynthesisService
 
 
 def _hash_capability(capability: str) -> str:
@@ -48,8 +46,8 @@ class ReviewService:
         *,
         store: BaseStateStore,
         permissions: ReviewPolicy,
-        experiments: ExperimentReviewTarget,
-        syntheses: SynthesisReviewTarget,
+        experiments: ExperimentService,
+        syntheses: SynthesisService,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store

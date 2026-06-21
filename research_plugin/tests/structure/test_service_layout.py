@@ -62,6 +62,75 @@ def _class_method_names(path: Path, class_name: str) -> set[str]:
     raise AssertionError(f"{class_name} not found in {path}")
 
 
+def _strict_self_collaborator_call_names(
+    source: str, collaborator: str, allowed_calls: set[str]
+) -> set[str]:
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def enclosing_function(node: ast.AST) -> str | None:
+        parent = parents.get(node)
+        while parent is not None:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return parent.name
+            parent = parents.get(parent)
+        return None
+
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "self"
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == collaborator
+        ):
+            raise AssertionError(
+                f"must not dynamically access self.{collaborator}"
+            )
+        if not isinstance(node, ast.Attribute):
+            continue
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            if node.attr != collaborator:
+                continue
+            parent = parents.get(node)
+            if (
+                isinstance(parent, ast.Assign)
+                and node in parent.targets
+                and enclosing_function(node) == "__init__"
+            ):
+                continue
+            if not isinstance(parent, ast.Attribute):
+                raise AssertionError(
+                    f"self.{collaborator} must only be used for direct method calls"
+                )
+            continue
+        owner = node.value
+        if (
+            isinstance(owner, ast.Attribute)
+            and owner.attr == collaborator
+            and isinstance(owner.value, ast.Name)
+            and owner.value.id == "self"
+        ):
+            if node.attr not in allowed_calls:
+                raise AssertionError(
+                    f"unexpected self.{collaborator}.{node.attr} access"
+                )
+            parent = parents.get(node)
+            if not isinstance(parent, ast.Call) or parent.func is not node:
+                raise AssertionError(
+                    f"self.{collaborator}.{node.attr} must be called directly"
+                )
+            calls.add(node.attr)
+    return calls
+
+
 def _assigned_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names: set[str] = set()
@@ -191,8 +260,8 @@ class ServiceLayoutTest(unittest.TestCase):
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"domain.quota_contract", "typing"},
+            "review_policy.py": {"typing"},
             "resource_records.py": {"typing"},
-            "review_targets.py": {"typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_sync.py": {"typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
@@ -213,6 +282,7 @@ class ServiceLayoutTest(unittest.TestCase):
                     self.assertNotIn(forbidden, source)
         self.assertFalse((PORTS_ROOT / "project_readers.py").exists())
         self.assertFalse((PORTS_ROOT / "reflection_waves.py").exists())
+        self.assertFalse((PORTS_ROOT / "review_targets.py").exists())
         self.assertIn(
             "def sync_targets(self, *, tenant_id: str | None = None)",
             (PORTS_ROOT / "sandbox_sync.py").read_text(encoding="utf-8"),
@@ -452,22 +522,53 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("permissions", imports)
         self.assertNotIn("identity", imports)
         self.assertIn("domain", imports)
-        self.assertIn("review_targets", imports)
+        self.assertIn("review_policy", imports)
         source = _source("reviews.py")
         self.assertIn("permissions: ReviewPolicy", source)
         self.assertNotIn("class ReviewPolicy", source)
 
-    def test_review_service_uses_target_ports(self) -> None:
+    def test_review_service_uses_direct_concrete_targets(self) -> None:
         imports = _import_segments(SERVICES / "reviews.py")
 
-        self.assertNotIn("experiments", imports)
-        self.assertNotIn("syntheses", imports)
-        self.assertIn("review_targets", imports)
+        self.assertIn("experiments", imports)
+        self.assertIn("syntheses", imports)
+        self.assertNotIn("review_targets", imports)
         source = _source("reviews.py")
-        self.assertIn("experiments: ExperimentReviewTarget", source)
-        self.assertIn("syntheses: SynthesisReviewTarget", source)
+        self.assertIn("experiments: ExperimentService", source)
+        self.assertIn("syntheses: SynthesisService", source)
         self.assertNotIn("class ExperimentReviewTarget", source)
         self.assertNotIn("class SynthesisReviewTarget", source)
+        from backend.services.experiments import ExperimentService
+        from backend.services.reviews import ReviewService
+        from backend.services.syntheses import SynthesisService
+
+        hints = get_type_hints(ReviewService.__init__)
+        self.assertIs(hints["experiments"], ExperimentService)
+        self.assertIs(hints["syntheses"], SynthesisService)
+        experiment_calls = {
+            "get_state",
+            "send_back_to_planned",
+            "send_back_to_running",
+            "target_snapshot_id",
+        }
+        synthesis_calls = {
+            "get_state",
+            "send_back_to_reflecting",
+            "send_back_to_synthesizing",
+            "target_snapshot_id",
+        }
+        self.assertEqual(
+            _strict_self_collaborator_call_names(
+                source, "experiments", experiment_calls
+            ),
+            experiment_calls,
+        )
+        self.assertEqual(
+            _strict_self_collaborator_call_names(
+                source, "syntheses", synthesis_calls
+            ),
+            synthesis_calls,
+        )
 
     def test_feed_service_does_not_read_local_image_paths(self) -> None:
         source = _source("feed.py")
