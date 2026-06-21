@@ -29,12 +29,14 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ..app import ResearchPluginApp
 from ..config import build_blob_store, build_state_store
+from ..control_app import ControlApp
 from ..dataplane.http_channel import HttpTaskChannel, HttpTaskQueue
+from ..execution import build_sandbox_backend
 from ..http_api import create_fastapi_app
 from ..services.cleanup import CleanupService
 from ..services.identity import AuthService
+from ..state.mgmt_keys import LocalMgmtKeyStore
 
 
 class ControlPlaneServer:
@@ -48,7 +50,7 @@ class ControlPlaneServer:
     def __init__(
         self,
         *,
-        app: ResearchPluginApp,
+        app: ControlApp,
         task_queue: HttpTaskQueue,
         auth: AuthService,
         cleanup: CleanupService,
@@ -73,7 +75,7 @@ def build_control_app(
     repo_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
-) -> tuple[ResearchPluginApp, HttpTaskQueue, AuthService]:
+) -> tuple[ControlApp, HttpTaskQueue, AuthService]:
     """Build the control-plane app, its daemon task queue, and AuthService.
 
     ``repo_root`` is a throwaway control-side staging dir for the SQLite/blob
@@ -98,13 +100,15 @@ def build_control_app(
     )
     task_queue = HttpTaskQueue()
     task_channel = HttpTaskChannel(queue=task_queue, result_timeout_seconds=result_timeout)
-    app = ResearchPluginApp(
+    if execution_backend is None:
+        execution_backend = build_sandbox_backend(repo_root=staging)
+    app = ControlApp(
         repo_root=staging,
-        db_path=db_path,
         store=store,
         blobs=blobs,
         task_channel=task_channel,
         execution_backend=execution_backend,
+        mgmt_keys=LocalMgmtKeyStore(root=staging / ".research_plugin" / "mgmt_keys"),
     )
     auth = AuthService(store=app.store)
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
@@ -140,7 +144,7 @@ def build_control_server(
     )
 
 
-def _resume_active_sandboxes(*, app: ResearchPluginApp) -> None:
+def _resume_active_sandboxes(*, app: ControlApp) -> None:
     """Reconcile rows left running/provisioning after a control restart.
 
     Mirror of ProjectRouter._resume_active_sandbox_projects for the cloud: the
@@ -171,7 +175,7 @@ def _resume_active_sandboxes(*, app: ResearchPluginApp) -> None:
         pass
 
 
-def _safe_reap(app: ResearchPluginApp) -> None:
+def _safe_reap(app: ControlApp) -> None:
     try:
         app.sandboxes.reap_expired()
     except Exception:  # noqa: BLE001 — the reaper must never die

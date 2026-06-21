@@ -56,6 +56,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "sync_sessions.py",
     SERVICES_ROOT / "metrics_records.py",
     BACKEND_ROOT / "record_core.py",
+    BACKEND_ROOT / "control_app.py",
     BACKEND_ROOT / "state" / "store.py",
     BACKEND_ROOT / "state" / "dialects.py",
 )
@@ -735,6 +736,37 @@ for name in (
             "ssh_rsync",
         ):
             self.assertNotIn(forbidden, _import_segments(BACKEND_ROOT / "record_core.py"))
+
+    def test_control_app_does_not_build_local_runtime(self) -> None:
+        source = (BACKEND_ROOT / "control_app.py").read_text(encoding="utf-8")
+        self.assertIn("class ControlApp:", source)
+        self.assertIn("build_record_core", source)
+        self.assertIn("build_control_tool_handlers", source)
+        self.assertIn(
+            "tool_names=CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES",
+            source,
+        )
+        for forbidden in (
+            "ResearchPluginApp",
+            "build_local_runtime",
+            "build_local_tool_handlers",
+            "LocalDataPlaneWorker",
+            "LocalWorkspace",
+            "LocalFeedImageReader",
+            "LocalResourceObserver",
+            "ToolCallStore",
+            "ActivityLogger",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_control_mode_builds_control_app_not_local_app(self) -> None:
+        source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("from ..control_app import ControlApp", source)
+        self.assertIn("app = ControlApp(", source)
+        self.assertNotIn("ResearchPluginApp", source)
+        self.assertNotIn("build_local_runtime", source)
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
