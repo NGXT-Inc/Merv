@@ -842,10 +842,19 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn("sqlite3.Row", source)
                 self.assertNotIn("import sqlite3", source)
 
-    def test_transport_delegates_sandbox_get_tenant_scope_to_service(self) -> None:
+    def test_transport_uses_contract_capabilities_for_sandbox_lifecycle_specials(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
-        self.assertIn('name != "sandbox.get"', source)
-        marker = 'if surface.enforce_project_scope and name == "sandbox.get":'
+        contracts_source = (BACKEND_ROOT / "contracts.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('name == "sandbox.get"', source)
+        self.assertNotIn('name != "sandbox.get"', source)
+        self.assertNotIn('name == "sandbox.release"', source)
+        self.assertIn("TOOL_CONTRACTS.get(name)", source)
+        self.assertIn("contract.hosted_control_skip_final_pull", source)
+        self.assertIn("contract.tenant_scoped_sandbox_lookup", source)
+        self.assertIn("hosted_control_skip_final_pull=True", contracts_source)
+        self.assertIn("tenant_scoped_sandbox_lookup=True", contracts_source)
+        marker = "if (\n            surface.enforce_project_scope\n            and contract is not None\n            and contract.tenant_scoped_sandbox_lookup"
         start = source.index(marker)
         end = source.index("return result", start)
         block = source[start:end]

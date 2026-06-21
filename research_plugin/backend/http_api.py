@@ -16,13 +16,18 @@ from fastapi import Body, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__
 from .admin_http import register_admin_routes
 from .app import ResearchPluginApp
 from .daemon_http import register_daemon_routes
 from .version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
-from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, SandboxReleaseInput
+from .contracts import (
+    DATA_PLANE_TOOL_NAMES,
+    PROJECT_SCOPED_TOOL_NAMES,
+    TOOL_CONTRACTS,
+)
 from .feed_http import register_feed_routes
 from .project_router import ProjectRouter
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
@@ -917,6 +922,18 @@ def create_fastapi_app(
     ) -> dict[str, Any]:
         arguments = dict(arguments or {})
         context = dict(context or {})
+        contract = TOOL_CONTRACTS.get(name)
+
+        def validated_contract_input() -> Any:
+            assert contract is not None
+            try:
+                return contract.input_model.model_validate(arguments)
+            except PydanticValidationError as exc:
+                raise ValidationError(
+                    "invalid tool arguments",
+                    details={"tool": name, "errors": exc.errors()},
+                ) from exc
+
         if not surface.accept_repo_root_context and context.get("repo_root"):
             raise DataPlaneRequiredError(
                 "repo_root context is local data-plane state; hosted control "
@@ -935,11 +952,15 @@ def create_fastapi_app(
                     "reason": "requires_local_data_plane",
                 },
             )
-        if not surface.release_uses_final_pull and name == "sandbox.release":
+        if (
+            contract is not None
+            and contract.hosted_control_skip_final_pull
+            and not surface.release_uses_final_pull
+        ):
             # Browser/admin release is a control-plane lifecycle action, but a
             # final rsync pull is data-plane work. Hosted calls terminate without
             # the pull; reapers and local/daemon calls still use the full path.
-            request = SandboxReleaseInput.model_validate(arguments)
+            request = validated_contract_input()
             target = api_for_project(request.project_id)
             require_project_scope(
                 target=target,
@@ -995,7 +1016,7 @@ def create_fastapi_app(
             arguments["project_id"] = projects[0]["id"]
         if (
             surface.enforce_project_scope
-            and name != "sandbox.get"
+            and not (contract is not None and contract.tenant_scoped_sandbox_lookup)
             and name in PROJECT_SCOPED_TOOL_NAMES
             and arguments.get("project_id")
         ):
@@ -1004,18 +1025,21 @@ def create_fastapi_app(
                 project_id=str(arguments["project_id"]),
                 principal=principal,
             )
-        if surface.enforce_project_scope and name == "sandbox.get":
-            experiment_id = str(arguments.get("experiment_id") or "")
-            project_id = str(arguments.get("project_id") or "") or None
+        if (
+            surface.enforce_project_scope
+            and contract is not None
+            and contract.tenant_scoped_sandbox_lookup
+        ):
+            request = validated_contract_input()
             result = api.app.sandboxes.get(
-                experiment_id=experiment_id,
-                project_id=project_id,
+                experiment_id=request.experiment_id,
+                project_id=request.project_id,
                 tenant_id=getattr(principal, "tenant_id", "") or "",
                 include_data_plane_enrichment=False,
             )
             if getattr(principal, "client_id", "") == "daemon":
                 result["_experiment_name"] = api.app.sandboxes.registry.experiment_name(
-                    experiment_id=experiment_id
+                    experiment_id=request.experiment_id
                 )
             return result
         return api.app.call_tool(name=name, arguments=arguments, activity_source=activity_source)

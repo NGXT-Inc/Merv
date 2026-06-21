@@ -34,6 +34,8 @@ class ToolContract:
     input_model: type[ContractModel]
     description: str
     plane: ToolPlane = "control"
+    hosted_control_skip_final_pull: bool = False
+    tenant_scoped_sandbox_lookup: bool = False
 
 
 class EmptyInput(ContractModel):
@@ -622,6 +624,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "terminated or expired sandboxes."
         ),
         plane="aggregate",
+        tenant_scoped_sandbox_lookup=True,
     ),
     "sandbox.sync": ToolContract(
         input_model=SandboxSyncInput,
@@ -644,6 +647,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "deliberate file handoff; hosted control cannot perform local "
             "final-pull rsync."
         ),
+        hosted_control_skip_final_pull=True,
     ),
     "sandbox.terminal": ToolContract(
         input_model=SandboxTerminalInput,
