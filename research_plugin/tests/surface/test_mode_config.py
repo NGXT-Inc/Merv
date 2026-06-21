@@ -942,7 +942,7 @@ class ControlModeAuthTest(unittest.TestCase):
         project_id = project.json()["id"]
         self.app.feed.register(project_id=project_id, handle="Nova-7")
 
-        with patch("backend.http_api.MAX_IMAGE_BYTES", 3):
+        with patch("backend.daemon_http.MAX_IMAGE_BYTES", 3):
             resp = daemon_client.post(
                 "/api/daemon/feed/post",
                 json={

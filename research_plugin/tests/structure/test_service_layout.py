@@ -998,6 +998,46 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("arguments must be an object", mcp_source)
         self.assertIn("context must be an object", mcp_source)
 
+    def test_control_daemon_http_routes_are_lifted_out_of_main_factory(self) -> None:
+        source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
+        daemon_source = (BACKEND_ROOT / "daemon_http.py").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            _import_module_names(BACKEND_ROOT / "daemon_http.py"),
+            {
+                "base64",
+                "binascii",
+                "collections.abc",
+                "typing",
+                "fastapi",
+                "services.feed",
+                "utils",
+            },
+        )
+        self.assertIn("register_daemon_routes(", source)
+        self.assertIn("app_for_daemon_project", source)
+        self.assertIn("task_queue=task_queue", source)
+        self.assertIn("sync_targets_source=sync_targets_source", source)
+        self.assertNotIn("def _required_text", source)
+        self.assertNotIn("def _decode_b64_field", source)
+        self.assertNotIn("base64", source)
+        for route in (
+            '"/api/daemon/tasks"',
+            '"/api/daemon/tasks/{task_id}/ack"',
+            '"/api/daemon/resources/validate-association"',
+            '"/api/daemon/resources/observe"',
+            '"/api/daemon/resources/associate"',
+            '"/api/daemon/feed/validate-post"',
+            '"/api/daemon/feed/post"',
+            '"/api/daemon/sandboxes/request"',
+            '"/api/daemon/sandboxes/sync"',
+            '"/api/daemon/sandboxes/metrics"',
+            '"/api/daemon/sync-targets"',
+        ):
+            with self.subTest(route=route):
+                self.assertIn(route, daemon_source)
+                self.assertNotIn(route, source)
+
     def test_transport_delegates_submitted_resource_blob_reads_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
 
