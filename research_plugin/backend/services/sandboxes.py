@@ -52,7 +52,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from ..domain.quota_contract import AdmissionRequest
 from ..domain.sync_contract import remote_experiment_dir
@@ -74,6 +74,7 @@ from ..sandbox_backend import (
 )
 from ..ports.metrics_archive import MetricsArchive
 from ..ports.mgmt_keys import MgmtKeyStore
+from ..ports.quota_admission import QuotaAdmission
 from ..ports.sandbox_lifecycle import ExperimentTransitions
 from ..ports.sandbox_worker import SandboxWorker
 from ..ports.task_channel import TaskChannel
@@ -103,11 +104,6 @@ from .sync_sessions import (
     LeaseService,
     SyncSessionService,
 )
-
-
-class QuotaAdmission(Protocol):
-    def check_admission(self, *, request: AdmissionRequest) -> None:
-        ...
 
 
 class SandboxService:

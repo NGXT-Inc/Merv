@@ -137,6 +137,7 @@ class ServiceLayoutTest(unittest.TestCase):
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
+            "quota_admission.py": {"domain.quota_contract", "typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_sync.py": {"typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
@@ -171,6 +172,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn(
             "ports.mgmt_keys", _import_module_names(SERVICES / "sandbox_mgmt_keys.py")
         )
+        self.assertNotIn("class QuotaAdmission", _source("sandboxes.py"))
         self.assertNotIn("class ControlPlaneView", _source("sandbox_daemons.py"))
         self.assertNotIn("class SyncSessionIssuer", _source("sandbox_provisioner.py"))
         daemon_imports = _import_segments(SERVICES / "sandbox_daemons.py")
