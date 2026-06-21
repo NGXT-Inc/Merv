@@ -10,12 +10,11 @@ filesystem/subprocess work with no sandbox-state knowledge, split out of
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from ..sandbox_support import SBX_DISPATCHER, _safe_name, _shq
-from ..utils import ValidationError
+from ..ssh_keys import ensure_ed25519_keypair
 
 
 class SandboxConnFiles:
@@ -32,38 +31,15 @@ class SandboxConnFiles:
 
     def ensure_keypair(self, *, experiment_id: str) -> tuple[str, Path]:
         key_path = self.key_path(experiment_id=experiment_id)
-        pub_path = key_path.with_suffix(".pub")
-        if key_path.exists() and pub_path.exists():
-            return pub_path.read_text().strip(), key_path
-        self.keys_dir.mkdir(parents=True, exist_ok=True)
-        # Remove a half-written pair before regenerating.
-        for path in (key_path, pub_path):
-            if path.exists():
-                path.unlink()
-        try:
-            subprocess.run(
-                [
-                    "ssh-keygen", "-t", "ed25519", "-N", "", "-q",
-                    "-C", f"research-plugin-{experiment_id}",
-                    "-f", str(key_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:
-            raise ValidationError(
-                "ssh-keygen is required to provision sandbox SSH access but was not found"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            raise ValidationError(
-                f"failed to generate sandbox SSH key: {exc.stderr or exc.stdout or exc}"
-            ) from exc
-        try:
-            os.chmod(key_path, 0o600)
-        except OSError:
-            pass
-        return pub_path.read_text().strip(), key_path
+        return (
+            ensure_ed25519_keypair(
+                key_path=key_path,
+                comment=f"research-plugin-{experiment_id}",
+                missing_action="provision sandbox SSH access",
+                failure_subject="sandbox SSH key",
+            ),
+            key_path,
+        )
 
     # ---------- dispatcher / conn files ----------
 

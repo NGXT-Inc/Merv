@@ -780,21 +780,36 @@ for name in (
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
-        # filesystem/ssh-keygen implementation belongs to composition-state
-        # wiring, not services/.
+        # filesystem key custody adapter belongs to composition-state wiring,
+        # not services/.
         self.assertFalse((SERVICES_ROOT / "sandbox_mgmt_keys.py").exists())
         for path in sorted(SERVICES_ROOT.glob("*.py")):
             with self.subTest(module=path.name):
                 self.assertFalse(_imports_management_key_adapter(path))
                 self.assertNotIn("LocalMgmtKeyStore", path.read_text(encoding="utf-8"))
         imports = _import_segments(BACKEND_ROOT / "state" / "mgmt_keys.py")
-        self.assertIn("subprocess", imports)
+        self.assertIn("ssh_keys", imports)
+        self.assertNotIn("subprocess", imports)
         self.assertNotIn("services", imports)
         self.assertIn("mgmt_keys", _import_segments(BACKEND_ROOT / "local_runtime.py"))
         self.assertNotIn(
             "subprocess",
             _import_segments(BACKEND_ROOT / "state" / "managed_mgmt_keys.py"),
         )
+
+    def test_local_ssh_keygen_is_single_sourced(self) -> None:
+        self.assertEqual(
+            _imports(BACKEND_ROOT / "ssh_keys.py"),
+            {"os", "pathlib", "subprocess", "utils"},
+        )
+        for path in (
+            BACKEND_ROOT / "dataplane" / "sandbox_conn.py",
+            BACKEND_ROOT / "state" / "mgmt_keys.py",
+        ):
+            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
+                self.assertIn("ssh_keys", _import_segments(path))
+                self.assertNotIn("subprocess", _import_segments(path))
+                self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
 
     def test_app_keeps_local_runtime_module_import_lazy(self) -> None:
         # Importing backend.app should not import backend.local_runtime itself.

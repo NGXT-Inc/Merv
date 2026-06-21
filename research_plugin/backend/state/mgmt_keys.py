@@ -8,12 +8,10 @@ control plane can provide a different implementation behind the same port.
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 from ..sandbox_support import _safe_name
-from ..utils import ValidationError
+from ..ssh_keys import ensure_ed25519_keypair
 
 
 class LocalMgmtKeyStore:
@@ -27,46 +25,12 @@ class LocalMgmtKeyStore:
 
     def ensure(self, *, experiment_id: str) -> str:
         key_path = self.key_path(experiment_id=experiment_id)
-        pub_path = key_path.with_suffix(".pub")
-        if key_path.exists() and pub_path.exists():
-            return pub_path.read_text().strip()
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        for path in (key_path, pub_path):
-            if path.exists():
-                path.unlink()
-        try:
-            subprocess.run(
-                [
-                    "ssh-keygen",
-                    "-t",
-                    "ed25519",
-                    "-N",
-                    "",
-                    "-q",
-                    "-C",
-                    f"research-plugin-mgmt-{experiment_id}",
-                    "-f",
-                    str(key_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError as exc:
-            raise ValidationError(
-                "ssh-keygen is required to mint the sandbox management key "
-                "but was not found"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            raise ValidationError(
-                "failed to generate sandbox management key: "
-                f"{exc.stderr or exc.stdout or exc}"
-            ) from exc
-        try:
-            os.chmod(key_path, 0o600)
-        except OSError:
-            pass
-        return pub_path.read_text().strip()
+        return ensure_ed25519_keypair(
+            key_path=key_path,
+            comment=f"research-plugin-mgmt-{experiment_id}",
+            missing_action="mint the sandbox management key",
+            failure_subject="sandbox management key",
+        )
 
     def remove(self, *, experiment_id: str) -> None:
         key_path = self.key_path(experiment_id=experiment_id)
