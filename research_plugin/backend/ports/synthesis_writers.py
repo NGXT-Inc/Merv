@@ -36,3 +36,21 @@ class SynthesisClaimWriter(Protocol):
         rationale: str,
     ) -> str:
         ...
+
+
+class SynthesisExperimentWriter(Protocol):
+    """Experiment writes triggered by a reviewed synthesis change spec."""
+
+    def create_from_synthesis(
+        self,
+        *,
+        conn: Any,
+        project_id: str,
+        synthesis_id: str,
+        name: str,
+        intent: str,
+        claim_ids: list[str],
+        proposal_key: str,
+        parallelism: str,
+    ) -> str:
+        ...

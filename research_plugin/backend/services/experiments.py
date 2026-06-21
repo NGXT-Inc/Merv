@@ -169,6 +169,52 @@ class ExperimentService:
             "creating another experiment."
         )
 
+    def create_from_synthesis(
+        self,
+        *,
+        conn,
+        project_id: str,
+        synthesis_id: str,
+        name: str,
+        intent: str,
+        claim_ids: list[str],
+        proposal_key: str,
+        parallelism: str,
+    ) -> str:
+        name = validate_experiment_name(name)
+        intent = intent.strip()
+        experiment_id = new_id(prefix="exp")
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO experiments
+              (id, project_id, name, intent, status, attempt_index,
+               revision_context, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'planned', 1, '', ?, ?)
+            """,
+            (experiment_id, project_id, name, intent, now, now),
+        )
+        for claim_id in claim_ids:
+            conn.execute(
+                "INSERT INTO experiment_claims (experiment_id, claim_id) VALUES (?, ?)",
+                (experiment_id, claim_id),
+            )
+        self.store.record_event(
+            conn=conn,
+            project_id=project_id,
+            event_type="experiment.created",
+            target_type="experiment",
+            target_id=experiment_id,
+            payload={
+                "name": name,
+                "intent": intent,
+                "source_synthesis_id": synthesis_id,
+                "proposal_key": proposal_key.strip(),
+                "parallelism": parallelism.strip(),
+            },
+        )
+        return experiment_id
+
     def _terminal_experiments_since_last_reflection(
         self, *, conn, project_id: str
     ) -> tuple[int, str | None]:

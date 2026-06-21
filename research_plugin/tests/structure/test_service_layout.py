@@ -379,9 +379,17 @@ class ServiceLayoutTest(unittest.TestCase):
             _class_method_names(synthesis_writer_path, "SynthesisClaimWriter"),
             {"create_from_synthesis", "update_from_synthesis"},
         )
-        from backend.ports.synthesis_writers import SynthesisClaimWriter
+        self.assertEqual(
+            _class_method_names(synthesis_writer_path, "SynthesisExperimentWriter"),
+            {"create_from_synthesis"},
+        )
+        from backend.ports.synthesis_writers import (
+            SynthesisClaimWriter,
+            SynthesisExperimentWriter,
+        )
 
         self.assertIn(Protocol, SynthesisClaimWriter.__mro__)
+        self.assertIn(Protocol, SynthesisExperimentWriter.__mro__)
 
     def test_reflection_policy_service_module_is_a_compatibility_shim(self) -> None:
         self.assertEqual(_import_modules("reflection_policy.py"), {"domain"})
@@ -572,6 +580,10 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_synthesis_service_uses_experiment_name_leaf(self) -> None:
         self.assertNotIn("experiments", _import_segments(SERVICES / "syntheses.py"))
+        source = _source("syntheses.py")
+        self.assertIn("experiment_writer: SynthesisExperimentWriter", source)
+        self.assertNotIn("INSERT INTO experiments", source)
+        self.assertNotIn("experiment_claims", source)
 
     def test_synthesis_service_uses_claim_vocabulary(self) -> None:
         self.assertNotIn("claims", _import_segments(SERVICES / "syntheses.py"))

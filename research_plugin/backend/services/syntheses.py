@@ -38,7 +38,7 @@ from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLES,
     REFLECTION_LENS_DOC_ROLES,
 )
-from ..ports.synthesis_writers import SynthesisClaimWriter
+from ..ports.synthesis_writers import SynthesisClaimWriter, SynthesisExperimentWriter
 from ..state.blobs import BlobStore
 from ..state.store import StateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
@@ -62,10 +62,12 @@ class SynthesisService:
         *,
         store: StateStore,
         claims: SynthesisClaimWriter,
+        experiment_writer: SynthesisExperimentWriter,
         blobs: BlobStore | None = None,
     ) -> None:
         self.store = store
         self.claims = claims
+        self.experiment_writer = experiment_writer
         # Gate lints read submitted (pinned) bytes from here, never the
         # working tree (see services/pinned.py).
         self.blobs = blobs
@@ -1051,23 +1053,17 @@ class SynthesisService:
                 key_to_claim_id.get(ref, ref)
                 for ref in self._claim_refs(proposal)
             ]
-            experiment_id = new_id(prefix="exp")
-            now = now_iso()
-            conn.execute(
-                """
-                INSERT INTO experiments
-                  (id, project_id, name, intent, status, attempt_index,
-                   revision_context, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'planned', 1, '', ?, ?)
-                """,
-                (experiment_id, project_id, name, intent, now, now),
-            )
-            for claim_id in claim_ids:
-                conn.execute(
-                    "INSERT INTO experiment_claims (experiment_id, claim_id) VALUES (?, ?)",
-                    (experiment_id, claim_id),
-                )
             proposal_key = str(proposal.get("key") or "").strip()
+            experiment_id = self.experiment_writer.create_from_synthesis(
+                conn=conn,
+                project_id=project_id,
+                synthesis_id=synthesis_id,
+                name=name,
+                intent=intent,
+                claim_ids=claim_ids,
+                proposal_key=proposal_key,
+                parallelism=str(proposal.get("parallelism") or ""),
+            )
             conn.execute(
                 """
                 INSERT INTO synthesis_experiments
@@ -1076,20 +1072,7 @@ class SynthesisService:
                 """,
                 (synthesis_id, experiment_id, proposal_key, now_iso()),
             )
-            self.store.record_event(
-                conn=conn,
-                project_id=project_id,
-                event_type="experiment.created",
-                target_type="experiment",
-                target_id=experiment_id,
-                payload={
-                    "name": name,
-                    "intent": intent,
-                    "source_synthesis_id": synthesis_id,
-                    "proposal_key": proposal_key,
-                    "parallelism": str(proposal.get("parallelism") or "").strip(),
-                },
-            )
+
     def _current_role_row(self, *, conn, synthesis_id: str, role: str):
         return conn.execute(
             """
