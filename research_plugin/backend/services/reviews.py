@@ -12,6 +12,7 @@ from typing import Any
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from ..utils import new_id
 from ..state.blobs import BlobStore
+from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
 from ..domain.review_returns import resolve_review_return
 from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
@@ -608,17 +609,12 @@ class ReviewService:
     def _validate_role_matches_gate(
         self, *, target_type: str, target_status: str, role: str
     ) -> None:
-        if role in {"human", "automated_check"}:
+        if is_review_gate_exempt(role=role):
             return
-        expected_by_status = (
-            {"synthesis_review": "reflection_reviewer"}
-            if target_type == "synthesis"
-            else {
-                "design_review": "design_reviewer",
-                "experiment_review": "experiment_reviewer",
-            }
+        expected = expected_review_gate_role(
+            target_type=target_type,
+            target_status=target_status,
         )
-        expected = expected_by_status.get(target_status)
         if expected is None:
             raise PermissionDeniedError(f"{target_type} is not currently awaiting {role}")
         if role != expected:
