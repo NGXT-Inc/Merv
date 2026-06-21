@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..domain.tool_call_stats import by_tool, tool_call_totals
-from ..utils import now_iso
+from ..utils import now_iso, parse_iso
 from .activity import SENSITIVE_KEYS, jsonable, payload_chars
 
 
@@ -449,20 +449,10 @@ class ToolCallStore:
         if not minutes or minutes <= 0:
             return True  # "all", but the ring is full → older calls were evicted
         cutoff = datetime.now(tz=UTC) - timedelta(minutes=minutes)
-        oldest = _parse_ts(scoped["o"]) if scoped else None
+        oldest = parse_iso(scoped["o"]) if scoped else None
         # Ring is full AND the oldest still-stored matching call is inside the
         # window → there may be matching calls that were already evicted.
         return oldest is None or oldest >= cutoff
-
-
-def _parse_ts(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def _safe_load(text: str) -> Any:

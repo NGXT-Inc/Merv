@@ -28,7 +28,7 @@ from typing import Any
 
 from ..domain.quota_contract import AdmissionRequest
 from ..state.store import BaseStateStore, row_to_dict
-from ..utils import PermissionDeniedError, now_iso
+from ..utils import PermissionDeniedError, now_iso, parse_iso
 
 # Scope key for the platform-wide kill-switch row (vs a per-tenant scope, which
 # is the tenant id). Tenant ids are opaque strings; '__global__' cannot collide
@@ -200,10 +200,10 @@ class QuotaService:
         gpu_hours = 0.0
         for row in rows:
             data = row_to_dict(row=row) or {}
-            started = _parse_iso(data.get("started_at"))
+            started = parse_iso(data.get("started_at"))
             if started is None:
                 continue
-            ended = _parse_iso(data.get("ended_at")) or now_dt
+            ended = parse_iso(data.get("ended_at")) or now_dt
             hours = max(0.0, (ended - started).total_seconds() / 3600.0)
             gpu_hours += hours
             usd += hours * float(data.get("price_usd_per_hour") or 0.0)
@@ -321,16 +321,6 @@ class QuotaService:
                     "quota": "usd_budget",
                 },
             )
-
-
-def _parse_iso(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
 def _int_or_none(value: Any) -> int | None:

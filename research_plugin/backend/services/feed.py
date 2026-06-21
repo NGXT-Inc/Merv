@@ -25,7 +25,7 @@ from ..domain.feed_images import (
     sniff_image_type,
 )
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
-from ..utils import NotFoundError, ValidationError, new_id, now_iso
+from ..utils import NotFoundError, ValidationError, new_id, now_iso, parse_iso
 from .feed_unfurl import UnfurlError, fetch_preview_image, unfurl
 
 # Hard cap on post text — "old Twitter, not an essay" (Feed_PRD.md open question,
@@ -615,15 +615,10 @@ class FeedService:
 
 
 def _hours_since(iso_ts: str | None) -> float | None:
-    if not iso_ts:
+    parsed = parse_iso(iso_ts)
+    if parsed is None:
         return None
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
-    try:
-        parsed = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - parsed
+    delta = datetime.now(UTC) - parsed
     return max(0.0, delta.total_seconds() / 3600.0)

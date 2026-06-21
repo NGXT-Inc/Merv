@@ -710,6 +710,16 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("def resolve_repo_path", repo_path_source)
         self.assertIn("def repo_relative_path", repo_path_source)
 
+    def test_iso_parsing_is_single_sourced(self) -> None:
+        for path in sorted(BACKEND_ROOT.rglob("*.py")):
+            if path.name == "utils.py":
+                continue
+            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
+                self.assertNotIn(
+                    "fromisoformat",
+                    path.read_text(encoding="utf-8"),
+                )
+
     def test_services_type_against_base_state_store(self) -> None:
         concrete_store_names = {"StateStore", "SqliteStateStore"}
         for path in sorted(SERVICES.glob("*.py")):

@@ -33,6 +33,7 @@ from typing import Any
 
 from .config import resolve_auth_required
 from .state.activity import SENSITIVE_KEYS
+from .utils import parse_iso
 
 
 def _redact(fields: dict[str, Any]) -> dict[str, Any]:
@@ -125,8 +126,8 @@ class TenantCounters:
             conn.close()
         sandbox_hours = 0.0
         for row in gens:
-            started = _parse(row["started_at"] if _has(row, "started_at") else None)
-            ended = _parse(row["ended_at"] if _has(row, "ended_at") else None)
+            started = parse_iso(row["started_at"] if _has(row, "started_at") else None)
+            ended = parse_iso(row["ended_at"] if _has(row, "ended_at") else None)
             if started is not None and ended is not None:
                 sandbox_hours += max(0.0, (ended - started).total_seconds() / 3600.0)
         return {
@@ -142,15 +143,3 @@ def _has(row: Any, key: str) -> bool:
         return key in row.keys()
     except AttributeError:
         return True
-
-
-def _parse(value: Any):
-    from datetime import UTC, datetime
-
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt

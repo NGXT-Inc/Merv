@@ -9,7 +9,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..utils import NotFoundError, PermissionDeniedError, ValidationError
+from ..utils import NotFoundError, PermissionDeniedError, ValidationError, parse_iso
 from ..utils import new_id
 from ..state.blobs import BlobStore
 from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
@@ -602,8 +602,8 @@ class ReviewService:
             raise PermissionDeniedError("invalid reviewer capability")
         if req["status"] not in {"requested", "started"}:
             raise PermissionDeniedError("review request is no longer open")
-        expires = datetime.fromisoformat(str(req["expires_at"]).replace("Z", "+00:00"))
-        if datetime.now(UTC) > expires:
+        expires = parse_iso(req["expires_at"])
+        if expires is None or datetime.now(UTC) > expires:
             raise PermissionDeniedError("reviewer capability expired")
 
     def _validate_return_to(

@@ -26,11 +26,10 @@ import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from ..domain.vocabulary import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
 from ..state.store import BaseStateStore
-from ..utils import now_iso
+from ..utils import now_iso, parse_iso
 
 
 @dataclass(frozen=True)
@@ -169,12 +168,9 @@ class AuthService:
 
 
 def _is_expired(expires_at: object) -> bool:
-    if not expires_at:
+    dt = parse_iso(expires_at)
+    if dt is None:
         return False
-    try:
-        dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+    from datetime import UTC, datetime
+
     return datetime.now(tz=UTC) > dt

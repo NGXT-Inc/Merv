@@ -16,7 +16,7 @@ from .state.activity import (
     redact_sensitive,
     summarize_arguments,
 )
-from .utils import ValidationError, now_iso
+from .utils import ValidationError, now_iso, parse_iso
 
 
 class ControlActivitySink:
@@ -344,8 +344,8 @@ def _tool_call_matches(
 ) -> bool:
     if minutes and minutes > 0:
         cutoff = datetime.now(tz=UTC) - timedelta(minutes=minutes)
-        ts = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
-        if ts < cutoff:
+        ts = parse_iso(row.get("ts"))
+        if ts is None or ts < cutoff:
             return False
     if source and source != "all" and row.get("source") != source:
         return False

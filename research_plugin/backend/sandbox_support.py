@@ -14,7 +14,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .utils import ValidationError
+from .utils import ValidationError, parse_iso as _parse_iso
 
 
 VALID_GPUS: frozenset[str] = frozenset(
@@ -241,13 +241,7 @@ def iso_after(*, seconds: int) -> str:
 
 
 def parse_iso(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    return _parse_iso(value)
 
 
 def env_float(name: str, override: float | None, default: float) -> float:
