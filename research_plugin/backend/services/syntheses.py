@@ -23,6 +23,7 @@ from ..domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
 )
+from ..domain.resource_selection import preferred_associated_resource
 from ..domain.synthesis_gates import (
     CORE_LENSES,
     CORE_LENS_IDS,
@@ -357,6 +358,34 @@ class SynthesisService:
         finally:
             conn.close()
 
+    def project_logic_graph_selection(self, *, project_id: str) -> dict[str, Any]:
+        """Select the current project graph wave and reflection signal.
+
+        The UI prefers the open wave's graph while synthesis is in progress,
+        falling back to the latest published graph when the open wave has not
+        submitted one yet. The transport layer owns response shaping; this
+        service owns the record reads and selection policy.
+        """
+        conn = self.store.connect()
+        try:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            signal = self.reflection_signal(project_id=project_id, conn=conn)
+            synthesis = self.open_synthesis(conn=conn, project_id=project_id)
+            graph_resource = self._project_graph_resource(synthesis=synthesis)
+            if synthesis is None or graph_resource is None:
+                published = self.latest_published(conn=conn, project_id=project_id)
+                published_graph = self._project_graph_resource(synthesis=published)
+                if published is not None and published_graph is not None:
+                    synthesis = published
+                    graph_resource = published_graph
+            return {
+                "signal": signal,
+                "synthesis": synthesis,
+                "graph_resource": graph_resource,
+            }
+        finally:
+            conn.close()
+
     def open_synthesis(self, *, conn, project_id: str) -> dict[str, Any] | None:
         """The one non-terminal wave for the project, fully hydrated, or None."""
         row = conn.execute(
@@ -383,6 +412,18 @@ class SynthesisService:
         if row is None:
             return None
         return self.get_state(synthesis_id=row["id"], conn=conn)
+
+    @staticmethod
+    def _project_graph_resource(
+        *, synthesis: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if synthesis is None:
+            return None
+        return preferred_associated_resource(
+            resources=synthesis.get("resources", []),
+            attempt=synthesis.get("attempt_index"),
+            roles=PROJECT_GRAPH_ROLES,
+        )
 
     def _reflection_coverage(self, *, synthesis: dict[str, Any]) -> dict[str, Any]:
         """Which roster lenses have a current-attempt reflection associated.

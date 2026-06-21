@@ -271,6 +271,12 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "markdown_images"},
         )
 
+    def test_resource_selection_is_domain_leaf_module(self) -> None:
+        self.assertEqual(
+            _import_module_names(DOMAIN_ROOT / "resource_selection.py"),
+            {"typing"},
+        )
+
     def test_ports_are_neutral_and_outside_services(self) -> None:
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
@@ -927,6 +933,17 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("open_synthesis", block)
         self.assertNotIn("latest_published", block)
 
+        start = source.index("    def project_logic_graph(")
+        end = source.index("    def synthesis_graph(", start)
+        block = source[start:end]
+
+        self.assertIn("self.app.syntheses.project_logic_graph_selection", block)
+        self.assertNotIn("self.app.store.connect", block)
+        self.assertNotIn("reflection_signal", block)
+        self.assertNotIn("open_synthesis", block)
+        self.assertNotIn("latest_published", block)
+        self.assertNotIn("def _latest_graph_resource", source)
+
     def test_http_transport_does_not_own_raw_persistence(self) -> None:
         path = BACKEND_ROOT / "http_api.py"
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -961,7 +978,7 @@ class ServiceLayoutTest(unittest.TestCase):
         )
         raw_sql: list[tuple[int, str]] = []
         execute_calls: list[int] = []
-        connect_calls: list[tuple[str, str]] = []
+        connect_calls: list[tuple[str, str, int]] = []
         for node in ast.walk(tree):
             text = stringish(node)
             if text is not None and sql_re.search(text):
@@ -971,12 +988,16 @@ class ServiceLayoutTest(unittest.TestCase):
                     execute_calls.append(node.lineno)
                 if node.func.attr == "connect":
                     connect_calls.append(
-                        (enclosing_function(node) or "<module>", ast.unparse(node.func.value))
+                        (
+                            enclosing_function(node) or "<module>",
+                            ast.unparse(node.func.value),
+                            node.lineno,
+                        )
                     )
 
         self.assertEqual(raw_sql, [])
         self.assertEqual(execute_calls, [])
-        self.assertEqual(connect_calls, [("project_logic_graph", "self.app.store")])
+        self.assertEqual(connect_calls, [])
 
     def test_transport_delegates_graph_ref_resolution_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")

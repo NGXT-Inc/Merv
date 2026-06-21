@@ -27,6 +27,7 @@ from .contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, Sandbox
 from .feed_http import register_feed_routes
 from .project_router import ProjectRouter
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
+from .domain.resource_selection import preferred_associated_resource
 from .domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES
 from .services.figure_view import build_experiment_figure
 from .services.feed import MAX_IMAGE_BYTES
@@ -155,33 +156,6 @@ def _decode_b64_field(
             f"{label} decodes to {len(data)} bytes; limit is {max_decoded_bytes}"
         )
     return data
-
-
-def _latest_graph_resource(
-    *,
-    resources: list[dict[str, Any]],
-    attempt: Any,
-    roles: tuple[str, ...] = ("graph",),
-) -> dict[str, Any] | None:
-    """The graph association to render: current attempt preferred (prior
-    attempts keep the story visible right after an attempt bump), canonical
-    role preferred, most recently associated within that role. Recency matches
-    the transition validator's ORDER BY a.created_seq DESC, so the UI never
-    renders a different file than the gate lints (the association_rowid key
-    kept its historical name when created_seq replaced rowid ordering)."""
-    candidates = [r for r in resources if r.get("association_role") in roles]
-    if not candidates:
-        return None
-    current = [r for r in candidates if r.get("association_attempt_index") == attempt]
-    pool = current or candidates
-    role_rank = {role: index for index, role in enumerate(roles)}
-    return min(
-        pool,
-        key=lambda r: (
-            role_rank.get(str(r.get("association_role")), len(roles)),
-            -(r.get("association_rowid") or 0),
-        ),
-    )
 
 
 class ResearchHttpApi:
@@ -748,8 +722,10 @@ class ResearchHttpApi:
             experiment_id=experiment_id, project_id=project_id
         )
         attempt = experiment.get("attempt_index")
-        chosen = _latest_graph_resource(
-            resources=experiment.get("resources", []), attempt=attempt
+        chosen = preferred_associated_resource(
+            resources=experiment.get("resources", []),
+            attempt=attempt,
+            roles=("graph",),
         )
         base = {
             "experiment_id": experiment_id,
@@ -805,18 +781,12 @@ class ResearchHttpApi:
         payload shape as the per-experiment graph endpoint so the UI renders
         both through one component.
         """
-        conn = self.app.store.connect()
-        try:
-            signal = self.app.syntheses.reflection_signal(project_id=project_id, conn=conn)
-            synthesis = self.app.syntheses.open_synthesis(conn=conn, project_id=project_id)
-            if synthesis is None or not self._synthesis_graph_resource(synthesis=synthesis):
-                published = self.app.syntheses.latest_published(conn=conn, project_id=project_id)
-                if published is not None and self._synthesis_graph_resource(synthesis=published):
-                    synthesis = published
-        finally:
-            conn.close()
+        selection = self.app.syntheses.project_logic_graph_selection(project_id=project_id)
         return self._graph_payload_for_synthesis(
-            project_id=project_id, synthesis=synthesis, extra_base={"signal": signal}
+            project_id=project_id,
+            synthesis=selection.get("synthesis"),
+            graph_resource=selection.get("graph_resource"),
+            extra_base={"signal": selection.get("signal")},
         )
 
     def synthesis_graph(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
@@ -838,6 +808,7 @@ class ResearchHttpApi:
         *,
         project_id: str,
         synthesis: dict[str, Any] | None,
+        graph_resource: dict[str, Any] | None = None,
         extra_base: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Shared graph shaping for the project-current and per-wave endpoints:
@@ -846,7 +817,9 @@ class ResearchHttpApi:
         component renders. `extra_base` injects endpoint-specific fields (the
         project-current endpoint adds the staleness `signal`)."""
         base: dict[str, Any] = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
-        chosen = self._synthesis_graph_resource(synthesis=synthesis) if synthesis else None
+        chosen = graph_resource or (
+            self._synthesis_graph_resource(synthesis=synthesis) if synthesis else None
+        )
         if synthesis is None or chosen is None:
             return {**base, "available": False, "synthesis": None, "graph": None, "problems": []}
         base["synthesis"] = {
@@ -902,7 +875,7 @@ class ResearchHttpApi:
         the prior-attempt fallback the experiment endpoint also uses."""
         if synthesis is None:
             return None
-        return _latest_graph_resource(
+        return preferred_associated_resource(
             resources=synthesis.get("resources", []),
             attempt=synthesis.get("attempt_index"),
             roles=PROJECT_GRAPH_ROLES,
