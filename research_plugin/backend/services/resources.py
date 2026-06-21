@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 from ..ports.resource_records import ResourceAssociationPolicy
 from ..state.blobs import BlobStore
-from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..state.store import (
+    BaseStateStore,
+    Connection,
+    Row,
+    next_created_seq,
+    row_to_dict,
+    rows_to_dicts,
+)
 from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 
@@ -365,7 +371,7 @@ class ResourceService:
         resource_id: str,
         project_id: str | None = None,
         include_history: bool = False,
-        conn: sqlite3.Connection | None = None,
+        conn: Connection | None = None,
     ) -> dict[str, Any]:
         """Resolve one registered resource.
 
@@ -421,7 +427,9 @@ class ResourceService:
         finally:
             conn.close()
 
-    def resources_for_target(self, *, conn: sqlite3.Connection, target_type: str, target_id: str) -> list[dict[str, Any]]:
+    def resources_for_target(
+        self, *, conn: Connection, target_type: str, target_id: str
+    ) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT r.*, a.role AS association_role, a.attempt_index AS association_attempt_index,
@@ -527,7 +535,7 @@ class ResourceService:
     )
 
     def _hydrate_resource(
-        self, *, row: sqlite3.Row, conn: sqlite3.Connection, compact: bool = False
+        self, *, row: Row, conn: Connection, compact: bool = False
     ) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
         if compact:
@@ -577,7 +585,9 @@ class ResourceService:
         if os.path.isabs(link):
             raise ValidationError("figure links must be repo-relative")
 
-    def _ensure_target_exists(self, *, conn: sqlite3.Connection, target_type: str, target_id: str) -> str | None:
+    def _ensure_target_exists(
+        self, *, conn: Connection, target_type: str, target_id: str
+    ) -> str | None:
         table_by_type = {
             "experiment": "experiments",
             "synthesis": "syntheses",
@@ -595,7 +605,9 @@ class ResourceService:
             raise NotFoundError(f"{target_type} not found: {target_id}")
         return str(row["project_id"])
 
-    def _association_attempt_index(self, *, conn: sqlite3.Connection, target_type: str, target_id: str) -> int:
+    def _association_attempt_index(
+        self, *, conn: Connection, target_type: str, target_id: str
+    ) -> int:
         # Experiments and syntheses both scope associations to their current
         # attempt, so a review rejection that bumps the attempt naturally
         # invalidates stale associations for either target kind.
@@ -611,8 +623,8 @@ class ResourceService:
     def _capture_submitted_gated_blob(
         self,
         *,
-        conn: sqlite3.Connection,
-        resource: sqlite3.Row,
+        conn: Connection,
+        resource: Row,
         role: str,
         version_id: str,
         project_id: str,
@@ -664,7 +676,7 @@ class ResourceService:
     def _capture_submitted_markdown_figures(
         self,
         *,
-        conn: sqlite3.Connection,
+        conn: Connection,
         version_id: str,
         project_id: str,
         markdown_text: str,
@@ -701,7 +713,7 @@ class ResourceService:
     def _associate_version(
         self,
         *,
-        conn: sqlite3.Connection,
+        conn: Connection,
         project_id: str,
         resource_id: str,
         version_id: str,
@@ -767,7 +779,7 @@ class ResourceService:
     def _snapshot_version_record(
         self,
         *,
-        conn: sqlite3.Connection,
+        conn: Connection,
         resource_id: str,
         project_id: str,
         rel_path: str,
@@ -822,7 +834,9 @@ class ResourceService:
         row = conn.execute("SELECT * FROM resource_versions WHERE id = ?", (version_id,)).fetchone()
         return self._hydrate_version(row=row, conn=conn)
 
-    def _hydrate_version(self, *, row: sqlite3.Row | None, conn: sqlite3.Connection) -> dict[str, Any]:
+    def _hydrate_version(
+        self, *, row: Row | None, conn: Connection
+    ) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
         if not data:
             return data
@@ -842,7 +856,9 @@ class ResourceService:
         data["associations"] = associations
         return data
 
-    def _get_version(self, *, conn: sqlite3.Connection, project_id: str, resource_id: str, version_id: str) -> dict[str, Any]:
+    def _get_version(
+        self, *, conn: Connection, project_id: str, resource_id: str, version_id: str
+    ) -> dict[str, Any]:
         resource = conn.execute("SELECT id FROM resources WHERE id = ? AND project_id = ?", (resource_id, project_id)).fetchone()
         if resource is None:
             raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")

@@ -703,6 +703,38 @@ class ServiceLayoutTest(unittest.TestCase):
                             "services should type store dependencies against BaseStateStore",
                         )
 
+    def test_store_contract_uses_neutral_connection_types(self) -> None:
+        source = (BACKEND_ROOT / "state" / "store.py").read_text(encoding="utf-8")
+        base_source = source[
+            source.index("class BaseStateStore:"):source.index("class StateStore(")
+        ]
+        self.assertIn("class Row(Protocol)", source)
+        self.assertIn("class ResultCursor(Protocol)", source)
+        self.assertIn("class Connection(Protocol)", source)
+        self.assertIn("def connect(self) -> Connection:", base_source)
+        self.assertIn(
+            "def transaction(self) -> Iterator[Connection]:", base_source
+        )
+        self.assertIn("parameters: Sequence[Any] = ()", source)
+        self.assertIn("def __enter__(self) -> Connection:", source)
+        self.assertIn("tb: TracebackType | None", source)
+        self.assertNotIn("sqlite3.", base_source)
+        self.assertIn("def next_created_seq(*, conn: Connection", source)
+        self.assertIn("row: Row | Mapping[str, Any] | None", source)
+
+        from backend.state.store import Connection, ResultCursor, Row
+
+        for protocol in (Row, ResultCursor, Connection):
+            self.assertIn(Protocol, protocol.__mro__)
+
+    def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
+        for name in ("pinned.py", "resources.py", "sandboxes.py"):
+            with self.subTest(module=name):
+                source = _source(name)
+                self.assertNotIn("sqlite3.Connection", source)
+                self.assertNotIn("sqlite3.Row", source)
+                self.assertNotIn("import sqlite3", source)
+
     def test_transport_delegates_sandbox_get_tenant_scope_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
         self.assertIn('name != "sandbox.get"', source)

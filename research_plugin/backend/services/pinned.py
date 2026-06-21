@@ -14,10 +14,10 @@ or live content.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from ..state.blobs import BlobStore
+from ..state.store import Connection
 from ..utils import NotFoundError, WorkflowError
 
 
@@ -30,7 +30,7 @@ def resubmit_hint(*, role: str, path: str) -> str:
 
 def pinned_artifact_text(
     *,
-    conn: sqlite3.Connection,
+    conn: Connection,
     blobs: BlobStore,
     target_type: str,
     target_id: str,
@@ -79,7 +79,7 @@ def pinned_artifact_text(
 
 def pinned_text_for_version(
     *,
-    conn: sqlite3.Connection,
+    conn: Connection,
     blobs: BlobStore,
     version_id: str,
     what: str,
@@ -113,7 +113,7 @@ def pinned_text_for_version(
 
 def pinned_version_row(
     *,
-    conn: sqlite3.Connection,
+    conn: Connection,
     target_type: str,
     target_id: str,
     role: str,

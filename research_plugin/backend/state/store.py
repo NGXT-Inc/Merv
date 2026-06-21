@@ -11,14 +11,64 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Protocol
 
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
 from ..utils import now_iso
+
+
+class Row(Protocol):
+    """Mapping-shaped database row shared by the SQLite and Postgres dialects."""
+
+    def __getitem__(self, key: str) -> Any:
+        ...
+
+    def keys(self) -> Iterable[str]:
+        ...
+
+
+class ResultCursor(Protocol):
+    """Cursor result surface used by record services."""
+
+    def fetchone(self) -> Row | Mapping[str, Any] | None:
+        ...
+
+    def fetchall(self) -> list[Row | Mapping[str, Any]]:
+        ...
+
+
+class Connection(Protocol):
+    """Small database connection surface exposed through ``BaseStateStore``."""
+
+    def execute(
+        self, sql: str, parameters: Sequence[Any] = ()
+    ) -> ResultCursor:
+        ...
+
+    def __enter__(self) -> Connection:
+        ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        ...
+
+    def commit(self) -> None:
+        ...
+
+    def rollback(self) -> None:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 SCHEMA = """
@@ -523,14 +573,14 @@ class BaseStateStore:
     that runs unchanged on both dialects.
     """
 
-    def connect(self) -> sqlite3.Connection:
+    def connect(self) -> Connection:
         raise NotImplementedError
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self) -> Iterator[Connection]:
         raise NotImplementedError
 
-    def _apply_migrations(self, *, conn: sqlite3.Connection) -> None:
+    def _apply_migrations(self, *, conn: Connection) -> None:
         """Apply unapplied ledger migrations in order, recording each."""
         applied = {
             int(row["version"])
@@ -548,7 +598,7 @@ class BaseStateStore:
                 (version, name, now_iso()),
             )
 
-    def _ensure_sandbox_tenant_id(self, *, conn: sqlite3.Connection) -> None:
+    def _ensure_sandbox_tenant_id(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="sandboxes", column="tenant_id"):
             conn.execute(
                 "ALTER TABLE sandboxes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'local'"
@@ -565,7 +615,7 @@ class BaseStateStore:
             """
         )
 
-    def _has_column(self, *, conn: sqlite3.Connection, table: str, column: str) -> bool:
+    def _has_column(self, *, conn: Connection, table: str, column: str) -> bool:
         try:
             rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
             if rows:
@@ -585,7 +635,7 @@ class BaseStateStore:
     def require_project_id(
         self,
         *,
-        conn: sqlite3.Connection,
+        conn: Connection,
         project_id: str | None,
         tenant_id: str | None = None,
     ) -> str:
@@ -616,7 +666,7 @@ class BaseStateStore:
     def record_event(
         self,
         *,
-        conn: sqlite3.Connection,
+        conn: Connection,
         project_id: str,
         event_type: str,
         target_type: str = "",
@@ -1092,7 +1142,7 @@ class StateStore(BaseStateStore):
 SqliteStateStore = StateStore
 
 
-def next_created_seq(*, conn: sqlite3.Connection, table: str) -> int:
+def next_created_seq(*, conn: Connection, table: str) -> int:
     """The next insertion-order value for ``table`` (see created_seq columns).
 
     MAX+1 inside the caller's open write transaction is race-free under the
@@ -1106,12 +1156,14 @@ def next_created_seq(*, conn: sqlite3.Connection, table: str) -> int:
     return int(row["next_seq"])
 
 
-def row_to_dict(*, row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | None:
+def row_to_dict(*, row: Row | Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Plain dict from a row of either dialect (sqlite3.Row or mapping)."""
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
 
 
-def rows_to_dicts(*, rows: list[sqlite3.Row] | list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def rows_to_dicts(
+    *, rows: Iterable[Row | Mapping[str, Any]]
+) -> list[dict[str, Any]]:
     return [row_to_dict(row=row) or {} for row in rows]

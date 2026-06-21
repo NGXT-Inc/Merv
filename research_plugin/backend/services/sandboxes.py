@@ -48,7 +48,6 @@ rows; the HTTP layer shapes the UI responses from `get_row`/`rows`/
 from __future__ import annotations
 
 import contextlib
-import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -59,7 +58,7 @@ from ..domain.sync_contract import remote_experiment_dir
 
 from ..state.activity import ActivityLogger
 from ..state.blobs import BlobStore
-from ..state.store import BaseStateStore, row_to_dict
+from ..state.store import BaseStateStore, Connection, row_to_dict
 from ..utils import (
     NotFoundError,
     PermissionDeniedError,
@@ -1473,7 +1472,7 @@ class SandboxService:
         )
 
     def _row_view(
-        self, *, row: dict[str, Any], conn: sqlite3.Connection | None = None
+        self, *, row: dict[str, Any], conn: Connection | None = None
     ) -> dict[str, Any]:
         experiment_id = str(row.get("experiment_id") or "")
         row = self.worker.merge_local_dashboards(row=row)
@@ -1488,7 +1487,7 @@ class SandboxService:
         )
 
     def _experiment_name(
-        self, *, experiment_id: str, conn: sqlite3.Connection | None = None
+        self, *, experiment_id: str, conn: Connection | None = None
     ) -> str:
         # Conn-scoped callers (workflow status) resolve the folder name on
         # their own connection instead of opening a fresh one per row.

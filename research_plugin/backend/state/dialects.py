@@ -32,9 +32,10 @@ import hashlib
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from types import TracebackType
 from typing import Any
 
-from .store import MIGRATIONS, SCHEMA, BaseStateStore
+from .store import MIGRATIONS, SCHEMA, BaseStateStore, Connection
 
 
 def translate_schema_to_postgres(schema_sql: str) -> str:
@@ -88,7 +89,7 @@ class PostgresConnection:
     def __init__(self, raw: Any) -> None:
         self._raw = raw
 
-    def execute(self, sql: str, parameters: Sequence[Any] | None = None) -> Any:
+    def execute(self, sql: str, parameters: Sequence[Any] = ()) -> Any:
         translated = sql.replace("?", "%s")
         if parameters:
             return self._raw.execute(translated, tuple(parameters))
@@ -96,6 +97,20 @@ class PostgresConnection:
         # multi-statement strings (the translated SCHEMA — the executescript
         # analog) execute in one round trip.
         return self._raw.execute(translated)
+
+    def __enter__(self) -> Connection:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
 
     def commit(self) -> None:
         # Autocommit means reads/writes outside transaction() are already
@@ -134,13 +149,13 @@ class PostgresStateStore(BaseStateStore):
         )
         self._initialize()
 
-    def connect(self) -> Any:
+    def connect(self) -> Connection:
         psycopg, dict_row = _psycopg()
         raw = psycopg.connect(self.dsn, row_factory=dict_row, autocommit=True)
         return PostgresConnection(raw)
 
     @contextmanager
-    def transaction(self) -> Iterator[Any]:
+    def transaction(self) -> Iterator[Connection]:
         conn = self.connect()
         try:
             conn.execute("BEGIN")
