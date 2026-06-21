@@ -557,6 +557,20 @@ class ServiceLayoutTest(unittest.TestCase):
                     f"domain modules must stay independent of backend layers: {sorted(forbidden)}",
                 )
 
+    def test_utils_stays_free_of_local_path_guards(self) -> None:
+        path = BACKEND_ROOT / "utils.py"
+        self.assertEqual(_import_module_names(path), {"datetime", "uuid"})
+        source = path.read_text(encoding="utf-8")
+        self.assertNotIn("resolve_repo_relative_file", source)
+        self.assertNotIn("pathlib", source)
+        self.assertNotIn("os.path", source)
+
+        repo_paths = BACKEND_ROOT / "dataplane" / "repo_paths.py"
+        self.assertEqual(_import_module_names(repo_paths), {"pathlib", "typing", "utils"})
+        repo_path_source = repo_paths.read_text(encoding="utf-8")
+        self.assertIn("def resolve_repo_path", repo_path_source)
+        self.assertIn("def repo_relative_path", repo_path_source)
+
     def test_vocabulary_imports_bypass_permission_service(self) -> None:
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             if path == SERVICES / "permissions.py":
