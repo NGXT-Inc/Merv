@@ -7,12 +7,17 @@ import hmac
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any
 
 from ..utils import NotFoundError, PermissionDeniedError, ValidationError
 from ..utils import new_id
 from ..state.blobs import BlobStore
 from ..domain.vocabulary import GATED_ROLES
+from ..ports.review_targets import (
+    ExperimentReviewTarget,
+    ReviewPolicy,
+    SynthesisReviewTarget,
+)
 from .identity import LOCAL_TENANT_ID
 from ..state.store import StateStore, next_created_seq, row_to_dict
 from ..utils import now_iso
@@ -27,62 +32,6 @@ def _hash_capability(capability: str) -> str:
     presented token and compares with hmac.compare_digest.
     """
     return hashlib.sha256(capability.encode("utf-8")).hexdigest()
-
-
-class ReviewPolicy(Protocol):
-    def validate_review_role(self, *, role: str) -> None:
-        ...
-
-    def validate_review_verdict(self, *, verdict: str) -> None:
-        ...
-
-
-class ExperimentReviewTarget(Protocol):
-    def get_state(
-        self,
-        *,
-        experiment_id: str,
-        project_id: str | None = None,
-        conn: Any | None = None,
-    ) -> dict[str, Any]:
-        ...
-
-    def target_snapshot_id(self, *, conn: Any, experiment_id: str) -> str:
-        ...
-
-    def send_back_to_running(
-        self, *, conn: Any, experiment_id: str, revision_context: str
-    ) -> None:
-        ...
-
-    def send_back_to_planned(
-        self, *, conn: Any, experiment_id: str, revision_context: str
-    ) -> None:
-        ...
-
-
-class SynthesisReviewTarget(Protocol):
-    def get_state(
-        self,
-        *,
-        synthesis_id: str,
-        project_id: str | None = None,
-        conn: Any | None = None,
-    ) -> dict[str, Any]:
-        ...
-
-    def target_snapshot_id(self, *, conn: Any, synthesis_id: str) -> str:
-        ...
-
-    def send_back_to_reflecting(
-        self, *, conn: Any, synthesis_id: str, revision_context: str
-    ) -> None:
-        ...
-
-    def send_back_to_synthesizing(
-        self, *, conn: Any, synthesis_id: str, revision_context: str
-    ) -> None:
-        ...
 
 
 class ReviewService:

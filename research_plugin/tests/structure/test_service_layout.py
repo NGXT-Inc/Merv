@@ -133,11 +133,12 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "markdown_images"},
         )
 
-    def test_sandbox_ports_are_neutral_and_outside_services(self) -> None:
+    def test_ports_are_neutral_and_outside_services(self) -> None:
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"domain.quota_contract", "typing"},
+            "review_targets.py": {"typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_sync.py": {"typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
@@ -213,13 +214,24 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("permissions", _import_segments(SERVICES / "resources.py"))
 
     def test_review_service_uses_permission_port(self) -> None:
-        self.assertNotIn("permissions", _import_segments(SERVICES / "reviews.py"))
+        imports = _import_segments(SERVICES / "reviews.py")
+        self.assertNotIn("permissions", imports)
+        self.assertIn("review_targets", imports)
+        source = _source("reviews.py")
+        self.assertIn("permissions: ReviewPolicy", source)
+        self.assertNotIn("class ReviewPolicy", source)
 
     def test_review_service_uses_target_ports(self) -> None:
         imports = _import_segments(SERVICES / "reviews.py")
 
         self.assertNotIn("experiments", imports)
         self.assertNotIn("syntheses", imports)
+        self.assertIn("review_targets", imports)
+        source = _source("reviews.py")
+        self.assertIn("experiments: ExperimentReviewTarget", source)
+        self.assertIn("syntheses: SynthesisReviewTarget", source)
+        self.assertNotIn("class ExperimentReviewTarget", source)
+        self.assertNotIn("class SynthesisReviewTarget", source)
 
     def test_feed_service_does_not_read_local_image_paths(self) -> None:
         source = _source("feed.py")
