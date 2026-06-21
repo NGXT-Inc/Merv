@@ -242,6 +242,20 @@ class ServiceLayoutTest(unittest.TestCase):
         ):
             self.assertNotIn(protocol_name, source)
         self.assertIn("experiments: ExperimentWorkflowReader", source)
+        workflow_reader_path = PORTS_ROOT / "workflow_readers.py"
+        for collaborator, protocol_name in (
+            ("experiments", "ExperimentWorkflowReader"),
+            ("reviews", "ReviewWorkflowReader"),
+            ("sandboxes", "SandboxWorkflowReader"),
+            ("syntheses", "ReflectionWorkflowReader"),
+        ):
+            allowed_calls = _class_method_names(workflow_reader_path, protocol_name)
+            self.assertEqual(
+                _strict_self_collaborator_call_names(
+                    source, collaborator, allowed_calls
+                ),
+                allowed_calls,
+            )
 
         from backend.services.workflow import WorkflowService
 
@@ -369,23 +383,20 @@ class ServiceLayoutTest(unittest.TestCase):
             "class ReflectionWorkflowReader",
         ):
             self.assertIn(class_name, workflow_reader_source)
-        workflow_reader_path = PORTS_ROOT / "workflow_readers.py"
-        self.assertEqual(
-            _class_method_names(workflow_reader_path, "ExperimentWorkflowReader"),
-            {"get_state", "validator_problems"},
+        from backend.ports.workflow_readers import (
+            ExperimentWorkflowReader,
+            ReflectionWorkflowReader,
+            ReviewWorkflowReader,
+            SandboxWorkflowReader,
         )
-        self.assertEqual(
-            _class_method_names(workflow_reader_path, "ReviewWorkflowReader"),
-            {"latest_verdict", "open_request"},
-        )
-        self.assertEqual(
-            _class_method_names(workflow_reader_path, "SandboxWorkflowReader"),
-            {"sandboxes_for_experiment", "sandboxes_for_project"},
-        )
-        self.assertEqual(
-            _class_method_names(workflow_reader_path, "ReflectionWorkflowReader"),
-            {"open_synthesis", "reflection_signal"},
-        )
+
+        for reader in (
+            ExperimentWorkflowReader,
+            ReviewWorkflowReader,
+            SandboxWorkflowReader,
+            ReflectionWorkflowReader,
+        ):
+            self.assertIn(Protocol, reader.__mro__)
         resource_record_path = PORTS_ROOT / "resource_records.py"
         resource_record_source = resource_record_path.read_text(encoding="utf-8")
         self.assertIn("class ResourceObservation", resource_record_source)
@@ -543,6 +554,9 @@ class ServiceLayoutTest(unittest.TestCase):
         source = _source("reviews.py")
         self.assertIn("permissions: ReviewPolicy", source)
         self.assertNotIn("class ReviewPolicy", source)
+        from backend.ports.review_policy import ReviewPolicy
+
+        self.assertIn(Protocol, ReviewPolicy.__mro__)
 
     def test_review_return_policy_is_domain_leaf_module(self) -> None:
         self.assertEqual(
