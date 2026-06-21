@@ -5,23 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .services.claims import ClaimService
-from .services.experiments import ExperimentService
-from .services.feed import FeedService
-from .services.graph_refs import GraphRefResolver
-from .services.permissions import PermissionService
-from .services.project_overview import ProjectOverviewService
-from .services.quotas import QuotaService
-from .services.reflection_tools import ReflectionToolService
-from .services.projects import ProjectService
-from .services.resources import ResourceService
-from .services.reviews import ReviewService
 from .services.sandboxes import SandboxService
-from .services.syntheses import SynthesisService
 from .services.workflow import WorkflowService
 from .state import BaseStateStore, StateStore
 from .state.blobs import BlobStore
 from .observability import StructuredLogger
+from .record_core import build_record_core
 from .tool_facade import ToolDispatcher
 from .tool_handlers import build_local_tool_handlers
 from .utils import ValidationError
@@ -84,8 +73,6 @@ class ResearchPluginApp:
         # line per tool call / HTTP request to stdout, in control mode only.
         # Dormant (disabled) in local mode, so behavior is byte-identical.
         self.structured_logger = StructuredLogger()
-        self.permissions = PermissionService()
-        self.quotas = QuotaService(store=self.store)
         # Content-addressed store for gated-artifact bytes (and figures and
         # parachute objects). Local mode roots it next to the state DB; the
         # control composition injects an S3BlobStore (Phase 8). Same protocol,
@@ -96,41 +83,22 @@ class ResearchPluginApp:
         self.feed_image_reader = runtime.feed_image_reader
         self.resource_artifact_reader = runtime.resource_artifact_reader
         self.resource_observer = runtime.resource_observer
-        self.projects = ProjectService(store=self.store)
-        self.claims = ClaimService(store=self.store)
-        self.experiments = ExperimentService(
-            store=self.store,
-            blobs=self.blobs,
-        )
-        self.resources = ResourceService(
-            store=self.store,
-            permissions=self.permissions,
-            blobs=self.blobs,
-        )
-        self.graph_refs = GraphRefResolver(store=self.store)
+        self.record_core = build_record_core(store=self.store, blobs=self.blobs)
+        self.permissions = self.record_core.permissions
+        self.quotas = self.record_core.quotas
+        self.projects = self.record_core.projects
+        self.claims = self.record_core.claims
+        self.experiments = self.record_core.experiments
+        self.resources = self.record_core.resources
+        self.graph_refs = self.record_core.graph_refs
+        self.syntheses = self.record_core.syntheses
+        self.reflections = self.record_core.reflections
+        self.project_overview = self.record_core.project_overview
+        self.reviews = self.record_core.reviews
+        self.feed = self.record_core.feed
         # One-time local upgrade: capture bytes for gated associations made
         # before byte capture existed (idempotent, skips present blobs).
         self._backfill_gated_blobs()
-        self.syntheses = SynthesisService(
-            store=self.store,
-            claims=self.claims,
-            experiment_writer=self.experiments,
-            project_writer=self.projects,
-            blobs=self.blobs,
-        )
-        self.reflections = ReflectionToolService(syntheses=self.syntheses)
-        self.project_overview = ProjectOverviewService(
-            store=self.store,
-            projects=self.projects,
-            syntheses=self.syntheses,
-        )
-        self.reviews = ReviewService(
-            store=self.store,
-            permissions=self.permissions,
-            experiments=self.experiments,
-            syntheses=self.syntheses,
-            blobs=self.blobs,
-        )
         self.sandboxes = SandboxService(
             store=self.store,
             sandbox_backend=self.execution_backend,
@@ -159,13 +127,6 @@ class ResearchPluginApp:
             reviews=self.reviews,
             sandboxes=self.sandboxes,
             syntheses=self.syntheses,
-        )
-        # Feed (Feed_PRD.md) is a self-contained module: it owns its schema,
-        # tools, HTTP routes, and UI, and nothing in the research workflow
-        # depends on it. Constructed here purely as a composition-root wiring.
-        self.feed = FeedService(
-            store=self.store,
-            blobs=self.blobs,
         )
         self.tools = ToolDispatcher(
             handlers=build_local_tool_handlers(

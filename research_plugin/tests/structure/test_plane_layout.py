@@ -55,6 +55,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "feed.py",
     SERVICES_ROOT / "sync_sessions.py",
     SERVICES_ROOT / "metrics_records.py",
+    BACKEND_ROOT / "record_core.py",
     BACKEND_ROOT / "state" / "store.py",
     BACKEND_ROOT / "state" / "dialects.py",
 )
@@ -668,6 +669,35 @@ for name in (
             "build_sandbox_backend",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_app_uses_record_core_builder_for_record_services(self) -> None:
+        app_source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
+        record_source = (BACKEND_ROOT / "record_core.py").read_text(encoding="utf-8")
+
+        self.assertIn("self.record_core = build_record_core", app_source)
+        for service_ctor in (
+            "ClaimService(",
+            "ExperimentService(",
+            "FeedService(",
+            "GraphRefResolver(",
+            "PermissionService(",
+            "ProjectOverviewService(",
+            "ProjectService(",
+            "QuotaService(",
+            "ResourceService(",
+            "ReviewService(",
+            "SynthesisService(",
+        ):
+            self.assertNotIn(service_ctor, app_source)
+            self.assertIn(service_ctor, record_source)
+        for forbidden in (
+            "local_runtime",
+            "dataplane",
+            "workspace",
+            "execution",
+            "ssh_rsync",
+        ):
+            self.assertNotIn(forbidden, _import_segments(BACKEND_ROOT / "record_core.py"))
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
