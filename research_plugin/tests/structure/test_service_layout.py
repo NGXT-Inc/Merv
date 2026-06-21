@@ -804,6 +804,37 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn(".store.transaction", block)
         self.assertNotIn("require_project_id", block)
 
+    def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
+        source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
+        from backend.http_api import HOSTED_CONTROL_TOOL_POLICIES
+
+        self.assertEqual(
+            set(HOSTED_CONTROL_TOOL_POLICIES),
+            {"project.create", "project.list", "project.current", "review.start"},
+        )
+        self.assertIsNone(
+            HOSTED_CONTROL_TOOL_POLICIES["project.create"].tenant_id_fallback
+        )
+        for tool_name in ("project.list", "project.current", "review.start"):
+            self.assertEqual(
+                HOSTED_CONTROL_TOOL_POLICIES[tool_name].tenant_id_fallback,
+                "",
+            )
+        self.assertTrue(
+            HOSTED_CONTROL_TOOL_POLICIES["review.start"].telemetry_from_review_request
+        )
+        self.assertIn("HOSTED_CONTROL_TOOL_POLICIES", source)
+        for tool_name in (
+            "project.create",
+            "project.list",
+            "project.current",
+            "review.start",
+        ):
+            self.assertIn(f'"{tool_name}": _HostedToolPolicy', source)
+            self.assertNotIn(f'if auth_required and name == "{tool_name}"', source)
+        self.assertIn("telemetry_from_review_request=True", source)
+        self.assertIn("review_request_project_id(", source)
+
     def test_transport_delegates_graph_ref_resolution_to_service(self) -> None:
         source = (BACKEND_ROOT / "http_api.py").read_text(encoding="utf-8")
         self.assertIn("self.app.graph_refs.resolve_index", source)

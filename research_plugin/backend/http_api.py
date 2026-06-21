@@ -11,6 +11,7 @@ import base64
 import binascii
 import json
 import mimetypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,20 @@ from .state.activity import effective_source, is_event_ok
 
 
 JsonBody = dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _HostedToolPolicy:
+    tenant_id_fallback: str | None = ""
+    telemetry_from_review_request: bool = False
+
+
+HOSTED_CONTROL_TOOL_POLICIES = {
+    "project.create": _HostedToolPolicy(tenant_id_fallback=None),
+    "project.list": _HostedToolPolicy(),
+    "project.current": _HostedToolPolicy(),
+    "review.start": _HostedToolPolicy(telemetry_from_review_request=True),
+}
 
 
 def _project_id_from_api_path(path: str) -> str | None:
@@ -1045,44 +1060,23 @@ def create_fastapi_app(
                 activity_source=activity_source,
             )
         assert api is not None
-        if auth_required and name == "project.create":
-            return api.app.call_tool(
-                name=name,
-                arguments=arguments,
-                activity_source=activity_source,
-                internal_kwargs={
-                    "tenant_id": getattr(principal, "tenant_id", "") or None
-                },
-            )
-        if auth_required and name == "project.list":
-            return api.app.call_tool(
-                name=name,
-                arguments=arguments,
-                activity_source=activity_source,
-                internal_kwargs={
-                    "tenant_id": getattr(principal, "tenant_id", "") or ""
-                },
-            )
-        if auth_required and name == "project.current":
-            return api.app.call_tool(
-                name=name,
-                arguments=arguments,
-                activity_source=activity_source,
-                internal_kwargs={
-                    "tenant_id": getattr(principal, "tenant_id", "") or ""
-                },
-            )
-        if auth_required and name == "review.start":
-            return api.app.call_tool(
-                name=name,
-                arguments=arguments,
-                activity_source=activity_source,
-                internal_kwargs={
-                    "tenant_id": getattr(principal, "tenant_id", "") or ""
-                },
-                telemetry_project_id=review_request_project_id(
+        policy = HOSTED_CONTROL_TOOL_POLICIES.get(name) if auth_required else None
+        if policy is not None:
+            call_kwargs: dict[str, Any] = {
+                "internal_kwargs": {
+                    "tenant_id": getattr(principal, "tenant_id", "")
+                    or policy.tenant_id_fallback
+                }
+            }
+            if policy.telemetry_from_review_request:
+                call_kwargs["telemetry_project_id"] = review_request_project_id(
                     api, arguments.get("review_request_id")
-                ),
+                )
+            return api.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source=activity_source,
+                **call_kwargs,
             )
         if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments and (context or {}).get("repo_root"):
             projects = api.app.projects.list_projects()["projects"]
