@@ -38,6 +38,21 @@ export function mediaUrl(relPath) {
   return `${BASE}${relPath}`;
 }
 
+// Fetch a binary asset WITH auth and return an object URL for use as an <img>
+// src. In hosted control mode every route past /health and /api/meta requires
+// the Bearer token, but the browser never attaches it to a plain <img src>, so
+// bytes that live in the cloud (feed images, link thumbnails) must be loaded
+// through fetch() and wrapped in a blob: URL. Works unchanged in local mode
+// (no token → same-origin fetch). Caller MUST URL.revokeObjectURL when done.
+export async function fetchObjectUrl(relPath, { signal } = {}) {
+  const init = { headers: { 'X-RP-Client-Version': CLIENT_VERSION }, signal };
+  const token = authToken();
+  if (token) init.headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${relPath}`, init);
+  if (!res.ok) throw new Error(`HTTP ${res.status} on GET ${relPath}`);
+  return URL.createObjectURL(await res.blob());
+}
+
 export async function request(path, { method = 'GET', body, signal } = {}) {
   const init = { method, signal, headers: { 'X-RP-Client-Version': CLIENT_VERSION } };
   const token = authToken();

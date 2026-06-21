@@ -1,7 +1,33 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { feedApi } from './feedApi';
 import { fmtAgo } from '../utils/format';
+
+// Load a feed media path through an authenticated fetch and expose it as a
+// blob: object URL. Needed because hosted control mode serves feed bytes behind
+// the Bearer token, which a plain <img src> can't send. Revokes on unmount /
+// path change. Returns null until loaded (or on error → image simply omitted).
+function useAuthedImage(relPath) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!relPath) { setUrl(null); return undefined; }
+    let active = true;
+    let objectUrl = null;
+    const controller = new AbortController();
+    feedApi.imageObjectUrl(relPath, { signal: controller.signal })
+      .then((u) => {
+        if (active) { objectUrl = u; setUrl(u); }
+        else { URL.revokeObjectURL(u); }
+      })
+      .catch(() => { if (active) setUrl(null); });
+    return () => {
+      active = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [relPath]);
+  return url;
+}
 
 // Map a post's optional entity ref to the route that shows it. Unknown kinds
 // (rver_/rev_/syn_ on desktop) render as a static chip — there is no single
@@ -49,6 +75,10 @@ export default function PostCard({ post, projectId, onView }) {
   const ago = ts != null ? Date.now() - ts : null;
   const ref = refTarget(post.ref);
   const preview = post.link_preview;
+  const imageSrc = useAuthedImage(post.image_url);
+  const linkThumbSrc = useAuthedImage(
+    preview && preview.has_image ? preview.image_url : null
+  );
 
   return (
     <article className="postcard" ref={cardRef}>
@@ -62,10 +92,10 @@ export default function PostCard({ post, projectId, onView }) {
 
       {post.text && <p className="postcard-text">{post.text}</p>}
 
-      {post.image_url && (
+      {post.image_url && imageSrc && (
         <div className="postcard-media">
           <img
-            src={feedApi.mediaUrl(post.image_url)}
+            src={imageSrc}
             alt=""
             loading="lazy"
             className="postcard-image"
@@ -81,8 +111,8 @@ export default function PostCard({ post, projectId, onView }) {
           rel="noopener noreferrer nofollow"
           onClick={() => feedApi.trackFeed(projectId, 'link_clicked', { post_id: post.id }).catch(() => {})}
         >
-          {preview.has_image && preview.image_url && (
-            <img src={feedApi.mediaUrl(preview.image_url)} alt="" loading="lazy" className="postcard-link-thumb" />
+          {preview.has_image && linkThumbSrc && (
+            <img src={linkThumbSrc} alt="" loading="lazy" className="postcard-link-thumb" />
           )}
           <span className="postcard-link-body">
             <span className="postcard-link-host">

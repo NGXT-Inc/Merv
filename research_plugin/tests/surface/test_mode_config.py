@@ -267,13 +267,10 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertEqual(other_current.json()["result"]["project"]["id"], other["id"])
 
     def test_hosted_debug_tool_calls_are_tenant_scoped_and_redacted(self) -> None:
-        acme = self.client.post(
-            "/api/projects",
-            json={"name": "Acme Debug"},
-            headers={"Authorization": f"Bearer {self.token}"},
-        )
-        self.assertEqual(acme.status_code, 201, acme.text)
-        acme_id = acme.json()["id"]
+        # Create both fixtures directly so this test exercises only tool-call
+        # tenant scoping; creating via POST would now also record a (correctly
+        # unscoped) project.create tool-call, which is covered separately.
+        acme_id = self.app.projects.create(name="Acme Debug", tenant_id="acme")["id"]
         other = self.app.projects.create(name="Other Debug", tenant_id="other")
         self.app.tool_calls.record(
             tool="review.request",
@@ -333,6 +330,29 @@ class ControlModeAuthTest(unittest.TestCase):
         remaining = self.app.tool_calls.stats()
         self.assertEqual(remaining["totals"]["calls"], 1)
         self.assertEqual(remaining["calls"][0]["project_id"], other["id"])
+
+    def test_hosted_project_create_records_tool_call(self) -> None:
+        # HTTP project creation routes through call_tool, so it emits the same
+        # activity + tool_calls telemetry the MCP path does (it previously
+        # bypassed call_tool and was invisible to /api/activity & debug).
+        before = self.app.tool_calls.stats()["totals"]["calls"]
+        resp = self.client.post(
+            "/api/projects",
+            json={"name": "Logged Project"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(resp.status_code, 201, resp.text)
+        stats = self.app.tool_calls.stats()
+        self.assertEqual(stats["totals"]["calls"], before + 1)
+        self.assertIn("project.create", [call["tool"] for call in stats["calls"]])
+        events = self.app.activity.recent(limit=50)["events"]
+        self.assertTrue(
+            any(
+                event.get("tool") == "project.create"
+                and event.get("event") == "tool.call"
+                for event in events
+            )
+        )
 
     def test_hosted_activity_is_tenant_scoped_and_redacted(self) -> None:
         acme = self.client.post(
@@ -406,6 +426,11 @@ class ControlModeAuthTest(unittest.TestCase):
         self.assertNotIn("repo_root", truncated.text)
         self.assertNotIn(str(self.repo), truncated.text)
         self.assertNotIn("local_sync_dir", truncated.text)
+        # The summary counts the full tenant-scoped scan window, not the trimmed
+        # display slice: two acme mcp events exist (review.request +
+        # experiment.get_state) even though limit=1 returns one.
+        self.assertEqual(len(truncated.json()["events"]), 1)
+        self.assertEqual(truncated.json()["summary"]["total"], 2)
 
         denied = self.client.get(
             f"/api/activity?project_id={other['id']}",
@@ -1282,6 +1307,21 @@ class ControlModeAuthTest(unittest.TestCase):
         )
         self.assertEqual(ok.status_code, 200, ok.text)
         self.assertEqual(ok.json()["result"]["experiment_id"], "exp_acme")
+
+        # Omitting project_id must NOT bypass the tenant check: previously the
+        # scope guard was skipped when project_id was falsy and the registry
+        # returned any tenant's row (incl. its SSH endpoint). The contract now
+        # requires project_id, so a foreign caller cannot read the row at all.
+        bypass = self.client.post(
+            "/mcp/call",
+            json={"name": "sandbox.get", "arguments": {"experiment_id": "exp_acme"}},
+            headers={"Authorization": f"Bearer {self.other_token}"},
+        )
+        # Clean typed rejection (not a 200 leak, not a sloppy 500).
+        self.assertEqual(bypass.status_code, 400, bypass.text)
+        self.assertEqual(bypass.json().get("error_code"), "validation_error")
+        self.assertNotIn("sbx_acme", bypass.text)
+        self.assertNotIn("/workspace/experiments/acme", bypass.text)
 
 
 class SecretStoreCredentialsTest(unittest.TestCase):

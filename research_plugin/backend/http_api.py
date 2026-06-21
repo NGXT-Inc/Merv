@@ -175,7 +175,10 @@ class ResearchHttpApi:
             "filter": {key: value for key, value in (("source", source), ("project_id", project_id)) if value},
             "events": events,
             "summary": (
-                _activity_summary(events)
+                # Summarize over the full filtered scan window, not the trimmed
+                # display slice, so a tenant's counts reflect everything scanned
+                # (up to `window`) rather than capping at `limit`.
+                _activity_summary(result.get("scanned_filtered", events))
                 if project_ids is not None or not include_unscoped_events
                 else result["summary"]
             ),
@@ -545,7 +548,19 @@ class ResearchHttpApi:
     ) -> dict[str, Any]:
         name = body.get("name") or body.get("title") or "Untitled Project"
         summary = body.get("summary") or body.get("description") or body.get("research_goal") or ""
-        return self.app.projects.create(name=name, summary=summary, tenant_id=tenant_id)
+        # Route through call_tool (not the service directly) so HTTP-driven
+        # project creation emits the same activity/tool_calls telemetry the MCP
+        # path does — tenant_id rides in via internal_kwargs in hosted mode only.
+        return self._present(
+            self.app.call_tool(
+                name="project.create",
+                arguments={"name": name, "summary": summary},
+                activity_source="http",
+                internal_kwargs=(
+                    {"tenant_id": tenant_id} if tenant_id is not None else None
+                ),
+            )
+        )
 
     def create_experiment(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         name = body.get("name") or ""

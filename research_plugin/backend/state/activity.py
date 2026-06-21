@@ -231,6 +231,12 @@ class ActivityLogger:
             filtered = [e for e in filtered if event_filter(e)]
         return {
             "events": filtered[-limit:],
+            # The full post-filter, pre-limit list over the scan window. Callers
+            # that need a scope-correct summary (the tenant-scoped HTTP path)
+            # summarize over this rather than the trimmed `events` slice, while
+            # the project-blind `summary` below stays usable only where no filter
+            # is applied (single-project local mode).
+            "scanned_filtered": filtered,
             "summary": {
                 "total": len(scanned),
                 "source_counts": source_counts,

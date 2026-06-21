@@ -20,6 +20,16 @@ from .utils import ValidationError
 
 _TRACK_EVENTS = {"feed_opened", "post_viewed", "link_clicked", "image_viewed"}
 
+# Only these analytics fields may ride along in a track payload. Everything else
+# (ts, source, status, tool, args, result, project_id, …) is server-owned — a
+# client must never be able to spread arbitrary keys into the activity log line.
+_TRACK_PAYLOAD_FIELDS = {"post_id"}
+
+# Feed images are user/agent-supplied bytes served same-origin; stop the browser
+# from MIME-sniffing them into something executable (defense in depth alongside
+# the SVG exclusion in FeedService).
+_IMAGE_RESPONSE_HEADERS = {"X-Content-Type-Options": "nosniff"}
+
 
 def register_feed_routes(
     http: Any, *, app_for: Callable[[str, Request], Any]
@@ -54,14 +64,18 @@ def register_feed_routes(
         content, content_type = app_for(project_id, request).feed.get_image(
             project_id=project_id, post_id=post_id
         )
-        return Response(content=content, media_type=content_type)
+        return Response(
+            content=content, media_type=content_type, headers=_IMAGE_RESPONSE_HEADERS
+        )
 
     @http.get("/api/projects/{project_id}/feed/{post_id}/link-image")
     def feed_link_image(request: Request, project_id: str, post_id: str) -> Response:
         content, content_type = app_for(project_id, request).feed.get_link_image(
             project_id=project_id, post_id=post_id
         )
-        return Response(content=content, media_type=content_type)
+        return Response(
+            content=content, media_type=content_type, headers=_IMAGE_RESPONSE_HEADERS
+        )
 
     @http.post("/api/projects/{project_id}/feed/track")
     def feed_track(
@@ -70,14 +84,20 @@ def register_feed_routes(
         # Usage analytics (Feed_PRD.md). Recorded to the machine-local activity
         # log, NOT the domain event stream — so it never pollutes the Events
         # timeline nor inflates the posting-nudge signal.
-        event = str((body or {}).get("event") or "").strip()
+        if not isinstance(body, dict):
+            raise ValidationError("feed track body must be a JSON object")
+        event = str(body.get("event") or "").strip()
         if event not in _TRACK_EVENTS:
             raise ValidationError(f"unknown feed event: {event!r}")
+        # project_id comes from the (tenant-checked) URL only; the body may
+        # contribute an explicit allowlist of analytics fields and nothing else,
+        # so a caller cannot forge tool-call-shaped entries or retarget the
+        # record at another tenant's project.
         app_for(project_id, request).activity.emit(
             event_type=f"feed.{event}",
             payload={
                 "project_id": project_id,
-                **{k: v for k, v in (body or {}).items() if k != "event"},
+                **{k: v for k, v in body.items() if k in _TRACK_PAYLOAD_FIELDS},
             },
         )
         return {"ok": True}
