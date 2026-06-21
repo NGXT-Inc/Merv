@@ -26,6 +26,13 @@ class _HandlerTarget:
         return _handler
 
 
+class _PermissionTarget:
+    def reject_reviewer_mutation(
+        self, *, tool_name: str, review_session_id: str | None
+    ) -> None:
+        return None
+
+
 def _handler_targets() -> dict[str, _HandlerTarget]:
     target = _HandlerTarget()
     return {
@@ -98,7 +105,7 @@ class ToolDispatcherTest(unittest.TestCase):
         handlers = {name: (lambda **_: {}) for name in tool_names}
         dispatcher = ToolDispatcher(
             handlers=handlers,
-            permissions=object(),
+            permissions=_PermissionTarget(),
             activity=object(),
             tool_calls=object(),
             tool_names=tool_names,

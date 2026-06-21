@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -36,6 +36,15 @@ class ToolSpec:
         if internal_kwargs:
             kwargs.update(internal_kwargs)
         return self.handler(**kwargs)
+
+
+class ToolPermissionPolicy(Protocol):
+    """Permission surface used by the tool dispatcher."""
+
+    def reject_reviewer_mutation(
+        self, *, tool_name: str, review_session_id: str | None
+    ) -> None:
+        ...
 
 
 def _contract_error_message(*, exc: PydanticValidationError) -> str:
@@ -76,7 +85,7 @@ class ToolDispatcher:
         self,
         *,
         handlers: dict[str, Callable[..., dict[str, Any]]],
-        permissions: Any,
+        permissions: ToolPermissionPolicy,
         activity: Any,
         tool_calls: Any,
         tool_names: Iterable[str] | None = None,

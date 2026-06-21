@@ -17,7 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import get_type_hints
+from typing import Protocol, get_type_hints
 
 from backend.contracts import (
     AGGREGATE_TOOL_NAMES,
@@ -121,6 +121,18 @@ def _top_level_import_segments(path: Path) -> set[str]:
             for alias in node.names:
                 segments.update(alias.name.split("."))
     return segments
+
+
+def _class_method_names(path: Path, class_name: str) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                item.name
+                for item in node.body
+                if isinstance(item, ast.FunctionDef)
+            }
+    raise AssertionError(f"{class_name} not found in {path}")
 
 
 def _call_name(node: ast.AST) -> str:
@@ -368,6 +380,31 @@ load("subprocess")
                     forbidden,
                     f"{path.name} imports local-IO modules: {sorted(forbidden)}",
                 )
+
+    def test_tool_dispatcher_uses_narrow_permission_policy(self) -> None:
+        from backend.tool_facade import ToolDispatcher, ToolPermissionPolicy
+
+        hints = get_type_hints(ToolDispatcher.__init__)
+        self.assertIs(hints["permissions"], ToolPermissionPolicy)
+        self.assertIn(Protocol, ToolPermissionPolicy.__mro__)
+        path = BACKEND_ROOT / "tool_facade.py"
+        source = path.read_text(encoding="utf-8")
+        self.assertNotIn("permissions: Any", source)
+        self.assertEqual(
+            _class_method_names(path, "ToolPermissionPolicy"),
+            {"reject_reviewer_mutation"},
+        )
+        tree = ast.parse(source)
+        calls = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "permissions"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "self"
+        }
+        self.assertEqual(calls, {"reject_reviewer_mutation"})
 
     def test_state_store_knows_no_repo_root(self) -> None:
         # The record store is a records-only component (plan §3.1): local
