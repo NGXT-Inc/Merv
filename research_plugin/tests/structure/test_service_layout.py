@@ -984,6 +984,34 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("identity", _import_segments(SERVICES / "reviews.py"))
         self.assertNotIn("services.identity", _source("reviews.py"))
 
+    def test_opaque_secret_token_helpers_are_single_sourced(self) -> None:
+        self.assertEqual(
+            _import_module_names(BACKEND_ROOT / "secret_tokens.py"),
+            {"hashlib", "hmac", "secrets"},
+        )
+        sensitive_paths = (
+            BACKEND_ROOT / "services" / "identity.py",
+            BACKEND_ROOT / "services" / "reviews.py",
+            BACKEND_ROOT / "state" / "store.py",
+        )
+        for path in sensitive_paths:
+            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
+                self.assertNotIn("hashlib", _import_module_names(path))
+                self.assertIn("secret_tokens", _import_module_names(path))
+
+        for path in (
+            BACKEND_ROOT / "services" / "identity.py",
+            BACKEND_ROOT / "services" / "reviews.py",
+        ):
+            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
+                self.assertNotIn("hmac", _import_module_names(path))
+                self.assertNotIn("compare_digest(", path.read_text(encoding="utf-8"))
+
+        self.assertNotIn(
+            "def _hash_capability",
+            (BACKEND_ROOT / "services" / "reviews.py").read_text(encoding="utf-8"),
+        )
+
     def test_view_modules_do_not_import_service_state_machines(self) -> None:
         for name in ("experiment_views.py", "workflow_views.py"):
             with self.subTest(module=name):

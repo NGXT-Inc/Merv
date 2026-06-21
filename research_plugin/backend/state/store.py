@@ -8,7 +8,6 @@ lives in ``dialects.py`` (cloud plan Phase 6).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -17,6 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Protocol
 
+from ..secret_tokens import hash_secret
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
 from ..utils import now_iso
@@ -1009,7 +1009,7 @@ class StateStore(BaseStateStore):
                     conn.execute(
                         "UPDATE review_requests_migrate SET capability_hash = ? WHERE id = ?",
                         (
-                            hashlib.sha256(plaintext.encode("utf-8")).hexdigest(),
+                            hash_secret(plaintext),
                             row["id"],
                         ),
                     )

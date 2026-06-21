@@ -13,8 +13,8 @@ against offline brute force; that threat does not apply here, because guessing a
 256-bit random token is infeasible regardless of hash speed. A fast
 ``hashlib.sha256`` is the correct, standard choice for opaque API keys (it is
 what GitHub/Stripe-style key stores do), and it keeps the lookup a single
-indexed equality. We still compare with ``hmac.compare_digest`` so a resolved
-row's stored hash is matched in constant time.
+indexed equality. Stored hashes are matched with the shared constant-time
+secret-token helper.
 
 Never log or store the plaintext token. Mint returns it once; only the hash is
 persisted.
@@ -22,12 +22,10 @@ persisted.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import secrets
 from dataclasses import dataclass
 
 from ..domain.vocabulary import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
+from ..secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..state.store import BaseStateStore
 from ..utils import now_iso, parse_iso
 
@@ -54,7 +52,7 @@ def hash_token(token: str) -> str:
     See the module docstring for why a fast hash is correct here (high-entropy
     opaque secret, not a password).
     """
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return hash_secret(token)
 
 
 class AuthError(Exception):
@@ -108,7 +106,7 @@ class AuthService:
         the store. Callers must hand it to the tenant out of band and discard it.
         """
         self.ensure_tenant(tenant_id=tenant_id)
-        token = f"rpt_{secrets.token_urlsafe(32)}"
+        token = mint_secret(prefix="rpt_", nbytes=32)
         resolved_client_id = (client_id or self.client_id).strip() or self.client_id
         with self.store.transaction() as conn:
             conn.execute(
@@ -153,9 +151,11 @@ class AuthService:
         if row is None:
             # Compare against a throwaway to keep the not-found path on the same
             # constant-time footing as a real row (no early-exit timing tell).
-            hmac.compare_digest(token_hash, token_hash)
+            secret_digest_matches(stored_digest=None, presented_digest=token_hash)
             raise AuthError("invalid bearer token")
-        if not hmac.compare_digest(str(row["token_hash"]), token_hash):
+        if not secret_digest_matches(
+            stored_digest=row["token_hash"], presented_digest=token_hash
+        ):
             raise AuthError("invalid bearer token")
         if row["revoked_at"]:
             raise AuthError("revoked bearer token")

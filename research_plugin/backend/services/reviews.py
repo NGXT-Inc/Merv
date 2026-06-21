@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..utils import NotFoundError, PermissionDeniedError, ValidationError, parse_iso
-from ..utils import new_id
+from ..secret_tokens import hash_secret, mint_secret, secret_digest_matches
+from ..utils import NotFoundError, PermissionDeniedError, ValidationError, new_id, parse_iso
 from ..state.blobs import BlobStore
 from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
 from ..domain.review_returns import resolve_review_return
@@ -20,17 +17,6 @@ from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..utils import now_iso
 from .experiments import ExperimentService
 from .syntheses import SynthesisService
-
-
-def _hash_capability(capability: str) -> str:
-    """Stored form of a reviewer capability (cloud plan Phase 7).
-
-    A reviewer capability is a high-entropy one-time token (token_urlsafe), so
-    sha256 is the correct fast hash for a random bearer secret. Never store the
-    plaintext; review.start hashes the presented token and compares with
-    hmac.compare_digest.
-    """
-    return hashlib.sha256(capability.encode("utf-8")).hexdigest()
 
 
 class ReviewService:
@@ -88,7 +74,7 @@ class ReviewService:
             # The plaintext capability is minted here, returned ONCE to the
             # caller, and never stored — only its sha256 lands in the row (cloud
             # plan Phase 7). review.start resolves by hashing the presented token.
-            capability = f"rp_{secrets.token_urlsafe(24)}"
+            capability = mint_secret(prefix="rp_", nbytes=24)
             expires_at = (datetime.now(UTC) + timedelta(hours=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
             snapshot_id = self._target_snapshot_id(conn=conn, target_type=target_type, target_id=target_id)
             conn.execute(
@@ -107,7 +93,7 @@ class ReviewService:
                     target_id,
                     role,
                     reason,
-                    _hash_capability(capability),
+                    hash_secret(capability),
                     snapshot_id,
                     producer_session_id,
                     expires_at,
@@ -597,8 +583,10 @@ class ReviewService:
     def _validate_request_open(self, *, req, capability: str) -> None:
         # Constant-time compare of the presented token's hash against the stored
         # hash (cloud plan Phase 7): the plaintext capability never sits at rest.
-        presented = _hash_capability(capability)
-        if not hmac.compare_digest(str(req["capability_hash"]), presented):
+        presented = hash_secret(capability)
+        if not secret_digest_matches(
+            stored_digest=req["capability_hash"], presented_digest=presented
+        ):
             raise PermissionDeniedError("invalid reviewer capability")
         if req["status"] not in {"requested", "started"}:
             raise PermissionDeniedError("review request is no longer open")
