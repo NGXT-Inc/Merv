@@ -25,6 +25,7 @@ from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.sandbox_daemons import SandboxDaemons
 from backend.dataplane.sandbox_dashboards import DashboardTunnels
 from backend.services.sandbox_metrics import SandboxMetrics
+from backend.services.sandbox_parachute import SandboxParachute
 from backend.services.sandbox_provisioner import SandboxProvisioner
 from backend.services.sandbox_registry import SandboxRegistry
 from backend.services.sandboxes import SandboxService
@@ -65,13 +66,14 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.app.shutdown()
         self.tmp.cleanup()
 
-    def test_facade_wires_the_four_collaborators(self) -> None:
+    def test_facade_wires_the_collaborators(self) -> None:
         service = self.app.sandboxes
         self.assertIsInstance(service.registry, SandboxRegistry)
         self.assertIsInstance(service.provisioner, SandboxProvisioner)
         self.assertIsInstance(service.worker, LocalDataPlaneWorker)
         self.assertIsInstance(service.worker.dashboards, DashboardTunnels)
         self.assertIsInstance(service.metrics, SandboxMetrics)
+        self.assertIsInstance(service.parachute, SandboxParachute)
         self.assertIsInstance(service.daemons, SandboxDaemons)
         # Terminal row marks tear down tunnels + conn files through the hook,
         # so the registry itself stays persistence-only.
@@ -83,6 +85,8 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIs(service.daemons.registry, service.registry)
         self.assertIs(service.metrics.registry, service.registry)
         self.assertIs(service.metrics.worker, service.worker)
+        self.assertIs(service.parachute.registry, service.registry)
+        self.assertIs(service.parachute.worker, service.worker)
         self.assertIs(service.worker, self.app.worker)
         # Data-plane work that deserves a record (a tunnel came up) reports
         # through the registry's event stream, not its own writes.
@@ -245,6 +249,12 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertNotIn("def _persist_metrics_row", source)
         self.assertNotIn("def _sample_metrics_cached", source)
         self.assertIn("self.metrics.persist_row", source)
+        self.assertNotIn("presign_put", source)
+        self.assertNotIn("presign_get", source)
+        self.assertNotIn("finalize_put", source)
+        self.assertNotIn("run_parachute", source)
+        self.assertNotIn("PARACHUTE_", source)
+        self.assertIn("self.parachute.rescue_row", source)
         # Row SQL lives in SandboxRegistry. The two conn-scoped view helpers
         # for the workflow layer are the only SELECTs allowed to remain.
         self.assertNotIn("UPDATE sandboxes", source)

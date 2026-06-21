@@ -56,6 +56,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "sync_sessions.py",
     SERVICES_ROOT / "metrics_records.py",
     SERVICES_ROOT / "sandbox_metrics.py",
+    SERVICES_ROOT / "sandbox_parachute.py",
     BACKEND_ROOT / "record_core.py",
     BACKEND_ROOT / "control_app.py",
     BACKEND_ROOT / "control_runtime.py",

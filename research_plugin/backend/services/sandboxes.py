@@ -35,6 +35,8 @@ metrics, views glue). The machinery lives in dedicated collaborators:
     conn refresh, and teardown ride it as tasks.
   - `sandbox_daemons.SandboxDaemons` — the auto-rsync poller and the
     expiration reaper threads.
+  - `sandbox_metrics.SandboxMetrics` — metrics archive/read/sample policy.
+  - `sandbox_parachute.SandboxParachute` — expiry parachute rescue/restore.
   - `sandbox_support` — constants, pure helpers, the SSH dispatcher template.
   - `sandbox_views` — row→response projections (agent view, row view, etc.).
 
@@ -47,7 +49,6 @@ rows; the HTTP layer shapes the UI responses from `get_row`/`rows`/
 
 from __future__ import annotations
 
-import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,7 @@ from ..ports.sandbox_worker import SandboxWorker
 from ..ports.task_channel import TaskChannel
 from . import sandbox_views
 from .sandbox_metrics import SandboxMetrics
+from .sandbox_parachute import SandboxParachute
 from .transcript_cache import TranscriptCache
 from .sandbox_daemons import SandboxDaemons
 from .sandbox_provisioner import SandboxProvisioner
@@ -84,8 +86,6 @@ from ..sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
-    PARACHUTE_MAX_OBJECT_BYTES,
-    PARACHUTE_TTL_SECONDS,
     encode_dashboards,
     iso_after,
     parse_terminal_markers,
@@ -170,6 +170,17 @@ class SandboxService:
             metrics_archive=metrics_archive,
             store=store,
         )
+        self.parachute = SandboxParachute(
+            registry=self.registry,
+            backend=sandbox_backend,
+            blobs=self.blobs,
+            mgmt_keys=self.mgmt_keys,
+            tasks=task_channel,
+            worker=self.worker,
+            tenant_for_project=lambda project_id: self._tenant_for_project(
+                project_id=project_id
+            ),
+        )
         # Backward-compatible public handles used by tests and thin UI helpers.
         self.metrics_archive = self.metrics.metrics_archive
         self.metrics_records = self.metrics.metrics_records
@@ -222,7 +233,7 @@ class SandboxService:
             sync_row=self._sync_row,
             final_pull=self._final_pull_row,
             persist_metrics=self.metrics.persist_row,
-            parachute=self._parachute_row,
+            parachute=self.parachute.rescue_row,
         )
         self.daemons.start()
         # Control-side transcript cursor cache (plan Phase 9, risk 14): coalesces
@@ -1024,79 +1035,7 @@ class SandboxService:
     # ---------- expiry parachute (plan Phase 5, fixed decision 5) ----------
 
     def _parachute_row(self, *, row: dict[str, Any]) -> None:
-        """Rescue the experiment dir over the management channel.
-
-        Fired when a final pull failed (reap with the daemon unreachable; a
-        release whose pull broke): mint a single-use upload target from the
-        blob store, run the pre-installed /opt/rp/parachute.sh on the VM via
-        the backend's management channel, and record the object on the row.
-        Loud by contract (plan risk 9): success emits ``sandbox.parachuted``,
-        any failure emits ``sandbox.parachute_failed`` — never silent. Never
-        raises: the caller must still terminate the sandbox (billing
-        protection beats data recovery).
-        """
-        experiment_id = str(row.get("experiment_id") or "")
-        project_id = str(row.get("project_id") or "")
-        sandbox_id = str(row.get("sandbox_id") or "")
-        try:
-            if self.blobs is None:
-                raise ValidationError(
-                    "no blob store is configured to hold parachute objects"
-                )
-            expires_at = iso_after(seconds=PARACHUTE_TTL_SECONDS)
-            target = self.blobs.presign_put(
-                namespace=project_id,
-                max_size_bytes=PARACHUTE_MAX_OBJECT_BYTES,
-                expires_at=expires_at,
-                content_type="application/gzip",
-            )
-            receipt = self.backend.run_parachute(
-                sandbox_id=sandbox_id,
-                put_url=str(target.get("url") or ""),
-                ssh_host=str(row.get("ssh_host") or ""),
-                ssh_port=int(row.get("ssh_port") or 0),
-                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
-            )
-            if receipt is None:
-                raise ValidationError("backend has no parachute channel")
-            stat = self.blobs.finalize_put(upload_id=str(target["upload_id"]))
-            if receipt.get("sha256") and str(receipt["sha256"]) != stat.sha256:
-                raise ValidationError(
-                    "parachute upload hash mismatch: VM reported "
-                    f"{receipt['sha256']}, store landed {stat.sha256}"
-                )
-            self.registry.upsert(
-                experiment_id=experiment_id,
-                parachute_state="uploaded",
-                parachute_object_key=f"{stat.namespace}/{stat.sha256}",
-                parachute_sha256=stat.sha256,
-                parachute_size_bytes=int(stat.size_bytes),
-                parachute_expires_at=expires_at,
-            )
-            self.registry.emit_event(
-                project_id=project_id,
-                event_type="sandbox.parachuted",
-                experiment_id=experiment_id,
-                payload={
-                    "sandbox_id": sandbox_id,
-                    "object_key": f"{stat.namespace}/{stat.sha256}",
-                    "sha256": stat.sha256,
-                    "size_bytes": int(stat.size_bytes),
-                    "expires_at": expires_at,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — loud event, then terminate anyway
-            with contextlib.suppress(Exception):
-                self.registry.upsert(
-                    experiment_id=experiment_id, parachute_state="failed"
-                )
-            with contextlib.suppress(Exception):
-                self.registry.emit_event(
-                    project_id=project_id,
-                    event_type="sandbox.parachute_failed",
-                    experiment_id=experiment_id,
-                    payload={"sandbox_id": sandbox_id, "error": str(exc)},
-                )
+        self.parachute.rescue_row(row=row)
 
     def _deliver_secrets(self, *, row: dict[str, Any], experiment_id: str) -> None:
         """Push provider credentials over the management channel post-boot.
@@ -1131,66 +1070,7 @@ class SandboxService:
             pass
 
     def _maybe_restore_parachute(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Land an unclaimed parachute in the local experiment folder.
-
-        Runs on the poll target (``sandbox.get``): in split mode the poll is
-        the daemon's reconnect signal, so an 'uploaded' parachute restores
-        the moment the data plane is back. The blob rides the
-        ``parachute_restore`` task; restore failure is loud and marks the
-        row 'failed' (a swept/expired blob will never restore).
-        """
-        if str(row.get("parachute_state") or "") != "uploaded":
-            return row
-        experiment_id = str(row.get("experiment_id") or "")
-        project_id = str(row.get("project_id") or "")
-        name = self.registry.experiment_name(experiment_id=experiment_id)
-        try:
-            if self.blobs is None:
-                raise ValidationError(
-                    "no blob store is configured to hold parachute objects"
-                )
-            sha256 = str(row.get("parachute_sha256") or "")
-            download = self.blobs.presign_get(namespace=project_id, sha256=sha256)
-            get_url = str(download.get("url") or "")
-            if not get_url:
-                raise ValidationError("blob store returned no parachute download URL")
-            result = self.tasks.submit(
-                task_type="parachute_restore",
-                payload={
-                    "experiment_id": experiment_id,
-                    "name": name,
-                    "get_url": get_url,
-                },
-                tenant_id=str(row.get("tenant_id") or self._tenant_for_project(project_id=project_id)),
-            )
-        except Exception as exc:  # noqa: BLE001 — loud failure, no silent retry loop
-            self.registry.upsert(experiment_id=experiment_id, parachute_state="failed")
-            self.registry.emit_event(
-                project_id=project_id,
-                event_type="sandbox.parachute_failed",
-                experiment_id=experiment_id,
-                payload={
-                    "sandbox_id": str(row.get("sandbox_id") or ""),
-                    "stage": "restore",
-                    "error": str(exc),
-                },
-            )
-            return self.registry.load_row(experiment_id=experiment_id)
-        self.registry.upsert(experiment_id=experiment_id, parachute_state="restored")
-        self.registry.emit_event(
-            project_id=project_id,
-            event_type="sandbox.parachute_restored",
-            experiment_id=experiment_id,
-            payload={
-                "sandbox_id": str(row.get("sandbox_id") or ""),
-                "object_key": str(row.get("parachute_object_key") or ""),
-                "restored": int(result.get("restored") or 0),
-                # Logical (repo-relative) spelling: event payloads are
-                # cloud-bound rows and must not carry absolute local paths.
-                "local_dir": self.worker.repo_relative(result.get("local_dir", "")),
-            },
-        )
-        return self.registry.load_row(experiment_id=experiment_id)
+        return self.parachute.maybe_restore_row(row=row)
 
     def _report_pull(
         self, *, row: dict[str, Any], session: dict[str, Any], result: dict[str, Any]
