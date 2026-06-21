@@ -496,19 +496,51 @@ for name in (
             list[SyncTarget],
         )
 
-    def test_project_overview_does_not_import_mutation_services(self) -> None:
-        # project.current is a read-side control projection. Keep it decoupled
-        # from mutation services so a future ControlApp can compose the view
-        # with narrower readers.
+    def test_project_overview_uses_direct_concrete_collaborators(self) -> None:
+        # project.current has one consumer and one implementation pair today.
+        # Keep it lean by avoiding a single-impl reader port until a real
+        # ControlApp composition gives that port a second implementation.
         imports = _import_segments(SERVICES_ROOT / "project_overview.py")
-        self.assertNotIn("projects", imports)
-        self.assertNotIn("syntheses", imports)
-        self.assertIn("project_readers", imports)
+        self.assertIn("projects", imports)
+        self.assertIn("syntheses", imports)
+        self.assertNotIn("project_readers", imports)
         source = (SERVICES_ROOT / "project_overview.py").read_text(encoding="utf-8")
-        self.assertIn("projects: ProjectCurrentReader", source)
-        self.assertIn("syntheses: SynthesisOverviewReader", source)
+        self.assertIn("projects: ProjectService", source)
+        self.assertIn("syntheses: SynthesisService", source)
         self.assertNotIn("class ProjectCurrentReader", source)
         self.assertNotIn("class SynthesisOverviewReader", source)
+        from backend.services.project_overview import ProjectOverviewService
+        from backend.services.projects import ProjectService
+        from backend.services.syntheses import SynthesisService
+
+        hints = get_type_hints(ProjectOverviewService.__init__)
+        self.assertIs(hints["projects"], ProjectService)
+        self.assertIs(hints["syntheses"], SynthesisService)
+
+        tree = ast.parse(source)
+
+        def collaborator_calls(name: str) -> set[str]:
+            calls: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute):
+                    continue
+                owner = func.value
+                if (
+                    isinstance(owner, ast.Attribute)
+                    and owner.attr == name
+                    and isinstance(owner.value, ast.Name)
+                    and owner.value.id == "self"
+                ):
+                    calls.add(func.attr)
+            return calls
+
+        self.assertEqual(collaborator_calls("projects"), {"current"})
+        self.assertEqual(
+            collaborator_calls("syntheses"), {"latest_published", "open_synthesis"}
+        )
 
     def test_workflow_service_uses_reader_ports(self) -> None:
         # workflow.status_and_next is a control-safe orientation view. It

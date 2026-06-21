@@ -190,7 +190,6 @@ class ServiceLayoutTest(unittest.TestCase):
         expected_imports = {
             "metrics_archive.py": {"pathlib", "typing"},
             "mgmt_keys.py": {"pathlib", "typing"},
-            "project_readers.py": {"typing"},
             "quota_admission.py": {"domain.quota_contract", "typing"},
             "reflection_waves.py": {"typing"},
             "resource_records.py": {"typing"},
@@ -213,6 +212,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 source = (PORTS_ROOT / name).read_text(encoding="utf-8")
                 for forbidden in ("httpx", "sqlite3", "json", "tempfile", "os."):
                     self.assertNotIn(forbidden, source)
+        self.assertFalse((PORTS_ROOT / "project_readers.py").exists())
         self.assertIn(
             "def sync_targets(self, *, tenant_id: str | None = None)",
             (PORTS_ROOT / "sandbox_sync.py").read_text(encoding="utf-8"),
@@ -288,21 +288,6 @@ class ServiceLayoutTest(unittest.TestCase):
         for name in list(grant_params)[1:]:
             self.assertEqual(grant_params[name].kind, Parameter.KEYWORD_ONLY)
         self.assertEqual(grant_params["data_dir"].default, "")
-        project_reader_source = (PORTS_ROOT / "project_readers.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(
-            "def current(self, *, tenant_id: str | None = None)",
-            project_reader_source,
-        )
-        self.assertIn(
-            "def latest_published(self, *, conn: Any, project_id: str)",
-            project_reader_source,
-        )
-        self.assertIn(
-            "def open_synthesis(self, *, conn: Any, project_id: str)",
-            project_reader_source,
-        )
         reflection_wave_source = (PORTS_ROOT / "reflection_waves.py").read_text(
             encoding="utf-8"
         )

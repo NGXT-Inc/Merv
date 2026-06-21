@@ -6,7 +6,8 @@ import json
 from typing import Any
 
 from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES, PROJECT_GRAPH_ROLES
-from ..ports.project_readers import ProjectCurrentReader, SynthesisOverviewReader
+from .projects import ProjectService
+from .syntheses import SynthesisService
 from ..state.store import BaseStateStore, rows_to_dicts
 
 
@@ -17,8 +18,8 @@ class ProjectOverviewService:
         self,
         *,
         store: BaseStateStore,
-        projects: ProjectCurrentReader,
-        syntheses: SynthesisOverviewReader,
+        projects: ProjectService,
+        syntheses: SynthesisService,
     ) -> None:
         self.store = store
         self.projects = projects
