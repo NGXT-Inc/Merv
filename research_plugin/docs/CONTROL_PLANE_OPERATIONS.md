@@ -28,6 +28,12 @@ See `deploy/.env.example` for a copy-ready template. Essentials:
   **Required in production** (SQLite fallback is dev-only).
 - `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` — the S3-shape blob store. The presign
   must be a real HTTPS PUT a sandbox VM can reach (the parachute depends on it).
+- `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` — mounted
+  management SSH key material. Production control reads this secret; it should
+  not generate management keys into a local staging directory. The private key
+  must be readable by the control process and 0600/0400; rotate by draining live
+  sandboxes or restarting control, because in-place changes are rejected after
+  startup.
 - Provider creds (`MODAL_*`, `LAMBDA_API_KEY`, `HF_TOKEN`) — **secret store /
   process env ONLY** in control mode. User-machine `.env` discovery is disabled;
   an explicit `RESEARCH_PLUGIN_MODAL_ENV_FILE` (a mounted secret) is the seam.

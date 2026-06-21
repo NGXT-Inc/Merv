@@ -21,7 +21,9 @@ from backend.execution.backends.lambda_labs.sandbox_backend import (
     build_user_data,
 )
 from backend.execution.backends.modal.sandbox_backend import BOOT_SCRIPT
+from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
 from backend.state.mgmt_keys import LocalMgmtKeyStore
+from backend.utils import ValidationError
 from tests.fakes import FakeRsyncSyncer
 
 
@@ -56,6 +58,69 @@ class LocalMgmtKeyStoreTest(unittest.TestCase):
         self.assertFalse(key_path.with_suffix(".pub").exists())
         # Idempotent on an absent pair.
         self.store.remove(experiment_id="exp_1")
+
+
+class MountedMgmtKeyStoreTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.key_path = self.root / "mounted_key"
+        self.key_path.write_text("PRIVATE KEY\n", encoding="utf-8")
+        self.key_path.chmod(0o600)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_ensure_uses_adjacent_public_key_without_mutating_secret(self) -> None:
+        public_path = Path(f"{self.key_path}.pub")
+        public_path.write_text("ssh-ed25519 AAAAmounted\n", encoding="utf-8")
+        store = MountedMgmtKeyStore(private_key_path=self.key_path)
+
+        self.assertEqual(store.ensure(experiment_id="exp_1"), "ssh-ed25519 AAAAmounted")
+        self.assertEqual(store.key_path(experiment_id="exp_1"), self.key_path)
+        store.remove(experiment_id="exp_1")
+        self.assertTrue(self.key_path.exists())
+        self.assertTrue(public_path.exists())
+
+    def test_public_key_env_override_does_not_need_adjacent_pub_file(self) -> None:
+        store = MountedMgmtKeyStore(
+            private_key_path=self.key_path,
+            public_key="ssh-ed25519 AAAAconfigured",
+        )
+
+        self.assertEqual(
+            store.ensure(experiment_id="exp_2"), "ssh-ed25519 AAAAconfigured"
+        )
+
+    def test_missing_public_key_fails_fast(self) -> None:
+        with self.assertRaises(ValidationError):
+            MountedMgmtKeyStore(private_key_path=self.key_path)
+
+    def test_missing_private_key_fails_fast(self) -> None:
+        with self.assertRaises(ValidationError):
+            MountedMgmtKeyStore(
+                private_key_path=self.root / "absent",
+                public_key="ssh-ed25519 AAAAconfigured",
+            )
+
+    def test_open_permissions_fail_fast(self) -> None:
+        self.key_path.chmod(0o644)
+
+        with self.assertRaises(ValidationError):
+            MountedMgmtKeyStore(
+                private_key_path=self.key_path,
+                public_key="ssh-ed25519 AAAAconfigured",
+            )
+
+    def test_rotated_private_key_fails_fast(self) -> None:
+        store = MountedMgmtKeyStore(
+            private_key_path=self.key_path,
+            public_key="ssh-ed25519 AAAAconfigured",
+        )
+        self.key_path.write_text("DIFFERENT PRIVATE KEY\n", encoding="utf-8")
+
+        with self.assertRaises(ValidationError):
+            store.key_path(experiment_id="exp_1")
 
 
 class DualKeyProvisionTest(unittest.TestCase):

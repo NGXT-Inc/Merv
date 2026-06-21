@@ -29,14 +29,20 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from ..config import build_blob_store, build_state_store
+from ..config import (
+    build_blob_store,
+    build_state_store,
+    resolve_mgmt_key_path,
+    resolve_mgmt_public_key,
+)
 from ..control_app import ControlApp
 from ..dataplane.http_channel import HttpTaskChannel, HttpTaskQueue
 from ..execution import build_sandbox_backend
 from ..http_api import create_fastapi_app
 from ..services.cleanup import CleanupService
 from ..services.identity import AuthService
-from ..state.mgmt_keys import LocalMgmtKeyStore
+from ..state.managed_mgmt_keys import MountedMgmtKeyStore
+from ..utils import ValidationError
 
 
 class ControlPlaneServer:
@@ -108,7 +114,7 @@ def build_control_app(
         blobs=blobs,
         task_channel=task_channel,
         execution_backend=execution_backend,
-        mgmt_keys=LocalMgmtKeyStore(root=staging / ".research_plugin" / "mgmt_keys"),
+        mgmt_keys=_build_mgmt_key_store(staging=staging, env=env),
     )
     auth = AuthService(store=app.store)
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
@@ -142,6 +148,24 @@ def build_control_server(
         cleanup=cleanup,
         fastapi_app=fastapi_app,
     )
+
+
+def _build_mgmt_key_store(*, staging: Path, env: Mapping[str, str] | None = None):
+    key_path = resolve_mgmt_key_path(env)
+    public_key = resolve_mgmt_public_key(env)
+    if key_path or public_key:
+        if not key_path:
+            raise ValidationError(
+                "RESEARCH_PLUGIN_MGMT_KEY_PATH is required when "
+                "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY is set"
+            )
+        return MountedMgmtKeyStore(
+            private_key_path=Path(key_path),
+            public_key=public_key,
+        )
+    from ..state.mgmt_keys import LocalMgmtKeyStore
+
+    return LocalMgmtKeyStore(root=staging / ".research_plugin" / "mgmt_keys")
 
 
 def _resume_active_sandboxes(*, app: ControlApp) -> None:

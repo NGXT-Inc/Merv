@@ -75,6 +75,8 @@ class DeployArtifactsTest(unittest.TestCase):
             "RESEARCH_PLUGIN_MODE",
             "RESEARCH_PLUGIN_DB_URL",
             "RESEARCH_PLUGIN_BLOB_BUCKET",
+            "RESEARCH_PLUGIN_MGMT_KEY_PATH",
+            "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY",
         ):
             self.assertIn(var, text)
 

@@ -7,8 +7,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.composition.control_mode import build_control_app
+from backend.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.http_api import create_fastapi_app
+from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
+from backend.utils import ValidationError
 
 
 class ControlAppTest(unittest.TestCase):
@@ -74,6 +77,40 @@ class ControlAppTest(unittest.TestCase):
             names = {tool["name"] for tool in app.list_tools()}
             self.assertIn("claim.create", names)
             self.assertNotIn("resource.register_file", names)
+
+    def test_control_app_uses_mounted_management_key_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key_path = root / "managed_key"
+            key_path.write_text("PRIVATE KEY\n", encoding="utf-8")
+            key_path.chmod(0o600)
+            app, _queue, _auth = build_control_app(
+                repo_root=root / "staging",
+                env={
+                    MGMT_KEY_PATH_ENV_VAR: str(key_path),
+                    MGMT_PUBLIC_KEY_ENV_VAR: "ssh-ed25519 AAAAmanaged",
+                },
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
+
+            self.assertIsInstance(app.sandboxes.mgmt_keys, MountedMgmtKeyStore)
+            self.assertEqual(
+                app.sandboxes.mgmt_keys.ensure(experiment_id="exp_1"),
+                "ssh-ed25519 AAAAmanaged",
+            )
+            self.assertEqual(
+                app.sandboxes.mgmt_keys.key_path(experiment_id="exp_1"), key_path
+            )
+
+    def test_control_app_rejects_partial_management_key_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValidationError):
+                build_control_app(
+                    repo_root=Path(tmp),
+                    env={MGMT_PUBLIC_KEY_ENV_VAR: "ssh-ed25519 AAAAmanaged"},
+                    execution_backend=FakeSandboxBackend(),
+                )
 
 
 if __name__ == "__main__":

@@ -7,16 +7,16 @@ from typing import Protocol
 
 
 class MgmtKeyStore(Protocol):
-    """Control-plane custody of per-sandbox management keypairs."""
+    """Control-plane custody of the management SSH channel key."""
 
     def ensure(self, *, experiment_id: str) -> str:
-        """Mint or reuse a keypair and return the public key."""
+        """Return the public key authorized for the sandbox management channel."""
         ...
 
     def key_path(self, *, experiment_id: str) -> Path:
-        """Return the private-key path for the management SSH channel."""
+        """Return the private-key path used for the management SSH channel."""
         ...
 
     def remove(self, *, experiment_id: str) -> None:
-        """Drop the keypair."""
+        """Drop key material when this store owns its lifecycle."""
         ...

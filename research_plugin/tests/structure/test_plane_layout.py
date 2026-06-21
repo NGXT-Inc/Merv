@@ -60,6 +60,7 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "control_runtime.py",
     BACKEND_ROOT / "state" / "store.py",
     BACKEND_ROOT / "state" / "dialects.py",
+    BACKEND_ROOT / "state" / "managed_mgmt_keys.py",
 )
 
 # Module names (any dotted segment) control modules may never import.
@@ -764,13 +765,16 @@ for name in (
             self.assertNotIn(forbidden, source)
 
     def test_control_mode_builds_control_app_not_local_app(self) -> None:
-        source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
-            encoding="utf-8"
-        )
+        path = BACKEND_ROOT / "composition" / "control_mode.py"
+        source = path.read_text(encoding="utf-8")
+        top_level_imports = _top_level_import_segments(path)
         self.assertIn("from ..control_app import ControlApp", source)
         self.assertIn("app = ControlApp(", source)
         self.assertNotIn("ResearchPluginApp", source)
         self.assertNotIn("build_local_runtime", source)
+        self.assertIn("MountedMgmtKeyStore", source)
+        self.assertIn("resolve_mgmt_key_path", source)
+        self.assertNotIn("mgmt_keys", top_level_imports)
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local
@@ -785,6 +789,10 @@ for name in (
         self.assertIn("subprocess", imports)
         self.assertNotIn("services", imports)
         self.assertIn("mgmt_keys", _import_segments(BACKEND_ROOT / "local_runtime.py"))
+        self.assertNotIn(
+            "subprocess",
+            _import_segments(BACKEND_ROOT / "state" / "managed_mgmt_keys.py"),
+        )
 
     def test_app_keeps_local_runtime_module_import_lazy(self) -> None:
         # Importing backend.app should not import backend.local_runtime itself.

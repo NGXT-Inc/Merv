@@ -42,6 +42,8 @@ CONTROL_URL_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_URL"
 CONTROL_TOKEN_FILE_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_TOKEN_FILE"
 BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
+MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
+MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
 
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 
@@ -139,6 +141,16 @@ def resolve_blob_dir(env: Mapping[str, str] | None = None) -> str | None:
 def resolve_blob_bucket(env: Mapping[str, str] | None = None) -> str | None:
     source = env if env is not None else os.environ
     return (source.get(BLOB_BUCKET_ENV_VAR) or "").strip() or None
+
+
+def resolve_mgmt_key_path(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (source.get(MGMT_KEY_PATH_ENV_VAR) or "").strip() or None
+
+
+def resolve_mgmt_public_key(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (source.get(MGMT_PUBLIC_KEY_ENV_VAR) or "").strip() or None
 
 
 def build_blob_store(
