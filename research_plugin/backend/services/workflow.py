@@ -6,6 +6,7 @@ from typing import Any
 
 from ..domain.gates import ReviewRequirement, RoleRequirement
 from ..domain.paths import experiment_folder_rel
+from ..domain.reflection_projection import external_reflection_target_type
 from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
 from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLE,
@@ -457,7 +458,7 @@ class WorkflowService:
         gate = {
             "role": role,
             "skill": skill,
-            "target_type": "reflection" if target_type == "synthesis" else target_type,
+            "target_type": external_reflection_target_type(target_type),
             "target_id": target_id,
             "status": status,
             "label": labels.get(status, status),

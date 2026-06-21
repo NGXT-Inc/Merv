@@ -4,7 +4,10 @@ import unittest
 
 from backend.domain.reflection_projection import (
     external_reflection_state,
+    external_reflection_target_type,
     external_reflection_transition,
+    internal_synthesis_target_type,
+    internal_synthesis_transition,
 )
 
 
@@ -43,6 +46,23 @@ class ReflectionProjectionTest(unittest.TestCase):
 
     def test_transition_ignores_non_dict_items(self) -> None:
         self.assertEqual(external_reflection_transition("ready"), "ready")
+
+    def test_external_reflection_target_type(self) -> None:
+        self.assertEqual(external_reflection_target_type("synthesis"), "reflection")
+        self.assertEqual(external_reflection_target_type("experiment"), "experiment")
+        self.assertIsNone(external_reflection_target_type(None))
+
+    def test_internal_synthesis_target_type(self) -> None:
+        self.assertEqual(internal_synthesis_target_type("reflection"), "synthesis")
+        self.assertEqual(internal_synthesis_target_type("experiment"), "experiment")
+        self.assertIsNone(internal_synthesis_target_type(None))
+
+    def test_internal_synthesis_transition(self) -> None:
+        self.assertEqual(
+            internal_synthesis_transition("submit_reflection_artifacts"),
+            "submit_synthesis",
+        )
+        self.assertEqual(internal_synthesis_transition("reject"), "reject")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from ..state.store import (
     rows_to_dicts,
 )
 from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
+from ..domain.reflection_projection import external_reflection_target_type
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from .pinned import pinned_text_for_version as load_pinned_text_for_version
 
@@ -629,8 +630,7 @@ class ResourceService:
         ).fetchall()
         associations = rows_to_dicts(rows=assoc_rows)
         for assoc in associations:
-            if assoc.get("target_type") == "synthesis":
-                assoc["target_type"] = "reflection"
+            assoc["target_type"] = external_reflection_target_type(assoc.get("target_type"))
         data["associations"] = associations
         if data.get("current_version_id"):
             row = conn.execute("SELECT * FROM resource_versions WHERE id = ?", (data["current_version_id"],)).fetchone()
@@ -927,8 +927,7 @@ class ResourceService:
         ).fetchall()
         associations = rows_to_dicts(rows=assoc_rows)
         for assoc in associations:
-            if assoc.get("target_type") == "synthesis":
-                assoc["target_type"] = "reflection"
+            assoc["target_type"] = external_reflection_target_type(assoc.get("target_type"))
         data["associations"] = associations
         return data
 

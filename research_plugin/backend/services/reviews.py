@@ -18,6 +18,10 @@ from ..utils import (
 )
 from ..state.blobs import BlobStore
 from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
+from ..domain.reflection_projection import (
+    external_reflection_target_type,
+    internal_synthesis_target_type,
+)
 from ..domain.review_returns import resolve_review_return
 from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
@@ -63,9 +67,7 @@ class ReviewService:
     ) -> dict[str, Any]:
         self.permissions.validate_review_role(role=role)
         external_target_type = target_type
-        target_type = (
-            "synthesis" if external_target_type == "reflection" else external_target_type
-        )
+        target_type = internal_synthesis_target_type(external_target_type)
         if target_type not in {"experiment", "synthesis"}:
             raise ValidationError("review targets must be 'experiment' or 'reflection'")
         with self.store.transaction() as conn:
@@ -194,9 +196,7 @@ class ReviewService:
             return {
                 "review_session_id": session_id,
                 "role": req["role"],
-                "target_type": (
-                    "reflection" if req["target_type"] == "synthesis" else req["target_type"]
-                ),
+                "target_type": external_reflection_target_type(req["target_type"]),
                 "target_id": req["target_id"],
                 "independence": independence,
                 "read_scope": ["claim", "experiment", "reflection", "resource", "review"],
@@ -364,7 +364,7 @@ class ReviewService:
             return self._hydrate_review(row=review)
 
     def status(self, *, target_type: str, target_id: str, project_id: str | None = None) -> dict[str, Any]:
-        target_type = "synthesis" if target_type == "reflection" else target_type
+        target_type = internal_synthesis_target_type(target_type)
         conn = self.store.connect()
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -535,8 +535,8 @@ class ReviewService:
 
     def _with_snapshot(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        if data.get("target_type") == "synthesis":
-            data["target_type"] = "reflection"
+        if "target_type" in data:
+            data["target_type"] = external_reflection_target_type(data["target_type"])
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
         return data
 
@@ -549,7 +549,7 @@ class ReviewService:
         return {
             "role": role,
             "skill": skill,
-            "target_type": "reflection" if target_type == "synthesis" else target_type,
+            "target_type": external_reflection_target_type(target_type),
             "target_id": target_id,
             "read_only": True,
             "start_tool": "review.start",
@@ -691,15 +691,15 @@ class ReviewService:
 
     def _hydrate_request(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        if data.get("target_type") == "synthesis":
-            data["target_type"] = "reflection"
+        if "target_type" in data:
+            data["target_type"] = external_reflection_target_type(data["target_type"])
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
         return data
 
     def _hydrate_review(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        if data.get("target_type") == "synthesis":
-            data["target_type"] = "reflection"
+        if "target_type" in data:
+            data["target_type"] = external_reflection_target_type(data["target_type"])
         data["findings"] = json.loads(data.pop("findings_json", "[]"))
         data["evidence"] = json.loads(data.pop("evidence_json", "{}"))
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))

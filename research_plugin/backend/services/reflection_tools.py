@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.reflection_projection import external_reflection_state
+from ..domain.reflection_projection import (
+    external_reflection_state,
+    internal_synthesis_transition,
+)
 from .syntheses import SynthesisService
 
 
@@ -50,11 +53,7 @@ class ReflectionToolService:
     def transition(
         self, *, project_id: str, reflection_id: str, transition: str
     ) -> dict[str, Any]:
-        internal_transition = (
-            "submit_synthesis"
-            if transition == "submit_reflection_artifacts"
-            else transition
-        )
+        internal_transition = internal_synthesis_transition(transition)
         return external_reflection_state(
             self.syntheses.transition(
                 project_id=project_id,
