@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from .utils import ValidationError
 
@@ -44,6 +45,7 @@ BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
 MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
+ALLOWED_ORIGINS_ENV_VAR = "RESEARCH_PLUGIN_ALLOWED_ORIGINS"
 
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 
@@ -151,6 +153,36 @@ def resolve_mgmt_key_path(env: Mapping[str, str] | None = None) -> str | None:
 def resolve_mgmt_public_key(env: Mapping[str, str] | None = None) -> str | None:
     source = env if env is not None else os.environ
     return (source.get(MGMT_PUBLIC_KEY_ENV_VAR) or "").strip() or None
+
+
+def resolve_allowed_origins(env: Mapping[str, str] | None = None) -> list[str]:
+    """Hosted-control CORS allowlist from a comma-separated env var."""
+    source = env if env is not None else os.environ
+    raw = (source.get(ALLOWED_ORIGINS_ENV_VAR) or "").strip()
+    if not raw:
+        return []
+    origins: list[str] = []
+    for part in raw.split(","):
+        origin = part.strip().rstrip("/")
+        if not origin:
+            continue
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValidationError(
+                f"invalid {ALLOWED_ORIGINS_ENV_VAR} origin: {origin!r} "
+                "(expected http:// or https:// origin with no path, query, or fragment)",
+                details={"origin": origin},
+            )
+        origins.append(origin)
+    return origins
 
 
 def build_blob_store(

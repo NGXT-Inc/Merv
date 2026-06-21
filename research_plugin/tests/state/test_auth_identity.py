@@ -13,7 +13,11 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from backend.config import resolve_auth_required
+from backend.config import (
+    ALLOWED_ORIGINS_ENV_VAR,
+    resolve_allowed_origins,
+    resolve_auth_required,
+)
 from backend.services.identity import (
     LOCAL_PRINCIPAL,
     AuthError,
@@ -22,6 +26,7 @@ from backend.services.identity import (
     hash_token,
 )
 from backend.state.store import StateStore
+from backend.utils import ValidationError
 
 
 def _iso(dt: datetime) -> str:
@@ -120,6 +125,34 @@ class AuthIdentityTest(unittest.TestCase):
         self.assertFalse(resolve_auth_required(env={"RESEARCH_PLUGIN_MODE": "local"}))
         self.assertTrue(resolve_auth_required(env={"RESEARCH_PLUGIN_MODE": "control"}))
         self.assertFalse(resolve_auth_required(env={"RESEARCH_PLUGIN_MODE": "daemon"}))
+
+    def test_resolve_allowed_origins(self) -> None:
+        self.assertEqual(resolve_allowed_origins(env={}), [])
+        self.assertEqual(
+            resolve_allowed_origins(
+                env={
+                    ALLOWED_ORIGINS_ENV_VAR: (
+                        " https://ui.example.com/, "
+                        "http://localhost:5173, ,"
+                    )
+                }
+            ),
+            ["https://ui.example.com", "http://localhost:5173"],
+        )
+        with self.assertRaises(ValidationError):
+            resolve_allowed_origins(env={ALLOWED_ORIGINS_ENV_VAR: "localhost:5173"})
+        with self.assertRaises(ValidationError):
+            resolve_allowed_origins(
+                env={ALLOWED_ORIGINS_ENV_VAR: "https://ui.example.com/app"}
+            )
+        with self.assertRaises(ValidationError):
+            resolve_allowed_origins(
+                env={ALLOWED_ORIGINS_ENV_VAR: "https://ui.example.com?x=1"}
+            )
+        with self.assertRaises(ValidationError):
+            resolve_allowed_origins(
+                env={ALLOWED_ORIGINS_ENV_VAR: "https://user@ui.example.com"}
+            )
 
 
 if __name__ == "__main__":

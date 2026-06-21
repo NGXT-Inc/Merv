@@ -36,6 +36,7 @@ from ..config import (
     build_state_store,
     resolve_blob_bucket,
     resolve_db_url,
+    resolve_allowed_origins,
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
 )
@@ -138,11 +139,14 @@ def build_control_server(
 ) -> ControlPlaneServer:
     """Build the control-plane FastAPI server (auth ON, daemon endpoints on)."""
     app, task_queue, auth = build_control_app(repo_root=repo_root, env=env)
+    origins = (
+        resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
+    )
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs)
     fastapi_app = create_fastapi_app(
         app=app,
         auth=auth,
-        allowed_origins=allowed_origins,
+        allowed_origins=origins,
         task_queue=task_queue,
         sync_targets_source=app.sandboxes.control_view,
         cleanup=cleanup,

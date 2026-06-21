@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from backend.composition.control_mode import build_control_app
 from backend.composition import control_mode
 from backend.config import (
+    ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
@@ -172,6 +173,44 @@ class ControlAppTest(unittest.TestCase):
             self.assertEqual(
                 blob_factory.call_args.kwargs["default_root"],
                 control_mode.CONTROL_COMPAT_REPO_ROOT / ".research_plugin" / "blobs",
+            )
+
+    def test_control_server_reads_allowed_origins_from_env(self) -> None:
+        from backend.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            server = build_control_server(
+                repo_root=Path(tmp),
+                env={
+                    ALLOWED_ORIGINS_ENV_VAR: (
+                        "https://ui.example.com, http://localhost:5173"
+                    )
+                },
+            )
+            self.addCleanup(server.shutdown)
+            client = TestClient(server.fastapi_app, raise_server_exceptions=False)
+
+            allowed = client.options(
+                "/api/projects",
+                headers={
+                    "Origin": "https://ui.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            self.assertEqual(
+                allowed.headers.get("access-control-allow-origin"),
+                "https://ui.example.com",
+            )
+            blocked = client.options(
+                "/api/projects",
+                headers={
+                    "Origin": "https://evil.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            self.assertNotEqual(
+                blocked.headers.get("access-control-allow-origin"),
+                "https://evil.example.com",
             )
 
 

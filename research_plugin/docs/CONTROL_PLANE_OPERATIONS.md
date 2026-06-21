@@ -24,6 +24,8 @@ an unknown mode value, refuses to start.
 
 See `deploy/.env.example` for a copy-ready template. Essentials:
 
+- `RESEARCH_PLUGIN_ALLOWED_ORIGINS` — comma-separated hosted UI origins allowed
+  by CORS. Empty means browsers from other origins cannot call the hosted API.
 - `RESEARCH_PLUGIN_DB_URL` — `postgres://…` selects the Postgres dialect.
   **Required in production** (SQLite fallback is dev-only).
 - `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` — the S3-shape blob store. The presign

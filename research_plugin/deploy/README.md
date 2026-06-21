@@ -51,6 +51,7 @@ control-mode variables (full list in `.env.example`):
 | Variable | Required | Meaning |
 |---|---|---|
 | `RESEARCH_PLUGIN_MODE` | yes (forced) | `control` |
+| `RESEARCH_PLUGIN_ALLOWED_ORIGINS` | prod | comma-separated hosted UI origins allowed by CORS |
 | `RESEARCH_PLUGIN_DB_URL` | prod | `postgres://…` (else SQLite — dev only) |
 | `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` | prod | object store; presign must be a reachable HTTPS PUT |
 | `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
