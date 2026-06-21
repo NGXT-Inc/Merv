@@ -7,7 +7,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .domain.vocabulary import RESOURCE_ROLES, RESOURCE_TARGET_TYPES
+from .domain.vocabulary import (
+    RESOURCE_ROLES,
+    RESOURCE_TARGET_TYPES,
+    REVIEW_VERDICT_VALUES,
+)
 
 
 class ContractModel(BaseModel):
@@ -283,7 +287,7 @@ class ReviewStartInput(ContractModel):
 
 class ReviewSubmitInput(ContractModel):
     review_session_id: str
-    verdict: Literal["pass", "needs_changes", "fail"]
+    verdict: Literal[*REVIEW_VERDICT_VALUES]
     return_to: Literal["", "planned", "running", "reflecting", "synthesizing"] = Field(
         default="",
         description=(

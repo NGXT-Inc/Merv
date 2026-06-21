@@ -176,6 +176,7 @@ VOCABULARY_NAMES = {
     "RESOURCE_ROLES",
     "RESOURCE_TARGET_TYPES",
     "REVIEW_ROLES",
+    "REVIEW_VERDICT_VALUES",
     "REVIEW_VERDICTS",
 }
 
@@ -824,6 +825,20 @@ class ServiceLayoutTest(unittest.TestCase):
                         leaked,
                         f"import vocabulary from backend.domain.vocabulary, not permissions: {sorted(leaked)}",
                     )
+
+    def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
+        from backend.contracts import ReviewSubmitInput
+        from backend.domain.vocabulary import REVIEW_VERDICT_VALUES, REVIEW_VERDICTS
+
+        self.assertEqual(REVIEW_VERDICTS, frozenset(REVIEW_VERDICT_VALUES))
+        self.assertEqual(
+            set(ReviewSubmitInput.model_fields["verdict"].annotation.__args__),
+            set(REVIEW_VERDICT_VALUES),
+        )
+        source = (BACKEND_ROOT / "contracts.py").read_text(encoding="utf-8")
+        self.assertIn("REVIEW_VERDICT_VALUES", source)
+        self.assertIn("verdict: Literal[*REVIEW_VERDICT_VALUES]", source)
+        self.assertNotIn('verdict: Literal["pass", "needs_changes", "fail"]', source)
 
     def test_gate_tables_are_domain_policy_only(self) -> None:
         # Workflow state machines are domain policy: they may share neutral

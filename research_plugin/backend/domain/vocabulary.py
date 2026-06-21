@@ -17,7 +17,8 @@ REVIEW_ROLES = frozenset(
         "automated_check",
     }
 )
-REVIEW_VERDICTS = frozenset({"pass", "needs_changes", "fail"})
+REVIEW_VERDICT_VALUES = ("pass", "needs_changes", "fail")
+REVIEW_VERDICTS = frozenset(REVIEW_VERDICT_VALUES)
 
 CLAIM_STATUSES = frozenset(
     {"draft", "active", "supported", "weakened", "contradicted", "abandoned"}
