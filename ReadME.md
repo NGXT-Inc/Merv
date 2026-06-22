@@ -1,11 +1,12 @@
-
 # Research Suite
+
+![Research Suite experiment workflow](experiments.png)
 
 Research Suite is a plugin for agentic coding platforms that helps agents run machine learning research as gated, reviewable experiment workflows.
 
-It is designed to work with Claude Code, Codex, Cursor, Gemini CLI, OpenCode, and other MCP-capable agent platforms. It includes a frontend for humans to observe agent behavior ranging from macro research strategy  to experiment execution specifics.
+It is designed to work with Claude Code, Codex, Cursor, Gemini CLI, OpenCode, and other MCP-capable agent platforms. It includes a frontend for humans to observe agent behavior ranging from macro research strategy to experiment execution specifics.
 
-The goal is to give research agents enough structure to plan experiments, execute them, review results, and reflect on the project direction to handle open ended research problems.
+The goal is to give research agents enough structure to plan experiments, execute them, review results, and reflect on the project direction to handle open-ended research problems.
 
 ## Experiment-level workflow
 
