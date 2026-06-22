@@ -15,3 +15,5 @@ logs/
 # Deprecated, kept locally for reference only
 deprecated/
 .research_plugin/
+
+/graphify-out
