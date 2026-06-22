@@ -129,7 +129,7 @@ the record/metadata half is cloud.**
   cloud stores the resource record and immutable version history.
 - **SSH access.** Cloud authorizes access and owns credential validity/rotation;
   local daemon holds the private key and runs the `ssh`/`rsync` client.
-- **Tenancy routing.** Today [`project_router.py`](../backend/project_router.py)
+- **Tenancy routing.** Today [`project_router.py`](../backend/daemon/project_router.py)
   multiplexes a shared daemon into per-`repo_root` app instances — a local,
   directory-keyed primitive. In production, **tenancy (user/project) moves to
   the cloud**, while the local daemon keeps the directory mapping (`repo_root` ↔

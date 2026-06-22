@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, ClassVar, Protocol
 
 from backend.app import ResearchPluginApp
-from backend.control_client import HttpControlPlaneClient
+from backend.control.control_client import HttpControlPlaneClient
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_server import make_http_server
 from mcp_server.daemon_marker import marker_path

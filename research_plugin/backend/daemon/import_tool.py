@@ -27,9 +27,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .state.blobs import BlobStore
-from .state.store import BaseStateStore
-from .utils import ValidationError, now_iso
+from ..state.blobs import BlobStore
+from ..state.store import BaseStateStore
+from ..utils import ValidationError, now_iso
 
 
 # Tables copied verbatim (ids carry over), in FK-safe order. events is handled

@@ -44,7 +44,7 @@ from ..config import (
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
 )
-from ..control_app import ControlApp
+from ..control.control_app import ControlApp
 from ..dataplane.http_channel import HttpTaskChannel, HttpTaskQueue
 from ..env import env_bool, env_float
 from ..execution import build_sandbox_backend

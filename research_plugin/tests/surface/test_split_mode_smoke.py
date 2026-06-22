@@ -41,8 +41,8 @@ from fastapi.testclient import TestClient
 
 from backend.app import ResearchPluginApp
 from backend.composition.daemon_mode import DaemonServer, build_daemon_executor
-from backend.control_client import HttpControlPlaneClient
-from backend.daemon_loopback import create_daemon_loopback_app
+from backend.control.control_client import HttpControlPlaneClient
+from backend.daemon.daemon_loopback import create_daemon_loopback_app
 from backend.dataplane import LocalDataPlaneWorker
 from backend.dataplane.http_channel import DaemonTaskLoop, HttpTaskChannel, HttpTaskQueue
 from backend.dataplane.project_links import ProjectLinks

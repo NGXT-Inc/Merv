@@ -23,10 +23,10 @@ from ..config import (
     resolve_control_url,
     resolve_mode,
 )
-from ..daemon_marker import clear_marker, write_marker
+from ..daemon.daemon_marker import clear_marker, write_marker
 from ..env import env_bool
 from .http_api import create_fastapi_app
-from ..project_router import ProjectRouter
+from ..daemon.project_router import ProjectRouter
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:
@@ -171,7 +171,7 @@ def _serve_daemon(*, host: str, port: int) -> int:
     a loopback surface for the proxy (GET /local/route + the data-plane tools).
     """
     from ..composition import build_daemon_server
-    from ..daemon_loopback import create_daemon_loopback_app
+    from ..daemon.daemon_loopback import create_daemon_loopback_app
 
     control_url = resolve_control_url()
     token = resolve_control_token()

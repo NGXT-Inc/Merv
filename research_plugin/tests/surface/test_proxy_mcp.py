@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app import ResearchPluginApp
-from backend.project_router import ProjectRouter
+from backend.daemon.project_router import ProjectRouter
 from mcp_server.daemon_marker import (
     discover_daemon_url,
     marker_path,

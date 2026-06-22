@@ -25,7 +25,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
-from .utils import (
+from ..utils import (
     NotFoundError,
     PermissionDeniedError,
     ResearchPluginError,

@@ -19,7 +19,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
-from ..control_client import ControlPlaneUnreachableError, HttpControlPlaneClient
+from ..control.control_client import ControlPlaneUnreachableError, HttpControlPlaneClient
 from ..ports.sandbox_sync import SyncTarget
 
 

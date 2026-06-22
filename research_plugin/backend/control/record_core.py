@@ -4,20 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .services.claims import ClaimService
-from .services.experiments import ExperimentService
-from .services.feed import FeedService
-from .services.graph_refs import GraphRefResolver
-from .services.permissions import PermissionService
-from .services.project_overview import ProjectOverviewService
-from .services.projects import ProjectService
-from .services.quotas import QuotaService
-from .services.reflection_tools import ReflectionToolService
-from .services.resources import ResourceService
-from .services.reviews import ReviewService
-from .services.syntheses import SynthesisService
-from .state import BaseStateStore
-from .state.blobs import BlobStore
+from ..services.claims import ClaimService
+from ..services.experiments import ExperimentService
+from ..services.feed import FeedService
+from ..services.graph_refs import GraphRefResolver
+from ..services.permissions import PermissionService
+from ..services.project_overview import ProjectOverviewService
+from ..services.projects import ProjectService
+from ..services.quotas import QuotaService
+from ..services.reflection_tools import ReflectionToolService
+from ..services.resources import ResourceService
+from ..services.reviews import ReviewService
+from ..services.syntheses import SynthesisService
+from ..state import BaseStateStore
+from ..state.blobs import BlobStore
 
 
 @dataclass(frozen=True)

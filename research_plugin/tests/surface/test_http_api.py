@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import ResearchPluginApp
 from backend.transport.http_api import ResearchHttpApi, create_fastapi_app
-from backend.project_router import ProjectRouter
+from backend.daemon.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.utils import ContentUnavailableError
 from mcp_server.time_utils import now_iso

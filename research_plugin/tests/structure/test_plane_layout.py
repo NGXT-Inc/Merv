@@ -57,9 +57,10 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "metrics_records.py",
     SERVICES_ROOT / "sandbox" / "sandbox_metrics.py",
     SERVICES_ROOT / "sandbox" / "sandbox_parachute.py",
-    BACKEND_ROOT / "record_core.py",
-    BACKEND_ROOT / "control_app.py",
-    BACKEND_ROOT / "control_runtime.py",
+    BACKEND_ROOT / "control" / "record_core.py",
+    BACKEND_ROOT / "control" / "control_app.py",
+    BACKEND_ROOT / "control" / "control_runtime.py",
+    BACKEND_ROOT / "control" / "control_client.py",
     BACKEND_ROOT / "state" / "store.py",
     BACKEND_ROOT / "state" / "dialects.py",
     BACKEND_ROOT / "state" / "managed_mgmt_keys.py",
@@ -325,7 +326,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
 
     def test_daemon_tool_catalogs_use_contract_plane_sets(self) -> None:
         daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
-        for path in (daemon_mode, BACKEND_ROOT / "daemon_loopback.py"):
+        for path in (daemon_mode, BACKEND_ROOT / "daemon" / "daemon_loopback.py"):
             with self.subTest(module=path.name):
                 source = path.read_text(encoding="utf-8")
                 self.assertIn("DATA_PLANE_TOOL_NAMES", source)
@@ -735,7 +736,7 @@ for name in (
 
     def test_app_uses_record_core_builder_for_record_services(self) -> None:
         app_source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
-        record_source = (BACKEND_ROOT / "record_core.py").read_text(encoding="utf-8")
+        record_source = (BACKEND_ROOT / "control" / "record_core.py").read_text(encoding="utf-8")
 
         self.assertIn("self.record_core = build_record_core", app_source)
         for service_ctor in (
@@ -760,10 +761,10 @@ for name in (
             "execution",
             "ssh_rsync",
         ):
-            self.assertNotIn(forbidden, _import_segments(BACKEND_ROOT / "record_core.py"))
+            self.assertNotIn(forbidden, _import_segments(BACKEND_ROOT / "control" / "record_core.py"))
 
     def test_control_app_does_not_build_local_runtime(self) -> None:
-        source = (BACKEND_ROOT / "control_app.py").read_text(encoding="utf-8")
+        source = (BACKEND_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
         self.assertIn("class ControlApp:", source)
         self.assertIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
@@ -791,7 +792,7 @@ for name in (
         path = BACKEND_ROOT / "composition" / "control_mode.py"
         source = path.read_text(encoding="utf-8")
         imports = _import_segments(path)
-        self.assertIn("from ..control_app import ControlApp", source)
+        self.assertIn("from ..control.control_app import ControlApp", source)
         self.assertIn("app = ControlApp(", source)
         self.assertNotIn("ResearchPluginApp", source)
         self.assertNotIn("build_local_runtime", source)

@@ -5,7 +5,7 @@ from pathlib import Path
 import uvicorn
 
 from backend.app import ResearchPluginApp
-from backend.http_api import create_fastapi_app
+from backend.transport.http_api import create_fastapi_app
 from backend.execution.backends.fake import FakeSandboxBackend
 from tests.fakes import FakeRsyncSyncer
 

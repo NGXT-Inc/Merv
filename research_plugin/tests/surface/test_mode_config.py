@@ -1563,7 +1563,7 @@ class ModeCompositionTest(unittest.TestCase):
         self.assertIn("RESEARCH_PLUGIN_CONTROL_URL", ctx.exception.message)
 
     def test_daemon_loopback_exposes_data_plane_mcp_surface(self) -> None:
-        from backend.daemon_loopback import create_daemon_loopback_app
+        from backend.daemon.daemon_loopback import create_daemon_loopback_app
 
         class _StubLinks:
             @staticmethod

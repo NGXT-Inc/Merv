@@ -10,7 +10,7 @@ from .services.workflow import WorkflowService
 from .state import BaseStateStore, StateStore
 from .state.blobs import BlobStore
 from .observability import StructuredLogger
-from .record_core import build_record_core
+from .control.record_core import build_record_core
 from .tools.tool_facade import ToolDispatcher
 from .tools.tool_handlers import build_local_tool_handlers
 from .utils import ValidationError

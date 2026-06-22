@@ -19,11 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .app import ResearchPluginApp
-from .tools.contracts import PROJECT_SCOPED_TOOL_NAMES, static_tool_catalog
 from .daemon_marker import clear_marker, write_marker
-from .sandbox.sandbox_backend import SandboxBackend
-from .utils import NotFoundError, ValidationError, now_iso
+from ..app import ResearchPluginApp
+from ..sandbox.sandbox_backend import SandboxBackend
+from ..tools.contracts import PROJECT_SCOPED_TOOL_NAMES, static_tool_catalog
+from ..utils import NotFoundError, ValidationError, now_iso
 
 
 BackendFactory = Callable[[Path], SandboxBackend | None]

@@ -29,7 +29,7 @@ from ..tools.contracts import (
     TOOL_CONTRACTS,
 )
 from .feed_http import register_feed_routes
-from ..project_router import ProjectRouter
+from ..daemon.project_router import ProjectRouter
 from ..domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from ..domain.resource_selection import preferred_associated_resource
 from ..domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES

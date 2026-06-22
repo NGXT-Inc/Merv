@@ -226,7 +226,7 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_resolve_project_id_reads_the_daemon_route_map(self) -> None:
-        from backend.daemon_loopback import create_daemon_loopback_app
+        from backend.daemon.daemon_loopback import create_daemon_loopback_app
         from backend.dataplane.project_links import ProjectLinks
 
         links = ProjectLinks(db_path=self.repo / "links.sqlite")

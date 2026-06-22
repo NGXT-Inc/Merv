@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.project_router import ProjectRouter
+from backend.daemon.project_router import ProjectRouter
 
 
 def _backend_factory(_repo: Path) -> FakeSandboxBackend:

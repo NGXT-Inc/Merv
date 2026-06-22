@@ -31,11 +31,11 @@ from typing import Any
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 
-from . import __version__
-from .tools.contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
-from .control_client import ControlPlaneUnreachableError
-from .transport.mcp_http import register_mcp_routes
-from .utils import ResearchPluginError, ValidationError
+from .. import __version__
+from ..control.control_client import ControlPlaneUnreachableError
+from ..tools.contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
+from ..transport.mcp_http import register_mcp_routes
+from ..utils import ResearchPluginError, ValidationError
 
 
 def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:

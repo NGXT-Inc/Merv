@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from ..tools.contracts import AGGREGATE_TOOL_NAMES, DATA_PLANE_TOOL_NAMES, static_tool_catalog
-from ..control_client import HttpControlPlaneClient
+from ..control.control_client import HttpControlPlaneClient
 from ..dataplane import LocalDataPlaneWorker
 from ..dataplane.feed_images import LocalFeedImageReader
 from ..dataplane.http_channel import DaemonTaskLoop

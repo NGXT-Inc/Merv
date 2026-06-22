@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .utils import now_iso
+from ..utils import now_iso
 
 
 MARKER_FILENAME = "daemon.json"

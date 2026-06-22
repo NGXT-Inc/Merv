@@ -14,7 +14,7 @@ SERVICES = SERVICES_ROOT
 HTTP_TRANSPORT_MODULES = (
     BACKEND_ROOT / "transport" / "admin_http.py",
     BACKEND_ROOT / "transport" / "daemon_http.py",
-    BACKEND_ROOT / "daemon_loopback.py",
+    BACKEND_ROOT / "daemon" / "daemon_loopback.py",
     BACKEND_ROOT / "transport" / "feed_http.py",
     BACKEND_ROOT / "transport" / "http_api.py",
     BACKEND_ROOT / "transport" / "mcp_http.py",
@@ -1028,7 +1028,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_mcp_http_routes_are_shared_by_control_and_daemon(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
-        daemon_source = (BACKEND_ROOT / "daemon_loopback.py").read_text(encoding="utf-8")
+        daemon_source = (BACKEND_ROOT / "daemon" / "daemon_loopback.py").read_text(encoding="utf-8")
         mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(

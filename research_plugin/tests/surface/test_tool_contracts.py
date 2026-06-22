@@ -13,7 +13,7 @@ from backend.tools.contracts import (
     static_tool_catalog,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.project_router import ProjectRouter
+from backend.daemon.project_router import ProjectRouter
 from backend.tools.tool_facade import ToolDispatcher
 from backend.tools.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
 
