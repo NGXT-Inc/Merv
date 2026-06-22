@@ -19,3 +19,4 @@ logs/
 /.claude-plugin/
 /.codex/
 /tmp/
+/dev_docs/
