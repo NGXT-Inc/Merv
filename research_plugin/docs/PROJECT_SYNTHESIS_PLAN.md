@@ -57,7 +57,7 @@ Primitives this design reuses rather than reinvents:
   enforces valid JSON `version:1`, non-empty nodes with unique `id` + non-empty `label`, ≤16 nodes,
   edges referencing existing nodes, no self-loops, acyclic, ≤16 KB. `kind`/`detail`/`refs`/extras are
   free-form and ignored. **This lint is reused verbatim for the project graph.**
-- **Node `refs` → `ref_index` resolution** (`backend/http_api.py`): node `refs` are plain strings,
+- **Node `refs` → `ref_index` resolution** (`backend/transport/http_api.py`): node `refs` are plain strings,
   resolved server-side on read into links for resource (`res_`/path), review (`rev_`), claim
   (`claim_`), experiment (`exp_`). Verified live across all types. We extend it with `syn_`.
 - **Review capabilities**: one-time tokens, `target_snapshot_id` pinning, read-only reviewer funnel

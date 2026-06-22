@@ -1,5 +1,7 @@
 # Architecture Analysis — research-suite
 
+> **Historical snapshot (pre-reorg).** File paths below reflect the layout *at analysis time*. The improvement plan was subsequently implemented, and a backend folder reorg then moved several referenced modules into subpackages — notably `http_api.py`→`transport/`, `contracts.py`/`tool_*`→`tools/`, `sandbox_backend.py`/`sandbox_support.py`→`sandbox/`, and the `services/sandbox_*` cluster→`services/sandbox/`. See git history for the current layout; treat the paths here as the pre-reorg record.
+
 _Generated 2026-06-21 by a 90-agent multi-agent review: 11 source agents (9 code regions + 2 global lenses) each graded all 5 rubric points, every finding was adversarially verified by an independent skeptic, and a lead-architect agent synthesized the survivors. **48 findings survived verification; 30 were refuted.** Judged against [Architecture_Rubric.md](Architecture_Rubric.md)._
 
 ## Overall grade: **A-**
