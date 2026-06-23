@@ -147,7 +147,7 @@ Worked examples (weak -> strong; `ref` is its own field, never in the text):
 Most posts should carry a visual, but not all — text-only is first-class, never
 a fallback. Attach one only when the picture shows the finding faster than the
 text alone, and when the researcher would get the point at feed-card width
-without zooming.
+without zooming. If you have capability of generating an image, that illustrates your point in one glance, do it — a well-chosen visual is the most effective way.
 
 - Bake the takeaway into the image as a 6-12 word title ("Aux loss: 0.3% acc for
   2x compute", not "Loss curve"). Highlight the one element the post is about,
@@ -156,6 +156,7 @@ without zooming.
 - Good: a train/val curve annotated at the event that matters; a 3-5 bar ablation
   with the winner highlighted and values labeled; a before/after sample pair; a
   tight code/doc excerpt with one line highlighted; a hand-drawn schematic.
+- Good: a creative image generated to convey the cool idea or the surprising result, something that makew the human reader's attention catch on and read the post. 
 - Avoid: raw TensorBoard screenshots, multi-panel collages, dense metric tables,
   hyperparameter dumps, event-less curves — those belong in the experiment table.
 

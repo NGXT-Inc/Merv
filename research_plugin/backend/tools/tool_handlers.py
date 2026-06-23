@@ -27,6 +27,48 @@ def _experiment_list_agent(
     }
 
 
+def _mlflow_connection(
+    *, sandboxes: Any, project_id: str, experiment_id: str
+) -> dict[str, Any]:
+    """Central MLflow connection block for one experiment — the same context
+    sandboxes export (tracking URI, rp/<project>/<experiment> name, env vars),
+    surfaced so local (non-sandbox) runs can connect the same way."""
+    tracking = getattr(sandboxes, "mlflow_tracking", None)
+    if tracking is None or not project_id or not experiment_id:
+        return {"configured": False}
+    return tracking.context(project_id=project_id, experiment_id=experiment_id).to_dict()
+
+
+def _mlflow_guidance(block: dict[str, Any]) -> str:
+    if not block.get("configured"):
+        return (
+            "If you run a quantitative experiment, log it to MLflow — but no "
+            "central MLflow tracking URI is configured on this backend yet."
+        )
+    return (
+        "If you run a quantitative experiment, use MLflow: log params, metrics, "
+        "and artifacts to the centralized server. Set the variables in mlflow.env "
+        "(MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, …) before the run, or use "
+        "mlflow.autolog(); inside a sandbox they are already exported."
+    )
+
+
+def _trace_run(run: dict[str, Any], *, with_history: bool) -> dict[str, Any]:
+    """One run reduced to what the agent needs to reason about / plot: params,
+    final metric values, and (optionally) the downsampled metric curves."""
+    metrics = run.get("metrics") or {}
+    out: dict[str, Any] = {
+        "run_id": run.get("run_id"),
+        "run_name": run.get("run_name"),
+        "status": run.get("status"),
+        "params": run.get("params") or {},
+        "metrics": {k: v.get("last") for k, v in metrics.items() if isinstance(v, dict)},
+    }
+    if with_history:
+        out["history"] = run.get("history") or {}
+    return out
+
+
 def build_control_tool_handlers(
     *,
     workflow: Any,
@@ -59,6 +101,79 @@ def build_control_tool_handlers(
     ) -> dict[str, Any]:
         return _experiment_list_agent(experiments=experiments, project_id=project_id)
 
+    def experiment_transition_agent(
+        *,
+        experiment_id: str,
+        transition: str,
+        evidence: dict[str, Any] | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = experiments.transition(
+            experiment_id=experiment_id,
+            transition=transition,
+            evidence=evidence,
+            project_id=project_id,
+        )
+        # The moment an experiment starts running, hand the agent the MLflow
+        # connection block so a quantitative run — including a local, non-sandbox
+        # one — can log to the centralized server without hunting for the URI.
+        if isinstance(result, dict) and result.get("status") == "running":
+            block = _mlflow_connection(
+                sandboxes=sandboxes,
+                project_id=str(result.get("project_id") or project_id or ""),
+                experiment_id=experiment_id,
+            )
+            result["mlflow"] = block
+            result["mlflow_guidance"] = _mlflow_guidance(block)
+        return result
+
+    def experiment_mlflow_agent(
+        *, experiment_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
+        state = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+        block = _mlflow_connection(
+            sandboxes=sandboxes,
+            project_id=str(state.get("project_id") or project_id or ""),
+            experiment_id=experiment_id,
+        )
+        return {
+            "experiment_id": experiment_id,
+            "mlflow": block,
+            "guidance": _mlflow_guidance(block),
+        }
+
+    def mlflow_traces_agent(
+        *,
+        project_id: str | None = None,
+        experiment_id: str | None = None,
+        include_history: bool | None = None,
+    ) -> dict[str, Any]:
+        with_history = bool(experiment_id) if include_history is None else bool(include_history)
+        if experiment_id:
+            state = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+            pid = state.get("project_id") or project_id
+            targets = [(experiment_id, state.get("name") or experiment_id, state.get("status") or "")]
+        else:
+            pid = project_id
+            listed = experiments.list_experiments(project_id=project_id)["experiments"]
+            targets = [(e["id"], e.get("name") or e["id"], e.get("status") or "") for e in listed]
+        out = []
+        for eid, name, status in targets:
+            data = sandboxes.results_metrics(experiment_id=eid, project_id=pid)
+            runs = [
+                _trace_run(run, with_history=with_history)
+                for captured in (data.get("experiments") or [])
+                for run in (captured.get("runs") or [])
+            ]
+            out.append({
+                "experiment_id": eid,
+                "name": name,
+                "status": status,
+                "available": bool(data.get("available")),
+                "runs": runs,
+            })
+        return {"experiments": out, "include_history": with_history}
+
     return {
         "workflow.status_and_next": workflow.status_and_next_agent,
         "project.create": projects.create,
@@ -72,7 +187,9 @@ def build_control_tool_handlers(
         "experiment.create": experiments.create,
         "experiment.list": experiment_list_agent,
         "experiment.get_state": experiment_get_state_agent,
-        "experiment.transition": experiments.transition,
+        "experiment.transition": experiment_transition_agent,
+        "experiment.mlflow": experiment_mlflow_agent,
+        "mlflow.traces": mlflow_traces_agent,
         "reflection.create": reflections.create,
         "reflection.get": reflections.get,
         "reflection.list": reflections.list,

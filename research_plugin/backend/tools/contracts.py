@@ -137,6 +137,11 @@ class ExperimentTransitionInput(ProjectScopedInput):
     evidence: dict[str, Any] | None = None
 
 
+class MlflowTracesInput(ProjectScopedInput):
+    experiment_id: str | None = None
+    include_history: bool | None = None
+
+
 class ReflectionLensInput(ContractModel):
     id: str = Field(
         description=(
@@ -491,7 +496,33 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Apply an allowed experiment transition. See "
             "experiment.get_state.allowed_transitions for valid transitions "
-            "and their preconditions from the current status."
+            "and their preconditions from the current status. When a transition "
+            "starts the experiment running, the result includes an 'mlflow' "
+            "connection block for quantitative logging."
+        ),
+    ),
+    "experiment.mlflow": ToolContract(
+        input_model=ExperimentGetStateInput,
+        description=(
+            "Central MLflow connection details for one experiment: the tracking "
+            "URI, the rp/<project>/<experiment> experiment name, the dashboard "
+            "URL, and the env vars to set (MLFLOW_TRACKING_URI, "
+            "MLFLOW_EXPERIMENT_NAME, …). Use before a quantitative run — "
+            "especially a LOCAL (non-sandbox) one, where the env is not "
+            "pre-exported. Returns configured=false when no tracking server is set."
+        ),
+    ),
+    "mlflow.traces": ToolContract(
+        input_model=MlflowTracesInput,
+        description=(
+            "MLflow metric traces across the project's experiments, for visual "
+            "analysis. Without experiment_id: every experiment's runs with their "
+            "params and final metric values (a compact map to navigate). With "
+            "experiment_id (or include_history=true): also the full downsampled "
+            "curves ({metric: [[step, value], …]}) so you can plot them — e.g. "
+            "overlay val/acc across runs — and post the figure to the feed. Reads "
+            "the durable metrics archive; experiments with no metrics return "
+            "available=false."
         ),
     ),
     "reflection.create": ToolContract(

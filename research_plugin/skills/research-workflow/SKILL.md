@@ -149,10 +149,15 @@ export RP_TB_LOGDIR="<already set in sandbox commands>"
 mkdir -p "$RP_EXPERIMENT_DIR"/results "$RP_EXPERIMENT_DIR"/figures
 ```
 
-For local non-sandbox runs, use the backend-provided central MLflow URI if one
-is available. Do not create a file-backed local MLflow store as the default
-tracking path for Research Plugin experiments. If MLflow is unavailable, say so
-in the report and still save compact result files.
+For local non-sandbox runs, call `experiment.mlflow` to get the central tracking
+URI, the `rp/<project>/<experiment>` name, and the env vars (the same block
+sandboxes export) and set them before the run. `experiment.transition` to
+`start_running` also returns that `mlflow` block. To review or compare runs
+across experiments, call `mlflow.traces` (pass `experiment_id` for one
+experiment's full curves), then plot the comparison yourself — a labeled figure
+you can analyze and post to the feed. Do not create a file-backed
+local MLflow store as the default tracking path for Research Plugin experiments.
+If MLflow is unavailable, say so in the report and still save compact result files.
 
 Do not make tracking stores the only submitted result. Save compact evidence
 under the experiment folder, especially `results/*.json`, `results/*.csv`, and
