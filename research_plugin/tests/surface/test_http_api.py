@@ -295,6 +295,59 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(run["metrics"]["acc"]["last"], 0.91)
         self.assertEqual(run["history"]["acc"], [[10, 0.85], [20, 0.91]])
 
+    def test_project_mlflow_overview_scopes_runs_and_deep_links(self) -> None:
+        project = self.request("POST", "/api/projects", {"name": "MLflow Project"})
+        project_id = project["id"]
+        exp = self.request(
+            "POST", f"/api/projects/{project_id}/experiments", {"name": "exp-ml", "intent": "Train"}
+        )
+        exp_id = exp["id"]
+        mlflow = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.test",
+            dashboard_url="https://mlflow.test",
+            health_check=lambda: True,
+        )
+        self.app.mlflow_tracking = mlflow
+        self.app.sandboxes.mlflow_tracking = mlflow
+        self.app.sandboxes.metrics.mlflow_tracking = mlflow
+        # Seed the durable archive so the overview has curves without a sandbox.
+        self.app.sandboxes.metrics.metrics_archive.persist(
+            experiment_id=exp_id,
+            snapshot={
+                "source": "mlflow",
+                "experiments": [
+                    {
+                        "experiment_id": "7",
+                        "name": f"rp/{project_id}/{exp_id}",
+                        "runs": [
+                            {
+                                "run_id": "r1",
+                                "run_name": "seed_0",
+                                "status": "FINISHED",
+                                "params": {"lr": "0.001"},
+                                "metrics": {"acc": {"last": 0.92}},
+                                "history": {"acc": [[1, 0.5], [2, 0.92]]},
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
+        self.assertTrue(overview["mlflow"]["configured"])
+        self.assertEqual(overview["mlflow"]["dashboard_url"], "https://mlflow.test")
+        items = overview["experiments"]
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["experiment_id"], exp_id)
+        self.assertEqual(item["name"], "exp-ml")
+        # Deep link resolves the MLflow numeric id from the matching snapshot.
+        self.assertEqual(item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/7")
+        run = item["metrics"]["experiments"][0]["runs"][0]
+        self.assertEqual(run["history"]["acc"], [[1, 0.5], [2, 0.92]])
+
     def test_home_exposes_active_experiments_and_processes(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "Active Work Project"})
         project_id = project["id"]

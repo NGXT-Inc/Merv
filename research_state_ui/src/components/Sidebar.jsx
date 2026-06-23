@@ -31,6 +31,10 @@ export default function Sidebar({ onRefresh }) {
   const resources = useProjectStore(selectResources);
   const sandboxes = useProjectStore(selectSandboxes);
   const runningSandboxes = sandboxes.filter(s => s.status === 'running').length;
+  // Central MLflow spans every experiment, so its entry point is project-level.
+  // The /home payload's `mlflow` health block gates the nav row; the dedicated
+  // page (/p/<id>/mlflow) renders the project's runs, curves, and embedded UI.
+  const mlflowConfigured = home?.mlflow?.configured;
   const location = useLocation();
   const navigate = useNavigate();
   const px = useProjectHref();
@@ -127,6 +131,11 @@ export default function Sidebar({ onRefresh }) {
             </span>
           )}
         </NavLink>
+        {mlflowConfigured && (
+          <NavLink to={px('/mlflow')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
+            MLflow
+          </NavLink>
+        )}
       </nav>
 
       <NavLink to={px('/visual/dag')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>

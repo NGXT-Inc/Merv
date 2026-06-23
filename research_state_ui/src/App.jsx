@@ -31,6 +31,7 @@ import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
 import Debug from './pages/Debug';
 import VisualDag from './pages/VisualDag';
+import MlflowDashboard from './pages/MlflowDashboard';
 
 // /debug merged into /activity. Preserve ?tool= (v6 <Navigate> drops search).
 // Lives under /p/:projectId, so redirect into the same project's /activity.
@@ -160,6 +161,7 @@ export default function App() {
             <Route path="reviews" element={<MobileReviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<SandboxCardList />} />
+            <Route path="mlflow" element={<MobileMlflowNotice />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
             <Route path="visual/dag" element={<MobileDagNotice />} />
@@ -195,6 +197,7 @@ export default function App() {
             <Route path="reviews" element={<Reviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<Sandboxes />} />
+            <Route path="mlflow" element={<MlflowDashboard />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
             <Route path="visual/dag" element={<VisualDag />} />
@@ -221,6 +224,24 @@ function MobileDagNotice() {
       </header>
       <div className="empty-state">
         <p>The interactive lineage map is hover-driven and sized for a wide canvas. Open it on desktop, or browse the same evidence per experiment.</p>
+        <Link to={px('/experiments')} className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
+      </div>
+    </div>
+  );
+}
+
+// The MLflow page pairs native curves with an embedded MLflow drill-in sized
+// for a wide canvas; on touch, point to desktop rather than render the iframe.
+function MobileMlflowNotice() {
+  const px = useProjectHref();
+  return (
+    <div className="page-stage">
+      <header className="page-header">
+        <div className="page-eyebrow">MLflow</div>
+        <h1 className="page-title">Desktop only</h1>
+      </header>
+      <div className="empty-state">
+        <p>The project MLflow dashboard renders runs, metric curves, and the embedded MLflow UI on a wide canvas. Open it on desktop, or browse per-experiment metrics here.</p>
         <Link to={px('/experiments')} className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
       </div>
     </div>

@@ -41,6 +41,7 @@ from .http_policy import (
 from .mcp_http import register_mcp_routes
 from ..services.figure_view import build_experiment_figure
 from ..services.identity import LOCAL_PRINCIPAL
+from ..services.mlflow_tracking import mlflow_experiment_name
 from ..utils import (
     ContentUnavailableError,
     DataPlaneRequiredError,
@@ -262,6 +263,9 @@ class ResearchHttpApi:
             },
             "workflow": workflow,
             "active_experiment": active_experiment,
+            # Central, cross-experiment MLflow endpoint so the UI can offer a
+            # project-level entry point, not just per-sandbox dashboards.
+            "mlflow": self.app.mlflow_tracking.health(),
         })
 
     def experiments_view(self, project_id: str) -> dict[str, Any]:
@@ -623,6 +627,45 @@ class ResearchHttpApi:
     def results_metrics_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
         """Archived MLflow metrics — durable results that outlive the sandbox VM."""
         return self.app.sandboxes.results_metrics(experiment_id=experiment_id, project_id=project_id)
+
+    def mlflow_overview_view(self, *, project_id: str) -> dict[str, Any]:
+        """Project-wide MLflow: the central endpoint plus every experiment's
+        runs and metric curves, each with a deep link into the embedded MLflow
+        UI. Powers the dedicated, project-scoped MLflow page (the central
+        dashboard can't be URL-filtered to one project, so we scope it here)."""
+        health = self.app.mlflow_tracking.health()
+        dashboard_url = str(health.get("dashboard_url") or "").rstrip("/")
+        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        items: list[dict[str, Any]] = []
+        for exp in experiments:
+            eid = str(exp.get("id") or "")
+            if not eid:
+                continue
+            metrics = self.app.sandboxes.results_metrics(experiment_id=eid, project_id=project_id)
+            mlflow_name = mlflow_experiment_name(project_id=project_id, experiment_id=eid)
+            # Resolve MLflow's numeric experiment id from the snapshot so the UI
+            # can deep-link the embedded drill-in to {dashboard}/#/experiments/<id>.
+            captured = metrics.get("experiments") if isinstance(metrics, dict) else None
+            numeric_id = ""
+            for me in captured or []:
+                if str(me.get("name") or "") == mlflow_name:
+                    numeric_id = str(me.get("experiment_id") or "")
+                    break
+            if not numeric_id and captured:
+                numeric_id = str(captured[0].get("experiment_id") or "")
+            items.append({
+                "experiment_id": eid,
+                "name": exp.get("name") or eid,
+                "status": exp.get("status") or "",
+                "intent": exp.get("intent") or "",
+                "mlflow_experiment_name": mlflow_name,
+                "dashboard_experiment_url": (
+                    f"{dashboard_url}/#/experiments/{numeric_id}"
+                    if dashboard_url and numeric_id else ""
+                ),
+                "metrics": metrics,
+            })
+        return self._present({"mlflow": health, "experiments": items})
 
     def sandbox_health_view(self) -> dict[str, Any]:
         return self.app.sandboxes.backend_health()
@@ -1441,6 +1484,10 @@ def create_fastapi_app(
         return api_for_project(project_id).results_metrics_view(
             project_id=project_id, experiment_id=experiment_id
         )
+
+    @http.get("/api/projects/{project_id}/mlflow")
+    def project_mlflow(project_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).mlflow_overview_view(project_id=project_id)
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal")
     def sandbox_terminal(
