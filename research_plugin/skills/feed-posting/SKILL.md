@@ -1,24 +1,30 @@
 ---
 name: feed-posting
 description: >-
-  Use when an agent hits a high-signal aha-moment worth surfacing to the human
-  researcher — a surprising result, a real bottleneck finally breaking, a
-  direction-changing decision, a null result that kills a path, a non-obvious
-  cross-experiment pattern, or a calibrated hunch worth flagging — or when
-  feed.list returns a nudge after a long quiet stretch. Covers registering a
-  handle once with feed.register and writing brief, curated, one-idea posts
-  with feed.post (not one post per experiment).
+  Use whenever the work produces something the researcher would want to see — a
+  finding, a surprise, a pivot, a kill, a dead end, a hunch, real progress — and
+  post it to the feed, your main channel to them. Covers registering a handle
+  once with feed.register and writing brief, vivid, one-idea posts (a hard length
+  cap, usually with a visual) via feed.post. Lean toward posting the story of the
+  work, not toward silence; the feed is ungated but a cold feed leaves the
+  researcher in the dark.
 ---
 
 # Posting to the Feed
 
-The feed is a curated highlight reel of aha-moments for the one human researcher
-steering this project — not a log, not an audience. Completeness lives elsewhere
-(the experiment table, per-experiment reflections, registered resources); the
-feed's only job is salience plus your voice, and it is not one post per
-experiment. You are messaging one busy expert colleague who already opened the
-feed: attention is given, not won, and the default between genuine aha-moments
-is silence.
+The feed is your main channel to the researcher steering this project — how they
+follow the work as it happens, asynchronously and at a glance, without living in
+the dashboards. Treat it like a social feed you author: bring them along. Post
+the moments that make the work worth watching — findings, surprises, pivots,
+dead ends, hunches — in a brief, vivid voice, usually with a visual that lands
+the point in one glance. Posts are short by design (a hard ~280-char cap), so
+each one is a single sharp idea, not a paragraph. The structured layer (the
+experiment table, per-experiment reflections, registered resources) carries
+completeness; the feed carries the story and your read on it, and it is not one
+post per experiment. Keep it alive — a cold feed leaves the researcher in the
+dark. The only restraint is quality: don't narrate the boring (a bare "exp done,
+acc 0.81" the table already shows), and don't inflate (hype you can't back with
+a number).
 
 ## Core model
 
@@ -30,8 +36,8 @@ is silence.
   whole surface.
 - `ref`: optional anchor to the entity a post is about. Empty `ref` is an
   un-anchored thought — fully supported and common.
-- The nudge: a backup hint on `feed.list`'s first page after a long silence. A
-  "have I under-curated?" prompt, not the trigger to post.
+- The nudge: a backup hint on `feed.list`'s first page after a long quiet
+  stretch — a "the feed's gone cold, bring them back" prompt.
 - Posts are permanent: append-only, no edit and no delete. Correct a wrong post
   only by posting again and saying what changed.
 
@@ -47,7 +53,7 @@ and never fails the post.
 feed.register (once, on connect)
   -> work ...
   -> does this clear the curation bar?
-       no  -> stay silent (the normal state), keep working
+       no  -> keep working; the next interesting beat won't be far
        yes -> feed.list (recall prior posts; avoid repeats/contradiction)
             -> feed.post (one idea, lead with the finding)
             -> back to work
@@ -73,11 +79,13 @@ A text-only, un-anchored post is equally valid — omit `image_path` and `ref`:
 }
 ```
 
-## When to post — the curation bar
+## What's worth a post
 
-This is the primary decision, made fresh each turn, and it defaults to silence.
-The feed is ungated precisely so you exercise restraint. Post only when the
-moment is one of these and you can state the so-what in a single line:
+Made fresh each turn: would someone following this project want to see this? The
+feed is ungated so you can keep it lively — the bar filters for interest and
+importance, not rarity. Each post is one sharp idea inside the length cap, so
+pick the moment and the single line that carries it. Post when the moment is one
+of these and you can land the so-what in a line:
 
 - Unexpected — a result that contradicts your hypothesis or a prior.
 - Direction-changing — it changes what you do next: a pivot, a kill, an unblock.
@@ -86,10 +94,10 @@ moment is one of these and you can state the so-what in a single line:
 - Connection — a non-obvious pattern across experiments or claims.
 - Hunch — a calibrated intuition worth flagging, even if un-anchored.
 
-Then one filter: would the researcher be glad you interrupted them, or does the
-structured layer already carry this? A bare "exp finished, accuracy 0.81" is the
-experiment table's job, not yours — if the table or reflections already show it,
-stay silent.
+Then one filter: would the researcher be glad to see this, or does the
+structured layer already carry it? A bare "exp finished, accuracy 0.81" is the
+experiment table's job, not yours — if the table or reflections already show the
+state, skip it and post the take instead.
 
 - Null and negative results are first-class. Say what they rule out; only the
   feed can editorialize "this path is dead." A confirmed dead end the next wave
@@ -194,21 +202,23 @@ width and points at nothing.
   allowed, hype is not. You may say what you would bet on; you may not use a
   superlative you cannot back with a number. Drop "breakthrough", "game-changing",
   and exclamation stacks.
-- No public-social mechanics: no hashtags, no @-bait, no engagement questions, no
-  threads or cliffhangers, no virality framing, no posting-time gaming. The
-  audience is one researcher who wants signal — there is nothing to win and
-  credibility to lose.
+- Engage for real, don't perform. A genuine question to the researcher ("chase
+  the loader bottleneck next, or ship the eval first?") or a clear "here's what
+  I'd do next" is the conversation — welcome. What's banned is theater with no
+  one to win over: hashtags, @-bait, cliffhangers, "more soon", virality framing,
+  posting-time gaming. One researcher wants your signal and your read, not growth
+  hacks.
 
 ## The nudge
 
 The nudge appears only on `feed.list`'s first page (`before_seq` is `None`) and
-only after a long silence — when both 8+ non-feed events and 6+ wall-clock hours
-have passed since your last post.
+only after a long quiet stretch — when both 8+ non-feed events and 6+ wall-clock
+hours have passed since your last post.
 
-- It is a backup safety net, never a command, and it never blocks; the feed is
-  ungated.
-- Read it as "have I under-curated?" — re-scan recent activity for a missed
-  aha-moment and post only if one genuinely clears the bar. Staying silent when
-  nudged is fine.
-- Posting filler to silence the nudge defeats its purpose and spends the
-  researcher's trust.
+- It is a backup signal that the feed has gone cold, never a command, and it
+  never blocks; the feed is ungated.
+- Read it as "bring them back" — re-scan recent activity for something worth
+  sharing and post it. There is almost always a finding, a pivot, or a read
+  worth a line.
+- The one thing not to do is post filler just to clear the nudge — that spends
+  the researcher's trust. Post something real, or keep working toward it.
