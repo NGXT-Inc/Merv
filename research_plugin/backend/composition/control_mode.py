@@ -1,7 +1,7 @@
 """Control-plane (cloud) composition (cloud plan Phase 8, §3.4).
 
 Builds the multi-tenant control plane: record services + workflow + reviews +
-sandbox lifecycle/provisioner/reaper + blob store + leases + quotas + auth.
+sandbox lifecycle/provisioner/reaper + blob store + leases + quotas.
 Store from build_state_store (Postgres in hosted/no-repo-root control; SQLite
 only when an explicit dev/test repo_root is supplied). Blob store from
 build_blob_store (a bucket is required for hosted/no-repo-root control so the
@@ -32,7 +32,6 @@ from fastapi import FastAPI
 from ..config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
-    CONTROL_REQUIRE_AUTH_ENV_VAR,
     CONTROL_RESTRICT_CORS_ENV_VAR,
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
@@ -51,7 +50,7 @@ from ..execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
 from ..services.cleanup import CleanupService
-from ..services.identity import AuthService
+from ..services.mlflow_tracking import CentralMlflowService
 from ..state.managed_mgmt_keys import MountedMgmtKeyStore
 from ..utils import ValidationError
 
@@ -73,13 +72,11 @@ class ControlPlaneServer:
         *,
         app: ControlApp,
         task_queue: HttpTaskQueue,
-        auth: AuthService,
         cleanup: CleanupService,
         fastapi_app: FastAPI,
     ) -> None:
         self.app = app
         self.task_queue = task_queue
-        self.auth = auth
         # The cloud cleanup sweeps (plan Phase 9). Built but NOT scheduled here —
         # scheduling is a documented seam (a managed cron / sidecar tick calls
         # ``cleanup.run_all(now=...)``). The reaper thread that IS owned lives in
@@ -96,8 +93,8 @@ def build_control_app(
     repo_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
-) -> tuple[ControlApp, HttpTaskQueue, AuthService]:
-    """Build the control-plane app, its daemon task queue, and AuthService.
+) -> tuple[ControlApp, HttpTaskQueue]:
+    """Build the control-plane app and its daemon task queue.
 
     ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
     production omits it and must provide DB_URL + BLOB_BUCKET + a mounted
@@ -127,13 +124,13 @@ def build_control_app(
         task_channel=task_channel,
         execution_backend=execution_backend,
         mgmt_keys=_build_mgmt_key_store(env=env),
+        mlflow_tracking=CentralMlflowService.from_env(env),
     )
-    auth = AuthService(store=app.store)
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
     # live VMs must re-acquire reaping. SandboxService already started the
     # reaper thread; this resumes any reconcile/reap work for rows left running.
     _resume_active_sandboxes(app=app)
-    return app, task_queue, auth
+    return app, task_queue
 
 
 def build_control_server(
@@ -142,8 +139,8 @@ def build_control_server(
     env: Mapping[str, str] | None = None,
     allowed_origins: list[str] | None = None,
 ) -> ControlPlaneServer:
-    """Build the control-plane FastAPI server (auth ON, daemon endpoints on)."""
-    app, task_queue, auth = build_control_app(repo_root=repo_root, env=env)
+    """Build the control-plane FastAPI server (daemon endpoints on)."""
+    app, task_queue = build_control_app(repo_root=repo_root, env=env)
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
     )
@@ -156,7 +153,6 @@ def build_control_server(
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs)
     fastapi_app = create_fastapi_app(
         app=app,
-        auth=auth,
         allowed_origins=origins,
         task_queue=task_queue,
         sync_targets_source=app.sandboxes.control_view,
@@ -166,7 +162,6 @@ def build_control_server(
     return ControlPlaneServer(
         app=app,
         task_queue=task_queue,
-        auth=auth,
         cleanup=cleanup,
         fastapi_app=fastapi_app,
     )
@@ -197,11 +192,6 @@ def _control_http_surface(
     *, env: Mapping[str, str] | None = None
 ) -> HttpSurfacePolicy:
     return HttpSurfacePolicy.for_surface(
-        require_bearer_auth=env_bool(
-            CONTROL_REQUIRE_AUTH_ENV_VAR, True, env=env
-        ),
-        require_privileged_bearer_auth=True,
-        enforce_project_scope=True,
         restrict_cors=env_bool(CONTROL_RESTRICT_CORS_ENV_VAR, True, env=env),
         hosted_control=True,
         expose_local_data_plane=False,

@@ -477,11 +477,10 @@ POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 
 ### Archived results metrics (outlive the VM)
 
-The MLflow tracking server runs *on* the sandbox, so terminating the VM would
-take the metrics history with it. The daemon therefore archives a structured
-snapshot of MLflow's state (experiments → runs → params, final metric values,
-and downsampled per-metric history) to local disk on every sync — throttled in
-the auto-sync loop — and force-refreshes it right before release/reap.
+MLflow tracking is backend-owned. The backend archives a compact structured
+snapshot of the centralized MLflow experiment (runs → params, final metric
+values, and downsampled per-metric history) on sync and before release/reap.
+For older sandbox-local runs, the pulled `mlflow.db` fallback remains readable.
 
 `GET .../results/metrics` serves that archive at any time, including long after
 the sandbox is terminated:
@@ -493,7 +492,6 @@ the sandbox is terminated:
   "sandbox_status": "terminated",
   "captured_at": "2026-06-11T01:23:45+00:00",
   "source": "mlflow",
-  "base_url": "http://127.0.0.1:64382",
   "experiments": [
     {
       "experiment_id": "1",
@@ -512,8 +510,9 @@ the sandbox is terminated:
 }
 ```
 
-`available: false` (with a `hint`) means nothing was ever captured — no MLflow
-runs existed, or the sandbox predates archiving. `history` arrays are
+`available: false` (with a `hint`) means nothing was captured yet — no MLflow
+runs existed, MLflow was unavailable, or the sandbox predates archiving.
+`history` arrays are
 `[step, value]` pairs downsampled to ≤1000 points; `metrics.*.last` is always
 the exact final value. Non-finite values (NaN/Inf) are stored as `null`.
 
@@ -534,22 +533,31 @@ A sandbox row looks like:
   "local_sync_dir": "/path/to/repo/experiments/exp_...",
   "initial_pushed": 12,
   "dashboards": {
-    "mlflow": "https://...modal.host",
     "tensorboard": "https://...modal.host"
+  },
+  "mlflow": {
+    "configured": true,
+    "mode": "external",
+    "tracking_uri": "https://mlflow.example.com",
+    "dashboard_url": "https://mlflow.example.com",
+    "experiment_name": "rp/proj_.../exp_...",
+    "env": {
+      "MLFLOW_TRACKING_URI": "https://mlflow.example.com",
+      "MLFLOW_EXPERIMENT_NAME": "rp/proj_.../exp_..."
+    }
   },
   "expires_at": "2026-06-01T18:00:00Z"
 }
 ```
 
-`dashboards` is a `name → URL` map for the in-sandbox observability servers
-(MLflow on port 5000, TensorBoard on 6006). Modal entries are public HTTPS URLs
-from encrypted tunnels; Lambda Labs entries are daemon-owned loopback URLs backed
-by SSH local forwards. The map is always present; expect an empty object when the
-backend exposed no dashboards (older rows, fake test backend, or dashboards that
-are still installing/starting). Render one tab per non-empty entry as an
-`<iframe>`. Treat non-loopback URLs as secret-by-obscurity for now. If provider
-tunnels relocate, the row updates on the next `sandbox.get`; local SSH forwards
-are recreated by the daemon when needed.
+`dashboards` is a `name → URL` map for sandbox-local dashboards. Today that is
+TensorBoard on port 6006. Modal entries are public HTTPS URLs from encrypted
+tunnels; Lambda Labs entries are daemon-owned loopback URLs backed by SSH local
+forwards. Centralized MLflow is exposed separately as the `mlflow` block because
+it is backend-owned, not a sandbox tunnel. Render one tab per non-empty
+dashboard entry and a separate MLflow link when `mlflow.configured` is true.
+If provider tunnels relocate, the row updates on the next `sandbox.get`; local
+SSH forwards are recreated by the daemon when needed.
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the experiment's
@@ -572,12 +580,12 @@ final-pull rsync and may return `final_pull_skipped: true` when a running final
 pull was skipped; local/reaper paths may still attempt a best-effort final pull
 before termination.
 
-Lambda Labs is the **default** backend (`RESEARCH_PLUGIN_EXECUTION_BACKEND`
-unset or `lambda_labs`): sandbox procurement launches a Lambda Labs VM with SSH
-and the baseline agent tooling installed via launch `user_data`. The same SSH
-rsync path is used for `sandbox.sync`; no provider volume or volume-like storage
-is required. Because Lambda machines are fixed GPU+CPU+RAM SKUs, the sandbox row
-carries the chosen `instance_type` and `region` alongside `gpu`/`cpu`/`memory`,
+Thunder Compute is the **default** backend (`RESEARCH_PLUGIN_EXECUTION_BACKEND`
+unset or `thunder_compute`): sandbox procurement launches a Thunder VM with SSH
+and installs the baseline agent tooling over the management SSH channel. The same
+SSH rsync path is used for `sandbox.sync`; no provider volume or volume-like
+storage is required. Thunder and Lambda Labs both use fixed GPU+CPU+RAM specs, so
+the sandbox row carries the chosen `instance_type` alongside `gpu`/`cpu`/`memory`,
 and the agent selects one from live availability (see the `needs_selection`
 response and `sandbox.options` in MCP_SERVER_CONTRACT.md).
 

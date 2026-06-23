@@ -132,6 +132,7 @@ class InProcessTaskChannel:
             sandbox_id = payload.get("sandbox_id")
             if sandbox_id is not None:
                 self.worker.stop_dashboards(sandbox_id=str(sandbox_id))
+                self.worker.stop_mlflow_access(sandbox_id=str(sandbox_id))
             self.worker.remove_conn_file(
                 experiment_id=str(payload["experiment_id"])
             )

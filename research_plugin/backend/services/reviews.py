@@ -141,11 +141,8 @@ class ReviewService:
         caller_session_id: str = "",
         tenant_id: str | None = None,
     ) -> dict[str, Any]:
-        # ``tenant_id`` is the authenticated principal's tenant (cloud plan
-        # Phase 7). None = local mode (single implicit 'local' tenant, auth
-        # off) — a no-op. When given, the request's project must belong to that
-        # tenant, so a reviewer authenticated to tenant B cannot start a review
-        # against tenant A's target.
+        # ``tenant_id`` is reserved for the future user-auth layer. None means
+        # the current private/local surface and skips tenant scoping.
         with self.store.transaction() as conn:
             req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (review_request_id,)).fetchone()
             if req is None:

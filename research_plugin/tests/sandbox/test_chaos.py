@@ -207,7 +207,7 @@ class ControlRestartTest(unittest.TestCase):
         from backend.composition.control_mode import build_control_app
 
         backend = self._reaper_backend()
-        app, _queue, _auth = build_control_app(
+        app, _queue = build_control_app(
             repo_root=self.staging,
             env=_mounted_mgmt_key_env(self.staging),
             execution_backend=backend,

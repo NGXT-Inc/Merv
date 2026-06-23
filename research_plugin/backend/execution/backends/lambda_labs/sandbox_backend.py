@@ -20,13 +20,19 @@ from typing import Any, Callable, Mapping
 from backend.execution.bootstrap_tools import (
     LAMBDA_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
-    REC_EXEC_CORE,
 )
-from backend.execution.transfer_spec import (
-    build_parachute_script,
-    parse_parachute_receipt,
-)
+from backend.execution.transfer_spec import parse_parachute_receipt
 from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
+from backend.execution.vm_bootstrap import (
+    DASHBOARD_SCRIPT,
+    MGMT_EXEC_SCRIPT,
+    MGMT_SSH_USER,
+    REC_SCRIPT,
+    SESSIONS_DIR_NAME,
+    TRACKING_ENV_EXPORTS,
+    TRANSCRIPT_FILENAME,
+    build_bootstrap_core,
+)
 from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from ....sandbox.sandbox_backend import (
@@ -42,8 +48,6 @@ from .client import LambdaCloudClient
 from .config import LambdaSandboxConfig
 
 
-SESSIONS_DIR_NAME = ".research_plugin_sessions"
-TRANSCRIPT_FILENAME = "transcript.log"
 TRANSCRIPT_TAIL_DEFAULT = 50_000
 # Sentinel prefix that rec.sh execs raw and UNRECORDED — recording such a read
 # would tee the tail output back into the very log being read. Since the
@@ -52,16 +56,6 @@ TRANSCRIPT_TAIL_DEFAULT = 50_000
 # sends this prefix; the rec.sh bypass is kept as a documented legacy/
 # defensive path for sandboxes bootstrapped before the switch.
 TRANSCRIPT_READ_PREFIX = "rp-transcript-read:"
-# The dedicated management principal (plan Phase 5, fixed decision 4).
-# Bootstrap creates this user with ONLY the management key authorized and an
-# sshd Match block that swaps the global rec.sh ForceCommand for the raw
-# pass-through below — so transcript polls and metrics samples are never
-# recorded as commands, and the parachute runs even when the user's machine
-# is gone. It gets passwordless sudo: the management channel's duties (tar
-# the experiment dir at reap, read logs whatever login wrote them) need root,
-# and the user key already grants root anyway — this is duty separation, not
-# privilege separation.
-MGMT_SSH_USER = "rpmgmt"
 TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
 TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
 # The parachute tars + uploads a whole experiment dir at reap time; give it
@@ -69,127 +63,9 @@ TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
 PARACHUTE_SSH_TIMEOUT_SECONDS = 600
 ACTIVE_INSTANCE_STATUSES = frozenset({"active"})
 LIVE_INSTANCE_STATUSES = frozenset({"booting", "active", "unhealthy"})
-DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
+DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
 
 SshRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
-
-
-REC_SCRIPT = r"""#!/usr/bin/env bash
-[ -f /opt/rp/env ] && . /opt/rp/env
-# Credentials (HF_TOKEN, etc.) are NOT baked into user_data (plan Phase 9,
-# risk 16). They are written post-boot to /opt/rp/secrets.env over the
-# management channel and sourced here, so the cleartext token never lives in
-# the provider's user_data blob or its on-disk copy.
-[ -f /opt/rp/secrets.env ] && . /opt/rp/secrets.env
-RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
-RP_WORKDIR="${RP_WORKDIR:-/workspace/$RP_EXPERIMENT_ID}"
-RP_EXPERIMENT_DIR="${RP_EXPERIMENT_DIR:-$RP_WORKDIR}"
-RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/data}"
-RP_DATASET_DIR="${RP_DATASET_DIR:-$RP_SANDBOX_DATA_DIR}"
-RP_DASH_DIR="${RP_DASH_DIR:-/workspace/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
-RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_DASH_DIR/tb}"
-MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://localhost:5000}"
-export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR RP_DASH_DIR RP_TB_LOGDIR MLFLOW_TRACKING_URI
-mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep" "$RP_DASH_DIR" 2>/dev/null || true
-if [ -x /opt/rp/start_dashboards.sh ]; then
-  /opt/rp/start_dashboards.sh >/dev/null 2>&1 || true
-fi
-LOG_DIR="$RP_DASH_DIR"
-LOG="$LOG_DIR/transcript.log"
-mkdir -p "$LOG_DIR" 2>/dev/null || true
-ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
-  # File-transfer protocols (rsync/scp/sftp) speak a binary protocol over stdio.
-  # The ForceCommand wrapper must hand them through untouched — teeing into the
-  # transcript log corrupts the stream. Only interactive/command shells get
-  # recorded. This is what lets the registry's rsync work once ForceCommand is
-  # active (it is set up early in user_data now).
-  case "$SSH_ORIGINAL_COMMAND" in
-    rsync\ --server*|*"sftp-server"*|internal-sftp*|scp\ -*)
-      exec bash -lc "$SSH_ORIGINAL_COMMAND"
-      ;;
-    rp-transcript-read:*)
-      # Daemon-internal transcript poll (sandbox.terminal). Runs raw and
-      # unrecorded: teeing it would feed the tail output back into the very
-      # log it reads, growing the transcript on every poll.
-      exec bash -c "${SSH_ORIGINAL_COMMAND#rp-transcript-read:}"
-      ;;
-  esac
-  { printf '\n[%s] $ %s\n' "$(ts)" "$SSH_ORIGINAL_COMMAND" >> "$LOG"; } 2>/dev/null || true
-  cd "$RP_EXPERIMENT_DIR" 2>/dev/null || true
-""" + REC_EXEC_CORE + r"""
-else
-  { printf '\n[%s] (interactive shell)\n' "$(ts)" >> "$LOG"; } 2>/dev/null || true
-  cd "$RP_EXPERIMENT_DIR" 2>/dev/null || true
-  exec bash -l
-fi
-"""
-
-
-# ForceCommand for the management principal: a raw pass-through. An explicit
-# wrapper instead of `ForceCommand none` keeps the exemption auditable in
-# /opt/rp and independent of the sshd build's support for the `none` argument.
-MGMT_EXEC_SCRIPT = r"""#!/usr/bin/env bash
-# research_plugin management channel (generated; plan Phase 5).
-# The management principal is exempt from the rec.sh transcript wrapper:
-# control-plane reads (transcript tail, metrics sampling) and the expiry
-# parachute run here, raw and unrecorded — recording a transcript read would
-# feed the tail output back into the very log it reads.
-exec bash -lc "${SSH_ORIGINAL_COMMAND:-bash -l}"
-"""
-
-
-DASHBOARD_SCRIPT = r"""#!/usr/bin/env bash
-set +e
-[ -f /opt/rp/env ] && . /opt/rp/env
-RP_EXPERIMENT_ID="${RP_EXPERIMENT_ID:-unknown}"
-RP_DASH_DIR="${RP_DASH_DIR:-/workspace/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
-RP_MLFLOW_DB="$RP_DASH_DIR/mlflow.db"
-RP_MLFLOW_ARTIFACTS="$RP_DASH_DIR/mlflow-artifacts"
-RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_DASH_DIR/tb}"
-mkdir -p "$RP_MLFLOW_ARTIFACTS" "$RP_TB_LOGDIR" 2>/dev/null || true
-
-pid_alive() {
-  pid_file="$1"
-  [ -s "$pid_file" ] || return 1
-  pid="$(cat "$pid_file" 2>/dev/null || true)"
-  [ -n "$pid" ] || return 1
-  kill -0 "$pid" >/dev/null 2>&1
-}
-
-if python3 -c 'import mlflow' >/dev/null 2>&1; then
-  if ! pid_alive "$RP_DASH_DIR/mlflow.pid"; then
-    (
-      cd /tmp || exit 0
-      nohup python3 -m mlflow server \
-        --host 127.0.0.1 --port 5000 \
-        --backend-store-uri "sqlite:///$RP_MLFLOW_DB" \
-        --artifacts-destination "file://$RP_MLFLOW_ARTIFACTS" \
-        --serve-artifacts \
-        >"$RP_DASH_DIR/mlflow.log" 2>&1 &
-      echo $! > "$RP_DASH_DIR/mlflow.pid"
-    )
-  fi
-else
-  {
-    printf '[%s] mlflow is not importable yet; dashboard not started\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    python3 -c 'import mlflow' 2>&1
-  } >> "$RP_DASH_DIR/mlflow.log" 2>&1 || true
-fi
-
-if python3 -c 'import tensorboard' >/dev/null 2>&1; then
-  if ! pid_alive "$RP_DASH_DIR/tensorboard.pid"; then
-    (
-      cd /tmp || exit 0
-      nohup python3 -m tensorboard.main \
-        --host 127.0.0.1 --port 6006 \
-        --logdir "$RP_TB_LOGDIR" \
-        >"$RP_DASH_DIR/tensorboard.log" 2>&1 &
-      echo $! > "$RP_DASH_DIR/tensorboard.pid"
-    )
-  fi
-fi
-"""
 
 
 class LambdaLabsSandboxBackend(SandboxBackendBase):
@@ -282,6 +158,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
                 ),
                 sandbox_data_dir=self.config.sandbox_data_dir,
                 management_public_key=request.management_public_key,
+                tracking_env=request.tracking_env,
                 # No tokens embedded in user_data (plan Phase 9, risk 16): they
                 # are delivered post-boot via write_secrets over the mgmt channel.
             )
@@ -786,120 +663,6 @@ def _sandbox_tokens() -> dict[str, str]:
     return tokens
 
 
-def build_bootstrap_core(
-    *,
-    public_key: str,
-    experiment_id: str,
-    workdir: str,
-    sessions_dir: str,
-    sandbox_data_dir: str,
-    management_public_key: str = "",
-    tokens: Mapping[str, str] | None = None,
-) -> str:
-    """Phase 1 of the VM bootstrap: reachable, writable, both keys live.
-
-    A shell fragment (no shebang) shared by ``build_user_data`` and the
-    docker-simulated VM integration test, so what the test exercises is the
-    bootstrap that ships. It creates the workspace tree, authorizes the user
-    key (root + ubuntu), provisions the management principal with ONLY the
-    management key, installs rec.sh + the dashboards script, and writes the
-    sshd config (global rec.sh ForceCommand; Match-exempt management user).
-    """
-    public_key_b64 = base64.b64encode(public_key.encode("utf-8")).decode("ascii")
-    rec_script_b64 = base64.b64encode(REC_SCRIPT.encode("utf-8")).decode("ascii")
-    dashboard_script_b64 = base64.b64encode(DASHBOARD_SCRIPT.encode("utf-8")).decode("ascii")
-    parachute_script_b64 = base64.b64encode(
-        build_parachute_script().encode("utf-8")
-    ).decode("ascii")
-    env_lines = "\n".join(
-        [
-            f"RP_WORKDIR={shlex.quote(workdir)}",
-            f"RP_EXPERIMENT_DIR={shlex.quote(workdir)}",
-            f"RP_EXPERIMENT_ID={shlex.quote(experiment_id)}",
-            f"RP_SANDBOX_DATA_DIR={shlex.quote(sandbox_data_dir)}",
-            f"RP_DATASET_DIR={shlex.quote(sandbox_data_dir)}",
-            f"RP_DASH_DIR={shlex.quote(sessions_dir)}",
-            f"RP_TB_LOGDIR={shlex.quote(sessions_dir + '/tb')}",
-            "MLFLOW_TRACKING_URI=http://localhost:5000",
-            # NOTE (plan Phase 9, risk 16): credentials are deliberately NOT
-            # embedded here. Cleartext in user_data lands in the provider's
-            # instance metadata and on the VM's disk. Tokens are delivered
-            # post-boot to /opt/rp/secrets.env over the management channel
-            # (SandboxBackend.write_secrets) and sourced by rec.sh. ``tokens``
-            # is accepted for signature stability but never written to user_data.
-        ]
-    )
-    _ = tokens  # intentionally unused: never embedded in user_data (see above)
-    mgmt_block = ""
-    if management_public_key:
-        mgmt_key_b64 = base64.b64encode(
-            management_public_key.encode("utf-8")
-        ).decode("ascii")
-        mgmt_exec_b64 = base64.b64encode(
-            MGMT_EXEC_SCRIPT.encode("utf-8")
-        ).decode("ascii")
-        mgmt_block = f"""
-# Management principal (plan Phase 5, fixed decision 4): only the management
-# key is authorized here, and the Match block below exempts it from the
-# global rec.sh ForceCommand so control-plane reads are never recorded as
-# commands. The Match append goes at the END of /etc/ssh/sshd_config, not in
-# sshd_config.d — Ubuntu's Include sits at the top of the main file, so a
-# Match opened in a conf.d snippet would swallow the distro directives that
-# follow it (UsePAM and friends are illegal inside Match blocks).
-useradd --create-home --shell /bin/bash {MGMT_SSH_USER} 2>/dev/null || true
-mkdir -p /home/{MGMT_SSH_USER}/.ssh
-printf '%s' {shlex.quote(mgmt_key_b64)} | base64 -d > /home/{MGMT_SSH_USER}/.ssh/authorized_keys
-chown -R {MGMT_SSH_USER}:{MGMT_SSH_USER} /home/{MGMT_SSH_USER}/.ssh
-chmod 700 /home/{MGMT_SSH_USER}/.ssh
-chmod 600 /home/{MGMT_SSH_USER}/.ssh/authorized_keys
-printf '{MGMT_SSH_USER} ALL=(ALL) NOPASSWD:ALL\\n' > /etc/sudoers.d/{MGMT_SSH_USER}
-chmod 440 /etc/sudoers.d/{MGMT_SSH_USER}
-printf '%s' {shlex.quote(mgmt_exec_b64)} | base64 -d > /opt/rp/mgmt_exec.sh
-chmod +x /opt/rp/mgmt_exec.sh
-cat >> /etc/ssh/sshd_config <<'RP_SSHD_MATCH'
-
-Match User {MGMT_SSH_USER}
-    ForceCommand /opt/rp/mgmt_exec.sh
-RP_SSHD_MATCH
-"""
-    return f"""# === Phase 1: make the VM reachable + writable FAST, before the slow installs ===
-# Create the workspace tree and authorize SSH up front so the registry's initial
-# rsync — which fires the moment SSH is reachable — always lands in a writable
-# directory. This used to run *after* a multi-minute Torch install, so the first
-# push could race a not-yet-existent /workspace and fail.
-mkdir -p /opt/rp /root/.ssh {shlex.quote(workdir)} {shlex.quote(sandbox_data_dir)} {shlex.quote(workdir)}/artifacts_to_keep {shlex.quote(sessions_dir)}
-printf '%s' {shlex.quote(public_key_b64)} | base64 -d > /root/.ssh/authorized_keys
-chmod 700 /root/.ssh
-chmod 600 /root/.ssh/authorized_keys
-if id ubuntu >/dev/null 2>&1; then
-  mkdir -p /home/ubuntu/.ssh
-  printf '%s' {shlex.quote(public_key_b64)} | base64 -d >> /home/ubuntu/.ssh/authorized_keys
-  chown -R ubuntu:ubuntu /home/ubuntu/.ssh {shlex.quote(workdir)} {shlex.quote(sandbox_data_dir)} {shlex.quote(sessions_dir)}
-  chmod 700 /home/ubuntu/.ssh
-  chmod 600 /home/ubuntu/.ssh/authorized_keys
-fi
-cat > /opt/rp/env <<'RP_ENV'
-{env_lines}
-RP_ENV
-printf '%s' {shlex.quote(rec_script_b64)} | base64 -d > /opt/rp/rec.sh
-printf '%s' {shlex.quote(dashboard_script_b64)} | base64 -d > /opt/rp/start_dashboards.sh
-printf '%s' {shlex.quote(parachute_script_b64)} | base64 -d > /opt/rp/parachute.sh
-chmod +x /opt/rp/rec.sh
-chmod +x /opt/rp/start_dashboards.sh
-chmod +x /opt/rp/parachute.sh
-{mgmt_block}cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
-PermitRootLogin prohibit-password
-PubkeyAuthentication yes
-PasswordAuthentication no
-AuthorizedKeysFile .ssh/authorized_keys
-ForceCommand /opt/rp/rec.sh
-PrintMotd no
-AcceptEnv LANG LC_*
-RP_SSHD
-systemctl restart ssh || systemctl restart sshd || service ssh restart || true
-"""
-
-
 def build_user_data(
     *,
     public_key: str,
@@ -909,6 +672,7 @@ def build_user_data(
     sandbox_data_dir: str,
     management_public_key: str = "",
     tokens: Mapping[str, str] | None = None,
+    tracking_env: Mapping[str, str] | None = None,
 ) -> str:
     apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
     python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
@@ -931,6 +695,7 @@ def build_user_data(
         sandbox_data_dir=sandbox_data_dir,
         management_public_key=management_public_key,
         tokens=tokens,
+        tracking_env=tracking_env,
     )
     return f"""#!/usr/bin/env bash
 set -euxo pipefail

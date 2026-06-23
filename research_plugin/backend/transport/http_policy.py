@@ -7,14 +7,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class HostedToolPolicy:
-    tenant_id_fallback: str | None = ""
     telemetry_from_review_request: bool = False
 
 
 @dataclass(frozen=True)
 class HttpSurfacePolicy:
-    require_bearer_auth: bool
-    require_privileged_bearer_auth: bool
     restrict_cors: bool
     hosted_control: bool
     expose_local_data_plane: bool
@@ -22,27 +19,17 @@ class HttpSurfacePolicy:
     allow_data_plane_http: bool
     allow_data_plane_tool_calls: bool
     use_hosted_tool_policies: bool
-    enforce_project_scope: bool
     release_uses_final_pull: bool
 
     @classmethod
     def for_surface(
         cls,
         *,
-        require_bearer_auth: bool,
-        require_privileged_bearer_auth: bool | None = None,
-        enforce_project_scope: bool | None = None,
         restrict_cors: bool,
         hosted_control: bool,
         expose_local_data_plane: bool,
     ) -> "HttpSurfacePolicy":
         return cls(
-            require_bearer_auth=require_bearer_auth,
-            require_privileged_bearer_auth=(
-                require_bearer_auth
-                if require_privileged_bearer_auth is None
-                else require_privileged_bearer_auth
-            ),
             restrict_cors=restrict_cors,
             hosted_control=hosted_control,
             expose_local_data_plane=expose_local_data_plane,
@@ -50,11 +37,6 @@ class HttpSurfacePolicy:
             allow_data_plane_http=expose_local_data_plane,
             allow_data_plane_tool_calls=expose_local_data_plane,
             use_hosted_tool_policies=hosted_control,
-            enforce_project_scope=(
-                require_bearer_auth
-                if enforce_project_scope is None
-                else enforce_project_scope
-            ),
             release_uses_final_pull=expose_local_data_plane,
         )
 
@@ -66,7 +48,7 @@ class HttpSurfacePolicy:
 
 
 HOSTED_CONTROL_TOOL_POLICIES = {
-    "project.create": HostedToolPolicy(tenant_id_fallback=None),
+    "project.create": HostedToolPolicy(),
     "project.list": HostedToolPolicy(),
     "project.current": HostedToolPolicy(),
     "review.start": HostedToolPolicy(telemetry_from_review_request=True),

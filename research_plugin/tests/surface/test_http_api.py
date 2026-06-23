@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from backend.app import ResearchPluginApp
+from backend.services.mlflow_tracking import CentralMlflowService
 from backend.transport.http_api import ResearchHttpApi, create_fastapi_app
 from backend.daemon.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
@@ -181,11 +182,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
         self.assertEqual(sandbox["status"], "running")
         self.assertTrue(sandbox["sandbox_id"])
-        # The HTTP row carries observability dashboard URLs (MLflow + TensorBoard)
-        # so the UI can render an iframe tab per non-empty entry.
+        # The HTTP row carries provider dashboard URLs. TensorBoard remains a
+        # sandbox dashboard; centralized MLflow is agent tracking context.
         self.assertIn("dashboards", sandbox)
-        self.assertIn("mlflow", sandbox["dashboards"])
-        self.assertTrue(sandbox["dashboards"]["mlflow"].startswith("https://"))
+        self.assertIn("tensorboard", sandbox["dashboards"])
+        self.assertNotIn("mlflow", sandbox["dashboards"])
 
         listed = self.request("GET", f"/api/projects/{project_id}/sandboxes")["sandboxes"]
         self.assertEqual(len(listed), 1)
@@ -243,9 +244,17 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.app.call_tool(
             "sandbox.request", {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"}
         )
+        mlflow = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.test",
+            health_check=lambda: True,
+        )
+        self.app.sandboxes.mlflow_tracking = mlflow
+        self.app.sandboxes.metrics.mlflow_tracking = mlflow
 
         url = f"/api/projects/{project_id}/experiments/{exp_id}/results/metrics"
-        empty = self.request("GET", url)
+        with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=None):
+            empty = self.request("GET", url)
         self.assertFalse(empty["available"])
         self.assertIn("hint", empty)
 
@@ -269,14 +278,15 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 }
             ],
         }
-        with patch("backend.dataplane.worker.snapshot_mlflow", return_value=snapshot):
+        with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=snapshot):
             self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
         live = self.request("GET", url)
         self.assertTrue(live["available"])
         self.assertEqual(live["sandbox_status"], "running")
+        self.assertNotIn("base_url", live)
 
         # Release with MLflow already unreachable — the last good archive serves on.
-        with patch("backend.dataplane.worker.snapshot_mlflow", return_value=None):
+        with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=None):
             self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
         durable = self.request("GET", url)
         self.assertTrue(durable["available"])

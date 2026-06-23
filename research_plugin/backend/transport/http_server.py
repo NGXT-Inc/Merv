@@ -19,8 +19,8 @@ import uvicorn
 from ..app import ResearchPluginApp
 from ..config import (
     Mode,
-    resolve_control_token,
     resolve_control_url,
+    resolve_daemon_state_dir,
     resolve_mode,
 )
 from ..daemon.daemon_marker import clear_marker, write_marker
@@ -141,7 +141,8 @@ def _serve_control(*, host: str, port: int) -> int:
     """Run the cloud control-plane composition (cloud plan Phase 8).
 
     Hosted/no-repo-root control requires durable DB, durable blob store, and a
-    mounted management key. Auth is ON.
+    mounted management key. This is a private operator-run control surface
+    until the real auth system lands.
     """
     from ..composition import build_control_server
 
@@ -173,9 +174,13 @@ def _serve_daemon(*, host: str, port: int) -> int:
     from ..composition import build_daemon_server
     from ..daemon.daemon_loopback import create_daemon_loopback_app
 
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise SystemExit(f"daemon mode refuses non-loopback host: {host}")
     control_url = resolve_control_url()
-    token = resolve_control_token()
-    daemon = build_daemon_server(control_url=control_url, token=token)
+    daemon = build_daemon_server(
+        control_url=control_url,
+        workspace_root=resolve_daemon_state_dir(),
+    )
     daemon.start()
     loopback = create_daemon_loopback_app(daemon=daemon)
     host, selected_port, uv, server_socket = _serve_uvicorn(
@@ -255,7 +260,10 @@ def main() -> int:
     if args.activity_stderr:
         os.environ["RESEARCH_PLUGIN_ACTIVITY_STDERR"] = "1"
 
-    router = ProjectRouter(registry_db_path=Path(args.registry_store))
+    router = ProjectRouter(
+        registry_db_path=Path(args.registry_store),
+        manage_local_mlflow=True,
+    )
     server = make_http_server(router=router, host=args.host, port=args.port)
     host, port = server.server_address
     print(f"research_plugin HTTP API listening on http://{host}:{port}", flush=True)

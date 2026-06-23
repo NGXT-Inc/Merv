@@ -24,9 +24,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# local = today's single-process install: both planes, the provider SDK, the
-# SQLite store and LocalDirBlobStore (no extra store/blob deps needed).
-local = ["modal>=1.4,<2"]
+# local = today's single-process install: both planes, the provider SDK, local
+# SQLite/dir stores, and the backend-owned MLflow server.
+local = ["modal>=1.4,<2", "mlflow==2.18.0"]
 # control = the cloud control plane: Postgres driver + object-store SDK + auth.
 # No provider SDK is required at module load (modal is lazily imported at one
 # site); a control plane that provisions Modal still needs it, so include it.
@@ -40,6 +40,7 @@ research-plugin-mcp = "mcp_server.__main__:main"
 research-plugin-http = "backend.transport.http_server:main"
 research-plugin-daemon = "backend.transport.http_server:daemon_main"
 research-plugin-control = "backend.transport.http_server:control_main"
+research-plugin-client = "backend.client_cli:main"
 
 [tool.setuptools.packages.find]
 # Discover backend + mcp_server AND their subpackages (backend.services,
@@ -48,4 +49,4 @@ research-plugin-control = "backend.transport.http_server:control_main"
 # could not import backend.services — the source-checkout tests never caught it
 # because they run from a copytree, not the wheel. ``find`` keeps the wheel and
 # the checkout in sync. research_state_ui has no __init__ and is excluded anyway.
-include = ["backend*", "mcp_server*"]
+include = ["backend*", "mcp_server*", "research_plugin_shared*"]

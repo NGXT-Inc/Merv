@@ -4,8 +4,7 @@ A user-machine process that holds the SSH keys, conn files, and repo↔project
 links, and moves bytes for the cloud. It runs:
 
 - a ``LocalDataPlaneWorker`` (rsync push/pull, conn files, dashboards),
-- an ``HttpControlPlaneClient`` upstream to the cloud (bearer token from the
-  0600 token file),
+- an ``HttpControlPlaneClient`` upstream to the cloud,
 - a ``DaemonTaskLoop`` long-polling the cloud for data-plane tasks
   (initial_push | sync_pull | final_pull | conn_refresh | teardown | parachute_restore),
 - an auto-sync loop that asks the cloud "my running sandboxes + lease grants"
@@ -23,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 import time
 from collections.abc import Mapping
@@ -47,27 +47,43 @@ from ..workspace import LocalWorkspace
 
 
 def _ensure_loopback_secret(*, root: Path) -> str:
-    """A local auth secret for the daemon's loopback surface (plan Phase 8,
-    risk 11). The daemon holds the cloud token + the user private keys behind a
-    loopback HTTP surface; a per-daemon secret (0600 file) keeps another local
-    process from driving it. Minimal but real; unix-socket bind is the Phase 9
-    hardening upgrade.
-    """
     path = root / "daemon_secret"
     try:
         existing = path.read_text(encoding="utf-8").strip()
         if existing:
+            _lock_secret_file(path)
             return existing
     except OSError:
         pass
     token = mint_secret(prefix="", nbytes=32)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(token, encoding="utf-8")
-        path.chmod(0o600)
-    except OSError:
-        pass
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+        _lock_secret_file(path)
+    except OSError as exc:
+        raise ValidationError(
+            f"cannot persist daemon loopback secret at {path}",
+            details={"path": str(path)},
+        ) from exc
     return token
+
+
+def _lock_secret_file(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+        mode = path.stat().st_mode & 0o777
+    except OSError as exc:
+        raise ValidationError(
+            f"cannot secure daemon loopback secret at {path}",
+            details={"path": str(path)},
+        ) from exc
+    if mode & 0o077:
+        raise ValidationError(
+            f"daemon loopback secret must not be group/world-readable: {path}",
+            details={"path": str(path), "mode": oct(mode)},
+        )
 
 
 class DaemonServer:
@@ -114,6 +130,7 @@ class DaemonServer:
         self.task_loop.stop()
         if self._auto_sync_thread is not None:
             self._auto_sync_thread.join(timeout=2.0)
+        self.worker.stop_mlflow_access()
 
     def list_tools(self) -> list[dict[str, Any]]:
         """The local MCP catalog: data-plane tools plus aggregate enrichers."""
@@ -175,8 +192,7 @@ class DaemonServer:
     def _request_sandbox(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        _repo_root, project_id = self._linked_scope(context=context)
         experiment_id = self._required_arg(arguments, "experiment_id")
         public_key, _key_path = self.worker.ensure_keypair(experiment_id=experiment_id)
         payload = dict(arguments)
@@ -190,8 +206,7 @@ class DaemonServer:
     def _sync_sandbox(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        _repo_root, project_id = self._linked_scope(context=context)
         payload = dict(arguments)
         payload["project_id"] = project_id
         payload["experiment_id"] = self._required_arg(arguments, "experiment_id")
@@ -200,8 +215,7 @@ class DaemonServer:
     def _post_feed(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        repo_root, project_id = self._linked_scope(context=context)
         payload: dict[str, Any] = {
             "project_id": project_id,
             "handle": self._required_arg(arguments, "handle"),
@@ -234,8 +248,7 @@ class DaemonServer:
     def _sandbox_get_enrichment(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        _repo_root, project_id = self._linked_scope(context=context)
         args = dict(arguments)
         args["project_id"] = project_id
         facts = self.control.call("sandbox.get", args)
@@ -281,8 +294,7 @@ class DaemonServer:
     def _register_resource_files(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        repo_root, project_id = self._linked_scope(context=context)
         kind = str(arguments.get("kind") or "other")
         title = str(arguments.get("title") or "")
         created_by = str(arguments.get("created_by") or "codex")
@@ -319,8 +331,7 @@ class DaemonServer:
     def _associate_resource(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
-        repo_root = self._repo_root_from_context(context=context)
-        project_id = self._project_id(arguments=arguments, repo_root=repo_root)
+        repo_root, project_id = self._linked_scope(context=context)
         resource_id = self._required_arg(arguments, "resource_id")
         role = self._required_arg(arguments, "role")
         intent = {
@@ -399,10 +410,11 @@ class DaemonServer:
             raise ValidationError("repo_root context is required for data-plane tools")
         return Path(repo_root).expanduser().resolve()
 
-    def _project_id(self, *, arguments: dict[str, Any], repo_root: Path) -> str:
-        project_id = str(arguments.get("project_id") or "")
-        if project_id:
-            return project_id
+    def _linked_scope(self, *, context: dict[str, Any]) -> tuple[Path, str]:
+        repo_root = self._repo_root_from_context(context=context)
+        return repo_root, self._project_id(repo_root=repo_root)
+
+    def _project_id(self, *, repo_root: Path) -> str:
         linked = self.project_links.project_for_repo(repo_root=str(repo_root))
         if linked:
             return linked
@@ -511,6 +523,7 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
             sandbox_id = payload.get("sandbox_id")
             if sandbox_id is not None:
                 worker.stop_dashboards(sandbox_id=str(sandbox_id))
+                worker.stop_mlflow_access(sandbox_id=str(sandbox_id))
             worker.remove_conn_file(experiment_id=str(payload["experiment_id"]))
             return None
         if task_type == "parachute_restore":
@@ -534,7 +547,6 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
 def build_daemon_server(
     *,
     control_url: str | None,
-    token: str | None = None,
     workspace_root: Path | None = None,
     client_id: str | None = None,
     env: Mapping[str, str] | None = None,
@@ -559,7 +571,7 @@ def build_daemon_server(
     backend = build_sandbox_backend(repo_root=root, activity=lambda *_a, **_k: None)
     worker = LocalDataPlaneWorker(workspace=workspace, backend=backend)
     resolved_client_id = client_id or worker.client_id()
-    control = HttpControlPlaneClient(base_url=control_url, token=token)
+    control = HttpControlPlaneClient(base_url=control_url)
     view = HttpControlPlaneView(
         control=control, worker=worker, client_id=resolved_client_id
     )

@@ -40,12 +40,11 @@ from .http_policy import (
 )
 from .mcp_http import register_mcp_routes
 from ..services.figure_view import build_experiment_figure
-from ..services.identity import LOCAL_PRINCIPAL, AuthError, AuthService
+from ..services.identity import LOCAL_PRINCIPAL
 from ..utils import (
     ContentUnavailableError,
     DataPlaneRequiredError,
     NotFoundError,
-    PermissionDeniedError,
     ResearchPluginError,
     ValidationError,
     WorkflowError,
@@ -55,13 +54,6 @@ from ..state.activity import effective_source, is_event_ok
 
 
 JsonBody = dict[str, Any] | None
-
-
-def _project_id_from_api_path(path: str) -> str | None:
-    parts = path.strip("/").split("/")
-    if len(parts) >= 3 and parts[0] == "api" and parts[1] == "projects":
-        return parts[2] or None
-    return None
 
 
 def _activity_event_project_id(event: dict[str, Any]) -> str | None:
@@ -136,6 +128,7 @@ class ResearchHttpApi:
             "repo_root": str(self.app.workspace.repo_root),
             "store": str(self.app.store.db_path),
             "activity_log": str(self.app.activity.log_path),
+            "mlflow": self.app.mlflow_tracking.health(),
         }
 
     def activity(
@@ -861,26 +854,21 @@ def create_fastapi_app(
     app: ResearchPluginApp | None = None,
     *,
     router: ProjectRouter | None = None,
-    auth: AuthService | None = None,
     allowed_origins: list[str] | None = None,
     task_queue: Any | None = None,
     sync_targets_source: Any | None = None,
     cleanup: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
 ) -> FastAPI:
-    # HTTP surface seam (cloud plan Phase 7). ``auth=None`` is local mode:
-    # auth OFF, the implicit LOCAL_PRINCIPAL on every request, CORS wide open,
-    # loopback bind enforced by http_server, and local data-plane routes
-    # exposed. An injected AuthService currently builds the hosted-control
-    # surface: mandatory bearer auth, restricted CORS, and no local data-plane
-    # routes.
+    # HTTP surface seam. Local mode exposes data-plane routes and accepts
+    # repo_root context. Hosted control hides local data-plane routes and relies
+    # on the local daemon/proxy to resolve repo_root -> project_id.
     if (app is None) == (router is None):
         raise ValueError("provide exactly one of app or router")
     surface = surface_policy or HttpSurfacePolicy.for_surface(
-        require_bearer_auth=auth is not None,
-        restrict_cors=auth is not None,
-        hosted_control=auth is not None,
-        expose_local_data_plane=auth is None,
+        restrict_cors=False,
+        hosted_control=False,
+        expose_local_data_plane=True,
     )
     api = (
         ResearchHttpApi(app=app, expose_local_data_plane=surface.expose_local_data_plane)
@@ -906,16 +894,6 @@ def create_fastapi_app(
             ResearchHttpApi(app=app, expose_local_data_plane=surface.expose_local_data_plane)
             if app is not None
             else None
-        )
-
-    def require_project_scope(
-        *, target: ResearchHttpApi, project_id: str, principal: Any
-    ) -> None:
-        if not surface.enforce_project_scope:
-            return
-        target.app.projects.require_project_scope(
-            project_id=project_id,
-            tenant_id=getattr(principal, "tenant_id", "") or "",
         )
 
     def route_call_tool(
@@ -968,11 +946,6 @@ def create_fastapi_app(
             # the pull; reapers and local/daemon calls still use the full path.
             request = validated_contract_input()
             target = api_for_project(request.project_id)
-            require_project_scope(
-                target=target,
-                project_id=request.project_id,
-                principal=principal,
-            )
             return target._present(
                 target.app.sandboxes.release(
                     experiment_id=request.experiment_id,
@@ -994,12 +967,7 @@ def create_fastapi_app(
             else None
         )
         if policy is not None:
-            call_kwargs: dict[str, Any] = {
-                "internal_kwargs": {
-                    "tenant_id": getattr(principal, "tenant_id", "")
-                    or policy.tenant_id_fallback
-                }
-            }
+            call_kwargs: dict[str, Any] = {}
             if policy.telemetry_from_review_request:
                 call_kwargs["telemetry_project_id"] = (
                     api.app.reviews.request_project_id(
@@ -1021,32 +989,17 @@ def create_fastapi_app(
                 )
             arguments["project_id"] = projects[0]["id"]
         if (
-            surface.enforce_project_scope
-            and not (contract is not None and contract.tenant_scoped_sandbox_lookup)
-            and name in PROJECT_SCOPED_TOOL_NAMES
-            and arguments.get("project_id")
-        ):
-            require_project_scope(
-                target=api,
-                project_id=str(arguments["project_id"]),
-                principal=principal,
-            )
-        if (
-            surface.enforce_project_scope
+            surface.hosted_control
             and contract is not None
-            and contract.tenant_scoped_sandbox_lookup
+            and contract.hosted_control_sandbox_lookup
         ):
             request = validated_contract_input()
             result = api.app.sandboxes.get(
                 experiment_id=request.experiment_id,
                 project_id=request.project_id,
-                tenant_id=getattr(principal, "tenant_id", "") or "",
+                tenant_id=None,
                 include_data_plane_enrichment=False,
             )
-            if getattr(principal, "client_id", "") == "daemon":
-                result["_experiment_name"] = api.app.sandboxes.registry.experiment_name(
-                    experiment_id=request.experiment_id
-                )
             return result
         return api.app.call_tool(name=name, arguments=arguments, activity_source=activity_source)
 
@@ -1063,123 +1016,38 @@ def create_fastapi_app(
             },
         )
 
-    def require_daemon_principal(request: Request) -> Any:
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_privileged_bearer_auth:
-            return principal
-        if getattr(principal, "client_id", "") != "daemon":
-            raise PermissionDeniedError(
-                "daemon-scoped bearer token required",
-                details={"required_client_id": "daemon"},
-            )
-        return principal
-
-    def require_admin_principal(request: Request) -> Any:
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_privileged_bearer_auth:
-            return principal
-        if getattr(principal, "client_id", "") != "admin":
-            raise PermissionDeniedError(
-                "admin-scoped bearer token required",
-                details={"required_client_id": "admin"},
-            )
-        return principal
-
-    def require_tenant_or_admin(request: Request, tenant_id: str) -> Any:
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        if not surface.require_privileged_bearer_auth:
-            return principal
-        if not getattr(request.state, "authenticated", False):
-            raise PermissionDeniedError(
-                "tenant/admin bearer token required",
-                details={"required_client_id": "admin"},
-            )
-        if getattr(principal, "client_id", "") == "admin":
-            return principal
-        if getattr(principal, "tenant_id", "") != tenant_id:
-            raise NotFoundError(f"tenant counters not found: {tenant_id}")
-        return principal
-
-    def require_daemon_project(request: Request, project_id: str) -> ResearchHttpApi:
-        principal = require_daemon_principal(request)
-        target = api_for_project(project_id)
-        require_project_scope(target=target, project_id=project_id, principal=principal)
-        return target
-
-    def require_http_project(request: Request, project_id: str) -> ResearchHttpApi:
-        target = api_for_project(project_id)
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        require_project_scope(target=target, project_id=project_id, principal=principal)
-        return target
-
-    def visible_project_ids(principal: Any) -> set[str]:
-        if not surface.enforce_project_scope:
-            return set()
-        target = default_api()
-        if target is None:
-            return set()
-        return target.app.projects.project_ids_for_tenant(
-            tenant_id=getattr(principal, "tenant_id", "") or ""
-        )
-
-    def visible_project_scope(request: Request, project_id: str | None) -> set[str] | None:
-        if not surface.enforce_project_scope:
-            return None
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        allowed = visible_project_ids(principal)
-        if project_id:
-            if project_id not in allowed:
-                raise NotFoundError(f"project not found: {project_id}")
-            return {project_id}
-        return allowed
-
     http = FastAPI(title="Research Plugin API", version=__version__)
-    # CORS (cloud plan Phase 7): local mode keeps the wide-open `*` policy
-    # (loopback-only, auth off) — unchanged. Control mode uses an explicit
-    # allowed-origins list (empty by default until the hosted UI origin is
-    # configured) and allows the headers the SPA stamps on every request.
+    # CORS: local mode keeps the wide-open `*` policy (loopback-only).
+    # Control mode uses an explicit allowed-origins list.
     if surface.restrict_cors:
         http.add_middleware(
             CORSMiddleware,
             allow_origins=allowed_origins or [],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version", "Authorization"],
+            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version"],
         )
     else:
         http.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            # The client always stamps X-RP-Client-Version (and may send a bearer
-            # token); include them so the documented cross-origin dev override
-            # (rsui:apiBase → a working-tree daemon on another port) passes
-            # preflight instead of failing with "Failed to fetch".
-            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version", "Authorization"],
+            # The client always stamps X-RP-Client-Version; include it so the
+            # documented cross-origin dev override passes preflight.
+            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version"],
         )
 
     @http.middleware("http")
     async def attach_principal(request: Request, call_next):
-        # Principal middleware (cloud plan Phase 7). Auth off (local mode): the
-        # implicit LOCAL_PRINCIPAL is attached and behavior is unchanged —
-        # loopback bind already enforced by http_server. Auth on (control
-        # mode): a valid `Authorization: Bearer` is required; missing/invalid/
-        # expired/revoked returns 401 before any handler runs. CORS preflights
-        # (OPTIONS) are never authenticated.
         if request.method == "OPTIONS":
             return await call_next(request)
-        # /health is unauthenticated liveness (load balancers probe it before a
-        # token exists); it returns a slim, path-free shape in control mode, so
-        # no host detail leaks despite being open. /api/meta is the version
-        # handshake itself — a client calls it precisely to learn the floor it
-        # must clear, so it is never floor-gated (and stays unauthenticated so
-        # an upgrade can be discovered before a token is even minted).
+        request.state.principal = LOCAL_PRINCIPAL
+        request.state.authenticated = False
+        # /health is liveness; /api/meta is the version handshake itself.
         if request.url.path in ("/health", "/api/meta"):
             return await call_next(request)
         # Version/compat floor (cloud plan Phase 9). A below-floor client is
-        # rejected with an actionable upgrade error BEFORE auth, so an outdated
-        # daemon/proxy gets a clear "upgrade" message instead of a confusing
-        # partial failure deeper in. A missing header is TOLERATED (pre-Phase-9
-        # clients predate the handshake — see backend.version).
+        # rejected with an actionable upgrade error. A missing header is
+        # tolerated for pre-Phase-9 clients.
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
         if surface.hosted_control and client_version and is_below_floor(
             client_version=client_version, floor=MIN_PROXY_VERSION
@@ -1197,43 +1065,6 @@ def create_fastapi_app(
                 },
                 status_code=426,
             )
-        if not surface.require_bearer_auth:
-            request.state.principal = LOCAL_PRINCIPAL
-            request.state.authenticated = False
-            if auth is not None:
-                header = request.headers.get("authorization") or ""
-                token = header[7:].strip() if header[:7].lower() == "bearer " else None
-                if token:
-                    try:
-                        request.state.principal = auth.resolve(token=token)
-                        request.state.authenticated = True
-                    except AuthError as exc:
-                        return JSONResponse(
-                            {"detail": str(exc), "error_code": "unauthorized"},
-                            status_code=401,
-                        )
-            return await call_next(request)
-        header = request.headers.get("authorization") or ""
-        token = header[7:].strip() if header[:7].lower() == "bearer " else None
-        try:
-            assert auth is not None
-            request.state.principal = auth.resolve(token=token)
-            request.state.authenticated = True
-        except AuthError as exc:
-            return JSONResponse(
-                {"detail": str(exc), "error_code": "unauthorized"},
-                status_code=401,
-            )
-        project_id = _project_id_from_api_path(request.url.path)
-        if project_id is not None:
-            try:
-                require_http_project(request=request, project_id=project_id)
-            except ResearchPluginError as exc:
-                status = 404 if isinstance(exc, NotFoundError) else 400
-                return JSONResponse(
-                    {"detail": exc.message, "error_code": exc.error_code, **exc.details},
-                    status_code=status,
-                )
         return await call_next(request)
 
     @http.middleware("http")
@@ -1320,20 +1151,11 @@ def create_fastapi_app(
         if router is not None:
             return router.activity_recent(limit=limit, source=source, project_id=project_id)
         assert api is not None
-        if surface.enforce_project_scope:
-            return api.activity(
-                limit=limit,
-                source=source,
-                project_id=project_id,
-                project_ids=visible_project_scope(request, project_id),
-                include_unscoped_events=False,
-            )
         return api.activity(limit=limit, source=source, project_id=project_id)
 
-    # /api/debug/* expose tool-call internals. In control mode the principal
-    # middleware above already requires a valid bearer on every route, so these
-    # are principal-gated with no per-route change (cloud plan Phase 7); local
-    # mode keeps them open on loopback, unchanged.
+    # /api/debug/* expose tool-call internals. Hosted control is currently a
+    # private operator surface; the real auth system should gate these before
+    # broad exposure.
     @http.get("/api/debug/tool-calls")
     def tool_call_stats(
         request: Request,
@@ -1363,7 +1185,7 @@ def create_fastapi_app(
             status=status,
             tool=tool,
             project_id=project_id,
-            project_ids=visible_project_scope(request, project_id),
+            project_ids=None,
             limit=limit, sort=sort, order=order,
         )
 
@@ -1374,7 +1196,7 @@ def create_fastapi_app(
             raise NotFoundError("no project instantiated yet")
         return target.tool_call_detail(
             call_id=call_id,
-            project_ids=visible_project_scope(request, None),
+            project_ids=None,
         )
 
     @http.post("/api/debug/tool-calls/clear")
@@ -1382,18 +1204,13 @@ def create_fastapi_app(
         target = default_api()
         if target is None:
             return {"cleared": 0}
-        return target.tool_calls_clear(project_ids=visible_project_scope(request, None))
+        return target.tool_calls_clear(project_ids=None)
 
     @http.get("/api/projects")
     def list_projects(request: Request) -> dict[str, Any]:
         if router is not None:
             return router.list_projects()
         assert api is not None
-        if surface.enforce_project_scope:
-            principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-            return api.app.projects.list_projects(
-                tenant_id=getattr(principal, "tenant_id", "") or ""
-            )
         return api.call_tool(name="project.list", arguments={})
 
     @http.post("/api/projects", status_code=201)
@@ -1411,13 +1228,7 @@ def create_fastapi_app(
                 summary=summary,
             )
         assert api is not None
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
-        return api.create_project(
-            body=payload,
-            tenant_id=(getattr(principal, "tenant_id", "") or None)
-            if surface.enforce_project_scope
-            else None,
-        )
+        return api.create_project(body=payload, tenant_id=None)
 
     @http.get("/api/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:
@@ -1596,13 +1407,10 @@ def create_fastapi_app(
         request: Request,
         body: JsonBody = Body(default=None),
     ) -> dict[str, Any]:
-        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
         return api_for_project(project_id).start_review(
             project_id=project_id,
             body=body or {},
-            tenant_id=(getattr(principal, "tenant_id", "") or None)
-            if surface.enforce_project_scope
-            else None,
+            tenant_id=None,
         )
 
     @http.post("/api/projects/{project_id}/reviews/submit")
@@ -1677,13 +1485,7 @@ def create_fastapi_app(
     # themselves here, reading only off app.feed. Removing the feed is deleting
     # the feed package plus this one line.
     def app_for_feed(project_id: str, request: Request) -> ResearchPluginApp:
-        target = api_for_project(project_id)
-        require_project_scope(
-            target=target,
-            project_id=project_id,
-            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
-        )
-        return target.app
+        return api_for_project(project_id).app
 
     register_feed_routes(http, app_for=app_for_feed)
 
@@ -1719,13 +1521,12 @@ def create_fastapi_app(
     )
 
     def app_for_daemon_project(request: Request, project_id: str) -> ResearchPluginApp:
-        return require_daemon_project(request, project_id).app
+        return api_for_project(project_id).app
 
     register_daemon_routes(
         http,
         task_queue=task_queue,
         sync_targets_source=sync_targets_source,
-        require_daemon=require_daemon_principal,
         app_for_project=app_for_daemon_project,
     )
 
@@ -1734,8 +1535,6 @@ def create_fastapi_app(
         http,
         store=api.app.store if api is not None else None,
         cleanup=cleanup,
-        require_admin=require_admin_principal,
-        require_tenant_or_admin=require_tenant_or_admin,
     )
 
     return http

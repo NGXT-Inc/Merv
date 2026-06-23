@@ -48,7 +48,7 @@ from backend.dataplane.http_channel import DaemonTaskLoop, HttpTaskChannel, Http
 from backend.dataplane.project_links import ProjectLinks
 from backend.dataplane.remote_view import HttpControlPlaneView
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.services.identity import AuthService
+from backend.transport.http_policy import HttpSurfacePolicy
 from backend.transport.http_server import _bind_socket
 from backend.state import StateStore
 from backend.state.blobs import LocalDirBlobStore
@@ -141,6 +141,60 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("sandbox.request", names)
         self.assertIn("sandbox.sync", names)
         self.assertIn("feed.post", names)
+
+    def test_daemon_stop_stops_mlflow_reverse_tunnels(self) -> None:
+        class _Control:
+            pass
+
+        class _Worker:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+
+            def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
+                self.calls.append({"sandbox_id": sandbox_id})
+
+        worker = _Worker()
+        server = DaemonServer(
+            worker=worker,
+            control=_Control(),
+            task_loop=_NoopLoop(),
+            view=object(),
+            project_links=self.links,
+            loopback_secret="secret",
+        )
+
+        server.stop()
+
+        self.assertEqual(worker.calls, [{"sandbox_id": ""}])
+
+    def test_daemon_teardown_stops_mlflow_reverse_tunnel(self) -> None:
+        class _Worker:
+            def __init__(self) -> None:
+                self.dashboard_stops: list[str] = []
+                self.mlflow_stops: list[str] = []
+                self.removed_conn: list[str] = []
+
+            def stop_dashboards(self, *, sandbox_id: str = "") -> None:
+                self.dashboard_stops.append(sandbox_id)
+
+            def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
+                self.mlflow_stops.append(sandbox_id)
+
+            def remove_conn_file(self, *, experiment_id: str) -> None:
+                self.removed_conn.append(experiment_id)
+
+        worker = _Worker()
+        execute = build_daemon_executor(worker=worker, control=object())
+
+        execute(
+            "teardown",
+            {"experiment_id": "exp_1", "sandbox_id": "sbx_1"},
+            None,
+        )
+
+        self.assertEqual(worker.dashboard_stops, ["sbx_1"])
+        self.assertEqual(worker.mlflow_stops, ["sbx_1"])
+        self.assertEqual(worker.removed_conn, ["exp_1"])
 
     def test_feed_post_reads_image_locally_and_submits_bytes(self) -> None:
         (self.repo / "plot.png").write_bytes(_PNG)
@@ -310,7 +364,7 @@ class _HttpServerThread:
         self._sock.close()
 
 
-class AuthenticatedSplitProxyTest(unittest.TestCase):
+class PrivateSplitProxyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -322,12 +376,16 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
             execution_backend=FakeSandboxBackend(),
             rsync_syncer=FakeRsyncSyncer(),
         )
-        self.auth = AuthService(store=self.cloud_app.store)
-        self.token = self.auth.mint_token(tenant_id="acme")
-
         from backend.transport.http_api import create_fastapi_app
 
-        cloud_fastapi = create_fastapi_app(app=self.cloud_app, auth=self.auth)
+        cloud_fastapi = create_fastapi_app(
+            app=self.cloud_app,
+            surface_policy=HttpSurfacePolicy.for_surface(
+                restrict_cors=False,
+                hosted_control=True,
+                expose_local_data_plane=False,
+            ),
+        )
         self.cloud_client = TestClient(cloud_fastapi, raise_server_exceptions=False)
         self.cloud = _HttpServerThread(fastapi_app=cloud_fastapi)
         self.links = ProjectLinks(db_path=root / "daemon" / "links.sqlite")
@@ -348,7 +406,6 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
                 repo_root=self.repo,
                 daemon_url=self.daemon_loopback.url,
                 control_url=self.cloud.url,
-                token=self.token,
                 daemon_secret="auth-proxy-secret",
             )
         )
@@ -373,8 +430,8 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
         self.assertFalse(result.get("isError"), result.get("structuredContent"))
         return result["structuredContent"]
 
-    def test_authenticated_proxy_sends_project_id_not_repo_context(self) -> None:
-        project = self._call("project.create", name="Auth Split")
+    def test_split_proxy_sends_project_id_not_repo_context(self) -> None:
+        project = self._call("project.create", name="Private Split")
         self.links.link(repo_root=str(self.repo), project_id=project["id"])
         captured: list[dict] = []
         original = self.proxy._http_post
@@ -402,7 +459,6 @@ class AuthenticatedSplitProxyTest(unittest.TestCase):
                 "arguments": {"project_id": project["id"]},
                 "context": {"repo_root": str(self.repo)},
             },
-            headers={"Authorization": f"Bearer {self.token}"},
         )
         self.assertEqual(bad.status_code, 400, bad.text)
         self.assertEqual(bad.json()["reason"], "repo_root_hidden_from_cloud")

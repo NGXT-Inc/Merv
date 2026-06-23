@@ -55,13 +55,20 @@ SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
 TRANSCRIPT_TAIL_DEFAULT = 50_000
 
-# Observability dashboards. Both servers run in the sandbox on these ports and
-# are surfaced to the user through Modal encrypted tunnels (HTTPS). The names
-# here are the keys in `ProvisionedSandbox.dashboards` and the persisted
-# `sandboxes.dashboards_json` column.
-DASHBOARD_PORTS: Mapping[str, int] = {"mlflow": 5000, "tensorboard": 6006}
-MLFLOW_PORT = 5000
+# Observability dashboards. TensorBoard still runs in the sandbox and is
+# surfaced to the user through a Modal encrypted tunnel (HTTPS). MLflow is now
+# backend-owned centralized infrastructure; agents receive its tracking URI in
+# the sandbox tool response, not from a sandbox-local server.
+DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
 TENSORBOARD_PORT = 6006
+TRACKING_ENV_EXPORTS = (
+    "MLFLOW_TRACKING_URI",
+    "MLFLOW_EXPERIMENT_NAME",
+    "RP_PROJECT_ID",
+    "RP_ATTEMPT_ID",
+    "RP_SANDBOX_ID",
+    "RP_EXECUTION_BACKEND",
+)
 
 # The expiry parachute (plan Phase 5, fixed decision 5): pre-installed via
 # the image file layer next to rec.sh, executed at reap time through
@@ -99,32 +106,20 @@ if [ -n "${RP_MANAGEMENT_KEY:-}" ]; then
   printf '%s\n' "$RP_MANAGEMENT_KEY" >> /root/.ssh/authorized_keys
 fi
 chmod 600 /root/.ssh/authorized_keys
-# Observability dashboards: an MLflow tracking server on port 5000 and a
-# TensorBoard on port 6006. Both serve from the per-experiment sessions dir,
-# which lives OUTSIDE the experiment folder (it is sandbox-authored telemetry,
-# not experiment content). Launched as backgrounded processes BEFORE
-# `exec sshd` so they're already up by the time the agent's first SSH command
-# lands.
+# Observability dashboard: TensorBoard on port 6006 serves from the
+# per-experiment sessions dir, which lives OUTSIDE the experiment folder (it is
+# sandbox-authored telemetry, not experiment content). It is launched as a
+# backgrounded process BEFORE `exec sshd` so it is already up by the time the
+# agent's first SSH command lands.
 #
 # Failure to launch is non-fatal: a missing python package or a port collision
-# only loses observability for this run; the sandbox is still usable. The
-# transcript wrapper exports MLFLOW_TRACKING_URI to every command so training
-# code can log to MLflow without managing the server.
+# only loses TensorBoard observability for this run; the sandbox is still
+# usable. Centralized MLflow is reported to agents by the backend.
 RP_DASH_DIR="${RP_DASH_DIR:-/workspace/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
-RP_MLFLOW_DB="$RP_DASH_DIR/mlflow.db"
-RP_MLFLOW_ARTIFACTS="$RP_DASH_DIR/mlflow-artifacts"
 RP_TB_LOGDIR="$RP_DASH_DIR/tb"
-mkdir -p "$RP_MLFLOW_ARTIFACTS" "$RP_TB_LOGDIR" 2>/dev/null || true
+mkdir -p "$RP_TB_LOGDIR" 2>/dev/null || true
 {
-  # Run from /tmp so MLflow doesn't pollute the repo with its meta dir, and
-  # use file:// for artifacts so a missing artifact store doesn't crash logging.
   cd /tmp
-  nohup python -m mlflow server \
-    --host 0.0.0.0 --port 5000 \
-    --backend-store-uri "sqlite:///$RP_MLFLOW_DB" \
-    --artifacts-destination "file://$RP_MLFLOW_ARTIFACTS" \
-    --serve-artifacts \
-    >"$RP_DASH_DIR/mlflow.log" 2>&1 &
   nohup python -m tensorboard.main \
     --host 0.0.0.0 --port 6006 \
     --logdir "$RP_TB_LOGDIR" \
@@ -141,7 +136,12 @@ mkdir -p "$RP_MLFLOW_ARTIFACTS" "$RP_TB_LOGDIR" 2>/dev/null || true
   printf 'RP_DATASET_DIR=%q\n' "$RP_SANDBOX_DATA_DIR"
   printf 'RP_DASH_DIR=%q\n' "$RP_DASH_DIR"
   printf 'RP_TB_LOGDIR=%q\n' "$RP_TB_LOGDIR"
-  printf 'MLFLOW_TRACKING_URI=%s\n' 'http://localhost:5000'
+  for name in MLFLOW_TRACKING_URI MLFLOW_EXPERIMENT_NAME RP_PROJECT_ID RP_ATTEMPT_ID RP_SANDBOX_ID RP_EXECUTION_BACKEND; do
+    value="${!name:-}"
+    if [ -n "$value" ]; then
+      printf '%s=%q\n' "$name" "$value"
+    fi
+  done
   if [ -n "${HF_TOKEN:-}" ]; then
     printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
     printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
@@ -174,13 +174,13 @@ RP_WORKDIR="${RP_WORKDIR:-/workspace/$RP_EXPERIMENT_ID}"
 RP_EXPERIMENT_DIR="${RP_EXPERIMENT_DIR:-$RP_WORKDIR}"
 RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/data}"
 RP_DATASET_DIR="${RP_DATASET_DIR:-$RP_SANDBOX_DATA_DIR}"
-MLFLOW_TRACKING_URI="${MLFLOW_TRACKING_URI:-http://localhost:5000}"
 RP_DASH_DIR="${RP_DASH_DIR:-/workspace/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
 RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_DASH_DIR/tb}"
 if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
   HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
-export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN MLFLOW_TRACKING_URI RP_DASH_DIR RP_TB_LOGDIR
+export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN RP_DASH_DIR RP_TB_LOGDIR
+export MLFLOW_TRACKING_URI MLFLOW_EXPERIMENT_NAME RP_PROJECT_ID RP_ATTEMPT_ID RP_SANDBOX_ID RP_EXECUTION_BACKEND
 mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep" "$RP_DASH_DIR" 2>/dev/null || true
 LOG_DIR="$RP_DASH_DIR"
 LOG="$LOG_DIR/transcript.log"
@@ -249,6 +249,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             experiment_id=request.experiment_id,
             workdir=workdir,
             sandbox_data_dir=sandbox_data_dir,
+            tracking_env=request.tracking_env,
         )
         secrets = self._sandbox_secrets(modal)
         name = _sandbox_name(request.experiment_id)
@@ -258,10 +259,10 @@ class ModalSandboxBackend(SandboxBackendBase):
             "timeout": int(request.time_limit),
             "workdir": workdir,
             "unencrypted_ports": [22],
-            # MLflow (5000) and TensorBoard (6006) served from inside the
-            # sandbox over HTTPS-fronted Modal tunnels. URLs captured below
-            # after creation and persisted in the sandbox row as dashboards.
-            "encrypted_ports": [MLFLOW_PORT, TENSORBOARD_PORT],
+            # TensorBoard (6006) is served from inside the sandbox over a
+            # HTTPS-fronted Modal tunnel. MLflow is backend-owned and reported
+            # separately to agents as tracking context.
+            "encrypted_ports": [TENSORBOARD_PORT],
             "env": env,
             "cpu": request.cpu,
             "memory": int(request.memory),
@@ -589,8 +590,9 @@ class ModalSandboxBackend(SandboxBackendBase):
         experiment_id: str,
         workdir: str,
         sandbox_data_dir: str,
+        tracking_env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        return {
+        env = {
             "RP_AUTHORIZED_KEY": public_key,
             "RP_MANAGEMENT_KEY": management_public_key,
             "RP_EXPERIMENT_ID": experiment_id,
@@ -601,6 +603,11 @@ class ModalSandboxBackend(SandboxBackendBase):
                 experiment_id=experiment_id, root=remote_root_of(workdir)
             ),
         }
+        for key, value in (tracking_env or {}).items():
+            key = str(key)
+            if key in TRACKING_ENV_EXPORTS and value is not None:
+                env[key] = str(value)
+        return env
 
     def _sandbox_secrets(self, modal: Any) -> list[Any]:
         """Build Modal sandbox secrets from the daemon environment.
@@ -727,7 +734,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         return self._cuda_image
 
     def _with_observability(self, image: Any) -> Any:
-        """Layer in the MLflow + TensorBoard servers used by the boot script.
+        """Layer in the MLflow client and TensorBoard server used by the boot script.
 
         Kept as its own layer below the heavy torch install so iterating on
         observability versions doesn't invalidate the multi-GB torch+CUDA

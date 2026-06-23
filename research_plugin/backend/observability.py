@@ -31,7 +31,7 @@ import json
 import sys
 from typing import Any
 
-from .config import resolve_auth_required
+from .config import Mode, resolve_mode
 from .state.activity import SENSITIVE_KEYS
 from .utils import parse_iso
 
@@ -47,13 +47,13 @@ def _redact(fields: dict[str, Any]) -> dict[str, Any]:
 class StructuredLogger:
     """Emits redacted JSON log lines to stdout, in control mode only.
 
-    ``enabled`` defaults to "control mode is on" (``resolve_auth_required``) so
+    ``enabled`` defaults to "control mode is on" so
     local mode never gains stdout noise; tests force it on. ``stream`` is
     injectable so a test can capture without touching real stdout.
     """
 
     def __init__(self, *, enabled: bool | None = None, stream: Any | None = None) -> None:
-        self.enabled = resolve_auth_required() if enabled is None else enabled
+        self.enabled = (resolve_mode() is Mode.CONTROL) if enabled is None else enabled
         self._stream = stream if stream is not None else sys.stdout
 
     def log(

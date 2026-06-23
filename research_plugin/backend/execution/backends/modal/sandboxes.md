@@ -91,7 +91,7 @@ The base image installs the baseline agent tooling plus two scripts:
 
 - `/opt/rp/boot.sh` writes `$RP_AUTHORIZED_KEY`, creates the experiment dir,
   `/workspace/data`, `artifacts_to_keep/`, and the sessions dir, starts
-  observability servers, then `exec`s `sshd -D`.
+  TensorBoard, then `exec`s `sshd -D`.
 - `/opt/rp/rec.sh` is the `ForceCommand` transcript wrapper.
 
 ## Visibility: the transcript wrapper
@@ -107,17 +107,19 @@ The wrapper records commands, streams stdout/stderr back to the SSH channel, and
 preserves the real command exit status. `sandbox.terminal` reads the transcript
 live from the running sandbox.
 
-## Training observability: MLflow + TensorBoard
+## Training observability: centralized MLflow + TensorBoard
 
-Every sandbox also runs two observability servers:
+Every sandbox installs the MLflow client package and receives the central
+tracking env from the backend. It does not run an MLflow tracking server.
 
-- MLflow tracking server on port `5000`, backed by
-  `$RP_DASH_DIR/mlflow.db` (outside the experiment folder).
-- TensorBoard on port `6006`, with `--logdir $RP_TB_LOGDIR`.
+TensorBoard still runs in the sandbox on port `6006`, with
+`--logdir $RP_TB_LOGDIR`.
 
-Both ports ship as Modal encrypted tunnels, so the daemon receives HTTPS URLs
-via `sandbox.tunnels()[port].url`. The dashboard servers are best-effort: a
-missing package or port collision loses observability for the run, never SSH.
+The TensorBoard port ships as a Modal encrypted tunnel, so the daemon receives
+an HTTPS URL via `sandbox.tunnels()[6006].url`. The dashboard is best-effort: a
+missing package or port collision loses TensorBoard observability for the run,
+never SSH. MLflow is reached through the backend-owned tracking URI in
+`MLFLOW_TRACKING_URI`.
 
 ## Shutdown / status
 

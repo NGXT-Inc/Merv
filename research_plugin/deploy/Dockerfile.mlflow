@@ -1,0 +1,22 @@
+# MLflow server image for the reference compose stack.
+#
+# Kept separate from deploy/Dockerfile so the control image does not carry
+# MLflow server dependencies.
+#
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN pip install \
+    "mlflow==2.18.0" \
+    "psycopg2-binary>=2.9,<3" \
+    "boto3>=1.34,<2"
+
+RUN useradd --create-home --uid 10002 mlflow
+USER mlflow
+
+EXPOSE 5000

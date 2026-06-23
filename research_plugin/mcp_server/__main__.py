@@ -9,8 +9,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
+
+from research_plugin_shared.client_config import (
+    DAEMON_SECRET_FILE_NAME,
+    CLIENT_CONFIG_ENV_VAR,
+    read_client_config,
+    read_secret_file,
+    resolve_client_config_path,
+)
 
 from .daemon_marker import discover_daemon_url
 from .proxy import DEFAULT_DAEMON_URL, HttpProxyMcpServer, ProxyConfig
@@ -39,16 +48,28 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(args.repo).resolve()
-    daemon_url = args.daemon_url or discover_daemon_url(repo_root=repo_root)
-    # Split-transport config (cloud plan Phase 8, §3.4). The cloud bearer token
-    # and the daemon loopback secret are read from files so they never sit in a
-    # process arg or env value that gets logged. None ⇒ local mode.
-    control_url = (args.control_url or "").rstrip("/") or None
-    token = _read_secret_file(os.environ.get("RESEARCH_PLUGIN_CONTROL_TOKEN_FILE"))
-    daemon_secret_file = os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
+    client_config_path = resolve_client_config_path()
+    client_config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(client_config_path)})
+    linked_client_config = (
+        client_config if _repo_is_linked(config=client_config, repo_root=repo_root) else {}
+    )
+    control_url = (
+        args.control_url or linked_client_config.get("control_url", "")
+    ).rstrip("/") or None
+    daemon_url = (
+        args.daemon_url
+        or discover_daemon_url(repo_root=repo_root)
+        or linked_client_config.get("daemon_url", "")
+    )
+    # The daemon loopback secret protects the local daemon API and is read from
+    # a file so it never sits in a process arg that gets logged.
+    daemon_secret_file = (
+        os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
+        or linked_client_config.get("daemon_secret_file")
+    )
     if control_url and not daemon_secret_file:
-        daemon_secret_file = str(Path.home() / ".research_plugin" / "daemon_secret")
-    daemon_secret = _read_secret_file(daemon_secret_file)
+        daemon_secret_file = str(Path.home() / ".research_plugin" / DAEMON_SECRET_FILE_NAME)
+    daemon_secret = read_secret_file(daemon_secret_file, keys=("token", "secret"))
 
     if not daemon_url and not control_url:
         # Don't hard-exit: Codex will call initialize before anything else, and
@@ -64,37 +85,31 @@ def main() -> int:
         repo_root=repo_root,
         daemon_url=daemon_url,
         control_url=control_url,
-        token=token,
         daemon_secret=daemon_secret,
     )
     HttpProxyMcpServer(config=config).serve()
     return 0
 
 
-def _read_secret_file(path: str | None) -> str | None:
-    """Read a token/secret from a file (JSON {"token": ...} or a bare line).
-
-    Never returns the value from an env var directly — secrets live in 0600
-    files so they don't leak into logged process state. None when unconfigured.
-    """
-    if not path:
-        return None
-    try:
-        raw = Path(path).expanduser().read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
+def _repo_is_linked(*, config: dict[str, str], repo_root: Path) -> bool:
+    raw = config.get("daemon_state_dir") or ""
     if not raw:
-        return None
+        return False
+    db_path = Path(raw).expanduser() / "project_links.sqlite"
+    if not db_path.exists():
+        return False
     try:
-        import json
-
-        parsed = json.loads(raw)
-    except ValueError:
-        return raw
-    if isinstance(parsed, dict):
-        token = parsed.get("token") or parsed.get("secret")
-        return str(token) if token else None
-    return raw
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM project_links WHERE repo_root = ? LIMIT 1",
+                (str(repo_root.expanduser().resolve()),),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 if __name__ == "__main__":

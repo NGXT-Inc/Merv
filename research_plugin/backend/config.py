@@ -23,6 +23,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from research_plugin_shared.client_config import (
+    CLIENT_CONFIG_ENV_VAR,
+    CONTROL_URL_ENV_VAR,
+    DAEMON_STATE_DIR_ENV_VAR,
+    read_client_config,
+    resolve_client_config_path,
+)
+
 from .utils import ValidationError
 
 if TYPE_CHECKING:  # the store import stays lazy at runtime (see build_state_store)
@@ -37,17 +45,18 @@ MODE_ENV_VAR = "RESEARCH_PLUGIN_MODE"
 DB_URL_ENV_VAR = "RESEARCH_PLUGIN_DB_URL"
 
 # Split-transport config (cloud plan Phase 8, §3.4). The daemon dials the cloud
-# at CONTROL_URL with a bearer token read from CONTROL_TOKEN_FILE; the cloud
-# never dials in. The blob bucket/dir selects the BlobStore impl per mode.
-CONTROL_URL_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_URL"
-CONTROL_TOKEN_FILE_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_TOKEN_FILE"
+# at CONTROL_URL. The cloud never dials in. The blob bucket/dir selects the
+# BlobStore impl per mode.
 BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
 MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "RESEARCH_PLUGIN_ALLOWED_ORIGINS"
-CONTROL_REQUIRE_AUTH_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_REQUIRE_AUTH"
 CONTROL_RESTRICT_CORS_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_RESTRICT_CORS"
+MLFLOW_MODE_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_MODE"
+MLFLOW_TRACKING_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI"
+MLFLOW_SERVER_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_SERVER_URI"
+MLFLOW_DASHBOARD_URL_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL"
 
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 
@@ -86,55 +95,31 @@ def resolve_db_url(env: Mapping[str, str] | None = None) -> str | None:
     return (source.get(DB_URL_ENV_VAR) or "").strip() or None
 
 
-def resolve_auth_required(env: Mapping[str, str] | None = None) -> bool:
-    """Whether the HTTP surface must authenticate every request (plan Phase 7).
+def resolve_daemon_state_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Machine-local daemon state root.
 
-    Derived from the mode, NOT from a separate switch, so auth-on and the
-    control topology are the same decision:
-
-    - ``local`` (default) ⇒ False: auth off, loopback bind enforced by
-      http_server, single implicit 'local' tenant — today's behavior.
-    - ``control`` ⇒ True: mandatory bearer auth on every route.
-    - ``daemon`` ⇒ False: it authenticates UPSTREAM to the control plane, not
-      its own (loopback) callers. The daemon's own loopback hardening (a local
-      auth secret) is a separate Phase 8 concern, not this bearer gate.
+    This is not a research repo. It stores the daemon registry, loopback secret,
+    pid/log files, sandbox keys, and other machine-local data-plane state. One
+    daemon state root can hold many repo→project links.
     """
-    return resolve_mode(env) is Mode.CONTROL
+    source = env if env is not None else os.environ
+    raw = (source.get(DAEMON_STATE_DIR_ENV_VAR) or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    config = read_client_config(env)
+    raw = (config.get("daemon_state_dir") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return resolve_client_config_path(env).parent
 
 
 def resolve_control_url(env: Mapping[str, str] | None = None) -> str | None:
     """The cloud control-plane URL the daemon dials, or None (plan §3.4)."""
     source = env if env is not None else os.environ
-    return (source.get(CONTROL_URL_ENV_VAR) or "").strip().rstrip("/") or None
-
-
-def resolve_control_token(env: Mapping[str, str] | None = None) -> str | None:
-    """Read the daemon's cloud bearer token from its 0600 token file (§3.4).
-
-    The file is JSON ``{"token": "..."}`` (matching the credentials.json shape
-    in the config matrix); a bare token line is also accepted. Never logged.
-    Returns None when no token file is configured (local control-to-daemon).
-    """
-    source = env if env is not None else os.environ
-    path = (source.get(CONTROL_TOKEN_FILE_ENV_VAR) or "").strip()
-    if not path:
-        return None
-    try:
-        import json
-
-        raw = Path(path).expanduser().read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
+    raw = (source.get(CONTROL_URL_ENV_VAR) or "").strip()
     if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return raw  # a bare token line
-    if isinstance(parsed, dict):
-        token = parsed.get("token")
-        return str(token) if token else None
-    return raw
+        raw = read_client_config(env).get("control_url", "")
+    return raw.rstrip("/") or None
 
 
 def resolve_blob_dir(env: Mapping[str, str] | None = None) -> str | None:
@@ -185,6 +170,39 @@ def resolve_allowed_origins(env: Mapping[str, str] | None = None) -> list[str]:
             )
         origins.append(origin)
     return origins
+
+
+def resolve_mlflow_mode(env: Mapping[str, str] | None = None) -> str:
+    """Centralized MLflow mode, or '' when MLflow is not configured yet."""
+    source = env if env is not None else os.environ
+    raw = (source.get(MLFLOW_MODE_ENV_VAR) or "").strip().lower()
+    if not raw:
+        return ""
+    if raw not in {"managed", "external"}:
+        raise ValidationError(
+            f"unknown {MLFLOW_MODE_ENV_VAR}: {raw!r} "
+            "(expected 'managed' or 'external')",
+            details={"mode": raw},
+        )
+    return raw
+
+
+def resolve_mlflow_tracking_uri(env: Mapping[str, str] | None = None) -> str:
+    """The backend-owned MLflow tracking URI exposed to agents."""
+    source = env if env is not None else os.environ
+    return (source.get(MLFLOW_TRACKING_URI_ENV_VAR) or "").strip().rstrip("/")
+
+
+def resolve_mlflow_server_uri(env: Mapping[str, str] | None = None) -> str:
+    """Optional backend-internal MLflow URI for control-plane reads."""
+    source = env if env is not None else os.environ
+    return (source.get(MLFLOW_SERVER_URI_ENV_VAR) or "").strip().rstrip("/")
+
+
+def resolve_mlflow_dashboard_url(env: Mapping[str, str] | None = None) -> str:
+    """Optional human-facing MLflow dashboard URL; defaults to tracking URI."""
+    source = env if env is not None else os.environ
+    return (source.get(MLFLOW_DASHBOARD_URL_ENV_VAR) or "").strip().rstrip("/")
 
 
 def build_blob_store(

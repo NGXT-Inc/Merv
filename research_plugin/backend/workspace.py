@@ -66,9 +66,10 @@ def local_sessions_dir(
 ) -> Path:
     """Daemon-owned local home for pulled sandbox telemetry, per VM generation.
 
-    MLflow/TensorBoard state and command transcripts are runtime telemetry,
-    not experiment content — they live outside the experiment folder, keyed by
-    sandbox id so one generation's pull never clobbers another's history.
+    TensorBoard state, command transcripts, and legacy sandbox-local MLflow
+    state are runtime telemetry, not experiment content — they live outside the
+    experiment folder, keyed by sandbox id so one generation's pull never
+    clobbers another's history.
     """
     base = (
         repo_root

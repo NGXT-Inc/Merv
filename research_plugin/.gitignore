@@ -6,6 +6,7 @@
 .venv/
 .codex/
 AGENTS.md
+serving.txt
 __pycache__/
 *.pyc
 .pytest_cache/

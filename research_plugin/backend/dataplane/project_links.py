@@ -71,3 +71,32 @@ class ProjectLinks:
         finally:
             conn.close()
         return str(row["project_id"]) if row is not None else None
+
+    def list_links(self) -> list[dict[str, str]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT repo_root, project_id, created_at FROM project_links ORDER BY repo_root"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "repo_root": str(row["repo_root"]),
+                "project_id": str(row["project_id"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def unlink(self, *, repo_root: str) -> bool:
+        canonical = str(Path(repo_root).expanduser().resolve())
+        conn = self._connect()
+        try:
+            with conn:
+                cur = conn.execute(
+                    "DELETE FROM project_links WHERE repo_root = ?", (canonical,)
+                )
+        finally:
+            conn.close()
+        return bool(cur.rowcount)

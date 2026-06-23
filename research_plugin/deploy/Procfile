@@ -4,10 +4,10 @@
 # never run in the same Procfile in production — but both entrypoints are shown
 # here so the console-script wiring is documented in one place.
 
-# Cloud control plane (auth on, reaper on, daemon endpoints on). Behind a
+# Cloud control plane (reaper on, daemon endpoints on). Keep private behind a
 # TLS-terminating load balancer. Needs RESEARCH_PLUGIN_DB_URL + _BLOB_BUCKET.
 control: research-plugin-control
 
 # User-machine data-plane daemon (rsync on, reaper off). Needs
-# RESEARCH_PLUGIN_CONTROL_URL + a 0600 RESEARCH_PLUGIN_CONTROL_TOKEN_FILE.
+# RESEARCH_PLUGIN_CONTROL_URL.
 daemon: research-plugin-daemon

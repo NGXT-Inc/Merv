@@ -17,6 +17,7 @@ from ..observability import StructuredLogger
 from ..ports.mgmt_keys import MgmtKeyStore
 from .record_core import build_record_core
 from ..sandbox.sandbox_backend import SandboxBackend
+from ..services.mlflow_tracking import CentralMlflowService
 from ..services.sandbox.sandboxes import SandboxService
 from ..services.workflow import WorkflowService
 from ..state import BaseStateStore
@@ -37,6 +38,7 @@ class ControlApp:
         execution_backend: SandboxBackend,
         task_channel: Any,
         mgmt_keys: MgmtKeyStore,
+        mlflow_tracking: CentralMlflowService | None = None,
         lease_client_id: str = "control",
     ) -> None:
         self.workspace = SimpleNamespace(repo_root=repo_root)
@@ -46,6 +48,11 @@ class ControlApp:
         self.structured_logger = StructuredLogger()
         self.blobs = blobs
         self.execution_backend = execution_backend
+        self.mlflow_tracking = (
+            mlflow_tracking
+            if mlflow_tracking is not None
+            else CentralMlflowService.from_env()
+        )
         self.worker = ControlSandboxWorker()
 
         self.record_core = build_record_core(store=self.store, blobs=self.blobs)
@@ -74,6 +81,7 @@ class ControlApp:
             blobs=self.blobs,
             quotas=self.quotas,
             task_channel=task_channel,
+            mlflow_tracking=self.mlflow_tracking,
         )
         self.workflow = WorkflowService(
             store=self.store,

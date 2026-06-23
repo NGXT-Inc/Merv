@@ -2,7 +2,7 @@
 
 Every local-IO duty of the sandbox stack routes through this seam (cloud plan
 §3.1): workspace folders, SSH keypairs and conn files, the initial rsync push,
-sync pulls, dashboard tunnels, and the pulled-``mlflow.db`` metrics fallback.
+sync pulls, dashboard tunnels, and the legacy pulled-``mlflow.db`` metrics fallback.
 Control-plane code (registry, provisioner, facade verbs) calls the interface;
 ``LocalDataPlaneWorker`` binds it to this machine by wrapping the existing
 machinery. In split mode the same duties become the daemon's task loop
@@ -33,13 +33,12 @@ from typing import Any, Callable, Protocol
 from ..execution.ssh_rsync import SshRsyncSyncer
 from ..env import env_float
 from ..sandbox.sandbox_backend import SandboxBackend
-from .metrics_archive import MetricsArchive, snapshot_mlflow, snapshot_mlflow_db
+from .metrics_archive import MetricsArchive, snapshot_mlflow_db
 from .sandbox_dashboards import DashboardTunnels
 from ..sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_INITIAL_PUSH_ATTEMPTS,
     DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
-    decode_dashboards,
 )
 from ..domain.sync_contract import (
     DIRECTION_POLICY,
@@ -48,6 +47,7 @@ from ..domain.sync_contract import (
 )
 from ..utils import ValidationError
 from ..workspace import LocalWorkspace
+from .mlflow_tunnels import MlflowReverseTunnels
 from .sandbox_conn import SandboxConnFiles
 from .state import SandboxLocalState
 
@@ -137,6 +137,12 @@ class DataPlaneWorker(Protocol):
 
     def stop_dashboards(self, *, sandbox_id: str = "") -> None: ...
 
+    def ensure_mlflow_access(
+        self, *, row: dict[str, Any], tracking_uri: str
+    ) -> dict[str, Any]: ...
+
+    def stop_mlflow_access(self, *, sandbox_id: str = "") -> None: ...
+
     def pulled_mlflow_db_path(self, *, experiment_id: str, name: str = "") -> Path: ...
 
     def capture_metrics_fallback(
@@ -180,6 +186,7 @@ class LocalDataPlaneWorker:
             key_path=self.key_path,
             local_state=self.state,
         )
+        self.mlflow_tunnels = MlflowReverseTunnels(key_path=self.key_path)
         # One rsync per experiment at a time; sync/release/reap contend.
         # Machine-local serialization only — subordinate to the sync lease,
         # which is the cross-client authority (plan Phase 4).
@@ -417,14 +424,22 @@ class LocalDataPlaneWorker:
     def stop_dashboards(self, *, sandbox_id: str = "") -> None:
         self.dashboards.stop(sandbox_id=sandbox_id)
 
+    def ensure_mlflow_access(
+        self, *, row: dict[str, Any], tracking_uri: str
+    ) -> dict[str, Any]:
+        return self.mlflow_tunnels.ensure(row=row, tracking_uri=tracking_uri)
+
+    def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
+        self.mlflow_tunnels.stop(sandbox_id=sandbox_id)
+
     # ---------- pulled-metrics fallback ----------
 
     def pulled_mlflow_db_path(self, *, experiment_id: str, name: str = "") -> Path:
-        # The sandbox's MLflow backend store, as mirrored locally by the rsync
-        # pull. Current layout: the daemon-owned sessions dir, one subdir per
-        # sandbox generation — pick the most recently modified db. Legacy
+        # Legacy sandbox-local MLflow backend store, as mirrored locally by the
+        # rsync pull. Current layout: the daemon-owned sessions dir, one subdir
+        # per sandbox generation — pick the most recently modified db. Older
         # layouts (sessions inside the synced folder) are checked as fallbacks
-        # so pre-change experiments keep their lazy metrics backfill.
+        # so pre-centralization experiments keep their lazy metrics backfill.
         sessions_base = self.workspace.sessions_dir(experiment_id=experiment_id)
         candidates = sorted(
             sessions_base.glob("*/mlflow.db"),
@@ -454,14 +469,6 @@ class LocalDataPlaneWorker:
         self, *, row: dict[str, Any], name: str = ""
     ) -> dict[str, Any] | None:
         experiment_id = str(row.get("experiment_id") or "")
-        try:
-            live = self.ensure_local_dashboards(row=row)
-        except Exception:  # noqa: BLE001 — fall back to the stored URLs
-            live = row
-        base_url = decode_dashboards(live.get("dashboards_json")).get("mlflow", "")
-        snapshot = snapshot_mlflow(base_url) if base_url else None
-        if snapshot is not None:
-            return snapshot
         return self.capture_metrics_fallback(experiment_id=experiment_id, name=name)
 
     def _portable_metrics_snapshot(
@@ -486,3 +493,4 @@ class LocalDataPlaneWorker:
         reports through this hook; Phase 4's task channel formalizes it.
         """
         self.dashboards.emit_event = emit_event
+        self.mlflow_tunnels.emit_event = emit_event

@@ -120,19 +120,20 @@ Do not reconstruct workflow state from memory.
 For quantitative ML work — training, evaluation, sweeps, ablations, or any run
 where metrics drive the conclusion — use MLflow for params/metrics/artifacts and
 TensorBoard for scalar curves/events. In a sandbox, `sandbox.request` /
-`sandbox.get` reports the prepared MLflow/TensorBoard environment. For local
-runs, you are responsible for creating it, for example from the repo root:
+`sandbox.get` reports a `mlflow` block and exports the same central MLflow env
+inside SSH commands:
 
 ```sh
-export RP_EXPERIMENT_DIR="$PWD/experiments/<name>"
-export MLFLOW_TRACKING_URI="file://$RP_EXPERIMENT_DIR/tracking/mlflow"
-export RP_TB_LOGDIR="$RP_EXPERIMENT_DIR/tracking/tensorboard"
-mkdir -p \
-  "$RP_EXPERIMENT_DIR"/tracking/mlflow \
-  "$RP_TB_LOGDIR" \
-  "$RP_EXPERIMENT_DIR"/results \
-  "$RP_EXPERIMENT_DIR"/figures
+export MLFLOW_TRACKING_URI="<from sandbox.mlflow.env>"
+export MLFLOW_EXPERIMENT_NAME="<from sandbox.mlflow.env>"
+export RP_TB_LOGDIR="<already set in sandbox commands>"
+mkdir -p "$RP_EXPERIMENT_DIR"/results "$RP_EXPERIMENT_DIR"/figures
 ```
+
+For local non-sandbox runs, use the backend-provided central MLflow URI if one
+is available. Do not create a file-backed local MLflow store as the default
+tracking path for Research Plugin experiments. If MLflow is unavailable, say so
+in the report and still save compact result files.
 
 Do not make tracking stores the only submitted result. Save compact evidence
 under the experiment folder, especially `results/*.json`, `results/*.csv`, and
@@ -146,7 +147,7 @@ SSH. Once the experiment is `ready_to_run` (or already `running`), call
 `sandbox.request(experiment_id, instance_type?, region?, gpu?, cpu?, memory?,
 time_limit?)` and follow the returned `hint`; `sandbox.request`/`sandbox.get`
 are the source of truth for provider selection, polling, expiry, credentials,
-dashboard env vars, and the synced-folder contract.
+observability env vars, and the synced-folder contract.
 
 Use the smallest viable machine. On Lambda Labs, omit `instance_type` first
 when you need the live machine menu; on Modal, request `gpu`/`cpu`/`memory`
@@ -168,8 +169,9 @@ compact outputs, report figures/tables, and deliberate final artifacts inside
 `$RP_EXPERIMENT_DIR` so they can be synced and registered.
 
 Use the observability environment reported by `sandbox.request`/`sandbox.get`;
-the sandbox prepares MLflow/TensorBoard, but you still need to log the run and
-save compact evidence under `$RP_EXPERIMENT_DIR`.
+the backend provides centralized MLflow tracking env and the sandbox provides
+TensorBoard event logging, but you still need to log the run and save compact
+evidence under `$RP_EXPERIMENT_DIR`.
 
 Before registering or associating result resources, call
 `sandbox.sync(experiment_id)`. Resource tools only see local repo files, so

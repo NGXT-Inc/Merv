@@ -27,7 +27,7 @@ research-plugin-mcp      sibling frontend UI
               +-------------+-------------+
               |                           |
         project state              sandbox backends
-  <repo>/.research_plugin/     Lambda Labs / Modal / fake
+  <repo>/.research_plugin/     Thunder / Lambda Labs / Modal / fake
 ```
 
 The stdio MCP proxy is intentionally thin and stateless. The HTTP daemon owns
@@ -37,7 +37,8 @@ sandbox orchestration, activity logs, and the HTTP API used by the frontend.
 Local mode runs the control and data planes together in `research-plugin-http`.
 Split/cloud mode runs a hosted `research-plugin-control` plus a local
 `research-plugin-daemon` that keeps repo files, private keys, and machine-local
-operations on the user's machine.
+operations on the user's machine. One local daemon can link many checkout
+folders to many hosted projects.
 
 ## Workflows
 
@@ -104,6 +105,36 @@ The active research repo gets its own state and activity under:
 <research-repo>/.research_plugin/
 ```
 
+## Quick Start: Hosted Control + Local Agents
+
+Install the slim client on the agent machine/VM:
+
+```bash
+git clone <research-suite-repo-url> ~/research-suite
+cd ~/research-suite/research_plugin
+python3 -m venv .venv
+.venv/bin/pip install -e '.[daemon]'
+```
+
+Configure the machine, start one daemon, and link a checkout:
+
+```bash
+bin/research-plugin-client connect \
+  --control-url https://your-control-plane.example.com \
+  --project-id proj_123 \
+  --repo ~/work/project-a
+```
+
+Link additional checkouts to additional hosted projects:
+
+```bash
+cd ~/work/project-b
+~/research-suite/research_plugin/bin/research-plugin-client link --project-id proj_456
+```
+
+Machine config and folder links live under `~/.research_plugin/`, outside every
+research repo. See [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md).
+
 ## Credentials
 
 Provider credentials belong to the daemon process, not the MCP proxy and not the
@@ -119,14 +150,15 @@ chmod 600 ~/.config/research-plugin/.env
 Common variables include:
 
 ```text
+RESEARCH_PLUGIN_THUNDER_API_KEY=...
 RESEARCH_PLUGIN_LAMBDA_API_KEY=...
 MODAL_TOKEN_ID=...
 MODAL_TOKEN_SECRET=...
 HF_TOKEN=...
 ```
 
-Lambda Labs is the default sandbox backend. Modal and the fake test backend are
-also supported through `RESEARCH_PLUGIN_EXECUTION_BACKEND`.
+Thunder Compute is the default sandbox backend. Lambda Labs, Modal, and the fake
+test backend are also supported through `RESEARCH_PLUGIN_EXECUTION_BACKEND`.
 
 ## Client Adapters
 
@@ -162,7 +194,9 @@ export RESEARCH_PLUGIN_EXECUTION_BACKEND=fake
 
 - [docs/startup.txt](docs/startup.txt) - terse local-mode command sequence
 - [docs/STARTUP_CHEATSHEET.md](docs/STARTUP_CHEATSHEET.md) - local startup flow
+- [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md) - hosted control plus local-agent VM flow
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - backend and mode architecture
+- [docs/CENTRALIZED_MLFLOW.md](docs/CENTRALIZED_MLFLOW.md) - backend-owned centralized MLflow tracking
 - [docs/CLIENTS.md](docs/CLIENTS.md) - Claude Code, Codex, Cursor, Gemini CLI, OpenCode
 - [docs/MCP_SERVER_CONTRACT.md](docs/MCP_SERVER_CONTRACT.md) - MCP tools and contracts
 - [docs/WORKFLOW_AND_REVIEW.md](docs/WORKFLOW_AND_REVIEW.md) - workflow gates and reviews

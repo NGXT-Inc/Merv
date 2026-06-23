@@ -8,6 +8,7 @@ from unittest import mock
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.execution.backends.lambda_labs import LambdaLabsSandboxBackend
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
+from backend.execution.backends.thunder_compute import ThunderComputeSandboxBackend
 from backend.sandbox.sandbox_backend import (
     BackendCapabilities,
     ProvisionedSandbox,
@@ -96,6 +97,7 @@ class SandboxBackendContractTest(unittest.TestCase):
         for backend_cls in (
             ModalSandboxBackend,
             LambdaLabsSandboxBackend,
+            ThunderComputeSandboxBackend,
             FakeSandboxBackend,
         ):
             with self.subTest(backend=backend_cls.__name__):
@@ -185,7 +187,7 @@ class SandboxBackendContractTest(unittest.TestCase):
             self.assertTrue(daemons._reaper_enabled())
 
     def test_services_do_not_dispatch_on_provider_name_literals(self) -> None:
-        provider_names = {"modal", "lambda_labs"}
+        provider_names = {"modal", "lambda_labs", "thunder_compute"}
         for path in SERVICES_ROOT.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             string_literals = {

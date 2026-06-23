@@ -11,6 +11,7 @@ from .state import BaseStateStore, StateStore
 from .state.blobs import BlobStore
 from .observability import StructuredLogger
 from .control.record_core import build_record_core
+from .services.mlflow_tracking import CentralMlflowService
 from .tools.tool_facade import ToolDispatcher
 from .tools.tool_handlers import build_local_tool_handlers
 from .utils import ValidationError
@@ -35,6 +36,7 @@ class ResearchPluginApp:
         blobs: "BlobStore | None" = None,
         task_channel: Any | None = None,
         runtime: "LocalRuntime | None" = None,
+        mlflow_tracking: CentralMlflowService | None = None,
     ) -> None:
         # The plane seam (cloud plan Phase 3): the record store knows nothing
         # about the checkout; local paths flow from the workspace and every
@@ -79,6 +81,11 @@ class ResearchPluginApp:
         # same contract tests, so the rest of the app is blob-impl-blind.
         self.blobs = runtime.blobs
         self.execution_backend = runtime.execution_backend
+        self.mlflow_tracking = (
+            mlflow_tracking
+            if mlflow_tracking is not None
+            else CentralMlflowService.from_env()
+        )
         self.worker = runtime.worker
         self.feed_image_reader = runtime.feed_image_reader
         self.resource_artifact_reader = runtime.resource_artifact_reader
@@ -114,6 +121,7 @@ class ResearchPluginApp:
             # Decision 7's one shared blob store also holds parachute objects.
             blobs=self.blobs,
             quotas=self.quotas,
+            mlflow_tracking=self.mlflow_tracking,
             # Split mode (Phase 8): the control composition injects an
             # HttpTaskChannel so control enqueues data-plane work to the daemon
             # over HTTP. None ⇒ the synchronous in-process channel (local mode).
@@ -316,7 +324,6 @@ class ResearchPluginApp:
             self.execution_backend.shutdown()
         except Exception:  # noqa: BLE001
             pass
-
     def call_tool(
         self,
         name: str,

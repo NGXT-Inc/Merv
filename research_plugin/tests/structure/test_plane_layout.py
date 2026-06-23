@@ -877,17 +877,20 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
     for pydantic/fastapi/boto3 by accident.
     """
 
-    # The proxy's own package + the standard library are the only allowed
-    # roots. (sys.stdlib_module_names covers the stdlib on 3.11+.)
+    # The proxy package, its stdlib-only shared helper, and the standard library
+    # are the only allowed roots. (sys.stdlib_module_names covers 3.11+.)
     def test_mcp_server_imports_only_stdlib(self) -> None:
         import sys
 
         plugin_root = BACKEND_ROOT.parent
         mcp_root = plugin_root / "mcp_server"
-        # The package's own siblings (imported relatively) plus the stdlib.
-        own = {p.stem for p in mcp_root.glob("*.py")} | {"mcp_server"}
+        shared_root = plugin_root / "research_plugin_shared"
+        own = {p.stem for p in mcp_root.glob("*.py")} | {
+            "mcp_server",
+            "research_plugin_shared",
+        }
         allowed = set(sys.stdlib_module_names) | own | {"__future__"}
-        for path in sorted(mcp_root.glob("*.py")):
+        for path in sorted([*mcp_root.glob("*.py"), *shared_root.glob("*.py")]):
             with self.subTest(module=path.name):
                 external = _imports(path) - allowed
                 self.assertFalse(

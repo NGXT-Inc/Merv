@@ -97,9 +97,9 @@ class SandboxDaemons:
         # be able to leave billing VMs unreaped. Local/daemon mode keeps the
         # switch (the user owns their own bill). enforce_expiry still gates by
         # backend (the in-memory fake opts out).
-        from ...config import resolve_auth_required
+        from ...config import Mode, resolve_mode
 
-        if not resolve_auth_required():
+        if resolve_mode() is not Mode.CONTROL:
             if not env_bool("RESEARCH_PLUGIN_SANDBOX_REAPER", default=True):
                 return False
         return self.backend.capabilities.enforce_expiry

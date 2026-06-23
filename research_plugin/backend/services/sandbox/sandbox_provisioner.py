@@ -534,6 +534,7 @@ class SandboxProvisioner:
         if sid:
             seen.add(str(sid))
             self.worker.stop_dashboards(sandbox_id=str(sid))
+            self.worker.stop_mlflow_access(sandbox_id=str(sid))
             self._terminate_quietly(sandbox_id=str(sid))
         try:
             orphan = self.backend.find_sandbox_id(experiment_id=experiment_id)

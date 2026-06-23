@@ -11,7 +11,8 @@ operator's responsibility (see "What this stack does NOT do" below).
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Control-plane image: installs the `control` extra, runs `research-plugin-control` (uvicorn) as a non-root user, with a `HEALTHCHECK` hitting `/api/meta`. |
-| `docker-compose.yml` | Full local stack: control + Postgres (record store) + MinIO (S3-shape blob store), with a one-shot bucket creator. |
+| `Dockerfile.mlflow` | Separate MLflow server image for the reference compose stack. |
+| `docker-compose.yml` | Full local stack: control + MLflow + Postgres (record stores) + MinIO (S3-shape blob/artifact stores), with one-shot bucket/database creators. |
 | `.env.example` | Documents the control-mode environment (§3.4 config matrix). Copy, fill, and keep out of version control. |
 | `.dockerignore` | Keeps secrets, local state, the React UI, and tests out of the build context. |
 
@@ -24,13 +25,19 @@ docker compose -f deploy/docker-compose.yml up --build
 
 This brings up:
 - **Postgres** on `localhost:5432` — the record store (Postgres dialect).
+- **MLflow** on `localhost:5000` — centralized tracking server. It uses a
+  separate `mlflow` Postgres database and the `research-plugin-mlflow-artifacts`
+  MinIO bucket. This loopback URL is for local browser/dev access only; remote
+  sandboxes need `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` set to the public HTTPS
+  MLflow URL.
 - **MinIO** on `localhost:9000` (console `:9001`) — the S3-shape blob store; the
-  `createbucket` job makes the `research-plugin-blobs` bucket.
+  `createbucket` job makes the Research Plugin blob bucket and the MLflow
+  artifact bucket.
 - **mgmtkey** one-shot — creates a dev-only management SSH key in a named volume
   and mounts it read-only into control. Managed deploys should use a real secret
   manager instead.
-- **control** on `localhost:8787` — auth ON, daemon task/sync-target endpoints
-  ON, reaper ON.
+- **control** on `localhost:8787` — private control API, daemon
+  task/sync-target endpoints ON, reaper ON.
 
 Verify the control plane is up and learn the version floor:
 
@@ -39,9 +46,10 @@ curl -s http://localhost:8787/api/meta
 # {"server_version":"...","min_daemon_version":"...","min_proxy_version":"..."}
 ```
 
-Mint a tenant token (control container holds the AuthService); hand the token to
-a daemon/proxy out of band and point it at `http://localhost:8787` via
-`RESEARCH_PLUGIN_CONTROL_URL`.
+The current operator-run setup is a private control plane. Client VMs run
+`research-plugin-client configure --control-url ...` without any control-plane
+token. Put the service behind trusted network boundaries until the real auth
+system lands.
 
 ## Modes & environment (§3.4)
 
@@ -54,8 +62,11 @@ control-mode variables (full list in `.env.example`):
 | `RESEARCH_PLUGIN_ALLOWED_ORIGINS` | prod | comma-separated hosted UI origins allowed by CORS |
 | `RESEARCH_PLUGIN_DB_URL` | prod | `postgres://…` (else SQLite — dev only) |
 | `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` | prod | object store; presign must be a reachable HTTPS PUT |
+| `RESEARCH_PLUGIN_MLFLOW_MODE` + `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` | prod | centralized MLflow endpoint reported to training clients |
+| `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` | optional | backend-internal MLflow URL for metrics reads when it differs from the client URL |
+| `RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL` | optional | human-facing MLflow UI URL when it differs from the tracking URI |
 | `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
-| `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
+| `THUNDER_COMPUTE_API_KEY` / `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
 
 The production control entrypoint runs without a checkout/staging repo. Startup
 therefore fails fast unless the durable DB, durable blob store, and mounted
@@ -83,8 +94,8 @@ for dev/test compatibility.
 The control plane serves plain HTTP on `:8787`. Put it **behind a
 TLS-terminating load balancer / reverse proxy** (ALB, nginx, Caddy, Traefik) in
 production — the daemon and proxy must dial `https://`. `/health` and `/api/meta`
-are unauthenticated for liveness/handshake; everything else requires a bearer
-token.
+are open for liveness/handshake. All other routes are currently private
+operator/admin routes, not public internet routes.
 
 ## What this stack does NOT do (documented seams)
 
@@ -92,12 +103,15 @@ These are intentionally out of the reference stack — production owns them:
 
 - **TLS certificates** — terminate at your LB; this image speaks HTTP.
 - **Managed Postgres / backups** — the compose Postgres is ephemeral dev data.
+- **Managed MLflow / artifact lifecycle** — the compose MLflow server is a
+  reference service. Production should run it behind TLS and back its database
+  and artifacts with durable storage.
 - **A real secret store** — point `RESEARCH_PLUGIN_MODAL_ENV_FILE` at a mounted
   secret, or inject `MODAL_*`/`LAMBDA_*`/`HF_TOKEN` from your platform's secret
   manager. Never bake them into the image.
 - **The cleanup scheduler** — wire a managed cron to `POST /api/admin/cleanup`.
-- **Auth bootstrap beyond static per-tenant tokens** — device-flow OAuth is
-  backlog (open decision C).
+- **Human login OAuth** — the control plane is currently private/operator-run;
+  device-flow OAuth is still backlog (open decision C).
 - **The React UI** — served separately (cloud SPA + CORS per origin); this image
   is the API only. The viewer's degraded states (result content / figures
   unavailable in this mode) are served by the API; the SPA renders them.

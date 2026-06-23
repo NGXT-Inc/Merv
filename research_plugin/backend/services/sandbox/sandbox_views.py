@@ -19,6 +19,7 @@ They are pure projection logic — no DB, backend, or filesystem calls.
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from ...domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
@@ -116,6 +117,7 @@ def agent_row_facts(
     *,
     row: dict[str, Any],
     env_info: dict[str, Any],
+    mlflow: dict[str, object] | None = None,
     reused: bool | None,
     lease: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -163,11 +165,11 @@ def agent_row_facts(
         "instance_type": row.get("instance_type") or None,
         "region": row.get("region") or None,
         "expires_at": row.get("expires_at"),
-        # Observability dashboards visible to the user. The agent receives
-        # the URLs purely informationally (it talks to MLflow through the
-        # in-sandbox `MLFLOW_TRACKING_URI` localhost env, not these URLs).
+        # Observability dashboards visible to the user.
         "dashboards": decode_dashboards(row.get("dashboards_json")),
     }
+    if mlflow:
+        facts["mlflow"] = mlflow
     lease_facts = _lease_facts(lease)
     if lease_facts is not None:
         facts["sync_lease"] = lease_facts
@@ -217,6 +219,36 @@ def merge_agent_view(
             "available inside the sandbox environment; use it through "
             "Hugging Face tooling and do not print or write the token. "
         )
+    mlflow_info = view.get("mlflow") if isinstance(view.get("mlflow"), dict) else {}
+    mlflow_env = mlflow_info.get("env") if isinstance(mlflow_info, dict) else {}
+    mlflow_configured = bool(
+        isinstance(mlflow_info, dict) and mlflow_info.get("configured")
+    )
+    mlflow_access = mlflow_info.get("access") if isinstance(mlflow_info, dict) else {}
+    mlflow_ready = not isinstance(mlflow_access, dict) or (
+        mlflow_access.get("ready") is not False
+    )
+    if mlflow_configured and mlflow_ready and isinstance(mlflow_env, dict):
+        mlflow_assignments = " ".join(
+            f"{key}={shlex.quote(str(value))}"
+            for key, value in sorted(mlflow_env.items())
+        )
+        mlflow_note = (
+            "Quantitative experiment tracking: use MLflow for params, metrics, "
+            "and artifacts. The backend owns the MLflow server; use the "
+            f"provided mlflow.env block, or prefix training commands with: "
+            f"{mlflow_assignments}. "
+        )
+    elif mlflow_configured:
+        mlflow_note = (
+            "Centralized MLflow is configured, but the sandbox access path is "
+            "not ready yet; poll sandbox.get until mlflow.access.ready is true. "
+        )
+    else:
+        mlflow_note = (
+            "Quantitative experiment tracking should use centralized MLflow, "
+            "but this backend has not provided an MLflow tracking URI yet. "
+        )
     if status == "provisioning":
         view["hint"] = (
             "Provisioning. A fresh Lambda Labs VM commonly takes 5-15 minutes "
@@ -237,11 +269,10 @@ def merge_agent_view(
         )
     elif live:
         dashboard_note = (
-            "Training observability: the backend starts MLflow and "
-            "TensorBoard inside the sandbox. Use "
-            "MLFLOW_TRACKING_URI=http://localhost:5000 for run params, "
-            "metrics, and artifacts; write TensorBoard events to "
-            "$RP_TB_LOGDIR. Framework integrations such as Hugging Face "
+            "Training observability: the backend provides centralized MLflow "
+            "tracking context and the sandbox provides TensorBoard event "
+            "logging. Write TensorBoard events to $RP_TB_LOGDIR. Framework "
+            "integrations such as Hugging Face "
             "Trainer and PyTorch Lightning's MLFlowLogger can use these "
             "env vars directly; for plain PyTorch, add mlflow.autolog() "
             "when useful. The user sees dashboard tabs in the UI once "
@@ -272,6 +303,7 @@ def merge_agent_view(
             "files under the local experiment folder. "
             f"{_expiry_note(view.get('expires_at'))}"
             f"{credential_note}"
+            f"{mlflow_note}"
             f"{dashboard_note}"
             "The dispatcher multiplexes one SSH connection and auto-retries "
             "transient connect failures, so do not wrap it in your own retry "
@@ -301,7 +333,12 @@ def agent_summary(
     return summary
 
 
-def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, Any]:
+def sandbox_row_view(
+    *,
+    row: dict[str, Any],
+    local_sync_dir: str,
+    mlflow: dict[str, object] | None = None,
+) -> dict[str, Any]:
     """Canonical sandbox-row projection (workflow status + HTTP/UI).
 
     ``local_sync_dir`` is machine-local data-plane enrichment: callers resolve
@@ -316,7 +353,7 @@ def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, A
     data_dir = str(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
     )
-    return {
+    view = {
         "experiment_id": row.get("experiment_id"),
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
@@ -341,9 +378,8 @@ def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, A
         "sandbox_data_dir": data_dir,
         "initial_pushed": row.get("initial_pushed"),
         "volume_name": row.get("volume_name"),
-        # Observability dashboards (MLflow, TensorBoard). Empty dict when
-        # no tunnels are exposed (test backends, pre-Phase-1 rows). The UI
-        # renders a tab per non-empty entry.
+        # Sandbox-local dashboards. Centralized MLflow is surfaced separately
+        # because it is backend-owned, not a sandbox tunnel.
         "dashboards": decode_dashboards(row.get("dashboards_json")),
         "requested_at": row.get("requested_at"),
         "expires_at": row.get("expires_at"),
@@ -352,6 +388,9 @@ def sandbox_row_view(*, row: dict[str, Any], local_sync_dir: str) -> dict[str, A
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+    if mlflow:
+        view["mlflow"] = mlflow
+    return view
 
 
 def needs_selection_view(

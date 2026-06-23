@@ -21,7 +21,9 @@ from typing import Any, Callable
 
 from .daemon_marker import clear_marker, write_marker
 from ..app import ResearchPluginApp
+from ..local_mlflow import LocalMlflowServer
 from ..sandbox.sandbox_backend import SandboxBackend
+from ..services.mlflow_tracking import CentralMlflowService
 from ..tools.contracts import PROJECT_SCOPED_TOOL_NAMES, static_tool_catalog
 from ..utils import NotFoundError, ValidationError, now_iso
 
@@ -45,17 +47,30 @@ class ProjectRouter:
         execution_backend_factory: BackendFactory | None = None,
         marker_host: str | None = None,
         marker_port: int | None = None,
+        manage_local_mlflow: bool = False,
     ) -> None:
         self.registry_db_path = registry_db_path.expanduser().resolve()
         self.registry_db_path.parent.mkdir(parents=True, exist_ok=True)
         self.execution_backend_factory = execution_backend_factory
         self.marker_host = marker_host
         self.marker_port = marker_port
+        self.manage_local_mlflow = manage_local_mlflow
+        self.mlflow_server: LocalMlflowServer | None = None
+        self.mlflow_tracking: CentralMlflowService | None = None
         self._lock = threading.RLock()
         self._apps_by_repo: dict[Path, ResearchPluginApp] = {}
         self._routes_by_project: dict[str, ProjectRoute] = {}
         self._initialize()
-        self._resume_active_sandbox_projects()
+        try:
+            if manage_local_mlflow:
+                self.mlflow_server = LocalMlflowServer(
+                    root=self.registry_db_path.parent / "mlflow"
+                )
+                self.mlflow_tracking = self.mlflow_server.start()
+            self._resume_active_sandbox_projects()
+        except Exception:
+            self._stop_mlflow()
+            raise
 
     def set_marker_endpoint(self, *, host: str, port: int) -> None:
         self.marker_host = host
@@ -73,13 +88,23 @@ class ProjectRouter:
     def shutdown(self) -> None:
         for app in list(self._apps_by_repo.values()):
             app.shutdown()
+        self._stop_mlflow()
+
+    def _stop_mlflow(self) -> None:
+        try:
+            if self.mlflow_server is not None:
+                self.mlflow_server.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
     def health(self) -> dict[str, Any]:
+        mlflow = self.mlflow_tracking or CentralMlflowService.from_env()
         return {
             "ok": True,
             "mode": "multi_project",
             "registry": str(self.registry_db_path),
             "projects": len(self._routes_by_project),
+            "mlflow": mlflow.health(),
         }
 
     def list_projects(self) -> dict[str, Any]:
@@ -383,6 +408,7 @@ class ProjectRouter:
             repo_root=repo_root,
             db_path=repo_root / ".research_plugin" / "state.sqlite",
             execution_backend=backend,
+            mlflow_tracking=self.mlflow_tracking,
         )
         self._apps_by_repo[repo_root] = app
         return app

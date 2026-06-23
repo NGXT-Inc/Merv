@@ -224,6 +224,20 @@ class ModalSandboxBackendTest(unittest.TestCase):
             time_limit=1234,
         )
 
+    def _request_with_tracking_env(self) -> SandboxRequest:
+        return SandboxRequest(
+            experiment_id="exp1",
+            project_id="proj1",
+            public_key="ssh-ed25519 AAAA",
+            tracking_env={
+                "MLFLOW_TRACKING_URI": "https://mlflow.test",
+                "MLFLOW_EXPERIMENT_NAME": "rp/proj1/exp1",
+                "RP_PROJECT_ID": "proj1",
+                "RP_EXECUTION_BACKEND": "modal",
+                "UNRELATED": "ignored",
+            },
+        )
+
     def test_acquire_wires_ssh_tunnel(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         self.assertEqual(provisioned.ssh_host, "sandbox.modal.test")
@@ -236,9 +250,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(create["args"], ("bash", "/opt/rp/boot.sh"))
         kwargs = create["kwargs"]
         self.assertEqual(kwargs["unencrypted_ports"], [22])
-        # Dashboards: MLflow on 5000 and TensorBoard on 6006 are requested as
-        # encrypted_ports so Modal exposes them as HTTPS tunnels.
-        self.assertEqual(kwargs["encrypted_ports"], [5000, 6006])
+        # TensorBoard on 6006 is requested as an encrypted port so Modal exposes
+        # it as an HTTPS tunnel. MLflow is centralized by the backend.
+        self.assertEqual(kwargs["encrypted_ports"], [6006])
         self.assertEqual(kwargs["timeout"], 1234)
         self.assertEqual(kwargs["gpu"], "A100")
         self.assertNotIn("volumes", kwargs)
@@ -260,13 +274,20 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
 
+    def test_acquire_exports_central_mlflow_tracking_env(self) -> None:
+        self.backend.acquire(request=self._request_with_tracking_env())
+        env = FakeSandboxClass.created[-1]["kwargs"]["env"]
+        self.assertEqual(env["MLFLOW_TRACKING_URI"], "https://mlflow.test")
+        self.assertEqual(env["MLFLOW_EXPERIMENT_NAME"], "rp/proj1/exp1")
+        self.assertEqual(env["RP_PROJECT_ID"], "proj1")
+        self.assertEqual(env["RP_EXECUTION_BACKEND"], "modal")
+        self.assertNotIn("UNRELATED", env)
+
     def test_acquire_captures_dashboard_urls(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
-        # ProvisionedSandbox.dashboards mirrors the encrypted-tunnel .url fields
-        # for MLflow (5000) and TensorBoard (6006). Names — not ports — are the
-        # contract surface so future dashboards key cleanly.
-        self.assertEqual(set(provisioned.dashboards.keys()), {"mlflow", "tensorboard"})
-        self.assertTrue(provisioned.dashboards["mlflow"].startswith("https://mlflow-"))
+        # ProvisionedSandbox.dashboards mirrors the encrypted-tunnel .url fields.
+        # MLflow is centralized backend tracking context, not a sandbox tunnel.
+        self.assertEqual(set(provisioned.dashboards.keys()), {"tensorboard"})
         self.assertTrue(
             provisioned.dashboards["tensorboard"].startswith("https://tensorboard-")
         )
@@ -283,25 +304,22 @@ class ModalSandboxBackendTest(unittest.TestCase):
         # refresh_ssh_endpoint returning None when there's nothing to refresh.
         self.assertEqual(self.backend.dashboard_urls(sandbox_id=""), {})
 
-    def test_boot_script_starts_mlflow_and_tensorboard(self) -> None:
+    def test_boot_script_starts_tensorboard_without_sandbox_mlflow(self) -> None:
         # The image layering writes the boot script as a heredoc into the
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
         from backend.execution.backends.modal.sandbox_backend import BOOT_SCRIPT, REC_SCRIPT
 
-        # MLflow tracking server bound to 0.0.0.0:5000, SQLite backend store,
-        # artifacts under the per-experiment sessions dir on the Volume.
-        self.assertIn("mlflow server", BOOT_SCRIPT)
-        self.assertIn("--port 5000", BOOT_SCRIPT)
-        self.assertIn("backend-store-uri", BOOT_SCRIPT)
+        # MLflow is not served inside the sandbox anymore; agents receive the
+        # centralized tracking URI from the backend tool response.
+        self.assertNotIn("mlflow server", BOOT_SCRIPT)
+        self.assertNotIn("backend-store-uri", BOOT_SCRIPT)
+        self.assertIn("MLFLOW_TRACKING_URI", BOOT_SCRIPT)
+        self.assertIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
         # TensorBoard, same Volume-backed logdir pattern.
         self.assertIn("tensorboard.main", BOOT_SCRIPT)
         self.assertIn("--port 6006", BOOT_SCRIPT)
-        # Both must be backgrounded so sshd still becomes the foreground PID 1.
+        # It must be backgrounded so sshd still becomes the foreground PID 1.
         self.assertIn("&\n", BOOT_SCRIPT)
-        # MLFLOW_TRACKING_URI must reach every SSH command so framework
-        # auto-detection (HF Trainer's report_to="all") just works.
-        self.assertIn("MLFLOW_TRACKING_URI", BOOT_SCRIPT)
-        self.assertIn("MLFLOW_TRACKING_URI", REC_SCRIPT)
 
     def test_modal_images_install_agent_shell_baseline(self) -> None:
         base = self.backend._base_image_default()

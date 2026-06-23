@@ -84,7 +84,8 @@ The same code base runs in three process roles selected by
   lifecycle, blob store, leases, quotas, auth, and the daemon task/sync-target
   endpoints. It never touches a user checkout.
 - **`daemon`** — the slim user-machine **data plane**: rsync, key custody, file
-  observation. It dials the control plane over HTTP (the cloud never dials in).
+  observation, and the machine-local repo-folder to hosted-project link
+  registry. It dials the control plane over HTTP (the cloud never dials in).
 
 The split is built end-to-end. The load-bearing rule — *the cloud cannot see a
 user's local filesystem* — is what puts file IO (rsync/ssh) on the daemon and
@@ -92,6 +93,7 @@ everything else (orchestration, records, credentials, authz, cost governance)
 on the control plane. The module-by-module assignment is in
 **`docs/CONTROL_DATA_PLANE_SPLIT.md`**; operating the control plane (modes, env,
 cleanup jobs, version floor, deploy) is **`docs/CONTROL_PLANE_OPERATIONS.md`**.
+For client VM setup, use **`docs/HOSTED_CLIENT_QUICKSTART.md`**.
 
 ## Ownership
 
@@ -288,13 +290,14 @@ MCP owns policy, state, and visibility:
 - tell Codex when output files should be synced as resources
 
 `execution` owns the `SandboxBackend` implementations. The default backend is
-**Lambda Labs** (VM-backed GPU execution); Modal is also supported; `fake` is
-used for tests. File sync is owned by `SandboxService` through provider-neutral
-SSH rsync. Backends declare a `requires_hardware_selection` capability and may
-expose an optional `hardware_catalog()`: Lambda bundles GPU+CPU+RAM into fixed
-instance types, so `SandboxService` returns a live availability menu
-(`needs_selection`) when `sandbox.request` omits the `instance_type`; Modal
-composes the machine from `gpu`/`cpu`/`memory` and needs no selection step.
+**Thunder Compute** (VM-backed GPU execution); Lambda Labs and Modal are also
+supported; `fake` is used for tests. File sync is owned by `SandboxService`
+through provider-neutral SSH rsync. Backends declare a
+`requires_hardware_selection` capability and may expose an optional
+`hardware_catalog()`: Thunder and Lambda bundle GPU+CPU+RAM into fixed instance
+types, so `SandboxService` returns a live availability menu (`needs_selection`)
+when `sandbox.request` omits the `instance_type`; Modal composes the machine from
+`gpu`/`cpu`/`memory` and needs no selection step.
 
 ## Reviewer identity and independence
 

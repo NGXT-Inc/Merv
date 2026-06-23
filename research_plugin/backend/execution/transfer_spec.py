@@ -52,11 +52,11 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
     "*.tgz",
 )
 
-# Sandbox-authored telemetry (command transcripts, MLflow/TensorBoard stores
-# and pid files). It lives OUTSIDE the remote experiment folder, but the push
-# and the parachute both exclude it defensively: legacy local mirrors may
-# contain an in-folder copy, and with --delete an --exclude *protects* the
-# remote tree.
+# Sandbox-authored telemetry (command transcripts, TensorBoard events, legacy
+# sandbox-local MLflow stores, and pid files). It lives OUTSIDE the remote
+# experiment folder, but the push and the parachute both exclude it defensively:
+# legacy local mirrors may contain an in-folder copy, and with --delete an
+# --exclude *protects* the remote tree.
 SESSIONS_DIR_EXCLUDE = ".research_plugin_sessions/"
 
 # Per-file size caps, in rsync --max-size spelling (MiB-based suffixes).

@@ -35,7 +35,7 @@ class ToolContract:
     description: str
     plane: ToolPlane = "control"
     hosted_control_skip_final_pull: bool = False
-    tenant_scoped_sandbox_lookup: bool = False
+    hosted_control_sandbox_lookup: bool = False
 
 
 class EmptyInput(ContractModel):
@@ -601,11 +601,11 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Procure (reuse or create) the experiment's sandbox and return SSH "
             "details plus runtime guidance for the synced folder, expiry, and "
-            "MLflow/TensorBoard observability. A fresh sandbox starts with the "
-            "experiment's local folder (experiments/<name>/) pushed to it, so "
-            "put anything the run needs in that folder first. On Lambda Labs, "
-            "omit instance_type to receive a live menu of available machines to "
-            "pick from."
+            "centralized MLflow tracking plus sandbox TensorBoard observability. "
+            "A fresh sandbox starts with the experiment's local folder "
+            "(experiments/<name>/) pushed to it, so put anything the run needs "
+            "in that folder first. On Lambda Labs, omit instance_type to "
+            "receive a live menu of available machines to pick from."
         ),
         plane="data",
     ),
@@ -624,7 +624,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "terminated or expired sandboxes."
         ),
         plane="aggregate",
-        tenant_scoped_sandbox_lookup=True,
+        hosted_control_sandbox_lookup=True,
     ),
     "sandbox.sync": ToolContract(
         input_model=SandboxSyncInput,

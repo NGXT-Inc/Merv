@@ -217,10 +217,12 @@ class LambdaAvailabilityTest(unittest.TestCase):
         self.assertIn("artifacts_to_keep", user_data)
         self.assertIn("chown -R ubuntu:ubuntu", user_data)
         self.assertIn("ForceCommand /opt/rp/rec.sh", user_data)
-        # Dashboard deps install individually, only when missing, and with
+        # Observability deps install individually, only when missing, and with
         # --ignore-installed: the image ships Debian-owned packages without
         # RECORD files (e.g. Werkzeug) that pip cannot uninstall, so a normal
         # install aborts mid-flight; --ignore-installed never calls uninstall.
+        # MLflow is needed as a client library for centralized tracking, not as
+        # a sandbox-local server.
         self.assertIn(
             "python3 -c 'import mlflow' >/dev/null 2>&1 || "
             "python3 -m pip install --break-system-packages --ignore-installed mlflow==2.18.0",
@@ -275,27 +277,41 @@ class LambdaAvailabilityTest(unittest.TestCase):
             workdir="/workspace/exp1",
             sessions_dir="/workspace/.research_plugin_sessions/exp1",
             sandbox_data_dir="/workspace/data",
+            tracking_env={
+                "MLFLOW_TRACKING_URI": "https://mlflow.test",
+                "MLFLOW_EXPERIMENT_NAME": "rp/proj1/exp1",
+                "RP_PROJECT_ID": "proj1",
+                "RP_EXECUTION_BACKEND": "lambda_labs",
+                "UNRELATED": "ignored",
+            },
         )
 
         self.assertIn("RP_WORKDIR=/workspace/exp1", user_data)
         self.assertIn("RP_EXPERIMENT_DIR=/workspace/exp1", user_data)
         self.assertIn("RP_SANDBOX_DATA_DIR=/workspace/data", user_data)
         self.assertIn("RP_DASH_DIR=/workspace/.research_plugin_sessions/exp1", user_data)
+        self.assertIn("MLFLOW_TRACKING_URI=https://mlflow.test", user_data)
+        self.assertIn("MLFLOW_EXPERIMENT_NAME=rp/proj1/exp1", user_data)
+        self.assertIn("RP_PROJECT_ID=proj1", user_data)
+        self.assertIn("RP_EXECUTION_BACKEND=lambda_labs", user_data)
+        self.assertNotIn("UNRELATED", user_data)
+        self.assertIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
         self.assertIn("start_dashboards.sh", user_data)
         self.assertIn("/opt/rp/start_dashboards.sh || true", user_data)
+        self.assertNotIn("MLFLOW_TRACKING_URI=http://localhost:5000", user_data)
 
     def test_lambda_backend_advertises_local_dashboard_ports(self) -> None:
         backend = LambdaLabsSandboxBackend()
         self.assertEqual(
             backend.local_dashboard_ports(),
-            {"mlflow": 5000, "tensorboard": 6006},
+            {"tensorboard": 6006},
         )
 
-    def test_lambda_dashboard_script_starts_mlflow_and_tensorboard(self) -> None:
-        self.assertIn("python3 -m mlflow server", DASHBOARD_SCRIPT)
-        self.assertIn("--host 127.0.0.1 --port 5000", DASHBOARD_SCRIPT)
-        self.assertIn("backend-store-uri", DASHBOARD_SCRIPT)
-        self.assertIn("mlflow is not importable yet", DASHBOARD_SCRIPT)
+    def test_lambda_dashboard_script_starts_tensorboard_only(self) -> None:
+        self.assertNotIn("python3 -m mlflow server", DASHBOARD_SCRIPT)
+        self.assertNotIn("--host 127.0.0.1 --port 5000", DASHBOARD_SCRIPT)
+        self.assertNotIn("backend-store-uri", DASHBOARD_SCRIPT)
+        self.assertNotIn("mlflow is not importable yet", DASHBOARD_SCRIPT)
         self.assertIn("python3 -m tensorboard.main", DASHBOARD_SCRIPT)
         self.assertIn("--host 127.0.0.1 --port 6006", DASHBOARD_SCRIPT)
 
@@ -314,13 +330,12 @@ class LambdaAvailabilityTest(unittest.TestCase):
 
         self.assertEqual(backend.capabilities.name, "lambda_labs")
 
-    def test_default_backend_is_lambda_labs(self) -> None:
-        # No name arg and no RESEARCH_PLUGIN_EXECUTION_BACKEND -> Lambda Labs.
-        # Construction is lazy (only an API key is needed to boot), so this must
-        # not raise even without a region/instance type configured.
-        with patch.dict(os.environ, {"LAMBDA_LABS_API_KEY": "test-key"}, clear=True):
+    def test_default_backend_is_thunder_compute(self) -> None:
+        # No name arg and no RESEARCH_PLUGIN_EXECUTION_BACKEND -> Thunder Compute.
+        # Construction is lazy, so this must not resolve credentials yet.
+        with patch.dict(os.environ, {}, clear=True):
             backend = build_sandbox_backend(repo_root=Path("/tmp/research-plugin-test"))
-        self.assertEqual(backend.capabilities.name, "lambda_labs")
+        self.assertEqual(backend.capabilities.name, "thunder_compute")
         self.assertTrue(backend.capabilities.requires_hardware_selection)
         self.assertFalse(backend.capabilities.configurable_resources)
 

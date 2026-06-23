@@ -875,15 +875,16 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn('name == "sandbox.release"', source)
         self.assertIn("TOOL_CONTRACTS.get(name)", source)
         self.assertIn("contract.hosted_control_skip_final_pull", source)
-        self.assertIn("contract.tenant_scoped_sandbox_lookup", source)
+        self.assertIn("contract.hosted_control_sandbox_lookup", source)
         self.assertIn("hosted_control_skip_final_pull=True", contracts_source)
-        self.assertIn("tenant_scoped_sandbox_lookup=True", contracts_source)
-        marker = "if (\n            surface.enforce_project_scope\n            and contract is not None\n            and contract.tenant_scoped_sandbox_lookup"
+        self.assertIn("hosted_control_sandbox_lookup=True", contracts_source)
+        marker = "if (\n            surface.hosted_control\n            and contract is not None\n            and contract.hosted_control_sandbox_lookup"
         start = source.index(marker)
         end = source.index("return result", start)
         block = source[start:end]
-        self.assertIn("tenant_id=", block)
+        self.assertIn("tenant_id=None", block)
         self.assertIn("api.app.sandboxes.get", block)
+        self.assertIn("include_data_plane_enrichment=False", block)
         self.assertNotIn(".store.transaction", block)
         self.assertNotIn("require_project_id", block)
 
@@ -901,15 +902,20 @@ class ServiceLayoutTest(unittest.TestCase):
         )
         self.assertIn("surface_policy=surface", control_source)
         for decision in (
-            "CONTROL_REQUIRE_AUTH_ENV_VAR",
             "CONTROL_RESTRICT_CORS_ENV_VAR",
-            "require_privileged_bearer_auth=True",
-            "enforce_project_scope=True",
             "hosted_control=True",
             "expose_local_data_plane=False",
         ):
             with self.subTest(decision=decision):
                 self.assertIn(decision, control_source)
+        for removed_decision in (
+            "CONTROL_REQUIRE_AUTH_ENV_VAR",
+            "require_bearer_auth",
+            "require_privileged_bearer_auth",
+            "enforce_project_scope",
+        ):
+            with self.subTest(removed_decision=removed_decision):
+                self.assertNotIn(removed_decision, control_source)
         control_builder = control_source[
             control_source.index("def _control_http_surface(") :
         ]
@@ -921,8 +927,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("for_auth_present", policy_source)
         self.assertNotIn("auth_required", source)
         for field_name in (
-            "require_bearer_auth",
-            "require_privileged_bearer_auth",
             "restrict_cors",
             "hosted_control",
             "expose_local_data_plane",
@@ -930,20 +934,22 @@ class ServiceLayoutTest(unittest.TestCase):
             "allow_data_plane_http",
             "allow_data_plane_tool_calls",
             "use_hosted_tool_policies",
-            "enforce_project_scope",
             "release_uses_final_pull",
         ):
             with self.subTest(field_name=field_name):
                 self.assertIn(field_name, policy_source)
+        self.assertNotIn("require_bearer_auth", policy_source)
+        self.assertNotIn("require_privileged_bearer_auth", policy_source)
+        self.assertNotIn("enforce_project_scope", policy_source)
 
-    def test_http_transport_centralizes_project_scope_gate(self) -> None:
+    def test_http_transport_does_not_carry_interim_project_scope_gate(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
 
-        self.assertIn("def require_project_scope(", source)
         self.assertNotIn(".store.require_project_id(", source)
         self.assertNotIn(".store.transaction(", source)
-        self.assertIn("target.app.projects.require_project_scope(", source)
-        self.assertGreaterEqual(source.count("require_project_scope("), 5)
+        self.assertNotIn("def require_project_scope(", source)
+        self.assertNotIn("target.app.projects.require_project_scope(", source)
+        self.assertNotIn("project_ids_for_tenant", source)
 
     def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
@@ -954,17 +960,10 @@ class ServiceLayoutTest(unittest.TestCase):
             set(HOSTED_CONTROL_TOOL_POLICIES),
             {"project.create", "project.list", "project.current", "review.start"},
         )
-        self.assertIsNone(
-            HOSTED_CONTROL_TOOL_POLICIES["project.create"].tenant_id_fallback
-        )
-        for tool_name in ("project.list", "project.current", "review.start"):
-            self.assertEqual(
-                HOSTED_CONTROL_TOOL_POLICIES[tool_name].tenant_id_fallback,
-                "",
-            )
         self.assertTrue(
             HOSTED_CONTROL_TOOL_POLICIES["review.start"].telemetry_from_review_request
         )
+        self.assertNotIn("tenant_id_fallback", policy_source)
         self.assertNotIn("class _HostedToolPolicy", source)
         self.assertIn("HOSTED_CONTROL_TOOL_POLICIES", source)
         self.assertIn("HOSTED_CONTROL_TOOL_POLICIES", policy_source)
@@ -1011,7 +1010,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "admin_http.py"),
-            {"collections.abc", "typing", "fastapi", "observability"},
+            {"typing", "observability"},
         )
         self.assertIn("register_admin_routes(", source)
         self.assertIn('"/api/admin/cleanup"', admin_source)
@@ -1023,8 +1022,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("app=api.app", source)
         self.assertNotIn("app.", admin_source)
         self.assertIn("cleanup.run_all().as_dict()", admin_source)
-        self.assertIn("require_admin(request)", admin_source)
-        self.assertIn("require_tenant_or_admin(request, tenant_id)", admin_source)
+        self.assertNotIn("require_admin", admin_source)
+        self.assertNotIn("require_tenant_or_admin", admin_source)
 
     def test_mcp_http_routes_are_shared_by_control_and_daemon(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
@@ -1210,9 +1209,9 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn(f'if ref.startswith("{prefix}")', source)
             self.assertNotIn(f'elif ref.startswith("{prefix}")', source)
 
-    def test_transport_delegates_visible_project_lookup_to_service(self) -> None:
+    def test_transport_has_no_visible_project_lookup_gate(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
-        self.assertIn("target.app.projects.project_ids_for_tenant", source)
+        self.assertNotIn("project_ids_for_tenant", source)
         self.assertNotIn("SELECT id FROM projects WHERE tenant_id", source)
 
     def test_vocabulary_imports_bypass_permission_service(self) -> None:
@@ -1305,7 +1304,6 @@ class ServiceLayoutTest(unittest.TestCase):
         )
         sensitive_paths = (
             BACKEND_ROOT / "composition" / "daemon_mode.py",
-            BACKEND_ROOT / "services" / "identity.py",
             BACKEND_ROOT / "services" / "reviews.py",
             BACKEND_ROOT / "state" / "store.py",
         )
@@ -1316,7 +1314,6 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertIn("secret_tokens", _import_module_names(path))
 
         for path in (
-            BACKEND_ROOT / "services" / "identity.py",
             BACKEND_ROOT / "services" / "reviews.py",
         ):
             with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):

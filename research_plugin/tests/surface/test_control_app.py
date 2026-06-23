@@ -12,14 +12,17 @@ from backend.composition import control_mode
 from backend.config import (
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
-    CONTROL_REQUIRE_AUTH_ENV_VAR,
     CONTROL_RESTRICT_CORS_ENV_VAR,
     DB_URL_ENV_VAR,
+    MLFLOW_MODE_ENV_VAR,
+    MLFLOW_SERVER_URI_ENV_VAR,
+    MLFLOW_TRACKING_URI_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
+from backend.transport.http_policy import HttpSurfacePolicy
 from backend.state import StateStore
 from backend.state.blobs import LocalDirBlobStore
 from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
@@ -41,28 +44,32 @@ class ControlAppTest(unittest.TestCase):
     def test_control_app_records_scoped_activity_without_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue, auth = build_control_app(
+            app, _queue = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
             )
             self.addCleanup(app.shutdown)
-            token = auth.mint_token(tenant_id="acme")
-            headers = {"Authorization": f"Bearer {token}"}
             client = TestClient(
-                create_fastapi_app(app=app, auth=auth),
+                create_fastapi_app(
+                    app=app,
+                    surface_policy=HttpSurfacePolicy.for_surface(
+                        restrict_cors=True,
+                        hosted_control=True,
+                        expose_local_data_plane=False,
+                    ),
+                ),
                 raise_server_exceptions=False,
             )
 
             created = client.post(
-                "/api/projects", json={"name": "Control Telemetry"}, headers=headers
+                "/api/projects", json={"name": "Control Telemetry"}
             )
             self.assertEqual(created.status_code, 201, created.text)
             project_id = created.json()["id"]
             claim = client.post(
                 f"/api/projects/{project_id}/claims",
                 json={"statement": "A scoped control-plane claim."},
-                headers=headers,
             )
             self.assertEqual(claim.status_code, 201, claim.text)
 
@@ -82,7 +89,6 @@ class ControlAppTest(unittest.TestCase):
             )
             listed = client.get(
                 "/api/debug/tool-calls?source=all&status=all",
-                headers=headers,
             )
             self.assertEqual(listed.status_code, 200, listed.text)
             calls = listed.json()["calls"]
@@ -91,12 +97,11 @@ class ControlAppTest(unittest.TestCase):
             review_call = next(call for call in calls if call["tool"] == "review.start")
             detail = client.get(
                 f"/api/debug/tool-calls/{review_call['id']}",
-                headers=headers,
             )
             self.assertEqual(detail.status_code, 200, detail.text)
             self.assertEqual(detail.json()["args"]["reviewer_capability"], "[redacted]")
             self.assertEqual(detail.json()["result"]["capability"], "[redacted]")
-            activity = client.get("/api/activity", headers=headers)
+            activity = client.get("/api/activity")
             self.assertEqual(activity.status_code, 200, activity.text)
             self.assertGreaterEqual(activity.json()["summary"]["total"], 1)
             names = {tool["name"] for tool in app.list_tools()}
@@ -108,7 +113,7 @@ class ControlAppTest(unittest.TestCase):
             root = Path(tmp)
             env = _mounted_mgmt_key_env(root)
             key_path = Path(env[MGMT_KEY_PATH_ENV_VAR])
-            app, _queue, _auth = build_control_app(
+            app, _queue = build_control_app(
                 repo_root=root / "staging",
                 env=env,
                 execution_backend=FakeSandboxBackend(),
@@ -145,7 +150,7 @@ class ControlAppTest(unittest.TestCase):
     def test_control_app_reads_task_result_timeout_from_injected_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue, _auth = build_control_app(
+            app, _queue = build_control_app(
                 repo_root=root,
                 env={
                     **_mounted_mgmt_key_env(root),
@@ -167,6 +172,97 @@ class ControlAppTest(unittest.TestCase):
                     },
                     execution_backend=FakeSandboxBackend(),
                 )
+
+    def test_control_app_reads_mlflow_from_injected_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app, _queue = build_control_app(
+                repo_root=root,
+                env={
+                    **_mounted_mgmt_key_env(root),
+                    MLFLOW_MODE_ENV_VAR: "external",
+                    MLFLOW_TRACKING_URI_ENV_VAR: "https://mlflow.example.test/",
+                    MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000/",
+                },
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
+
+            self.assertEqual(app.mlflow_tracking.tracking_uri, "https://mlflow.example.test")
+            self.assertEqual(
+                app.sandboxes.mlflow_tracking.tracking_uri,
+                "https://mlflow.example.test",
+            )
+            self.assertEqual(app.mlflow_tracking.server_uri, "http://mlflow:5000")
+            self.assertEqual(
+                app.sandboxes.backend_health()["mlflow"]["tracking_uri"],
+                "https://mlflow.example.test",
+            )
+            self.assertEqual(
+                app.sandboxes.backend_health()["mlflow"]["server_uri"],
+                "http://mlflow:5000",
+            )
+
+    def test_control_app_lazy_central_metrics_record_without_archive(self) -> None:
+        snapshot = {
+            "source": "mlflow",
+            "base_url": "http://mlflow:5000",
+            "experiments": [
+                {
+                    "name": "central",
+                    "runs": [
+                        {
+                            "run_id": "run_1",
+                            "metrics": {"loss": {"last": 0.2}},
+                            "params": {},
+                            "history": {},
+                        }
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app, _queue = build_control_app(
+                repo_root=root,
+                env={
+                    **_mounted_mgmt_key_env(root),
+                    MLFLOW_TRACKING_URI_ENV_VAR: "https://mlflow.example.test/",
+                    MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000/",
+                },
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
+            project_id = app.call_tool("project.create", {"name": "Control Metrics"})["id"]
+            exp_id = app.call_tool(
+                "experiment.create",
+                {"project_id": project_id, "name": "exp", "intent": "measure"},
+            )["id"]
+            app.sandboxes.registry.upsert(
+                experiment_id=exp_id,
+                project_id=project_id,
+                status="running",
+                sandbox_id="sbx_control",
+            )
+
+            self.assertIsNone(app.sandboxes.metrics_archive.load(experiment_id=exp_id))
+            with patch(
+                "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",
+                return_value=dict(snapshot),
+            ) as capture:
+                result = app.sandboxes.results_metrics(
+                    experiment_id=exp_id, project_id=project_id
+                )
+
+            capture.assert_called_once()
+            self.assertEqual(capture.call_args.args[0], "http://mlflow:5000")
+            self.assertTrue(result["available"])
+            self.assertIn("captured_at", result)
+            self.assertNotIn("base_url", result)
+            self.assertIsNone(app.sandboxes.metrics_archive.load(experiment_id=exp_id))
+            record = app.sandboxes.metrics_records.load(experiment_id=exp_id)
+            self.assertIsNotNone(record)
+            self.assertEqual((record or {})["experiments"][0]["name"], "central")
 
     def test_control_app_without_repo_root_requires_durable_config(self) -> None:
         with self.assertRaises(ValidationError) as ctx:
@@ -197,7 +293,7 @@ class ControlAppTest(unittest.TestCase):
                     return_value=blobs,
                 ) as blob_factory,
             ):
-                app, _queue, _auth = build_control_app(
+                app, _queue = build_control_app(
                     repo_root=None,
                     env=env,
                     execution_backend=FakeSandboxBackend(),
@@ -273,7 +369,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(server.shutdown)
             self.assertIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
 
-    def test_control_server_surface_auth_and_cors_are_configured_independently(self) -> None:
+    def test_control_server_private_surface_and_cors_are_configured_independently(self) -> None:
         from backend.composition.control_mode import build_control_server
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -283,7 +379,6 @@ class ControlAppTest(unittest.TestCase):
                     repo_root=root,
                     env={
                         **_mounted_mgmt_key_env(root),
-                        CONTROL_REQUIRE_AUTH_ENV_VAR: "false",
                         CONTROL_RESTRICT_CORS_ENV_VAR: "false",
                     },
                 )
@@ -293,51 +388,26 @@ class ControlAppTest(unittest.TestCase):
             projects = client.get("/api/projects")
             self.assertEqual(projects.status_code, 200, projects.text)
 
-            daemon_without_token = client.get("/api/daemon/tasks?wait=0")
-            self.assertEqual(daemon_without_token.status_code, 400)
-            self.assertEqual(
-                daemon_without_token.json()["error_code"], "permission_denied"
-            )
+            daemon_poll = client.get("/api/daemon/tasks?wait=0")
+            self.assertEqual(daemon_poll.status_code, 200, daemon_poll.text)
 
-            admin_without_token = client.post("/api/admin/cleanup")
-            self.assertEqual(admin_without_token.status_code, 400)
-            self.assertEqual(
-                admin_without_token.json()["error_code"], "permission_denied"
-            )
+            admin_cleanup = client.post("/api/admin/cleanup")
+            self.assertEqual(admin_cleanup.status_code, 200, admin_cleanup.text)
 
-            counters_without_token = client.get("/api/admin/tenants/local/counters")
-            self.assertEqual(counters_without_token.status_code, 400)
-            self.assertEqual(
-                counters_without_token.json()["error_code"], "permission_denied"
-            )
-
-            daemon_token = server.auth.mint_token(
-                tenant_id="local", client_id="daemon"
-            )
-            daemon = client.get(
-                "/api/daemon/tasks?wait=0",
-                headers={"Authorization": f"Bearer {daemon_token}"},
-            )
-            self.assertEqual(daemon.status_code, 200, daemon.text)
+            counters = client.get("/api/admin/tenants/local/counters")
+            self.assertEqual(counters.status_code, 200, counters.text)
 
             old_daemon = client.get(
                 "/api/daemon/tasks?wait=0",
-                headers={
-                    "Authorization": f"Bearer {daemon_token}",
-                    CLIENT_VERSION_HEADER: "0.0001",
-                },
+                headers={CLIENT_VERSION_HEADER: "0.0001"},
             )
             self.assertEqual(old_daemon.status_code, 426, old_daemon.text)
 
             acme_project = server.app.projects.create(
                 name="Acme Hosted", tenant_id="acme"
             )
-            other_daemon_token = server.auth.mint_token(
-                tenant_id="other", client_id="daemon"
-            )
-            wrong_tenant = client.post(
+            daemon_write = client.post(
                 "/api/daemon/resources/observe",
-                headers={"Authorization": f"Bearer {other_daemon_token}"},
                 json={
                     "project_id": acme_project["id"],
                     "path": "results.txt",
@@ -347,21 +417,7 @@ class ControlAppTest(unittest.TestCase):
                     "size_bytes": 1,
                 },
             )
-            self.assertEqual(wrong_tenant.status_code, 404, wrong_tenant.text)
-
-            admin_token = server.auth.mint_token(tenant_id="ops", client_id="admin")
-            admin = client.post(
-                "/api/admin/cleanup",
-                headers={"Authorization": f"Bearer {admin_token}"},
-            )
-            self.assertEqual(admin.status_code, 200, admin.text)
-
-            local_token = server.auth.mint_token(tenant_id="local")
-            tenant_counters = client.get(
-                "/api/admin/tenants/local/counters",
-                headers={"Authorization": f"Bearer {local_token}"},
-            )
-            self.assertEqual(tenant_counters.status_code, 200, tenant_counters.text)
+            self.assertEqual(daemon_write.status_code, 200, daemon_write.text)
 
             meta = client.get("/api/meta")
             self.assertEqual(meta.status_code, 200, meta.text)

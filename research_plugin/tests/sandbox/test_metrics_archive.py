@@ -7,11 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from backend.mlflow_metrics import MAX_HISTORY_POINTS, downsample_history, snapshot_mlflow
 from backend.dataplane.metrics_archive import (
-    MAX_HISTORY_POINTS,
     MetricsArchive,
-    _downsample,
-    snapshot_mlflow,
     snapshot_mlflow_db,
 )
 from tests.fakes import write_fake_mlflow_db
@@ -49,7 +47,12 @@ class FakeClient:
         if self.fail:
             raise OSError("connection refused")
         if url.endswith("/experiments/search"):
-            return FakeResponse({"experiments": self.experiments})
+            experiments = self.experiments
+            wanted = (params or {}).get("filter", "")
+            if wanted.startswith("name = '"):
+                name = wanted.removeprefix("name = '").removesuffix("'")
+                experiments = [e for e in experiments if e.get("name") == name]
+            return FakeResponse({"experiments": experiments})
         if url.endswith("/metrics/get-history"):
             key = (params or {}).get("run_id"), (params or {}).get("metric_key")
             return FakeResponse({"metrics": self.history.get(key, [])})
@@ -66,7 +69,7 @@ class FakeClient:
 
 def _client_patch(client: FakeClient):
     return patch(
-        "backend.dataplane.metrics_archive.httpx.Client",
+        "backend.mlflow_metrics.httpx.Client",
         return_value=client,
     )
 
@@ -94,8 +97,6 @@ class SnapshotMlflowTest(unittest.TestCase):
                             "params": [{"key": "lr", "value": "0.0005"}],
                             "metrics": [
                                 {"key": "acc", "value": 0.91, "step": 20, "timestamp": 5},
-                                # Non-finite final value must be stored as null,
-                                # not break JSON for browsers.
                                 {"key": "bad", "value": float("nan"), "step": 1, "timestamp": 5},
                             ],
                         },
@@ -129,6 +130,38 @@ class SnapshotMlflowTest(unittest.TestCase):
         # The whole record must be strict JSON (no NaN literals).
         json.loads(json.dumps(snapshot, allow_nan=False))
 
+    def test_snapshot_can_scope_to_one_experiment_name(self) -> None:
+        client = FakeClient(
+            experiments=[
+                {"experiment_id": "1", "name": "rp/proj_a/exp_a"},
+                {"experiment_id": "2", "name": "rp/proj_b/exp_b"},
+            ],
+            runs={
+                "1": [
+                    {
+                        "info": {"run_id": "r1", "run_name": "a"},
+                        "data": {"metrics": [{"key": "acc", "value": 0.1}]},
+                    }
+                ],
+                "2": [
+                    {
+                        "info": {"run_id": "r2", "run_name": "b"},
+                        "data": {"metrics": [{"key": "acc", "value": 0.9}]},
+                    }
+                ],
+            },
+        )
+        with _client_patch(client):
+            snapshot = snapshot_mlflow(
+                "https://mlflow.test", experiment_name="rp/proj_b/exp_b"
+            )
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot["experiments"]), 1)
+        self.assertEqual(snapshot["experiments"][0]["name"], "rp/proj_b/exp_b")
+        self.assertEqual(
+            snapshot["experiments"][0]["runs"][0]["metrics"]["acc"]["last"], 0.9
+        )
+
     def test_snapshot_none_when_no_runs_anywhere(self) -> None:
         client = FakeClient(
             experiments=[{"experiment_id": "0", "name": "Default", "last_update_time": 1}],
@@ -144,12 +177,12 @@ class SnapshotMlflowTest(unittest.TestCase):
 
     def test_downsample_caps_points_and_keeps_endpoints(self) -> None:
         points = [[i, float(i)] for i in range(5000)]
-        sampled = _downsample(points)
+        sampled = downsample_history(points)
         self.assertLessEqual(len(sampled), MAX_HISTORY_POINTS + 1)
         self.assertEqual(sampled[0], [0, 0.0])
         self.assertEqual(sampled[-1], [4999, 4999.0])
         short = [[0, 1.0], [1, 2.0]]
-        self.assertEqual(_downsample(short), short)
+        self.assertEqual(downsample_history(short), short)
 
 
 class SnapshotMlflowDbTest(unittest.TestCase):

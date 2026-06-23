@@ -83,9 +83,8 @@ CREATE TABLE IF NOT EXISTS projects (
   hard_stop_rationale TEXT NOT NULL DEFAULT '',
   stopped_at TEXT,
   -- Tenancy (cloud plan Phase 6): ownership lives on the project row; every
-  -- other table reaches its tenant through project_id. Local mode is the
-  -- fixed 'local' tenant. Denormalized per-table tenant columns and
-  -- enforcement land with Phase 7's auth, not before.
+  -- other table reaches its tenant through project_id. The current private
+  -- deployment uses the fixed 'local' tenant until real user auth lands.
   tenant_id TEXT NOT NULL DEFAULT 'local',
   created_at TEXT NOT NULL
 );
@@ -343,10 +342,10 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   parachute_size_bytes INTEGER NOT NULL DEFAULT 0,
   parachute_expires_at TEXT,
   volume_name TEXT NOT NULL DEFAULT '',
-  -- Observability dashboards exposed inside the sandbox (MLflow at 5000,
-  -- TensorBoard at 6006), surfaced to the user as provider URLs (Modal HTTPS
-  -- tunnels) or daemon-owned local SSH forwards (Lambda Labs). JSON object
-  -- keyed by dashboard name. Empty '{}' when no dashboards were exposed.
+  -- Sandbox-local observability dashboards (currently TensorBoard at 6006),
+  -- surfaced to the user as provider URLs (Modal HTTPS tunnels) or
+  -- daemon-owned local SSH forwards (Lambda Labs). Centralized MLflow is not
+  -- stored here. JSON object keyed by dashboard name; '{}' when none exposed.
   dashboards_json TEXT NOT NULL DEFAULT '{}',
   sandbox_name TEXT NOT NULL DEFAULT '',
   phase TEXT NOT NULL DEFAULT '',
@@ -413,31 +412,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TEXT NOT NULL
 );
 
--- Identity (cloud plan Phase 7, §3.2). Dormant in local mode: the implicit
--- 'local' tenant needs no row here and auth is off on loopback, so these
--- tables stay empty until the control plane provisions tenants out of band.
--- A tenant owns projects (projects.tenant_id) and, through them, every
--- project-scoped record. Bearer tokens are minted per tenant and resolved to
--- a Principal by AuthService (services/identity.py).
+-- Tenant records. The current private hosted-control deployment has no user
+-- auth yet, but projects, quotas, budgets, and counters are already tenant
+-- shaped so the real auth system can attach users later without reshaping
+-- stored project data.
 CREATE TABLE IF NOT EXISTS tenants (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
-);
-
--- API bearer tokens (cloud plan Phase 7). The PK is the sha256 hash of the
--- token — the plaintext is shown once at mint and never stored (see
--- services/identity.py for why a fast hash is correct for high-entropy bearer
--- secrets). expires_at/revoked_at are nullable: NULL means "no expiry" /
--- "not revoked". Lookups are by hash with a constant-time compare.
-CREATE TABLE IF NOT EXISTS api_tokens (
-  token_hash TEXT PRIMARY KEY,
-  tenant_id TEXT NOT NULL,
-  client_id TEXT NOT NULL DEFAULT 'control',
-  label TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  expires_at TEXT,
-  revoked_at TEXT
 );
 
 -- Cost governance (cloud plan Phase 7). One quota row per tenant; every
@@ -831,20 +813,12 @@ class StateStore(BaseStateStore):
             table="reviews",
             columns={"return_to": "TEXT NOT NULL DEFAULT ''"},
         )
-        # Cloud-split Phase 7: review sessions bind to the authenticated tenant
-        # (single 'local' tenant in local mode); legacy rows predate the column.
+        # Review sessions keep a tenant column so future auth can scope review
+        # starts without reshaping legacy rows.
         self._ensure_columns(
             conn=conn,
             table="review_sessions",
             columns={"tenant_id": "TEXT NOT NULL DEFAULT ''"},
-        )
-        # Daemon-scoped control-plane tokens (server-side split): hosted UI
-        # tokens resolve as client_id='control'; daemon-only resource/task
-        # endpoints require client_id='daemon'.
-        self._ensure_columns(
-            conn=conn,
-            table="api_tokens",
-            columns={"client_id": "TEXT NOT NULL DEFAULT 'control'"},
         )
         # Async provisioning (June 2026): sandboxes gained a provisioning/failed
         # lifecycle with progress + error fields. Older DBs predate these columns.
@@ -861,10 +835,9 @@ class StateStore(BaseStateStore):
                 "sandbox_data_dir": "TEXT NOT NULL DEFAULT ''",
                 "sync_dir": "TEXT NOT NULL DEFAULT ''",
                 "unsynced_dir": "TEXT NOT NULL DEFAULT ''",
-                # Phase 1 observability dashboards: MLflow + TensorBoard URLs
-                # surfaced from the in-sandbox servers through provider URLs or
-                # daemon-owned local SSH forwards. JSON object keyed by dashboard
-                # name; '{}' on older rows and sandboxes where none were exposed.
+                # Sandbox-local observability dashboards (currently TensorBoard)
+                # surfaced through provider URLs or daemon-owned local SSH
+                # forwards. Centralized MLflow is exposed separately.
                 "dashboards_json": "TEXT NOT NULL DEFAULT '{}'",
                 # Lambda-default (June 2026): provider-bundled machine SKU +
                 # datacenter for backends that procure a fixed instance type.

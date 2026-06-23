@@ -26,9 +26,9 @@ from ..ports.sandbox_sync import SyncTarget
 class HttpControlPlaneView:
     """Daemon-side HTTP client for sync targets + the task long-poll/ack.
 
-    Reuses the control client's base_url + bearer token; the task poll uses a
-    longer per-request timeout than ordinary tool calls because it is a long
-    poll the cloud holds open.
+    Reuses the control client's base_url; the task poll uses a longer
+    per-request timeout than ordinary tool calls because it is a long poll the
+    cloud holds open.
     """
 
     def __init__(
@@ -47,7 +47,7 @@ class HttpControlPlaneView:
     # ---- sync targets (the ControlPlaneView poll) ----
 
     def sync_targets(self, *, tenant_id: str | None = None) -> list[SyncTarget]:
-        _ = tenant_id  # tenant scope is enforced by the daemon bearer identity.
+        _ = tenant_id  # Reserved for future user auth; current private mode is unscoped.
         body = self._request(
             method="GET",
             path=f"/api/daemon/sync-targets?client_id={self._client_id}",
@@ -92,7 +92,7 @@ class HttpControlPlaneView:
             payload["error"] = error
         self._request(method="POST", path=f"/api/daemon/tasks/{task_id}/ack", body=payload)
 
-    # ---- transport (reuses the control client's auth + base) ----
+    # ---- transport (reuses the control client's base) ----
 
     def _request(
         self,
@@ -107,8 +107,6 @@ class HttpControlPlaneView:
         headers = {"Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        if self._control.token:
-            headers["Authorization"] = f"Bearer {self._control.token}"
         # Version/compat handshake (cloud plan Phase 9): stamp the daemon's
         # version so the control plane can reject below-floor clients with an
         # actionable upgrade error. Sourced from the package version.

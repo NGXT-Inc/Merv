@@ -15,6 +15,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
@@ -105,8 +106,8 @@ class DualUpstreamProxyTest(unittest.TestCase):
 
     def test_control_tool_routes_to_cloud_with_project_id(self) -> None:
         # Control tool → cloud. The cloud never receives repo_root; it gets the
-        # explicit project_id (here passed through; _resolve_project_id against a
-        # real daemon /local/route is covered by test_proxy_identity below).
+        # project_id resolved by the proxy.
+        self.proxy._resolve_project_id = lambda: self.project["id"]  # type: ignore[method-assign]
         claim = self._call(
             "claim.create",
             {"project_id": self.project["id"], "statement": "A control-routed claim."},
@@ -139,6 +140,7 @@ class DualUpstreamProxyTest(unittest.TestCase):
                 control_url="http://127.0.0.1:1",
             )
         )
+        broken._resolve_project_id = lambda: self.project["id"]  # type: ignore[method-assign]
         (self.repo / "data.txt").write_text("still works\n")
         ok = broken.handle(
             {
@@ -163,19 +165,6 @@ class DualUpstreamProxyTest(unittest.TestCase):
         result = down["result"]["structuredContent"]
         self.assertEqual(result["error_code"], "cloud_unreachable")
         self.assertTrue(down["result"].get("isError"))
-
-    def test_missing_control_url_is_hard_error_for_control_tools_in_split(self) -> None:
-        # A proxy left in split intent (a control tool) but with no control URL
-        # is a hard config error, never a silent loopback fallback. We model
-        # "split mode declared by the call's plane": with control_url None the
-        # proxy is single-upstream, so instead assert the documented dual-mode
-        # rule directly — a control tool with control_url set but unreachable
-        # surfaces cloud_unreachable (covered above), and a None control_url is
-        # plain local mode (single upstream), which the local tests cover.
-        local = HttpProxyMcpServer(
-            config=ProxyConfig(repo_root=self.repo, daemon_url=self.daemon.url)
-        )
-        self.assertFalse(local.config.split_mode)
 
 
 class AggregateMergeTest(unittest.TestCase):
@@ -264,10 +253,53 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
                 )
             )
             self.assertEqual(proxy._resolve_project_id(), "proj_cloud_minted")
+            links.link(repo_root=str(self.repo), project_id="proj_relinked")
+            self.assertEqual(proxy._resolve_project_id(), "proj_relinked")
         finally:
             server.should_exit = True
             thread.join(timeout=5.0)
             sock.close()
+
+    def test_split_proxy_overrides_caller_supplied_project_id(self) -> None:
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                daemon_url="http://daemon.invalid",
+                control_url="http://control.invalid",
+            )
+        )
+        proxy._tool_meta = lambda **_: SimpleNamespace(project_scoped=True)  # type: ignore[method-assign]
+        proxy._resolve_project_id = lambda: "proj_authoritative"  # type: ignore[method-assign]
+        captured: dict = {}
+
+        def _capture_post(**kwargs):  # noqa: ANN003
+            captured.update(kwargs.get("payload") or {})
+            return {"result": {}}
+
+        proxy._http_post = _capture_post  # type: ignore[method-assign]
+        proxy._call_cloud(name="claim.list", arguments={"project_id": "proj_evil"})
+
+        self.assertEqual(captured["arguments"]["project_id"], "proj_authoritative")
+
+    def test_split_proxy_strips_project_id_from_daemon_calls(self) -> None:
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                daemon_url="http://daemon.invalid",
+                control_url="http://control.invalid",
+            )
+        )
+        captured: dict = {}
+
+        def _capture_post(**kwargs):  # noqa: ANN003
+            captured.update(kwargs.get("payload") or {})
+            return {"result": {}}
+
+        proxy._http_post = _capture_post  # type: ignore[method-assign]
+        proxy._call_daemon(name="resource.register_file", arguments={"project_id": "proj_evil"})
+
+        self.assertNotIn("project_id", captured["arguments"])
+        self.assertEqual(captured["context"]["repo_root"], str(self.repo))
 
 
 if __name__ == "__main__":

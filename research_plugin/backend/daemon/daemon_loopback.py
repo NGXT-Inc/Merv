@@ -4,9 +4,7 @@ The proxy talks to the daemon for the data-plane tool subset and to resolve the
 repo_root to project_id mapping (so repo_root never crosses to the cloud). A
 deliberately small surface:
 
-- GET /local/route (repo_root query) resolves the project_id for a checkout
-  from the daemon-local project_links; the proxy caches it and sends an
-  explicit project_id on cloud calls.
+- GET /local/route resolves repo_root to project_id through project_links.
 - GET /health: daemon liveness plus cloud reachability (feeds sandbox.health).
 - POST /local/link registers a repo_root to project_id mapping (the proxy calls
   it once the cloud has minted a project).
@@ -14,8 +12,8 @@ deliberately small surface:
   the stateless MCP proxy.
 
 The surface is gated by a local daemon auth secret (risk 11): the daemon holds
-the cloud token and the user private keys, so a bare loopback bind is not
-enough. A unix-socket bind is the Phase 9 upgrade.
+user private keys and local repo access, so a bare loopback bind is not enough.
+A unix-socket bind is the Phase 9 upgrade.
 
 The data-plane tool EXECUTION (register_file/associate/feed.post reading bytes
 locally and submitting to the cloud record half; request/sync driving the
@@ -26,7 +24,7 @@ persisted records.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
@@ -38,7 +36,24 @@ from ..transport.mcp_http import register_mcp_routes
 from ..utils import ResearchPluginError, ValidationError
 
 
-def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:
+class _ControlProbe(Protocol):
+    def list_tools(self) -> list[dict[str, Any]]: ...
+
+
+class _ProjectLinks(Protocol):
+    def project_for_repo(self, *, repo_root: str) -> str | None: ...
+    def link(self, *, repo_root: str, project_id: str) -> None: ...
+    def list_links(self) -> list[dict[str, str]]: ...
+    def unlink(self, *, repo_root: str) -> bool: ...
+
+
+class DaemonLoopback(Protocol):
+    loopback_secret: str
+    project_links: _ProjectLinks
+    control: _ControlProbe
+
+
+def create_daemon_loopback_app(*, daemon: DaemonLoopback) -> FastAPI:
     http = FastAPI(title="Research Plugin Daemon (loopback)", version=__version__)
     secret = daemon.loopback_secret
 
@@ -106,6 +121,20 @@ def create_daemon_loopback_app(*, daemon: Any) -> FastAPI:
             raise ValidationError("repo_root and project_id are required")
         daemon.project_links.link(repo_root=repo_root, project_id=project_id)
         return {"linked": True, "repo_root": repo_root, "project_id": project_id}
+
+    @http.get("/local/links")
+    def local_links(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+        _check_secret(authorization)
+        return {"links": daemon.project_links.list_links()}
+
+    @http.delete("/local/link")
+    def local_unlink(
+        repo_root: str = Query(...),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _check_secret(authorization)
+        removed = daemon.project_links.unlink(repo_root=repo_root)
+        return {"unlinked": removed, "repo_root": repo_root}
 
     def list_mcp_tools() -> list[dict[str, Any]]:
         if hasattr(daemon, "list_tools"):

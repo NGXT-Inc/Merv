@@ -14,8 +14,7 @@ SDKs and this client must work there, and the proxy reuses the same plumbing.
 Error translation: the control plane returns its ``ResearchPluginError`` as a
 JSON body ``{detail, error_code, ...}`` (see ``http_api.research_error_handler``).
 This client rebuilds the matching exception type so callers — and the contract
-scenarios — observe identical results to the in-process wiring. Bearer token is
-optional (local/daemon-to-local has auth off; control mode requires it).
+scenarios — observe identical results to the in-process wiring.
 """
 
 from __future__ import annotations
@@ -70,7 +69,6 @@ class HttpControlPlaneClient:
         self,
         *,
         base_url: str,
-        token: str | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         extra_context: dict[str, Any] | None = None,
     ) -> None:
@@ -78,7 +76,6 @@ class HttpControlPlaneClient:
         # for explicit project_id / client_id only; the daemon resolves the
         # repo→project mapping locally and the proxy attaches project_id here.
         self.base_url = base_url.rstrip("/")
-        self.token = token
         self.timeout_seconds = timeout_seconds
         self.extra_context = dict(extra_context or {})
 
@@ -137,11 +134,7 @@ class HttpControlPlaneClient:
     # ---- transport (stdlib only) ----
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.token:
-            # Never log this header.
-            headers["Authorization"] = f"Bearer {self.token}"
-        return headers
+        return {"Content-Type": "application/json", "Accept": "application/json"}
 
     def _get(self, *, path: str) -> dict[str, Any]:
         req = Request(self.base_url + path, method="GET", headers=self._headers())
@@ -181,11 +174,10 @@ class HttpControlPlaneClient:
             body = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             body = {}
-        # A 401 is the auth_expired/unauthorized taxonomy, not a domain error.
         if exc.code == 401:
             return ControlPlaneUnreachableError(
-                str(body.get("detail") or "control plane rejected the bearer token"),
-                details={"error_code": "auth_expired", "status": 401},
+                str(body.get("detail") or "control plane rejected the request"),
+                details={"status": 401},
             )
         message = str(body.get("detail") or exc.reason or "control plane error")
         error_code = str(body.get("error_code") or "research_plugin_error")

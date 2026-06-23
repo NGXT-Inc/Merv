@@ -13,7 +13,6 @@ from ..services.feed import MAX_IMAGE_BYTES
 from ..utils import ValidationError
 
 JsonBody = dict[str, Any] | None
-DaemonPrincipalRequired = Callable[[Request], Any]
 DaemonProjectApp = Callable[[Request, str], Any]
 
 
@@ -51,7 +50,6 @@ def register_daemon_routes(
     *,
     task_queue: Any | None,
     sync_targets_source: Any | None,
-    require_daemon: DaemonPrincipalRequired,
     app_for_project: DaemonProjectApp,
 ) -> None:
     if task_queue is not None:
@@ -62,10 +60,9 @@ def register_daemon_routes(
             client_id: str = Query(""),  # noqa: ARG001 - v1 single daemon per tenant
             wait: int = Query(25, ge=0, le=60),
         ) -> dict[str, Any]:
-            principal = require_daemon(request)
             task = task_queue.poll(
                 wait_seconds=float(wait),
-                tenant_id=getattr(principal, "tenant_id", "") or "",
+                tenant_id="",
             )
             return {"task": task}
 
@@ -73,14 +70,13 @@ def register_daemon_routes(
         def daemon_ack_task(
             task_id: str, request: Request, body: JsonBody = Body(default=None)
         ) -> dict[str, Any]:
-            principal = require_daemon(request)
             payload = body or {}
             task_queue.ack(
                 task_id=task_id,
                 ok=bool(payload.get("ok")),
                 result=payload.get("result"),
                 error=payload.get("error"),
-                tenant_id=getattr(principal, "tenant_id", "") or "",
+                tenant_id="",
             )
             return {"acked": True}
 
@@ -274,10 +270,7 @@ def register_daemon_routes(
         def daemon_sync_targets(
             request: Request, client_id: str = Query("")  # noqa: ARG001
         ) -> dict[str, Any]:
-            principal = require_daemon(request)
-            targets = sync_targets_source.sync_targets(
-                tenant_id=getattr(principal, "tenant_id", "") or ""
-            )
+            targets = sync_targets_source.sync_targets(tenant_id="")
             return {
                 "targets": [
                     {

@@ -87,7 +87,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _build(self, *, alive_ids: tuple[str, ...] = ()):
-        app, queue, _auth = build_control_app(
+        app, queue = build_control_app(
             repo_root=self.staging,
             env=_mounted_mgmt_key_env(self.staging),
             execution_backend=_reaper_capable_backend(alive_ids=alive_ids),

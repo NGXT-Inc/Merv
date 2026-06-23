@@ -1,12 +1,11 @@
-"""Dashboard exposure for sandboxes: SSH tunnel pool + MLflow deep links.
+"""Dashboard exposure for sandbox-local TensorBoard.
 
 `DashboardTunnels` owns the daemon-side ssh ``-L`` port-forward processes that
-surface in-sandbox dashboards (MLflow, TensorBoard) for providers without a
-native tunnel surface (Lambda Labs), and decorates MLflow URLs with a deep
-link into the newest real run. Loopback URLs are machine-local facts (cloud
-plan §3.2): they persist in the data-plane worker's local store, never in the
-cloud-bound sandbox row, and views merge them back through ``merged_row``.
-The provider-native URL refresh (a row fact) lives in the sandbox facade.
+surface sandbox-local dashboards (TensorBoard for new runs) for providers
+without a native tunnel surface (Lambda Labs). Loopback URLs are machine-local
+facts (cloud plan §3.2): they persist in the data-plane worker's local store,
+never in the cloud-bound sandbox row, and views merge them back through
+``merged_row``. The provider-native URL refresh lives in the sandbox facade.
 """
 
 from __future__ import annotations
@@ -73,10 +72,6 @@ class DashboardTunnels:
         self._tunnels: dict[tuple[str, str], _DashboardTunnel] = {}
         self._tunnel_attempts: dict[tuple[str, str], float] = {}
         self._tunnels_lock = threading.Lock()
-        # (sandbox_id, base_url) -> (computed_at, display_url): TTL cache for
-        # the MLflow deep link so polls don't query MLflow every 3 seconds.
-        self._mlflow_links: dict[tuple[str, str], tuple[float, str]] = {}
-
     def merged_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
         """The row with provider URLs + locally stored loopback URLs merged.
 
@@ -136,11 +131,8 @@ class DashboardTunnels:
             key = (sandbox_id, name)
             tunnel = self._live_tunnel(key=key)
             if tunnel is not None:
-                display_url = self._display_url(
-                    name=name, base_url=tunnel.url, sandbox_id=sandbox_id
-                )
-                if local.get(name) != display_url:
-                    local[name] = display_url
+                if local.get(name) != tunnel.url:
+                    local[name] = tunnel.url
                     changed = True
                 continue
 
@@ -167,9 +159,7 @@ class DashboardTunnels:
                 continue
             with self._tunnels_lock:
                 self._tunnels[key] = tunnel
-            local[name] = self._display_url(
-                name=name, base_url=tunnel.url, sandbox_id=sandbox_id
-            )
+            local[name] = tunnel.url
             changed = True
 
         if changed:
@@ -201,25 +191,6 @@ class DashboardTunnels:
             self._terminate_process(tunnel.process)
 
     # ---------- internals ----------
-
-    def _display_url(self, *, name: str, base_url: str, sandbox_id: str) -> str:
-        """The URL the UI should embed for one dashboard.
-
-        For MLflow this is a deep link into the most recently active real
-        experiment (recomputed at most every 15s, so it upgrades on a later
-        poll once training creates the experiment). Everything else uses the
-        tunnel URL as-is.
-        """
-        if name != "mlflow":
-            return base_url
-        key = (sandbox_id, base_url)
-        now = time.monotonic()
-        cached = self._mlflow_links.get(key)
-        if cached is not None and now - cached[0] < 15.0:
-            return cached[1]
-        url = _mlflow_deep_link(base_url)
-        self._mlflow_links[key] = (now, url)
-        return url
 
     def _live_tunnel(self, *, key: tuple[str, str]) -> _DashboardTunnel | None:
         with self._tunnels_lock:
@@ -330,74 +301,6 @@ def _dashboard_url_ready(url: str) -> bool:
     except httpx.HTTPError:
         return False
     return response.status_code < 500
-
-
-def _mlflow_deep_link(base_url: str) -> str:
-    """Deep-link MLflow at the training charts instead of the empty landing page.
-
-    A fresh MLflow opens on the empty "Default" experiment, several clicks away
-    from the training charts. The daemon asks MLflow's REST API — through the
-    tunnel it owns; the browser cannot, because of CORS — for the newest
-    non-Default experiment, then for that experiment's newest run (preferring
-    one still RUNNING), and points the iframe straight at the run's
-    "Model metrics" tab. Fallbacks, in order: experiment chart view when the
-    experiment has no runs yet, the bare URL before any real experiment exists
-    or on any error.
-    """
-    try:
-        response = httpx.get(
-            f"{base_url}/api/2.0/mlflow/experiments/search",
-            params={"max_results": 100},
-            timeout=1.5,
-        )
-        if response.status_code != 200:
-            return base_url
-        experiments = response.json().get("experiments") or []
-    except Exception:  # noqa: BLE001 — the deep link is best-effort sugar
-        return base_url
-    real = [
-        e for e in experiments if isinstance(e, dict) and e.get("name") != "Default"
-    ]
-    if not real:
-        return base_url
-    best = max(real, key=lambda e: int(e.get("last_update_time") or 0))
-    experiment_id = str(best.get("experiment_id") or "")
-    if not experiment_id:
-        return base_url
-    run_id = _mlflow_latest_run_id(base_url, experiment_id)
-    if run_id:
-        return f"{base_url}/#/experiments/{experiment_id}/runs/{run_id}/model-metrics"
-    return f"{base_url}/#/experiments/{experiment_id}?compareRunsMode=CHART"
-
-
-def _mlflow_latest_run_id(base_url: str, experiment_id: str) -> str | None:
-    """The run worth watching: newest in the experiment, RUNNING beats finished."""
-    try:
-        response = httpx.post(
-            f"{base_url}/api/2.0/mlflow/runs/search",
-            json={
-                "experiment_ids": [experiment_id],
-                "order_by": ["attributes.start_time DESC"],
-                "max_results": 20,
-            },
-            timeout=1.5,
-        )
-        if response.status_code != 200:
-            return None
-        runs = response.json().get("runs") or []
-    except Exception:  # noqa: BLE001 — best-effort, same as the experiment lookup
-        return None
-    infos = [
-        run.get("info") or {}
-        for run in runs
-        if isinstance(run, dict) and isinstance(run.get("info"), dict)
-    ]
-    candidates = [info for info in infos if info.get("run_id")]
-    if not candidates:
-        return None
-    running = [info for info in candidates if info.get("status") == "RUNNING"]
-    best = max(running or candidates, key=lambda i: int(i.get("start_time") or 0))
-    return str(best["run_id"])
 
 
 def _tunnel_ready(

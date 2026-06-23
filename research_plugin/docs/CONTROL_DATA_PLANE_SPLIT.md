@@ -66,6 +66,7 @@ CLOUD (multi-tenant)
   and records. Provisions VMs, but never touches a user's filesystem.
 - **Local data-plane daemon** — one long-lived process per user machine. Has
   filesystem access; runs rsync/watch; authenticates to the cloud as the user.
+  Keeps a daemon-local registry with many `repo_root -> project_id` links.
   This is the role the **current HTTP daemon already plays for sync** — we keep
   that half and shed the rest to the cloud.
 - **MCP server** — stays a thin, stateless stdio proxy. It gains a second
@@ -132,7 +133,8 @@ the record/metadata half is cloud.**
   multiplexes a shared daemon into per-`repo_root` app instances — a local,
   directory-keyed primitive. In production, **tenancy (user/project) moves to
   the cloud**, while the local daemon keeps the directory mapping (`repo_root` ↔
-  experiment folders). Anything keyed on `repo_root` is, by definition, local.
+  `project_id`). A single machine daemon can keep many such links. Anything
+  keyed on `repo_root` is, by definition, local.
 
 ## The seam: contracts between cloud and local
 
@@ -182,10 +184,11 @@ owned by the local daemon:
 
 ## Cross-cutting concerns to design before this is real
 
-1. **Local → cloud auth bootstrap.** The local daemon must authenticate to the
-   cloud *as the user* so ownership checks mean anything. Device-flow OAuth →
-   local refresh token → exchange for short-lived sync-session credentials.
-   This is the foundation everything else rests on.
+1. **Production auth.** The current private operator-run deployment has no user
+   auth. Before broad exposure, the local daemon must authenticate to the cloud
+   *as the user* so ownership checks mean anything. Device-flow OAuth → local
+   refresh token → exchange for short-lived sync-session credentials is the
+   expected shape.
 
 2. **SSH credential model.** Prefer an **SSH CA**: the local daemon generates a
    keypair (private key never leaves the machine), the cloud signs the public
@@ -232,10 +235,12 @@ This is evolution, not a rewrite — the local daemon already owns sync.
    behavior change; just a clean boundary.
 2. **Define the sync-session + lease contract** (above) and route today's
    `sandbox.sync` through it locally.
-3. **Stand up the cloud control plane** (auth, multi-tenant DB, provisioning,
-   credential issuance). Point the MCP server's control-plane tools at it.
+3. **Stand up the private cloud control plane** (durable DB, provisioning,
+   credential issuance; real user auth comes later). Point the MCP server's
+   control-plane tools at it.
 4. **Ship the local data-plane daemon** as the slimmed-down successor to
-   `backend.transport.http_server`: data half only, authenticating to the cloud.
+   `backend.transport.http_server`: data half only, registering with the cloud
+   control plane.
 5. **Add lease enforcement + `direction_policy`** and the
    `start_sync`/`stop_sync`/`sync_status` tools.
 

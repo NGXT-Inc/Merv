@@ -35,6 +35,10 @@ class LocalShippingTest(unittest.TestCase):
         self.install_dir.mkdir(parents=True)
         shutil.copytree(self.source_plugin / "backend", self.install_dir / "backend")
         shutil.copytree(self.source_plugin / "mcp_server", self.install_dir / "mcp_server")
+        shutil.copytree(
+            self.source_plugin / "research_plugin_shared",
+            self.install_dir / "research_plugin_shared",
+        )
         shutil.copytree(self.source_plugin / "bin", self.install_dir / "bin")
         shutil.copytree(self.source_plugin / "skills", self.install_dir / "skills")
         shutil.copy2(self.source_plugin / ".mcp.codex.json", self.install_dir / ".mcp.codex.json")

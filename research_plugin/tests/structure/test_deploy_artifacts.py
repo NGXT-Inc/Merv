@@ -21,6 +21,7 @@ class DeployArtifactsTest(unittest.TestCase):
     def test_deploy_dir_has_the_expected_files(self) -> None:
         for name in (
             "Dockerfile",
+            "Dockerfile.mlflow",
             "docker-compose.yml",
             "README.md",
             ".dockerignore",
@@ -61,6 +62,7 @@ class DeployArtifactsTest(unittest.TestCase):
         )
         self.assertIn("psycopg", control_extra)
         self.assertIn("boto3", control_extra)
+        self.assertNotIn("mlflow", control_extra)
 
     def test_compose_wires_control_postgres_object_store_and_management_key(self) -> None:
         text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
@@ -76,6 +78,7 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("mgmtkey:/run/secrets/research_plugin_mgmt_key:ro", text)
         # Builds from the deploy Dockerfile.
         self.assertIn("dockerfile: deploy/Dockerfile", text)
+        self.assertIn("dockerfile: deploy/Dockerfile.mlflow", text)
 
     def test_env_example_documents_control_matrix(self) -> None:
         text = (DEPLOY / ".env.example").read_text(encoding="utf-8")

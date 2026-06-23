@@ -27,7 +27,7 @@ metrics, views glue). The machinery lives in dedicated collaborators:
   - `sandbox_provisioner.SandboxProvisioner` — background provisioning jobs,
     cancellation, orphan cleanup, and row reconciliation.
   - `SandboxWorker` — every data-plane duty: SSH keys + conn files, rsync
-    push/pull tasks, ssh -L dashboard tunnels, and the pulled-mlflow.db
+    push/pull tasks, ssh -L dashboard tunnels, and legacy pulled-mlflow.db
     metrics fallback (cloud plan §3.1).
   - `sync_sessions` — sync leases (the cross-client byte-movement authority),
     session issuance, and the poller's ControlPlaneView (cloud plan Phase 4).
@@ -75,6 +75,7 @@ from ...ports.quota_admission import QuotaAdmission
 from ...ports.sandbox_lifecycle import ExperimentTransitions
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
+from ..mlflow_tracking import CentralMlflowService
 from . import sandbox_views
 from .sandbox_metrics import SandboxMetrics
 from .sandbox_parachute import SandboxParachute
@@ -119,6 +120,7 @@ class SandboxService:
         blobs: BlobStore | None = None,
         quotas: QuotaAdmission | None = None,
         task_channel: TaskChannel | None = None,
+        mlflow_tracking: CentralMlflowService | None = None,
     ) -> None:
         self.store = store
         self.backend = sandbox_backend
@@ -156,6 +158,7 @@ class SandboxService:
         # All conn/tunnel/rsync work routes through the data-plane worker; the
         # facade owns no local-IO machinery of its own.
         self.worker = worker
+        self.mlflow_tracking = mlflow_tracking or CentralMlflowService()
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
             request_wait_seconds,
@@ -169,6 +172,7 @@ class SandboxService:
             mgmt_keys=self.mgmt_keys,
             metrics_archive=metrics_archive,
             store=store,
+            mlflow_tracking=self.mlflow_tracking,
         )
         self.parachute = SandboxParachute(
             registry=self.registry,
@@ -351,17 +355,23 @@ class SandboxService:
         #    `provisioning` (the agent polls sandbox.get); a fast one returns SSH
         #    inline, exactly like before. Backend errors are handled inside the
         #    job, which lands the row in `failed` — so request never times out.
+        tracking_env = self._mlflow_tracking_env(
+            project_id=project_id,
+            experiment_id=experiment_id,
+        )
         req = SandboxRequest(
             experiment_id=experiment_id,
             project_id=project_id,
             public_key=public_key,
             management_public_key=management_public_key,
+            management_key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
             gpu=gpu,
             cpu=cpu,
             memory=memory,
             time_limit=time_limit,
             instance_type=instance_type,
             region=region,
+            tracking_env=tracking_env,
             # The remote folder is named after the experiment so the VM layout
             # mirrors experiments/<name>/ locally (id fallback for legacy rows).
             remote_workdir=remote_experiment_dir(
@@ -519,7 +529,8 @@ class SandboxService:
                 self._parachute_row(row=row)
                 final_result = {}
         if was_active:
-            # Last chance to read MLflow: the server dies with the VM.
+            # Final metrics capture is best-effort. Central MLflow is durable;
+            # legacy sandbox-local MLflow DB snapshots remain a fallback path.
             self.metrics.persist_row(
                 row=row,
                 force=True,
@@ -787,7 +798,10 @@ class SandboxService:
 
     def health(self) -> dict[str, Any]:
         health = self.backend.health()
-        result = {"ok": bool(health.get("ok"))}
+        result = {
+            "ok": bool(health.get("ok")),
+            "mlflow": self.mlflow_tracking.health(),
+        }
         if not result["ok"] and health.get("error"):
             result["error"] = health["error"]
         return result
@@ -822,7 +836,9 @@ class SandboxService:
 
     def backend_health(self) -> dict[str, Any]:
         """Full backend health payload (the slim ``health`` tool trims this)."""
-        return self.backend.health()
+        health = dict(self.backend.health())
+        health["mlflow"] = self.mlflow_tracking.health()
+        return health
 
     def sample_metrics(self, *, experiment_id: str, project_id: str | None = None) -> dict[str, Any]:
         return self.metrics.sample_metrics(
@@ -852,6 +868,7 @@ class SandboxService:
         self.daemons.stop()
         self.provisioner.shutdown()
         self.worker.stop_dashboards()
+        self.worker.stop_mlflow_access()
 
     def reap_expired(self, **kwargs: Any) -> int:
         """Terminate running sandboxes past expires_at (see SandboxDaemons)."""
@@ -1131,6 +1148,7 @@ class SandboxService:
         return sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
+            mlflow=self._mlflow_context(row=row),
             reused=reused,
             lease=self.leases.holder(experiment_id=experiment_id),
         )
@@ -1141,9 +1159,22 @@ class SandboxService:
         # the worker. Local mode merges them here, so tool results are
         # unchanged; split mode performs the same merge across the seam.
         experiment_id = str(row.get("experiment_id") or "")
+        mlflow = self._mlflow_context(row=row)
+        current_access = mlflow.get("access")
+        access_ready = not (
+            isinstance(current_access, dict) and current_access.get("ready") is False
+        )
+        if bool(mlflow.get("configured")) and access_ready:
+            access = self.worker.ensure_mlflow_access(
+                row=row, tracking_uri=str(mlflow.get("tracking_uri") or "")
+            )
+            mlflow["access"] = access
+            if access.get("ready") is False and access.get("note"):
+                mlflow["note"] = str(access["note"])
         facts = sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
+            mlflow=mlflow,
             reused=reused,
             lease=self.leases.holder(experiment_id=experiment_id),
         )
@@ -1159,6 +1190,34 @@ class SandboxService:
             row=row, lease=self.leases.holder(experiment_id=experiment_id)
         )
 
+    def _mlflow_context(self, *, row: dict[str, Any]) -> dict[str, object]:
+        project_id = str(row.get("project_id") or "")
+        experiment_id = str(row.get("experiment_id") or "")
+        if not project_id or not experiment_id:
+            return {}
+        context = self.mlflow_tracking.context(
+            project_id=project_id,
+            experiment_id=experiment_id,
+            sandbox_id=str(row.get("sandbox_id") or ""),
+            execution_backend=self.backend.capabilities.name,
+        ).to_dict()
+        health = self.mlflow_tracking.health()
+        if health.get("reachable") is False:
+            note = str(health.get("note") or "MLflow is not reachable.")
+            context["access"] = {"required": False, "ready": False, "note": note}
+            context["note"] = note
+        return context
+
+    def _mlflow_tracking_env(self, *, project_id: str, experiment_id: str) -> dict[str, str]:
+        context = self.mlflow_tracking.context(
+            project_id=project_id,
+            experiment_id=experiment_id,
+            execution_backend=self.backend.capabilities.name,
+        )
+        if not context.configured:
+            return {}
+        return dict(context.env)
+
     def _row_view(
         self, *, row: dict[str, Any], conn: Connection | None = None
     ) -> dict[str, Any]:
@@ -1166,6 +1225,7 @@ class SandboxService:
         row = self.worker.merge_local_dashboards(row=row)
         return sandbox_views.sandbox_row_view(
             row=row,
+            mlflow=self._mlflow_context(row=row),
             local_sync_dir=str(
                 self.worker.local_experiment_dir(
                     experiment_id=experiment_id,

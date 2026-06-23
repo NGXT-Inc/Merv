@@ -262,7 +262,11 @@ Additional, for the UI:
 
 - Browser UI pointed at `http://127.0.0.1:8787`
 
-Additional, for the default Modal backend (daemon env only):
+Additional, for the default Thunder Compute backend (daemon env only):
+
+- `THUNDER_COMPUTE_API_KEY` (or `RESEARCH_PLUGIN_THUNDER_API_KEY`)
+
+Additional, for the Modal backend (daemon env only):
 
 - `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` available directly or through
   `RESEARCH_PLUGIN_MODAL_ENV_FILE`
@@ -274,8 +278,8 @@ Additional, for the Lambda Labs backend (daemon env only):
 - `RESEARCH_PLUGIN_LAMBDA_REGION`, for example `us-east-1`
 - `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`, for example `gpu_1x_a10`
 
-Lambda provisioning currently creates an SSH-ready VM with the agent shell/ML
-tooling baseline. Repo sync is intentionally not implemented for Lambda yet.
+Thunder and Lambda provisioning create SSH-ready VMs with the agent shell/ML
+tooling baseline. Repo sync is provider-neutral SSH rsync.
 
 Recommended while debugging:
 

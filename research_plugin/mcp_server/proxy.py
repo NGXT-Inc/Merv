@@ -13,14 +13,14 @@ Two topologies (cloud plan Phase 8, §3.3), selected by config:
   ``plane`` (read off the served catalog, so it can never drift from
   ``contracts``): ``control`` → the cloud, ``data`` → the local daemon,
   ``aggregate`` → both, merged. The cloud receives an explicit ``project_id``
-  (resolved via the daemon's ``/local/route``) and a bearer token, NEVER
-  ``repo_root``; data calls carry ``repo_root`` to the local daemon only.
+  (resolved via the daemon's ``/local/route``), NEVER ``repo_root``; data calls
+  carry ``repo_root`` to the local daemon only.
 
 Error taxonomy is returned as TOOL RESULTS, not ``-32000`` protocol errors, so a
 client never disables the server over a transient outage: ``local_daemon_not_
-running``, ``cloud_unreachable``, ``auth_expired``. A cloud outage never blocks
-data tools and vice versa. In split mode a missing ``control_url`` is a hard
-config error (no silent loopback fallback); local mode keeps the friendly one.
+running``, ``cloud_unreachable``. A cloud outage never blocks data tools and
+vice versa. In split mode a missing ``control_url`` is a hard config error (no
+silent loopback fallback); local mode keeps the friendly one.
 
 Discovery order for the daemon URL:
 
@@ -63,7 +63,6 @@ _TRANSPORT_ERROR_CODES = frozenset(
         "daemon_not_running",
         "local_daemon_not_running",
         "cloud_unreachable",
-        "auth_expired",
         "daemon_bad_response",
     }
 )
@@ -73,10 +72,9 @@ _TRANSPORT_ERROR_CODES = frozenset(
 class ProxyConfig:
     repo_root: Path
     daemon_url: str | None
-    # Split mode (Phase 8): the cloud control-plane URL + bearer token. None ⇒
+    # Split mode (Phase 8): the cloud control-plane URL. None ⇒
     # single-upstream local mode (byte-identical to before this phase).
     control_url: str | None = None
-    token: str | None = None
     # The daemon's loopback auth secret (risk 11): sent to the local daemon so
     # the credential-holding loopback surface accepts the proxy's calls.
     daemon_secret: str | None = None
@@ -87,7 +85,6 @@ class ProxyConfig:
             repo_root=self.repo_root,
             daemon_url=url,
             control_url=self.control_url,
-            token=self.token,
             daemon_secret=self.daemon_secret,
             timeout_seconds=self.timeout_seconds,
         )
@@ -97,13 +94,19 @@ class ProxyConfig:
         return bool(self.control_url)
 
 
+@dataclass(frozen=True)
+class _ToolMeta:
+    plane: str = "control"
+    project_scoped: bool = False
+
+
 class _UpstreamError(Exception):
     """An upstream was unreachable or returned a non-2xx.
 
     Carries the proxy's error taxonomy code (plan §3.3): ``daemon_not_running``
     / ``local_daemon_not_running`` (data plane), ``cloud_unreachable`` (control
-    plane), ``auth_expired`` (401 from the cloud). Surfaced as a TOOL RESULT,
-    not a protocol error, so the client never disables the server.
+    plane). Surfaced as a TOOL RESULT, not a protocol error, so the client never
+    disables the server.
     """
 
     def __init__(
@@ -135,11 +138,7 @@ class HttpProxyMcpServer:
 
     def __init__(self, *, config: ProxyConfig) -> None:
         self.config = config
-        # Cache the daemon's repo_root→project_id resolution so split-mode cloud
-        # calls don't re-hit /local/route every time.
-        self._project_id: str | None = None
-        self._scoped_cache: set[str] | None = None
-        self._plane_cache: dict[str, str] | None = None
+        self._tool_cache: dict[str, _ToolMeta] | None = None
 
     # ---- stdio loop ------------------------------------------------------
 
@@ -300,11 +299,12 @@ class HttpProxyMcpServer:
 
     def _call_daemon(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         url = self._require_daemon_url()
+        args = self._call_arguments(arguments=arguments)
         body = self._http_post(
             url=f"{url}/mcp/call",
             payload={
                 "name": name,
-                "arguments": arguments,
+                "arguments": args,
                 # Data-plane calls carry repo_root to the LOCAL daemon only.
                 "context": {"repo_root": str(self.config.repo_root)},
             },
@@ -322,15 +322,13 @@ class HttpProxyMcpServer:
                 "set it to the cloud control plane or unset split mode",
                 error_code="cloud_unreachable",
             )
-        args = dict(arguments)
+        args = self._call_arguments(arguments=arguments)
         # Identity on the wire (§3.2): the cloud gets an explicit project_id and
         # NEVER repo_root. Resolve it via the local daemon's route map — but ONLY
         # for tools that actually take project_id (e.g. review.start/submit are
         # capability-scoped, not project-scoped, and reject the extra field).
-        if "project_id" not in args and self._tool_is_project_scoped(name=name):
-            project_id = self._resolve_project_id()
-            if project_id:
-                args["project_id"] = project_id
+        if self._tool_meta(name=name).project_scoped:
+            args["project_id"] = self._resolve_project_id_required()
         body = self._http_post(
             url=f"{self.config.control_url}/mcp/call",
             payload={"name": name, "arguments": args},
@@ -379,19 +377,16 @@ class HttpProxyMcpServer:
         return {key: value for key, value in merged.items() if not key.startswith("_")}
 
     def _aggregate_health(self) -> dict[str, Any]:
-        # daemon self-check + cloud reachability + auth status (plan §3.3).
+        # daemon self-check + cloud reachability (plan §3.3).
         data_ok, data_detail = self._probe(is_cloud=False)
         cloud_ok, cloud_detail = (True, {})
-        auth_ok = True
         if self.config.split_mode:
             cloud_ok, cloud_detail = self._probe(is_cloud=True)
-            auth_ok = cloud_detail.get("error_code") != "auth_expired"
         return {
             "ok": bool(data_ok and (cloud_ok or not self.config.split_mode)),
             "data_plane": {"reachable": data_ok, **data_detail},
             "control_plane": {
                 "reachable": cloud_ok,
-                "auth_ok": auth_ok,
                 "configured": self.config.split_mode,
                 **cloud_detail,
             },
@@ -410,8 +405,6 @@ class HttpProxyMcpServer:
     # ---- identity resolution (split mode) --------------------------------
 
     def _resolve_project_id(self) -> str | None:
-        if self._project_id is not None:
-            return self._project_id
         url = self._daemon_url_or_none()
         if not url:
             return None
@@ -426,39 +419,50 @@ class HttpProxyMcpServer:
             return None
         project_id = body.get("project_id")
         if isinstance(project_id, str) and project_id:
-            self._project_id = project_id
             return project_id
         return None
 
+    def _resolve_project_id_required(self) -> str:
+        project_id = self._resolve_project_id()
+        if not project_id:
+            raise _UpstreamError(
+                "no hosted project link found for repo; run "
+                "research-plugin-client link --project-id <project_id>",
+                error_code="local_daemon_not_running",
+                details={"repo_root": str(self.config.repo_root)},
+            )
+        return project_id
+
     # ---- helpers ---------------------------------------------------------
 
-    def _tool_is_project_scoped(self, *, name: str) -> bool:
-        # A control tool is project-scoped iff its raw input schema declares a
-        # project_id property (read from the catalog BEFORE the proxy strips it
-        # for the client). Capability-scoped tools (review.start/submit) are not.
-        if self._scoped_cache is None:
-            scoped: set[str] = set()
+    def _plane_for(self, *, name: str) -> str:
+        return self._tool_meta(name=name).plane
+
+    def _tool_meta(self, *, name: str) -> _ToolMeta:
+        if self._tool_cache is None:
+            metadata: dict[str, _ToolMeta] = {}
             for _is_cloud, tool in self._each_catalog_tool():
+                tool_name = tool.get("name")
+                if not isinstance(tool_name, str):
+                    continue
                 schema = tool.get("inputSchema")
                 props = schema.get("properties") if isinstance(schema, dict) else None
-                if isinstance(tool.get("name"), str) and isinstance(props, dict) and "project_id" in props:
-                    scoped.add(tool["name"])
-            self._scoped_cache = scoped
-        return name in self._scoped_cache
+                metadata.setdefault(
+                    tool_name,
+                    _ToolMeta(
+                        plane=tool.get("plane") if isinstance(tool.get("plane"), str) else "control",
+                        project_scoped=isinstance(props, dict) and "project_id" in props,
+                    ),
+                )
+            self._tool_cache = metadata
+        # Unknown tool ⇒ control; the cloud will reject a truly unknown tool clearly.
+        return self._tool_cache.get(name, _ToolMeta())
 
-    def _plane_for(self, *, name: str) -> str:
-        # Resolve a tool's plane from the merged catalog (drift-proof). Cached
-        # on first lookup; aggregate tools resolve here too.
-        if self._plane_cache is None:
-            planes: dict[str, str] = {}
-            for _is_cloud, tool in self._each_catalog_tool():
-                plane = tool.get("plane")
-                if isinstance(tool.get("name"), str) and isinstance(plane, str):
-                    planes.setdefault(tool["name"], plane)
-            self._plane_cache = planes
-        # Unknown tool ⇒ control (the conservative default: most tools are
-        # control, and the cloud will reject a truly unknown tool clearly).
-        return self._plane_cache.get(name, "control")
+    def _call_arguments(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        args = dict(arguments)
+        if self.config.split_mode:
+            args.pop("project_id", None)
+        return args
 
     def _result_dict(self, *, body: dict[str, Any]) -> dict[str, Any]:
         result = body.get("result")
@@ -533,10 +537,7 @@ class HttpProxyMcpServer:
         # (not imported from backend) so the proxy stays stdlib-only; it matches
         # backend.version.CLIENT_VERSION_HEADER, pinned by a surface test.
         headers["X-RP-Client-Version"] = __version__
-        if is_cloud and self.config.token:
-            # Never logged.
-            headers["Authorization"] = f"Bearer {self.config.token}"
-        elif not is_cloud and self.config.daemon_secret:
+        if not is_cloud and self.config.daemon_secret:
             headers["Authorization"] = f"Bearer {self.config.daemon_secret}"
         return headers
 
@@ -583,13 +584,6 @@ class HttpProxyMcpServer:
             body = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             body = {}
-        # A 401 from the cloud is the auth taxonomy, not a domain error.
-        if is_cloud and exc.code == 401:
-            return _UpstreamError(
-                str(body.get("detail") or "control plane rejected the token"),
-                error_code="auth_expired",
-                details={"status": 401},
-            )
         message = body.get("detail") or exc.reason or "upstream returned HTTP error"
         error_code = body.get("error_code") or "daemon_http_error"
         details = {k: v for k, v in body.items() if k not in {"detail", "error_code"}}

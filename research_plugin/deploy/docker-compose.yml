@@ -7,8 +7,8 @@
 #
 #   docker compose -f deploy/docker-compose.yml up --build
 #
-# Then mint a tenant token inside the control container and point a daemon /
-# proxy at http://localhost:8787 (RESEARCH_PLUGIN_CONTROL_URL).
+# Then point a daemon / proxy at http://localhost:8787
+# (RESEARCH_PLUGIN_CONTROL_URL).
 
 services:
   postgres:
@@ -26,6 +26,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-shot: create the separate MLflow database. MLflow owns generic table
+  # names, so keep it out of the Research Plugin record-store database.
+  mlflowdb:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: rp_dev_password
+    entrypoint: >
+      /bin/sh -c "
+      createdb -h postgres -U rp mlflow 2>/dev/null || true &&
+      echo 'mlflow database ready';
+      "
 
   minio:
     image: minio/minio:latest
@@ -54,8 +69,38 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 rpminio rpminio_dev_password &&
       mc mb --ignore-existing local/research-plugin-blobs &&
+      mc mb --ignore-existing local/research-plugin-mlflow-artifacts &&
       echo 'bucket ready';
       "
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.mlflow
+    depends_on:
+      mlflowdb:
+        condition: service_completed_successfully
+      createbucket:
+        condition: service_completed_successfully
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://rp:rp_dev_password@postgres:5432/mlflow
+      MLFLOW_ARTIFACTS_DESTINATION: s3://research-plugin-mlflow-artifacts
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: rpminio
+      AWS_SECRET_ACCESS_KEY: rpminio_dev_password
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+    entrypoint: >
+      /bin/sh -c "
+      python -m mlflow server \
+        --host 0.0.0.0 \
+        --port 5000 \
+        --backend-store-uri \"$${MLFLOW_BACKEND_STORE_URI}\" \
+        --artifacts-destination \"$${MLFLOW_ARTIFACTS_DESTINATION}\" \
+        --serve-artifacts;
+      "
+    ports:
+      - "5000:5000"
 
   # One-shot: create a dev-only management SSH key in a named volume. Managed
   # deploys should replace this with an orchestrator/secret-manager mount.
@@ -89,6 +134,8 @@ services:
         condition: service_completed_successfully
       mgmtkey:
         condition: service_completed_successfully
+      mlflow:
+        condition: service_started
     environment:
       RESEARCH_PLUGIN_MODE: control
       RESEARCH_PLUGIN_HTTP_HOST: 0.0.0.0
@@ -98,6 +145,12 @@ services:
       # Blob store: the S3-shape bucket on MinIO (cloud plan Phase 8). boto3
       # reads these standard AWS env vars; the endpoint URL points it at MinIO.
       RESEARCH_PLUGIN_BLOB_BUCKET: research-plugin-blobs
+      # Centralized MLflow: tracking/dashboard URLs are reported to agents.
+      # Override the tracking URI to the public HTTPS host for remote sandboxes.
+      RESEARCH_PLUGIN_MLFLOW_MODE: external
+      RESEARCH_PLUGIN_MLFLOW_TRACKING_URI: ${RESEARCH_PLUGIN_MLFLOW_TRACKING_URI:-}
+      RESEARCH_PLUGIN_MLFLOW_SERVER_URI: ${RESEARCH_PLUGIN_MLFLOW_SERVER_URI:-http://mlflow:5000}
+      RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL: ${RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL:-}
       # Dev-only mounted management key from the mgmtkey one-shot above.
       RESEARCH_PLUGIN_MGMT_KEY_PATH: /run/secrets/research_plugin_mgmt_key/key
       AWS_ACCESS_KEY_ID: rpminio
@@ -106,7 +159,7 @@ services:
       AWS_ENDPOINT_URL_S3: http://minio:9000
       # Provider creds come from the env / a secret store ONLY in control mode
       # (.env discovery is disabled). Leave unset for a record-only dev stack;
-      # set MODAL_* / LAMBDA_* (and HF_TOKEN) to actually provision sandboxes.
+      # set THUNDER_* / MODAL_* / LAMBDA_* (and HF_TOKEN) to provision sandboxes.
     ports:
       - "8787:8787"
     volumes:

@@ -18,6 +18,8 @@ from ...sandbox.sandbox_support import (
 )
 from ...state.store import BaseStateStore
 from ...utils import NotFoundError, now_iso
+from ...mlflow_metrics import snapshot_mlflow
+from ..mlflow_tracking import CentralMlflowService
 from ..metrics_records import MetricsSnapshotStore
 from .sandbox_registry import SandboxRegistry
 
@@ -34,12 +36,14 @@ class SandboxMetrics:
         mgmt_keys: MgmtKeyStore,
         metrics_archive: MetricsArchive,
         store: BaseStateStore,
+        mlflow_tracking: CentralMlflowService | None = None,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.worker = worker
         self.mgmt_keys = mgmt_keys
         self.metrics_archive = metrics_archive
+        self.mlflow_tracking = mlflow_tracking or CentralMlflowService()
         self.metrics_records = MetricsSnapshotStore(store=store)
         self._cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._lock = threading.Lock()
@@ -83,16 +87,22 @@ class SandboxMetrics:
         if data is None:
             data = self.metrics_archive.load(experiment_id=experiment_id)
         if data is None:
-            snapshot = self.worker.capture_metrics_fallback(
-                experiment_id=experiment_id,
-                name=self.registry.experiment_name(experiment_id=experiment_id),
-            )
+            snapshot = None
+            if row is not None:
+                snapshot = self._capture_central_mlflow(row=row)
+            if snapshot is None:
+                snapshot = self.worker.capture_metrics_fallback(
+                    experiment_id=experiment_id,
+                    name=self.registry.experiment_name(experiment_id=experiment_id),
+                )
             if snapshot is not None:
+                snapshot = self._portable_snapshot(snapshot=snapshot)
+                snapshot = {"captured_at": now_iso(), **snapshot}
                 with contextlib.suppress(OSError):
                     self.metrics_archive.persist(
                         experiment_id=experiment_id, snapshot=snapshot
                     )
-                data = self.metrics_archive.load(experiment_id=experiment_id)
+                data = snapshot
         if data is not None and not from_record and row is not None:
             with contextlib.suppress(Exception):
                 self.metrics_records.record(
@@ -107,7 +117,7 @@ class SandboxMetrics:
                 "sandbox_status": status,
                 "hint": (
                     "No archived metrics yet - they are captured from the "
-                    "sandbox's MLflow on sync and right before release."
+                    "centralized MLflow server on sync and right before release."
                 ),
             }
         return {
@@ -125,7 +135,7 @@ class SandboxMetrics:
         snapshot: dict[str, Any] | None = None,
         snapshot_provided: bool = False,
     ) -> None:
-        """Best-effort: archive the sandbox's MLflow metrics snapshot."""
+        """Best-effort: archive the central MLflow metrics snapshot."""
         try:
             experiment_id = str(row.get("experiment_id") or "")
             if not experiment_id:
@@ -138,15 +148,17 @@ class SandboxMetrics:
                 and now - last < METRICS_PERSIST_TTL_SECONDS
             ):
                 return
-            if not snapshot_provided:
+            central_snapshot = self._capture_central_mlflow(row=row)
+            if isinstance(central_snapshot, dict):
+                snapshot = central_snapshot
+            elif not isinstance(snapshot, dict) and not snapshot_provided:
                 snapshot = self.worker.capture_metrics_snapshot(
                     row=row,
                     name=self.registry.experiment_name(experiment_id=experiment_id),
                 )
             if not isinstance(snapshot, dict):
                 return
-            snapshot = dict(snapshot)
-            snapshot.pop("base_url", None)
+            snapshot = self._portable_snapshot(snapshot=snapshot)
             self._persisted_at[experiment_id] = now
             path = self.metrics_archive.persist(
                 experiment_id=experiment_id, snapshot=snapshot
@@ -172,6 +184,30 @@ class SandboxMetrics:
                 )
         except Exception:  # noqa: BLE001 - archiving must never block callers
             return
+
+    def _capture_central_mlflow(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
+        experiment_id = str(row.get("experiment_id") or "")
+        project_id = str(row.get("project_id") or "")
+        if not experiment_id or not project_id:
+            return None
+        context = self.mlflow_tracking.context(
+            project_id=project_id,
+            experiment_id=experiment_id,
+            sandbox_id=str(row.get("sandbox_id") or ""),
+            execution_backend=self.backend.capabilities.name,
+        )
+        if not context.configured:
+            return None
+        return snapshot_mlflow(
+            self.mlflow_tracking.server_uri or context.tracking_uri,
+            experiment_name=context.experiment_name,
+        )
+
+    @staticmethod
+    def _portable_snapshot(*, snapshot: dict[str, Any]) -> dict[str, Any]:
+        portable = dict(snapshot)
+        portable.pop("base_url", None)
+        return portable
 
     def sample_metrics(
         self, *, experiment_id: str, project_id: str | None = None

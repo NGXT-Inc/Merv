@@ -303,7 +303,6 @@ class StoreMigrationTest(unittest.TestCase):
             }
             for table in (
                 "tenants",
-                "api_tokens",
                 "tenant_quotas",
                 "sandbox_generations",
             ):

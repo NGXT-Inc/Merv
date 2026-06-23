@@ -94,9 +94,9 @@ class FakeSandboxBackend(SandboxBackendBase):
         # Live SSH endpoint per sandbox id; move_endpoint() simulates a tunnel
         # that Modal relocated so refresh_ssh_endpoint() can be exercised.
         self.endpoints: dict[str, tuple[str, int]] = {}
-        # Observability dashboard URLs per sandbox id, mirroring Modal's
-        # encrypted-tunnel surface. Empty by default; tests opt in by setting
-        # the entry or calling move_dashboards() to simulate a relocation.
+        # Observability dashboard URLs per sandbox id, mirroring provider
+        # dashboard surfaces. Centralized MLflow is reported separately through
+        # sandbox views; TensorBoard remains a dashboard.
         self.dashboards: dict[str, dict[str, str]] = {}
         self.phases: list[tuple[str, str]] = []
         self.healthy = True
@@ -162,7 +162,6 @@ class FakeSandboxBackend(SandboxBackendBase):
             self.dashboards.setdefault(
                 sandbox_id,
                 {
-                    "mlflow": f"https://mlflow-{sandbox_id}.modal.test",
                     "tensorboard": f"https://tensorboard-{sandbox_id}.modal.test",
                 },
             )

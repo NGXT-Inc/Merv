@@ -11,11 +11,11 @@ mode is unaffected by everything here — it is the byte-identical default.
 
 `RESEARCH_PLUGIN_MODE` selects the process role (`backend/config.py`):
 
-| Mode | Role | Auth | Reaper | Auto-rsync | Console script |
-|---|---|---|---|---|---|
-| `local` (default) | both planes in one process | off | on | on | `research-plugin-http` |
-| `control` | cloud control plane | **on** | on | off | `research-plugin-control` |
-| `daemon` | user-machine data plane | off (auths upstream) | off | on | `research-plugin-daemon` |
+| Mode | Role | Reaper | Auto-rsync | Console script |
+|---|---|---|---|---|
+| `local` (default) | both planes in one process | on | on | `research-plugin-http` |
+| `control` | cloud control plane | on | off | `research-plugin-control` |
+| `daemon` | user-machine data plane | off | on | `research-plugin-daemon` |
 
 Mode validation is fail-fast: a daemon without `RESEARCH_PLUGIN_CONTROL_URL`, or
 an unknown mode value, refuses to start.
@@ -51,13 +51,13 @@ store, and mounted management key config above.
 
 - `GET /api/meta` →
   `{server_version, min_daemon_version, min_proxy_version, mode, capabilities}`.
-  Unauthenticated, so a client can discover the floor before holding a token and
-  hide local data-plane actions when connected to hosted control.
+  Open, so a client can discover the floor and hide local data-plane actions
+  when connected to hosted control.
 - Clients (daemon + stdio proxy) stamp `X-RP-Client-Version` on every request.
 - A **below-floor** client gets `426 Upgrade Required` with an actionable
-  message (`error_code: client_too_old`) **before** auth. A missing header is
-  tolerated (pre-Phase-9 clients). Floors are constants in `backend/version.py`;
-  the contract is additive-only within a major, so the floor moves rarely.
+  message (`error_code: client_too_old`). A missing header is tolerated
+  (pre-Phase-9 clients). Floors are constants in `backend/version.py`; the
+  contract is additive-only within a major, so the floor moves rarely.
 
 ## Cost governance
 
@@ -130,5 +130,5 @@ alerting are the operator's responsibility. See `deploy/README.md`.
 ## Known seams (not built — production owns them)
 
 Managed Postgres provisioning, real TLS certs, a live cleanup scheduler daemon,
-device-flow OAuth (open decision C; static per-tenant tokens are v1), the React
-UI repoint, and reaper-lag / provision-failure / parachute-failure alerting.
+device-flow OAuth / real user auth (open decision C), the React UI repoint, and
+reaper-lag / provision-failure / parachute-failure alerting.
