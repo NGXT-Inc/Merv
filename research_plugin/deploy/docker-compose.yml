@@ -140,6 +140,10 @@ services:
       RESEARCH_PLUGIN_MODE: control
       RESEARCH_PLUGIN_HTTP_HOST: 0.0.0.0
       RESEARCH_PLUGIN_HTTP_PORT: 8787
+      # Browser origins allowed by CORS: the hosted UI (Vercel) + the control
+      # plane's own host + local dev. Override with RESEARCH_PLUGIN_ALLOWED_ORIGINS
+      # in the environment if a deployment needs a different set.
+      RESEARCH_PLUGIN_ALLOWED_ORIGINS: ${RESEARCH_PLUGIN_ALLOWED_ORIGINS:-https://experiments.rapidreview.io,https://research-suite-chi.vercel.app,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}
       # Record store: the Postgres dialect (cloud plan Phase 6).
       RESEARCH_PLUGIN_DB_URL: postgresql://rp:rp_dev_password@postgres:5432/research_plugin
       # Blob store: the S3-shape bucket on MinIO (cloud plan Phase 8). boto3
