@@ -2,49 +2,53 @@
 
 from __future__ import annotations
 
-import base64
 import os
-import re
 import shlex
 import subprocess
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from backend.execution.bootstrap_tools import BASELINE_APT_PACKAGES, ML_PYTHON_PACKAGES
-from backend.execution.transfer_spec import parse_parachute_receipt
-from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
 from backend.execution.vm_bootstrap import (
+    DASHBOARD_PORTS,
     MGMT_SSH_USER,
-    REC_SCRIPT,
-    SESSIONS_DIR_NAME,
-    TRANSCRIPT_FILENAME,
     build_bootstrap_core,
 )
-from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
-from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
+from backend.execution.vm_ssh import (
+    SshInputRunner,
+    SshRunner,
+    read_transcript_via_mgmt_ssh,
+    run_parachute_via_mgmt_ssh,
+    run_ssh,
+    run_ssh_input,
+    run_ssh_parachute,
+    sample_metrics_via_mgmt_ssh,
+    sandbox_tokens,
+    ssh_command,
+    stderr_detail,
+    write_secrets_via_mgmt_ssh,
+)
 from ....sandbox.sandbox_backend import (
+    BackendUnavailableError,
     BackendCapabilities,
+    BackendValidationError,
     OnCreated,
     OnPhase,
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
 )
+from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from .catalog import find_option, summarize_specs
 from .client import ThunderComputeClient
 from .config import ThunderSandboxConfig
 
 
-TRANSCRIPT_TAIL_DEFAULT = 50_000
-TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
-TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
-PARACHUTE_SSH_TIMEOUT_SECONDS = 600
 BOOTSTRAP_SSH_TIMEOUT_SECONDS = 900
 ACTIVE_INSTANCE_STATUSES = frozenset({"running"})
 LIVE_INSTANCE_STATUSES = frozenset({"starting", "running"})
 TERMINAL_INSTANCE_STATUSES = frozenset({"terminated", "terminating", "stopped", "failed"})
-DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
 
 THUNDER_APT_PACKAGES: tuple[str, ...] = (
     "openssh-server",
@@ -52,7 +56,6 @@ THUNDER_APT_PACKAGES: tuple[str, ...] = (
     *BASELINE_APT_PACKAGES,
 )
 
-SshRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 BootstrapRunner = Callable[[list[str], str, int], "subprocess.CompletedProcess[str]"]
 
 
@@ -69,14 +72,16 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         config: ThunderSandboxConfig | None = None,
         client: ThunderComputeClient | None = None,
         ssh_runner: SshRunner | None = None,
+        ssh_input_runner: SshInputRunner | None = None,
         bootstrap_runner: BootstrapRunner | None = None,
         parachute_runner: SshRunner | None = None,
     ) -> None:
         self._config = config
         self._client = client
-        self._ssh_runner = ssh_runner or _run_ssh
+        self._ssh_runner = ssh_runner or run_ssh
+        self._ssh_input_runner = ssh_input_runner or run_ssh_input
         self._bootstrap_runner = bootstrap_runner or _run_bootstrap
-        self._parachute_runner = parachute_runner or ssh_runner or _run_ssh_parachute
+        self._parachute_runner = parachute_runner or ssh_runner or run_ssh_parachute
 
     @property
     def config(self) -> ThunderSandboxConfig:
@@ -127,7 +132,7 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
 
             _call(on_phase, "connecting", "waiting for running instance and ssh")
             instance = self._wait_for_running_instance(
-                instance_id=instance_id, instance_uuid=instance_uuid
+                instance_id=instance_id, instance_uuid=instance_uuid, on_phase=on_phase
             )
             host = str(instance.get("ip") or "")
             port = int(instance.get("port") or 22)
@@ -143,6 +148,7 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
                 port=port,
                 request=request,
                 workdir=workdir,
+                on_phase=on_phase,
             )
             return ProvisionedSandbox(
                 sandbox_id=instance_id,
@@ -202,37 +208,17 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002
         key_path: str = "",
     ) -> str:
-        if not sandbox_id or not ssh_host or not key_path:
-            return ""
-        limit = int(tail) if tail and tail > 0 else TRANSCRIPT_TAIL_DEFAULT
-        base = workdir or remote_experiment_dir(
-            experiment_id=experiment_id, root=self.config.remote_root
-        )
-        log_path = PurePosixPath(
-            remote_sessions_dir(experiment_id=experiment_id, root=remote_root_of(base)),
-            TRANSCRIPT_FILENAME,
-        ).as_posix()
-        legacy_path = PurePosixPath(
-            base, SESSIONS_DIR_NAME, experiment_id, TRANSCRIPT_FILENAME
-        ).as_posix()
-        remote_command = (
-            f"if [ -f {shlex.quote(log_path)} ]; then "
-            f"tail -c {limit} {shlex.quote(log_path)}; "
-            f"elif [ -f {shlex.quote(legacy_path)} ]; then "
-            f"tail -c {limit} {shlex.quote(legacy_path)}; fi"
-        )
-        result = self._ssh_mgmt(
-            host=ssh_host,
-            port=int(ssh_port) or 22,
+        return read_transcript_via_mgmt_ssh(
+            ssh_runner=self._ssh_runner,
+            sandbox_id=sandbox_id,
+            experiment_id=experiment_id,
+            workdir=workdir,
+            remote_root=self.config.remote_root,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
             key_path=key_path,
-            remote_command=remote_command,
+            tail=tail,
         )
-        if result.returncode != 0:
-            detail = _stderr_detail(result)
-            raise BackendUnavailableError(
-                f"transcript read over SSH failed (exit {result.returncode}): {detail}"
-            )
-        return result.stdout or ""
 
     def sample_metrics(
         self,
@@ -243,20 +229,13 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         ssh_user: str = "",  # noqa: ARG002
         key_path: str = "",
     ) -> dict[str, Any] | None:
-        if not sandbox_id or not ssh_host or not key_path:
-            return None
-        try:
-            result = self._ssh_mgmt(
-                host=ssh_host,
-                port=int(ssh_port) or 22,
-                key_path=key_path,
-                remote_command=METRICS_SCRIPT,
-            )
-        except Exception:  # noqa: BLE001
-            return None
-        if result.returncode != 0:
-            return None
-        return parse_metrics(result.stdout or "")
+        return sample_metrics_via_mgmt_ssh(
+            ssh_runner=self._ssh_runner,
+            sandbox_id=sandbox_id,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
 
     def run_parachute(
         self,
@@ -267,35 +246,17 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,
         key_path: str = "",
     ) -> dict[str, Any] | None:
-        if not sandbox_id or not ssh_host or not key_path:
-            raise BackendUnavailableError(
-                "parachute needs the SSH endpoint and the management key"
-            )
-        remote_command = f"sudo -n bash /opt/rp/parachute.sh {shlex.quote(put_url)}"
-        command = _ssh_command(
-            host=ssh_host,
-            port=int(ssh_port) or 22,
-            user=MGMT_SSH_USER,
+        return run_parachute_via_mgmt_ssh(
+            ssh_runner=self._parachute_runner,
+            sandbox_id=sandbox_id,
+            put_url=put_url,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
             key_path=key_path,
-            remote_command=remote_command,
         )
-        try:
-            result = self._parachute_runner(command)
-        except subprocess.TimeoutExpired as exc:
-            raise BackendUnavailableError(f"parachute over SSH timed out: {exc}") from exc
-        except OSError as exc:
-            raise BackendUnavailableError(f"could not run ssh for parachute: {exc}") from exc
-        if result.returncode != 0:
-            raise BackendUnavailableError(
-                f"parachute over SSH failed (exit {result.returncode}): {_stderr_detail(result)}"
-            )
-        receipt = parse_parachute_receipt(result.stdout or "")
-        if receipt is None:
-            raise BackendUnavailableError("parachute produced no upload receipt")
-        return receipt
 
     def sandbox_secrets(self) -> dict[str, str]:
-        return _sandbox_tokens()
+        return sandbox_tokens()
 
     def write_secrets(
         self,
@@ -306,33 +267,14 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,
         key_path: str = "",
     ) -> bool:
-        if not sandbox_id or not ssh_host or not key_path or not secrets:
-            return False
-        body = "\n".join(
-            f"export {name}={shlex.quote(value)}"
-            for name, value in sorted(secrets.items())
-            if value
+        return write_secrets_via_mgmt_ssh(
+            ssh_runner=self._ssh_input_runner,
+            sandbox_id=sandbox_id,
+            secrets=secrets,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
         )
-        if not body:
-            return False
-        payload_b64 = base64.b64encode((body + "\n").encode("utf-8")).decode("ascii")
-        remote_command = (
-            "sudo -n bash -c "
-            + shlex.quote(
-                f"umask 077; printf %s {shlex.quote(payload_b64)} | "
-                "base64 -d > /opt/rp/secrets.env; chmod 600 /opt/rp/secrets.env"
-            )
-        )
-        try:
-            result = self._ssh_mgmt(
-                host=ssh_host,
-                port=int(ssh_port) or 22,
-                key_path=key_path,
-                remote_command=remote_command,
-            )
-        except Exception:  # noqa: BLE001
-            return False
-        return result.returncode == 0
 
     def local_dashboard_ports(self) -> dict[str, int]:
         return dict(DASHBOARD_PORTS)
@@ -425,13 +367,14 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         return option
 
     def _wait_for_running_instance(
-        self, *, instance_id: str, instance_uuid: str
+        self, *, instance_id: str, instance_uuid: str, on_phase: OnPhase | None = None
     ) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.poll_timeout_seconds
         last_status = ""
         while time.monotonic() < deadline:
             instance = self._instance_by_id(instance_id, instance_uuid=instance_uuid)
             last_status = _status(instance)
+            _call(on_phase, "connecting", f"Thunder instance status: {last_status or 'unknown'}")
             if last_status in ACTIVE_INSTANCE_STATUSES and instance.get("ip"):
                 return instance
             if last_status in TERMINAL_INSTANCE_STATUSES:
@@ -464,6 +407,7 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         port: int,
         request: SandboxRequest,
         workdir: str,
+        on_phase: OnPhase | None = None,
     ) -> None:
         script = build_thunder_bootstrap_script(
             public_key=request.public_key,
@@ -476,7 +420,7 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
             sandbox_data_dir=self.config.sandbox_data_dir,
             tracking_env=request.tracking_env,
         )
-        command = _ssh_command(
+        command = ssh_command(
             host=host,
             port=port,
             user=self.config.ssh_user,
@@ -486,6 +430,7 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
         deadline = time.monotonic() + self.config.poll_timeout_seconds
         last_error = ""
         while time.monotonic() < deadline:
+            _call(on_phase, "bootstrapping", "running bootstrap over ssh")
             try:
                 result = self._bootstrap_runner(
                     command,
@@ -500,16 +445,20 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
                         host=host,
                         port=port,
                         key_path=request.management_key_path,
+                        on_phase=on_phase,
                     )
                     return
-                last_error = _stderr_detail(result)
+                last_error = stderr_detail(result)
             time.sleep(self.config.poll_interval_seconds)
         raise BackendUnavailableError(f"Thunder VM bootstrap failed: {last_error}")
 
-    def _wait_for_management_ssh(self, *, host: str, port: int, key_path: str) -> None:
+    def _wait_for_management_ssh(
+        self, *, host: str, port: int, key_path: str, on_phase: OnPhase | None = None
+    ) -> None:
         deadline = time.monotonic() + self.config.poll_timeout_seconds
         last_error = ""
         while time.monotonic() < deadline:
+            _call(on_phase, "bootstrapping", "waiting for management ssh")
             result = self._ssh_mgmt(
                 host=host,
                 port=port,
@@ -518,14 +467,14 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
             )
             if result.returncode == 0:
                 return
-            last_error = _stderr_detail(result)
+            last_error = stderr_detail(result)
             time.sleep(self.config.poll_interval_seconds)
         raise BackendUnavailableError(f"Thunder management SSH never became ready: {last_error}")
 
     def _ssh_mgmt(
         self, *, host: str, port: int, key_path: str, remote_command: str
     ) -> subprocess.CompletedProcess[str]:
-        command = _ssh_command(
+        command = ssh_command(
             host=host,
             port=port,
             user=MGMT_SSH_USER,
@@ -587,33 +536,6 @@ fi
 """
 
 
-def _sandbox_tokens() -> dict[str, str]:
-    token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        return {}
-    tokens = {"HF_TOKEN": token}
-    hub_token = os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
-    if hub_token:
-        tokens["HUGGING_FACE_HUB_TOKEN"] = hub_token
-    return tokens
-
-
-def _ssh_command(
-    *, host: str, port: int, user: str, key_path: str, remote_command: str
-) -> list[str]:
-    return [
-        "ssh",
-        "-i", key_path,
-        "-p", str(int(port) or 22),
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-        f"{user}@{host}",
-        remote_command,
-    ]
-
-
 def _status(instance: Mapping[str, Any]) -> str:
     return str(instance.get("status") or "").strip().lower()
 
@@ -639,17 +561,6 @@ def _contains_key_comment(instance: Mapping[str, Any], marker: str) -> bool:
     return False
 
 
-def _stderr_detail(result: subprocess.CompletedProcess[str]) -> str:
-    lines = (result.stderr or "").strip().splitlines()
-    return lines[-1] if lines else "no stderr"
-
-
-def _run_ssh(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, text=True, capture_output=True, timeout=TRANSCRIPT_READ_TIMEOUT_SECONDS
-    )
-
-
 def _run_bootstrap(
     command: list[str], script: str, timeout: int
 ) -> subprocess.CompletedProcess[str]:
@@ -662,20 +573,9 @@ def _run_bootstrap(
     )
 
 
-def _run_ssh_parachute(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, text=True, capture_output=True, timeout=PARACHUTE_SSH_TIMEOUT_SECONDS
-    )
-
-
 def _call(cb: Any, *args: Any) -> None:
     if cb is not None:
         cb(*args)
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_thunder_compute_sandbox_backend(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 import tempfile
@@ -14,12 +15,11 @@ from backend.execution.backends.thunder_compute.config import (
     ThunderSandboxConfig,
 )
 from backend.execution.backends.thunder_compute.sandbox_backend import (
-    MGMT_SSH_USER,
-    REC_SCRIPT,
-    TRANSCRIPT_TAIL_DEFAULT,
     ThunderComputeSandboxBackend,
     build_thunder_bootstrap_script,
 )
+from backend.execution.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
+from backend.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
 from backend.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
@@ -65,9 +65,6 @@ class FakeThunderClient:
     def pricing(self):
         return PRICING
 
-    def list_templates(self):
-        return {"base": {"displayName": "Base"}}
-
     def create_instance(self, **kwargs):
         self.created.append(kwargs)
         return {"identifier": 7, "uuid": "uuid-7", "key": "unused-generated-key"}
@@ -112,12 +109,15 @@ class FakeBootstrapRunner:
 class FakeSshRunner:
     def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.commands: list[list[str]] = []
+        self.inputs: list[str] = []
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
 
-    def __call__(self, command: list[str]):
+    def __call__(self, command: list[str], stdin: str | None = None):
         self.commands.append(list(command))
+        if stdin is not None:
+            self.inputs.append(stdin)
         return subprocess.CompletedProcess(command, self.returncode, self.stdout, self.stderr)
 
 
@@ -163,6 +163,30 @@ class ThunderConfigTest(unittest.TestCase):
             with self.assertRaises(BackendValidationError):
                 ThunderCloudConfig.from_env()
 
+    def test_env_config_rejects_plain_http_remote_base_url(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "THUNDER_COMPUTE_API_KEY": "test-key",
+                "RESEARCH_PLUGIN_THUNDER_API_BASE": "http://api.thundercompute.com:8443/v1",
+            },
+            clear=True,
+        ):
+            with self.assertRaises(BackendValidationError):
+                ThunderCloudConfig.from_env()
+
+    def test_env_config_allows_plain_http_localhost_base_url_for_tests(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "THUNDER_COMPUTE_API_KEY": "test-key",
+                "RESEARCH_PLUGIN_THUNDER_API_BASE": "http://localhost:8443/v1",
+            },
+            clear=True,
+        ):
+            config = ThunderCloudConfig.from_env()
+        self.assertEqual(config.base_url, "http://localhost:8443/v1")
+
 
 class ThunderBackendTest(unittest.TestCase):
     def _backend(
@@ -184,6 +208,7 @@ class ThunderBackendTest(unittest.TestCase):
             config=config,
             client=fake_client,  # type: ignore[arg-type]
             ssh_runner=fake_ssh,
+            ssh_input_runner=fake_ssh,
             bootstrap_runner=fake_bootstrap,
         )
         return backend, fake_client, fake_bootstrap, fake_ssh
@@ -311,6 +336,19 @@ class ThunderBackendTest(unittest.TestCase):
         self.assertEqual(client.deleted, ["7"])
         self.assertEqual(bootstrap.calls, [])
 
+    def test_acquire_cancellation_during_poll_terminates_vm(self) -> None:
+        backend, client, bootstrap, _ = self._backend()
+
+        def cancel_during_poll(_phase: str, detail: str) -> None:
+            if detail.startswith("Thunder instance status:"):
+                raise RuntimeError("cancel")
+
+        with self.assertRaises(RuntimeError):
+            backend.acquire(request=self._request(), on_phase=cancel_during_poll)
+
+        self.assertEqual(client.deleted, ["7"])
+        self.assertEqual(bootstrap.calls, [])
+
     def test_acquire_rejects_missing_management_key(self) -> None:
         backend, client, _, _ = self._backend()
         with self.assertRaises(BackendValidationError):
@@ -364,7 +402,13 @@ class ThunderBackendTest(unittest.TestCase):
         )
         command = ssh.commands[0]
         self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.7")
-        self.assertNotIn("hf_secret_value", " ".join(command))
+        argv = " ".join(command)
+        self.assertNotIn("hf_secret_value", argv)
+        self.assertNotIn(
+            base64.b64encode(b"export HF_TOKEN=hf_secret_value\n").decode("ascii"),
+            argv,
+        )
+        self.assertEqual(ssh.inputs, ["export HF_TOKEN=hf_secret_value\n"])
         self.assertIn("/opt/rp/secrets.env", command[-1])
 
     def test_bootstrap_script_contains_rec_bypass_and_no_plain_tokens(self) -> None:

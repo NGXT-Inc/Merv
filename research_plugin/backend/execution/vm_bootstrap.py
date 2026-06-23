@@ -13,6 +13,7 @@ from .transfer_spec import build_parachute_script
 SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
 MGMT_SSH_USER = "rpmgmt"
+DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
 TRACKING_ENV_EXPORTS = (
     "MLFLOW_TRACKING_URI",
     "MLFLOW_EXPERIMENT_NAME",

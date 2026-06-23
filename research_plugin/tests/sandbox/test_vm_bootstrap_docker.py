@@ -38,8 +38,8 @@ from backend.dataplane import InProcessTaskChannel, LocalDataPlaneWorker
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.execution.backends.lambda_labs.sandbox_backend import (
     LambdaLabsSandboxBackend,
-    build_bootstrap_core,
 )
+from backend.execution.vm_bootstrap import build_bootstrap_core
 from backend.workspace import LocalWorkspace
 
 

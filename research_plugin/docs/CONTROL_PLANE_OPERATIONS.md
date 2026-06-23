@@ -36,9 +36,11 @@ See `deploy/.env.example` for a copy-ready template. Essentials:
   must be readable by the control process and 0600/0400; rotate by draining live
   sandboxes or restarting control, because in-place changes are rejected after
   startup.
-- Provider creds (`MODAL_*`, `LAMBDA_API_KEY`, `HF_TOKEN`) — **secret store /
+- Provider creds (`THUNDER_COMPUTE_API_KEY`, `RESEARCH_PLUGIN_THUNDER_API_KEY`,
+  `MODAL_*`, `LAMBDA_API_KEY`, `HF_TOKEN`) — **secret store /
   process env ONLY** in control mode. User-machine `.env` discovery is disabled;
-  an explicit `RESEARCH_PLUGIN_MODAL_ENV_FILE` (a mounted secret) is the seam.
+  explicit mounted env files such as `RESEARCH_PLUGIN_THUNDER_ENV_FILE` or
+  `RESEARCH_PLUGIN_MODAL_ENV_FILE` are the seam.
 - `HF_TOKEN` is delivered to a fresh VM **post-boot over the management channel**
   (`SandboxBackend.write_secrets` → `/opt/rp/secrets.env`), never embedded in VM
   `user_data` (risk 16).

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ....sandbox.sandbox_backend import BackendValidationError
 from ...sync_dirs import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT, SESSIONS_DIRNAME
@@ -41,8 +42,20 @@ class ThunderCloudConfig:
             os.environ.get("RESEARCH_PLUGIN_THUNDER_API_BASE")
             or DEFAULT_BASE_URL
         ).strip()
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError("RESEARCH_PLUGIN_THUNDER_API_BASE must be an HTTP URL")
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "https":
+            localhost = parsed.scheme == "http" and parsed.hostname in {
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            }
+            if not localhost:
+                raise BackendValidationError(
+                    "RESEARCH_PLUGIN_THUNDER_API_BASE must be an HTTPS URL "
+                    "(http is only allowed for localhost tests)"
+                )
+        if not parsed.netloc:
+            raise BackendValidationError("RESEARCH_PLUGIN_THUNDER_API_BASE must include a host")
         return cls(api_key=api_key, base_url=base_url.rstrip("/"))
 
 

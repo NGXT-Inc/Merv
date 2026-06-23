@@ -99,9 +99,9 @@ wires the services below. Here is where each lands.
 | Workflow orchestration | `services/workflow.py` | `status_and_next` is pure logic over records. |
 | Permissions / authz | `services/permissions.py` | Becomes the real multi-tenant authz layer. |
 | Sandbox hardware catalog | `execution/backends/*` via `SandboxBackend.hardware_catalog` | Provider-specific GPU/pricing metadata stays behind the execution backend protocol. |
-| Sandbox **lifecycle records + provisioning** | `services/sandboxes.py` (provision/terminate/reconcile, lifecycle rows) | Calls Modal/Lambda; holds provider creds; no FS needed. |
-| Execution backends | `execution/backends/{modal,lambda_labs}` | Provider credentials + VM API calls belong server-side. |
-| Provider credentials + billing | (Modal/Lambda config) | Must never sit on user machines in a multi-tenant world. |
+| Sandbox **lifecycle records + provisioning** | `services/sandboxes.py` (provision/terminate/reconcile, lifecycle rows) | Calls Thunder/Modal/Lambda; holds provider creds; no FS needed. |
+| Execution backends | `execution/backends/{thunder_compute,modal,lambda_labs}` | Provider credentials + VM API calls belong server-side. |
+| Provider credentials + billing | (Thunder/Modal/Lambda config) | Must never sit on user machines in a multi-tenant world. |
 | Durable state | `state/store.py` | Becomes the multi-tenant DB (Postgres), keyed on user/project, not `repo_root`. |
 | Audit / activity | `state/activity.py`, `state/tool_calls.py` | Cloud-side audit per tenant (a thin local mirror is optional). |
 

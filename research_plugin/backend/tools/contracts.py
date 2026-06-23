@@ -335,7 +335,7 @@ class SandboxRequestInput(ProjectScopedInput):
         default=None,
         description=(
             "Provider-bundled machine SKU (GPU + CPU + RAM together). Required by "
-            "the default Lambda Labs backend: call this with no instance_type (or "
+            "the default Thunder Compute and Lambda Labs backends: call this with no instance_type (or "
             "use sandbox.options) to get a live menu, then pick one of "
             "options[].instance_type. Ignored by Modal (which composes the machine "
             "from gpu/cpu/memory)."
@@ -604,7 +604,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "centralized MLflow tracking plus sandbox TensorBoard observability. "
             "A fresh sandbox starts with the experiment's local folder "
             "(experiments/<name>/) pushed to it, so put anything the run needs "
-            "in that folder first. On Lambda Labs, omit instance_type to "
+            "in that folder first. On Thunder Compute or Lambda Labs, omit instance_type to "
             "receive a live menu of available machines to pick from."
         ),
         plane="data",
@@ -613,7 +613,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=SandboxOptionsInput,
         description=(
             "List the hardware the active backend can provision right now "
-            "(Lambda Labs: live available instance types; Modal: gpu/cpu/memory menu)."
+            "(Thunder Compute/Lambda Labs: live available instance types; Modal: gpu/cpu/memory menu)."
         ),
     ),
     "sandbox.get": ToolContract(

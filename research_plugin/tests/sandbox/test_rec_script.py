@@ -20,12 +20,10 @@ import time
 import unittest
 from pathlib import Path
 
-from backend.execution.backends.lambda_labs.sandbox_backend import (
-    REC_SCRIPT as LAMBDA_REC_SCRIPT,
-)
 from backend.execution.backends.modal.sandbox_backend import (
     REC_SCRIPT as MODAL_REC_SCRIPT,
 )
+from backend.execution.vm_bootstrap import REC_SCRIPT as LAMBDA_REC_SCRIPT
 from backend.execution.bootstrap_tools import (
     BASELINE_APT_PACKAGES,
     LAMBDA_APT_PACKAGES,

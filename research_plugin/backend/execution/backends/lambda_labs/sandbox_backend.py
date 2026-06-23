@@ -7,48 +7,50 @@ backend only prepares a normal developer shell with the tools agents expect.
 
 from __future__ import annotations
 
-import base64
 import os
 import re
 import shlex
 import socket
-import subprocess
 import time
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping
+from pathlib import Path
+from typing import Any, Mapping
 
 from backend.execution.bootstrap_tools import (
     LAMBDA_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
 )
-from backend.execution.transfer_spec import parse_parachute_receipt
-from backend.execution.usage_metrics import METRICS_SCRIPT, parse_metrics
 from backend.execution.vm_bootstrap import (
-    DASHBOARD_SCRIPT,
-    MGMT_EXEC_SCRIPT,
-    MGMT_SSH_USER,
-    REC_SCRIPT,
-    SESSIONS_DIR_NAME,
-    TRACKING_ENV_EXPORTS,
-    TRANSCRIPT_FILENAME,
+    DASHBOARD_PORTS,
     build_bootstrap_core,
 )
-from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
-from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
+from backend.execution.vm_ssh import (
+    SshInputRunner,
+    SshRunner,
+    read_transcript_via_mgmt_ssh,
+    run_parachute_via_mgmt_ssh,
+    run_ssh,
+    run_ssh_input,
+    run_ssh_parachute,
+    sample_metrics_via_mgmt_ssh,
+    sandbox_tokens,
+    write_secrets_via_mgmt_ssh,
+)
 from ....sandbox.sandbox_backend import (
+    BackendUnavailableError,
     BackendCapabilities,
+    BackendValidationError,
     OnCreated,
     OnPhase,
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
 )
+from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from .catalog import find_option, summarize_instance_types, to_agent_options
 from .client import LambdaCloudClient
 from .config import LambdaSandboxConfig
 
 
-TRANSCRIPT_TAIL_DEFAULT = 50_000
 # Sentinel prefix that rec.sh execs raw and UNRECORDED — recording such a read
 # would tee the tail output back into the very log being read. Since the
 # management-key switch (plan Phase 5) control-plane reads log in as the
@@ -56,16 +58,8 @@ TRANSCRIPT_TAIL_DEFAULT = 50_000
 # sends this prefix; the rec.sh bypass is kept as a documented legacy/
 # defensive path for sandboxes bootstrapped before the switch.
 TRANSCRIPT_READ_PREFIX = "rp-transcript-read:"
-TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
-TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
-# The parachute tars + uploads a whole experiment dir at reap time; give it
-# its own generous subprocess budget (separate from the 30s transcript read).
-PARACHUTE_SSH_TIMEOUT_SECONDS = 600
 ACTIVE_INSTANCE_STATUSES = frozenset({"active"})
 LIVE_INSTANCE_STATUSES = frozenset({"booting", "active", "unhealthy"})
-DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
-
-SshRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
 
 class LambdaLabsSandboxBackend(SandboxBackendBase):
@@ -85,6 +79,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         config: LambdaSandboxConfig | None = None,
         client: LambdaCloudClient | None = None,
         ssh_runner: SshRunner | None = None,
+        ssh_input_runner: SshInputRunner | None = None,
         parachute_runner: SshRunner | None = None,
     ) -> None:
         # Resolve config/client lazily so the daemon can boot (and report health)
@@ -94,10 +89,11 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         self._config = config
         self._client = client
         # Test seam: read_transcript shells out to ssh through this.
-        self._ssh_runner = ssh_runner or _run_ssh
+        self._ssh_runner = ssh_runner or run_ssh
+        self._ssh_input_runner = ssh_input_runner or run_ssh_input
         # Separate seam (and timeout budget) for the parachute: tar + upload
         # of a whole experiment dir does not fit the transcript read's 30s.
-        self._parachute_runner = parachute_runner or ssh_runner or _run_ssh_parachute
+        self._parachute_runner = parachute_runner or ssh_runner or run_ssh_parachute
 
     @property
     def config(self) -> LambdaSandboxConfig:
@@ -251,51 +247,17 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         never depends on the user's machine. The row's data-plane ``ssh_user``
         is ignored.
         """
-        if not sandbox_id or not ssh_host or not key_path:
-            return ""
-        limit = int(tail) if tail and tail > 0 else TRANSCRIPT_TAIL_DEFAULT
-        base = workdir or remote_experiment_dir(
-            experiment_id=experiment_id, root=self.config.remote_root
+        return read_transcript_via_mgmt_ssh(
+            ssh_runner=self._ssh_runner,
+            sandbox_id=sandbox_id,
+            experiment_id=experiment_id,
+            workdir=workdir,
+            remote_root=self.config.remote_root,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+            tail=tail,
         )
-        # Sessions live outside the experiment folder; legacy sandboxes
-        # (pre-layout-change rows) kept them inside the synced workdir.
-        log_path = PurePosixPath(
-            remote_sessions_dir(experiment_id=experiment_id, root=remote_root_of(base)),
-            TRANSCRIPT_FILENAME,
-        ).as_posix()
-        legacy_path = PurePosixPath(
-            base, SESSIONS_DIR_NAME, experiment_id, TRANSCRIPT_FILENAME
-        ).as_posix()
-        remote_command = (
-            f"if [ -f {shlex.quote(log_path)} ]; then "
-            f"tail -c {limit} {shlex.quote(log_path)}; "
-            f"elif [ -f {shlex.quote(legacy_path)} ]; then "
-            f"tail -c {limit} {shlex.quote(legacy_path)}; fi"
-        )
-        command = [
-            "ssh",
-            "-i", key_path,
-            "-p", str(int(ssh_port) or 22),
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{MGMT_SSH_USER}@{ssh_host}",
-            remote_command,
-        ]
-        try:
-            result = self._ssh_runner(command)
-        except subprocess.TimeoutExpired as exc:
-            raise BackendUnavailableError(f"transcript read over SSH timed out: {exc}") from exc
-        except OSError as exc:
-            raise BackendUnavailableError(f"could not run ssh for transcript read: {exc}") from exc
-        if result.returncode != 0:
-            stderr_lines = (result.stderr or "").strip().splitlines()
-            detail = stderr_lines[-1] if stderr_lines else "no stderr"
-            raise BackendUnavailableError(
-                f"transcript read over SSH failed (exit {result.returncode}): {detail}"
-            )
-        return result.stdout or ""
 
     def sample_metrics(
         self,
@@ -317,26 +279,13 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         raises — the registry treats None as "metrics unavailable" and the UI
         hides the strip.
         """
-        if not sandbox_id or not ssh_host or not key_path:
-            return None
-        command = [
-            "ssh",
-            "-i", key_path,
-            "-p", str(int(ssh_port) or 22),
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{MGMT_SSH_USER}@{ssh_host}",
-            METRICS_SCRIPT,
-        ]
-        try:
-            result = self._ssh_runner(command)
-        except Exception:  # noqa: BLE001 — metrics are best-effort
-            return None
-        if result.returncode != 0:
-            return None
-        return parse_metrics(result.stdout or "")
+        return sample_metrics_via_mgmt_ssh(
+            ssh_runner=self._ssh_runner,
+            sandbox_id=sandbox_id,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
 
     def run_parachute(
         self,
@@ -356,38 +305,14 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         so the reaper's parachute branch surfaces it loudly — a lost
         experiment dir must never fail silently (plan risk 9).
         """
-        if not sandbox_id or not ssh_host or not key_path:
-            raise BackendUnavailableError(
-                "parachute needs the SSH endpoint and the management key"
-            )
-        remote_command = f"sudo -n bash /opt/rp/parachute.sh {shlex.quote(put_url)}"
-        command = [
-            "ssh",
-            "-i", key_path,
-            "-p", str(int(ssh_port) or 22),
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{MGMT_SSH_USER}@{ssh_host}",
-            remote_command,
-        ]
-        try:
-            result = self._parachute_runner(command)
-        except subprocess.TimeoutExpired as exc:
-            raise BackendUnavailableError(f"parachute over SSH timed out: {exc}") from exc
-        except OSError as exc:
-            raise BackendUnavailableError(f"could not run ssh for parachute: {exc}") from exc
-        if result.returncode != 0:
-            stderr_lines = (result.stderr or "").strip().splitlines()
-            detail = stderr_lines[-1] if stderr_lines else "no stderr"
-            raise BackendUnavailableError(
-                f"parachute over SSH failed (exit {result.returncode}): {detail}"
-            )
-        receipt = parse_parachute_receipt(result.stdout or "")
-        if receipt is None:
-            raise BackendUnavailableError("parachute produced no upload receipt")
-        return receipt
+        return run_parachute_via_mgmt_ssh(
+            ssh_runner=self._parachute_runner,
+            sandbox_id=sandbox_id,
+            put_url=put_url,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
 
     def sandbox_secrets(self) -> dict[str, str]:
         """The credentials to deliver to a fresh VM post-boot (HF tokens).
@@ -396,7 +321,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         HUGGING_FACE_HUB_TOKEN); the control side hands these to write_secrets.
         Empty when none are configured.
         """
-        return _sandbox_tokens()
+        return sandbox_tokens()
 
     def write_secrets(
         self,
@@ -410,44 +335,19 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         """Deliver provider credentials post-boot over the management channel.
 
         Writes ``/opt/rp/secrets.env`` (sourced by rec.sh) as ``export NAME=...``
-        lines, replacing the cleartext-in-user_data embed (plan Phase 9, risk
-        16). The whole file is base64-encoded into the remote command so the
-        token never appears as a process argument (it would otherwise show in
-        ``ps``); the remote ``base64 -d`` reconstructs it into a 0600 file owned
-        by root. Best-effort: returns False on any failure (the agent's HF
-        downloads simply won't have the token) and never raises — provisioning
-        must not fail because a token write was flaky.
+        lines over SSH stdin, replacing the cleartext-in-user_data embed (plan
+        Phase 9, risk 16). Best-effort: returns False on any failure (the
+        agent's HF downloads simply won't have the token) and never raises —
+        provisioning must not fail because a token write was flaky.
         """
-        if not sandbox_id or not ssh_host or not key_path or not secrets:
-            return False
-        body = "\n".join(
-            f"export {name}={shlex.quote(value)}"
-            for name, value in sorted(secrets.items())
-            if value
+        return write_secrets_via_mgmt_ssh(
+            ssh_runner=self._ssh_input_runner,
+            sandbox_id=sandbox_id,
+            secrets=secrets,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
         )
-        if not body:
-            return False
-        payload_b64 = base64.b64encode((body + "\n").encode("utf-8")).decode("ascii")
-        remote_command = (
-            f"sudo -n bash -c "
-            f"{shlex.quote(f'umask 077; printf %s {shlex.quote(payload_b64)} | base64 -d > /opt/rp/secrets.env; chmod 600 /opt/rp/secrets.env')}"
-        )
-        command = [
-            "ssh",
-            "-i", key_path,
-            "-p", str(int(ssh_port) or 22),
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", f"ConnectTimeout={TRANSCRIPT_SSH_CONNECT_TIMEOUT}",
-            f"{MGMT_SSH_USER}@{ssh_host}",
-            remote_command,
-        ]
-        try:
-            result = self._ssh_runner(command)
-        except Exception:  # noqa: BLE001 — secret delivery is best-effort
-            return False
-        return result.returncode == 0
 
     def local_dashboard_ports(self) -> dict[str, int]:
         """Dashboard ports reachable only from inside the VM.
@@ -647,22 +547,6 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
                     pass
 
 
-def _sandbox_tokens() -> dict[str, str]:
-    """Hugging Face credentials from the daemon env, for VM injection.
-
-    Mirrors the Modal backend's secret injection: gated on HF_TOKEN, with
-    HUGGING_FACE_HUB_TOKEN riding along when set.
-    """
-    token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        return {}
-    tokens = {"HF_TOKEN": token}
-    hub_token = os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
-    if hub_token:
-        tokens["HUGGING_FACE_HUB_TOKEN"] = hub_token
-    return tokens
-
-
 def build_user_data(
     *,
     public_key: str,
@@ -741,18 +625,6 @@ fi
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _run_ssh(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, text=True, capture_output=True, timeout=TRANSCRIPT_READ_TIMEOUT_SECONDS
-    )
-
-
-def _run_ssh_parachute(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command, text=True, capture_output=True, timeout=PARACHUTE_SSH_TIMEOUT_SECONDS
-    )
 
 
 def _call(cb: Any, *args: Any) -> None:

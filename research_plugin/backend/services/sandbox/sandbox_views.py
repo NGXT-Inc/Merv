@@ -251,7 +251,7 @@ def merge_agent_view(
         )
     if status == "provisioning":
         view["hint"] = (
-            "Provisioning. A fresh Lambda Labs VM commonly takes 5-15 minutes "
+            "Provisioning. A fresh GPU VM commonly takes 5-15 minutes "
             "to boot and bootstrap (a large first sync adds time). Poll "
             "sandbox.get every 30-60 seconds until status is running, then "
             "run commands with ssh.command. Do not re-call sandbox.request "

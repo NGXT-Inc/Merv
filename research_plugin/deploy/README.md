@@ -106,9 +106,10 @@ These are intentionally out of the reference stack — production owns them:
 - **Managed MLflow / artifact lifecycle** — the compose MLflow server is a
   reference service. Production should run it behind TLS and back its database
   and artifacts with durable storage.
-- **A real secret store** — point `RESEARCH_PLUGIN_MODAL_ENV_FILE` at a mounted
-  secret, or inject `MODAL_*`/`LAMBDA_*`/`HF_TOKEN` from your platform's secret
-  manager. Never bake them into the image.
+- **A real secret store** — point `RESEARCH_PLUGIN_THUNDER_ENV_FILE` or
+  `RESEARCH_PLUGIN_MODAL_ENV_FILE` at a mounted secret, or inject
+  `THUNDER_COMPUTE_API_KEY`/`MODAL_*`/`LAMBDA_*`/`HF_TOKEN` from your platform's
+  secret manager. Never bake them into the image.
 - **The cleanup scheduler** — wire a managed cron to `POST /api/admin/cleanup`.
 - **Human login OAuth** — the control plane is currently private/operator-run;
   device-flow OAuth is still backlog (open decision C).

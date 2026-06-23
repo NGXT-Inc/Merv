@@ -23,12 +23,6 @@ class ThunderComputeClient:
             raise BackendUnavailableError("Thunder Compute returned malformed specs data")
         return raw
 
-    def list_templates(self) -> dict[str, Any]:
-        data = self._request("GET", "/thunder-templates")
-        if not isinstance(data, dict):
-            raise BackendUnavailableError("Thunder Compute returned malformed templates data")
-        return data
-
     def pricing(self) -> dict[str, Any]:
         data = self._request("GET", "/pricing")
         raw = data.get("pricing")

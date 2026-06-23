@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
 import tempfile
@@ -12,16 +13,14 @@ from backend.execution import build_sandbox_backend
 from backend.execution.backends.lambda_labs.catalog import summarize_instance_types
 from backend.execution.backends.lambda_labs.config import LambdaCloudConfig
 from backend.execution.backends.lambda_labs.sandbox_backend import (
-    DASHBOARD_SCRIPT,
-    REC_SCRIPT,
-    MGMT_SSH_USER,
     TRANSCRIPT_READ_PREFIX,
-    TRANSCRIPT_TAIL_DEFAULT,
     LambdaLabsSandboxBackend,
     build_user_data,
     _sandbox_name,
 )
 from backend.execution.backends.lambda_labs.config import LambdaSandboxConfig
+from backend.execution.vm_bootstrap import DASHBOARD_SCRIPT, MGMT_SSH_USER, REC_SCRIPT
+from backend.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
 from backend.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from backend.sandbox.sandbox_backend import SandboxRequest
 
@@ -444,12 +443,15 @@ class FakeSshRunner:
 
     def __init__(self, *, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
         self.commands: list[list[str]] = []
+        self.inputs: list[str] = []
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
 
-    def __call__(self, command: list[str]) -> subprocess.CompletedProcess:
+    def __call__(self, command: list[str], stdin: str | None = None) -> subprocess.CompletedProcess:
         self.commands.append(list(command))
+        if stdin is not None:
+            self.inputs.append(stdin)
         return subprocess.CompletedProcess(command, self.returncode, self.stdout, self.stderr)
 
 
@@ -542,7 +544,10 @@ class LambdaSecretsTest(unittest.TestCase):
     def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
         config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
         return LambdaLabsSandboxBackend(
-            config=config, client=FakeLambdaSandboxClient(), ssh_runner=runner  # type: ignore[arg-type]
+            config=config,
+            client=FakeLambdaSandboxClient(),
+            ssh_runner=runner,  # type: ignore[arg-type]
+            ssh_input_runner=runner,  # type: ignore[arg-type]
         )
 
     def test_user_data_never_embeds_the_token_plaintext(self) -> None:
@@ -577,9 +582,14 @@ class LambdaSecretsTest(unittest.TestCase):
         # Management principal + management key.
         self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.2")
         self.assertIn("/keys/mgmt", command)
-        # The token is base64'd into the remote command, never a plaintext argv
-        # element (so it can't leak via `ps`).
-        self.assertNotIn("hf_supersecret_value", " ".join(command))
+        # The secret body travels over SSH stdin, not local process argv.
+        argv = " ".join(command)
+        self.assertNotIn("hf_supersecret_value", argv)
+        self.assertNotIn(
+            base64.b64encode(b"export HF_TOKEN=hf_supersecret_value\n").decode("ascii"),
+            argv,
+        )
+        self.assertEqual(runner.inputs, ["export HF_TOKEN=hf_supersecret_value\n"])
         self.assertIn("/opt/rp/secrets.env", command[-1])
 
     def test_write_secrets_noop_without_endpoint_or_secrets(self) -> None:
@@ -775,8 +785,6 @@ class LambdaUserDataOrderingTest(unittest.TestCase):
         )
 
     def test_rec_script_passes_rsync_through_untouched(self) -> None:
-        from backend.execution.backends.lambda_labs.sandbox_backend import REC_SCRIPT
-
         # rsync/scp/sftp must be exec'd raw (no tee) or the binary stream corrupts
         # once ForceCommand is active.
         self.assertIn(r"rsync\ --server*", REC_SCRIPT)
