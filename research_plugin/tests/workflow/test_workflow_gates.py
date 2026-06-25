@@ -6,6 +6,7 @@ from pathlib import Path
 
 from backend.app import ResearchPluginApp
 from backend.domain.artifacts import plan_sections_missing
+from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
 from backend.utils import ValidationError, WorkflowError
 
 # A plan that satisfies the required spine (Summary; Objective & hypothesis;
@@ -222,6 +223,45 @@ class WorkflowGateTest(unittest.TestCase):
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="abandon")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
         self.assertEqual(state["allowed_transitions"], [])
+
+    def test_experiment_create_enforces_active_experiment_cap(self) -> None:
+        for index in range(ACTIVE_EXPERIMENT_CAP):
+            self.call(
+                "experiment.create",
+                name=f"active-{index}",
+                project_id=self.project_id,
+                intent="Keep this experiment active.",
+            )
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.create",
+                name="active-over-cap",
+                project_id=self.project_id,
+                intent="Should wait for a slot.",
+            )
+        self.assertEqual(
+            str(ctx.exception),
+            (
+                "active experiment cap reached: project has 7 active "
+                "experiments; finish one before creating another."
+            ),
+        )
+
+        experiments = self.call("experiment.list", project_id=self.project_id)["experiments"]
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=experiments[0]["id"],
+            transition="abandon",
+        )
+        created = self.call(
+            "experiment.create",
+            name="active-after-slot",
+            project_id=self.project_id,
+            intent="A slot is available.",
+        )
+        self.assertEqual(created["name"], "active-after-slot")
 
     # ---- terminal transitions ----
 

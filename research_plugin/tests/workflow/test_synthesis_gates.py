@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
+from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
 from backend.domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
@@ -134,6 +135,15 @@ class SynthesisGateTest(unittest.TestCase):
             role="reflection_lens_doc",
             body=f"# {lens_id}\nFindings through the {lens_id} lens.\n",
         )
+
+    def _create_active_experiments(self, count: int) -> None:
+        for index in range(count):
+            self.call(
+                "experiment.create",
+                name=f"active-{index}",
+                project_id=self.project_id,
+                intent="Keep this experiment active.",
+            )
 
     def _drive_to_synthesizing(self) -> str:
         syn_id = self._create_wave()
@@ -662,6 +672,21 @@ class SynthesisGateTest(unittest.TestCase):
             )
         self.assertIn("not valid JSON", str(ctx.exception))
 
+    def test_change_spec_cannot_exceed_active_experiment_cap(self) -> None:
+        self._create_active_experiments(ACTIVE_EXPERIMENT_CAP - 1)
+        syn_id = self._drive_to_synthesizing()
+        self._associate_synthesis_artifacts(syn_id=syn_id)
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflection_artifacts",
+            )
+        message = str(ctx.exception)
+        self.assertIn("active experiment cap would be exceeded", message)
+        self.assertIn("finish one before creating another", message)
+
     def test_publish_materializes_claim_changes_and_experiment_wave(self) -> None:
         existing = self.call(
             "claim.create",
@@ -735,6 +760,35 @@ class SynthesisGateTest(unittest.TestCase):
         detail = self._state(syn_id)
         self.assertEqual(len(detail["materialized_claims"]), 2)
         self.assertEqual(len(detail["materialized_experiments"]), 2)
+
+    def test_publish_defensively_rechecks_active_experiment_cap(self) -> None:
+        self._create_active_experiments(ACTIVE_EXPERIMENT_CAP - 2)
+        syn_id = self._drive_to_synthesis_review()
+        session_id = self._open_review_session(syn_id=syn_id)
+        self.call("review.submit", review_session_id=session_id, verdict="pass")
+        self.call(
+            "experiment.create",
+            name="late-active-a",
+            project_id=self.project_id,
+            intent="Created after reflection review.",
+        )
+        self.call(
+            "experiment.create",
+            name="late-active-b",
+            project_id=self.project_id,
+            intent="Created after reflection review.",
+        )
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="publish",
+            )
+        message = str(ctx.exception)
+        self.assertIn("active experiment cap would be exceeded", message)
+        self.assertIn("finish one before creating another", message)
 
     def test_publish_claim_update_null_status_confidence_preserves_existing(self) -> None:
         existing = self.call(

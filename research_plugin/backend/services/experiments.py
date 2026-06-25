@@ -6,6 +6,10 @@ import json
 from typing import Any
 
 from ..domain.artifacts import plan_sections_missing, report_problems
+from ..domain.experiment_policy import (
+    ACTIVE_EXPERIMENT_CAP,
+    active_experiment_cap_reached_message,
+)
 from ..domain.experiment_names import validate_experiment_name
 from ..domain.graph_lint import graph_problems
 from ..domain.paths import experiment_folder_rel
@@ -82,6 +86,7 @@ class ExperimentService:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             self._reject_stopped_project(conn=conn, project_id=project_id)
+            self._reject_active_experiment_cap(conn=conn, project_id=project_id)
             self._reject_reflection_blocked_experiment_create(
                 conn=conn, project_id=project_id
             )
@@ -136,6 +141,24 @@ class ExperimentService:
         if row is not None and row["status"] == "stopped":
             raise ValidationError("project is stopped; new experiments are not allowed")
 
+    def _active_experiment_count(self, *, conn, project_id: str) -> int:
+        terminal = ", ".join(f"'{status}'" for status in sorted(TERMINAL_STATUSES))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) AS count FROM experiments
+            WHERE project_id = ? AND status NOT IN ({terminal})
+            """,
+            (project_id,),
+        ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
+    def _reject_active_experiment_cap(self, *, conn, project_id: str) -> None:
+        active_count = self._active_experiment_count(conn=conn, project_id=project_id)
+        if active_count >= ACTIVE_EXPERIMENT_CAP:
+            raise WorkflowError(
+                active_experiment_cap_reached_message(active_count=active_count)
+            )
+
     def _reject_reflection_blocked_experiment_create(self, *, conn, project_id: str) -> None:
         debt, published_id = self._terminal_experiments_since_last_reflection(
             conn=conn, project_id=project_id
@@ -187,6 +210,7 @@ class ExperimentService:
     ) -> str:
         name = validate_experiment_name(name)
         intent = intent.strip()
+        self._reject_active_experiment_cap(conn=conn, project_id=project_id)
         experiment_id = new_id(prefix="exp")
         now = now_iso()
         conn.execute(

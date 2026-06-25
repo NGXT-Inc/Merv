@@ -61,6 +61,20 @@ MVP gates:
 7. Claim update gate: claim status/confidence changes require evidence links and
    a passing experiment or human review.
 
+## Active experiment cap
+
+A project may have at most 7 active experiments at once. Active means any
+experiment whose status is not terminal (`complete`, `failed`, or `abandoned`).
+Direct `experiment.create` is blocked at the cap with:
+
+```text
+active experiment cap reached: project has 7 active experiments; finish one before creating another.
+```
+
+Reflection-published change specs must also fit available active slots. The
+change spec is rejected before review, and publish rechecks defensively, if the
+proposed experiment wave would exceed the cap.
+
 ## Design reviewer contract
 
 The design reviewer runs before expensive execution. It is read-only and submits

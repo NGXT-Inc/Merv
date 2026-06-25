@@ -17,6 +17,10 @@ import re
 from typing import Any
 
 from ..domain.experiment_names import validate_experiment_name
+from ..domain.experiment_policy import (
+    ACTIVE_EXPERIMENT_CAP,
+    active_experiment_cap_would_exceed_message,
+)
 from ..domain.graph_lint import graph_problems
 from ..domain.markdown_images import markdown_image_links
 from ..domain.reflection_policy import (
@@ -907,6 +911,16 @@ class SynthesisService:
             problems.append(
                 "decision.experiments must contain no more than three experiments"
             )
+        active_count = len(
+            self._non_terminal_experiments(conn=conn, project_id=project_id)
+        )
+        if active_count + len(experiments) > ACTIVE_EXPERIMENT_CAP:
+            problems.append(
+                active_experiment_cap_would_exceed_message(
+                    active_count=active_count,
+                    proposed_count=len(experiments),
+                )
+            )
         seen_names: set[str] = set()
         for index, proposal in enumerate(experiments):
             label = f"decision.experiments[{index}]"
@@ -1094,6 +1108,16 @@ class SynthesisService:
         key_to_claim_id: dict[str, str],
         experiments: list[dict[str, Any]],
     ) -> None:
+        active_count = len(
+            self._non_terminal_experiments(conn=conn, project_id=project_id)
+        )
+        if active_count + len(experiments) > ACTIVE_EXPERIMENT_CAP:
+            raise WorkflowError(
+                active_experiment_cap_would_exceed_message(
+                    active_count=active_count,
+                    proposed_count=len(experiments),
+                )
+            )
         for proposal in experiments:
             name = validate_experiment_name(str(proposal.get("name") or ""))
             intent = str(proposal.get("intent") or "").strip()

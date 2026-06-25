@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
+from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
 from backend.domain.reflection_policy import REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
 from backend.utils import WorkflowError
 
@@ -97,6 +98,34 @@ class SynthesisExperimentWriterTest(unittest.TestCase):
                 "parallelism": "Independent axis.",
             },
         )
+
+    def test_synthesis_writer_enforces_active_experiment_cap(self) -> None:
+        claim = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="A synthesis-created experiment must fit the active cap.",
+        )
+        for index in range(ACTIVE_EXPERIMENT_CAP):
+            self.call(
+                "experiment.create",
+                project_id=self.project_id,
+                name=f"active-{index}",
+                intent="Keep this experiment active.",
+            )
+
+        with self.app.store.transaction() as conn:
+            with self.assertRaises(WorkflowError) as ctx:
+                self.app.experiments.create_from_synthesis(
+                    conn=conn,
+                    project_id=self.project_id,
+                    synthesis_id="syn_contract",
+                    name="synthesis-over-cap",
+                    intent="Created from an approved reflection change spec.",
+                    claim_ids=[claim["id"]],
+                    proposal_key="wave_a",
+                    parallelism="Independent axis.",
+                )
+        self.assertIn("finish one before creating another", str(ctx.exception))
 
 
 if __name__ == "__main__":

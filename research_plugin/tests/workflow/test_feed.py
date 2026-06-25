@@ -6,16 +6,28 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from pathlib import Path as _P
+
 from backend.app import ResearchPluginApp
 from backend.domain import feed_policy
+from backend.domain.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from backend.services.feed import POST_TEXT_MAX
 from backend.services.feed_unfurl import UnfurlError, unfurl
+from backend.transport.feed_http import _image_headers
 from backend.utils import ValidationError
 
 # Minimal valid 1x1 PNG.
 _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000100ffff03000006000557bff8a40000000049454e44ae426082"
+)
+
+# A small SVG whose root is preceded by an XML declaration (matplotlib-shaped),
+# carrying a <script> we expect to survive storage but be served inert.
+_SVG = (
+    b'<?xml version="1.0" encoding="UTF-8"?>\n'
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+    b'<rect width="10" height="10"/><script>1</script></svg>'
 )
 
 
@@ -79,6 +91,32 @@ class FeedServiceTest(unittest.TestCase):
         data, ctype = self.app.feed.get_image(project_id=self.pid, post_id=result["post"]["id"])
         self.assertEqual(data, _PNG)
         self.assertEqual(ctype, "image/png")
+
+    def test_sniff_detects_svg_but_not_arbitrary_text(self) -> None:
+        self.assertEqual(sniff_image_type(_P("c.svg"), _SVG), "image/svg+xml")
+        # An xml-declared svg with leading whitespace still sniffs.
+        self.assertEqual(sniff_image_type(_P("c.svg"), b"  \n" + _SVG), "image/svg+xml")
+        # Plain text / html that merely mentions svg later is not an image.
+        self.assertIsNone(sniff_image_type(_P("note.txt"), b"the svg chart is nice"))
+
+    def test_svg_served_inert_via_csp_sandbox(self) -> None:
+        # External (unfurl) re-host set stays raster-only — svg never enters it.
+        self.assertNotIn("image/svg+xml", SERVEABLE_IMAGE_TYPES)
+        png_headers = _image_headers("image/png")
+        self.assertNotIn("Content-Security-Policy", png_headers)
+        svg_headers = _image_headers("image/svg+xml")
+        self.assertIn("sandbox", svg_headers["Content-Security-Policy"])
+        self.assertIn("script-src 'none'", svg_headers["Content-Security-Policy"])
+        self.assertEqual(svg_headers["X-Content-Type-Options"], "nosniff")
+
+    def test_svg_image_captured_and_served(self) -> None:
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        (self.repo / "chart.svg").write_bytes(_SVG)
+        result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="vec", image_path="chart.svg")
+        self.assertTrue(result["post"]["has_image"])
+        data, ctype = self.app.feed.get_image(project_id=self.pid, post_id=result["post"]["id"])
+        self.assertEqual(data, _SVG)
+        self.assertEqual(ctype, "image/svg+xml")
 
     def test_feed_service_rejects_unobserved_local_image_path(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")

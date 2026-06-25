@@ -25,10 +25,25 @@ _TRACK_EVENTS = {"feed_opened", "post_viewed", "link_clicked", "image_viewed"}
 # client must never be able to spread arbitrary keys into the activity log line.
 _TRACK_PAYLOAD_FIELDS = {"post_id"}
 
-# Feed images are user/agent-supplied bytes served same-origin; stop the browser
-# from MIME-sniffing them into something executable (defense in depth alongside
-# the SVG exclusion in FeedService).
-_IMAGE_RESPONSE_HEADERS = {"X-Content-Type-Options": "nosniff"}
+# Feed images are agent-supplied bytes served same-origin; stop the browser from
+# MIME-sniffing them into something executable.
+_BASE_IMAGE_HEADERS = {"X-Content-Type-Options": "nosniff"}
+
+# SVG is the one accepted image type that is also an active document: loaded via
+# <img> it cannot script, but on DIRECT navigation a browser would run embedded
+# <script>/on*= handlers (stored XSS). Serving it under a no-token `sandbox` plus
+# `script-src 'none'` makes the document inert in every modern browser, so a
+# first-party SVG chart is safe to accept. (External/unfurl SVGs never reach here
+# — they are dropped raster-only upstream.)
+_SVG_CONTENT_TYPE = "image/svg+xml"
+_SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; sandbox"
+
+
+def _image_headers(content_type: str) -> dict[str, str]:
+    """Base hardening for every image, plus a CSP sandbox for SVG documents."""
+    if (content_type or "").split(";", 1)[0].strip().lower() == _SVG_CONTENT_TYPE:
+        return {**_BASE_IMAGE_HEADERS, "Content-Security-Policy": _SVG_CSP}
+    return _BASE_IMAGE_HEADERS
 
 
 def register_feed_routes(
@@ -65,7 +80,7 @@ def register_feed_routes(
             project_id=project_id, post_id=post_id
         )
         return Response(
-            content=content, media_type=content_type, headers=_IMAGE_RESPONSE_HEADERS
+            content=content, media_type=content_type, headers=_image_headers(content_type)
         )
 
     @http.get("/api/projects/{project_id}/feed/{post_id}/link-image")
@@ -74,7 +89,7 @@ def register_feed_routes(
             project_id=project_id, post_id=post_id
         )
         return Response(
-            content=content, media_type=content_type, headers=_IMAGE_RESPONSE_HEADERS
+            content=content, media_type=content_type, headers=_image_headers(content_type)
         )
 
     @http.post("/api/projects/{project_id}/feed/track")

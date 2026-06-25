@@ -384,7 +384,7 @@ class FeedService:
         content_type = sniff_image_type(candidate, data)
         if content_type is None:
             raise ValidationError(
-                f"{image_path} does not look like an image (png/jpeg/gif/webp)"
+                f"{image_path} does not look like an image (png/jpeg/gif/webp/svg)"
             )
         sha = self.blobs.put(namespace=project_id, data=data)
         return sha, content_type
