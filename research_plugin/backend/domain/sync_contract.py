@@ -19,7 +19,7 @@ ARTIFACTS_TO_KEEP_DIRNAME = "artifacts_to_keep"
 TRANSFER_CONTRACT_VERSION = 1
 # Bumping this version invalidates outstanding sync sessions. Bump it whenever
 # the session payload shape changes.
-SYNC_SESSION_SCHEMA_VERSION = 1
+SYNC_SESSION_SCHEMA_VERSION = 2
 
 # Per-subtree authority (plan §3.1 / fixed decision 8). These name what the
 # rsync flags implement: the experiment dir is mirrored with the remote as the
@@ -34,11 +34,19 @@ DIRECTION_POLICY: dict[str, str] = {
 
 
 def remote_experiment_dir(
-    *, experiment_id: str, name: str = "", root: str = DEFAULT_REMOTE_ROOT
+    *,
+    experiment_id: str,
+    name: str = "",
+    root: str = DEFAULT_REMOTE_ROOT,
+    sandbox_uid: str = "",
 ) -> str:
     """The one synced folder on the VM for this experiment."""
+    folder = safe_experiment_dirname(name.strip() or experiment_id)
+    if sandbox_uid:
+        # Additional sandboxes need separate remote roots; the default path stays stable.
+        folder = safe_experiment_dirname(f"{folder}-{sandbox_uid[:12]}")
     return posixpath.join(
-        root.rstrip("/") or "/", safe_experiment_dirname(name.strip() or experiment_id)
+        root.rstrip("/") or "/", folder
     )
 
 

@@ -188,6 +188,18 @@ class StoreMigrationTest(unittest.TestCase):
             for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
         }
 
+    def _sandbox_unique_index_columns(self, conn: sqlite3.Connection) -> list[list[str]]:
+        uniques: list[list[str]] = []
+        for idx in conn.execute("PRAGMA index_list(sandboxes)").fetchall():
+            if not idx["unique"]:
+                continue
+            columns = [
+                str(info["name"])
+                for info in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()
+            ]
+            uniques.append(columns)
+        return uniques
+
     def test_machine_local_sandbox_columns_are_dropped(self) -> None:
         # Cloud-split Phase 3: key_path / local_sync_dir moved to the worker's
         # local store; an upgraded database loses the columns but keeps every
@@ -237,6 +249,223 @@ class StoreMigrationTest(unittest.TestCase):
 
         # Idempotent: a second boot with the columns already gone is a no-op.
         StateStore(db_path=self.db)
+
+    def test_legacy_sandboxes_gain_uid_and_attachments(self) -> None:
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            for experiment_id, status, terminated_at in (
+                ("exp_run", "running", None),
+                ("exp_done", "terminated", "2026-01-01T02:00:00Z"),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO sandboxes (
+                      experiment_id, project_id, sandbox_id, status,
+                      terminated_at, created_at, updated_at
+                    )
+                    VALUES (?, 'proj_old', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        experiment_id,
+                        f"sb-{experiment_id}",
+                        status,
+                        terminated_at,
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T01:00:00Z",
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        StateStore(db_path=self.db)
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            pk = [
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+                if int(row["pk"] or 0) > 0
+            ]
+            self.assertEqual(pk, ["sandbox_uid"])
+            rows = conn.execute(
+                "SELECT sandbox_uid, experiment_id FROM sandboxes ORDER BY experiment_id"
+            ).fetchall()
+            self.assertEqual([row["experiment_id"] for row in rows], ["exp_done", "exp_run"])
+            uids = [str(row["sandbox_uid"]) for row in rows]
+            self.assertEqual(len(set(uids)), 2)
+            for sandbox_uid in uids:
+                self.assertEqual(len(sandbox_uid), 32)
+                int(sandbox_uid, 16)
+            attachments = conn.execute(
+                """
+                SELECT sandbox_uid, experiment_id, detached_at
+                FROM sandbox_attachments
+                ORDER BY experiment_id
+                """
+            ).fetchall()
+            self.assertEqual(
+                [(row["sandbox_uid"], row["experiment_id"]) for row in attachments],
+                [(rows[0]["sandbox_uid"], "exp_done"), (rows[1]["sandbox_uid"], "exp_run")],
+            )
+            self.assertEqual(attachments[0]["detached_at"], "2026-01-01T02:00:00Z")
+            self.assertIsNone(attachments[1]["detached_at"])
+        finally:
+            conn.close()
+
+    def test_sandboxes_experiment_unique_is_dropped(self) -> None:
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sandboxes (
+                  sandbox_uid TEXT PRIMARY KEY,
+                  experiment_id TEXT NOT NULL,
+                  project_id TEXT NOT NULL,
+                  sandbox_id TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'none',
+                  requested_at TEXT,
+                  terminated_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  created_seq INTEGER NOT NULL DEFAULT 0,
+                  UNIQUE(experiment_id)
+                );
+                CREATE TABLE sandbox_attachments (
+                  sandbox_uid TEXT NOT NULL,
+                  experiment_id TEXT NOT NULL,
+                  attached_at TEXT NOT NULL,
+                  detached_at TEXT,
+                  PRIMARY KEY (sandbox_uid, experiment_id)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  sandbox_uid, experiment_id, project_id, sandbox_id, status,
+                  created_at, updated_at, created_seq
+                )
+                VALUES (
+                  'uid_old', 'exp_parallel', 'proj_old', 'sb-old', 'running',
+                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                VALUES ('uid_old', 'exp_parallel', '2026-01-01T00:00:00Z', NULL)
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            self.assertNotIn(
+                ["experiment_id"], self._sandbox_unique_index_columns(conn)
+            )
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  sandbox_uid, experiment_id, project_id, sandbox_id, status,
+                  created_at, updated_at, created_seq
+                )
+                VALUES (
+                  'uid_new', 'exp_parallel', 'proj_old', 'sb-new', 'running',
+                  '2026-01-01T00:00:01Z', '2026-01-01T00:00:01Z', 2
+                )
+                """
+            )
+            rows = conn.execute(
+                "SELECT sandbox_uid FROM sandboxes WHERE experiment_id = ? ORDER BY created_seq",
+                ("exp_parallel",),
+            ).fetchall()
+            self.assertEqual([row["sandbox_uid"] for row in rows], ["uid_old", "uid_new"])
+            attachment = conn.execute(
+                "SELECT detached_at FROM sandbox_attachments WHERE sandbox_uid = 'uid_old'"
+            ).fetchone()
+            self.assertIsNone(attachment["detached_at"])
+        finally:
+            conn.close()
+
+    def test_sandbox_attachments_rebuild_allows_history_rows(self) -> None:
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sandboxes (
+                  sandbox_uid TEXT PRIMARY KEY,
+                  experiment_id TEXT NOT NULL,
+                  project_id TEXT NOT NULL,
+                  sandbox_id TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'none',
+                  requested_at TEXT,
+                  terminated_at TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+                CREATE TABLE sandbox_attachments (
+                  sandbox_uid TEXT NOT NULL,
+                  experiment_id TEXT NOT NULL,
+                  attached_at TEXT NOT NULL,
+                  detached_at TEXT,
+                  PRIMARY KEY (sandbox_uid, experiment_id)
+                );
+                INSERT INTO sandboxes (
+                  sandbox_uid, experiment_id, project_id, sandbox_id, status,
+                  created_at, updated_at
+                )
+                VALUES (
+                  'uid_old', 'exp_parallel', 'proj_old', 'sb-old', 'running',
+                  '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                );
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                VALUES ('uid_old', 'exp_parallel', '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z');
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            pk = [
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(sandbox_attachments)").fetchall()
+                if int(row["pk"] or 0) > 0
+            ]
+            self.assertEqual(pk, [])
+            conn.execute(
+                """
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                VALUES ('uid_old', 'exp_parallel', '2026-01-01T02:00:00Z', NULL)
+                """
+            )
+            rows = conn.execute(
+                """
+                SELECT detached_at FROM sandbox_attachments
+                WHERE sandbox_uid = 'uid_old' AND experiment_id = 'exp_parallel'
+                ORDER BY attached_at
+                """
+            ).fetchall()
+            self.assertEqual([row["detached_at"] for row in rows], ["2026-01-01T01:00:00Z", None])
+        finally:
+            conn.close()
 
     def test_fresh_db_has_no_machine_local_sandbox_columns(self) -> None:
         store = StateStore(db_path=self.db)
@@ -429,6 +658,24 @@ class StoreMigrationTest(unittest.TestCase):
                 ).fetchall()
             }
             self.assertIn("metrics_snapshots", tables)
+        finally:
+            conn.close()
+
+    def test_legacy_sandboxes_gain_heartbeat_columns(self) -> None:
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = self._sandbox_columns(conn)
+            self.assertIn("idle_since", columns)
+            self.assertIn("heartbeat_snapshot_json", columns)
         finally:
             conn.close()
 

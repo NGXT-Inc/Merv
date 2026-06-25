@@ -7,8 +7,8 @@ local mode ``InProcessTaskChannel`` degenerates to a synchronous dispatch the
 moment a task is enqueued, preserving today's provision/reap/teardown
 ordering exactly.
 
-Task types: ``initial_push`` | ``sync_pull`` | ``final_pull`` | ``conn_refresh`` |
-``teardown`` | ``parachute_restore``. The last unpacks a reaped sandbox's
+Task types: ``sync_pull`` | ``final_pull`` | ``conn_refresh`` | ``teardown`` |
+``parachute_restore``. The last unpacks a reaped sandbox's
 parachute object (plan Phase 5, fixed decision 5) into the experiment's
 local folder through the worker's normal sync-path semantics.
 
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 
 TASK_TYPES: frozenset[str] = frozenset(
     {
-        "initial_push",
         "sync_pull",
         "final_pull",
         "conn_refresh",
@@ -100,12 +99,6 @@ class InProcessTaskChannel:
 
     def _execute(self, *, task: Task) -> Any:
         payload = task.payload
-        if task.type == "initial_push":
-            return self.worker.push_initial(
-                session=payload["session"],
-                name=str(payload.get("name") or ""),
-                on_retry=payload.get("on_retry"),
-            )
         if task.type == "final_pull":
             result = self.worker.final_pull(
                 session=payload["session"],
@@ -124,7 +117,9 @@ class InProcessTaskChannel:
             # Re-render the agent's conn file (and ssh command) for a row
             # whose tunnel endpoint moved.
             return self.worker.sandbox_enrichment(
-                row=payload["row"], name=str(payload.get("name") or "")
+                row=payload["row"],
+                name=str(payload.get("name") or ""),
+                use_sandbox_uid_command=bool(payload.get("use_sandbox_uid_command")),
             )
         if task.type == "teardown":
             # sandbox_id is None when the row itself was missing: skip tunnel
@@ -134,7 +129,11 @@ class InProcessTaskChannel:
                 self.worker.stop_dashboards(sandbox_id=str(sandbox_id))
                 self.worker.stop_mlflow_access(sandbox_id=str(sandbox_id))
             self.worker.remove_conn_file(
-                experiment_id=str(payload["experiment_id"])
+                experiment_id=str(payload["experiment_id"]),
+                sandbox_uid=str(payload.get("sandbox_uid") or ""),
+                remove_experiment_alias=bool(
+                    payload.get("remove_experiment_alias", True)
+                ),
             )
             return None
         # parachute_restore: unpack a reaped sandbox's parachute object into

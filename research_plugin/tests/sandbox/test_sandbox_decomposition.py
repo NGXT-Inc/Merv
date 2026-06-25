@@ -24,6 +24,10 @@ from backend.dataplane import InProcessTaskChannel, LocalDataPlaneWorker
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.sandbox.sandbox_daemons import SandboxDaemons
 from backend.dataplane.sandbox_dashboards import DashboardTunnels
+from backend.services.sandbox.sandbox_heartbeat import (
+    SandboxHeartbeatMonitor,
+    SandboxIdlePolicy,
+)
 from backend.services.sandbox.sandbox_metrics import SandboxMetrics
 from backend.services.sandbox.sandbox_parachute import SandboxParachute
 from backend.services.sandbox.sandbox_provisioner import SandboxProvisioner
@@ -75,6 +79,8 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIsInstance(service.metrics, SandboxMetrics)
         self.assertIsInstance(service.parachute, SandboxParachute)
         self.assertIsInstance(service.daemons, SandboxDaemons)
+        self.assertIsInstance(service.daemons.heartbeat, SandboxHeartbeatMonitor)
+        self.assertIsInstance(service.daemons.heartbeat.policy, SandboxIdlePolicy)
         # Terminal row marks tear down tunnels + conn files through the hook,
         # so the registry itself stays persistence-only.
         self.assertIsNotNone(service.registry.on_terminal)
@@ -83,6 +89,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIs(service.provisioner.registry, service.registry)
         self.assertIs(service.provisioner.worker, service.worker)
         self.assertIs(service.daemons.registry, service.registry)
+        self.assertIs(service.daemons.heartbeat.registry, service.registry)
         self.assertIs(service.metrics.registry, service.registry)
         self.assertIs(service.metrics.worker, service.worker)
         self.assertIs(service.parachute.registry, service.registry)
@@ -94,20 +101,16 @@ class SandboxDecompositionTest(unittest.TestCase):
 
     def test_facade_wires_the_phase4_seam(self) -> None:
         # Sync sessions, leases, and the task channel (cloud plan Phase 4):
-        # one lease service backs the session issuer and the poller's view,
-        # one channel carries every control→data signal, and the provisioner
-        # shares both rather than minting its own.
+        # one lease service backs the session issuer and control-plane view,
+        # and one channel carries explicit control→data signals.
         service = self.app.sandboxes
         self.assertIsInstance(service.leases, LeaseService)
         self.assertIsInstance(service.sessions, SyncSessionService)
         self.assertIsInstance(service.tasks, InProcessTaskChannel)
         self.assertIsInstance(service.control_view, InProcessControlPlaneView)
         self.assertIs(service.sessions.leases, service.leases)
-        self.assertIs(service.provisioner.sessions, service.sessions)
-        self.assertIs(service.provisioner.tasks, service.tasks)
         self.assertIs(service.control_view.registry, service.registry)
         self.assertIs(service.control_view.sessions, service.sessions)
-        self.assertIs(service.daemons.view, service.control_view)
         self.assertIs(service.tasks.worker, service.worker)
         self.assertIs(service.metrics_archive, service.worker.metrics_archive)
         self.assertIs(service.quotas, self.app.quotas)
@@ -259,7 +262,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         # for the workflow layer are the only SELECTs allowed to remain.
         self.assertNotIn("UPDATE sandboxes", source)
         self.assertNotIn("INSERT INTO sandboxes", source)
-        self.assertEqual(source.count("SELECT * FROM sandboxes"), 3)
+        self.assertEqual(source.count("SELECT * FROM sandboxes"), 2)
 
     def test_facade_import_does_not_load_data_plane_task_machinery(self) -> None:
         code = """

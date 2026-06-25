@@ -126,17 +126,12 @@ def build_bootstrap_core(
     parachute_script_b64 = base64.b64encode(
         build_parachute_script().encode("utf-8")
     ).decode("ascii")
-    env_lines = "\n".join(
-        [
-            f"RP_WORKDIR={shlex.quote(workdir)}",
-            f"RP_EXPERIMENT_DIR={shlex.quote(workdir)}",
-            f"RP_EXPERIMENT_ID={shlex.quote(experiment_id)}",
-            f"RP_SANDBOX_DATA_DIR={shlex.quote(sandbox_data_dir)}",
-            f"RP_DATASET_DIR={shlex.quote(sandbox_data_dir)}",
-            f"RP_DASH_DIR={shlex.quote(sessions_dir)}",
-            f"RP_TB_LOGDIR={shlex.quote(sessions_dir + '/tb')}",
-            *_tracking_env_lines(tracking_env),
-        ]
+    env_lines = build_runtime_env(
+        experiment_id=experiment_id,
+        workdir=workdir,
+        sessions_dir=sessions_dir,
+        sandbox_data_dir=sandbox_data_dir,
+        tracking_env=tracking_env,
     )
     _ = tokens
     mgmt_block = ""
@@ -204,3 +199,26 @@ def _tracking_env_lines(tracking_env: Mapping[str, str] | None) -> list[str]:
         if key in TRACKING_ENV_EXPORTS and value is not None:
             lines.append(f"{key}={shlex.quote(str(value))}")
     return lines
+
+
+def build_runtime_env(
+    *,
+    experiment_id: str,
+    workdir: str,
+    sessions_dir: str,
+    sandbox_data_dir: str,
+    tracking_env: Mapping[str, str] | None = None,
+) -> str:
+    """Render /opt/rp/env for the experiment currently attached to the box."""
+    return "\n".join(
+        [
+            f"RP_WORKDIR={shlex.quote(workdir)}",
+            f"RP_EXPERIMENT_DIR={shlex.quote(workdir)}",
+            f"RP_EXPERIMENT_ID={shlex.quote(experiment_id)}",
+            f"RP_SANDBOX_DATA_DIR={shlex.quote(sandbox_data_dir)}",
+            f"RP_DATASET_DIR={shlex.quote(sandbox_data_dir)}",
+            f"RP_DASH_DIR={shlex.quote(sessions_dir)}",
+            f"RP_TB_LOGDIR={shlex.quote(sessions_dir + '/tb')}",
+            *_tracking_env_lines(tracking_env),
+        ]
+    )

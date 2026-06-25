@@ -35,6 +35,7 @@ BACKEND_METHODS = (
     "run_parachute",
     "sandbox_secrets",
     "write_secrets",
+    "retarget",
     "shutdown",
 )
 
@@ -86,8 +87,6 @@ class SandboxBackendContractTest(unittest.TestCase):
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
             experiments=object(),  # type: ignore[arg-type]
-            control_view=object(),  # type: ignore[arg-type]
-            sync_row=lambda **_kwargs: {},
             final_pull=lambda **_kwargs: {},
             persist_metrics=lambda **_kwargs: None,
             parachute=lambda **_kwargs: None,
@@ -117,6 +116,16 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertEqual(backend.local_dashboard_ports(), {})
         self.assertIsNone(backend.find_sandbox_id(experiment_id="exp"))
         self.assertIsNone(backend.run_parachute(sandbox_id="sb", put_url="file:///x"))
+        self.assertFalse(
+            backend.retarget(
+                sandbox_id="sb",
+                experiment_id="exp",
+                public_key="ssh-ed25519 AAAAuser",
+                workdir="/workspace/exp",
+                sandbox_data_dir="/workspace/data",
+                tracking_env={},
+            )
+        )
         self.assertIsNone(backend.shutdown())
 
     def test_services_do_not_probe_backend_optional_methods(self) -> None:
@@ -139,31 +148,23 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertIsInstance(catalog, dict)
         self.assertTrue(catalog["selection_required"])
 
-    def test_default_capabilities_enable_daemon_gates(self) -> None:
+    def test_default_capabilities_enable_reaper_gate(self) -> None:
         daemons = self._daemons_for_backend(MinimalBackend())
 
         with mock.patch.dict(
             os.environ,
-            {
-                "RESEARCH_PLUGIN_SANDBOX_REAPER": "1",
-                "RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC": "1",
-            },
+            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
         ):
             self.assertTrue(daemons._reaper_enabled())
-            self.assertTrue(daemons._auto_sync_enabled())
 
-    def test_fake_capabilities_disable_daemon_gates(self) -> None:
+    def test_fake_capabilities_disable_reaper_gate(self) -> None:
         daemons = self._daemons_for_backend(FakeSandboxBackend())
 
         with mock.patch.dict(
             os.environ,
-            {
-                "RESEARCH_PLUGIN_SANDBOX_REAPER": "1",
-                "RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC": "1",
-            },
+            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
         ):
             self.assertFalse(daemons._reaper_enabled())
-            self.assertFalse(daemons._auto_sync_enabled())
 
     def test_local_mode_honors_reaper_off_switch(self) -> None:
         # Local mode (the default): the user owns their bill, so the env

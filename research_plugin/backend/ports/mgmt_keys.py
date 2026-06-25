@@ -9,14 +9,14 @@ from typing import Protocol
 class MgmtKeyStore(Protocol):
     """Control-plane custody of the management SSH channel key."""
 
-    def ensure(self, *, experiment_id: str) -> str:
+    def ensure(self, *, sandbox_uid: str) -> str:
         """Return the public key authorized for the sandbox management channel."""
         ...
 
-    def key_path(self, *, experiment_id: str) -> Path:
+    def key_path(self, *, sandbox_uid: str) -> Path:
         """Return the private-key path used for the management SSH channel."""
         ...
 
-    def remove(self, *, experiment_id: str) -> None:
+    def remove(self, *, sandbox_uid: str) -> None:
         """Drop key material when this store owns its lifecycle."""
         ...

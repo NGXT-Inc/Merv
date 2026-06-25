@@ -54,10 +54,12 @@ class QuotaAdmissionTest(unittest.TestCase):
         with self.store.transaction() as conn:
             conn.execute(
                 """
-                INSERT INTO sandboxes (experiment_id, project_id, status, created_at, updated_at)
-                VALUES (?, ?, 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+                INSERT INTO sandboxes (
+                  sandbox_uid, experiment_id, project_id, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
                 """,
-                (experiment_id, self.project_id),
+                (f"uid_{experiment_id}", experiment_id, self.project_id),
             )
 
     def test_no_quota_row_is_unlimited(self) -> None:
@@ -92,8 +94,10 @@ class QuotaAdmissionTest(unittest.TestCase):
         with self.store.transaction() as conn:
             conn.execute(
                 """
-                INSERT INTO sandboxes (experiment_id, project_id, status, created_at, updated_at)
-                VALUES ('exp_o', ?, 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+                INSERT INTO sandboxes (
+                  sandbox_uid, experiment_id, project_id, status, created_at, updated_at
+                )
+                VALUES ('uid_exp_o', 'exp_o', ?, 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
                 """,
                 (other,),
             )

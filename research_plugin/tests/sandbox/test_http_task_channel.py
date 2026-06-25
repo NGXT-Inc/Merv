@@ -2,9 +2,8 @@
 
 The in-process channel dispatches synchronously; the HTTP sibling has the cloud
 enqueue, the daemon long-poll, execute, and ack — the cloud never dials in. This
-proves the round-trip and the cross-process provision handshake (initial_push
-through awaiting_initial_push to running) over the HttpTaskQueue, and that the
-task payloads stay JSON-serializable.
+proves the round-trip over the HttpTaskQueue, and that task payloads stay
+JSON-serializable.
 """
 
 from __future__ import annotations
@@ -89,15 +88,6 @@ class HttpTaskQueueRoundTripTest(unittest.TestCase):
 
     def test_known_in_process_only_fields_are_stripped_from_wire_payload(self) -> None:
         cases = [
-            (
-                "initial_push",
-                {
-                    "session": {"experiment_id": "x"},
-                    "name": "exp",
-                    "on_retry": lambda attempt, attempts: None,
-                },
-                {"session": {"experiment_id": "x"}, "name": "exp"},
-            ),
             (
                 "parachute_restore",
                 {

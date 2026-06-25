@@ -48,6 +48,7 @@ class SandboxParachute:
         experiment_id = str(row.get("experiment_id") or "")
         project_id = str(row.get("project_id") or "")
         sandbox_id = str(row.get("sandbox_id") or "")
+        sandbox_uid = str(row.get("sandbox_uid") or "")
         try:
             if self.blobs is None:
                 raise ValidationError(
@@ -65,7 +66,7 @@ class SandboxParachute:
                 put_url=str(target.get("url") or ""),
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
-                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
+                key_path=str(self._mgmt_key_path(row=row)),
             )
             if receipt is None:
                 raise ValidationError("backend has no parachute channel")
@@ -77,6 +78,7 @@ class SandboxParachute:
                 )
             self.registry.upsert(
                 experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid or None,
                 parachute_state="uploaded",
                 parachute_object_key=f"{stat.namespace}/{stat.sha256}",
                 parachute_sha256=stat.sha256,
@@ -89,6 +91,7 @@ class SandboxParachute:
                 experiment_id=experiment_id,
                 payload={
                     "sandbox_id": sandbox_id,
+                    "sandbox_uid": sandbox_uid,
                     "object_key": f"{stat.namespace}/{stat.sha256}",
                     "sha256": stat.sha256,
                     "size_bytes": int(stat.size_bytes),
@@ -98,7 +101,9 @@ class SandboxParachute:
         except Exception as exc:  # noqa: BLE001 - loud event, terminate anyway
             with contextlib.suppress(Exception):
                 self.registry.upsert(
-                    experiment_id=experiment_id, parachute_state="failed"
+                    experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid or None,
+                    parachute_state="failed",
                 )
             with contextlib.suppress(Exception):
                 self.registry.emit_event(
@@ -114,6 +119,7 @@ class SandboxParachute:
             return row
         experiment_id = str(row.get("experiment_id") or "")
         project_id = str(row.get("project_id") or "")
+        sandbox_uid = str(row.get("sandbox_uid") or "")
         name = self.registry.experiment_name(experiment_id=experiment_id)
         try:
             if self.blobs is None:
@@ -137,7 +143,11 @@ class SandboxParachute:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - loud failure, no silent loop
-            self.registry.upsert(experiment_id=experiment_id, parachute_state="failed")
+            self.registry.upsert(
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid or None,
+                parachute_state="failed",
+            )
             self.registry.emit_event(
                 project_id=project_id,
                 event_type="sandbox.parachute_failed",
@@ -148,8 +158,12 @@ class SandboxParachute:
                     "error": str(exc),
                 },
             )
-            return self.registry.load_row(experiment_id=experiment_id)
-        self.registry.upsert(experiment_id=experiment_id, parachute_state="restored")
+            return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        self.registry.upsert(
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid or None,
+            parachute_state="restored",
+        )
         self.registry.emit_event(
             project_id=project_id,
             event_type="sandbox.parachute_restored",
@@ -161,4 +175,7 @@ class SandboxParachute:
                 "local_dir": self.worker.repo_relative(result.get("local_dir", "")),
             },
         )
-        return self.registry.load_row(experiment_id=experiment_id)
+        return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+
+    def _mgmt_key_path(self, *, row: dict[str, Any]) -> Any:
+        return self.mgmt_keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))

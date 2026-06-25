@@ -22,22 +22,19 @@ from tests.fakes import FakeRsyncSyncer
 
 
 def _reaper_capable_backend_factory(_repo: Path) -> FakeSandboxBackend:
-    """A fake backend with remote-sandbox daemon behavior enabled."""
+    """A fake backend with expiry enforcement enabled."""
     backend = FakeSandboxBackend()
     backend.capabilities = BackendCapabilities(
         name="fake",
         enforce_expiry=True,
-        auto_sync=True,
     )
     return backend
 
 
 class RouterRestartReaperTest(unittest.TestCase):
-    # Keep the background loops alive but inert: the first reap/sync only
-    # happens after one full interval, so the test never races them.
+    # Keep the background reaper alive but inert so the test never races it.
     _ENV = {
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL": "3600",
     }
 
     def setUp(self) -> None:
@@ -75,11 +72,9 @@ class RouterRestartReaperTest(unittest.TestCase):
         app = router.app_for_project(project["id"])
         app.sandboxes.worker.rsync_syncer = FakeRsyncSyncer(
             sync_pulled=0,
-            push_pulled=0,
             duration_seconds=0.0,
             command_count=1,
             sync_stdout="",
-            push_stdout="",
         )
         exp_id = app.call_tool(
             "experiment.create",
@@ -119,11 +114,9 @@ class RouterRestartReaperTest(unittest.TestCase):
         # expired sandbox and put the experiment back where the agent can act.
         app.sandboxes.worker.rsync_syncer = FakeRsyncSyncer(
             sync_pulled=0,
-            push_pulled=0,
             duration_seconds=0.0,
             command_count=1,
             sync_stdout="",
-            push_stdout="",
         )
         self.assertEqual(app.sandboxes.reap_expired(), 1)
         sandbox = app.call_tool(

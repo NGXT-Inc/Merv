@@ -31,6 +31,7 @@ from backend.execution.vm_ssh import (
     run_ssh,
     run_ssh_input,
     run_ssh_parachute,
+    retarget_via_mgmt_ssh,
     sample_metrics_via_mgmt_ssh,
     sandbox_tokens,
     write_secrets_via_mgmt_ssh,
@@ -114,7 +115,7 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         on_phase: OnPhase | None = None,
         on_created: OnCreated | None = None,
     ) -> ProvisionedSandbox:
-        instance_name = _sandbox_name(request.experiment_id)
+        instance_name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         key_name = f"{instance_name}-key"
         instance_type = (request.instance_type or self.config.instance_type_name or "").strip()
         if not instance_type:
@@ -349,6 +350,32 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
             key_path=key_path,
         )
 
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: Mapping[str, str],
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> bool:
+        return retarget_via_mgmt_ssh(
+            ssh_runner=self._ssh_input_runner,
+            sandbox_id=sandbox_id,
+            experiment_id=experiment_id,
+            public_key=public_key,
+            workdir=workdir,
+            sandbox_data_dir=sandbox_data_dir or self.config.sandbox_data_dir,
+            tracking_env=tracking_env,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
+
     def local_dashboard_ports(self) -> dict[str, int]:
         """Dashboard ports reachable only from inside the VM.
 
@@ -381,8 +408,10 @@ class LambdaLabsSandboxBackend(SandboxBackendBase):
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "backend": "lambda_labs", "error": str(exc)}
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
-        name = _sandbox_name(experiment_id)
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = ""
+    ) -> str | None:
+        name = _sandbox_name(sandbox_uid or experiment_id)
         try:
             for instance in self.client.list_instances():
                 if instance.get("name") == name and str(instance.get("status") or "") in LIVE_INSTANCE_STATUSES:

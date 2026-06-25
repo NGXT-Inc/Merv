@@ -37,15 +37,6 @@ from ..sandbox.sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 from ..utils import format_iso
 
 
-# How long a row may sit in a pre-running provisioning phase before the
-# stale-provision sweep declares the daemon dead and reaps it. The provider VM
-# exists and is billing by this point (created from the ``creating`` phase
-# onward), so this is the billing-protection deadline for risk 8 (daemon offline
-# mid-provision). Single-sourced with the reaper thread's deadline so the two
-# never disagree. Comfortably above a slow first sync; well below an hour.
-DEFAULT_AWAITING_PUSH_DEADLINE_SECONDS = DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
-
-
 @dataclass(frozen=True)
 class CleanupReport:
     """Per-sweep counts from one ``run_all`` pass (for logs/metrics/tests)."""
@@ -80,12 +71,12 @@ class CleanupService:
         sandboxes: Any,
         blobs: Any,
         storage: Any | None = None,
-        awaiting_push_deadline_seconds: float = DEFAULT_AWAITING_PUSH_DEADLINE_SECONDS,
+        stale_provision_deadline_seconds: float = DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
     ) -> None:
         self.sandboxes = sandboxes
         self.blobs = blobs
         self.storage = storage
-        self.awaiting_push_deadline_seconds = float(awaiting_push_deadline_seconds)
+        self.stale_provision_deadline_seconds = float(stale_provision_deadline_seconds)
 
     # ---------- the entry point a scheduler calls ----------
 
@@ -150,14 +141,14 @@ class CleanupService:
         """Reap rows wedged in ANY pre-running provisioning phase past the deadline.
 
         Risk 8 (daemon offline mid-provision → billing VM): a provision can wedge
-        in any pre-running phase — ``creating`` / ``connecting`` /
-        ``awaiting_initial_push`` — and the provider VM already exists from
-        ``creating`` onward, so the reap must not be restricted to the push phase.
+        in any pre-running phase — ``creating`` / ``connecting`` — and the
+        provider VM already exists from ``creating`` onward, so the reap must
+        not be phase-specific.
         Delegates to the shared ``provisioner.reap_stale_provisions`` so this
         sweep and the always-running reaper thread can never disagree about what
         'wedged' means. Idempotent — a row that already settled is skipped.
         """
         now_dt = now or datetime.now(tz=UTC)
         return self.sandboxes.provisioner.reap_stale_provisions(
-            now=now_dt, deadline_seconds=self.awaiting_push_deadline_seconds
+            now=now_dt, deadline_seconds=self.stale_provision_deadline_seconds
         )

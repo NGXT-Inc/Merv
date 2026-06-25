@@ -70,35 +70,59 @@ class SandboxConnFiles:
             # The raw_command fallback still works.
             pass
 
-    def write_command_wrapper(self, *, row: dict[str, Any], key_path: Path) -> str:
+    def write_command_wrapper(
+        self,
+        *,
+        row: dict[str, Any],
+        key_path: Path,
+        use_sandbox_uid_command: bool = False,
+    ) -> str:
         """Refresh the per-experiment conn file and return the short command.
 
-        Returns `.research_plugin/sbx <experiment_id>` (relative to the repo
-        root). Returns "" if the wrapper could not be written, so the caller
-        falls back to the raw ssh line.
+        Returns `.research_plugin/sbx <key>` (relative to the repo root).
+        Returns "" if the wrapper could not be written, so the caller falls
+        back to the raw ssh line.
         """
         dispatcher, conn_dir = self.command_paths()
-        safe = _safe_name(str(row.get("experiment_id") or ""))
+        experiment_id = str(row.get("experiment_id") or "")
+        sandbox_uid = str(row.get("sandbox_uid") or "")
+        safe_uid = _safe_name(sandbox_uid or experiment_id)
+        safe_exp = _safe_name(experiment_id)
         try:
             self.ensure_dispatcher(dispatcher=dispatcher)
             conn_dir.mkdir(parents=True, exist_ok=True)
-            conn_file = conn_dir / safe
-            conn_file.write_text(
+            body = (
                 f"RP_SSH_KEY={_shq(str(key_path))}\n"
                 f"RP_SSH_HOST={_shq(str(row.get('ssh_host') or ''))}\n"
                 f"RP_SSH_PORT={_shq(str(row.get('ssh_port') or ''))}\n"
                 f"RP_SSH_USER={_shq(str(row.get('ssh_user') or 'root'))}\n"
             )
+            conn_file = conn_dir / safe_uid
+            conn_file.write_text(body)
             os.chmod(conn_file, 0o600)
+            if safe_exp and not use_sandbox_uid_command:
+                # The experiment alias preserves the single-sandbox command.
+                alias = conn_dir / safe_exp
+                alias.write_text(body)
+                os.chmod(alias, 0o600)
         except OSError:
             return ""
         rel = os.path.relpath(dispatcher, self.repo_root)
-        return f"{rel} {safe}"
+        return f"{rel} {safe_uid if use_sandbox_uid_command else safe_exp or safe_uid}"
 
-    def remove_conn(self, *, experiment_id: str) -> None:
+    def remove_conn(
+        self,
+        *,
+        experiment_id: str,
+        sandbox_uid: str = "",
+        remove_experiment_alias: bool = True,
+    ) -> None:
         """Drop the conn file so `sbx` fails loudly for a dead sandbox."""
         _, conn_dir = self.command_paths()
         try:
-            (conn_dir / _safe_name(experiment_id)).unlink(missing_ok=True)
+            if sandbox_uid:
+                (conn_dir / _safe_name(sandbox_uid)).unlink(missing_ok=True)
+            if remove_experiment_alias or not sandbox_uid:
+                (conn_dir / _safe_name(experiment_id)).unlink(missing_ok=True)
         except OSError:
             pass

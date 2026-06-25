@@ -48,20 +48,14 @@ POLL_AFTER_SECONDS = 30
 # Live-usage samples are coalesced for this long so the fleet view and the
 # drill-in terminal (which both poll ~3s) don't double-exec into a sandbox.
 METRICS_CACHE_TTL_SECONDS = 2.0
-DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS = 5.0
-# The auto-sync loop runs every few seconds, but archiving MLflow metrics
-# sweeps the whole REST surface (runs + per-metric history), so it is
-# throttled to this cadence. Explicit sync/release/reap bypass the throttle.
+# Archiving MLflow metrics sweeps the whole REST surface, so dashboard polling
+# is throttled to this cadence. Explicit sync/release/reap bypass the throttle.
 METRICS_PERSIST_TTL_SECONDS = 60.0
 # How often the reaper checks for sandboxes past their expires_at deadline and
 # terminates them. Needed because Lambda VMs (unlike Modal sandboxes) have no
 # server-side lifetime enforcement, so without this an expired VM bills forever.
 DEFAULT_REAPER_INTERVAL_SECONDS = 30.0
-# The first rsync push can fire in the brief window after SSH opens but before
-# cloud-init has finished creating the remote workspace / injecting the VM key,
-# so it is retried a few times before the provision is declared failed.
-DEFAULT_INITIAL_PUSH_ATTEMPTS = 6
-DEFAULT_INITIAL_PUSH_RETRY_SECONDS = 10.0
+DEFAULT_SANDBOX_IDLE_SECONDS = 3600.0
 # Expiry parachute (plan Phase 5, fixed decision 5). The TTL is the blob
 # store's backstop: an unclaimed parachute object (daemon never reconnected)
 # is swept after this long instead of living forever. The object cap bounds

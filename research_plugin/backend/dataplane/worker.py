@@ -1,19 +1,19 @@
 """The DataPlaneWorker interface and its local-mode implementation.
 
 Every local-IO duty of the sandbox stack routes through this seam (cloud plan
-§3.1): workspace folders, SSH keypairs and conn files, the initial rsync push,
-sync pulls, dashboard tunnels, and the legacy pulled-``mlflow.db`` metrics fallback.
+§3.1): workspace folders, SSH keypairs and conn files, sync pulls, dashboard
+tunnels, and the legacy pulled-``mlflow.db`` metrics fallback.
 Control-plane code (registry, provisioner, facade verbs) calls the interface;
 ``LocalDataPlaneWorker`` binds it to this machine by wrapping the existing
 machinery. In split mode the same duties become the daemon's task loop
 (Phase 8).
 
-Byte movement is session-shaped (plan Phase 4): ``push_initial``/``sync_pull``
-/``final_pull`` take the lease-backed sync session the control plane minted —
-SSH endpoint, remote directory contract, ``direction_policy`` — and refuse a
-session whose policy or contract version the local rsync flags do not
-implement. The worker's per-experiment locks serialize rsync on this machine,
-subordinate to the lease (the cross-client authority).
+Byte movement is session-shaped (plan Phase 4): ``sync_pull``/``final_pull``
+take the lease-backed sync session the control plane minted — SSH endpoint,
+remote directory contract, ``direction_policy`` — and refuse a session whose
+policy or contract version the local rsync flags do not implement. The
+worker's per-experiment locks serialize rsync on this machine, subordinate to
+the lease (the cross-client authority).
 
 Since plan Phase 5's management-key switch, ``read_transcript`` and
 ``sample_metrics`` are control-plane duties authenticated by the per-sandbox
@@ -26,20 +26,14 @@ from __future__ import annotations
 import io
 import tarfile
 import threading
-import time
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from ..execution.ssh_rsync import SshRsyncSyncer
-from ..env import env_float
 from ..sandbox.sandbox_backend import SandboxBackend
 from .metrics_archive import MetricsArchive, snapshot_mlflow_db
 from .sandbox_dashboards import DashboardTunnels
-from ..sandbox.sandbox_support import (
-    ACTIVE_SANDBOX_STATUSES,
-    DEFAULT_INITIAL_PUSH_ATTEMPTS,
-    DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
-)
+from ..sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ..domain.sync_contract import (
     DIRECTION_POLICY,
     SYNC_SESSION_SCHEMA_VERSION,
@@ -50,12 +44,6 @@ from ..workspace import LocalWorkspace
 from .mlflow_tunnels import MlflowReverseTunnels
 from .sandbox_conn import SandboxConnFiles
 from .state import SandboxLocalState
-
-
-# (attempt, attempts) — progress hook for the initial-push retry loop, so the
-# provisioner can surface "waiting for remote workspace" without the worker
-# knowing about provision rows.
-OnPushRetry = Callable[[int, int], None]
 
 
 def _require_session(session: Any) -> dict[str, Any]:
@@ -105,18 +93,20 @@ class DataPlaneWorker(Protocol):
 
     def key_path(self, *, experiment_id: str) -> Path: ...
 
-    def remove_conn_file(self, *, experiment_id: str) -> None: ...
-
-    def sandbox_enrichment(
-        self, *, row: dict[str, Any], name: str = ""
-    ) -> dict[str, Any]: ...
-
-    def push_initial(
+    def remove_conn_file(
         self,
         *,
-        session: dict[str, Any],
+        experiment_id: str,
+        sandbox_uid: str = "",
+        remove_experiment_alias: bool = True,
+    ) -> None: ...
+
+    def sandbox_enrichment(
+        self,
+        *,
+        row: dict[str, Any],
         name: str = "",
-        on_retry: OnPushRetry | None = None,
+        use_sandbox_uid_command: bool = False,
     ) -> dict[str, Any]: ...
 
     def sync_pull(
@@ -160,7 +150,7 @@ class LocalDataPlaneWorker:
     """Local-mode worker: today's sandbox IO machinery behind the seam.
 
     Wraps ``SandboxConnFiles`` (keys, dispatcher, conn files),
-    ``SshRsyncSyncer`` (push/pull), ``DashboardTunnels`` (ssh -L pool), and
+    ``SshRsyncSyncer`` (pulls), ``DashboardTunnels`` (ssh -L pool), and
     ``MetricsArchive``; machine-local sandbox facts (key path, local sync dir,
     loopback dashboard URLs) persist in ``SandboxLocalState``, never in
     cloud-bound rows.
@@ -187,9 +177,11 @@ class LocalDataPlaneWorker:
             local_state=self.state,
         )
         self.mlflow_tunnels = MlflowReverseTunnels(key_path=self.key_path)
-        # One rsync per experiment at a time; sync/release/reap contend.
-        # Machine-local serialization only — subordinate to the sync lease,
-        # which is the cross-client authority (plan Phase 4).
+        # One rsync per experiment at a time; sync/release/reap contend. With
+        # multiple sandboxes per experiment each pulls to its OWN local dir
+        # (uid-suffixed for additional ones), so this lock is conservative —
+        # machine-local serialization only, subordinate to the sync lease
+        # (the cross-client authority, plan Phase 4).
         self._sync_locks: dict[str, threading.Lock] = {}
         self._sync_locks_lock = threading.Lock()
 
@@ -211,11 +203,26 @@ class LocalDataPlaneWorker:
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def local_experiment_dir(self, *, experiment_id: str, name: str = "") -> Path:
+    def local_experiment_dir(
+        self, *, experiment_id: str, name: str = "", sandbox_uid: str = ""
+    ) -> Path:
+        if sandbox_uid:
+            # Additional sandbox: a uid-suffixed local dir mirrors its uid-suffixed
+            # remote root (sync_contract) so parallel pulls never overwrite the
+            # primary's folder. Deterministic, so it needs no per-experiment cache.
+            base = self.workspace.experiment_dir(experiment_id=experiment_id, name=name)
+            return base.with_name(f"{base.name}-{sandbox_uid[:12]}")
         stored = self.state.load(experiment_id=experiment_id)["local_sync_dir"]
         if stored:
             return Path(stored)
         return self.workspace.experiment_dir(experiment_id=experiment_id, name=name)
+
+    @staticmethod
+    def _local_dir_uid(*, remote_dir: str, sandbox_uid: str) -> str:
+        """The uid to suffix the local dir with — set only for an additional
+        sandbox, whose remote dir carries the uid suffix (sync_contract)."""
+        uid = (sandbox_uid or "")[:12]
+        return sandbox_uid if uid and remote_dir.rstrip("/").endswith(f"-{uid}") else ""
 
     def repo_relative(self, path: str | Path) -> str:
         return self.workspace.relative(path)
@@ -230,11 +237,25 @@ class LocalDataPlaneWorker:
     def key_path(self, *, experiment_id: str) -> Path:
         return self._conn.key_path(experiment_id=experiment_id)
 
-    def remove_conn_file(self, *, experiment_id: str) -> None:
-        self._conn.remove_conn(experiment_id=experiment_id)
+    def remove_conn_file(
+        self,
+        *,
+        experiment_id: str,
+        sandbox_uid: str = "",
+        remove_experiment_alias: bool = True,
+    ) -> None:
+        self._conn.remove_conn(
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            remove_experiment_alias=remove_experiment_alias,
+        )
 
     def sandbox_enrichment(
-        self, *, row: dict[str, Any], name: str = ""
+        self,
+        *,
+        row: dict[str, Any],
+        name: str = "",
+        use_sandbox_uid_command: bool = False,
     ) -> dict[str, Any]:
         """The machine-local half of the agent view (plan §3.3).
 
@@ -250,7 +271,13 @@ class LocalDataPlaneWorker:
             and (row.get("status") or "none") in ACTIVE_SANDBOX_STATUSES
         )
         command = (
-            self._conn.write_command_wrapper(row=row, key_path=key_path) if live else ""
+            self._conn.write_command_wrapper(
+                row=row,
+                key_path=key_path,
+                use_sandbox_uid_command=use_sandbox_uid_command,
+            )
+            if live
+            else ""
         )
         raw_command = (
             self._conn.raw_ssh_command(row=row, key_path=key_path) if live else ""
@@ -260,64 +287,28 @@ class LocalDataPlaneWorker:
             "command": command,
             "raw_command": raw_command,
             "local_dir": str(
-                self.local_experiment_dir(experiment_id=experiment_id, name=name)
+                self.local_experiment_dir(
+                    experiment_id=experiment_id,
+                    name=name,
+                    sandbox_uid=self._local_dir_uid(
+                        remote_dir=str(row.get("workdir") or row.get("sync_dir") or ""),
+                        sandbox_uid=str(row.get("sandbox_uid") or ""),
+                    ),
+                )
             ),
         }
 
     # ---------- rsync ----------
-
-    def push_initial(
-        self,
-        *,
-        session: dict[str, Any],
-        name: str = "",
-        on_retry: OnPushRetry | None = None,
-    ) -> dict[str, Any]:
-        session = _require_session(session)
-        experiment_id = str(session["experiment_id"])
-        ssh = session["ssh"]
-        local_dir = self.local_experiment_dir(experiment_id=experiment_id, name=name)
-        local_dir.mkdir(parents=True, exist_ok=True)
-        attempts = max(
-            1,
-            int(env_float(
-                "RESEARCH_PLUGIN_SANDBOX_INITIAL_PUSH_ATTEMPTS",
-                None,
-                DEFAULT_INITIAL_PUSH_ATTEMPTS,
-            )),
-        )
-        retry_seconds = env_float(
-            "RESEARCH_PLUGIN_SANDBOX_INITIAL_PUSH_RETRY",
-            None,
-            DEFAULT_INITIAL_PUSH_RETRY_SECONDS,
-        )
-        result: dict[str, Any] | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                result = self.rsync_syncer.push_initial(
-                    ssh_host=str(ssh.get("host") or ""),
-                    ssh_port=int(ssh.get("port") or 0),
-                    ssh_user=str(ssh.get("user") or "root"),
-                    key_path=self.key_path(experiment_id=experiment_id),
-                    remote_sync_dir=str(session["remote"]["experiment_dir"]),
-                    local_sync_dir=local_dir,
-                ).as_dict()
-                break
-            except Exception:  # noqa: BLE001 — first push races cloud-init; retry briefly
-                if attempt >= attempts:
-                    raise
-                if on_retry is not None:
-                    on_retry(attempt, attempts)
-                time.sleep(retry_seconds)
-        assert result is not None
-        self.state.record(experiment_id=experiment_id, local_sync_dir=str(local_dir))
-        return result
 
     def sync_pull(
         self, *, session: dict[str, Any], name: str = "", skip_if_busy: bool = False
     ) -> dict[str, Any]:
         session = _require_session(session)
         experiment_id = str(session["experiment_id"])
+        local_uid = self._local_dir_uid(
+            remote_dir=str((session.get("remote") or {}).get("experiment_dir") or ""),
+            sandbox_uid=str(session.get("sandbox_uid") or ""),
+        )
         with self._sync_locks_lock:
             lock = self._sync_locks.setdefault(experiment_id, threading.Lock())
         acquired = lock.acquire(blocking=not skip_if_busy)
@@ -328,12 +319,14 @@ class LocalDataPlaneWorker:
                 "pulled": 0,
                 "conflicts": 0,
                 "local_dir": str(
-                    self.local_experiment_dir(experiment_id=experiment_id, name=name)
+                    self.local_experiment_dir(
+                        experiment_id=experiment_id, name=name, sandbox_uid=local_uid
+                    )
                 ),
             }
         try:
             local_dir = self.local_experiment_dir(
-                experiment_id=experiment_id, name=name
+                experiment_id=experiment_id, name=name, sandbox_uid=local_uid
             )
             ssh = session["ssh"]
             remote = session["remote"]
@@ -355,9 +348,13 @@ class LocalDataPlaneWorker:
                     sandbox_id=str(session.get("sandbox_id") or ""),
                 ),
             ).as_dict()
-            self.state.record(
-                experiment_id=experiment_id, local_sync_dir=str(local_dir)
-            )
+            # Cache the primary's local dir only; an additional sandbox uses a
+            # deterministic uid-suffixed dir, so caching it would clobber the
+            # primary's cached path.
+            if not local_uid:
+                self.state.record(
+                    experiment_id=experiment_id, local_sync_dir=str(local_dir)
+                )
             return result
         finally:
             lock.release()

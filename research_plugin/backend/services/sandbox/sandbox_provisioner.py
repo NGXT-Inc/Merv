@@ -1,21 +1,18 @@
 """Background sandbox provisioning: job threads, cancellation, reconcile.
 
-`SandboxProvisioner` owns the acquire lifecycle — one background job per
-experiment (idempotent attach), cooperative cancellation, orphan cleanup, and
-the reconcile pass that keeps a polled row truthful after crashes or restarts.
+`SandboxProvisioner` owns the acquire lifecycle — idempotent experiment-keyed
+jobs for the default path, uid-keyed jobs for additional sandboxes, cooperative
+cancellation, orphan cleanup, and the reconcile pass that keeps a polled row
+truthful after crashes or restarts.
 It talks to persistence through `SandboxRegistry`, applies experiment status
 changes only through the workflow engine's system transitions, and reaches
 the facade only through ``refresh_row`` (endpoint + dashboard refresh for a
 live row).
 
-The provision job's row phases: provider ``acquire`` reports ``creating`` /
-``connecting``; then the row sits in the explicit ``awaiting_initial_push``
-phase (cloud plan Phase 4) while the lease-authorized ``initial_push`` task
-delivers the experiment folder, and only a confirmed push flips the row to
-``running``. The row status stays ``provisioning`` throughout, so the
+``connecting``; then a successfully acquired sandbox is recorded as
+``running``. The row status stays ``provisioning`` until that handoff, so the
 existing cancellation and orphan-cleanup paths (reconcile, release-cancel)
-cover the new phase — a daemon offline mid-push must never leave a billing VM
-with no files unaccounted for.
+cover every pre-running provider phase.
 """
 
 from __future__ import annotations
@@ -34,9 +31,7 @@ from ...sandbox.sandbox_backend import (
 )
 from ...domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
 from ...ports.sandbox_lifecycle import ExperimentTransitions
-from ...ports.sandbox_sync import SyncSessionIssuer
 from ...ports.sandbox_worker import SandboxWorker
-from ...ports.task_channel import TaskChannel
 from ...utils import iso_after, now_iso
 from .sandbox_registry import SandboxRegistry
 from ...sandbox.sandbox_support import (
@@ -60,6 +55,8 @@ class _ProvisionJob:
     thread: threading.Thread
     cancel: threading.Event
     done: threading.Event
+    experiment_id: str
+    sandbox_uid: str = ""
 
 
 class SandboxProvisioner:
@@ -72,8 +69,6 @@ class SandboxProvisioner:
         backend: SandboxBackend,
         experiments: ExperimentTransitions,
         worker: SandboxWorker,
-        sessions: SyncSessionIssuer,
-        tasks: TaskChannel,
         refresh_row: RefreshRow,
         stale_provision_seconds: float,
     ) -> None:
@@ -81,13 +76,20 @@ class SandboxProvisioner:
         self.backend = backend
         self.experiments = experiments
         self.worker = worker
-        self.sessions = sessions
-        self.tasks = tasks
         self._refresh_row = refresh_row
         self.stale_provision_seconds = stale_provision_seconds
-        # In-flight provisioning jobs, keyed by experiment_id.
+        # Default provisioning is keyed by experiment; additional sandboxes by uid.
         self._jobs: dict[str, _ProvisionJob] = {}
         self._jobs_lock = threading.Lock()
+
+    def _job_key(self, *, experiment_id: str, sandbox_uid: str = "") -> str:
+        return sandbox_uid or experiment_id
+
+    def _job_for_row(
+        self, *, experiment_id: str, sandbox_uid: str = ""
+    ) -> _ProvisionJob | None:
+        # Default provisioning jobs predate the row uid; additional jobs use it.
+        return self._jobs.get(sandbox_uid) or self._jobs.get(experiment_id)
 
     # ---------- liveness ----------
 
@@ -109,32 +111,34 @@ class SandboxProvisioner:
         """
         status = row.get("status")
         exp = str(row.get("experiment_id"))
+        sandbox_uid = str(row.get("sandbox_uid") or "")
         if status in ACTIVE_SANDBOX_STATUSES and row.get("sandbox_id"):
             if self.is_alive(sandbox_id=str(row["sandbox_id"])):
-                self.registry.touch_alive(experiment_id=exp)
-                return self._refresh_row(row=self.registry.load_row(experiment_id=exp))
-            self.registry.mark_terminated(experiment_id=exp)
+                self.registry.touch_alive(experiment_id=exp, sandbox_uid=sandbox_uid)
+                return self._refresh_row(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
+            self.registry.mark_terminated(experiment_id=exp, sandbox_uid=sandbox_uid)
             self.registry.emit_event(
                 project_id=str(row["project_id"]),
                 event_type="sandbox.expired",
                 experiment_id=exp,
                 payload={"sandbox_id": row.get("sandbox_id", "")},
             )
-            return self.registry.load_row(experiment_id=exp)
+            return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
         if status == "provisioning":
             with self._jobs_lock:
-                job = self._jobs.get(exp)
+                job = self._job_for_row(experiment_id=exp, sandbox_uid=sandbox_uid)
                 live_job = bool(job and job.thread.is_alive())
             if live_job and not self.provision_too_old(row=row):
                 return row  # genuinely in flight — keep polling
             # The job may have JUST settled; re-read before declaring failure.
-            fresh = self.registry.load_row(experiment_id=exp)
+            fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
             if fresh.get("status") != "provisioning":
                 return self.reconcile(row=fresh)
             self.cleanup_orphan(experiment_id=exp, row=fresh)
             self.registry.mark_failed(
                 experiment_id=exp,
                 error="provisioning interrupted; call sandbox.request again",
+                sandbox_uid=sandbox_uid,
             )
             self.registry.emit_event(
                 project_id=str(row["project_id"]),
@@ -142,7 +146,7 @@ class SandboxProvisioner:
                 experiment_id=exp,
                 payload={"error": "provisioning interrupted"},
             )
-            return self.registry.load_row(experiment_id=exp)
+            return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
         return row
 
     def provision_too_old(self, *, row: dict[str, Any]) -> bool:
@@ -162,45 +166,68 @@ class SandboxProvisioner:
         project_id: str,
         req: SandboxRequest,
         existing: dict[str, Any] | None,
+        sandbox_uid: str = "",
+        create_new: bool = False,
     ) -> _ProvisionJob:
         """Return the in-flight job for this experiment, or start a fresh one.
 
         Idempotent: a second request during provisioning attaches to the same
         job rather than starting a duplicate.
         """
+        job_key = self._job_key(
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid if create_new else "",
+        )
         with self._jobs_lock:
-            job = self._jobs.get(experiment_id)
+            job = self._jobs.get(job_key)
             if job is not None and job.thread.is_alive():
                 return job
         # No live job. Clear any prior/orphan sandbox before a fresh provision so
         # the deterministic Modal name cannot collide (the wedge we hit). Done
         # outside the lock — it may make a network call.
-        self.cleanup_orphan(experiment_id=experiment_id, row=existing)
+        if not create_new:
+            self.cleanup_orphan(experiment_id=experiment_id, row=existing)
         with self._jobs_lock:
-            job = self._jobs.get(experiment_id)
+            job = self._jobs.get(job_key)
             if job is not None and job.thread.is_alive():
                 return job
             self.begin_provisioning_row(
-                experiment_id=experiment_id, project_id=project_id, req=req
+                experiment_id=experiment_id,
+                project_id=project_id,
+                req=req,
+                sandbox_uid=sandbox_uid,
+                create_new=create_new,
             )
             cancel = threading.Event()
             done = threading.Event()
             thread = threading.Thread(
                 target=self._provision,
-                args=(experiment_id, project_id, req, cancel, done),
-                name=f"provision-{experiment_id}",
+                args=(experiment_id, project_id, req, cancel, done, sandbox_uid),
+                name=f"provision-{sandbox_uid or experiment_id}",
                 daemon=True,
             )
-            job = _ProvisionJob(thread=thread, cancel=cancel, done=done)
-            self._jobs[experiment_id] = job
+            job = _ProvisionJob(
+                thread=thread,
+                cancel=cancel,
+                done=done,
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid,
+            )
+            self._jobs[job_key] = job
             thread.start()
             return job
 
-    def cancel(self, *, experiment_id: str) -> None:
-        """Signal the experiment's in-flight job (if any) to abort."""
+    def cancel(self, *, experiment_id: str, sandbox_uid: str | None = None) -> None:
+        """Signal in-flight job(s) for the experiment to abort."""
+        target_uid = (sandbox_uid or "").strip()
         with self._jobs_lock:
-            job = self._jobs.get(experiment_id)
-        if job is not None:
+            jobs = [
+                job
+                for job in self._jobs.values()
+                if job.experiment_id == experiment_id
+                and (not target_uid or job.sandbox_uid == target_uid)
+            ]
+        for job in jobs:
             job.cancel.set()
 
     def shutdown(self) -> None:
@@ -222,19 +249,26 @@ class SandboxProvisioner:
         req: SandboxRequest,
         cancel: threading.Event,
         done: threading.Event,
+        sandbox_uid: str = "",
     ) -> None:
-        """Background worker: sync → create → tunnel, updating the row per phase."""
+        """Background worker: create → tunnel, updating the row per phase."""
         try:
             def on_phase(phase: str, detail: str) -> None:
                 if cancel.is_set():
                     raise _Canceled()
-                self.set_provision(experiment_id=experiment_id, phase=phase, detail=detail)
+                self.set_provision(
+                    experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
+                    phase=phase,
+                    detail=detail,
+                )
 
             def on_created(sandbox_id: str, sandbox_name: str) -> None:
                 # Persist the id the moment it exists so a crash/restart can
                 # reconcile or clean it up — this is the orphan fix.
                 self.set_provision(
                     experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
                     sandbox_id=sandbox_id,
                     sandbox_name=sandbox_name,
                 )
@@ -249,70 +283,25 @@ class SandboxProvisioner:
             # a just-terminated sandbox `running`.
             if cancel.is_set():
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
-                self._settle_canceled(experiment_id=experiment_id, project_id=project_id)
-                return
-            # The explicit phase between provider-acquire and running (plan
-            # Phase 4): the VM exists but its experiment folder hasn't been
-            # confirmed yet. Status stays `provisioning`, so cancellation
-            # (this on_phase checks the cancel flag) and reconcile/orphan
-            # cleanup cover it like any other in-flight phase.
-            on_phase("awaiting_initial_push", "pushing the local experiment folder")
-            name = self.registry.experiment_name(experiment_id=experiment_id)
-            try:
-                # The push is lease-authorized and session-shaped: the control
-                # plane grants the lease and mints the transfer contract, then
-                # enqueues an initial_push task — in split mode the daemon's
-                # task loop executes it; in-process it runs synchronously.
-                session = self.sessions.grant(
+                self._settle_canceled(
                     experiment_id=experiment_id,
-                    sandbox_id=provisioned.sandbox_id,
-                    ssh_host=provisioned.ssh_host,
-                    ssh_port=provisioned.ssh_port,
-                    ssh_user=provisioned.ssh_user,
-                    experiment_dir=provisioned.sync_dir
-                    or provisioned.workdir
-                    or remote_experiment_dir(experiment_id=experiment_id, name=name),
-                    data_dir=provisioned.sandbox_data_dir or provisioned.unsynced_dir,
+                    project_id=project_id,
+                    sandbox_uid=sandbox_uid,
                 )
-                initial_sync = self.tasks.submit(
-                    task_type="initial_push",
-                    payload={
-                        "session": session,
-                        "name": name,
-                        "on_retry": lambda attempt, attempts: self.set_provision(
-                            experiment_id=experiment_id,
-                            phase="awaiting_initial_push",
-                            detail=f"waiting for remote workspace (attempt {attempt}/{attempts})",
-                        ),
-                    },
-                    tenant_id=self.registry.tenant_for_project(project_id=project_id),
-                )
-            except Exception:
-                self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
-                raise
-            self.registry.emit_event(
-                project_id=project_id,
-                event_type="sandbox.initial_rsynchronized",
-                experiment_id=experiment_id,
-                payload={
-                    "sandbox_id": provisioned.sandbox_id,
-                    "pushed": initial_sync.get("pulled", 0),
-                    # Logical (repo-relative) spelling: event payloads are
-                    # cloud-bound rows and must not carry absolute local paths.
-                    "local_dir": self.worker.repo_relative(
-                        initial_sync.get("local_dir", "")
-                    ),
-                    "remote_dir": initial_sync.get("remote_dir", ""),
-                    "duration_seconds": initial_sync.get("duration_seconds", 0),
-                },
-            )
+                return
+            name = self.registry.experiment_name(experiment_id=experiment_id)
             if cancel.is_set():
                 self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
-                self._settle_canceled(experiment_id=experiment_id, project_id=project_id)
+                self._settle_canceled(
+                    experiment_id=experiment_id,
+                    project_id=project_id,
+                    sandbox_uid=sandbox_uid,
+                )
                 return
             now = now_iso()
             self.registry.upsert(
                 experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid or None,
                 project_id=project_id,
                 status="running",
                 sandbox_id=provisioned.sandbox_id,
@@ -335,7 +324,6 @@ class SandboxProvisioner:
                 sync_dir=provisioned.sync_dir or provisioned.workdir,
                 unsynced_dir=provisioned.unsynced_dir or provisioned.sandbox_data_dir,
                 sandbox_data_dir=provisioned.sandbox_data_dir,
-                initial_pushed=int(initial_sync.get("pulled", -1)),
                 volume_name=provisioned.volume_name,
                 dashboards_json=encode_dashboards(provisioned.dashboards),
                 expires_at=iso_after(seconds=req.time_limit),
@@ -374,39 +362,51 @@ class SandboxProvisioner:
                     "instance_type": provisioned.instance_type or (req.instance_type or ""),
                     "region": provisioned.region or (req.region or ""),
                     "time_limit": req.time_limit,
-                    "initial_sync": {
-                        "provider": initial_sync.get("provider", "ssh_rsync"),
-                        "direction": initial_sync.get("direction", "push"),
-                        "pushed": initial_sync.get("pulled", 0),
-                        "local_dir": initial_sync.get("local_dir", ""),
-                        "remote_dir": initial_sync.get("remote_dir", ""),
-                    },
                 },
             )
         except _Canceled:
             # acquire already terminated anything it created.
-            self._settle_canceled(experiment_id=experiment_id, project_id=project_id)
+            self._settle_canceled(
+                experiment_id=experiment_id,
+                project_id=project_id,
+                sandbox_uid=sandbox_uid,
+            )
         except (BackendUnavailableError, BackendValidationError, BackendPermissionError) as exc:
             self._settle_failed(
-                experiment_id=experiment_id, project_id=project_id, error=str(exc)
+                experiment_id=experiment_id,
+                project_id=project_id,
+                error=str(exc),
+                sandbox_uid=sandbox_uid,
             )
         except Exception as exc:  # noqa: BLE001 — never lose the row to an unexpected error
             self._settle_failed(
-                experiment_id=experiment_id, project_id=project_id, error=str(exc)
+                experiment_id=experiment_id,
+                project_id=project_id,
+                error=str(exc),
+                sandbox_uid=sandbox_uid,
             )
         finally:
             done.set()
+            job_key = self._job_key(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
             with self._jobs_lock:
-                current = self._jobs.get(experiment_id)
+                current = self._jobs.get(job_key)
                 if current is not None and current.done is done:
-                    self._jobs.pop(experiment_id, None)
+                    self._jobs.pop(job_key, None)
 
     def begin_provisioning_row(
-        self, *, experiment_id: str, project_id: str, req: SandboxRequest
+        self,
+        *,
+        experiment_id: str,
+        project_id: str,
+        req: SandboxRequest,
+        sandbox_uid: str = "",
+        create_new: bool = False,
     ) -> None:
         now = now_iso()
-        self.registry.upsert(
+        writer = self.registry.create_sandbox if create_new else self.registry.upsert
+        writer(
             experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid or None,
             project_id=project_id,
             status="provisioning",
             phase="starting",
@@ -420,10 +420,9 @@ class SandboxProvisioner:
             workdir=req.remote_workdir or remote_experiment_dir(experiment_id=experiment_id),
             sync_dir=req.remote_workdir or remote_experiment_dir(experiment_id=experiment_id),
             unsynced_dir=DEFAULT_DATA_DIR,
-            initial_pushed=-1,
             # Control knows a management keypair exists for this sandbox (plan
             # Phase 5): a store reference only — never key material.
-            mgmt_key_ref=(experiment_id if req.management_public_key else ""),
+            mgmt_key_ref=(str(req.sandbox_uid or sandbox_uid) if req.management_public_key else ""),
             gpu=req.gpu or "",
             cpu=req.cpu,
             memory=req.memory,
@@ -441,6 +440,7 @@ class SandboxProvisioner:
         self,
         *,
         experiment_id: str,
+        sandbox_uid: str = "",
         phase: str | None = None,
         detail: str | None = None,
         sandbox_id: str | None = None,
@@ -455,7 +455,9 @@ class SandboxProvisioner:
             fields["sandbox_id"] = sandbox_id
         if sandbox_name is not None:
             fields["sandbox_name"] = sandbox_name
-        self.registry.upsert(experiment_id=experiment_id, **fields)
+        self.registry.upsert(
+            experiment_id=experiment_id, sandbox_uid=sandbox_uid or None, **fields
+        )
 
     def reap_stale_provisions(
         self, *, now: datetime, deadline_seconds: float
@@ -483,8 +485,11 @@ class SandboxProvisioner:
         reaped = 0
         for row in self.registry.list_rows_by_status(status="provisioning"):
             experiment_id = str(row.get("experiment_id") or "")
+            sandbox_uid = str(row.get("sandbox_uid") or "")
             with self._jobs_lock:
-                job = self._jobs.get(experiment_id)
+                job = self._job_for_row(
+                    experiment_id=experiment_id, sandbox_uid=sandbox_uid
+                )
                 if job is not None and job.thread.is_alive():
                     continue  # a live job in this process still owns it
             started = parse_iso(row.get("provision_started_at"))
@@ -492,13 +497,14 @@ class SandboxProvisioner:
                 continue
             # The job may have JUST settled the row between the list and here;
             # only reap one that is still provisioning.
-            fresh = self.registry.load_row(experiment_id=experiment_id)
+            fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
             if fresh.get("status") != "provisioning":
                 continue
             try:
                 self.cleanup_orphan(experiment_id=experiment_id, row=fresh)
                 self.registry.mark_failed(
                     experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
                     error=(
                         "provisioning wedged past deadline (daemon offline?); "
                         "the sandbox was terminated — call sandbox.request again"
@@ -535,12 +541,34 @@ class SandboxProvisioner:
             self.worker.stop_dashboards(sandbox_id=str(sid))
             self.worker.stop_mlflow_access(sandbox_id=str(sid))
             self._terminate_quietly(sandbox_id=str(sid))
-        try:
-            orphan = self.backend.find_sandbox_id(experiment_id=experiment_id)
-        except Exception:  # noqa: BLE001
+        if not sid:
+            sandbox_uid = str((row or {}).get("sandbox_uid") or "")
+            active_sibling = bool(
+                sandbox_uid
+                and self.registry.has_active_for_experiment(
+                    experiment_id=experiment_id, exclude_sandbox_uid=sandbox_uid
+                )
+            )
+            lookup_uids: list[str] = []
+            if sandbox_uid:
+                lookup_uids.append(sandbox_uid)
+            # Avoid the experiment alias while a sibling is live; it names the primary.
+            if not active_sibling:
+                lookup_uids.append("")
+            if not lookup_uids:
+                lookup_uids.append("")
             orphan = None
-        if orphan and str(orphan) not in seen:
-            self._terminate_quietly(sandbox_id=str(orphan))
+            for lookup_uid in lookup_uids:
+                if orphan:
+                    break
+                try:
+                    orphan = self.backend.find_sandbox_id(
+                        experiment_id=experiment_id, sandbox_uid=lookup_uid
+                    )
+                except Exception:  # noqa: BLE001
+                    orphan = None
+            if orphan and str(orphan) not in seen:
+                self._terminate_quietly(sandbox_id=str(orphan))
 
     # ---------- settle helpers ----------
 
@@ -550,8 +578,12 @@ class SandboxProvisioner:
         except Exception:  # noqa: BLE001
             pass
 
-    def _settle_canceled(self, *, experiment_id: str, project_id: str) -> None:
-        self.registry.mark_terminated(experiment_id=experiment_id)
+    def _settle_canceled(
+        self, *, experiment_id: str, project_id: str, sandbox_uid: str = ""
+    ) -> None:
+        self.registry.mark_terminated(
+            experiment_id=experiment_id, sandbox_uid=sandbox_uid or None
+        )
         self.registry.emit_event(
             project_id=project_id,
             event_type="sandbox.released",
@@ -559,8 +591,19 @@ class SandboxProvisioner:
             payload={"canceled": True},
         )
 
-    def _settle_failed(self, *, experiment_id: str, project_id: str, error: str) -> None:
-        self.registry.mark_failed(experiment_id=experiment_id, error=error)
+    def _settle_failed(
+        self,
+        *,
+        experiment_id: str,
+        project_id: str,
+        error: str,
+        sandbox_uid: str = "",
+    ) -> None:
+        self.registry.mark_failed(
+            experiment_id=experiment_id,
+            error=error,
+            sandbox_uid=sandbox_uid or None,
+        )
         self.registry.emit_event(
             project_id=project_id,
             event_type="sandbox.failed",

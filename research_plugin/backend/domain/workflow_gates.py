@@ -81,7 +81,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
         to_status="running",
         ready_gate="execution_ready",
         ready_action="start_running",
-        ready_allowed=("sandbox.request", "experiment.transition"),
+        ready_allowed=("sandbox.request", "sandbox.attach", "experiment.transition"),
     ),
     "running": ForwardTransition(
         name="submit_results",
@@ -103,6 +103,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 action="run_experiment_and_sync_results",
                 allowed=(
                     "sandbox.request",
+                    "sandbox.attach",
                     "sandbox.terminal",
                     "sandbox.get",
                     "sandbox.sync",

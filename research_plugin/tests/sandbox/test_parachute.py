@@ -18,15 +18,11 @@ from pathlib import Path
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.execution.backends.lambda_labs.sandbox_backend import build_user_data
-from backend.execution.ssh_rsync import (
-    DEFAULT_EXCLUDES as RSYNC_DEFAULT_EXCLUDES,
-    SESSIONS_DIR_EXCLUDE as RSYNC_SESSIONS_DIR_EXCLUDE,
-)
+from backend.execution.ssh_rsync import DEFAULT_EXCLUDES as RSYNC_DEFAULT_EXCLUDES
 from backend.execution.transfer_spec import (
     ARTIFACTS_MAX_FILE_SIZE,
     DEFAULT_EXCLUDES,
     PARACHUTE_EXCLUDES,
-    SESSIONS_DIR_EXCLUDE,
     SYNC_MAX_FILE_SIZE,
     TRANSFER_CONTRACT_VERSION,
     build_parachute_script,
@@ -46,10 +42,9 @@ from tests.fakes import FakeRsyncSyncer
 
 class TransferSpecTest(unittest.TestCase):
     def test_rsync_consumes_the_shared_constants(self) -> None:
-        # ssh_rsync re-imports the spec's objects — identity, not copies, so
+        # ssh_rsync re-imports the spec's exclude set — identity, not a copy, so
         # the two byte paths can never drift.
         self.assertIs(RSYNC_DEFAULT_EXCLUDES, DEFAULT_EXCLUDES)
-        self.assertIs(RSYNC_SESSIONS_DIR_EXCLUDE, SESSIONS_DIR_EXCLUDE)
 
     def test_session_pin_is_the_spec_version(self) -> None:
         self.assertEqual(SESSION_TRANSFER_CONTRACT_VERSION, TRANSFER_CONTRACT_VERSION)
@@ -219,13 +214,19 @@ class ParachuteFlowTest(unittest.TestCase):
         # the user key) before the terminate.
         call = self.backend.parachute_calls[-1]
         self.assertEqual(call["sandbox_id"], sandbox_id)
+        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
         self.assertEqual(
             Path(call["key_path"]).resolve(),
-            (self.repo / ".research_plugin" / "mgmt_keys" / exp_id / "key").resolve(),
+            (
+                self.repo
+                / ".research_plugin"
+                / "mgmt_keys"
+                / row["sandbox_uid"]
+                / "key"
+            ).resolve(),
         )
         self.assertIn(sandbox_id, self.backend.terminated)
         # The row records the object — key, hash, size, TTL backstop.
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "terminated")
         self.assertEqual(row["parachute_state"], "uploaded")
         self.assertEqual(

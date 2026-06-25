@@ -353,6 +353,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertEqual(
             get_type_hints(RunningSandboxSyncRow),
             {
+                "sandbox_uid": str,
                 "experiment_id": str,
                 "tenant_id": str | None,
                 "sandbox_id": str | None,
@@ -388,11 +389,13 @@ class ServiceLayoutTest(unittest.TestCase):
                 "ssh_user",
                 "experiment_dir",
                 "data_dir",
+                "sandbox_uid",
             ],
         )
         for name in list(grant_params)[1:]:
             self.assertEqual(grant_params[name].kind, Parameter.KEYWORD_ONLY)
         self.assertEqual(grant_params["data_dir"].default, "")
+        self.assertEqual(grant_params["sandbox_uid"].default, "")
         workflow_reader_source = (PORTS_ROOT / "workflow_readers.py").read_text(
             encoding="utf-8"
         )
@@ -505,21 +508,18 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("list_running_rows", source)
         self.assertNotIn("class RunningSandboxRows", source)
 
-    def test_auto_sync_loops_share_target_step(self) -> None:
-        helper = BACKEND_ROOT / "sandbox" / "sandbox_autosync.py"
+    def test_auto_sync_poller_is_removed(self) -> None:
         daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
         daemon_source = daemon_mode.read_text(encoding="utf-8")
         local_source = _source("sandbox/sandbox_daemons.py")
 
-        self.assertEqual(_import_module_names(helper), {"collections.abc", "typing"})
-        self.assertIn("run_auto_sync_target", daemon_source)
-        self.assertIn("run_auto_sync_target", local_source)
-        self.assertNotIn("Mirror SandboxDaemons._auto_sync_loop", daemon_source)
-        self.assertIn(
-            '"experiment_id": str(row.get("experiment_id") or "")',
-            daemon_source,
-        )
-        self.assertNotIn('target.get("experiment_id")', daemon_source)
+        self.assertFalse((BACKEND_ROOT / "sandbox" / "sandbox_autosync.py").exists())
+        for source in (daemon_source, local_source):
+            self.assertNotIn("run_auto_sync_target", source)
+            self.assertNotIn("_auto_sync_loop", source)
+            self.assertNotIn("auto_sync_thread", source)
+            self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", source)
+            self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL", source)
 
     def test_resource_service_records_observations_without_local_observer(self) -> None:
         source = _source("resources.py")
@@ -1079,6 +1079,7 @@ class ServiceLayoutTest(unittest.TestCase):
             '"/api/daemon/feed/validate-post"',
             '"/api/daemon/feed/post"',
             '"/api/daemon/sandboxes/request"',
+            '"/api/daemon/sandboxes/attach"',
             '"/api/daemon/sandboxes/sync"',
             '"/api/daemon/sandboxes/metrics"',
             '"/api/daemon/sync-targets"',

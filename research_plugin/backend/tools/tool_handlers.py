@@ -259,6 +259,7 @@ def build_local_tool_handlers(
                 resource_associate if resource_associate is not None else resources.associate
             ),
             "sandbox.request": sandboxes.request,
+            "sandbox.attach": sandboxes.attach,
             "sandbox.sync": sandboxes.sync,
             "feed.post": feed_post if feed_post is not None else feed.post,
         }

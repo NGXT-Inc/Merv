@@ -11,24 +11,17 @@ class FakeRsyncSyncer:
         self,
         *,
         sync_pulled: int = 2,
-        push_pulled: int = 1,
         duration_seconds: float = 0.1,
         command_count: int = 2,
         sync_stdout: str = "small.txt\n",
-        push_stdout: str = "seed.txt\n",
         sync_stderr: str = "",
-        push_stderr: str = "",
     ) -> None:
         self.sync_pulled = sync_pulled
-        self.push_pulled = push_pulled
         self.duration_seconds = duration_seconds
         self.command_count = command_count
         self.sync_stdout = sync_stdout
-        self.push_stdout = push_stdout
         self.sync_stderr = sync_stderr
-        self.push_stderr = push_stderr
         self.calls: list[dict] = []
-        self.push_calls: list[dict] = []
 
     def sync(self, **kwargs) -> SshRsyncResult:
         self.calls.append(dict(kwargs))
@@ -40,19 +33,6 @@ class FakeRsyncSyncer:
             command_count=self.command_count,
             stdout=self.sync_stdout,
             stderr=self.sync_stderr,
-        )
-
-    def push_initial(self, **kwargs) -> SshRsyncResult:
-        self.push_calls.append(dict(kwargs))
-        return SshRsyncResult(
-            pulled=self.push_pulled,
-            duration_seconds=self.duration_seconds,
-            local_dir=str(kwargs["local_sync_dir"]),
-            remote_dir=str(kwargs["remote_sync_dir"]),
-            command_count=self.command_count,
-            stdout=self.push_stdout,
-            stderr=self.push_stderr,
-            direction="push",
         )
 
 

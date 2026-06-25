@@ -210,12 +210,18 @@ class SandboxMetrics:
         return portable
 
     def sample_metrics(
-        self, *, experiment_id: str, project_id: str | None = None
+        self,
+        *,
+        experiment_id: str,
+        project_id: str | None = None,
+        sandbox_uid: str | None = None,
     ) -> dict[str, Any]:
         """Sample live in-container usage for a running sandbox."""
         try:
             row = self.registry.fetch_scoped(
-                experiment_id=experiment_id, project_id=project_id
+                experiment_id=experiment_id,
+                project_id=project_id,
+                sandbox_uid=sandbox_uid,
             )
         except NotFoundError:
             return {
@@ -228,6 +234,7 @@ class SandboxMetrics:
         sandbox_id = str(row.get("sandbox_id") or "")
         base: dict[str, Any] = {
             "experiment_id": experiment_id,
+            "sandbox_uid": row.get("sandbox_uid", ""),
             "sandbox_id": sandbox_id,
             "status": status,
             "reserved": {
@@ -264,10 +271,13 @@ class SandboxMetrics:
                 ssh_host=str(row.get("ssh_host") or ""),
                 ssh_port=int(row.get("ssh_port") or 0),
                 ssh_user=str(row.get("ssh_user") or ""),
-                key_path=str(self.mgmt_keys.key_path(experiment_id=experiment_id)),
+                key_path=str(self._mgmt_key_path(row=row)),
             )
         except Exception:  # noqa: BLE001 - metrics are best-effort
             metrics = None
         with self._lock:
             self._cache[sandbox_id] = (time.monotonic(), metrics)
         return metrics
+
+    def _mgmt_key_path(self, *, row: dict[str, Any]) -> Any:
+        return self.mgmt_keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))

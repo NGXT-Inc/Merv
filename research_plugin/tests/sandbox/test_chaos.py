@@ -3,9 +3,9 @@
 No docker — the fakes stand in for the provider and the daemon. Each scenario
 exercises a failure the split design must survive:
 
-- daemon dies mid-provision  ⇒ the stale-awaiting_initial_push reap (Step 2)
+- daemon dies mid-provision  ⇒ the stale-provision reap (Step 2)
   terminates the billing sandbox so a dead daemon never leaves a VM running with
-  no files (risk 8).
+  no owner (risk 8).
 - daemon dies mid-sync        ⇒ the lease-expiry sweep releases the abandoned
   lease so another client can take the experiment over (risk on multi-client
   coordination).
@@ -44,8 +44,6 @@ def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:
 class _Base(unittest.TestCase):
     _ENV = {
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC": "0",
         "RESEARCH_PLUGIN_SANDBOX_REAPER": "0",
     }
 
@@ -84,15 +82,15 @@ class _Base(unittest.TestCase):
 
 class DaemonDiesMidProvisionTest(_Base):
     def test_orphan_cleanup_terminates_the_billing_sandbox(self) -> None:
-        # A VM was created (billing) but the initial push never completed because
-        # the daemon died — the row is wedged in awaiting_initial_push.
+        # A VM was created (billing) but provisioning never completed because
+        # the daemon died — the row is wedged before running.
         exp_id = self._experiment()
         self.app.sandboxes.registry.upsert(
             experiment_id=exp_id,
             project_id=self.project_id,
             sandbox_id="sb-billing",
             status="provisioning",
-            phase="awaiting_initial_push",
+            phase="connecting",
             provision_started_at="2026-01-01T00:00:00Z",
         )
         self.backend.alive["sb-billing"] = True
@@ -174,7 +172,6 @@ class ControlRestartTest(unittest.TestCase):
 
     _ENV = {
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL": "3600",
         "RESEARCH_PLUGIN_MODE": "control",
         "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "2",
     }
@@ -199,7 +196,7 @@ class ControlRestartTest(unittest.TestCase):
     def _reaper_backend(self) -> FakeSandboxBackend:
         backend = FakeSandboxBackend()
         backend.capabilities = BackendCapabilities(
-            name="fake", enforce_expiry=True, auto_sync=True
+            name="fake", enforce_expiry=True
         )
         return backend
 

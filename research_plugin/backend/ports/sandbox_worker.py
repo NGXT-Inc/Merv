@@ -40,5 +40,9 @@ class SandboxWorker(Protocol):
     def ensure_keypair(self, *, experiment_id: str) -> tuple[str, Path]: ...
 
     def sandbox_enrichment(
-        self, *, row: dict[str, Any], name: str = ""
+        self,
+        *,
+        row: dict[str, Any],
+        name: str = "",
+        use_sandbox_uid_command: bool = False,
     ) -> dict[str, Any]: ...

@@ -1,10 +1,9 @@
 """The control→data task channel, routed in-process (cloud plan Phase 4).
 
 Every byte movement and runtime-teardown signal rides the channel as an
-explicit task — initial_push through the new ``awaiting_initial_push`` row
-phase, the reaper's final_pull with a deadline, conn_refresh on endpoint
-moves, and teardown on terminal rows — while the synchronous in-process
-dispatch preserves today's ordering exactly.
+explicit task — sync_pull, the reaper's final_pull with a deadline,
+conn_refresh on endpoint moves, and teardown on terminal rows — while the
+synchronous in-process dispatch preserves today's ordering exactly.
 """
 
 from __future__ import annotations
@@ -12,8 +11,6 @@ from __future__ import annotations
 import io
 import tarfile
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
 
@@ -22,18 +19,6 @@ from backend.dataplane.tasks import InProcessTaskChannel
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.utils import ValidationError
 from tests.fakes import FakeRsyncSyncer
-
-
-class GatedPushRsyncSyncer(FakeRsyncSyncer):
-    """FakeRsyncSyncer whose initial push blocks until the test releases it."""
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.push_gate = threading.Event()
-
-    def push_initial(self, **kwargs):
-        self.push_gate.wait(timeout=10)
-        return super().push_initial(**kwargs)
 
 
 class TaskChannelTestBase(unittest.TestCase):
@@ -77,14 +62,11 @@ class TaskChannelTestBase(unittest.TestCase):
 class TaskChannelTest(TaskChannelTestBase):
     def test_lifecycle_tasks_dispatch_synchronously_in_order(self) -> None:
         # provision → release drives the full local loop; the channel must
-        # observe initial_push, then the release's final_pull, then the
-        # terminal teardown — exactly the pre-channel ordering.
+        # observe the release's final_pull, then the terminal teardown.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(
-            self._task_types(), ["initial_push", "final_pull", "teardown"]
-        )
+        self.assertEqual(self._task_types(), ["final_pull", "teardown"])
         acks = [ack for _task, ack in self.channel.history]
         self.assertTrue(all(ack["ok"] for ack in acks))
         # One ack per task, by id.
@@ -92,23 +74,7 @@ class TaskChannelTest(TaskChannelTestBase):
             [ack["task_id"] for _task, ack in self.channel.history],
             [task.id for task, _ack in self.channel.history],
         )
-        self.assertEqual(len({task.id for task, _ack in self.channel.history}), 3)
-
-    def test_initial_push_task_carries_the_lease_backed_session(self) -> None:
-        exp_id = self._experiment()
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        push_task = next(t for t, _a in self.channel.history if t.type == "initial_push")
-        session = push_task.payload["session"]
-        self.assertEqual(session["experiment_id"], exp_id)
-        self.assertEqual(session["remote"]["experiment_dir"], "/workspace/exp-1")
-        self.assertEqual(
-            session["lease"]["holder_client_id"], self.app.worker.client_id()
-        )
-        self.assertEqual(
-            session["direction_policy"]["artifacts_to_keep"], "remote_append_only"
-        )
-        # The push itself went through the worker's rsync as before.
-        self.assertEqual(self.rsync.push_calls[-1]["remote_sync_dir"], "/workspace/exp-1")
+        self.assertEqual(len({task.id for task, _ack in self.channel.history}), 2)
 
     def test_teardown_task_fires_on_terminal_rows(self) -> None:
         exp_id = self._experiment()
@@ -253,77 +219,6 @@ class TaskChannelTest(TaskChannelTestBase):
     def test_unknown_task_type_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             self.channel.submit(task_type="reboot_vm", payload={})
-
-
-class AwaitingInitialPushPhaseTest(TaskChannelTestBase):
-    rsync_factory = GatedPushRsyncSyncer
-
-    def _await(self, predicate, timeout: float = 5.0) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            time.sleep(0.02)
-        self.fail("condition not reached before timeout")
-
-    def test_provision_flows_through_awaiting_initial_push_to_running(self) -> None:
-        # Gate the push so the row observably sits in the explicit phase
-        # between provider-acquire and running (plan Phase 4).
-        self.app.sandboxes.request_wait_seconds = 0.05
-        exp_id = self._experiment()
-        try:
-            result = self.call(
-                "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-            )
-            self.assertEqual(result["status"], "provisioning")
-            registry = self.app.sandboxes.registry
-            self._await(
-                lambda: registry.load_row(experiment_id=exp_id).get("phase")
-                == "awaiting_initial_push"
-            )
-            row = registry.load_row(experiment_id=exp_id)
-            # Status stays `provisioning`, so cancellation and the reconcile/
-            # orphan-cleanup paths cover the new phase like any other.
-            self.assertEqual(row["status"], "provisioning")
-            # The phase is agent-visible the way other phases already are.
-            polled = self.call(
-                "sandbox.get", project_id=self.project_id, experiment_id=exp_id
-            )
-            self.assertEqual(polled["status"], "provisioning")
-            self.assertEqual(polled["phase"], "awaiting_initial_push")
-        finally:
-            self.rsync.push_gate.set()
-        self._await(
-            lambda: registry.load_row(experiment_id=exp_id).get("status") == "running"
-        )
-        row = registry.load_row(experiment_id=exp_id)
-        self.assertEqual(row["phase"], "")
-        self.assertEqual(self._task_types(), ["initial_push"])
-
-    def test_release_during_awaiting_initial_push_cancels_cleanly(self) -> None:
-        # A release that lands mid-push must terminate the VM, never mark the
-        # row running — the cancellation path covers the new phase.
-        self.app.sandboxes.request_wait_seconds = 0.05
-        exp_id = self._experiment()
-        registry = self.app.sandboxes.registry
-        try:
-            self.call(
-                "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-            )
-            self._await(
-                lambda: registry.load_row(experiment_id=exp_id).get("phase")
-                == "awaiting_initial_push"
-            )
-            self.call(
-                "sandbox.release", project_id=self.project_id, experiment_id=exp_id
-            )
-        finally:
-            self.rsync.push_gate.set()
-        self._await(
-            lambda: registry.load_row(experiment_id=exp_id).get("status")
-            == "terminated"
-        )
-        self.assertTrue(self.backend.terminated)
 
 
 if __name__ == "__main__":

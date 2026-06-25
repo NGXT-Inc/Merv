@@ -9,8 +9,8 @@ process roles:
   blob store + leases + quotas + the daemon task/lease HTTP endpoints.
   It serves /mcp/* (control tools) + /api/* but NEVER touches a user checkout.
 - ``daemon_mode`` — the slim local data-plane daemon: LocalDataPlaneWorker +
-  HttpControlPlaneClient to the cloud, the task long-poll loop and auto-sync
-  loop, and the local data-plane tool subset.
+  HttpControlPlaneClient to the cloud, the task long-poll loop, and the local
+  data-plane tool subset.
 
 ``http_server.main`` dispatches on ``resolve_mode`` to the right builder. Each
 builder owns its own fail-fast validation (a daemon without a control URL

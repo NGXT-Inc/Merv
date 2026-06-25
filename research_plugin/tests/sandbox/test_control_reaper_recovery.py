@@ -34,7 +34,7 @@ def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:
 def _reaper_capable_backend(*, alive_ids: tuple[str, ...] = ()) -> FakeSandboxBackend:
     backend = FakeSandboxBackend()
     backend.capabilities = BackendCapabilities(
-        name="fake", enforce_expiry=True, auto_sync=True
+        name="fake", enforce_expiry=True
     )
     # Pre-mark VMs the restarted backend should treat as still up (the risk-6
     # case: a billing VM the cloud forgot to reap). reconcile then keeps the row
@@ -46,9 +46,8 @@ def _reaper_capable_backend(*, alive_ids: tuple[str, ...] = ()) -> FakeSandboxBa
 
 class ControlReaperRecoveryTest(unittest.TestCase):
     _ENV = {
-        # Keep the loops inert between ticks so the test drives reaping itself.
+        # Keep the reaper inert between ticks so the test drives reaping itself.
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL": "3600",
         "RESEARCH_PLUGIN_MODE": "control",
         # Short task-result wait so a final_pull that briefly outruns the drain
         # thread falls through quickly instead of holding the test 30s.

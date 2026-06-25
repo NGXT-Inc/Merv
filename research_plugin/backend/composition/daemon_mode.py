@@ -3,12 +3,10 @@
 A user-machine process that holds the SSH keys, conn files, and repo↔project
 links, and moves bytes for the cloud. It runs:
 
-- a ``LocalDataPlaneWorker`` (rsync push/pull, conn files, dashboards),
+- a ``LocalDataPlaneWorker`` (rsync pulls, conn files, dashboards),
 - an ``HttpControlPlaneClient`` upstream to the cloud,
 - a ``DaemonTaskLoop`` long-polling the cloud for data-plane tasks
-  (initial_push | sync_pull | final_pull | conn_refresh | teardown | parachute_restore),
-- an auto-sync loop that asks the cloud "my running sandboxes + lease grants"
-  and rsyncs each (the HTTP ControlPlaneView),
+  (sync_pull | final_pull | conn_refresh | teardown | parachute_restore),
 - a small loopback HTTP surface for the proxy (local data-plane tool subset +
   GET /local/route for the repo→project mapping + local UI byte endpoints).
 
@@ -23,8 +21,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import threading
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -39,7 +35,6 @@ from ..dataplane.remote_view import HttpControlPlaneView
 from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
 from ..execution import build_sandbox_backend
-from ..sandbox.sandbox_autosync import run_auto_sync_target
 from ..secret_tokens import mint_secret
 from ..services.sandbox import sandbox_views
 from ..utils import ValidationError
@@ -87,10 +82,10 @@ def _lock_secret_file(path: Path) -> None:
 
 
 class DaemonServer:
-    """A running data-plane daemon: worker + task loop + auto-sync loop.
+    """A running data-plane daemon: worker + task loop + loopback surface.
 
     Holds the worker (local IO), the control client (cloud upstream), and the
-    two background loops. ``start``/``stop`` own the loop lifecycle. The
+    background task loop. ``start``/``stop`` own the loop lifecycle. The
     loopback FastAPI surface is built by the caller (http_server) from this.
     """
 
@@ -100,36 +95,23 @@ class DaemonServer:
         worker: LocalDataPlaneWorker,
         control: HttpControlPlaneClient,
         task_loop: DaemonTaskLoop,
-        view: HttpControlPlaneView,
         project_links: ProjectLinks,
         loopback_secret: str,
-        auto_sync_interval_seconds: float = 5.0,
     ) -> None:
         self.worker = worker
         self.control = control
         self.task_loop = task_loop
-        self.view = view
         # Daemon-local repo_root→project_id mapping; the proxy resolves identity
         # through this so repo_root never crosses to the cloud (§3.2).
         self.project_links = project_links
         # Local auth secret for the loopback surface (risk 11).
         self.loopback_secret = loopback_secret
-        self._auto_sync_interval = auto_sync_interval_seconds
-        self._auto_sync_stop = threading.Event()
-        self._auto_sync_thread: threading.Thread | None = None
 
     def start(self) -> None:
         self.task_loop.start()
-        self._auto_sync_thread = threading.Thread(
-            target=self._auto_sync_loop, name="daemon-auto-sync", daemon=True
-        )
-        self._auto_sync_thread.start()
 
     def stop(self) -> None:
-        self._auto_sync_stop.set()
         self.task_loop.stop()
-        if self._auto_sync_thread is not None:
-            self._auto_sync_thread.join(timeout=2.0)
         self.worker.stop_mlflow_access()
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -170,6 +152,8 @@ class DaemonServer:
             return self._post_feed(arguments=arguments, context=context)
         if name == "sandbox.request":
             return self._request_sandbox(arguments=arguments, context=context)
+        if name == "sandbox.attach":
+            return self._attach_sandbox(arguments=arguments, context=context)
         if name == "sandbox.sync":
             return self._sync_sandbox(arguments=arguments, context=context)
         if name == "sandbox.get":
@@ -201,7 +185,11 @@ class DaemonServer:
         payload["public_key"] = public_key
         facts = self.control.request_sandbox(payload)
         name = str(facts.pop("_experiment_name", "") or "")
-        return self._merge_sandbox_enrichment(facts=facts, name=name)
+        return self._merge_sandbox_enrichment(
+            facts=facts,
+            name=name,
+            use_sandbox_uid_command=bool(arguments.get("additional")),
+        )
 
     def _sync_sandbox(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
@@ -211,6 +199,25 @@ class DaemonServer:
         payload["project_id"] = project_id
         payload["experiment_id"] = self._required_arg(arguments, "experiment_id")
         return self.control.sync_sandbox(payload)
+
+    def _attach_sandbox(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        _repo_root, project_id = self._linked_scope(context=context)
+        experiment_id = self._required_arg(arguments, "experiment_id")
+        public_key, _key_path = self.worker.ensure_keypair(experiment_id=experiment_id)
+        payload = dict(arguments)
+        payload["project_id"] = project_id
+        payload["experiment_id"] = experiment_id
+        payload["public_key"] = public_key
+        facts = self.control.attach_sandbox(payload)
+        name = str(facts.pop("_experiment_name", "") or "")
+        use_uid = bool(facts.pop("_use_sandbox_uid_command", False))
+        return self._merge_sandbox_enrichment(
+            facts=facts,
+            name=name,
+            use_sandbox_uid_command=use_uid,
+        )
 
     def _post_feed(
         self, *, arguments: dict[str, Any], context: dict[str, Any]
@@ -253,7 +260,11 @@ class DaemonServer:
         args["project_id"] = project_id
         facts = self.control.call("sandbox.get", args)
         name = str(facts.pop("_experiment_name", "") or "")
-        enrichment = self._sandbox_enrichment(facts=facts, name=name)
+        enrichment = self._sandbox_enrichment(
+            facts=facts,
+            name=name,
+            use_sandbox_uid_command=bool(arguments.get("sandbox_uid")),
+        )
         return {
             "command": enrichment.get("command", ""),
             "raw_command": enrichment.get("raw_command", ""),
@@ -262,23 +273,39 @@ class DaemonServer:
         }
 
     def _merge_sandbox_enrichment(
-        self, *, facts: dict[str, Any], name: str
+        self,
+        *,
+        facts: dict[str, Any],
+        name: str,
+        use_sandbox_uid_command: bool = False,
     ) -> dict[str, Any]:
         if not facts.get("experiment_id"):
             return facts
-        enrichment = self._sandbox_enrichment(facts=facts, name=name)
+        enrichment = self._sandbox_enrichment(
+            facts=facts,
+            name=name,
+            use_sandbox_uid_command=use_sandbox_uid_command,
+        )
         return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
 
-    def _sandbox_enrichment(self, *, facts: dict[str, Any], name: str) -> dict[str, Any]:
+    def _sandbox_enrichment(
+        self,
+        *,
+        facts: dict[str, Any],
+        name: str,
+        use_sandbox_uid_command: bool = False,
+    ) -> dict[str, Any]:
         return self.worker.sandbox_enrichment(
             row=self._sandbox_row_from_facts(facts=facts),
             name=name,
+            use_sandbox_uid_command=use_sandbox_uid_command,
         )
 
     def _sandbox_row_from_facts(self, *, facts: dict[str, Any]) -> dict[str, Any]:
         ssh = facts.get("ssh") if isinstance(facts.get("ssh"), dict) else {}
         return {
             "experiment_id": facts.get("experiment_id", ""),
+            "sandbox_uid": facts.get("sandbox_uid", ""),
             "project_id": facts.get("project_id", ""),
             "sandbox_id": facts.get("sandbox_id", ""),
             "status": facts.get("status", ""),
@@ -429,35 +456,6 @@ class DaemonServer:
             raise ValidationError(f"{key} is required")
         return str(value)
 
-    def _auto_sync_loop(self) -> None:
-        # Same per-target sync step as SandboxDaemons, but targets come from
-        # the cloud over HTTP and metrics completion is reported back over HTTP.
-        # A row leased to another client is simply absent from the targets.
-        while not self._auto_sync_stop.wait(self._auto_sync_interval):
-            try:
-                targets = self.view.sync_targets()
-            except Exception:  # noqa: BLE001 — a cloud blip must not kill the loop
-                continue
-            for target in targets:
-                try:
-                    row = target.get("row")
-                    _, snapshot = run_auto_sync_target(
-                        target=target,
-                        sync_pull=self.worker.sync_pull,
-                        after_sync=self.worker.capture_metrics_snapshot,
-                    )
-                    if snapshot is not None and isinstance(row, dict):
-                        self.control.submit_sandbox_metrics(
-                            {
-                                "project_id": str(row.get("project_id") or ""),
-                                "experiment_id": str(row.get("experiment_id") or ""),
-                                "metrics_snapshot": snapshot,
-                            }
-                        )
-                except Exception:  # noqa: BLE001 — per-target best-effort
-                    continue
-
-
 def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlPlaneClient):
     """The daemon's task dispatch: (type, payload, deadline) -> result.
 
@@ -499,10 +497,6 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
         return result
 
     def execute(task_type: str, payload: dict[str, Any], deadline: str | None) -> Any:
-        if task_type == "initial_push":
-            return _relativize(worker.push_initial(
-                session=payload["session"], name=str(payload.get("name") or "")
-            ))
         if task_type == "final_pull":
             return _with_metrics_snapshot(worker.final_pull(
                 session=payload["session"],
@@ -517,14 +511,22 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker, control: HttpControlP
             ), payload)
         if task_type == "conn_refresh":
             return worker.sandbox_enrichment(
-                row=payload["row"], name=str(payload.get("name") or "")
+                row=payload["row"],
+                name=str(payload.get("name") or ""),
+                use_sandbox_uid_command=bool(payload.get("use_sandbox_uid_command")),
             )
         if task_type == "teardown":
             sandbox_id = payload.get("sandbox_id")
             if sandbox_id is not None:
                 worker.stop_dashboards(sandbox_id=str(sandbox_id))
                 worker.stop_mlflow_access(sandbox_id=str(sandbox_id))
-            worker.remove_conn_file(experiment_id=str(payload["experiment_id"]))
+            worker.remove_conn_file(
+                experiment_id=str(payload["experiment_id"]),
+                sandbox_uid=str(payload.get("sandbox_uid") or ""),
+                remove_experiment_alias=bool(
+                    payload.get("remove_experiment_alias", True)
+                ),
+            )
             return None
         if task_type == "parachute_restore":
             # The cloud hands a presigned GET URL (S3); the daemon downloads the
@@ -590,7 +592,6 @@ def build_daemon_server(
         worker=worker,
         control=control,
         task_loop=task_loop,
-        view=view,
         project_links=project_links,
         loopback_secret=loopback_secret,
     )

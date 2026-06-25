@@ -36,27 +36,27 @@ class LocalMgmtKeyStoreTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_ensure_mints_an_ed25519_keypair_under_the_store_root(self) -> None:
-        public_key = self.store.ensure(experiment_id="exp_1")
+        public_key = self.store.ensure(sandbox_uid="exp_1")
         self.assertTrue(public_key.startswith("ssh-ed25519 "))
-        key_path = self.store.key_path(experiment_id="exp_1")
+        key_path = self.store.key_path(sandbox_uid="exp_1")
         self.assertEqual(key_path, self.root / "exp_1" / "key")
         self.assertTrue(key_path.exists())
         self.assertTrue(key_path.with_suffix(".pub").exists())
         self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
 
     def test_ensure_is_idempotent(self) -> None:
-        first = self.store.ensure(experiment_id="exp_1")
-        second = self.store.ensure(experiment_id="exp_1")
+        first = self.store.ensure(sandbox_uid="exp_1")
+        second = self.store.ensure(sandbox_uid="exp_1")
         self.assertEqual(first, second)
 
     def test_remove_drops_the_keypair(self) -> None:
-        self.store.ensure(experiment_id="exp_1")
-        self.store.remove(experiment_id="exp_1")
-        key_path = self.store.key_path(experiment_id="exp_1")
+        self.store.ensure(sandbox_uid="exp_1")
+        self.store.remove(sandbox_uid="exp_1")
+        key_path = self.store.key_path(sandbox_uid="exp_1")
         self.assertFalse(key_path.exists())
         self.assertFalse(key_path.with_suffix(".pub").exists())
         # Idempotent on an absent pair.
-        self.store.remove(experiment_id="exp_1")
+        self.store.remove(sandbox_uid="exp_1")
 
 
 class MountedMgmtKeyStoreTest(unittest.TestCase):
@@ -75,9 +75,9 @@ class MountedMgmtKeyStoreTest(unittest.TestCase):
         public_path.write_text("ssh-ed25519 AAAAmounted\n", encoding="utf-8")
         store = MountedMgmtKeyStore(private_key_path=self.key_path)
 
-        self.assertEqual(store.ensure(experiment_id="exp_1"), "ssh-ed25519 AAAAmounted")
-        self.assertEqual(store.key_path(experiment_id="exp_1"), self.key_path)
-        store.remove(experiment_id="exp_1")
+        self.assertEqual(store.ensure(sandbox_uid="exp_1"), "ssh-ed25519 AAAAmounted")
+        self.assertEqual(store.key_path(sandbox_uid="exp_1"), self.key_path)
+        store.remove(sandbox_uid="exp_1")
         self.assertTrue(self.key_path.exists())
         self.assertTrue(public_path.exists())
 
@@ -88,7 +88,7 @@ class MountedMgmtKeyStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            store.ensure(experiment_id="exp_2"), "ssh-ed25519 AAAAconfigured"
+            store.ensure(sandbox_uid="exp_2"), "ssh-ed25519 AAAAconfigured"
         )
 
     def test_missing_public_key_fails_fast(self) -> None:
@@ -119,7 +119,7 @@ class MountedMgmtKeyStoreTest(unittest.TestCase):
         self.key_path.write_text("DIFFERENT PRIVATE KEY\n", encoding="utf-8")
 
         with self.assertRaises(ValidationError):
-            store.key_path(experiment_id="exp_1")
+            store.key_path(sandbox_uid="exp_1")
 
 
 class DualKeyProvisionTest(unittest.TestCase):
@@ -163,14 +163,13 @@ class DualKeyProvisionTest(unittest.TestCase):
         # Separation is real: two distinct keypairs in two distinct homes.
         self.assertNotEqual(request.public_key, request.management_public_key)
         mgmt_keys = self.app.sandboxes.mgmt_keys
+        key_path = mgmt_keys.key_path(sandbox_uid=created["sandbox_uid"])
         self.assertEqual(
             request.management_public_key,
-            mgmt_keys.key_path(experiment_id=exp_id).with_suffix(".pub").read_text().strip(),
+            key_path.with_suffix(".pub").read_text().strip(),
         )
         user_key = self.repo / ".research_plugin" / "sandboxes" / "keys" / exp_id
-        self.assertNotEqual(
-            mgmt_keys.key_path(experiment_id=exp_id).resolve(), user_key.resolve()
-        )
+        self.assertNotEqual(key_path.resolve(), user_key.resolve())
         # The captured bootstrap authorizes exactly the two keys.
         boot = self.backend.bootstraps[created["sandbox_id"]]
         self.assertEqual(
@@ -182,17 +181,16 @@ class DualKeyProvisionTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
-        self.assertEqual(row["mgmt_key_ref"], exp_id)
-        private_key = self.app.sandboxes.mgmt_keys.key_path(
-            experiment_id=exp_id
-        ).read_text()
+        self.assertEqual(row["mgmt_key_ref"], row["sandbox_uid"])
+        private_key = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=row["sandbox_uid"]).read_text()
         for value in row.values():
             self.assertNotIn(private_key, str(value))
 
     def test_release_drops_the_management_keypair_with_the_sandbox(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        key_path = self.app.sandboxes.mgmt_keys.key_path(experiment_id=exp_id)
+        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        key_path = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=row["sandbox_uid"])
         self.assertTrue(key_path.exists())
         self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
         # Per-sandbox keys: the keypair dies with the sandbox; the next

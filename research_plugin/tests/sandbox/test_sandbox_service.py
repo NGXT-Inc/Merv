@@ -44,8 +44,8 @@ class SandboxServiceTest(unittest.TestCase):
     def call(self, tool: str, **kwargs):
         return self.app.call_tool(tool, kwargs)
 
-    def _experiment(self, *, status: str = "ready_to_run") -> str:
-        exp_id = self.call("experiment.create", name="exp-1", project_id=self.project_id, intent="x")["id"]
+    def _experiment(self, *, status: str = "ready_to_run", name: str = "exp-1") -> str:
+        exp_id = self.call("experiment.create", name=name, project_id=self.project_id, intent="x")["id"]
         if status != "planned":
             with self.app.store.transaction() as conn:
                 conn.execute("UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id))
@@ -81,16 +81,11 @@ class SandboxServiceTest(unittest.TestCase):
             Path(result["local_experiment_dir"]).resolve(),
             (self.repo / "experiments" / "exp-1").resolve(),
         )
-        self.assertEqual(self.rsync.push_calls[-1]["remote_sync_dir"], "/workspace/exp-1")
-        self.assertEqual(
-            Path(self.rsync.push_calls[-1]["local_sync_dir"]),
-            Path(result["local_experiment_dir"]),
-        )
         # The agent is told the folder contract at the moment it matters.
-        self.assertIn("files_pushed", result)
         self.assertIn("experiment folder", result["hint"])
         self.assertIn("OUTSIDE the experiment folder", result["hint"])
         self.assertIn("the sandbox owns the folder", result["hint"])
+        self.assertIn("Call sandbox.sync", result["hint"])
         self.assertIn("expires at", result["hint"])
         self.assertIn("ready_to_run", result["hint"])
         # Full ssh line is still available as a cwd-independent fallback.
@@ -106,19 +101,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(
             tracking_env["MLFLOW_EXPERIMENT_NAME"], f"rp/{self.project_id}/{exp_id}"
         )
-
-    def test_request_reports_push_count_and_flags_empty_folder(self) -> None:
-        # files_pushed comes from the initial folder push; 0 is meaningful (the
-        # local experiment folder had nothing eligible) and the hint says so
-        # honestly instead of implying files are waiting on the VM.
-        self.rsync.push_pulled = 0
-        exp_id = self._experiment()
-        result = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-        )
-        self.assertEqual(result["files_pushed"], 0)
-        self.assertIn("no eligible files", result["hint"])
-        self.assertIn("starts empty", result["hint"])
 
     def test_request_and_get_report_huggingface_env_without_secret_value(self) -> None:
         self.backend.sandbox_environment = lambda: {  # type: ignore[method-assign]
@@ -158,6 +140,330 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertTrue(second["reused"])
         self.assertEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 1)
+
+    def test_attach_repoints_live_sandbox_to_another_experiment(self) -> None:
+        source = self._experiment(name="exp-1")
+        target = self._experiment(name="exp-2")
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=source
+        )
+        uid = created["sandbox_uid"]
+        old_key = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=uid)
+        self.assertTrue(old_key.exists())
+
+        attached = self.call(
+            "sandbox.attach",
+            project_id=self.project_id,
+            experiment_id=target,
+            sandbox_uid=uid,
+        )
+
+        self.assertEqual(attached["sandbox_uid"], uid)
+        self.assertEqual(attached["sandbox_id"], created["sandbox_id"])
+        self.assertEqual(attached["experiment_id"], target)
+        self.assertEqual(attached["status"], "running")
+        self.assertTrue(attached["reused"])
+        self.assertEqual(attached["source_experiment_id"], source)
+        self.assertTrue(attached["source_experiment_reverted"])
+        self.assertEqual(attached["workdir"], "/workspace/exp-2")
+        self.assertEqual(attached["ssh"]["command"], f".research_plugin/sbx {target}")
+
+        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(row["experiment_id"], target)
+        self.assertEqual(row["mgmt_key_ref"], uid)
+        self.assertEqual(
+            self.call("experiment.get_state", project_id=self.project_id, experiment_id=source)["status"],
+            "ready_to_run",
+        )
+        self.assertEqual(
+            self.call("experiment.get_state", project_id=self.project_id, experiment_id=target)["status"],
+            "running",
+        )
+        conn = self.app.store.connect()
+        try:
+            attachments = conn.execute(
+                """
+                SELECT experiment_id, detached_at
+                FROM sandbox_attachments
+                WHERE sandbox_uid = ?
+                ORDER BY experiment_id
+                """,
+                (uid,),
+            ).fetchall()
+        finally:
+            conn.close()
+        by_experiment = {row["experiment_id"]: row["detached_at"] for row in attachments}
+        self.assertEqual(set(by_experiment), {source, target})
+        self.assertIsNotNone(by_experiment[source])
+        self.assertIsNone(by_experiment[target])
+        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
+        self.assertFalse((conn_dir / source).exists())
+        self.assertTrue((conn_dir / target).exists())
+        self.assertTrue((conn_dir / uid).exists())
+        self.assertEqual(self.backend.retarget_calls[-1]["experiment_id"], target)
+        self.assertEqual(self.backend.retarget_calls[-1]["workdir"], "/workspace/exp-2")
+        self.assertEqual(self.backend.retarget_calls[-1]["key_path"], str(old_key))
+
+        self.call("sandbox.terminal", project_id=self.project_id, experiment_id=target)
+        self.assertEqual(self.backend.transcript_reads[-1]["key_path"], str(old_key))
+
+    def test_attach_refreshes_source_alias_when_sibling_remains(self) -> None:
+        source = self._experiment(name="exp-1")
+        target = self._experiment(name="exp-2")
+        primary = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=source
+        )
+        sibling = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=source,
+            additional=True,
+        )
+
+        attached = self.call(
+            "sandbox.attach",
+            project_id=self.project_id,
+            experiment_id=target,
+            sandbox_uid=primary["sandbox_uid"],
+        )
+
+        self.assertFalse(attached["source_experiment_reverted"])
+        self.assertEqual(
+            self.call(
+                "experiment.get_state",
+                project_id=self.project_id,
+                experiment_id=source,
+            )["status"],
+            "running",
+        )
+        self.assertEqual(
+            self.call("sandbox.get", project_id=self.project_id, experiment_id=source)[
+                "sandbox_uid"
+            ],
+            sibling["sandbox_uid"],
+        )
+        conn = self.repo / ".research_plugin" / "sandboxes" / "conn" / source
+        self.assertTrue(conn.exists())
+        self.assertIn(f"RP_SSH_PORT='{40002}'", conn.read_text())
+
+    def test_attach_rejects_dead_sandbox_and_non_runnable_target(self) -> None:
+        source = self._experiment(name="exp-1")
+        planned = self._experiment(status="planned", name="exp-2")
+        runnable = self._experiment(name="exp-3")
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=source
+        )
+        with self.assertRaises(PermissionDeniedError):
+            self.call(
+                "sandbox.attach",
+                project_id=self.project_id,
+                experiment_id=planned,
+                sandbox_uid=created["sandbox_uid"],
+            )
+
+        self.backend.kill(sandbox_id=created["sandbox_id"])
+        with self.assertRaises(ValidationError):
+            self.call(
+                "sandbox.attach",
+                project_id=self.project_id,
+                experiment_id=runnable,
+                sandbox_uid=created["sandbox_uid"],
+            )
+
+    def test_request_additional_creates_parallel_sandbox(self) -> None:
+        exp_id = self._experiment()
+        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
+        )
+
+        self.assertNotEqual(first["sandbox_uid"], second["sandbox_uid"])
+        self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
+        self.assertEqual(first["ssh"]["command"], f".research_plugin/sbx {exp_id}")
+        self.assertEqual(
+            second["ssh"]["command"],
+            f".research_plugin/sbx {second['sandbox_uid']}",
+        )
+        self.assertEqual(first["workdir"], "/workspace/exp-1")
+        self.assertNotEqual(first["workdir"], second["workdir"])
+        self.assertIn(second["sandbox_uid"][:12], second["workdir"])
+
+        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
+        self.assertTrue((conn_dir / first["sandbox_uid"]).exists())
+        self.assertTrue((conn_dir / second["sandbox_uid"]).exists())
+        rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
+        self.assertEqual({row["sandbox_uid"] for row in rows}, {first["sandbox_uid"], second["sandbox_uid"]})
+        listed = self.call("sandbox.list", project_id=self.project_id)["sandboxes"]
+        self.assertIn(first["sandbox_uid"], {row["sandbox_uid"] for row in listed})
+        self.assertIn(second["sandbox_uid"], {row["sandbox_uid"] for row in listed})
+        # The back-compat experiment-keyed read targets the most recent live row.
+        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(got["sandbox_uid"], second["sandbox_uid"])
+
+    def test_get_sync_terminal_and_release_target_sandbox_uid(self) -> None:
+        exp_id = self._experiment()
+        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
+        )
+
+        got_first = self.call(
+            "sandbox.get",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            sandbox_uid=first["sandbox_uid"],
+        )
+        self.assertEqual(got_first["sandbox_id"], first["sandbox_id"])
+        synced = self.call(
+            "sandbox.sync",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            sandbox_uid=first["sandbox_uid"],
+        )
+        self.assertEqual(synced["sandbox_uid"], first["sandbox_uid"])
+        self.assertEqual(self.rsync.calls[-1]["remote_sync_dir"], first["workdir"])
+
+        self.call(
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            sandbox_uid=second["sandbox_uid"],
+        )
+        self.assertEqual(self.backend.transcript_reads[-1]["sandbox_id"], second["sandbox_id"])
+
+        released = self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            sandbox_uid=first["sandbox_uid"],
+        )
+        self.assertEqual(released["sandbox_uid"], first["sandbox_uid"])
+        self.assertIn(first["sandbox_id"], self.backend.terminated)
+        self.assertTrue(self.backend.is_alive(sandbox_id=second["sandbox_id"]))
+        primary = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(primary["sandbox_uid"], second["sandbox_uid"])
+
+    def test_release_provisioning_sibling_does_not_touch_live_primary(self) -> None:
+        exp_id = self._experiment()
+        primary = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        pending_uid = self.app.sandboxes.registry.create_sandbox(
+            experiment_id=exp_id,
+            project_id=self.project_id,
+            status="provisioning",
+            workdir="/workspace/exp-1-pending",
+            sync_dir="/workspace/exp-1-pending",
+        )
+
+        released = self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            sandbox_uid=pending_uid,
+        )
+
+        self.assertEqual(released["sandbox_uid"], pending_uid)
+        self.assertTrue(self.backend.is_alive(sandbox_id=primary["sandbox_id"]))
+        self.assertNotIn(primary["sandbox_id"], self.backend.terminated)
+        conn = self.app.store.connect()
+        try:
+            gens = conn.execute(
+                "SELECT ended_at FROM sandbox_generations WHERE experiment_id = ?",
+                (exp_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(gens), 1)
+        self.assertIsNone(gens[0]["ended_at"])
+
+    def test_release_without_uid_releases_all_live_sandboxes(self) -> None:
+        exp_id = self._experiment()
+        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
+        )
+
+        released = self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(released["released_count"], 2)
+        self.assertIn(first["sandbox_id"], self.backend.terminated)
+        self.assertIn(second["sandbox_id"], self.backend.terminated)
+        statuses = {
+            row["sandbox_uid"]: row["status"]
+            for row in self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
+        }
+        self.assertEqual(statuses[first["sandbox_uid"]], "terminated")
+        self.assertEqual(statuses[second["sandbox_uid"]], "terminated")
+
+    def test_reaper_reverts_experiment_only_after_last_live_sandbox(self) -> None:
+        exp_id = self._experiment()
+        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
+        )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE sandboxes SET expires_at=? WHERE sandbox_uid=?",
+                ("2000-01-01T00:00:00Z", first["sandbox_uid"]),
+            )
+        self.assertEqual(self.app.sandboxes.reap_expired(), 1)
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "running")
+
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE sandboxes SET expires_at=? WHERE sandbox_uid=?",
+                ("2000-01-01T00:00:00Z", second["sandbox_uid"]),
+            )
+        self.assertEqual(self.app.sandboxes.reap_expired(), 1)
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "ready_to_run")
+
+    def test_reaper_keeps_experiment_running_while_sibling_provisions(self) -> None:
+        # Regression (F1): a still-provisioning sibling must keep the experiment
+        # alive when the running sandbox reaps — has_active must count provisioning.
+        exp_id = self._experiment()
+        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
+        )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE sandboxes SET status='provisioning' WHERE sandbox_uid=?",
+                (second["sandbox_uid"],),
+            )
+            conn.execute(
+                "UPDATE sandboxes SET expires_at=? WHERE sandbox_uid=?",
+                ("2000-01-01T00:00:00Z", first["sandbox_uid"]),
+            )
+        self.assertEqual(self.app.sandboxes.reap_expired(), 1)
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(state["status"], "running")
+
+    def test_additional_sandbox_gets_a_distinct_local_dir(self) -> None:
+        # Regression (F2): parallel sandboxes must NOT share one local sync dir, or
+        # a uid-targeted sync (rsync --delete) would clobber the primary's folder.
+        exp_id = self._experiment()
+        primary = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        extra = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
+        )
+        self.assertNotEqual(
+            primary["local_experiment_dir"], extra["local_experiment_dir"]
+        )
+        self.assertTrue(
+            extra["local_experiment_dir"].endswith(extra["sandbox_uid"][:12])
+        )
 
     def test_request_recreates_after_death(self) -> None:
         exp_id = self._experiment()
@@ -278,7 +584,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("mlflow.autolog", result["hint"])
         self.assertIn("figures/*.png", result["hint"])
         self.assertIn("report.md", result["hint"])
-        self.assertIn("mirrored back to the local repo", result["hint"])
+        self.assertIn("Call sandbox.sync to pull", result["hint"])
 
     def test_local_loopback_mlflow_starts_reverse_tunnel_for_remote_sandbox(self) -> None:
         self.app.sandboxes.mlflow_tracking = CentralMlflowService(
@@ -293,11 +599,20 @@ class SandboxServiceTest(unittest.TestCase):
         process.poll.return_value = None
         exp_id = self._experiment()
         self.app.worker.ensure_keypair(experiment_id=exp_id)
-        self.app.sandboxes.mgmt_keys.ensure(experiment_id=exp_id)
+        real_popen = subprocess.Popen
+
+        def mlflow_popen(command, **kwargs):
+            command = list(command)
+            # Mgmt-key minting (ssh-keygen) runs for real; the patch stands in
+            # only for the mlflow reverse tunnel.
+            if command and command[0] == "ssh-keygen":
+                return real_popen(command, **kwargs)
+            return process
+
         with (
             patch(
                 "backend.dataplane.mlflow_tunnels.subprocess.Popen",
-                return_value=process,
+                side_effect=mlflow_popen,
             ) as popen,
             patch("backend.dataplane.mlflow_tunnels._forward_bound", return_value=True),
         ):
@@ -640,12 +955,16 @@ class SandboxServiceTest(unittest.TestCase):
         # the global subprocess module, so the patch would otherwise swallow
         # the ssh-keygen runs inside sandbox.request.
         self.app.sandboxes._ensure_keypair(experiment_id=exp_id)
-        self.app.sandboxes.mgmt_keys.ensure(experiment_id=exp_id)
         popen_calls: list[list[str]] = []
         procs: list[tuple[list[str], FakeProcess]] = []
+        real_popen = subprocess.Popen
 
-        def fake_popen(command, **_kwargs):
+        def fake_popen(command, **kwargs):
             command = list(command)
+            # Mgmt-key minting (ssh-keygen) must run for real; the patch only
+            # stands in for the ssh dashboard tunnels.
+            if command and command[0] == "ssh-keygen":
+                return real_popen(command, **kwargs)
             popen_calls.append(command)
             proc = FakeProcess()
             procs.append((command, proc))
@@ -797,6 +1116,7 @@ class SandboxServiceTest(unittest.TestCase):
         # the user key, which stays data-plane-only.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         read = self.backend.transcript_reads[-1]
         self.assertEqual(read["ssh_host"], "sandbox.modal.test")
@@ -804,7 +1124,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(read["ssh_user"], "root")
         self.assertEqual(
             Path(read["key_path"]).resolve(),
-            (self.repo / ".research_plugin" / "mgmt_keys" / exp_id / "key").resolve(),
+            (
+                self.repo
+                / ".research_plugin"
+                / "mgmt_keys"
+                / row["sandbox_uid"]
+                / "key"
+            ).resolve(),
         )
         user_key = self.repo / ".research_plugin" / "sandboxes" / "keys" / exp_id
         self.assertNotEqual(Path(read["key_path"]).resolve(), user_key.resolve())

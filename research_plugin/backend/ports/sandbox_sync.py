@@ -8,6 +8,7 @@ from typing import Any, Protocol, TypedDict
 class RunningSandboxSyncRow(TypedDict):
     """Provider-portable sandbox facts needed to mint a sync session."""
 
+    sandbox_uid: str
     experiment_id: str
     tenant_id: str | None
     sandbox_id: str | None
@@ -28,7 +29,7 @@ class SyncTarget(TypedDict):
 
 
 class ControlPlaneView(Protocol):
-    """Lease-backed sandbox targets visible to a sync poller."""
+    """Lease-backed sandbox targets exposed by the control plane."""
 
     def sync_targets(self, *, tenant_id: str | None = None) -> list[SyncTarget]:
         ...
@@ -54,5 +55,6 @@ class SyncSessionIssuer(Protocol):
         ssh_user: str,
         experiment_dir: str,
         data_dir: str = "",
+        sandbox_uid: str = "",
     ) -> dict[str, Any]:
         ...

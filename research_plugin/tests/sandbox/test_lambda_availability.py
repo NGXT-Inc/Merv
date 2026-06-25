@@ -618,6 +618,8 @@ class LambdaMetricsTest(unittest.TestCase):
     SAMPLE_OUTPUT = (
         "RPM cpu_cores_used=3.4210\n"
         "RPM mem_used_bytes=2147483648\n"
+        "RPM net_bytes_total=123456\n"
+        "RPM ssh_established=2\n"
         "RPM gpu idx=0 util=97 used=20000 total=24576 name=NVIDIA A10\n"
         "RPM ok=1\n"
     )
@@ -648,6 +650,8 @@ class LambdaMetricsTest(unittest.TestCase):
         self.assertIsNotNone(metrics)
         self.assertAlmostEqual(metrics["cpu"]["used_cores"], 3.421)
         self.assertEqual(metrics["memory"]["used_bytes"], 2_147_483_648)
+        self.assertEqual(metrics["network"]["bytes_total"], 123456)
+        self.assertEqual(metrics["network"]["ssh_established"], 2)
         self.assertEqual(
             metrics["gpus"],
             [{

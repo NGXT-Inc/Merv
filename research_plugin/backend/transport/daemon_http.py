@@ -195,9 +195,34 @@ def register_daemon_routes(
                 time_limit=payload.get("time_limit"),
                 instance_type=payload.get("instance_type"),
                 region=payload.get("region"),
+                additional=bool(payload.get("additional")),
             )
             result["_experiment_name"] = app.sandboxes.registry.experiment_name(
                 experiment_id=experiment_id
+            )
+            return result
+
+        @http.post("/api/daemon/sandboxes/attach")
+        def daemon_attach_sandbox(
+            request: Request, body: JsonBody = Body(default=None)
+        ) -> dict[str, Any]:
+            payload = body or {}
+            project_id = _required_text(payload, "project_id")
+            experiment_id = _required_text(payload, "experiment_id")
+            sandbox_uid = _required_text(payload, "sandbox_uid")
+            app = app_for_project(request, project_id)
+            result = app.sandboxes.attach_from_data_plane(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid,
+                public_key=_required_text(payload, "public_key"),
+            )
+            result["_experiment_name"] = app.sandboxes.registry.experiment_name(
+                experiment_id=experiment_id
+            )
+            result["_use_sandbox_uid_command"] = app.sandboxes.registry.has_active_for_experiment(
+                experiment_id=experiment_id,
+                exclude_sandbox_uid=sandbox_uid,
             )
             return result
 
@@ -211,6 +236,7 @@ def register_daemon_routes(
             return app.sandboxes.sync(
                 project_id=project_id,
                 experiment_id=_required_text(payload, "experiment_id"),
+                sandbox_uid=payload.get("sandbox_uid"),
                 daemon_metrics_snapshot=payload.get("metrics_snapshot"),
                 daemon_metrics_snapshot_provided="metrics_snapshot" in payload,
             )

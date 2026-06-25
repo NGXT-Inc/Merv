@@ -1,7 +1,7 @@
 """Cloud cleanup sweeps (cloud plan Phase 9), driven by injected clocks.
 
 The four idempotent sweeps grouped behind CleanupService.run_all — orphan-VM,
-blob TTL GC, lease-expiry, and stale-awaiting_initial_push reap — each take a
+blob TTL GC, lease-expiry, and stale-provision reap — each take a
 ``now`` so the test owns the clock. The service is mode-blind (the in-process
 app exercises the exact code the control plane schedules), so these run without
 docker or a real control plane.
@@ -23,11 +23,9 @@ from tests.fakes import FakeRsyncSyncer
 
 
 class CleanupSweepTest(unittest.TestCase):
-    # Park the background loops so the test, not a timer, drives every sweep.
+    # Park the background reaper so the test, not a timer, drives every sweep.
     _ENV = {
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL": "3600",
-        "RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC": "0",
         "RESEARCH_PLUGIN_SANDBOX_REAPER": "0",
     }
 
@@ -143,9 +141,9 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(released, 0)
         self.assertIsNotNone(leases.holder(experiment_id="exp_live"))
 
-    # ---- stale awaiting_initial_push reap ----
+    # ---- stale provisioning reap ----
 
-    def test_stale_awaiting_push_reaped_past_deadline(self) -> None:
+    def test_stale_provision_reaped_past_deadline(self) -> None:
         exp_id = self._experiment()
         started = "2026-01-01T00:00:00Z"
         self.app.sandboxes.registry.upsert(
@@ -153,12 +151,12 @@ class CleanupSweepTest(unittest.TestCase):
             project_id=self.project_id,
             sandbox_id="sb-wedged",
             status="provisioning",
-            phase="awaiting_initial_push",
+            phase="connecting",
             provision_started_at=started,
         )
         self.backend.alive["sb-wedged"] = True
         self.backend.by_experiment[exp_id] = "sb-wedged"
-        # 20 minutes later, well past the 10-minute awaiting-push deadline.
+        # 20 minutes later, well past the stale-provision deadline.
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
@@ -169,9 +167,8 @@ class CleanupSweepTest(unittest.TestCase):
 
     def test_stale_provision_reaped_in_earlier_phase(self) -> None:
         # A daemon crash during `connecting` (Lambda waiting for boot + SSH)
-        # leaves a billing VM in a provisioning phase that is NOT
-        # awaiting_initial_push. The sweep must still reap it — the VM exists
-        # from `creating` onward, so the old phase guard would have leaked it.
+        # leaves a billing VM in a provisioning phase. The sweep must still
+        # reap it — the VM exists from `creating` onward.
         exp_id = self._experiment()
         self.app.sandboxes.registry.upsert(
             experiment_id=exp_id,
@@ -214,14 +211,14 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-unrecorded", self.backend.terminated)
 
-    def test_stale_awaiting_push_left_alone_within_deadline(self) -> None:
+    def test_stale_provision_left_alone_within_deadline(self) -> None:
         exp_id = self._experiment()
         self.app.sandboxes.registry.upsert(
             experiment_id=exp_id,
             project_id=self.project_id,
             sandbox_id="sb-fresh",
             status="provisioning",
-            phase="awaiting_initial_push",
+            phase="connecting",
             provision_started_at="2026-01-01T00:00:00Z",
         )
         # Only 2 minutes in — under the deadline, so it keeps provisioning.

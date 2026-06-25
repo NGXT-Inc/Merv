@@ -1,7 +1,7 @@
 """Sync sessions, leases, and the control-plane view of sync targets.
 
 The sync authority model from docs/CONTROL_DATA_PLANE_SPLIT.md: every
-sandbox byte movement — the initial push, periodic syncs, the final pull — is
+sandbox byte movement — explicit syncs and the final pull — is
 authorized by an exclusive per-experiment **lease** and described by a
 **sync session** the data-plane worker executes. The lease lives in the record
 store (cloud-held in split mode) because the control plane is the only thing
@@ -13,9 +13,8 @@ flags do not implement.
 
 In local mode one process holds one implicit lease per experiment (acquire by
 the same holder renews), so the agent surface is unchanged. In split mode
-(Phase 8) these same payloads cross HTTP unmodified, and
-``InProcessControlPlaneView.sync_targets`` is exactly the call that becomes
-the daemon's poll.
+(Phase 8) these same payloads cross HTTP unmodified for task execution and
+daemon-facing control endpoints.
 
 Deadlines and expiries minted here are cloud-authoritative (plan §3.2): the
 data plane treats them as opaque strings and never compares them against its
@@ -49,9 +48,8 @@ from ..ports.sandbox_sync import RunningSandboxRows, RunningSandboxSyncRow, Sync
 # TRANSFER_CONTRACT_VERSION pins the shared transfer rules (rsync excludes +
 # size caps) into every session; it lives in the domain sync contract so
 # record/session code does not import provider execution modules.
-# How long a sync lease lives between renewals. Comfortably above the
-# auto-sync poll interval (~5s), short enough that a dead client's experiment
-# is takeover-able quickly.
+# How long a sync lease lives between renewals; short enough that a dead
+# client's experiment is takeover-able quickly.
 DEFAULT_LEASE_TTL_SECONDS = 120
 # Budget handed to a final_pull task before the control plane gives up on the
 # data plane. Unenforced in-process (the local worker is always reachable);
@@ -70,6 +68,7 @@ def build_sync_session(
     experiment_dir: str,
     data_dir: str = "",
     lease: dict[str, Any],
+    sandbox_uid: str = "",
 ) -> dict[str, Any]:
     """The byte-movement contract handed to the data plane (plan Phase 4).
 
@@ -81,6 +80,7 @@ def build_sync_session(
     return {
         "schema_version": SYNC_SESSION_SCHEMA_VERSION,
         "experiment_id": experiment_id,
+        "sandbox_uid": sandbox_uid,
         "sandbox_id": sandbox_id,
         "ssh": {
             "host": ssh_host,
@@ -330,6 +330,7 @@ class SyncSessionService:
         ssh_user: str,
         experiment_dir: str,
         data_dir: str = "",
+        sandbox_uid: str = "",
     ) -> dict[str, Any]:
         lease = self.leases.acquire(
             experiment_id=experiment_id, holder_client_id=self.client_id
@@ -343,6 +344,7 @@ class SyncSessionService:
             experiment_dir=experiment_dir,
             data_dir=data_dir,
             lease=lease,
+            sandbox_uid=sandbox_uid,
         )
 
     def grant_for_row(
@@ -359,9 +361,14 @@ class SyncSessionService:
             experiment_dir=str(
                 row.get("sync_dir")
                 or row.get("workdir")
-                or remote_experiment_dir(experiment_id=experiment_id, name=name)
+                or remote_experiment_dir(
+                    experiment_id=experiment_id,
+                    name=name,
+                    sandbox_uid=str(row.get("sandbox_uid") or ""),
+                )
             ),
             data_dir=str(row.get("sandbox_data_dir") or row.get("unsynced_dir") or ""),
+            sandbox_uid=str(row.get("sandbox_uid") or ""),
         )
 
     def report_completion(self, *, experiment_id: str, lease_id: str) -> None:
@@ -371,14 +378,13 @@ class SyncSessionService:
 
 
 class InProcessControlPlaneView:
-    """The auto-sync poller's window onto the control plane (plan Phase 4).
+    """Lease-backed sync targets exposed by the control plane (plan Phase 4).
 
     "My running sandboxes, with a sync lease granted for each" — implemented
     in-process by the registry + lease service today; in split mode (Phase 8)
-    this exact call becomes the daemon's HTTP poll. A row whose lease another
-    client holds is simply absent from the targets (``sandbox.get`` shows
-    that holder and its expiry), so two clients can never double-sync one
-    experiment.
+    this is served through the daemon HTTP surface. A row whose lease another
+    client holds is simply absent from the targets (``sandbox.get`` shows that
+    holder and its expiry), so two clients can never double-sync one experiment.
     """
 
     def __init__(

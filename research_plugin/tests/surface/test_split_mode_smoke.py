@@ -6,14 +6,13 @@ pointed at it, and the dual-upstream proxy in front of both, then drives the
 full research loop THROUGH the proxy:
 
   project.current/create → claim → experiment → plan associate (bytes to the
-  cloud blob store) → design review → sandbox.request (FakeSandboxBackend;
-  handshake through awaiting_initial_push, the initial_push crossing the HTTP
-  task channel) → sync under lease → results/report/graph associate →
+  cloud blob store) → design review → sandbox.request (FakeSandboxBackend) →
+  explicit sync under lease → results/report/graph associate →
   experiment review → complete → release.
 
-Asserts: the cloud holds the records + blobs; the daemon moved the bytes
-(rsync ran on the daemon worker); repo_root NEVER reached the cloud; killing
-the daemon mid-run exercises the parachute (FakeSandboxBackend parachute path).
+Asserts: the cloud holds the records + blobs; explicit sync runs on the daemon
+worker; repo_root NEVER reached the cloud; killing the daemon mid-run exercises
+the parachute (FakeSandboxBackend parachute path).
 
 Wiring choice (documented per the plan's allowance): the daemon and cloud share
 one record store + blob store, while resource observations still cross daemon
@@ -124,7 +123,6 @@ class DaemonResourceForwardingTest(unittest.TestCase):
             worker=object(),
             control=control,
             task_loop=_NoopLoop(),
-            view=object(),
             project_links=self.links,
             loopback_secret="secret",
         )
@@ -158,7 +156,6 @@ class DaemonResourceForwardingTest(unittest.TestCase):
             worker=worker,
             control=_Control(),
             task_loop=_NoopLoop(),
-            view=object(),
             project_links=self.links,
             loopback_secret="secret",
         )
@@ -180,7 +177,7 @@ class DaemonResourceForwardingTest(unittest.TestCase):
             def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
                 self.mlflow_stops.append(sandbox_id)
 
-            def remove_conn_file(self, *, experiment_id: str) -> None:
+            def remove_conn_file(self, *, experiment_id: str, **_kwargs) -> None:
                 self.removed_conn.append(experiment_id)
 
         worker = _Worker()
@@ -524,7 +521,6 @@ class SplitModeSmokeTest(unittest.TestCase):
             worker=self.daemon_worker,
             control=self.control_client,
             task_loop=self.task_loop,
-            view=view,
             project_links=self.links,
             loopback_secret="smoke-secret",
         )
@@ -666,9 +662,8 @@ class SplitModeSmokeTest(unittest.TestCase):
         self._call("experiment.transition", project_id=project_id,
                    experiment_id=exp_id, transition="start_running")
 
-        # sandbox.request → data plane (daemon). The initial_push task crosses
-        # the HTTP task channel: cloud enqueues, the daemon loop executes the
-        # rsync push, acks. Poll sandbox.get until running.
+        # sandbox.request provisions the sandbox; explicit sandbox.sync below is
+        # the only rsync path.
         self._call("sandbox.request", project_id=project_id, experiment_id=exp_id)
         self._await(lambda: self._call(
             "sandbox.get", project_id=project_id, experiment_id=exp_id

@@ -23,6 +23,7 @@ from backend.execution.vm_ssh import (
     run_ssh,
     run_ssh_input,
     run_ssh_parachute,
+    retarget_via_mgmt_ssh,
     sample_metrics_via_mgmt_ssh,
     sandbox_tokens,
     ssh_command,
@@ -276,6 +277,32 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
             key_path=key_path,
         )
 
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: Mapping[str, str],
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> bool:
+        return retarget_via_mgmt_ssh(
+            ssh_runner=self._ssh_input_runner,
+            sandbox_id=sandbox_id,
+            experiment_id=experiment_id,
+            public_key=public_key,
+            workdir=workdir,
+            sandbox_data_dir=sandbox_data_dir or self.config.sandbox_data_dir,
+            tracking_env=tracking_env,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
+
     def local_dashboard_ports(self) -> dict[str, int]:
         return dict(DASHBOARD_PORTS)
 
@@ -325,8 +352,10 @@ class ThunderComputeSandboxBackend(SandboxBackendBase):
             "options": options,
         }
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
-        marker = f"research-plugin-mgmt-{experiment_id}"
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = ""
+    ) -> str | None:
+        marker = f"research-plugin-mgmt-{sandbox_uid or experiment_id}"
         try:
             instances = self.client.list_instances()
         except Exception:  # noqa: BLE001

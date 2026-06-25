@@ -189,6 +189,12 @@ class PostgresStateStore(BaseStateStore):
     def _initialize(self) -> None:
         conn = self.connect()
         try:
+            # Upgrade a pre-refactor sandboxes table to the sandbox_uid primary
+            # key before the schema-create adds sandbox_attachments' foreign key
+            # against it (Postgres validates FK targets at CREATE; SQLite reaches
+            # the same shape in _ensure_forward_schema). A no-op on a fresh
+            # database — the schema-create then builds the final shape directly.
+            self._migrate_sandbox_uid_identity(conn=conn)
             conn.execute(translate_schema_to_postgres(SCHEMA))
             self._apply_migrations(conn=conn)
         finally:

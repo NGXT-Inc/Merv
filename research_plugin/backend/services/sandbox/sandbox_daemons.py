@@ -1,41 +1,37 @@
-"""Background sandbox daemons: the auto-rsync poller and the expiration reaper.
+"""Background sandbox daemons: expiration plus idle reaping.
 
-`SandboxDaemons` owns the two long-lived threads and their policy (enable
-gates, intervals, the reap composition). The reaper — control-plane work that
-moves cloud-side in split mode — reads rows from `SandboxRegistry` directly,
+`SandboxDaemons` owns the long-lived reap thread and its policy (enable gates,
+intervals, and reap composition). The reaper — control-plane work that moves
+cloud-side in split mode — reads rows from `SandboxRegistry` directly,
 terminates via the backend, cleans orphans via the provisioner, and reverts
-experiments only through the workflow engine's system transitions. The
-auto-sync poller — data-plane work that stays on the user's machine — never
-reads rows directly: it asks the injected `ControlPlaneView` for "my running
-sandboxes + a sync lease for each" (cloud plan Phase 4), the exact call that
-becomes the daemon's HTTP poll in Phase 8. Both loops reach the facade
-through injected callables — ``sync_row``, ``final_pull``,
-``persist_metrics``, and ``parachute`` — so the facade's swappable rsync
-syncer, metrics archive, and blob store stay where they are.
+experiments only through the workflow engine's system transitions. It reaches
+the facade through injected callables — ``final_pull``, ``persist_metrics``,
+and ``parachute`` — so the facade's swappable rsync syncer, metrics archive,
+and blob store stay where they are.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from datetime import UTC, datetime
 from typing import Any, Callable
 
 from ...sandbox.sandbox_backend import SandboxBackend
-from ...sandbox.sandbox_autosync import run_auto_sync_target
 from ...env import env_bool, env_float
 from ...ports.sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
-from ...ports.sandbox_sync import ControlPlaneView
 from .sandbox_registry import SandboxRegistry
 from ...sandbox.sandbox_support import (
-    DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     DEFAULT_REAPER_INTERVAL_SECONDS,
+    DEFAULT_SANDBOX_IDLE_SECONDS,
     DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
     parse_iso,
 )
+from .sandbox_heartbeat import SandboxHeartbeatMonitor, SandboxIdlePolicy
 
 
 class SandboxDaemons:
-    """Owns the auto-sync and reaper threads plus the reap policy."""
+    """Owns control-plane background loops and composes their policies."""
 
     def __init__(
         self,
@@ -44,35 +40,32 @@ class SandboxDaemons:
         backend: SandboxBackend,
         provisioner: ProvisionReaper,
         experiments: ExperimentTransitions,
-        control_view: ControlPlaneView,
-        sync_row: Callable[..., dict[str, Any]],
         final_pull: Callable[..., dict[str, Any]],
         persist_metrics: Callable[..., None],
         parachute: Callable[..., None],
+        sample_metrics: Callable[..., dict[str, Any]] | None = None,
+        lease_holder: Callable[..., dict[str, Any] | None] | None = None,
+        idle_policy: SandboxIdlePolicy | None = None,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.provisioner = provisioner
         self.experiments = experiments
-        self.view = control_view
-        self._sync_row = sync_row
         self._final_pull = final_pull
         self._persist_metrics = persist_metrics
         self._parachute = parachute
-        self._auto_sync_stop = threading.Event()
+        self.heartbeat = SandboxHeartbeatMonitor(
+            registry=registry,
+            sample_metrics=sample_metrics or (lambda **_kwargs: {}),
+            lease_holder=lease_holder or (lambda **_kwargs: None),
+            reap_row=self._reap_row,
+            policy=idle_policy,
+        )
         self._reaper_stop = threading.Event()
-        self.auto_sync_thread: threading.Thread | None = None
         self.reaper_thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if self._auto_sync_enabled():
-            self.auto_sync_thread = threading.Thread(
-                target=self._auto_sync_loop,
-                name="sandbox-rsync-poller",
-                daemon=True,
-            )
-            self.auto_sync_thread.start()
-        if self._reaper_enabled():
+        if self._daemon_enabled():
             self.reaper_thread = threading.Thread(
                 target=self._reaper_loop,
                 name="sandbox-reaper",
@@ -81,14 +74,14 @@ class SandboxDaemons:
             self.reaper_thread.start()
 
     def stop(self) -> None:
-        self._auto_sync_stop.set()
         self._reaper_stop.set()
-        if self.auto_sync_thread is not None:
-            self.auto_sync_thread.join(timeout=2.0)
         if self.reaper_thread is not None:
             self.reaper_thread.join(timeout=2.0)
 
     # ---------- expiration reaper ----------
+
+    def _daemon_enabled(self) -> bool:
+        return self._reaper_enabled() or self._idle_reap_threshold() > 0
 
     def _reaper_enabled(self) -> bool:
         # Cost governance (cloud plan Phase 7): in CONTROL mode the env
@@ -116,8 +109,14 @@ class SandboxDaemons:
             DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
         )
         while not self._reaper_stop.wait(interval):
+            expiry_enabled = self._reaper_enabled()
             try:
-                self.reap_expired()
+                if expiry_enabled:
+                    self.reap_expired()
+            except Exception:  # noqa: BLE001 — the reaper must never die
+                pass
+            try:
+                self.reap_idle(threshold_seconds=self._idle_reap_threshold())
             except Exception:  # noqa: BLE001 — the reaper must never die
                 pass
             # The reaper handles `running` rows by expires_at; a provision that
@@ -126,11 +125,23 @@ class SandboxDaemons:
             # agent happened to re-poll. In local mode this thread is the only
             # proactive billing backstop (CleanupService runs only in the cloud).
             try:
-                self.provisioner.reap_stale_provisions(
-                    now=datetime.now(tz=UTC), deadline_seconds=stale_deadline
-                )
+                if expiry_enabled:
+                    self.provisioner.reap_stale_provisions(
+                        now=datetime.now(tz=UTC), deadline_seconds=stale_deadline
+                    )
             except Exception:  # noqa: BLE001 — the reaper must never die
                 pass
+
+    def _idle_reap_threshold(self) -> float:
+        raw = os.environ.get("RESEARCH_PLUGIN_SANDBOX_IDLE_SECONDS")
+        if raw is not None and raw.strip() == "":
+            return 0.0
+        threshold = env_float(
+            "RESEARCH_PLUGIN_SANDBOX_IDLE_SECONDS",
+            None,
+            DEFAULT_SANDBOX_IDLE_SECONDS,
+        )
+        return threshold if threshold > 0 else 0.0
 
     def reap_expired(self, *, now: datetime | None = None) -> int:
         """Terminate every running sandbox whose expires_at deadline has passed.
@@ -148,7 +159,29 @@ class SandboxDaemons:
             reaped += 1
         return reaped
 
-    def _reap_row(self, *, row: dict[str, Any]) -> None:
+    def reap_idle(
+        self,
+        *,
+        now: datetime | None = None,
+        threshold_seconds: float | None = None,
+    ) -> int:
+        return self.heartbeat.reap_idle(
+            now=now,
+            threshold_seconds=(
+                self._idle_reap_threshold()
+                if threshold_seconds is None
+                else float(threshold_seconds)
+            ),
+        )
+
+    def _reap_row(
+        self,
+        *,
+        row: dict[str, Any],
+        event_type: str = "sandbox.expired",
+        transition_reason: str = "sandbox reaped at expires_at deadline",
+        payload_extra: dict[str, Any] | None = None,
+    ) -> None:
         experiment_id = str(row.get("experiment_id") or "")
         # Preserve outputs before the kill — same courtesy as release(). The
         # pull arrives at the worker as a final_pull task with a deadline
@@ -178,85 +211,37 @@ class SandboxDaemons:
             except Exception:  # noqa: BLE001
                 stopped = False
         self.provisioner.cleanup_orphan(experiment_id=experiment_id, row=row)
-        self.registry.mark_terminated(experiment_id=experiment_id)
+        sandbox_uid = str(row.get("sandbox_uid") or "")
+        self.registry.mark_terminated(
+            experiment_id=experiment_id, sandbox_uid=sandbox_uid
+        )
         # An experiment whose sandbox expired underneath it must not stay
         # 'running' forever; ready_to_run is truthful (nothing is executing)
         # and lets the agent simply request a fresh sandbox. The system
         # transition no-ops for experiments already past running.
-        reverted = self.experiments.apply_system_transition(
-            experiment_id=experiment_id,
-            transition="sandbox_expired",
-            reason="sandbox reaped at expires_at deadline",
+        active_remain = self.registry.has_active_for_experiment(
+            experiment_id=experiment_id
         )
+        reverted = False
+        if not active_remain:
+            reverted = self.experiments.apply_system_transition(
+                experiment_id=experiment_id,
+                transition="sandbox_expired",
+                reason=transition_reason,
+            )
+        payload = {
+            "sandbox_id": sandbox_id,
+            "sandbox_uid": sandbox_uid,
+            "reaped": True,
+            "expires_at": row.get("expires_at"),
+            "stopped": stopped,
+            "experiment_reverted": reverted,
+        }
+        if payload_extra:
+            payload.update(payload_extra)
         self.registry.emit_event(
             project_id=str(row.get("project_id")),
-            event_type="sandbox.expired",
+            event_type=event_type,
             experiment_id=experiment_id,
-            payload={
-                "sandbox_id": sandbox_id,
-                "reaped": True,
-                "expires_at": row.get("expires_at"),
-                "stopped": stopped,
-                "experiment_reverted": reverted,
-            },
+            payload=payload,
         )
-
-    # ---------- auto rsync poller ----------
-
-    def _auto_sync_enabled(self) -> bool:
-        # Config matrix (cloud plan §3.4): control mode runs the reaper but NOT
-        # the auto-rsync poller — the cloud never rsyncs a user checkout (the
-        # daemon owns that). In local/daemon mode the env switch + the backend
-        # capability decide as before.
-        from ...config import Mode, resolve_mode
-
-        if resolve_mode() is Mode.CONTROL:
-            return False
-        if not env_bool("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", default=True):
-            return False
-        return self.backend.capabilities.auto_sync
-
-    def _auto_sync_loop(self) -> None:
-        interval = env_float(
-            "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL",
-            None,
-            DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
-        )
-        # Remember the last error emitted per experiment so a persistent
-        # failure (e.g. an unusable local rsync) is reported once instead of
-        # flooding the events table every interval. Only this single auto-sync
-        # thread touches the dict, so no lock is needed.
-        last_errors: dict[str, str] = {}
-        while not self._auto_sync_stop.wait(interval):
-            # Targets come from the ControlPlaneView — running sandboxes with
-            # a lease granted/renewed for this client (plan Phase 4). A row
-            # another client is syncing is simply absent here.
-            targets = self.view.sync_targets()
-            active = {
-                str(target["row"].get("experiment_id")) for target in targets
-            }
-            for gone in set(last_errors) - active:
-                last_errors.pop(gone, None)
-            for target in targets:
-                row = target["row"]
-                experiment_id = str(row.get("experiment_id"))
-                try:
-                    result, _ = run_auto_sync_target(
-                        target=target,
-                        sync_pull=self._sync_row,
-                        sync_includes_row=True,
-                        after_sync=self._persist_metrics,
-                    )
-                    if not result.get("skipped"):
-                        last_errors.pop(experiment_id, None)
-                except Exception as exc:  # noqa: BLE001
-                    message = str(exc)
-                    if last_errors.get(experiment_id) == message:
-                        continue  # already reported this exact failure
-                    last_errors[experiment_id] = message
-                    self.registry.emit_event(
-                        project_id=str(row.get("project_id")),
-                        event_type="sandbox.rsync_error",
-                        experiment_id=experiment_id,
-                        payload={"error": message, "sandbox_id": row.get("sandbox_id", "")},
-                    )

@@ -24,15 +24,18 @@ class MountedMgmtKeyStore:
             public_key if public_key is not None else self._read_adjacent_public_key()
         )
 
-    def key_path(self, *, experiment_id: str) -> Path:
+    def key_path(self, *, sandbox_uid: str) -> Path:
+        del sandbox_uid  # one mounted key serves every sandbox
         self._assert_private_key_unchanged()
         return self._private_key_path
 
-    def ensure(self, *, experiment_id: str) -> str:
+    def ensure(self, *, sandbox_uid: str) -> str:
+        del sandbox_uid  # one mounted key serves every sandbox
         self._assert_private_key_unchanged()
         return self._public_key
 
-    def remove(self, *, experiment_id: str) -> None:
+    def remove(self, *, sandbox_uid: str) -> None:
+        del sandbox_uid
         # The orchestrator/secret manager owns this key's lifecycle.
         return None
 

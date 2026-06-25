@@ -17,7 +17,6 @@ from .sync_dirs import ARTIFACTS_TO_KEEP_DIRNAME
 from .transfer_spec import (
     ARTIFACTS_MAX_FILE_SIZE,
     DEFAULT_EXCLUDES,
-    SESSIONS_DIR_EXCLUDE,
     SYNC_MAX_FILE_SIZE,
 )
 
@@ -115,8 +114,7 @@ def _rsync_too_old_error(binary: RsyncBinary) -> RuntimeError:
 # The exclude patterns and per-file size caps come from the shared transfer
 # contract (transfer_spec.py, plan Phase 5): the expiry parachute tars with
 # the same rules, so what survives a reaped VM is exactly what a pull would
-# have brought home. DEFAULT_EXCLUDES / SESSIONS_DIR_EXCLUDE are re-imported
-# here so existing call sites keep their spelling.
+# have brought home.
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
@@ -130,12 +128,10 @@ class SshRsyncResult:
     command_count: int
     stdout: str
     stderr: str
-    direction: str = "pull"
 
     def as_dict(self) -> dict:
         return {
             "provider": "ssh_rsync",
-            "direction": self.direction,
             "pulled": self.pulled,
             "duration_seconds": round(self.duration_seconds, 3),
             "local_dir": self.local_dir,
@@ -193,7 +189,6 @@ class SshRsyncSyncer:
                     local_dir=local_sync_dir,
                     max_size=SYNC_MAX_FILE_SIZE,
                     excludes=DEFAULT_EXCLUDES + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/",),
-                    push=False,
                 ),
                 False,
             ),
@@ -207,7 +202,6 @@ class SshRsyncSyncer:
                     local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
                     max_size=ARTIFACTS_MAX_FILE_SIZE,
                     excludes=(),
-                    push=False,
                 ),
                 True,
             ),
@@ -228,7 +222,6 @@ class SshRsyncSyncer:
                         local_dir=local_sessions_dir,
                         max_size=SYNC_MAX_FILE_SIZE,
                         excludes=DEFAULT_EXCLUDES,
-                        push=False,
                     ),
                     True,
                 )
@@ -237,64 +230,6 @@ class SshRsyncSyncer:
             commands,
             remote_sync_dir=remote_sync_dir,
             local_sync_dir=local_sync_dir,
-            direction="pull",
-        )
-
-    def push_initial(
-        self,
-        *,
-        ssh_host: str,
-        ssh_port: int,
-        ssh_user: str,
-        key_path: Path,
-        remote_sync_dir: str,
-        local_sync_dir: Path,
-    ) -> SshRsyncResult:
-        if not ssh_host or not ssh_port:
-            raise RuntimeError("missing SSH endpoint for rsync")
-        if not key_path.exists():
-            raise RuntimeError(f"missing SSH key for rsync: {key_path}")
-        remote_sync_dir = remote_sync_dir.rstrip("/")
-        if not remote_sync_dir:
-            raise RuntimeError("missing remote experiment dir for rsync")
-        self._ensure_rsync_usable()
-        local_sync_dir.mkdir(parents=True, exist_ok=True)
-        commands = [
-            (
-                self._rsync_command(
-                    ssh_host=ssh_host,
-                    ssh_port=ssh_port,
-                    ssh_user=ssh_user,
-                    key_path=key_path,
-                    remote_dir=remote_sync_dir,
-                    local_dir=local_sync_dir,
-                    max_size=SYNC_MAX_FILE_SIZE,
-                    excludes=DEFAULT_EXCLUDES
-                    + (f"{ARTIFACTS_TO_KEEP_DIRNAME}/", SESSIONS_DIR_EXCLUDE),
-                    push=True,
-                ),
-                False,
-            ),
-            (
-                self._rsync_command(
-                    ssh_host=ssh_host,
-                    ssh_port=ssh_port,
-                    ssh_user=ssh_user,
-                    key_path=key_path,
-                    remote_dir=f"{remote_sync_dir}/{ARTIFACTS_TO_KEEP_DIRNAME}",
-                    local_dir=local_sync_dir / ARTIFACTS_TO_KEEP_DIRNAME,
-                    max_size=ARTIFACTS_MAX_FILE_SIZE,
-                    excludes=(),
-                    push=True,
-                ),
-                True,
-            ),
-        ]
-        return self._run_passes(
-            commands,
-            remote_sync_dir=remote_sync_dir,
-            local_sync_dir=local_sync_dir,
-            direction="push",
         )
 
     def _rsync_command(
@@ -308,7 +243,6 @@ class SshRsyncSyncer:
         local_dir: Path,
         max_size: str,
         excludes: tuple[str, ...],
-        push: bool,
     ) -> list[str]:
         local_dir.mkdir(parents=True, exist_ok=True)
         ssh = (
@@ -331,7 +265,7 @@ class SshRsyncSyncer:
             command.extend(["--exclude", pattern])
         remote = f"{ssh_user}@{ssh_host}:{remote_dir.rstrip('/')}/"
         local = os.fspath(local_dir) + "/"
-        command.extend([local, remote] if push else [remote, local])
+        command.extend([remote, local])
         return command
 
     def _run_passes(
@@ -340,7 +274,6 @@ class SshRsyncSyncer:
         *,
         remote_sync_dir: str,
         local_sync_dir: Path,
-        direction: str,
     ) -> SshRsyncResult:
         start = time.monotonic()
         stdout_parts: list[str] = []
@@ -367,7 +300,6 @@ class SshRsyncSyncer:
             command_count=ran,
             stdout="\n".join(stdout_parts),
             stderr="\n".join(stderr_parts),
-            direction=direction,
         )
 
     @staticmethod

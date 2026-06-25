@@ -35,14 +35,6 @@ class NoopRsyncSyncer:
             command_count=0, stdout="", stderr="",
         )
 
-    def push_initial(self, **kwargs) -> SshRsyncResult:
-        return SshRsyncResult(
-            pulled=0, duration_seconds=0.0,
-            local_dir=str(kwargs.get("local_sync_dir", "")),
-            remote_dir=str(kwargs.get("remote_sync_dir", "")),
-            command_count=0, stdout="", stderr="", direction="push",
-        )
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()

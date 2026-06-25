@@ -2,7 +2,7 @@
 
 The service layer consumes the neutral ``MgmtKeyStore`` port; this module is
 the local filesystem implementation used by local-mode composition. Keys live
-under ``.research_plugin/mgmt_keys/<experiment_id>/`` in local mode. A cloud
+under ``.research_plugin/mgmt_keys/<sandbox_uid>/`` in local mode. A cloud
 control plane can provide a different implementation behind the same port.
 """
 
@@ -15,25 +15,24 @@ from ..ssh_keys import ensure_ed25519_keypair
 
 
 class LocalMgmtKeyStore:
-    """Management keys on the control plane's local disk."""
+    """Management keys on the control plane's local disk, keyed by sandbox_uid."""
 
     def __init__(self, *, root: Path) -> None:
         self.root = root
 
-    def key_path(self, *, experiment_id: str) -> Path:
-        return self.root / _safe_name(experiment_id) / "key"
+    def key_path(self, *, sandbox_uid: str) -> Path:
+        return self.root / _safe_name(sandbox_uid) / "key"
 
-    def ensure(self, *, experiment_id: str) -> str:
-        key_path = self.key_path(experiment_id=experiment_id)
+    def ensure(self, *, sandbox_uid: str) -> str:
         return ensure_ed25519_keypair(
-            key_path=key_path,
-            comment=f"research-plugin-mgmt-{experiment_id}",
+            key_path=self.key_path(sandbox_uid=sandbox_uid),
+            comment=f"research-plugin-mgmt-{sandbox_uid}",
             missing_action="mint the sandbox management key",
             failure_subject="sandbox management key",
         )
 
-    def remove(self, *, experiment_id: str) -> None:
-        key_path = self.key_path(experiment_id=experiment_id)
+    def remove(self, *, sandbox_uid: str) -> None:
+        key_path = self.key_path(sandbox_uid=sandbox_uid)
         for path in (key_path, key_path.with_suffix(".pub")):
             try:
                 path.unlink(missing_ok=True)

@@ -168,8 +168,8 @@ def _serve_daemon(*, host: str, port: int) -> int:
     """Run the slim local data-plane daemon (cloud plan Phase 8, §3.4).
 
     Fail-fast: refuses to start without RESEARCH_PLUGIN_CONTROL_URL (no silent
-    127.0.0.1 fallback). Starts the task long-poll + auto-sync loops and serves
-    a loopback surface for the proxy (GET /local/route + the data-plane tools).
+    127.0.0.1 fallback). Starts the task long-poll loop and serves a loopback
+    surface for the proxy (GET /local/route + the data-plane tools).
     """
     from ..composition import build_daemon_server
     from ..daemon.daemon_loopback import create_daemon_loopback_app

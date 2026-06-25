@@ -25,64 +25,32 @@ from typing import Any
 from ...domain.sync_contract import DEFAULT_DATA_DIR, remote_experiment_dir
 from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
-    DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
     POLL_AFTER_SECONDS,
     decode_dashboards,
 )
-from ...env import env_float
 
 
-def _sync_interval_seconds() -> int:
-    return int(
-        env_float(
-            "RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL",
-            None,
-            DEFAULT_AUTO_RSYNC_INTERVAL_SECONDS,
-        )
-    )
-
-
-def _folder_contract_note(
-    *, remote_dir: str, local_dir: str, initial_pushed: int | None
-) -> str:
+def _folder_contract_note(*, remote_dir: str, local_dir: str) -> str:
     """The experiment-folder sync contract, told at the moment it matters.
 
     This is the load-bearing guidance: one folder round-trips, everything else
-    stays on the VM, and while the sandbox is live the VM owns the folder.
+    stays on the VM, and pulls happen only when the agent asks.
     """
-    if initial_pushed is None or initial_pushed < 0:
-        pushed_note = (
-            f"Your experiment folder ({local_dir}) was pushed to {remote_dir} "
-            "on the sandbox ($RP_EXPERIMENT_DIR). "
-        )
-    elif initial_pushed == 0:
-        pushed_note = (
-            f"Your experiment folder ({local_dir}) was pushed to {remote_dir} "
-            "on the sandbox ($RP_EXPERIMENT_DIR), but it had no eligible files, "
-            "so the remote folder starts empty. "
-        )
-    else:
-        pushed_note = (
-            f"Your experiment folder ({local_dir}) was pushed to {remote_dir} "
-            f"on the sandbox ($RP_EXPERIMENT_DIR) — {initial_pushed} file(s) "
-            "transferred. "
-        )
-    interval = _sync_interval_seconds()
     return (
-        pushed_note
-        + "Files over 100 MB and caches/checkpoints/archives (.git, venvs, "
-        "*.pt, *.ckpt, *.safetensors, tarballs, ...) are never pushed or "
-        "pulled; the exception is $RP_EXPERIMENT_DIR/artifacts_to_keep, which "
-        "syncs with a 5 GB per-file cap for deliberate final artifacts. "
-        f"The folder is mirrored back to the local repo every ~{interval}s "
-        "and on sandbox.sync, as an exact replica: deletions and renames on "
-        "the sandbox propagate to the local copy, and local edits are "
-        "overwritten — while this sandbox is live, the sandbox owns the "
-        "folder, so make ALL experiment-file edits here over SSH (including "
-        "report.md and graph.json; their local copies update via the mirror). "
+        f"The sandbox experiment folder is {remote_dir} ($RP_EXPERIMENT_DIR); "
+        f"its local mirror is {local_dir}. Files over 100 MB and "
+        "caches/checkpoints/archives (.git, venvs, *.pt, *.ckpt, "
+        "*.safetensors, tarballs, ...) are never pulled; the exception is "
+        "$RP_EXPERIMENT_DIR/artifacts_to_keep, which syncs with a 5 GB "
+        "per-file cap for deliberate final artifacts. Call sandbox.sync to "
+        "pull the sandbox folder back to the local repo as an exact replica: "
+        "deletions and renames on the sandbox propagate to the local copy, and "
+        "local edits are overwritten. While this sandbox is live, the sandbox "
+        "owns the folder, so make experiment-file edits there over SSH "
+        "(including report.md and graph.json). "
         "Keep datasets, caches, and anything you do not want carried into the "
         "repo OUTSIDE the experiment folder (e.g. $RP_DATASET_DIR) — nothing "
-        "outside the folder is ever synced. "
+        "outside the folder is pulled. "
     )
 
 
@@ -138,9 +106,8 @@ def agent_row_facts(
     data_dir = str(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
     )
-    raw_pushed = row.get("initial_pushed")
-    initial_pushed = int(raw_pushed) if raw_pushed is not None else -1
     facts: dict[str, Any] = {
+        "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
@@ -151,13 +118,12 @@ def agent_row_facts(
             "user": row.get("ssh_user"),
         },
         "workdir": row.get("workdir"),
-        # The one synced location: the experiment's folder, pushed at
-        # provisioning and mirrored back while the sandbox lives.
+        # The one synced location: the experiment folder, pulled back only
+        # when the agent calls sandbox.sync while the sandbox is live.
         "experiment_dir": remote_dir,
         # VM-local conventional home for datasets/caches. Never synced —
         # like everything else outside the experiment folder.
         "data_dir": data_dir,
-        "files_pushed": initial_pushed if initial_pushed >= 0 else None,
         "volume": row.get("volume_name"),
         "gpu": row.get("gpu") or None,
         "cpu": row.get("cpu"),
@@ -209,8 +175,6 @@ def merge_agent_view(
     }
     view["local_experiment_dir"] = local_dir
     remote_dir = str(view.get("experiment_dir") or "")
-    initial_pushed = view.get("files_pushed")
-    initial_pushed = int(initial_pushed) if initial_pushed is not None else -1
     credential_note = ""
     env_info = view.get("environment") or {}
     if "HF_TOKEN" in (env_info.get("available_tokens") or []):
@@ -252,13 +216,10 @@ def merge_agent_view(
     if status == "provisioning":
         view["hint"] = (
             "Provisioning. A fresh GPU VM commonly takes 5-15 minutes "
-            "to boot and bootstrap (a large first sync adds time). Poll "
+            "to boot and bootstrap. Poll "
             "sandbox.get every 30-60 seconds until status is running, then "
             "run commands with ssh.command. Do not re-call sandbox.request "
-            "to poll. When the sandbox boots, your local experiment folder "
-            f"({local_dir}) is pushed to {remote_dir} on the VM, so anything "
-            "the run needs (scripts, configs, notes) should already be in "
-            "that folder. "
+            "to poll. "
             f"{_expiry_note(view.get('expires_at'))}"
             f"{credential_note}"
         )
@@ -297,7 +258,6 @@ def merge_agent_view(
             + _folder_contract_note(
                 remote_dir=remote_dir,
                 local_dir=local_dir,
-                initial_pushed=initial_pushed,
             )
             + "Before registering result resources, call sandbox.sync and use "
             "files under the local experiment folder. "
@@ -319,6 +279,7 @@ def agent_summary(
     *, row: dict[str, Any], lease: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     summary = {
+        "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
         "sandbox_id": row.get("sandbox_id"),
         "status": row.get("status"),
@@ -354,6 +315,7 @@ def sandbox_row_view(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
     )
     view = {
+        "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
@@ -376,7 +338,6 @@ def sandbox_row_view(
         "sync_dir": remote_dir,
         "local_sync_dir": local_sync_dir,
         "sandbox_data_dir": data_dir,
-        "initial_pushed": row.get("initial_pushed"),
         "volume_name": row.get("volume_name"),
         # Sandbox-local dashboards. Centralized MLflow is surfaced separately
         # because it is backend-owned, not a sandbox tunnel.

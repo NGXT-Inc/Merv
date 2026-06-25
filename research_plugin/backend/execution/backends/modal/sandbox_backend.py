@@ -35,6 +35,7 @@ from backend.execution.usage_metrics import (
     METRICS_SCRIPT,
     parse_metrics,
 )
+from backend.execution.vm_bootstrap import build_runtime_env
 from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from ....sandbox.sandbox_backend import (
@@ -46,7 +47,7 @@ from ....sandbox.sandbox_backend import (
     SandboxRequest,
 )
 from .config import COMPUTE_TIERS, DEFAULT_GPU, VALID_GPUS, ModalConfig
-from ._sandbox_ops import maybe_await, read_stream, wait_process
+from ._sandbox_ops import ensure_remote_dir, exec_checked, maybe_await, read_stream, wait_process
 
 
 ActivityHook = Callable[[str, dict[str, Any]], None]
@@ -252,7 +253,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             tracking_env=request.tracking_env,
         )
         secrets = self._sandbox_secrets(modal)
-        name = _sandbox_name(request.experiment_id)
+        name = _sandbox_name(request.sandbox_uid or request.experiment_id)
         kwargs: dict[str, Any] = {
             "app": app,
             "image": image,
@@ -322,7 +323,9 @@ class ModalSandboxBackend(SandboxBackendBase):
             dashboards=dashboards,
         )
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = ""
+    ) -> str | None:
         """Best-effort lookup of a sandbox we created for this experiment by name.
 
         Used by the registry to reconcile a provisioning row whose daemon-side
@@ -330,7 +333,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         — the orphan still holds the deterministic name, so we can find and adopt
         or clean it up. Returns None if no such sandbox exists.
         """
-        name = _sandbox_name(experiment_id)
+        name = _sandbox_name(sandbox_uid or experiment_id)
         if not name:
             return None
         try:
@@ -488,6 +491,56 @@ class ModalSandboxBackend(SandboxBackendBase):
         if receipt is None:
             raise BackendUnavailableError("parachute produced no upload receipt")
         return receipt
+
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: Mapping[str, str],
+        ssh_host: str = "",  # noqa: ARG002 — Modal retargets via control-plane exec
+        ssh_port: int = 0,  # noqa: ARG002
+        key_path: str = "",  # noqa: ARG002
+    ) -> bool:
+        if not sandbox_id or not workdir:
+            raise BackendUnavailableError("retarget needs a sandbox id and workdir")
+        sandbox = self._sandbox_from_id(sandbox_id)
+        data_dir = sandbox_data_dir or self.config.sandbox_data_dir
+        sessions_dir = remote_sessions_dir(
+            experiment_id=experiment_id, root=remote_root_of(workdir)
+        )
+        for path in (workdir, f"{workdir}/artifacts_to_keep", data_dir, sessions_dir):
+            ensure_remote_dir(sandbox=sandbox, path=path)
+        env_body = build_runtime_env(
+            experiment_id=experiment_id,
+            workdir=workdir,
+            sessions_dir=sessions_dir,
+            sandbox_data_dir=data_dir,
+            tracking_env=tracking_env,
+        )
+        encoded = base64.b64encode(env_body.encode("utf-8")).decode("ascii")
+        exec_checked(
+            sandbox=sandbox,
+            command=f"printf '%s' {shlex.quote(encoded)} | base64 -d > /opt/rp/env",
+            timeout=60,
+        )
+        if public_key:
+            pub = shlex.quote(public_key)
+            exec_checked(
+                sandbox=sandbox,
+                command=(
+                    "mkdir -p /root/.ssh; touch /root/.ssh/authorized_keys; "
+                    f"pub={pub}; "
+                    'grep -qxF "$pub" /root/.ssh/authorized_keys '
+                    '|| printf "%s\\n" "$pub" >> /root/.ssh/authorized_keys; '
+                    "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys"
+                ),
+                timeout=60,
+            )
+        return True
 
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None

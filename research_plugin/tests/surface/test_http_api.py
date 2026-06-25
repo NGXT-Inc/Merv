@@ -446,18 +446,20 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO sandboxes (
-                  experiment_id, project_id, sandbox_id, status, created_at, updated_at
+                  sandbox_uid, experiment_id, project_id, sandbox_id, status,
+                  created_at, updated_at
                 )
-                VALUES (?, ?, 'sb_active', 'running', ?, ?)
+                VALUES ('uid_active', ?, ?, 'sb_active', 'running', ?, ?)
                 """,
                 (running["id"], project_id, now, now),
             )
             conn.execute(
                 """
                 INSERT INTO sandboxes (
-                  experiment_id, project_id, sandbox_id, status, terminated_at, created_at, updated_at
+                  sandbox_uid, experiment_id, project_id, sandbox_id, status,
+                  terminated_at, created_at, updated_at
                 )
-                VALUES (?, ?, 'sb_done', 'terminated', ?, ?, ?)
+                VALUES ('uid_done', ?, ?, 'sb_done', 'terminated', ?, ?, ?)
                 """,
                 (complete["id"], project_id, now, now, now),
             )

@@ -11,7 +11,13 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from ....sandbox.sandbox_backend import BackendUnavailableError
-from ...sync_dirs import DEFAULT_DATA_DIR, remote_experiment_dir
+from ...sync_dirs import (
+    DEFAULT_DATA_DIR,
+    remote_experiment_dir,
+    remote_root_of,
+    remote_sessions_dir,
+)
+from ...vm_bootstrap import build_runtime_env
 from ...transfer_spec import (
     build_parachute_script,
     is_excluded_relpath,
@@ -55,7 +61,6 @@ class FakeSandboxBackend(SandboxBackendBase):
         self.capabilities = BackendCapabilities(
             name="fake",
             enforce_expiry=False,
-            auto_sync=False,
             requires_hardware_selection=requires_hardware_selection,
             configurable_resources=configurable_resources,
         )
@@ -87,6 +92,8 @@ class FakeSandboxBackend(SandboxBackendBase):
         # run_parachute call lands here so the reaper's parachute branch is
         # observable in-process.
         self.parachute_calls: list[dict] = []
+        self.retarget_calls: list[dict] = []
+        self.remote_envs: dict[str, str] = {}
         # Simulated remote experiment dir per sandbox id: relpath → bytes.
         # Seeded by tests; run_parachute tars it per the shared transfer spec.
         self.remote_files: dict[str, dict[str, bytes]] = {}
@@ -122,9 +129,10 @@ class FakeSandboxBackend(SandboxBackendBase):
             raise BackendUnavailableError("fake create failure")
         self.counter += 1
         sandbox_id = f"sb-{self.counter}"
-        name = f"rp-{request.experiment_id}"
+        name_key = request.sandbox_uid or request.experiment_id
+        name = f"rp-{name_key}"
         self.alive[sandbox_id] = True
-        self.by_experiment[request.experiment_id] = sandbox_id
+        self.by_experiment[name_key] = sandbox_id
         self.endpoints[sandbox_id] = ("sandbox.modal.test", 40000 + self.counter)
         # What a real bootstrap would do with this request: authorize BOTH
         # keys (user + management, plan Phase 5) and pre-install /opt/rp
@@ -217,8 +225,10 @@ class FakeSandboxBackend(SandboxBackendBase):
             return {}
         return dict(self.dashboards.get(sandbox_id, {}))
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
-        sandbox_id = self.by_experiment.get(experiment_id)
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = ""
+    ) -> str | None:
+        sandbox_id = self.by_experiment.get(sandbox_uid or experiment_id)
         if sandbox_id and self.alive.get(sandbox_id):
             return sandbox_id
         return None
@@ -323,6 +333,46 @@ class FakeSandboxBackend(SandboxBackendBase):
             )
         Path(url2pathname(target.path)).write_bytes(data)
         return {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: dict[str, str],
+        ssh_host: str = "",  # noqa: ARG002
+        ssh_port: int = 0,  # noqa: ARG002
+        key_path: str = "",
+    ) -> bool:
+        if not self.alive.get(sandbox_id):
+            raise BackendUnavailableError("fake sandbox is not alive")
+        sessions_dir = remote_sessions_dir(
+            experiment_id=experiment_id, root=remote_root_of(workdir)
+        )
+        env = build_runtime_env(
+            experiment_id=experiment_id,
+            workdir=workdir,
+            sessions_dir=sessions_dir,
+            sandbox_data_dir=sandbox_data_dir or DEFAULT_DATA_DIR,
+            tracking_env=tracking_env,
+        )
+        self.retarget_calls.append(
+            {
+                "sandbox_id": sandbox_id,
+                "experiment_id": experiment_id,
+                "public_key": public_key,
+                "workdir": workdir,
+                "sandbox_data_dir": sandbox_data_dir or DEFAULT_DATA_DIR,
+                "tracking_env": dict(tracking_env),
+                "key_path": key_path,
+            }
+        )
+        self.remote_envs[sandbox_id] = env
+        self.remote_files.setdefault(sandbox_id, {})
+        return True
 
     def sandbox_environment(self) -> dict:
         return {"available_tokens": [], "notes": []}

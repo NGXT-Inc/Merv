@@ -436,6 +436,8 @@ class ModalSandboxBackendTest(unittest.TestCase):
             "RPM cpu_cores_limit=2.0000\n"
             "RPM mem_used_bytes=2147483648\n"
             "RPM mem_limit_bytes=8589934592\n"
+            "RPM net_bytes_total=98765\n"
+            "RPM ssh_established=0\n"
             "RPM gpu idx=0 util=42 used=1024 total=40960 name=NVIDIA A100-SXM4-40GB\n"
             "RPM ok=1\n"
         )
@@ -443,6 +445,9 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertIsNotNone(metrics)
         self.assertEqual(metrics["cpu"], {"used_cores": 1.5, "limit_cores": 2.0})
         self.assertEqual(metrics["memory"], {"used_bytes": 2147483648, "limit_bytes": 8589934592})
+        self.assertEqual(
+            metrics["network"], {"bytes_total": 98765, "ssh_established": 0}
+        )
         self.assertEqual(len(metrics["gpus"]), 1)
         gpu = metrics["gpus"][0]
         self.assertEqual(gpu["util_pct"], 42)

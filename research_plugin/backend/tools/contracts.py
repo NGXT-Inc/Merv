@@ -420,6 +420,13 @@ class SandboxRequestInput(ProjectScopedInput):
         default=None,
         description="Max sandbox lifetime in seconds (60..86400). Default 3600.",
     )
+    additional: bool = Field(
+        default=False,
+        description=(
+            "When true, provision a new parallel sandbox for this experiment "
+            "instead of reusing the current primary sandbox."
+        ),
+    )
 
 
 class SandboxOptionsInput(ProjectScopedInput):
@@ -435,10 +442,27 @@ class SandboxOptionsInput(ProjectScopedInput):
 
 class SandboxGetInput(ProjectScopedInput):
     experiment_id: str
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to read; omitted targets the primary sandbox.",
+    )
+
+
+class SandboxAttachInput(ProjectScopedInput):
+    experiment_id: str = Field(
+        description="Target experiment to attach the live sandbox to."
+    )
+    sandbox_uid: str = Field(
+        description="Existing running sandbox_uid to re-point to the target experiment."
+    )
 
 
 class SandboxSyncInput(ProjectScopedInput):
     experiment_id: str
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to sync; omitted targets the primary sandbox.",
+    )
 
 
 class SandboxListInput(ProjectScopedInput):
@@ -447,10 +471,21 @@ class SandboxListInput(ProjectScopedInput):
 
 class SandboxReleaseInput(ProjectScopedInput):
     experiment_id: str
+    sandbox_uid: str | None = Field(
+        default=None,
+        description=(
+            "Optional sandbox_uid to terminate just one sandbox. Omit to "
+            "terminate all live sandboxes for the experiment."
+        ),
+    )
 
 
 class SandboxTerminalInput(ProjectScopedInput):
     experiment_id: str
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to read; omitted targets the primary sandbox.",
+    )
     tail: int | None = Field(
         default=None, description="Return only the last N characters of the transcript."
     )
@@ -738,6 +773,15 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         ),
         plane="aggregate",
         hosted_control_sandbox_lookup=True,
+    ),
+    "sandbox.attach": ToolContract(
+        input_model=SandboxAttachInput,
+        description=(
+            "Reuse an existing running sandbox for a different ready/running "
+            "experiment by re-pointing its workdir, conn file, lifecycle, and "
+            "attachment history without terminating the VM."
+        ),
+        plane="data",
     ),
     "sandbox.sync": ToolContract(
         input_model=SandboxSyncInput,

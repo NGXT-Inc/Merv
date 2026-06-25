@@ -4,7 +4,7 @@ Fixed decision 2: every "cloud signals daemon" flow is a daemon-initiated
 long-poll task channel — the cloud NEVER dials in. This module has both sides:
 
 - ``HttpTaskQueue`` lives in the control plane. It enqueues tasks (the same
-  five types as the in-process channel) and serves them to a daemon that
+  types as the in-process channel) and serves them to a daemon that
   long-polls; the daemon POSTs acks/results back. Payloads are JSON-serializable
   (the parachute bytes become a presigned GET the daemon downloads, per the
   Phase 4 note), unlike the in-process channel which may keep live objects.
@@ -35,7 +35,6 @@ from .tasks import TASK_TYPES
 
 
 IN_PROCESS_ONLY_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
-    "initial_push": frozenset({"on_retry"}),
     "parachute_restore": frozenset({"data"}),
 }
 
@@ -43,9 +42,8 @@ IN_PROCESS_ONLY_PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
 def _wire_payload(*, task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Return a JSON payload for the HTTP path.
 
-    Phase 4/5 left two live objects in task payloads: the in-process
-    ``initial_push`` retry callback and in-process ``parachute_restore`` bytes.
-    Those fields are intentionally local-only. Everything else must be JSON
+    Phase 5 leaves in-process ``parachute_restore`` bytes in local payloads.
+    That field is intentionally local-only. Everything else must be JSON
     serializable so new cross-plane leaks fail at enqueue instead of silently
     disappearing before the daemon sees the task.
     """

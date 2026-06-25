@@ -29,7 +29,7 @@ class WorkflowSlimTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
-            rsync_syncer=FakeRsyncSyncer(sync_pulled=0, push_pulled=0, sync_stdout="", push_stdout=""),
+            rsync_syncer=FakeRsyncSyncer(sync_pulled=0, sync_stdout=""),
         )
         self.project_id = self.call("project.create", name="Slim Project")["id"]
 

@@ -9,7 +9,9 @@ lives in ``dialects.py`` (cloud plan Phase 6).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -325,7 +327,8 @@ CREATE TABLE IF NOT EXISTS synthesis_experiments (
 );
 
 CREATE TABLE IF NOT EXISTS sandboxes (
-  experiment_id TEXT PRIMARY KEY,
+  sandbox_uid TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
   tenant_id TEXT NOT NULL DEFAULT 'local',
   sandbox_id TEXT NOT NULL DEFAULT '',
@@ -341,7 +344,7 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   -- Provider price quote at provision (cloud plan Phase 7): captured from the
   -- catalog option (Lambda has it; Modal leaves 0). Recorded on the row AND
   -- appended to sandbox_generations so per-generation spend is reconstructable
-  -- even though the row itself is upsert-overwritten per experiment.
+  -- even though the row itself only retains its current generation.
   price_usd_per_hour REAL NOT NULL DEFAULT 0,
   time_limit INTEGER NOT NULL DEFAULT 0,
   ssh_host TEXT NOT NULL DEFAULT '',
@@ -351,11 +354,9 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   sync_dir TEXT NOT NULL DEFAULT '',
   unsynced_dir TEXT NOT NULL DEFAULT '',
   sandbox_data_dir TEXT NOT NULL DEFAULT '',
-  -- Files delivered by the initial experiment-folder push (-1 = unknown).
-  initial_pushed INTEGER NOT NULL DEFAULT -1,
   -- Management keypair reference (cloud plan Phase 5, fixed decision 4):
   -- non-empty when a control-plane management key was minted for this
-  -- sandbox. A key-store reference (the experiment id) — never key material.
+  -- sandbox. A key-store reference (the sandbox_uid) — never key material.
   mgmt_key_ref TEXT NOT NULL DEFAULT '',
   -- Expiry parachute record (cloud plan Phase 5, fixed decision 5): set when
   -- a reap/release whose final pull failed uploaded the experiment dir to
@@ -381,12 +382,22 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   requested_at TEXT,
   expires_at TEXT,
   last_seen_at TEXT,
+  idle_since TEXT,
+  heartbeat_snapshot_json TEXT NOT NULL DEFAULT '{}',
   terminated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   -- Insertion-order column replacing rowid ordering (cloud plan Phase 6).
   created_seq INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_attachments (
+  sandbox_uid TEXT NOT NULL,
+  experiment_id TEXT NOT NULL,
+  attached_at TEXT NOT NULL,
+  detached_at TEXT,
+  FOREIGN KEY(sandbox_uid) REFERENCES sandboxes(sandbox_uid)
 );
 
 -- Figures submitted alongside a markdown gated artifact (cloud plan Phase 2):
@@ -464,7 +475,7 @@ CREATE TABLE IF NOT EXISTS tenant_quotas (
 );
 
 -- Per-generation sandbox spend ledger (cloud plan Phase 7). The sandboxes row
--- is upsert-overwritten per experiment, so it cannot reconstruct historical
+-- retains only its current generation, so it cannot reconstruct historical
 -- spend; each provisioned generation appends a row here with the price the
 -- provider quoted (Lambda has it; Modal leaves it 0/null). Reconstructable
 -- spend = sum over rows of price_usd_per_hour * runtime. Dormant in local
@@ -511,6 +522,24 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # Existing hosted Postgres control stores predate sandboxes.tenant_id; fresh
     # schemas have it, and this idempotent migration backfills existing rows.
     (2, "add_sandbox_tenant_id", ""),
+    # Slice-3 (June 2026): idle-reaper heartbeat columns. Fresh schemas have
+    # them; this idempotently adds them to existing SQLite + Postgres stores.
+    (3, "add_sandbox_heartbeat_columns", ""),
+    # Slice-2 (June 2026): the sandbox gets its own identity. Existing hosted
+    # Postgres stores keyed sandboxes by experiment_id; this swaps the primary
+    # key to sandbox_uid and opens the sandbox_attachments relation. Must run
+    # before the mgmt-key/attachment migrations below (they read sandbox_uid).
+    # SQLite already reaches this shape in _ensure_forward_schema, so the
+    # handler is a guarded no-op there and on every fresh schema.
+    (4, "migrate_sandbox_uid_identity", ""),
+    # Slice-4 (June 2026): one experiment may own multiple sandbox rows.
+    (5, "drop_sandboxes_experiment_unique", ""),
+    # Slice-5 (June 2026): management keys follow the sandbox, not the
+    # experiment; legacy non-empty refs are left as fallback refs.
+    (6, "backfill_sandbox_mgmt_key_refs", ""),
+    # Slice-5 (June 2026): attachment history can contain multiple
+    # close-then-open rows for the same sandbox/experiment pair.
+    (7, "allow_sandbox_attachment_history", ""),
 )
 
 
@@ -569,6 +598,25 @@ CREATE TABLE review_requests_migrate (
 """
 
 
+def _schema_table_ddl(*, table: str, name: str | None = None) -> str:
+    """Extract one CREATE TABLE block from SCHEMA for SQLite rebuilds."""
+    match = re.search(
+        rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);",
+        SCHEMA,
+        re.DOTALL,
+    )
+    if match is None:
+        raise RuntimeError(f"table not found in schema: {table}")
+    ddl = match.group(0)
+    if name is not None:
+        ddl = ddl.replace(
+            f"CREATE TABLE IF NOT EXISTS {table}",
+            f"CREATE TABLE {name}",
+            1,
+        )
+    return ddl
+
+
 class BaseStateStore:
     """Dialect-neutral record-store contract and shared persistence helpers.
 
@@ -599,6 +647,16 @@ class BaseStateStore:
                 continue
             if name == "add_sandbox_tenant_id":
                 self._ensure_sandbox_tenant_id(conn=conn)
+            elif name == "add_sandbox_heartbeat_columns":
+                self._ensure_sandbox_heartbeat_columns(conn=conn)
+            elif name == "migrate_sandbox_uid_identity":
+                self._migrate_sandbox_uid_identity(conn=conn)
+            elif name == "drop_sandboxes_experiment_unique":
+                self._drop_sandboxes_experiment_unique(conn=conn)
+            elif name == "backfill_sandbox_mgmt_key_refs":
+                self._backfill_sandbox_mgmt_key_refs(conn=conn)
+            elif name == "allow_sandbox_attachment_history":
+                self._allow_sandbox_attachment_history(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -622,6 +680,138 @@ class BaseStateStore:
             WHERE project_id != ''
             """
         )
+
+    def _ensure_sandbox_heartbeat_columns(self, *, conn: Connection) -> None:
+        """Idempotently add the idle-reaper columns to existing SQLite/Postgres."""
+        for column, ddl in (
+            ("idle_since", "TEXT"),
+            ("heartbeat_snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ):
+            if not self._has_column(conn=conn, table="sandboxes", column=column):
+                conn.execute(f"ALTER TABLE sandboxes ADD COLUMN {column} {ddl}")
+
+    def _drop_sandboxes_experiment_unique(self, *, conn: Connection) -> None:
+        conn.execute(
+            "ALTER TABLE sandboxes DROP CONSTRAINT IF EXISTS sandboxes_experiment_id_key"
+        )
+
+    def _backfill_sandbox_mgmt_key_refs(self, *, conn: Connection) -> None:
+        if not self._has_column(conn=conn, table="sandboxes", column="mgmt_key_ref"):
+            conn.execute(
+                "ALTER TABLE sandboxes ADD COLUMN mgmt_key_ref TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            """
+            UPDATE sandboxes
+            SET mgmt_key_ref = sandbox_uid
+            WHERE COALESCE(mgmt_key_ref, '') = '' AND COALESCE(sandbox_uid, '') != ''
+            """
+        )
+
+    def _allow_sandbox_attachment_history(self, *, conn: Connection) -> None:
+        conn.execute(
+            "ALTER TABLE sandbox_attachments DROP CONSTRAINT IF EXISTS sandbox_attachments_pkey"
+        )
+
+    def _migrate_sandbox_uid_identity(self, *, conn: Connection) -> None:
+        """Repoint an experiment_id-keyed sandboxes table onto sandbox_uid.
+
+        The decoupling refactor makes sandbox_uid the primary key and opens the
+        sandbox_attachments relation. Fresh schemas already have that shape and
+        SQLite reaches it in _ensure_forward_schema, so the guard makes this a
+        no-op there; the real work upgrades a hosted Postgres store that predates
+        the refactor. Idempotent: every step is guarded or IF-EXISTS, and the PK
+        swap only commits once (a partial run re-converges on the next boot).
+        """
+        if self._sandboxes_uid_is_pk(conn=conn):
+            return
+        # No legacy sandboxes table yet (a fresh database, before its
+        # schema-create) — there is nothing to upgrade; the schema-create builds
+        # the final sandbox_uid-keyed shape directly.
+        if not self._has_column(conn=conn, table="sandboxes", column="experiment_id"):
+            return
+        if not self._has_column(conn=conn, table="sandboxes", column="sandbox_uid"):
+            conn.execute("ALTER TABLE sandboxes ADD COLUMN sandbox_uid TEXT")
+        # experiment_id was the legacy primary key, so it addresses each row.
+        for row in conn.execute(
+            "SELECT experiment_id FROM sandboxes WHERE COALESCE(sandbox_uid, '') = ''"
+        ).fetchall():
+            conn.execute(
+                "UPDATE sandboxes SET sandbox_uid = ? WHERE experiment_id = ?",
+                (uuid.uuid4().hex, row["experiment_id"]),
+            )
+        conn.execute("ALTER TABLE sandboxes DROP CONSTRAINT IF EXISTS sandboxes_pkey")
+        conn.execute("ALTER TABLE sandboxes ADD PRIMARY KEY (sandbox_uid)")
+        # Open one attachment per surviving sandbox (closed if already terminated).
+        self._backfill_sandbox_attachments(conn=conn)
+
+    def _sandboxes_uid_is_pk(self, *, conn: Connection) -> bool:
+        """True once sandbox_uid is the sandboxes primary key (fresh or upgraded)."""
+        try:
+            rows = conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+            if rows:
+                return any(
+                    str(row["name"]) == "sandbox_uid" and int(row["pk"] or 0) > 0
+                    for row in rows
+                )
+        except Exception:  # noqa: BLE001 - Postgres has no PRAGMA
+            pass
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_schema = 'public'
+              AND tc.table_name = 'sandboxes'
+              AND tc.constraint_type = 'PRIMARY KEY'
+              AND kcu.column_name = 'sandbox_uid'
+            """
+        ).fetchone()
+        return row is not None
+
+    def _backfill_sandbox_attachments(self, *, conn: Connection) -> None:
+        """Open the forward relation for legacy/un-attached rows; a no-op once filled.
+
+        Dialect-neutral so both the SQLite forward-schema rebuild and the Postgres
+        identity migration share it.
+        """
+        conn.execute(_schema_table_ddl(table="sandbox_attachments"))
+        # Only rows still missing their attachment — so re-runs after the first
+        # upgrade do no work, while a partial upgrade still gets finished.
+        rows = conn.execute(
+            """
+            SELECT sandbox_uid, experiment_id, requested_at, created_at, updated_at,
+                   terminated_at, status
+            FROM sandboxes
+            WHERE COALESCE(sandbox_uid, '') != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM sandbox_attachments a
+                WHERE a.sandbox_uid = sandboxes.sandbox_uid
+                  AND a.experiment_id = sandboxes.experiment_id
+              )
+            """
+        ).fetchall()
+        for row in rows:
+            attached_at = (
+                row["requested_at"]
+                or row["created_at"]
+                or row["updated_at"]
+                or now_iso()
+            )
+            detached_at = None
+            if row["terminated_at"] or row["status"] in {"terminated", "failed"}:
+                detached_at = row["terminated_at"] or row["updated_at"] or attached_at
+            conn.execute(
+                """
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (row["sandbox_uid"], row["experiment_id"], attached_at, detached_at),
+            )
 
     def _has_column(self, *, conn: Connection, table: str, column: str) -> bool:
         try:
@@ -872,11 +1062,6 @@ class StateStore(BaseStateStore):
                 # Cloud-split Phase 7 (June 2026): provider price quote captured
                 # at provision for cost governance. 0 on rows that predate it.
                 "price_usd_per_hour": "REAL NOT NULL DEFAULT 0",
-                # Experiment-folder sync (June 2026): how many files the initial
-                # push delivered to the sandbox. -1 = unknown (pre-change rows
-                # or provisioning still in flight); 0 is meaningful — the local
-                # experiment folder had nothing eligible to push.
-                "initial_pushed": "INTEGER NOT NULL DEFAULT -1",
                 # Cloud-split Phase 5 (June 2026): management keypair reference
                 # — non-empty when a control-plane management key exists for
                 # this sandbox. Never key material.
@@ -922,6 +1107,13 @@ class StateStore(BaseStateStore):
             table="sandboxes",
             columns=("key_path", "local_sync_dir"),
         )
+        # Slice-1 (June 2026): the automatic experiment-folder push was removed,
+        # so the per-sandbox initial_pushed file count no longer exists.
+        self._drop_columns(
+            conn=conn,
+            table="sandboxes",
+            columns=("initial_pushed",),
+        )
         # Cloud-split Phase 6 (June 2026): explicit insertion-order columns
         # replace `ORDER BY rowid` so the same queries run on the Postgres
         # dialect (which has no rowid). Legacy rows backfill created_seq from
@@ -942,6 +1134,10 @@ class StateStore(BaseStateStore):
             )
             if "created_seq" in added:
                 conn.execute(f"UPDATE {table} SET created_seq = rowid")
+        # Slice-2 (June 2026): sandbox rows now have their own durable id;
+        # public 1:1 behavior is preserved by registry primary selection.
+        self._migrate_sandbox_identity(conn=conn)
+        self._backfill_sandbox_attachments(conn=conn)
         # Cloud-split Phase 9 (June 2026): the per-tenant USD spend budget. The
         # GPU-hour budget shipped in Phase 7; USD is its sibling. Nullable =
         # unlimited; pre-Phase-9 quota rows predate the column.
@@ -950,6 +1146,178 @@ class StateStore(BaseStateStore):
             table="tenant_quotas",
             columns={"usd_budget": "REAL"},
         )
+
+    def _migrate_sandbox_identity(self, *, conn: sqlite3.Connection) -> None:
+        """Rebuild sandboxes when legacy SQLite has experiment_id as the PK."""
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandboxes'"
+        ).fetchone()
+        if table is None:
+            return
+        columns = conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+        uid_pk = any(
+            str(row["name"]) == "sandbox_uid" and int(row["pk"] or 0) > 0
+            for row in columns
+        )
+        if uid_pk:
+            return
+        conn.execute("DROP TABLE IF EXISTS sandbox_attachments")
+        conn.execute(_schema_table_ddl(table="sandboxes", name="sandboxes_migrate"))
+        source_columns = {str(row["name"]) for row in columns}
+        target_columns = [
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sandboxes_migrate)").fetchall()
+        ]
+        copy_columns = [
+            column
+            for column in target_columns
+            if column != "sandbox_uid" and column in source_columns
+        ]
+        select_columns = ", ".join(copy_columns)
+        insert_columns = ", ".join(["sandbox_uid", *copy_columns])
+        placeholders = ", ".join("?" for _ in ["sandbox_uid", *copy_columns])
+        for row in conn.execute(f"SELECT {select_columns} FROM sandboxes").fetchall():
+            conn.execute(
+                f"INSERT INTO sandboxes_migrate ({insert_columns}) VALUES ({placeholders})",
+                [uuid.uuid4().hex, *[row[column] for column in copy_columns]],
+            )
+        conn.execute("DROP TABLE sandboxes")
+        conn.execute("ALTER TABLE sandboxes_migrate RENAME TO sandboxes")
+        conn.execute(_schema_table_ddl(table="sandbox_attachments"))
+
+    def _drop_sandboxes_experiment_unique(self, *, conn: sqlite3.Connection) -> None:
+        """Rebuild sandboxes when SQLite still has UNIQUE(experiment_id)."""
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandboxes'"
+        ).fetchone()
+        if table is None or not self._sandboxes_has_experiment_unique(conn=conn):
+            return
+        attachments_exist = (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_attachments'"
+            ).fetchone()
+            is not None
+        )
+        if attachments_exist:
+            conn.execute("DROP TABLE IF EXISTS sandbox_attachments_migrate")
+            conn.execute(
+                """
+                CREATE TEMP TABLE sandbox_attachments_migrate AS
+                SELECT sandbox_uid, experiment_id, attached_at, detached_at
+                FROM sandbox_attachments
+                """
+            )
+            conn.execute("DROP TABLE sandbox_attachments")
+        conn.execute(_schema_table_ddl(table="sandboxes", name="sandboxes_migrate"))
+        source_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+        }
+        target_columns = [
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sandboxes_migrate)").fetchall()
+            if str(row["name"]) in source_columns
+        ]
+        columns = ", ".join(target_columns)
+        conn.execute(
+            f"INSERT INTO sandboxes_migrate ({columns}) SELECT {columns} FROM sandboxes"
+        )
+        conn.execute("DROP TABLE sandboxes")
+        conn.execute("ALTER TABLE sandboxes_migrate RENAME TO sandboxes")
+        conn.execute(_schema_table_ddl(table="sandbox_attachments"))
+        if attachments_exist:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                SELECT sandbox_uid, experiment_id, attached_at, detached_at
+                FROM sandbox_attachments_migrate
+                """
+            )
+            conn.execute("DROP TABLE sandbox_attachments_migrate")
+        self._backfill_sandbox_attachments(conn=conn)
+
+    def _sandboxes_has_experiment_unique(self, *, conn: sqlite3.Connection) -> bool:
+        for idx in conn.execute("PRAGMA index_list(sandboxes)").fetchall():
+            if not idx["unique"]:
+                continue
+            columns = [
+                str(info["name"])
+                for info in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()
+            ]
+            if columns == ["experiment_id"]:
+                return True
+        return False
+
+    def _allow_sandbox_attachment_history(self, *, conn: sqlite3.Connection) -> None:
+        """Rebuild sandbox_attachments when SQLite still keys only the pair."""
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_attachments'"
+        ).fetchone()
+        if table is None:
+            conn.execute(_schema_table_ddl(table="sandbox_attachments"))
+            return
+        if self._sandbox_attachment_pk_columns(conn=conn) == []:
+            return
+        conn.execute("DROP TABLE IF EXISTS sandbox_attachments_migrate")
+        conn.execute(_schema_table_ddl(table="sandbox_attachments", name="sandbox_attachments_migrate"))
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO sandbox_attachments_migrate (
+              sandbox_uid, experiment_id, attached_at, detached_at
+            )
+            SELECT sandbox_uid, experiment_id, attached_at, detached_at
+            FROM sandbox_attachments
+            """
+        )
+        conn.execute("DROP TABLE sandbox_attachments")
+        conn.execute("ALTER TABLE sandbox_attachments_migrate RENAME TO sandbox_attachments")
+
+    def _sandbox_attachment_pk_columns(self, *, conn: sqlite3.Connection) -> list[str]:
+        rows = conn.execute("PRAGMA table_info(sandbox_attachments)").fetchall()
+        return [
+            str(row["name"])
+            for row in sorted(rows, key=lambda row: int(row["pk"] or 0))
+            if int(row["pk"] or 0) > 0
+        ]
+
+    def _backfill_sandbox_attachments(self, *, conn: sqlite3.Connection) -> None:
+        """Open the forward relation for legacy/un-attached rows; a no-op once filled."""
+        conn.execute(_schema_table_ddl(table="sandbox_attachments"))
+        # Only rows still missing their attachment — so re-runs after the first
+        # upgrade do no work, while a partial upgrade still gets finished.
+        rows = conn.execute(
+            """
+            SELECT sandbox_uid, experiment_id, requested_at, created_at, updated_at,
+                   terminated_at, status
+            FROM sandboxes
+            WHERE COALESCE(sandbox_uid, '') != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM sandbox_attachments a
+                WHERE a.sandbox_uid = sandboxes.sandbox_uid
+                  AND a.experiment_id = sandboxes.experiment_id
+              )
+            """
+        ).fetchall()
+        for row in rows:
+            attached_at = (
+                row["requested_at"]
+                or row["created_at"]
+                or row["updated_at"]
+                or now_iso()
+            )
+            detached_at = None
+            if row["terminated_at"] or row["status"] in {"terminated", "failed"}:
+                detached_at = row["terminated_at"] or row["updated_at"] or attached_at
+            conn.execute(
+                """
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at, detached_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (row["sandbox_uid"], row["experiment_id"], attached_at, detached_at),
+            )
 
     def _migrate_capability_hash(self) -> None:
         """Migrate review_requests.capability (plaintext) → capability_hash.

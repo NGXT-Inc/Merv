@@ -26,8 +26,8 @@ METRICS_EXEC_TIMEOUT = 15
 # from /proc/meminfo — the reclaimable page cache a memory-mapped dataset
 # inflates "used" with is deliberately excluded, and under gVisor the
 # cgroup/meminfo limits are host-level and unusable as denominators, so no
-# limit is emitted from these files), and per-GPU utilization + VRAM via
-# nvidia-smi.
+# limit is emitted from these files), cumulative network bytes + SSH sessions,
+# and per-GPU utilization + VRAM via nvidia-smi.
 METRICS_SCRIPT = r"""
 set -u
 now_ns() { date +%s%N; }
@@ -73,6 +73,22 @@ if [ -r /proc/meminfo ]; then
     /^SReclaimable:/  {s=$2}
     END { u=t-f-b-c-s; if (u<0) u=0; printf "RPM mem_used_bytes=%.0f\n", u*1024 }
   ' /proc/meminfo
+fi
+if [ -r /proc/net/dev ]; then
+  awk 'NR>2{iface=$1; sub(/:/,"",iface); if(iface!="lo") total+=$2+$10}
+       END{printf "RPM net_bytes_total=%.0f\n", total}' /proc/net/dev
+fi
+ssh_sessions() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -Htn state established 'sport = :22' 2>/dev/null | wc -l | awk '{print $1}'
+    return
+  fi
+  awk 'NR>1{split($2,a,":"); if(tolower(a[2])=="0016" && $4=="01") c++}
+       END{print c+0}' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+ssh_established=$(ssh_sessions || true)
+if [ -n "${ssh_established:-}" ]; then
+  printf 'RPM ssh_established=%s\n' "$ssh_established"
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,name \
@@ -128,6 +144,7 @@ def parse_metrics(output: str) -> dict[str, Any] | None:
     """Turn `RPM key=value` sampler lines into a structured gauge dict."""
     cpu_used = cpu_limit = None
     mem_used = mem_limit = None
+    net_bytes = ssh_established = None
     gpus: list[dict[str, Any]] = []
     saw_ok = False
     for raw_line in output.splitlines():
@@ -143,16 +160,30 @@ def parse_metrics(output: str) -> dict[str, Any] | None:
             mem_used = _to_int(body.split("=", 1)[1])
         elif body.startswith("mem_limit_bytes="):
             mem_limit = _to_int(body.split("=", 1)[1])
+        elif body.startswith("net_bytes_total="):
+            net_bytes = _to_int(body.split("=", 1)[1])
+        elif body.startswith("ssh_established="):
+            ssh_established = _to_int(body.split("=", 1)[1])
         elif body.startswith("gpu "):
             gpu = _parse_gpu(body[4:])
             if gpu is not None:
                 gpus.append(gpu)
         elif body.startswith("ok="):
             saw_ok = body.split("=", 1)[1].strip() == "1"
-    if not saw_ok and cpu_used is None and mem_used is None and not gpus:
+    if (
+        not saw_ok
+        and cpu_used is None
+        and mem_used is None
+        and net_bytes is None
+        and not gpus
+    ):
         return None
     return {
         "cpu": {"used_cores": cpu_used, "limit_cores": cpu_limit},
         "memory": {"used_bytes": mem_used, "limit_bytes": mem_limit},
+        "network": {
+            "bytes_total": net_bytes,
+            "ssh_established": ssh_established,
+        },
         "gpus": gpus,
     }

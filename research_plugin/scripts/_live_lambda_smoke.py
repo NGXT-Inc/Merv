@@ -22,11 +22,10 @@ from pathlib import Path
 # Make the research_plugin package root importable when run as a bare script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Test-only: point the remote workspace at /home/ubuntu (exists at boot) so the
-# initial rsync push doesn't race the cloud-init that creates /workspace.
+# Test-only: point the remote workspace at /home/ubuntu (exists at boot) so an
+# explicit sandbox.sync doesn't race the cloud-init that creates /workspace.
 os.environ.setdefault("RESEARCH_PLUGIN_LAMBDA_WORKDIR", "/home/ubuntu/rp_synced")
 os.environ.setdefault("RESEARCH_PLUGIN_LAMBDA_DATA_DIR", "/home/ubuntu/rp_unsynced")
-os.environ.setdefault("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", "0")
 
 from backend.app import ResearchPluginApp
 from backend.execution.backends.lambda_labs.config import load_lambda_env_file

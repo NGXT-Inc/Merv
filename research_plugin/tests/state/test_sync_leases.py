@@ -16,6 +16,10 @@ from unittest import mock
 from backend.app import ResearchPluginApp
 from backend.dataplane.state import CLIENT_ID_ENV, SandboxLocalState
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.domain.sync_contract import (
+    SYNC_SESSION_SCHEMA_VERSION,
+    TRANSFER_CONTRACT_VERSION,
+)
 from backend.services.sync_sessions import (
     InProcessControlPlaneView,
     LeaseService,
@@ -104,6 +108,7 @@ class LeaseServiceTest(unittest.TestCase):
         lease = self.leases.acquire(experiment_id="exp_1", holder_client_id="client_a")
         session = build_sync_session(
             experiment_id="exp_1",
+            sandbox_uid="uid_1",
             sandbox_id="sb-1",
             ssh_host="host.test",
             ssh_port=2222,
@@ -111,8 +116,9 @@ class LeaseServiceTest(unittest.TestCase):
             experiment_dir="/workspace/exp-one",
             lease=lease,
         )
-        self.assertEqual(session["schema_version"], 1)
-        self.assertEqual(session["transfer_contract_version"], 1)
+        self.assertEqual(session["schema_version"], SYNC_SESSION_SCHEMA_VERSION)
+        self.assertEqual(session["transfer_contract_version"], TRANSFER_CONTRACT_VERSION)
+        self.assertEqual(session["sandbox_uid"], "uid_1")
         self.assertEqual(
             session["ssh"], {"host": "host.test", "port": 2222, "user": "root"}
         )
@@ -188,6 +194,8 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
 
     def test_lease_visible_in_sandbox_get_and_list(self) -> None:
         self.call("sandbox.request", project_id=self.project_id, experiment_id=self.exp_id)
+        # The lease is claimed when the agent first syncs — no auto-sync grants it.
+        self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
         client_id = self.app.worker.client_id()
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=self.exp_id)
         self.assertEqual(got["sync_lease"]["holder_client_id"], client_id)
@@ -210,6 +218,8 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
 
     def test_second_client_cannot_double_sync_a_leased_experiment(self) -> None:
         self.call("sandbox.request", project_id=self.project_id, experiment_id=self.exp_id)
+        # The local client claims the lease by syncing once — no auto-sync grant.
+        self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
         # Hand the lease to a simulated second client (long TTL), as if
         # another machine's daemon were syncing this experiment.
         own = self.app.sandboxes.leases.holder(experiment_id=self.exp_id)
@@ -248,6 +258,7 @@ class InProcessControlPlaneViewTest(unittest.TestCase):
                 return [
                     {
                         "experiment_id": "exp_1",
+                        "sandbox_uid": "uid_1",
                         "sandbox_id": "sb-1",
                         "ssh_host": "host.test",
                         "ssh_port": 2222,
@@ -265,6 +276,7 @@ class InProcessControlPlaneViewTest(unittest.TestCase):
 
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0]["row"]["sandbox_id"], "sb-1")
+        self.assertEqual(targets[0]["session"]["sandbox_uid"], "uid_1")
         self.assertEqual(targets[0]["session"]["experiment_id"], "exp_1")
         self.assertEqual(
             targets[0]["session"]["lease"]["holder_client_id"], "client_a"

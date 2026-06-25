@@ -160,7 +160,8 @@ def _postgres_harness() -> ClientHarness:
 def _schema_without_sandbox_tenant() -> str:
     legacy = re.sub(
         r"(CREATE TABLE IF NOT EXISTS sandboxes \(\n"
-        r"\s*experiment_id TEXT PRIMARY KEY,\n"
+        r"\s*sandbox_uid TEXT PRIMARY KEY,\n"
+        r"\s*experiment_id TEXT NOT NULL,\n"
         r"\s*project_id TEXT NOT NULL,\n)"
         r"\s*tenant_id TEXT NOT NULL DEFAULT 'local',\n",
         r"\1",
@@ -168,6 +169,27 @@ def _schema_without_sandbox_tenant() -> str:
     )
     if legacy == SCHEMA:
         raise AssertionError("failed to remove sandboxes.tenant_id from legacy schema")
+    return legacy
+
+
+def _schema_with_legacy_sandbox_identity() -> str:
+    """SCHEMA as it stood before the decoupling refactor: sandboxes keyed by
+    experiment_id, with no sandbox_uid column and no sandbox_attachments table."""
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS sandboxes \(\n"
+        r"\s*sandbox_uid TEXT PRIMARY KEY,\n"
+        r"\s*experiment_id TEXT NOT NULL,\n",
+        "CREATE TABLE IF NOT EXISTS sandboxes (\n  experiment_id TEXT PRIMARY KEY,\n",
+        SCHEMA,
+    )
+    legacy = re.sub(
+        r"CREATE TABLE IF NOT EXISTS sandbox_attachments \(.*?\n\);\n",
+        "",
+        legacy,
+        flags=re.DOTALL,
+    )
+    if legacy == SCHEMA or "CREATE TABLE IF NOT EXISTS sandbox_attachments" in legacy:
+        raise AssertionError("failed to build the legacy sandbox-identity schema")
     return legacy
 
 
@@ -258,11 +280,11 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO sandboxes (
-                  experiment_id, project_id, status, created_at, updated_at
+                  sandbox_uid, experiment_id, project_id, status, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                ("exp_old", "proj_old", "failed", now_iso(), now_iso()),
+                ("uid_exp_old", "exp_old", "proj_old", "failed", now_iso(), now_iso()),
             )
 
         store = PostgresStateStore(dsn=dsn)
@@ -283,6 +305,92 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                 ("exp_old",),
             ).fetchone()
             self.assertEqual(row["tenant_id"], "tenant_pg")
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
+
+    def test_legacy_postgres_sandboxes_gain_uid_and_attachments(self) -> None:
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_with_legacy_sandbox_identity()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (%s, %s, %s)",
+                (1, "drop_legacy_jobs_table", now_iso()),
+            )
+            conn.execute(
+                "INSERT INTO projects (id, name, summary, created_at) VALUES (%s, %s, %s, %s)",
+                ("proj_pg", "PG", "", now_iso()),
+            )
+            # one live box and one already-terminated box under the legacy PK.
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, sandbox_id, status,
+                  requested_at, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                ("exp_live", "proj_pg", "sb-live", "running", now_iso(), now_iso(), now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, sandbox_id, status,
+                  requested_at, created_at, updated_at, terminated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    "exp_done", "proj_pg", "sb-done", "terminated",
+                    now_iso(), now_iso(), now_iso(), now_iso(),
+                ),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            # sandbox_uid is now the sole primary key.
+            pk = conn.execute(
+                """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_schema = 'public'
+                  AND tc.table_name = 'sandboxes'
+                  AND tc.constraint_type = 'PRIMARY KEY'
+                """
+            ).fetchall()
+            self.assertEqual([str(r["column_name"]) for r in pk], ["sandbox_uid"])
+            # every legacy row got a distinct uuid.
+            rows = conn.execute(
+                "SELECT experiment_id, sandbox_uid FROM sandboxes"
+            ).fetchall()
+            self.assertTrue(all(str(r["sandbox_uid"]) for r in rows))
+            self.assertEqual(len({str(r["sandbox_uid"]) for r in rows}), 2)
+            # one attachment per sandbox: live stays open, terminated is closed.
+            att = conn.execute(
+                """
+                SELECT s.experiment_id, a.detached_at
+                FROM sandbox_attachments a
+                JOIN sandboxes s ON s.sandbox_uid = a.sandbox_uid
+                """
+            ).fetchall()
+            by_exp = {str(r["experiment_id"]): r["detached_at"] for r in att}
+            self.assertEqual(len(att), 2)
+            self.assertIsNone(by_exp["exp_live"])
+            self.assertIsNotNone(by_exp["exp_done"])
+            # the full ledger is recorded exactly once, in order.
             ledger = conn.execute(
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
@@ -546,6 +654,16 @@ class SchemaParityTest(unittest.TestCase):
         self.assertNotRegex(translated, r"\bINTEGER\b")  # 32-bit on Postgres
         self.assertIn("BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY", translated)
 
+    def test_sandboxes_schema_no_longer_unique_by_experiment(self) -> None:
+        translated = translate_schema_to_postgres(SCHEMA)
+        match = re.search(
+            r"CREATE TABLE IF NOT EXISTS sandboxes \((.*?)\n\);",
+            translated,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        self.assertNotIn("UNIQUE(experiment_id)", match.group(1))
+
     def test_postgres_has_column_uses_information_schema_directly(self) -> None:
         class _Rows:
             def fetchone(self):
@@ -572,6 +690,50 @@ class SchemaParityTest(unittest.TestCase):
         self.assertNotIn("PRAGMA", sql.upper())
         self.assertIn("information_schema.columns", sql)
         self.assertEqual(params, ("projects", "hard_stop_synthesis_id"))
+
+    def test_postgres_drop_sandbox_experiment_unique_is_constraint_ddl(self) -> None:
+        class _Rows:
+            def fetchone(self):
+                return None
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def execute(self, sql: str, params: tuple[str, ...] | None = None):
+                self.calls.append(sql)
+                return _Rows()
+
+        conn = _Conn()
+        store = object.__new__(PostgresStateStore)
+        store._drop_sandboxes_experiment_unique(conn=conn)
+        self.assertEqual(len(conn.calls), 1)
+        self.assertIn(
+            "ALTER TABLE sandboxes DROP CONSTRAINT IF EXISTS sandboxes_experiment_id_key",
+            conn.calls[0],
+        )
+
+    def test_postgres_attachment_history_migration_drops_pair_primary_key(self) -> None:
+        class _Rows:
+            def fetchone(self):
+                return None
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def execute(self, sql: str, params: tuple[str, ...] | None = None):
+                self.calls.append(sql)
+                return _Rows()
+
+        conn = _Conn()
+        store = object.__new__(PostgresStateStore)
+        store._allow_sandbox_attachment_history(conn=conn)
+        self.assertEqual(len(conn.calls), 1)
+        self.assertIn(
+            "ALTER TABLE sandbox_attachments DROP CONSTRAINT IF EXISTS sandbox_attachments_pkey",
+            conn.calls[0],
+        )
 
     def test_no_question_marks_inside_sql_string_literals(self) -> None:
         """The dialect's '?' → '%s' translation is string-level; it is only

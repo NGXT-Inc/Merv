@@ -48,6 +48,7 @@ class SandboxRequest:
     experiment_id: str
     project_id: str
     public_key: str
+    sandbox_uid: str = ""
     management_public_key: str = ""
     management_key_path: str = ""
     gpu: str | None = None
@@ -92,8 +93,6 @@ class BackendCapabilities:
     name: str
     # A provider that forgets this flag gets billing protection by default.
     enforce_expiry: bool = True
-    # Preserve results by default for any real remote sandbox.
-    auto_sync: bool = True
     # True when a provider-bundled machine SKU must be selected first.
     requires_hardware_selection: bool = False
     # True when cpu/memory/gpu can be requested independently.
@@ -163,7 +162,7 @@ class SandboxBackend(Protocol):
         """Optionally expose dashboards through local SSH forwards. Unsupported backends return {}."""
         ...
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
+    def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
         """Optionally find an orphan sandbox by experiment. Unsupported backends return None."""
         ...
 
@@ -193,6 +192,22 @@ class SandboxBackend(Protocol):
         key_path: str = "",
     ) -> bool:
         """Optionally deliver provider credentials post-boot."""
+        ...
+
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: Mapping[str, str],
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> bool:
+        """Optionally point a live sandbox at another experiment."""
         ...
 
     def shutdown(self) -> None:
@@ -233,7 +248,7 @@ class SandboxBackendBase:
         """Unsupported default: no dashboards need local SSH forwarding."""
         return {}
 
-    def find_sandbox_id(self, *, experiment_id: str) -> str | None:
+    def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
         """Unsupported default: no orphan lookup is available."""
         return None
 
@@ -263,6 +278,22 @@ class SandboxBackendBase:
         key_path: str = "",
     ) -> bool:
         """Unsupported default: no post-boot secret channel."""
+        return False
+
+    def retarget(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        public_key: str,
+        workdir: str,
+        sandbox_data_dir: str,
+        tracking_env: Mapping[str, str],
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> bool:
+        """Unsupported default: this backend cannot reuse across experiments."""
         return False
 
     def shutdown(self) -> None:

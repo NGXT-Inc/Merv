@@ -1,11 +1,9 @@
 """The daemon's HTTP window onto the control plane (cloud plan Phase 8).
 
-In-process, ``InProcessControlPlaneView.sync_targets`` is the auto-sync poller's
-"my running sandboxes + a lease for each" call, and ``InProcessTaskChannel``
-dispatches tasks. In split mode the daemon talks to the cloud over HTTP for
-both: ``HttpControlPlaneView`` polls ``/api/daemon/sync-targets`` for lease-
-backed sessions and ``/api/daemon/tasks`` for data-plane work, posting acks
-back. The cloud never dials in — every call here is daemon-initiated.
+In-process, ``InProcessTaskChannel`` dispatches tasks. In split mode the daemon
+talks to the cloud over HTTP: ``HttpControlPlaneView`` long-polls
+``/api/daemon/tasks`` for data-plane work and posts acks back. The cloud never
+dials in — every call here is daemon-initiated.
 
 Sessions returned by the cloud are JSON sync-session dicts (the same shape the
 worker already requires); the daemon enriches its own key paths locally — the
@@ -24,7 +22,7 @@ from ..ports.sandbox_sync import SyncTarget
 
 
 class HttpControlPlaneView:
-    """Daemon-side HTTP client for sync targets + the task long-poll/ack.
+    """Daemon-side HTTP client for task long-poll/ack and control views.
 
     Reuses the control client's base_url; the task poll uses a longer
     per-request timeout than ordinary tool calls because it is a long poll the
