@@ -179,6 +179,32 @@ CREATE TABLE IF NOT EXISTS resources (
 	  FOREIGN KEY(version_id) REFERENCES resource_versions(id)
 	);
 
+CREATE TABLE IF NOT EXISTS storage_objects (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  namespace TEXT NOT NULL,
+  status TEXT NOT NULL,
+  upload_id TEXT,
+  expires_at TEXT,
+  created_by TEXT NOT NULL DEFAULT 'codex',
+  producing_experiment_id TEXT NOT NULL DEFAULT '',
+  producing_run TEXT NOT NULL DEFAULT '',
+  source_uri TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_accessed_at TEXT,
+  created_seq INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(project_id, name, version),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
 CREATE TABLE IF NOT EXISTS review_requests (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,

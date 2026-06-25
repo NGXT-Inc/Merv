@@ -263,4 +263,32 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/sync`, { method: 'POST' }),
   releaseSandbox: (pid, eid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/release`, { method: 'POST' }),
+
+  // Storage — long-term heavy-file ledger (datasets/models preserved off-repo in
+  // S3-compatible storage, R2 first). The UI browses + manages lifecycle; bytes
+  // are produced and saved by the agent via the storage.* MCP tools, never
+  // uploaded from here. A 404 means the backend storage API isn't present yet.
+  listStorage: (pid, { kind, status, name, includeExpired } = {}) => {
+    const p = new URLSearchParams();
+    if (kind && kind !== 'all') p.set('kind', kind);
+    if (status && status !== 'all') p.set('status', status);
+    if (name) p.set('name', name);
+    if (includeExpired) p.set('include_expired', '1');
+    const q = p.toString();
+    return request(`/api/projects/${encodeURIComponent(pid)}/storage${q ? '?' + q : ''}`);
+  },
+  getStorageObject: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}`),
+  // Mint a short-lived presigned download URL; the access also bumps the
+  // object's 60-day TTL (a fetch means "still in use").
+  storageDownloadLink: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}/download`, { method: 'POST' }),
+  pinStorage: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}/pin`, { method: 'POST' }),
+  unpinStorage: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}/unpin`, { method: 'POST' }),
+  renewStorage: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}/renew`, { method: 'POST' }),
+  deleteStorage: (pid, id) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/storage/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };

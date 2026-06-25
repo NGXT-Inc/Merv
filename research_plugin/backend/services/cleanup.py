@@ -3,7 +3,8 @@
 The control plane needs periodic housekeeping that the local-mode in-process
 daemons never had to do at scale: terminate orphaned billing VMs, garbage-
 collect expired blobs, release dead sync leases, and reap provisions that wedged
-mid-push. Phase 9 implements these as **pure, clock-injectable functions** —
+mid-push. Heavy-storage expiry joins the same pattern. These are **pure,
+clock-injectable functions** —
 each takes ``now`` and returns a count — grouped behind ``CleanupService`` with
 a single ``run_all(now=...)`` entry point.
 
@@ -51,6 +52,7 @@ class CleanupReport:
 
     orphan_vms_reaped: int = 0
     blobs_swept: int = 0
+    storage_objects_swept: int = 0
     leases_released: int = 0
     stale_provisions_reaped: int = 0
 
@@ -58,6 +60,7 @@ class CleanupReport:
         return {
             "orphan_vms_reaped": self.orphan_vms_reaped,
             "blobs_swept": self.blobs_swept,
+            "storage_objects_swept": self.storage_objects_swept,
             "leases_released": self.leases_released,
             "stale_provisions_reaped": self.stale_provisions_reaped,
         }
@@ -67,8 +70,8 @@ class CleanupService:
     """The control plane's cleanup sweeps, grouped behind ``run_all``.
 
     Constructed from a ``SandboxService`` (registry + provisioner + backend +
-    leases) and a ``BlobStore``. Every method takes ``now`` so a scheduler or a
-    test drives the clock; ``run_all`` runs all four and returns a CleanupReport.
+    leases), a ``BlobStore``, and optionally storage. Every method takes ``now``
+    so a scheduler or a test drives the clock.
     """
 
     def __init__(
@@ -76,10 +79,12 @@ class CleanupService:
         *,
         sandboxes: Any,
         blobs: Any,
+        storage: Any | None = None,
         awaiting_push_deadline_seconds: float = DEFAULT_AWAITING_PUSH_DEADLINE_SECONDS,
     ) -> None:
         self.sandboxes = sandboxes
         self.blobs = blobs
+        self.storage = storage
         self.awaiting_push_deadline_seconds = float(awaiting_push_deadline_seconds)
 
     # ---------- the entry point a scheduler calls ----------
@@ -89,6 +94,7 @@ class CleanupService:
         return CleanupReport(
             orphan_vms_reaped=self.sweep_orphan_vms(now=now_dt),
             blobs_swept=self.sweep_expired_blobs(now=now_dt),
+            storage_objects_swept=self.sweep_expired_storage(now=now_dt),
             leases_released=self.sweep_expired_leases(now=now_dt),
             stale_provisions_reaped=self.sweep_stale_provisions(now=now_dt),
         )
@@ -121,6 +127,16 @@ class CleanupService:
         try:
             return int(self.blobs.sweep_expired(now=now_iso))
         except Exception:  # noqa: BLE001 — a GC failure must not abort the pass
+            return 0
+
+    def sweep_expired_storage(self, *, now: datetime | None = None) -> int:
+        """Expire heavy storage rows through the ledger (refcount-aware GC)."""
+        if self.storage is None:
+            return 0
+        now_iso = format_iso(now or datetime.now(tz=UTC))
+        try:
+            return int(self.storage.sweep_expired(now=now_iso))
+        except Exception:  # noqa: BLE001
             return 0
 
     def sweep_expired_leases(self, *, now: datetime | None = None) -> int:

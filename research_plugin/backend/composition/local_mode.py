@@ -12,8 +12,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..app import ResearchPluginApp
+from ..config import build_object_store, build_state_store
+from ..storage.service import StorageLedgerService
 
 
 def build_local_app(*, repo_root: Path, db_path: Path) -> ResearchPluginApp:
     """Today's single-process app."""
-    return ResearchPluginApp(repo_root=repo_root, db_path=db_path)
+    store = build_state_store(db_path=db_path)
+    storage = StorageLedgerService(
+        store=store,
+        objects=build_object_store(default_root=repo_root / ".research_plugin"),
+    )
+    return ResearchPluginApp(
+        repo_root=repo_root,
+        db_path=db_path,
+        store=store,
+        storage=storage,
+    )

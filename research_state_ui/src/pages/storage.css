@@ -1,0 +1,63 @@
+/* Long-term storage ledger — self-contained styles for the Storage page. */
+
+.storage-list { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.storage-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.storage-row.is-open { border-color: var(--line-strong); }
+
+.storage-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 10px var(--space-3);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-size: var(--text-base);
+}
+.storage-row-head:hover { background: var(--hover); }
+.storage-row-twist { color: var(--faint); width: 12px; flex-shrink: 0; }
+.storage-row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.storage-row-ver { color: var(--muted); font-size: var(--text-xs); margin-left: 6px; font-weight: 500; }
+.storage-row-size { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+/* Kind badges reuse .ft-tag; colour by class. */
+.storage-kind { margin-left: 0; }
+.storage-kind--dataset { color: var(--ice); background: rgba(var(--ice-rgb), 0.10); }
+.storage-kind--model { color: var(--mcp); background: rgba(var(--mcp-rgb), 0.10); }
+.storage-kind--other { color: var(--muted); background: rgba(var(--faint-rgb), 0.12); }
+
+.storage-ttl { font-size: var(--text-xs); flex-shrink: 0; white-space: nowrap; }
+.storage-ttl--ok { color: var(--muted); }
+.storage-ttl--soon { color: var(--qualifies); }
+.storage-ttl--danger { color: var(--refutes); }
+.storage-ttl--pin { color: var(--active); font-weight: 600; }
+
+.storage-detail { padding: var(--space-3); border-top: 1px solid var(--line-soft); background: var(--bg-soft); }
+.storage-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.storage-meta-label { font-size: var(--text-xs); color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.storage-meta-value { font-size: var(--text-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.storage-detail-notes {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  margin-bottom: var(--space-3);
+  white-space: pre-wrap;
+}
+.storage-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.storage-detail-link { margin-top: var(--space-3); display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
+.storage-detail-link a { word-break: break-all; }
+.storage-detail-link-note { font-size: var(--text-xs); color: var(--faint); }

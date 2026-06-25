@@ -13,10 +13,9 @@ from ...sandbox.sandbox_backend import SandboxBackend
 from ...sandbox.sandbox_support import (
     PARACHUTE_MAX_OBJECT_BYTES,
     PARACHUTE_TTL_SECONDS,
-    iso_after,
 )
 from ...state.blobs import BlobStore
-from ...utils import ValidationError
+from ...utils import ValidationError, iso_after
 from .sandbox_registry import SandboxRegistry
 
 TenantResolver = Callable[[str], str]

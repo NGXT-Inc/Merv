@@ -12,7 +12,11 @@ from backend.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
     Mode,
+    STORAGE_ACCESS_KEY_ID_ENV_VAR,
+    STORAGE_SECRET_ACCESS_KEY_ENV_VAR,
     resolve_mode,
+    resolve_storage_access_key_id,
+    resolve_storage_secret_access_key,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
@@ -55,6 +59,50 @@ class ModeConfigTest(unittest.TestCase):
         with self.assertRaises(ValidationError) as ctx:
             resolve_mode(env={"RESEARCH_PLUGIN_MODE": "cloud"})
         self.assertIn("unknown", ctx.exception.message)
+
+
+class StorageConfigTest(unittest.TestCase):
+    def test_storage_access_key_prefers_storage_env_then_aws_then_none(self) -> None:
+        self.assertEqual(
+            resolve_storage_access_key_id(
+                {
+                    STORAGE_ACCESS_KEY_ID_ENV_VAR: " storage-ak ",
+                    "AWS_ACCESS_KEY_ID": "aws-ak",
+                }
+            ),
+            "storage-ak",
+        )
+        self.assertEqual(
+            resolve_storage_access_key_id({"AWS_ACCESS_KEY_ID": " aws-ak "}),
+            "aws-ak",
+        )
+        self.assertIsNone(resolve_storage_access_key_id({}))
+        self.assertIsNone(
+            resolve_storage_access_key_id(
+                {STORAGE_ACCESS_KEY_ID_ENV_VAR: " ", "AWS_ACCESS_KEY_ID": " "}
+            )
+        )
+
+    def test_storage_secret_prefers_storage_env_then_aws_then_none(self) -> None:
+        self.assertEqual(
+            resolve_storage_secret_access_key(
+                {
+                    STORAGE_SECRET_ACCESS_KEY_ENV_VAR: " storage-secret ",
+                    "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                }
+            ),
+            "storage-secret",
+        )
+        self.assertEqual(
+            resolve_storage_secret_access_key({"AWS_SECRET_ACCESS_KEY": " aws-secret "}),
+            "aws-secret",
+        )
+        self.assertIsNone(resolve_storage_secret_access_key({}))
+        self.assertIsNone(
+            resolve_storage_secret_access_key(
+                {STORAGE_SECRET_ACCESS_KEY_ENV_VAR: " ", "AWS_SECRET_ACCESS_KEY": " "}
+            )
+        )
 
 
 class LocalModeParityTest(unittest.TestCase):

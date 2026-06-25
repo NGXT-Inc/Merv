@@ -119,6 +119,10 @@ export default function Sidebar({ onRefresh }) {
           </div>
         )}
 
+        <NavLink to={px('/storage')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
+          Storage
+        </NavLink>
+
         <NavLink to={px('/reviews')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           <span>Reviews</span>
           <span className="sidebar-link-count">{stats.open_reviews ?? stats.reviews ?? 0}</span>

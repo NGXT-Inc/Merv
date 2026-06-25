@@ -26,6 +26,7 @@ import ClaimDetail from './pages/ClaimDetail';
 import Experiments from './pages/Experiments';
 import ExperimentDetail from './pages/ExperimentDetail';
 import Resources from './pages/Resources';
+import Storage from './pages/Storage';
 import Reviews from './pages/Reviews';
 import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
@@ -158,6 +159,8 @@ export default function App() {
             <Route path="synthesis" element={<MobileSynthesisScreen />} />
             <Route path="resources" element={<MobileResources />} />
             <Route path="resources/:resourceId" element={<MobileResources />} />
+            <Route path="storage" element={<Storage />} />
+            <Route path="storage/:objectId" element={<Storage />} />
             <Route path="reviews" element={<MobileReviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<SandboxCardList />} />
@@ -194,6 +197,8 @@ export default function App() {
             <Route path="experiments/:experimentId" element={<ExperimentDetail />} />
             <Route path="resources" element={<Resources />} />
             <Route path="resources/:resourceId" element={<Resources />} />
+            <Route path="storage" element={<Storage />} />
+            <Route path="storage/:objectId" element={<Storage />} />
             <Route path="reviews" element={<Reviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<Sandboxes />} />

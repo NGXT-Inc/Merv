@@ -37,12 +37,11 @@ from ...ports.sandbox_lifecycle import ExperimentTransitions
 from ...ports.sandbox_sync import SyncSessionIssuer
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
-from ...utils import now_iso
+from ...utils import iso_after, now_iso
 from .sandbox_registry import SandboxRegistry
 from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     encode_dashboards,
-    iso_after,
     parse_iso,
 )
 

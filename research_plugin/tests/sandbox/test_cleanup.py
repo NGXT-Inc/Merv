@@ -259,6 +259,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(report2.as_dict(), {
             "orphan_vms_reaped": 0,
             "blobs_swept": 0,
+            "storage_objects_swept": 0,
             "leases_released": 0,
             "stale_provisions_reaped": 0,
         })

@@ -49,6 +49,12 @@ DB_URL_ENV_VAR = "RESEARCH_PLUGIN_DB_URL"
 # BlobStore impl per mode.
 BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
+STORAGE_PROVIDER_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_PROVIDER"
+STORAGE_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_BUCKET"
+STORAGE_ENDPOINT_URL_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL"
+STORAGE_REGION_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_REGION"
+STORAGE_ACCESS_KEY_ID_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_ACCESS_KEY_ID"
+STORAGE_SECRET_ACCESS_KEY_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_SECRET_ACCESS_KEY"
 MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "RESEARCH_PLUGIN_ALLOWED_ORIGINS"
@@ -130,6 +136,55 @@ def resolve_blob_dir(env: Mapping[str, str] | None = None) -> str | None:
 def resolve_blob_bucket(env: Mapping[str, str] | None = None) -> str | None:
     source = env if env is not None else os.environ
     return (source.get(BLOB_BUCKET_ENV_VAR) or "").strip() or None
+
+
+def resolve_storage_provider(env: Mapping[str, str] | None = None) -> str:
+    source = env if env is not None else os.environ
+    raw = (source.get(STORAGE_PROVIDER_ENV_VAR) or "").strip().lower()
+    if not raw:
+        return "local"
+    if raw not in {"local", "s3"}:
+        raise ValidationError(
+            f"unknown {STORAGE_PROVIDER_ENV_VAR}: {raw!r} "
+            "(expected 'local' or 's3')",
+            details={"provider": raw},
+        )
+    return raw
+
+
+def resolve_storage_bucket(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (source.get(STORAGE_BUCKET_ENV_VAR) or "").strip() or None
+
+
+def resolve_storage_endpoint_url(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (source.get(STORAGE_ENDPOINT_URL_ENV_VAR) or "").strip() or None
+
+
+def resolve_storage_region(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (source.get(STORAGE_REGION_ENV_VAR) or "").strip() or None
+
+
+def resolve_storage_access_key_id(env: Mapping[str, str] | None = None) -> str | None:
+    source = env if env is not None else os.environ
+    return (
+        (source.get(STORAGE_ACCESS_KEY_ID_ENV_VAR) or "").strip()
+        or (source.get("AWS_ACCESS_KEY_ID") or "").strip()
+        or None
+    )
+
+
+def resolve_storage_secret_access_key(
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    source = env if env is not None else os.environ
+    return (
+        (source.get(STORAGE_SECRET_ACCESS_KEY_ENV_VAR) or "").strip()
+        or (source.get("AWS_SECRET_ACCESS_KEY") or "").strip()
+        or None
+    )
 
 
 def resolve_mgmt_key_path(env: Mapping[str, str] | None = None) -> str | None:
@@ -226,6 +281,36 @@ def build_blob_store(
 
     root = resolve_blob_dir(env)
     return LocalDirBlobStore(root=Path(root) if root else default_root)
+
+
+def build_object_store(
+    *, default_root: Path, env: Mapping[str, str] | None = None
+):
+    """The heavy-object store selected by storage env config.
+
+    Unset/local keeps bytes under ``default_root/storage``. ``s3`` covers AWS
+    S3, MinIO, and R2; R2 is just S3 with an endpoint URL.
+    """
+    provider = resolve_storage_provider(env)
+    if provider == "local":
+        from .storage.local_object_store import LocalObjectStore
+
+        return LocalObjectStore(root=default_root / "storage")
+    bucket = resolve_storage_bucket(env)
+    if not bucket:
+        raise ValidationError(
+            f"{STORAGE_BUCKET_ENV_VAR} is required when {STORAGE_PROVIDER_ENV_VAR}=s3",
+            details={"provider": provider},
+        )
+    from .storage.s3_object_store import S3CompatibleObjectStore
+
+    return S3CompatibleObjectStore(
+        bucket=bucket,
+        endpoint_url=resolve_storage_endpoint_url(env),
+        region_name=resolve_storage_region(env),
+        access_key_id=resolve_storage_access_key_id(env),
+        secret_access_key=resolve_storage_secret_access_key(env),
+    )
 
 
 def build_state_store(

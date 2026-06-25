@@ -36,6 +36,7 @@ from ..config import (
     DB_URL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     build_blob_store,
+    build_object_store,
     build_state_store,
     resolve_blob_bucket,
     resolve_db_url,
@@ -51,6 +52,7 @@ from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
 from ..services.cleanup import CleanupService
 from ..services.mlflow_tracking import CentralMlflowService
+from ..storage.service import StorageLedgerService
 from ..state.managed_mgmt_keys import MountedMgmtKeyStore
 from ..utils import ValidationError
 
@@ -106,6 +108,8 @@ def build_control_app(
     db_path = staging / ".research_plugin" / "state.sqlite"
     store = build_state_store(db_path=db_path, env=env)
     blobs = build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
+    objects = build_object_store(default_root=staging / ".research_plugin", env=env)
+    storage = StorageLedgerService(store=store, objects=objects)
     # The cloud→daemon task channel: control enqueues, the daemon long-polls.
     # A bounded result wait so a reaper final_pull falls through to the expiry
     # parachute promptly when the daemon is unreachable (billing protection
@@ -121,6 +125,7 @@ def build_control_app(
         repo_root=staging,
         store=store,
         blobs=blobs,
+        storage=storage,
         task_channel=task_channel,
         execution_backend=execution_backend,
         mgmt_keys=_build_mgmt_key_store(env=env),
@@ -150,7 +155,7 @@ def build_control_server(
             "%s is empty; browser clients will be blocked by hosted-control CORS",
             ALLOWED_ORIGINS_ENV_VAR,
         )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs)
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
     fastapi_app = create_fastapi_app(
         app=app,
         allowed_origins=origins,

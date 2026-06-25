@@ -271,6 +271,47 @@ class ResourceResolveInput(ProjectScopedInput):
     )
 
 
+class StoragePutObjectInput(ProjectScopedInput):
+    name: str
+    kind: Literal["dataset", "model", "other"]
+    sha256: str
+    size_bytes: int = Field(ge=0)
+    content_type: str = "application/octet-stream"
+    producing_experiment_id: str = ""
+    producing_run: str = ""
+    source_uri: str = ""
+    notes: str = ""
+
+
+class StorageCompleteUploadInput(ProjectScopedInput):
+    upload_id: str
+    parts: list[dict[str, Any]] | None = None
+
+
+class StorageListInput(ProjectScopedInput):
+    kind: Literal["dataset", "model", "other"] | None = None
+    name: str | None = None
+    status: (
+        Literal["uploading", "completing", "available", "missing", "expired", "deleted"]
+        | None
+    ) = None
+    include_expired: bool = False
+    limit: int | None = Field(default=None, ge=1)
+    offset: int = Field(default=0, ge=0)
+    compact: bool = False
+
+
+class StorageResolveInput(ProjectScopedInput):
+    object_id: str | None = None
+    name: str | None = None
+    version: int | None = Field(default=None, ge=1)
+    include_download: bool = True
+
+
+class StorageObjectInput(ProjectScopedInput):
+    object_id: str
+
+
 class ReviewRequestInput(ProjectScopedInput):
     target_type: Literal["experiment", "reflection"]
     target_id: str
@@ -600,6 +641,47 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Resolve one registered resource. Pass include_history=true to also "
             "return its immutable observed versions (the former resource.history)."
         ),
+    ),
+    "storage.put_object": ToolContract(
+        input_model=StoragePutObjectInput,
+        description=(
+            "Register a heavy storage object intent. Returns a presigned upload "
+            "target unless the content is already present in the project."
+        ),
+    ),
+    "storage.complete_upload": ToolContract(
+        input_model=StorageCompleteUploadInput,
+        description="Complete a storage upload and mark the ledger object available.",
+    ),
+    "storage.list": ToolContract(
+        input_model=StorageListInput,
+        description=(
+            "List project storage objects. Filter by kind/name/status, paginate "
+            "with limit/offset, and pass compact=true for a lean projection."
+        ),
+    ),
+    "storage.resolve": ToolContract(
+        input_model=StorageResolveInput,
+        description=(
+            "Resolve one storage object by id or name/version. With "
+            "include_download=true, returns a presigned download URL and renews TTL."
+        ),
+    ),
+    "storage.pin": ToolContract(
+        input_model=StorageObjectInput,
+        description="Pin a storage object so expiry cleanup keeps it.",
+    ),
+    "storage.unpin": ToolContract(
+        input_model=StorageObjectInput,
+        description="Unpin a storage object and restore its default expiry.",
+    ),
+    "storage.renew": ToolContract(
+        input_model=StorageObjectInput,
+        description="Renew a storage object's default expiry window.",
+    ),
+    "storage.delete": ToolContract(
+        input_model=StorageObjectInput,
+        description="Delete a storage ledger alias and reclaim bytes when unreferenced.",
     ),
     "review.request": ToolContract(
         input_model=ReviewRequestInput,

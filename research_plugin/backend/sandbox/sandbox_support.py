@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
-from ..utils import ValidationError, format_iso, parse_iso as _parse_iso
+from ..utils import ValidationError, parse_iso as _parse_iso
 
 
 VALID_GPUS: frozenset[str] = frozenset(
@@ -228,10 +228,6 @@ def validate_request_inputs(
             f"time_limit must be between {MIN_TIME_LIMIT_SECONDS} and {MAX_TIME_LIMIT_SECONDS} seconds"
         )
     return norm_gpu, norm_cpu, norm_memory, norm_time
-
-
-def iso_after(*, seconds: int) -> str:
-    return format_iso(datetime.now(UTC) + timedelta(seconds=seconds))
 
 
 def parse_iso(value: Any) -> datetime | None:

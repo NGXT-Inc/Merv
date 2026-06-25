@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .config import build_object_store
 from .services.sandbox.sandboxes import SandboxService
+from .storage.service import StorageLedgerService
 from .services.workflow import WorkflowService
 from .state import BaseStateStore, StateStore
 from .state.blobs import BlobStore
@@ -34,6 +36,7 @@ class ResearchPluginApp:
         rsync_syncer: SshRsyncSyncer | None = None,
         store: BaseStateStore | None = None,
         blobs: "BlobStore | None" = None,
+        storage: StorageLedgerService | None = None,
         task_channel: Any | None = None,
         runtime: "LocalRuntime | None" = None,
         mlflow_tracking: CentralMlflowService | None = None,
@@ -80,6 +83,10 @@ class ResearchPluginApp:
         # control composition injects an S3BlobStore (Phase 8). Same protocol,
         # same contract tests, so the rest of the app is blob-impl-blind.
         self.blobs = runtime.blobs
+        self.storage = storage if storage is not None else StorageLedgerService(
+            store=self.store,
+            objects=build_object_store(default_root=self.workspace.research_dir),
+        )
         self.execution_backend = runtime.execution_backend
         self.mlflow_tracking = (
             mlflow_tracking
@@ -145,6 +152,7 @@ class ResearchPluginApp:
                 experiments=self.experiments,
                 reflections=self.reflections,
                 resources=self.resources,
+                storage=self.storage,
                 resource_register_file=self.register_resource_file,
                 resource_associate=self.associate_resource,
                 reviews=self.reviews,

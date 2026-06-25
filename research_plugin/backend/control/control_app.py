@@ -19,6 +19,7 @@ from .record_core import build_record_core
 from ..sandbox.sandbox_backend import SandboxBackend
 from ..services.mlflow_tracking import CentralMlflowService
 from ..services.sandbox.sandboxes import SandboxService
+from ..storage.service import StorageLedgerService
 from ..services.workflow import WorkflowService
 from ..state import BaseStateStore
 from ..state.blobs import BlobStore
@@ -35,6 +36,7 @@ class ControlApp:
         repo_root: Path,
         store: BaseStateStore,
         blobs: BlobStore,
+        storage: StorageLedgerService,
         execution_backend: SandboxBackend,
         task_channel: Any,
         mgmt_keys: MgmtKeyStore,
@@ -47,6 +49,7 @@ class ControlApp:
         self.tool_calls = ControlToolCallSink()
         self.structured_logger = StructuredLogger()
         self.blobs = blobs
+        self.storage = storage
         self.execution_backend = execution_backend
         self.mlflow_tracking = (
             mlflow_tracking
@@ -99,6 +102,7 @@ class ControlApp:
                 experiments=self.experiments,
                 reflections=self.reflections,
                 resources=self.resources,
+                storage=self.storage,
                 reviews=self.reviews,
                 sandboxes=self.sandboxes,
                 feed=self.feed,

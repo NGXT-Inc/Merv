@@ -9,6 +9,11 @@ from backend.tools.contracts import (
     AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
+    StorageCompleteUploadInput,
+    StorageListInput,
+    StorageObjectInput,
+    StoragePutObjectInput,
+    StorageResolveInput,
     TOOL_CONTRACTS,
     static_tool_catalog,
 )
@@ -43,6 +48,7 @@ def _handler_targets() -> dict[str, _HandlerTarget]:
         "experiments": target,
         "reflections": target,
         "resources": target,
+        "storage": target,
         "reviews": target,
         "sandboxes": target,
         "feed": target,
@@ -85,6 +91,21 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertIn("sandbox.sync before release", tools["sandbox.release"]["description"])
         self.assertIn("hosted control", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
+
+    def test_storage_tools_registered_with_expected_input_models(self) -> None:
+        expected = {
+            "storage.put_object": StoragePutObjectInput,
+            "storage.complete_upload": StorageCompleteUploadInput,
+            "storage.list": StorageListInput,
+            "storage.resolve": StorageResolveInput,
+            "storage.pin": StorageObjectInput,
+            "storage.unpin": StorageObjectInput,
+            "storage.renew": StorageObjectInput,
+            "storage.delete": StorageObjectInput,
+        }
+        for name, model in expected.items():
+            self.assertIs(TOOL_CONTRACTS[name].input_model, model)
+            self.assertEqual(TOOL_CONTRACTS[name].plane, "control")
 
 
 class StaticCatalogNoSideEffectTest(unittest.TestCase):

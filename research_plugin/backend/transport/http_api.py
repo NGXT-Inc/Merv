@@ -1416,6 +1416,58 @@ def create_fastapi_app(
     def delete_resource(project_id: str, resource_id: str) -> dict[str, Any]:
         return api_for_project(project_id).call_tool(name="resource.delete", arguments={"project_id": project_id, "resource_id": resource_id})
 
+    @http.get("/api/projects/{project_id}/storage")
+    def list_storage(
+        project_id: str,
+        kind: str | None = None,
+        status: str | None = None,
+        name: str | None = None,
+        include_expired: bool = False,
+    ) -> dict[str, Any]:
+        return api_for_project(project_id).app.storage.list_objects(
+            project_id=project_id,
+            kind=kind,
+            status=status,
+            name=name,
+            include_expired=include_expired,
+        )
+
+    @http.get("/api/projects/{project_id}/storage/{object_id}")
+    def get_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).app.storage.get_object(
+            project_id=project_id, object_id=object_id
+        )
+
+    @http.post("/api/projects/{project_id}/storage/{object_id}/download")
+    def download_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).app.storage.resolve(
+            project_id=project_id, object_id=object_id, include_download=True
+        )
+
+    @http.post("/api/projects/{project_id}/storage/{object_id}/pin")
+    def pin_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return {"object": api_for_project(project_id).app.storage.pin(
+            project_id=project_id, object_id=object_id
+        )}
+
+    @http.post("/api/projects/{project_id}/storage/{object_id}/unpin")
+    def unpin_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return {"object": api_for_project(project_id).app.storage.unpin(
+            project_id=project_id, object_id=object_id
+        )}
+
+    @http.post("/api/projects/{project_id}/storage/{object_id}/renew")
+    def renew_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return {"object": api_for_project(project_id).app.storage.renew(
+            project_id=project_id, object_id=object_id
+        )}
+
+    @http.delete("/api/projects/{project_id}/storage/{object_id}")
+    def delete_storage_object(project_id: str, object_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).app.storage.delete(
+            project_id=project_id, object_id=object_id
+        )
+
     @http.get("/api/projects/{project_id}/resources/{resource_id}/content")
     def resource_content(project_id: str, resource_id: str, version: str | None = None) -> dict[str, Any]:
         # `version` pins the exact submitted bytes of one resource version

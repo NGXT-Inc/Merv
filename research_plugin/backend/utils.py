@@ -14,7 +14,7 @@ once instead of three times.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 
@@ -81,6 +81,11 @@ def new_id(*, prefix: str) -> str:
 def now_iso() -> str:
     """Return the current UTC instant as an ISO-8601 string (``…Z``)."""
     return format_iso(datetime.now(UTC))
+
+
+def iso_after(*, seconds: int) -> str:
+    """Return the UTC instant ``seconds`` from now as an ISO-8601 string."""
+    return format_iso(datetime.now(UTC) + timedelta(seconds=seconds))
 
 
 def format_iso(value: datetime) -> str:

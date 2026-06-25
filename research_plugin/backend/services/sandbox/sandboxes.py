@@ -63,6 +63,7 @@ from ...utils import (
     PermissionDeniedError,
     ResearchPluginError,
     ValidationError,
+    iso_after,
 )
 from ...sandbox.sandbox_backend import (
     BackendUnavailableError,
@@ -88,7 +89,6 @@ from ...sandbox.sandbox_support import (
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     encode_dashboards,
-    iso_after,
     parse_terminal_markers,
     validate_request_inputs,
 )
