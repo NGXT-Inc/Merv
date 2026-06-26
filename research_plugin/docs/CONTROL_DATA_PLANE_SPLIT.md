@@ -170,17 +170,15 @@ daemon dies the lease expires and another client can claim it. **Do not attempt
 peer-to-peer lease coordination between local processes.** This directly
 addresses the "two local clients fight over one experiment" problem.
 
-### MCP tool surface (lease-aware)
+### MCP tool surface
 
-Sync tools must not block the handler. They control/observe a background worker
-owned by the local daemon:
+Sandbox tools should stay lifecycle-oriented. The daemon owns machine-local SSH
+keys, conn files, dashboard tunnels, and repo/project routing; retained files are
+copied explicitly by the agent over SSH or uploaded to durable storage.
 
-- `sandbox.start_sync` — acquire the cloud lease, start the local worker;
-  if already held, report the current holder instead of racing.
-- `sandbox.stop_sync` — stop the worker, release the lease.
-- `sandbox.sync_once` — one-shot pull/push (today's `sandbox.sync`).
-- `sandbox.sync_status` — lease holder, last sync time + direction, failure
-  count, active local client id.
+- `sandbox.request` — data-plane key/conn setup plus control-plane provisioning.
+- `sandbox.get` — aggregate control row facts plus local SSH enrichment.
+- `sandbox.release` — control-plane lifecycle termination after retention confirm.
 
 ## Cross-cutting concerns to design before this is real
 
@@ -197,10 +195,9 @@ owned by the local daemon:
    plane. (Today `_ensure_keypair` generates a long-lived local key and hands
    the public key to the backend; the CA model is the production evolution.)
 
-3. **`--delete` + multi-client is a footgun.** Current sync pulls with
-   `--delete`. Across a network boundary with leases, a stale client can wipe
-   live work. The `direction_policy` in the sync session must specify per-subtree
-   authority explicitly; the local syncer enforces it.
+3. **Explicit retention is a user-facing contract.** Release and reaping destroy
+   sandbox-local files. The UI and tool hints must keep the retention checklist
+   visible so agents copy or upload important outputs before termination.
 
 4. **Provider-credential ownership — a fork, not a footnote.**
    - *Platform-owned* Modal/Lambda accounts with per-user billing attribution:
@@ -233,16 +230,15 @@ This is evolution, not a rewrite — the local daemon already owns sync.
    control half (lifecycle records, provisioning) and a data half (sync worker,
    keys, local dirs) behind an interface, while both still run locally. No
    behavior change; just a clean boundary.
-2. **Define the sync-session + lease contract** (above) and route today's
-   `sandbox.sync` through it locally.
+2. **Define the sandbox identity and attachment contract** so project sandboxes
+   can be standalone, attached to experiments, or reattached without VM churn.
 3. **Stand up the private cloud control plane** (durable DB, provisioning,
    credential issuance; real user auth comes later). Point the MCP server's
    control-plane tools at it.
 4. **Ship the local data-plane daemon** as the slimmed-down successor to
    `backend.transport.http_server`: data half only, registering with the cloud
    control plane.
-5. **Add lease enforcement + `direction_policy`** and the
-   `start_sync`/`stop_sync`/`sync_status` tools.
+5. **Keep file handoff explicit**: no automatic daemon mirror or sync lease.
 
 ## Open decisions
 

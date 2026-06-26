@@ -4,7 +4,7 @@ Drives the REAL Lambda Cloud API end-to-end through ResearchPluginApp:
   1. health + live availability
   2. sandbox.options + sandbox.request(no instance_type) -> needs_selection menu
   3. provision the cheapest available SKU, SSH in, run nvidia-smi
-  4. sandbox.sync, then release/terminate (guaranteed teardown)
+  4. release/terminate (guaranteed teardown)
 
 Run from research_plugin/ with the Lambda key available:
   RESEARCH_PLUGIN_LAMBDA_ENV_FILE=$PWD/.env .venv/bin/python scripts/_live_lambda_smoke.py
@@ -22,8 +22,7 @@ from pathlib import Path
 # Make the research_plugin package root importable when run as a bare script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Test-only: point the remote workspace at /home/ubuntu (exists at boot) so an
-# explicit sandbox.sync doesn't race the cloud-init that creates /workspace.
+# Test-only: point the remote workspace at /home/ubuntu (exists at boot).
 os.environ.setdefault("RESEARCH_PLUGIN_LAMBDA_WORKDIR", "/home/ubuntu/rp_synced")
 os.environ.setdefault("RESEARCH_PLUGIN_LAMBDA_DATA_DIR", "/home/ubuntu/rp_unsynced")
 
@@ -110,13 +109,7 @@ def main() -> int:
             time.sleep(10)
         print("SSH/nvidia-smi succeeded:", ok)
 
-        hr("3c. sandbox.sync (rsync remote synced workspace -> local)")
-        try:
-            synced = app.call_tool("sandbox.sync", {"project_id": pid, "experiment_id": eid})
-            print("sync provider:", synced["sync"].get("provider"),
-                  "| pulled:", synced["sync"].get("pulled"))
-        except Exception as exc:  # noqa: BLE001
-            print("sync error (non-fatal):", exc)
+        print("Retain any needed files explicitly over SSH before release.")
     else:
         print("error:", row.get("error"))
 

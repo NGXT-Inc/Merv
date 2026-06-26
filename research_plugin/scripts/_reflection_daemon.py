@@ -20,20 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.execution.ssh_rsync import SshRsyncResult
 from backend.transport.http_server import make_http_server
-
-
-class NoopRsyncSyncer:
-    """No-op stand-in so provisioning never blocks on real rsync to a fake host."""
-
-    def sync(self, **kwargs) -> SshRsyncResult:
-        return SshRsyncResult(
-            pulled=0, duration_seconds=0.0,
-            local_dir=str(kwargs.get("local_sync_dir", "")),
-            remote_dir=str(kwargs.get("remote_sync_dir", "")),
-            command_count=0, stdout="", stderr="",
-        )
 
 
 def main() -> int:
@@ -55,7 +42,6 @@ def main() -> int:
         repo_root=repo_root,
         db_path=db_path,
         execution_backend=backend,
-        rsync_syncer=NoopRsyncSyncer(),
     )
     server = make_http_server(app=app, host=args.host, port=args.port)
     host, port = server.server_address

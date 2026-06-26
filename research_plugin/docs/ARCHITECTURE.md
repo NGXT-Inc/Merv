@@ -46,15 +46,12 @@ flowchart TD
   Daemon --> Jobs["Sandbox registry (Modal/Lambda + SSH)"]
   Daemon --> ResourceIndex["Repo-file resource index"]
   Daemon --> ReviewGates["Review gates"]
-  Daemon --> Sync["SSH rsync syncer"]
 
   Skills --> DesignReviewer["Design reviewer agent"]
   Skills --> ExperimentReviewer["Experiment reviewer agent"]
   DesignReviewer --> MCPProxy
   ExperimentReviewer --> MCPProxy
-  Jobs --> LocalRepo
   ResourceIndex --> LocalRepo
-  Sync --> LocalRepo
 ```
 
 ## Process topology
@@ -62,7 +59,7 @@ flowchart TD
 The plugin is split across two processes per research repo:
 
 1. **HTTP daemon** — long-lived. Owns SQLite, the activity log, the sandbox
-   execution backend, and the sandbox rsync poller. Exposes the full tool
+   execution backend, and the sandbox registry/reapers. Exposes the full tool
    surface at `/mcp/*` and a UI-flavored view at `/api/*`.
 2. **MCP stdio proxy** — short-lived, spawned by Codex on demand. Stateless.
    Discovers the daemon URL via `$REPO/.research_plugin/daemon.json` or
@@ -269,30 +266,31 @@ findings, and guidance about what should stay the same versus change.
 
 ## Sandbox execution
 
-There is no job abstraction. Codex requests a sandbox for an experiment and runs
-commands on it directly over SSH. It does not talk to Modal directly.
+There is no job abstraction. Codex requests a sandbox and runs commands on it
+directly over SSH. A sandbox can be standalone or attached to an experiment; it
+can later be attached to another experiment without recreating the VM.
 
 ```text
 Codex
   -> sandbox.request (MCP)
-      -> SandboxService registry  (one sandbox per experiment, reuse-if-alive)
+      -> SandboxService registry  (project sandbox, optional experiment attachment)
           -> SandboxBackend (Modal/Lambda)  ->  sandbox/VM + SSH endpoint
   -> ssh <command>  (run by Codex itself, recorded to the experiment transcript)
-  -> sandbox.sync  (mirror /workspace/<name> back to the local experiment folder)
+  -> explicit copy/upload of retained outputs before release
 ```
 
 MCP owns policy, state, and visibility:
 
 - gate `sandbox.request` on experiment status (`ready_to_run` / `running`)
-- own the per-experiment SSH keypair and the durable `sandboxes` row
+- own per-sandbox SSH facts and the durable `sandboxes` row
 - procure / reuse / release sandboxes and reconcile liveness
 - expose the terminal transcript for visibility
-- tell Codex when output files should be synced as resources
+- tell Codex when output files should be retained and registered as resources
 
 `execution` owns the `SandboxBackend` implementations. The default backend is
 **Thunder Compute** (VM-backed GPU execution); Lambda Labs and Modal are also
-supported; `fake` is used for tests. File sync is owned by `SandboxService`
-through provider-neutral SSH rsync. Backends declare a
+supported; `fake` is used for tests. Backends only procure SSH-reachable
+machines and expose lifecycle/observability hooks. Backends declare a
 `requires_hardware_selection` capability and may expose an optional
 `hardware_catalog()`: Thunder and Lambda bundle GPU+CPU+RAM into fixed instance
 types, so `SandboxService` returns a live availability menu (`needs_selection`)

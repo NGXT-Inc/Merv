@@ -4,8 +4,8 @@
   This file is the FACE of the EXECUTED experiment: it is what the user reads
   in the UI to understand what happened, and the artifact the experiment
   reviewer grades against the plan's pre-registered Evaluation section. Write
-  it in the experiment folder (e.g. experiments/<name>/report.md), sync it,
-  then register + associate it with role "report".
+  it in the experiment folder (e.g. experiments/<name>/report.md), then
+  register + associate it with role "report".
 
   REQUIRED spine — `experiment.transition(submit_results)` is blocked until
   each of these has real content (the lint strips these HTML comments, so a
@@ -19,9 +19,9 @@
     - The report must stay under 16 KB. This is the executive layer: raw
       numbers, logs, and large tables live in linked result resources
       (results.json, metrics.csv), not here.
-    - Every relative image link must resolve to a synced file. Save figures
-      next to the report (e.g. figures/*.png) and sandbox.sync before
-      submitting.
+    - Every relative image link must resolve to a submitted local file. Save
+      figures next to the report (e.g. figures/*.png), copy them off any
+      sandbox first, then submit.
 
   RECOMMENDED — not lint-enforced, but the experiment reviewer judges whether
   they are sufficient:

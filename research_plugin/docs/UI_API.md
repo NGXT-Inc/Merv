@@ -560,34 +560,19 @@ If provider tunnels relocate, the row updates on the next `sandbox.get`; local
 SSH forwards are recreated by the daemon when needed.
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
-where `transcript` is the recorded command/output log for the experiment's
-sandbox. Fresh sandbox setup pushes the experiment's whole local folder
-(`experiments/<name>/`) to `/workspace/<name>` before
-returning `status: running` (`initial_pushed` reports how many files made the
-trip), so a new remote environment starts with the current local experiment
-files. The sync endpoint mirrors `/workspace/<name>` from the live
-sandbox/VM back into the local experiment folder with SSH `rsync` (an exact
-replica: deletions propagate, local edits are overwritten while the sandbox is
-live). The regular sync excludes common heavy files and limits file size;
-`artifacts_to_keep/` inside the experiment folder is the deliberate
-large-artifact exception path. Everything outside the experiment folder (e.g.
-`/workspace/data` for datasets, caches, checkpoints) stays remote and is never
-synced. Sandbox telemetry (mlflow.db, TensorBoard events, transcript) is pulled
-separately into `.research_plugin/sessions/<experiment_id>/<sandbox_id>/`. Use
-the sync endpoint for the deliberate data-plane file handoff before release. In
-hosted control mode, the release endpoint terminates the sandbox without local
-final-pull rsync and may return `final_pull_skipped: true` when a running final
-pull was skipped; local/reaper paths may still attempt a best-effort final pull
-before termination.
+where `transcript` is the recorded command/output log for the sandbox. Fresh
+sandbox setup returns SSH details and a remote work folder. Nothing is mirrored
+automatically: agents fetch code/data on the box and explicitly retain outputs
+before release by copying light files over SSH or uploading heavy artifacts with
+storage tools. Everything left on the VM at release or expiry is destroyed.
 
 Thunder Compute is the **default** backend (`RESEARCH_PLUGIN_EXECUTION_BACKEND`
 unset or `thunder_compute`): sandbox procurement launches a Thunder VM with SSH
-and installs the baseline agent tooling over the management SSH channel. The same
-SSH rsync path is used for `sandbox.sync`; no provider volume or volume-like
-storage is required. Thunder and Lambda Labs both use fixed GPU+CPU+RAM specs, so
-the sandbox row carries the chosen `instance_type` alongside `gpu`/`cpu`/`memory`,
-and the agent selects one from live availability (see the `needs_selection`
-response and `sandbox.options` in MCP_SERVER_CONTRACT.md).
+and installs the baseline agent tooling over the management SSH channel. Thunder
+and Lambda Labs both use fixed GPU+CPU+RAM specs, so the sandbox row carries the
+chosen `instance_type` alongside `gpu`/`cpu`/`memory`, and the agent selects one
+from live availability (see the `needs_selection` response and `sandbox.options`
+in MCP_SERVER_CONTRACT.md).
 
 The metrics endpoint returns live in-container usage, sampled on demand inside
 the sandbox (CPU/RAM via cgroups, GPU via `nvidia-smi`). It is best-effort:

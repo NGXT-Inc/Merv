@@ -22,4 +22,6 @@ Operating rules:
   `review_request_id`, and `reviewer_capability` in the prompt. Reviewers are
   read-only and submit verdicts themselves via `review.start` / `review.submit`.
 - Expensive or GPU work runs in a sandbox over SSH (`sandbox.request` /
-  `sandbox.terminal` / `sandbox.sync` / `sandbox.release`), never locally.
+  `sandbox.terminal` / `sandbox.release`), never locally. Copy retained files
+  off the box explicitly over SSH, or upload heavy artifacts with storage tools,
+  before releasing the sandbox.

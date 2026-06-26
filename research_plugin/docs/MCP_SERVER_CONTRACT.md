@@ -272,17 +272,16 @@ per-resource version history, use `resource.resolve(include_history=true)`.
 
 ```text
 sandbox.options(gpu?, region?)
-sandbox.request(experiment_id, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
-sandbox.get(experiment_id)
-sandbox.sync(experiment_id)
+sandbox.request(experiment_id?, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
+sandbox.get(experiment_id? | sandbox_uid)
 sandbox.list()
-sandbox.release(experiment_id)
-sandbox.terminal(experiment_id, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_exit_code / last_command_finished_at / command_running per command.
+sandbox.release(experiment_id? | sandbox_uid)
+sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_exit_code / last_command_finished_at / command_running per command.
 sandbox.health()
 ```
 
-There is no job abstraction. Codex requests a sandbox for an experiment, gets
-back SSH connection details (including a short, ready-to-run `ssh.command`), and
+There is no job abstraction. Codex requests a sandbox, gets back SSH connection
+details (including a short, ready-to-run `ssh.command`), and
 runs shell commands on the sandbox itself. Lightweight work still runs locally.
 
 `sandbox.request` is the only procurement call. The registry keeps **one sandbox
@@ -358,28 +357,14 @@ plain sandbox `env` value and not as a synced repo `.env` file.
 Agents must not print the token, write it into synced files, or register it as a
 resource.
 
-When a fresh sandbox/VM is created, setup pushes the experiment's whole local
-folder (`experiments/<name>/`) to `$RP_EXPERIMENT_DIR` before
-returning `status: running`, and the response reports `files_pushed`. This
-makes existing local experiment files (plan, scripts, configs, notes) available
-to a newly provisioned remote environment — including a replacement sandbox
-after expiry, which receives everything the previous one synced back. While
-the sandbox lives, the daemon mirrors the folder back continuously
-(best-effort periodic rsync, default every ~5s) and on explicit
-`sandbox.sync(experiment_id)`. The mirror is an **exact replica with
-deletions**: file deletions and renames on the VM propagate to the local copy,
-and local edits are overwritten — while a sandbox is live, the VM owns the
-folder, and agents make all experiment-file edits there over SSH. The regular
-pass skips heavy file types and enforces a conservative file-size limit;
-`$RP_EXPERIMENT_DIR/artifacts_to_keep` is the deliberate exception path for
-large final artifacts. Resource tools only operate on local repo files, so a
-file produced remotely cannot be associated until it has synced locally —
-call `sandbox.sync` as the durable handoff before registering resources and
-before `sandbox.release`. Sandbox-authored telemetry (MLflow database,
-TensorBoard events, command transcripts) lives outside the experiment folder
-on the VM and is pulled separately into the daemon-owned
-`.research_plugin/sessions/<experiment_id>/<sandbox_id>/` dir, one subdir per
-VM generation.
+When a fresh sandbox/VM is created, setup returns SSH details and a remote work
+folder (`$RP_EXPERIMENT_DIR`). Nothing is mirrored automatically. Agents fetch
+code/data on the box, keep disposable bulk data under `$RP_DATASET_DIR`, and
+explicitly retain outputs before release: copy light files back over SSH or
+upload heavy artifacts with storage tools. Resource tools only operate on local
+repo files, so a file produced remotely cannot be associated until it has been
+copied back locally. Release and expiry destroy the VM and any files the agent
+did not retain.
 
 Provisioning is **best-effort-synchronous**. Creating a sandbox can outlast the
 MCP call timeout (large first sync, cold GPU), so `sandbox.request` provisions on

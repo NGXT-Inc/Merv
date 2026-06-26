@@ -2,7 +2,7 @@
 name: research-workflow
 description: >-
   Use when the agent should operate the Research Plugin workflow: ask MCP for
-  status and next action, inspect claims, create or run experiments, sync
+  status and next action, inspect claims, create or run experiments, register
   repo-file resources, use MCP-controlled mutations, and launch read-only design
   or experiment reviewers when required.
 ---
@@ -23,7 +23,7 @@ workflow state.
 
 You may freely work on local repo files. Do not treat those edits as
 research-state mutations. A file becomes a research resource only after MCP
-accepts a resource registration or sync and associates it with a claim,
+accepts a resource registration and associates it with a claim,
 experiment, review, or attempt.
 
 ## Research process
@@ -87,14 +87,12 @@ inflated (hype you can't back with a number).
 
 Every experiment owns exactly one folder: `experiments/<name>/`
 (created for you by `experiment.create`). Everything the experiment is lives
-there — plan.md, scripts, configs, results, report.md, graph.json. This
-matters because the folder is also the **sandbox sync unit**: when a sandbox
-is provisioned, the whole folder is pushed to the VM, and while the sandbox
-lives the folder is mirrored back to the local repo. Work you keep in the
-folder from planning onward (the plan, the code you wrote for the run, the
-notes the run needs) is therefore already on the VM when it boots. Shared
-repo material (papers/, notes/) is NOT pushed — copy the specific files a run
-needs manually.
+there — plan.md, scripts, configs, results, report.md, graph.json. Resource
+tools only see local repo files. A sandbox is just an ephemeral machine you SSH
+into: fetch code and data on the box, write compact outputs under
+`$RP_EXPERIMENT_DIR`, then explicitly copy retained files back to this local
+folder before registering them. Heavy artifacts should go to durable object
+storage instead of into the repo.
 
 ## Workflow
 
@@ -121,8 +119,9 @@ needs manually.
    request a sandbox with `sandbox.request` and run commands on it yourself over
    SSH (see Execution environment). Prefer CPU-only sandboxes for data profiling
    and preprocessing unless the specific command needs GPU acceleration.
-11. After execution in a sandbox, call `sandbox.sync(experiment_id)`
-    before registering or associating result resources.
+11. After execution in a sandbox, explicitly copy retained files off the box
+    before registering or associating result resources. Use `rsync`/`scp` over
+    the returned SSH details for light files, and storage tools for heavy files.
 12. Launch a separate read-only reviewer agent when MCP requires design review or
    experiment review.
 13. Make sure the reviewer submits directly to MCP using its review capability.
@@ -168,10 +167,11 @@ reviewed.
 
 Expensive or GPU work runs in a **cloud sandbox** that you drive directly over
 SSH. Once the experiment is `ready_to_run` (or already `running`), call
-`sandbox.request(experiment_id, instance_type?, region?, gpu?, cpu?, memory?,
+`sandbox.request(experiment_id?, instance_type?, region?, gpu?, cpu?, memory?,
 time_limit?)` and follow the returned `hint`; `sandbox.request`/`sandbox.get`
 are the source of truth for provider selection, polling, expiry, credentials,
-observability env vars, and the synced-folder contract.
+observability env vars, and the remote work folder. A sandbox can also be
+created unattached and addressed by `sandbox_uid`.
 
 Use the smallest viable machine. On Lambda Labs, omit `instance_type` first
 when you need the live machine menu; on Modal, request `gpu`/`cpu`/`memory`
@@ -185,27 +185,27 @@ repo root. Use `sandbox.terminal(experiment_id)` to inspect transcript output
 and command exit markers before re-running anything long.
 
 While the sandbox is live, make experiment-folder edits on the VM under
-`$RP_EXPERIMENT_DIR`; the sandbox mirrors that folder back locally, so local
-edits inside the same folder can be overwritten. Keep datasets, caches,
-temporary checkpoints, and other disposable bulk files outside the synced
-folder, usually under `$RP_DATASET_DIR`. Keep durable scripts, configs, notes,
-compact outputs, report figures/tables, and deliberate final artifacts inside
-`$RP_EXPERIMENT_DIR` so they can be synced and registered.
+`$RP_EXPERIMENT_DIR`. Nothing is mirrored automatically. Keep datasets, caches,
+temporary checkpoints, and other disposable bulk files under `$RP_DATASET_DIR`.
+Keep durable scripts, configs, notes, compact outputs, report figures/tables,
+and deliberate final artifacts under `$RP_EXPERIMENT_DIR` so you can copy them
+off deliberately before release.
 
 Use the observability environment reported by `sandbox.request`/`sandbox.get`;
 the backend provides centralized MLflow tracking env and the sandbox provides
 TensorBoard event logging, but you still need to log the run and save compact
 evidence under `$RP_EXPERIMENT_DIR`.
 
-Before registering or associating result resources, call
-`sandbox.sync(experiment_id)`. Resource tools only see local repo files, so
-remote sandbox paths are not valid resources until sync completes. Prefer
-`sandbox.sync` before `sandbox.release`; expiry and release attempt a final
-pull, but do not rely on that for deliberate handoff.
+Before registering or associating result resources, use `rsync` or `scp`
+yourself with the returned SSH details, or upload heavy artifacts with
+`storage.put_object`. Resource tools only see local repo files, so remote
+sandbox paths are not valid resources until you have copied the files back
+locally. Do this before `sandbox.release`; release and expiry destroy the VM
+and anything you did not retain.
 
-Do not embed secrets in commands or synced files. Treat the sandbox as
-ephemeral: durable outputs must be written inside `$RP_EXPERIMENT_DIR`, synced,
-and then registered/associated as resources.
+Do not embed secrets in commands or retained files. Treat the sandbox as
+ephemeral: durable outputs must be explicitly copied or uploaded and then
+registered/associated as resources.
 
 ## Experiment creation
 
@@ -294,9 +294,9 @@ has BOTH a `result` resource and a `report` resource whose SUBMITTED content
 - **Under 16 KB.** The report is the executive layer: link raw metrics files
   (`results.json`, logs) as separate result resources instead of inlining.
 - **Every relative image link has submitted figure content.** Save figures
-  next to the report (`figures/*.png`), `sandbox.sync` so they exist locally,
-  and THEN associate the report — associating it submits the figures it links
-  alongside it. Added a figure later? Re-associate the report.
+  next to the report (`figures/*.png`), copy them off the sandbox so they exist
+  locally, and THEN associate the report — associating it submits the figures it
+  links alongside it. Added a figure later? Re-associate the report.
 
 The Conclusion must apply the plan's pre-registered decision rule explicitly —
 the experiment reviewer compares the two documents side by side.
@@ -325,7 +325,7 @@ is an editorial call — record what shaped the experiment, not every step. If a
 development adds no valuable information to the story, you may leave it out.
 
 Keep nodes brief and use `refs` for depth: a node's `refs` array takes
-repo-relative paths of synced files or record ids (`res_…`, `rev_…`,
+repo-relative paths of registered files or record ids (`res_…`, `rev_…`,
 `claim_…`, `exp_…`), and the UI resolves them into links the user and
 reviewer can follow. Point a problem node at the log that shows it, a pivot
 node at the review that forced it, an outcome node at the results file —
@@ -338,13 +338,13 @@ JSON (`version: 1`), every node with a unique `id` and non-empty `label`,
 under 16 KB. The lint checks shape only; the experiment reviewer judges
 whether the story is honest and consistent with the report and transcript.
 
-Start the graph early and sync it as the story develops — the user watches it
-live, and a hard decision is best recorded in the moment you make it, while
-the reasoning is fresh; a graph reconstructed at the end keeps the events but
-loses the *why*. After a review rejection, consider whether the rejection and
-the rework it forces belong in the story. If the graph is at the 16-node
-budget and something important must be added, reduce the graph first; how to
-retell the story within the budget is your call.
+Start the graph early and keep a local copy current as the story develops —
+the user watches it live, and a hard decision is best recorded in the moment
+you make it, while the reasoning is fresh; a graph reconstructed at the end
+keeps the events but loses the *why*. After a review rejection, consider
+whether the rejection and the rework it forces belong in the story. If the
+graph is at the 16-node budget and something important must be added, reduce
+the graph first; how to retell the story within the budget is your call.
 
 ## Resource discipline
 
@@ -353,10 +353,10 @@ Resources are repo files. Prefer one file per resource.
 When the agent creates or changes files during an experiment:
 
 - identify the relevant repo-relative paths
-- if the experiment ran in a sandbox, call `sandbox.sync` first; resource tools
-  operate on local files and cannot associate unsynced remote sandbox files
-- call the MCP resource sync/register tool
-- associate synced resources with the current experiment, claim, or review
+- if the experiment ran in a sandbox, copy retained files off the box first;
+  resource tools operate on local files and cannot associate remote sandbox files
+- call the MCP resource register tool
+- associate local resources with the current experiment, claim, or review
 - when `workflow.status_and_next` includes `resource_guidance`, follow its
   `association_role`; do not guess plural role names such as `results`,
   `reports`, or `output` (the singular roles are `result`, `report`, and
@@ -390,7 +390,7 @@ step.
 
 Before marking an experiment complete:
 
-- resources are synced
+- resources are registered and associated
 - design and experiment reviews are recorded and accepted by MCP
 - conclusion is grounded in files or sandbox outputs
 - MCP accepts the transition

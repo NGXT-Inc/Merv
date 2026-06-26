@@ -29,7 +29,8 @@ See `deploy/.env.example` for a copy-ready template. Essentials:
 - `RESEARCH_PLUGIN_DB_URL` — `postgres://…` selects the Postgres dialect.
   **Required in production** (SQLite fallback is dev-only).
 - `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` — the S3-shape blob store. The presign
-  must be a real HTTPS PUT a sandbox VM can reach (the parachute depends on it).
+  endpoints must be real HTTPS URLs a sandbox VM can reach for explicit artifact
+  uploads.
 - `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` — mounted
   management SSH key material. Production control reads this secret; it should
   not generate management keys into a local staging directory. The private key
@@ -107,13 +108,10 @@ interval; the sweeps are the broader periodic housekeeping.
 
 Result-role `/content` and figure `/file?rel=` return a documented
 `content_unavailable` shape in control mode (the bytes live only on an offline
-daemon, or are metadata-only — fixed decision 6) rather than a 500. `sandbox.sync`
-surfaces a `daemon_unreachable` reason on a task timeout. Hosted browser/MCP
-`sandbox.release` is a lifecycle action only: it terminates without local
-final-pull rsync and returns `final_pull_skipped`. Reaper/local release paths may
-still attempt a best-effort final pull; failures flag `daemon_unreachable` while
-still freeing billing. The React SPA renders these states — that repoint is
-separate from the backend.
+daemon, or are metadata-only — fixed decision 6) rather than a 500. Hosted
+browser/MCP `sandbox.release` is intentionally destructive: it terminates the VM
+after the caller confirms retained outputs. Anything left on the sandbox is lost.
+The React SPA renders these states — that repoint is separate from the backend.
 
 ## Poll amplification
 
@@ -133,4 +131,4 @@ alerting are the operator's responsibility. See `deploy/README.md`.
 
 Managed Postgres provisioning, real TLS certs, a live cleanup scheduler daemon,
 device-flow OAuth / real user auth (open decision C), the React UI repoint, and
-reaper-lag / provision-failure / parachute-failure alerting.
+reaper-lag / provision-failure / idle-reap alerting.
