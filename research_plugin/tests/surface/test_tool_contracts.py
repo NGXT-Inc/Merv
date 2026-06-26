@@ -88,8 +88,8 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertIn("TensorBoard", tools["sandbox.request"]["description"])
         self.assertIn("expiry", tools["sandbox.get"]["description"])
         self.assertIn("poll provisioning", tools["sandbox.get"]["description"])
-        self.assertIn("sandbox.sync before release", tools["sandbox.release"]["description"])
-        self.assertIn("hosted control", tools["sandbox.release"]["description"])
+        self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
+        self.assertIn("retention checklist", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
 
     def test_storage_tools_registered_with_expected_input_models(self) -> None:

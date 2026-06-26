@@ -117,7 +117,11 @@ class SandboxIdentityTest(unittest.TestCase):
 
         self.app.call_tool(
             "sandbox.release",
-            {"project_id": self.project_id, "experiment_id": exp_id},
+            {
+                "project_id": self.project_id,
+                "experiment_id": exp_id,
+                "confirm_retained": True,
+            },
         )
         attachment = self._attachment(sandbox_uid, exp_id)
         self.assertIsNotNone(attachment["detached_at"])

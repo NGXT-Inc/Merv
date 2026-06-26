@@ -260,7 +260,6 @@ def build_local_tool_handlers(
             ),
             "sandbox.request": sandboxes.request,
             "sandbox.attach": sandboxes.attach,
-            "sandbox.sync": sandboxes.sync,
             "feed.post": feed_post if feed_post is not None else feed.post,
         }
     )

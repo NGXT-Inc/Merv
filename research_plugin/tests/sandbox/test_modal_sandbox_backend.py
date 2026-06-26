@@ -185,10 +185,10 @@ class ModalSandboxBackendTest(unittest.TestCase):
         FakeSandbox.tunnels_fail = False
         FakeSandboxClass.created = []
         FakeSandboxClass.by_name = {}
-        self._old_hf_env = {
-            "HF_TOKEN": os.environ.get("HF_TOKEN"),
-            "HUGGING_FACE_HUB_TOKEN": os.environ.get("HUGGING_FACE_HUB_TOKEN"),
-        }
+        # ModalConfig.from_env() loads the plugin .env into os.environ, which can
+        # inject keys (e.g. RESEARCH_PLUGIN_STORAGE_PROVIDER) that would leak into
+        # later tests. Snapshot the whole environment and restore it in tearDown.
+        self._saved_environ = dict(os.environ)
         os.environ["MODAL_TOKEN_ID"] = os.environ.get("MODAL_TOKEN_ID", "tok")
         os.environ["MODAL_TOKEN_SECRET"] = os.environ.get("MODAL_TOKEN_SECRET", "sec")
         os.environ.pop("HF_TOKEN", None)
@@ -208,11 +208,10 @@ class ModalSandboxBackendTest(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        for key, value in self._old_hf_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        # Restore the exact pre-test environment so nothing load_modal_env_file()
+        # injected leaks into other test modules.
+        os.environ.clear()
+        os.environ.update(self._saved_environ)
         self.tmp.cleanup()
 
     def _request(self) -> SandboxRequest:

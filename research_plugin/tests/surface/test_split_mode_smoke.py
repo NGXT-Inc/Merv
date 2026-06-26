@@ -137,7 +137,7 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("resource.associate", names)
         self.assertIn("sandbox.get", names)
         self.assertIn("sandbox.request", names)
-        self.assertIn("sandbox.sync", names)
+        self.assertNotIn("sandbox.sync", names)
         self.assertIn("feed.post", names)
 
     def test_daemon_stop_stops_mlflow_reverse_tunnels(self) -> None:
@@ -678,12 +678,19 @@ class SplitModeSmokeTest(unittest.TestCase):
         # sync under lease (data plane), then results/report/graph. Metrics
         # capture is patched on the DAEMON worker only; if control captures
         # through its own worker, no archived metrics will appear here.
+        # sandbox.sync is no longer an MCP tool routed through the proxy; the
+        # daemon's data-plane sync handler (DaemonServer.call_tool) still drives
+        # the rsync pull + metrics capture, so exercise it directly here.
         with patch.object(
             self.daemon_worker,
             "capture_metrics_snapshot",
             return_value=dict(SPLIT_METRICS),
         ) as capture_metrics:
-            self._call("sandbox.sync", project_id=project_id, experiment_id=exp_id)
+            self.daemon_server.call_tool(
+                name="sandbox.sync",
+                arguments={"experiment_id": exp_id},
+                context={"repo_root": str(self.repo)},
+            )
         capture_metrics.assert_called_once()
         archived_metrics = self.cloud_app.sandboxes.results_metrics(
             experiment_id=exp_id,
@@ -709,7 +716,12 @@ class SplitModeSmokeTest(unittest.TestCase):
                    transition="complete", evidence={"conclusion": "0.72 beats 0.6; supported."})
 
         # release (control surface) — terminates the sandbox.
-        self._call("sandbox.release", project_id=project_id, experiment_id=exp_id)
+        self._call(
+            "sandbox.release",
+            project_id=project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         durable_metrics = self.cloud_app.sandboxes.results_metrics(
             experiment_id=exp_id,
             project_id=project_id,

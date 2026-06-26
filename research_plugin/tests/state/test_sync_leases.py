@@ -195,7 +195,7 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
     def test_lease_visible_in_sandbox_get_and_list(self) -> None:
         self.call("sandbox.request", project_id=self.project_id, experiment_id=self.exp_id)
         # The lease is claimed when the agent first syncs — no auto-sync grants it.
-        self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
+        self.app.sandboxes.sync(project_id=self.project_id, experiment_id=self.exp_id)
         client_id = self.app.worker.client_id()
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=self.exp_id)
         self.assertEqual(got["sync_lease"]["holder_client_id"], client_id)
@@ -207,19 +207,22 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
         # One client re-syncing its own experiment renews its own lease —
         # no error, no extra ceremony, same response shape as ever.
         self.call("sandbox.request", project_id=self.project_id, experiment_id=self.exp_id)
-        first = self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
-        second = self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
+        first = self.app.sandboxes.sync(project_id=self.project_id, experiment_id=self.exp_id)
+        second = self.app.sandboxes.sync(project_id=self.project_id, experiment_id=self.exp_id)
         self.assertEqual(first["sync"]["provider"], "ssh_rsync")
         self.assertEqual(second["sync"]["provider"], "ssh_rsync")
         released = self.call(
-            "sandbox.release", project_id=self.project_id, experiment_id=self.exp_id
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=self.exp_id,
+            confirm_retained=True,
         )
         self.assertEqual(released["status"], "terminated")
 
     def test_second_client_cannot_double_sync_a_leased_experiment(self) -> None:
         self.call("sandbox.request", project_id=self.project_id, experiment_id=self.exp_id)
         # The local client claims the lease by syncing once — no auto-sync grant.
-        self.call("sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id)
+        self.app.sandboxes.sync(project_id=self.project_id, experiment_id=self.exp_id)
         # Hand the lease to a simulated second client (long TTL), as if
         # another machine's daemon were syncing this experiment.
         own = self.app.sandboxes.leases.holder(experiment_id=self.exp_id)
@@ -232,8 +235,8 @@ class LeaseAgentSurfaceTest(unittest.TestCase):
             ttl_seconds=3600,
         )
         with self.assertRaises(PermissionDeniedError) as ctx:
-            self.call(
-                "sandbox.sync", project_id=self.project_id, experiment_id=self.exp_id
+            self.app.sandboxes.sync(
+                project_id=self.project_id, experiment_id=self.exp_id
             )
         self.assertIn("client_elsewhere", str(ctx.exception))
         # And sandbox.get tells this client why it isn't syncing.

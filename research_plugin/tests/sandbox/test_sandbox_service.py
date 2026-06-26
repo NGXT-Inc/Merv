@@ -83,9 +83,10 @@ class SandboxServiceTest(unittest.TestCase):
         )
         # The agent is told the folder contract at the moment it matters.
         self.assertIn("experiment folder", result["hint"])
-        self.assertIn("OUTSIDE the experiment folder", result["hint"])
-        self.assertIn("the sandbox owns the folder", result["hint"])
-        self.assertIn("Call sandbox.sync", result["hint"])
+        self.assertIn("EPHEMERAL SSH window", result["hint"])
+        self.assertIn("$RP_DATASET_DIR", result["hint"])
+        self.assertIn("rsync", result["hint"])
+        self.assertIn("storage.put_object", result["hint"])
         self.assertIn("expires at", result["hint"])
         self.assertIn("ready_to_run", result["hint"])
         # Full ssh line is still available as a cwd-independent fallback.
@@ -130,7 +131,12 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("RP_SSH_HOST=", body)
         self.assertIn("RP_SSH_PORT=", body)
         # Releasing the sandbox drops the conn file so `sbx` fails loudly.
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         self.assertFalse(conn.exists())
 
     def test_request_reuses_live_sandbox(self) -> None:
@@ -320,8 +326,7 @@ class SandboxServiceTest(unittest.TestCase):
             sandbox_uid=first["sandbox_uid"],
         )
         self.assertEqual(got_first["sandbox_id"], first["sandbox_id"])
-        synced = self.call(
-            "sandbox.sync",
+        synced = self.app.sandboxes.sync(
             project_id=self.project_id,
             experiment_id=exp_id,
             sandbox_uid=first["sandbox_uid"],
@@ -342,6 +347,7 @@ class SandboxServiceTest(unittest.TestCase):
             project_id=self.project_id,
             experiment_id=exp_id,
             sandbox_uid=first["sandbox_uid"],
+            confirm_retained=True,
         )
         self.assertEqual(released["sandbox_uid"], first["sandbox_uid"])
         self.assertIn(first["sandbox_id"], self.backend.terminated)
@@ -365,6 +371,7 @@ class SandboxServiceTest(unittest.TestCase):
             project_id=self.project_id,
             experiment_id=exp_id,
             sandbox_uid=pending_uid,
+            confirm_retained=True,
         )
 
         self.assertEqual(released["sandbox_uid"], pending_uid)
@@ -391,7 +398,12 @@ class SandboxServiceTest(unittest.TestCase):
             additional=True,
         )
 
-        released = self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        released = self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         self.assertEqual(released["released_count"], 2)
         self.assertIn(first["sandbox_id"], self.backend.terminated)
         self.assertIn(second["sandbox_id"], self.backend.terminated)
@@ -584,7 +596,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("mlflow.autolog", result["hint"])
         self.assertIn("figures/*.png", result["hint"])
         self.assertIn("report.md", result["hint"])
-        self.assertIn("Call sandbox.sync to pull", result["hint"])
+        self.assertIn("rsync the files you need off", result["hint"])
 
     def test_local_loopback_mlflow_starts_reverse_tunnel_for_remote_sandbox(self) -> None:
         self.app.sandboxes.mlflow_tracking = CentralMlflowService(
@@ -776,7 +788,12 @@ class SandboxServiceTest(unittest.TestCase):
             "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",
             return_value=dict(self.SNAPSHOT),
         ) as snap:
-            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "sandbox.release",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                confirm_retained=True,
+            )
         snap.assert_called_once()
         self.assertEqual(snap.call_args.args[0], "https://mlflow.test")
         self.assertEqual(
@@ -842,7 +859,7 @@ class SandboxServiceTest(unittest.TestCase):
             "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",
             return_value=dict(self.SNAPSHOT),
         ):
-            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+            self.app.sandboxes.sync(project_id=self.project_id, experiment_id=exp_id)
         result = self.app.sandboxes.results_metrics(
             experiment_id=exp_id, project_id=self.project_id
         )
@@ -859,9 +876,14 @@ class SandboxServiceTest(unittest.TestCase):
             "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",
             return_value=dict(self.SNAPSHOT),
         ):
-            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+            self.app.sandboxes.sync(project_id=self.project_id, experiment_id=exp_id)
         with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=None):
-            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "sandbox.release",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                confirm_retained=True,
+            )
         result = self.app.sandboxes.results_metrics(
             experiment_id=exp_id, project_id=self.project_id
         )
@@ -878,7 +900,7 @@ class SandboxServiceTest(unittest.TestCase):
             "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",
             return_value=dict(self.SNAPSHOT),
         ):
-            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+            self.app.sandboxes.sync(project_id=self.project_id, experiment_id=exp_id)
         archive_path = self.app.sandboxes.metrics_archive.path_for(exp_id)
         self.assertTrue(archive_path.exists())  # the local file cache is kept as-is
         archive_path.unlink()
@@ -993,7 +1015,12 @@ class SandboxServiceTest(unittest.TestCase):
                     for command in popen_calls
                 )
             )
-            self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "sandbox.release",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                confirm_retained=True,
+            )
 
         ssh_procs = [proc for command, proc in procs if command and command[0] == "ssh"]
         self.assertTrue(ssh_procs)
@@ -1160,7 +1187,12 @@ class SandboxServiceTest(unittest.TestCase):
     def test_terminal_running_false_after_release(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         self.assertFalse(term["running"])
 
@@ -1278,15 +1310,22 @@ class SandboxServiceTest(unittest.TestCase):
         self.backend.append_transcript(
             experiment_id=exp_id, text="\n[2026-06-09T12:00:00Z] $ sleep 100\n"
         )
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         self.assertFalse(term["running"])
         self.assertFalse(term["command_running"])
 
     def test_sync_commits_sandbox_and_returns_resource_guidance(self) -> None:
+        # sandbox.sync is no longer an MCP tool, but the internal service method
+        # still backs daemon-driven pulls — exercise it directly.
         exp_id = self._experiment()
         created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        result = self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+        result = self.app.sandboxes.sync(project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["sync"]["provider"], "ssh_rsync")
         self.assertEqual(result["sync"]["pulled"], 2)
@@ -1297,19 +1336,51 @@ class SandboxServiceTest(unittest.TestCase):
     def test_sync_requires_running_sandbox(self) -> None:
         exp_id = self._experiment()
         with self.assertRaises(ValidationError):
-            self.call("sandbox.sync", project_id=self.project_id, experiment_id=exp_id)
+            self.app.sandboxes.sync(project_id=self.project_id, experiment_id=exp_id)
 
     # ---- release ----
 
     def test_release_terminates(self) -> None:
         exp_id = self._experiment()
         created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        released = self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        released = self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         self.assertEqual(released["status"], "terminated")
         self.assertIn("final pull", released["hint"])
         self.assertIn("metrics snapshot", released["hint"])
         self.assertIn("sandbox.sync", released["hint"])
         self.assertNotIn("parachute", released["hint"].lower())
+        self.assertIn(created["sandbox_id"], self.backend.terminated)
+
+    def test_release_requires_retention_confirmation(self) -> None:
+        # Two-step release: the first call WITHOUT confirm_retained must NOT
+        # terminate — it returns a retention checklist and leaves the sandbox
+        # alive. Only confirm_retained=True actually destroys the VM.
+        exp_id = self._experiment()
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        pending = self.call(
+            "sandbox.release", project_id=self.project_id, experiment_id=exp_id
+        )
+        self.assertEqual(pending["status"], "confirmation_required")
+        self.assertFalse(pending["released"])
+        self.assertTrue(pending["pending_release"])
+        self.assertNotIn(created["sandbox_id"], self.backend.terminated)
+        self.assertTrue(self.backend.is_alive(sandbox_id=created["sandbox_id"]))
+        # The sandbox is still running and visible.
+        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(got["status"], "running")
+        # Confirming actually terminates it.
+        released = self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
+        self.assertEqual(released["status"], "terminated")
         self.assertIn(created["sandbox_id"], self.backend.terminated)
 
     # ---- list ----
@@ -1549,7 +1620,12 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         started = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(started["status"], "provisioning")
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         # Let the gated job unwind; it must honor the cancel, not go running.
         self.backend.gate.set()
         final = self._await_status(exp_id, "terminated")

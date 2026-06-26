@@ -677,6 +677,7 @@ class SandboxService:
         project_id: str | None = None,
         skip_final_pull: bool = False,
         sandbox_uid: str | None = None,
+        confirm_retained: bool = False,
     ) -> dict[str, Any]:
         row = self.registry.fetch_scoped(
             experiment_id=experiment_id,
@@ -697,6 +698,15 @@ class SandboxService:
             ]
             if len(active) > 1:
                 targets = active
+        # Retention gate: deleting a sandbox is irreversible, so the first call
+        # confirms nothing was lost before we destroy the VM. Re-call with
+        # confirm_retained=true to actually terminate.
+        if not confirm_retained:
+            return self._release_confirmation(
+                experiment_id=experiment_id,
+                project_id=str(row.get("project_id") or ""),
+                targets=targets,
+            )
         views = [
             self._release_row(row=target, skip_final_pull=skip_final_pull)
             for target in targets
@@ -710,6 +720,40 @@ class SandboxService:
             "released_count": len(views),
             "sandboxes": views,
             "hint": "All live sandboxes for this experiment were terminated.",
+        }
+
+    def _release_confirmation(
+        self, *, experiment_id: str, project_id: str, targets: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """First-call retention checklist: release does not delete until the
+        agent confirms it kept what it needs — the VM is destroyed on release."""
+        pending = [
+            {
+                "sandbox_uid": str(target.get("sandbox_uid") or ""),
+                "sandbox_id": str(target.get("sandbox_id") or ""),
+                "status": target.get("status"),
+                "workdir": target.get("workdir"),
+            }
+            for target in targets
+        ]
+        count = len(pending)
+        noun = "sandbox" if count == 1 else "sandboxes"
+        return {
+            "experiment_id": experiment_id,
+            "project_id": project_id,
+            "status": "confirmation_required",
+            "released": False,
+            "pending_release": pending,
+            "hint": (
+                f"Not released yet. This will permanently destroy {count} {noun} "
+                "and everything on the VM. First confirm you have retained "
+                "everything you need: rsync the light files you want off the box "
+                "yourself over SSH into the local experiment folder, and "
+                "storage.put_object for any heavy file (a trained model, a precious "
+                "dataset) worth keeping. Nothing is auto-synced — anything you do "
+                "not pull is lost. When you have everything, re-call sandbox.release "
+                "with confirm_retained=true to terminate."
+            ),
         }
 
     def _release_row(

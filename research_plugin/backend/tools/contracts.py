@@ -457,14 +457,6 @@ class SandboxAttachInput(ProjectScopedInput):
     )
 
 
-class SandboxSyncInput(ProjectScopedInput):
-    experiment_id: str
-    sandbox_uid: str | None = Field(
-        default=None,
-        description="Optional sandbox_uid to sync; omitted targets the primary sandbox.",
-    )
-
-
 class SandboxListInput(ProjectScopedInput):
     pass
 
@@ -476,6 +468,16 @@ class SandboxReleaseInput(ProjectScopedInput):
         description=(
             "Optional sandbox_uid to terminate just one sandbox. Omit to "
             "terminate all live sandboxes for the experiment."
+        ),
+    )
+    confirm_retained: bool = Field(
+        default=False,
+        description=(
+            "Release permanently destroys the sandbox and everything on it. "
+            "The first call without this flag does NOT delete — it returns a "
+            "retention checklist. Set true only after you have retained "
+            "everything you need (rsync light files off the box yourself over "
+            "SSH, storage.put_object for heavy ones) to actually terminate."
         ),
     )
 
@@ -783,15 +785,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         ),
         plane="data",
     ),
-    "sandbox.sync": ToolContract(
-        input_model=SandboxSyncInput,
-        description=(
-            "Mirror the sandbox's experiment folder back to the local "
-            "experiment folder with SSH rsync (exact replica; the durable "
-            "handoff before registering resources)."
-        ),
-        plane="data",
-    ),
     "sandbox.list": ToolContract(
         input_model=SandboxListInput,
         description="List sandboxes for the project.",
@@ -799,10 +792,13 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.release": ToolContract(
         input_model=SandboxReleaseInput,
         description=(
-            "Terminate the experiment's sandbox and capture a best-effort "
-            "metrics snapshot. Prefer sandbox.sync before release for a "
-            "deliberate file handoff; hosted control cannot perform local "
-            "final-pull rsync."
+            "Terminate the experiment's sandbox (permanently destroys the VM "
+            "and everything on it) and capture a best-effort metrics snapshot. "
+            "Two-step by design: the first call WITHOUT confirm_retained does "
+            "not delete — it returns a retention checklist asking you to confirm "
+            "you have everything you need. Retain first (rsync light files off "
+            "the box yourself over SSH, storage.put_object for heavy ones), then "
+            "re-call with confirm_retained=true to actually terminate."
         ),
         hosted_control_skip_final_pull=True,
     ),

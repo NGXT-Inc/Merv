@@ -220,7 +220,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(delta["transcript"], "results.json\n")
         self.assertGreater(delta["cursor"], cursor)
 
-        synced = self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
+        # Pulls are now driven by the daemon/service directly (no sandbox.sync
+        # tool); the internal sync method still mirrors the box back.
+        synced = self.app.sandboxes.sync(project_id=project_id, experiment_id=exp_id)
         self.assertEqual(synced["sync"]["provider"], "ssh_rsync")
         self.assertEqual(synced["sync"]["pulled"], 1)
 
@@ -279,7 +281,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             ],
         }
         with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=snapshot):
-            self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/sync")
+            self.app.sandboxes.sync(project_id=project_id, experiment_id=exp_id)
         live = self.request("GET", url)
         self.assertTrue(live["available"])
         self.assertEqual(live["sandbox_status"], "running")

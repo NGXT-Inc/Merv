@@ -37,20 +37,21 @@ def _folder_contract_note(*, remote_dir: str, local_dir: str) -> str:
     stays on the VM, and pulls happen only when the agent asks.
     """
     return (
-        f"The sandbox experiment folder is {remote_dir} ($RP_EXPERIMENT_DIR); "
-        f"its local mirror is {local_dir}. Files over 100 MB and "
-        "caches/checkpoints/archives (.git, venvs, *.pt, *.ckpt, "
-        "*.safetensors, tarballs, ...) are never pulled; the exception is "
-        "$RP_EXPERIMENT_DIR/artifacts_to_keep, which syncs with a 5 GB "
-        "per-file cap for deliberate final artifacts. Call sandbox.sync to "
-        "pull the sandbox folder back to the local repo as an exact replica: "
-        "deletions and renames on the sandbox propagate to the local copy, and "
-        "local edits are overwritten. While this sandbox is live, the sandbox "
-        "owns the folder, so make experiment-file edits there over SSH "
-        "(including report.md and graph.json). "
-        "Keep datasets, caches, and anything you do not want carried into the "
-        "repo OUTSIDE the experiment folder (e.g. $RP_DATASET_DIR) — nothing "
-        "outside the folder is pulled. "
+        f"The sandbox experiment folder is {remote_dir} ($RP_EXPERIMENT_DIR). "
+        "Work in it over SSH — scripts, results, report.md, graph.json. "
+        "This sandbox is an EPHEMERAL SSH window: nothing is synced for you, and "
+        "when it is released or reaped the VM and everything on it is destroyed. "
+        "So pull anything you want to keep BEFORE then, yourself, from the "
+        "terminal: you have the SSH connection details (ssh.key_path / ssh.host / "
+        "ssh.port in this response), so rsync the light files you need off the box "
+        f"into the local experiment folder ({local_dir}) and then register them as "
+        "resources, e.g. "
+        f"rsync -az -e 'ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no' "
+        f"<user>@<host>:{remote_dir}/ {local_dir}/ . "
+        "Heavy files (trained models, precious datasets, multi-GB checkpoints) "
+        "should NOT be rsynced into the repo — upload them to durable storage with "
+        "storage.put_object instead. Keep caches and scratch data under "
+        "$RP_DATASET_DIR, outside the experiment folder. "
     )
 
 
@@ -58,10 +59,11 @@ def _expiry_note(expires_at: Any) -> str:
     if not expires_at:
         return ""
     return (
-        f"Sandbox lifetime expires at {expires_at}. Before that deadline, call "
-        "sandbox.sync and register/associate needed outputs. If it expires, "
-        "the reaper attempts a final pull and metrics snapshot, terminates the "
-        "sandbox, and the experiment can request a new sandbox from ready_to_run. "
+        f"Sandbox lifetime expires at {expires_at}. Before that deadline, pull "
+        "anything you need off the box yourself (rsync light files into the local "
+        "experiment folder, storage.put_object for heavy ones) and "
+        "register/associate the outputs. If it expires, the reaper terminates the "
+        "sandbox and the experiment can request a new one from ready_to_run. "
     )
 
 
@@ -118,8 +120,8 @@ def agent_row_facts(
             "user": row.get("ssh_user"),
         },
         "workdir": row.get("workdir"),
-        # The one synced location: the experiment folder, pulled back only
-        # when the agent calls sandbox.sync while the sandbox is live.
+        # The experiment folder on the box; the agent rsyncs what it needs off
+        # it over SSH before the sandbox is destroyed (nothing is auto-synced).
         "experiment_dir": remote_dir,
         # VM-local conventional home for datasets/caches. Never synced —
         # like everything else outside the experiment folder.
@@ -240,8 +242,8 @@ def merge_agent_view(
             "the servers are reachable; you do not need to fetch or "
             "share the URLs. Also save selected plot images or compact result "
             "tables under $RP_EXPERIMENT_DIR (e.g. figures/*.png, "
-            "results/*.json/csv) so they sync and can be referenced from "
-            "report.md. "
+            "results/*.json/csv) so you can rsync them off and reference them "
+            "from report.md. "
         )
         view["hint"] = (
             f"Run commands with: {command} '<your shell command>' (from the repo root). "
@@ -259,8 +261,9 @@ def merge_agent_view(
                 remote_dir=remote_dir,
                 local_dir=local_dir,
             )
-            + "Before registering result resources, call sandbox.sync and use "
-            "files under the local experiment folder. "
+            + "Before registering result resources, rsync the files you need off "
+            "the box yourself (see the folder note) into the local experiment "
+            "folder, then register those local files. "
             f"{_expiry_note(view.get('expires_at'))}"
             f"{credential_note}"
             f"{mlflow_note}"

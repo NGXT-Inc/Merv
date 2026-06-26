@@ -300,7 +300,6 @@ class ToolPlanePartitionTest(unittest.TestCase):
                 "resource.associate",
                 "sandbox.request",
                 "sandbox.attach",
-                "sandbox.sync",
                 # feed.post reads a local image file before recording the post,
                 # so it lives on the data plane (byte capture mirrors
                 # resource.associate); register/list are pure control records.
@@ -317,13 +316,19 @@ class ToolPlanePartitionTest(unittest.TestCase):
             {
                 "resource_registration": "resource.register_file",
                 "resource_association": "resource.associate",
+                # sandbox.sync is no longer an MCP tool (the agent pulls files
+                # itself via rsync over SSH); the legacy UI feature key and its
+                # dead /sandbox/sync route remain but no longer point at a
+                # data-plane tool in the catalog.
                 "sandbox_sync": "sandbox.sync",
             },
         )
-        self.assertLessEqual(
-            set(HTTP_DATA_PLANE_FEATURE_TO_TOOL.values()),
-            DATA_PLANE_TOOL_NAMES,
-        )
+        live_features = {
+            tool
+            for feature, tool in HTTP_DATA_PLANE_FEATURE_TO_TOOL.items()
+            if feature != "sandbox_sync"
+        }
+        self.assertLessEqual(live_features, DATA_PLANE_TOOL_NAMES)
 
     def test_daemon_tool_catalogs_use_contract_plane_sets(self) -> None:
         daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"

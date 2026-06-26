@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import shutil
 import subprocess
 import tarfile
@@ -123,6 +124,12 @@ class VmBootstrapDockerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # LambdaLabsSandboxBackend() validates a Lambda API key at construction.
+        # The management-channel reads exercised here go over local SSH, not the
+        # Lambda API, so a placeholder key is sufficient and keeps the test
+        # self-contained (it must not depend on a real key leaking in from env).
+        cls._saved_environ = dict(os.environ)
+        os.environ.setdefault("RESEARCH_PLUGIN_LAMBDA_API_KEY", "test-placeholder")
         cls.tmp = tempfile.TemporaryDirectory()
         base = Path(cls.tmp.name)
         cls.user_key = base / "user_key"
@@ -183,6 +190,8 @@ class VmBootstrapDockerTest(unittest.TestCase):
                 ["docker", "rm", "-f", cls.container], capture_output=True
             )
         cls.tmp.cleanup()
+        os.environ.clear()
+        os.environ.update(cls._saved_environ)
 
     # ---------- helpers ----------
 

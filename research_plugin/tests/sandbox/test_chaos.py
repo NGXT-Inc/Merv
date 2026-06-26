@@ -162,7 +162,9 @@ class DaemonDiesMidSyncTest(_Base):
         self.app.sandboxes._final_pull_row = _boom
         try:
             view = self.app.sandboxes.release(
-                experiment_id=exp_id, project_id=self.project_id
+                experiment_id=exp_id,
+                project_id=self.project_id,
+                confirm_retained=True,
             )
         finally:
             self.app.sandboxes._final_pull_row = original

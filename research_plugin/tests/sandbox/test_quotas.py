@@ -344,7 +344,11 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
             # Release so the next request re-provisions instead of reusing.
             self.app.call_tool(
                 "sandbox.release",
-                {"project_id": self.project_id, "experiment_id": exp_id},
+                {
+                    "project_id": self.project_id,
+                    "experiment_id": exp_id,
+                    "confirm_retained": True,
+                },
             )
         conn = self.store.connect()
         try:
@@ -370,7 +374,11 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
         )
         self.app.call_tool(
             "sandbox.release",
-            {"project_id": self.project_id, "experiment_id": exp_id},
+            {
+                "project_id": self.project_id,
+                "experiment_id": exp_id,
+                "confirm_retained": True,
+            },
         )
         conn = self.store.connect()
         try:

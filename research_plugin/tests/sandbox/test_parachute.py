@@ -311,7 +311,12 @@ class ParachuteFlowTest(unittest.TestCase):
         # Agent-present release: the pull succeeds, no parachute.
         exp_id = self._experiment()
         self._provision_with_remote_files(exp_id)
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         self.assertEqual(self.backend.parachute_calls, [])
 
         # Same verb, failing pull: the parachute branch fires (injectable).
@@ -330,7 +335,10 @@ class ParachuteFlowTest(unittest.TestCase):
         }
         self.app.sandboxes._final_pull_row = _raise_pull_failure  # type: ignore[method-assign]
         released = self.call(
-            "sandbox.release", project_id=self.project_id, experiment_id=exp2
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp2,
+            confirm_retained=True,
         )
         self.assertNotIn("parachute", released["hint"].lower())
         self.assertEqual(len(self.backend.parachute_calls), 1)

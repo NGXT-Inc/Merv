@@ -65,7 +65,12 @@ class TaskChannelTest(TaskChannelTestBase):
         # observe the release's final_pull, then the terminal teardown.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         self.assertEqual(self._task_types(), ["final_pull", "teardown"])
         acks = [ack for _task, ack in self.channel.history]
         self.assertTrue(all(ack["ok"] for ack in acks))
@@ -89,7 +94,12 @@ class TaskChannelTest(TaskChannelTestBase):
             stopped.append(sandbox_id),
             original_stop(sandbox_id=sandbox_id),
         )
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         teardown = next(t for t, _a in self.channel.history if t.type == "teardown")
         self.assertEqual(teardown.payload["experiment_id"], exp_id)
         self.assertEqual(teardown.payload["sandbox_id"], created["sandbox_id"])

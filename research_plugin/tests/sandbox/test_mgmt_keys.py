@@ -192,7 +192,12 @@ class DualKeyProvisionTest(unittest.TestCase):
         row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
         key_path = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=row["sandbox_uid"])
         self.assertTrue(key_path.exists())
-        self.call("sandbox.release", project_id=self.project_id, experiment_id=exp_id)
+        self.call(
+            "sandbox.release",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            confirm_retained=True,
+        )
         # Per-sandbox keys: the keypair dies with the sandbox; the next
         # provision mints a fresh one.
         self.assertFalse(key_path.exists())

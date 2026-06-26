@@ -994,6 +994,7 @@ def create_fastapi_app(
                     experiment_id=request.experiment_id,
                     project_id=request.project_id,
                     skip_final_pull=True,
+                    confirm_retained=request.confirm_retained,
                 )
             )
         if router is not None:
@@ -1574,7 +1575,13 @@ def create_fastapi_app(
     ) -> dict[str, Any]:
         return route_call_tool(
             name="sandbox.release",
-            arguments={"project_id": project_id, "experiment_id": experiment_id},
+            # The browser already confirms in its own UX; the retention gate is
+            # for the agent's MCP call, so the UI route terminates directly.
+            arguments={
+                "project_id": project_id,
+                "experiment_id": experiment_id,
+                "confirm_retained": True,
+            },
             activity_source="http",
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
         )

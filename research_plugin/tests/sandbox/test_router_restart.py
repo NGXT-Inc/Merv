@@ -133,7 +133,12 @@ class RouterRestartReaperTest(unittest.TestCase):
         project_id, exp_id = self._seed_expired_running_sandbox(first)
         app = first.app_for_project(project_id)
         app.call_tool(
-            "sandbox.release", {"project_id": project_id, "experiment_id": exp_id}
+            "sandbox.release",
+            {
+                "project_id": project_id,
+                "experiment_id": exp_id,
+                "confirm_retained": True,
+            },
         )
         first.shutdown()
 
