@@ -101,6 +101,7 @@ class ControlApp:
                 storage=self.storage,
                 reviews=self.reviews,
                 sandboxes=self.sandboxes,
+                mlflow_tracking=self.mlflow_tracking,
                 feed=self.feed,
             ),
             permissions=self.permissions,

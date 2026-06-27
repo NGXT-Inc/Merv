@@ -37,6 +37,15 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
 
+    def configure_mlflow(self, service: CentralMlflowService) -> None:
+        self.app.mlflow_tracking.mode = service.mode
+        self.app.mlflow_tracking.tracking_uri = service.tracking_uri
+        self.app.mlflow_tracking.server_uri = service.server_uri
+        self.app.mlflow_tracking.dashboard_url = service.dashboard_url
+        self.app.mlflow_tracking.note = service.note
+        self.app.mlflow_tracking._health_check = service._health_check
+        self.app.sandboxes.metrics.mlflow_tracking = self.app.mlflow_tracking
+
     def test_home_claim_experiment_resource_review_endpoints(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "UI Project", "summary": "Frontend target"})
         project_id = project["id"]
@@ -182,7 +191,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(sandbox["status"], "running")
         self.assertTrue(sandbox["sandbox_id"])
         # The HTTP row carries provider dashboard URLs. TensorBoard remains a
-        # sandbox dashboard; centralized MLflow is agent tracking context.
+        # sandbox dashboard; centralized MLflow is experiment tracking context.
         self.assertIn("dashboards", sandbox)
         self.assertIn("tensorboard", sandbox["dashboards"])
         self.assertNotIn("mlflow", sandbox["dashboards"])
@@ -244,8 +253,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             tracking_uri="https://mlflow.test",
             health_check=lambda: True,
         )
-        self.app.sandboxes.mlflow_tracking = mlflow
-        self.app.sandboxes.metrics.mlflow_tracking = mlflow
+        self.configure_mlflow(mlflow)
 
         url = f"/api/projects/{project_id}/experiments/{exp_id}/results/metrics"
         with patch("backend.services.sandbox.sandbox_metrics.snapshot_mlflow", return_value=None):
@@ -306,9 +314,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             dashboard_url="https://mlflow.test",
             health_check=lambda: True,
         )
-        self.app.mlflow_tracking = mlflow
-        self.app.sandboxes.mlflow_tracking = mlflow
-        self.app.sandboxes.metrics.mlflow_tracking = mlflow
+        self.configure_mlflow(mlflow)
         # Seed the durable archive so the overview has curves without a sandbox.
         self.app.sandboxes.metrics.metrics_archive.persist(
             experiment_id=exp_id,
@@ -359,8 +365,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             dashboard_url="https://mlflow.test",
             health_check=lambda: True,
         )
-        self.app.mlflow_tracking = mlflow
-        self.app.sandboxes.mlflow_tracking = mlflow
+        self.configure_mlflow(mlflow)
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
 

@@ -148,6 +148,7 @@ class ResearchPluginApp:
                 resource_associate=self.associate_resource,
                 reviews=self.reviews,
                 sandboxes=self.sandboxes,
+                mlflow_tracking=self.mlflow_tracking,
                 feed=self.feed,
                 feed_post=self.post_feed,
             ),

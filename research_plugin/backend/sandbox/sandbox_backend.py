@@ -60,9 +60,6 @@ class SandboxRequest:
     remote_workdir: str = ""
     instance_type: str | None = None
     region: str | None = None
-    # Backend-owned experiment tracking variables that commands should inherit.
-    # Used for centralized MLflow; providers persist these into /opt/rp/env.
-    tracking_env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

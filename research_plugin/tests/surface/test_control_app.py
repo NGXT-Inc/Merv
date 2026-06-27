@@ -189,19 +189,8 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
 
             self.assertEqual(app.mlflow_tracking.tracking_uri, "https://mlflow.example.test")
-            self.assertEqual(
-                app.sandboxes.mlflow_tracking.tracking_uri,
-                "https://mlflow.example.test",
-            )
             self.assertEqual(app.mlflow_tracking.server_uri, "http://mlflow:5000")
-            self.assertEqual(
-                app.sandboxes.backend_health()["mlflow"]["tracking_uri"],
-                "https://mlflow.example.test",
-            )
-            self.assertEqual(
-                app.sandboxes.backend_health()["mlflow"]["server_uri"],
-                "http://mlflow:5000",
-            )
+            self.assertNotIn("mlflow", app.sandboxes.backend_health())
 
     def test_control_app_lazy_central_metrics_record_without_archive(self) -> None:
         snapshot = {

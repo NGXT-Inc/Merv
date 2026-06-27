@@ -113,7 +113,6 @@ class DaemonServer:
 
     def stop(self) -> None:
         self.task_loop.stop()
-        self.worker.stop_mlflow_access()
 
     def list_tools(self) -> list[dict[str, Any]]:
         """The local MCP catalog: data-plane tools plus aggregate enrichers."""
@@ -472,7 +471,6 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker):
             sandbox_id = payload.get("sandbox_id")
             if sandbox_id is not None:
                 worker.stop_dashboards(sandbox_id=str(sandbox_id))
-                worker.stop_mlflow_access(sandbox_id=str(sandbox_id))
             worker.remove_conn_file(
                 experiment_id=str(payload["experiment_id"]),
                 sandbox_uid=str(payload.get("sandbox_uid") or ""),

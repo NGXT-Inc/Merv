@@ -28,15 +28,14 @@ def _experiment_list_agent(
 
 
 def _mlflow_connection(
-    *, sandboxes: Any, project_id: str, experiment_id: str
+    *, mlflow_tracking: Any, project_id: str, experiment_id: str
 ) -> dict[str, Any]:
     """Central MLflow connection block for one experiment — the same context
-    sandboxes export (tracking URI, rp/<project>/<experiment> name, env vars),
-    surfaced so local (non-sandbox) runs can connect the same way."""
-    tracking = getattr(sandboxes, "mlflow_tracking", None)
-    if tracking is None or not project_id or not experiment_id:
+    tracking URI, rp/<project>/<experiment> name, and env vars surfaced so any
+    run location can connect the same way."""
+    if mlflow_tracking is None or not project_id or not experiment_id:
         return {"configured": False}
-    return tracking.context(project_id=project_id, experiment_id=experiment_id).to_dict()
+    return mlflow_tracking.context(project_id=project_id, experiment_id=experiment_id).to_dict()
 
 
 def _mlflow_guidance(block: dict[str, Any]) -> str:
@@ -49,7 +48,7 @@ def _mlflow_guidance(block: dict[str, Any]) -> str:
         "If you run a quantitative experiment, use MLflow: log params, metrics, "
         "and artifacts to the centralized server. Set the variables in mlflow.env "
         "(MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, …) before the run, or use "
-        "mlflow.autolog(); inside a sandbox they are already exported."
+        "mlflow.autolog()."
     )
 
 
@@ -81,6 +80,7 @@ def build_control_tool_handlers(
     storage: Any,
     reviews: Any,
     sandboxes: Any,
+    mlflow_tracking: Any,
     feed: Any,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Map control/aggregate tool names to service methods.
@@ -120,7 +120,7 @@ def build_control_tool_handlers(
         # one — can log to the centralized server without hunting for the URI.
         if isinstance(result, dict) and result.get("status") == "running":
             block = _mlflow_connection(
-                sandboxes=sandboxes,
+                mlflow_tracking=mlflow_tracking,
                 project_id=str(result.get("project_id") or project_id or ""),
                 experiment_id=experiment_id,
             )
@@ -133,7 +133,7 @@ def build_control_tool_handlers(
     ) -> dict[str, Any]:
         state = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
         block = _mlflow_connection(
-            sandboxes=sandboxes,
+            mlflow_tracking=mlflow_tracking,
             project_id=str(state.get("project_id") or project_id or ""),
             experiment_id=experiment_id,
         )
@@ -233,6 +233,7 @@ def build_local_tool_handlers(
     storage: Any,
     reviews: Any,
     sandboxes: Any,
+    mlflow_tracking: Any,
     feed: Any,
     resource_register_file: Callable[..., dict[str, Any]],
     resource_associate: Callable[..., dict[str, Any]] | None = None,
@@ -250,6 +251,7 @@ def build_local_tool_handlers(
         storage=storage,
         reviews=reviews,
         sandboxes=sandboxes,
+        mlflow_tracking=mlflow_tracking,
         feed=feed,
     )
     handlers.update(

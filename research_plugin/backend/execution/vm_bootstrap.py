@@ -13,14 +13,6 @@ SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
 MGMT_SSH_USER = "rpmgmt"
 DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
-TRACKING_ENV_EXPORTS = (
-    "MLFLOW_TRACKING_URI",
-    "MLFLOW_EXPERIMENT_NAME",
-    "RP_PROJECT_ID",
-    "RP_ATTEMPT_ID",
-    "RP_SANDBOX_ID",
-    "RP_EXECUTION_BACKEND",
-)
 
 
 REC_SCRIPT = r"""#!/usr/bin/env bash
@@ -38,7 +30,6 @@ RP_DATASET_DIR="${RP_DATASET_DIR:-$RP_SANDBOX_DATA_DIR}"
 RP_DASH_DIR="${RP_DASH_DIR:-/workspace/.research_plugin_sessions/$RP_EXPERIMENT_ID}"
 RP_TB_LOGDIR="${RP_TB_LOGDIR:-$RP_DASH_DIR/tb}"
 export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR RP_DASH_DIR RP_TB_LOGDIR
-export MLFLOW_TRACKING_URI MLFLOW_EXPERIMENT_NAME RP_PROJECT_ID RP_ATTEMPT_ID RP_SANDBOX_ID RP_EXECUTION_BACKEND
 mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep" "$RP_DASH_DIR" 2>/dev/null || true
 if [ -x /opt/rp/start_dashboards.sh ]; then
   /opt/rp/start_dashboards.sh >/dev/null 2>&1 || true
@@ -115,7 +106,6 @@ def build_bootstrap_core(
     sandbox_data_dir: str,
     management_public_key: str = "",
     tokens: Mapping[str, str] | None = None,
-    tracking_env: Mapping[str, str] | None = None,
     sshd_apply_command: str = "systemctl restart ssh || systemctl restart sshd || service ssh restart || true",
 ) -> str:
     """Phase 1 VM bootstrap: workspace, SSH keys, rec.sh, and dashboards."""
@@ -127,7 +117,6 @@ def build_bootstrap_core(
         workdir=workdir,
         sessions_dir=sessions_dir,
         sandbox_data_dir=sandbox_data_dir,
-        tracking_env=tracking_env,
     )
     _ = tokens
     mgmt_block = ""
@@ -185,23 +174,12 @@ RP_SSHD
 {sshd_apply_command}
 """
 
-
-def _tracking_env_lines(tracking_env: Mapping[str, str] | None) -> list[str]:
-    lines: list[str] = []
-    for key, value in sorted((tracking_env or {}).items()):
-        key = str(key)
-        if key in TRACKING_ENV_EXPORTS and value is not None:
-            lines.append(f"{key}={shlex.quote(str(value))}")
-    return lines
-
-
 def build_runtime_env(
     *,
     experiment_id: str,
     workdir: str,
     sessions_dir: str,
     sandbox_data_dir: str,
-    tracking_env: Mapping[str, str] | None = None,
 ) -> str:
     """Render /opt/rp/env for the experiment currently attached to the box."""
     return "\n".join(
@@ -213,6 +191,5 @@ def build_runtime_env(
             f"RP_DATASET_DIR={shlex.quote(sandbox_data_dir)}",
             f"RP_DASH_DIR={shlex.quote(sessions_dir)}",
             f"RP_TB_LOGDIR={shlex.quote(sessions_dir + '/tb')}",
-            *_tracking_env_lines(tracking_env),
         ]
     )

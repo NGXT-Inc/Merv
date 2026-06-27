@@ -533,7 +533,6 @@ class SandboxProvisioner:
         if sid:
             seen.add(str(sid))
             self.worker.stop_dashboards(sandbox_id=str(sid))
-            self.worker.stop_mlflow_access(sandbox_id=str(sid))
             self._terminate_quietly(sandbox_id=str(sid))
         if not sid:
             sandbox_uid = str((row or {}).get("sandbox_uid") or "")

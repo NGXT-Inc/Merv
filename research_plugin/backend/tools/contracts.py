@@ -773,8 +773,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Procure (reuse or create) a project sandbox, optionally attached to "
             "an experiment, and return SSH details plus runtime guidance for the "
             "remote work folder, expiry, and sandbox TensorBoard observability. "
-            "Attached experiment sandboxes also include centralized MLflow tracking "
-            "context when the sandbox has exactly one active experiment. "
             "On Thunder Compute or Lambda Labs, omit instance_type to "
             "receive a live menu of available machines to pick from."
         ),

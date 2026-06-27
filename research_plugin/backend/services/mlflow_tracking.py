@@ -1,4 +1,4 @@
-"""Centralized MLflow tracking context for agents and sandboxes."""
+"""Centralized MLflow tracking context for experiment agents."""
 
 from __future__ import annotations
 

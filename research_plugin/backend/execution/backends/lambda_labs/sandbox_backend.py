@@ -134,7 +134,6 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
                 ),
                 sandbox_data_dir=self.config.sandbox_data_dir,
                 management_public_key=request.management_public_key,
-                tracking_env=request.tracking_env,
                 # No tokens embedded in user_data (plan Phase 9, risk 16): they
                 # are delivered post-boot via write_secrets over the mgmt channel.
             )
@@ -414,7 +413,6 @@ def build_user_data(
     sandbox_data_dir: str,
     management_public_key: str = "",
     tokens: Mapping[str, str] | None = None,
-    tracking_env: Mapping[str, str] | None = None,
 ) -> str:
     apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
     python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
@@ -437,7 +435,6 @@ def build_user_data(
         sandbox_data_dir=sandbox_data_dir,
         management_public_key=management_public_key,
         tokens=tokens,
-        tracking_env=tracking_env,
     )
     return f"""#!/usr/bin/env bash
 set -euxo pipefail

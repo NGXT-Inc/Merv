@@ -221,11 +221,6 @@ class ThunderBackendTest(unittest.TestCase):
             "management_public_key": "ssh-ed25519 AAAAmgmt test",
             "management_key_path": "/keys/mgmt",
             "instance_type": "a100xl_x1_prototyping",
-            "tracking_env": {
-                "MLFLOW_TRACKING_URI": "https://mlflow.test",
-                "RP_EXECUTION_BACKEND": "thunder_compute",
-                "UNRELATED": "ignored",
-            },
         }
         kwargs.update(overrides)
         return SandboxRequest(**kwargs)
@@ -302,8 +297,8 @@ class ThunderBackendTest(unittest.TestCase):
         self.assertIn("/keys/mgmt", bootstrap.calls[0]["command"])
         script = bootstrap.calls[0]["script"]
         self.assertIn("RP_EXPERIMENT_DIR=/workspace/exp1", script)
-        self.assertIn("RP_EXECUTION_BACKEND=thunder_compute", script)
-        self.assertNotIn("UNRELATED", script)
+        self.assertNotIn("MLFLOW_TRACKING_URI", script)
+        self.assertNotIn("RP_EXECUTION_BACKEND", script)
         self.assertIn("ForceCommand /opt/rp/rec.sh", script)
         self.assertNotIn("/opt/rp/parachute.sh", script)
         # Bootstrap readiness is checked through the management principal.

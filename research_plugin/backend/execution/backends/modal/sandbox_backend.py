@@ -53,19 +53,9 @@ TRANSCRIPT_FILENAME = "transcript.log"
 TRANSCRIPT_TAIL_DEFAULT = 50_000
 
 # Observability dashboards. TensorBoard still runs in the sandbox and is
-# surfaced to the user through a Modal encrypted tunnel (HTTPS). MLflow is now
-# backend-owned centralized infrastructure; agents receive its tracking URI in
-# the sandbox tool response, not from a sandbox-local server.
+# surfaced to the user through a Modal encrypted tunnel (HTTPS).
 DASHBOARD_PORTS: Mapping[str, int] = {"tensorboard": 6006}
 TENSORBOARD_PORT = 6006
-TRACKING_ENV_EXPORTS = (
-    "MLFLOW_TRACKING_URI",
-    "MLFLOW_EXPERIMENT_NAME",
-    "RP_PROJECT_ID",
-    "RP_ATTEMPT_ID",
-    "RP_SANDBOX_ID",
-    "RP_EXECUTION_BACKEND",
-)
 
 # The usage sampler script + parser live in backend/execution/usage_metrics.py,
 # shared with the Lambda backend (which runs the same probes over plain SSH).
@@ -125,12 +115,6 @@ mkdir -p "$RP_TB_LOGDIR" 2>/dev/null || true
   printf 'RP_DATASET_DIR=%q\n' "$RP_SANDBOX_DATA_DIR"
   printf 'RP_DASH_DIR=%q\n' "$RP_DASH_DIR"
   printf 'RP_TB_LOGDIR=%q\n' "$RP_TB_LOGDIR"
-  for name in MLFLOW_TRACKING_URI MLFLOW_EXPERIMENT_NAME RP_PROJECT_ID RP_ATTEMPT_ID RP_SANDBOX_ID RP_EXECUTION_BACKEND; do
-    value="${!name:-}"
-    if [ -n "$value" ]; then
-      printf '%s=%q\n' "$name" "$value"
-    fi
-  done
   if [ -n "${HF_TOKEN:-}" ]; then
     printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
     printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
@@ -169,7 +153,6 @@ if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
   HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
 export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN RP_DASH_DIR RP_TB_LOGDIR
-export MLFLOW_TRACKING_URI MLFLOW_EXPERIMENT_NAME RP_PROJECT_ID RP_ATTEMPT_ID RP_SANDBOX_ID RP_EXECUTION_BACKEND
 mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep" "$RP_DASH_DIR" 2>/dev/null || true
 LOG_DIR="$RP_DASH_DIR"
 LOG="$LOG_DIR/transcript.log"
@@ -238,7 +221,6 @@ class ModalSandboxBackend(SandboxBackendBase):
             experiment_id=request.experiment_id,
             workdir=workdir,
             sandbox_data_dir=sandbox_data_dir,
-            tracking_env=request.tracking_env,
         )
         secrets = self._sandbox_secrets(modal)
         name = _sandbox_name(request.sandbox_uid or request.experiment_id)
@@ -249,8 +231,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             "workdir": workdir,
             "unencrypted_ports": [22],
             # TensorBoard (6006) is served from inside the sandbox over a
-            # HTTPS-fronted Modal tunnel. MLflow is backend-owned and reported
-            # separately to agents as tracking context.
+            # HTTPS-fronted Modal tunnel.
             "encrypted_ports": [TENSORBOARD_PORT],
             "env": env,
             "cpu": request.cpu,
@@ -289,7 +270,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             host, port = self._ssh_endpoint(sandbox=sandbox)
             # Read the encrypted dashboard tunnels alongside SSH. Failure here is
             # treated as "no dashboards this run" rather than a fatal acquire
-            # error — the sandbox is still usable, the user just loses MLflow/TB.
+            # error — the sandbox is still usable, the user just loses TensorBoard.
             dashboards = self._dashboard_urls(sandbox=sandbox)
         except BaseException:
             try:
@@ -548,7 +529,6 @@ class ModalSandboxBackend(SandboxBackendBase):
         experiment_id: str,
         workdir: str,
         sandbox_data_dir: str,
-        tracking_env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         env = {
             "RP_AUTHORIZED_KEY": public_key,
@@ -561,10 +541,6 @@ class ModalSandboxBackend(SandboxBackendBase):
                 experiment_id=experiment_id, root=remote_root_of(workdir)
             ),
         }
-        for key, value in (tracking_env or {}).items():
-            key = str(key)
-            if key in TRACKING_ENV_EXPORTS and value is not None:
-                env[key] = str(value)
         return env
 
     def _sandbox_secrets(self, modal: Any) -> list[Any]:

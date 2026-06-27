@@ -274,12 +274,6 @@ class ControlSandboxWorker:
     def stop_dashboards(self, **_: Any) -> None:
         return
 
-    def ensure_mlflow_access(self, **_: Any) -> dict[str, Any]:
-        return {"required": False, "ready": True}
-
-    def stop_mlflow_access(self, **_: Any) -> None:
-        return
-
     def repo_relative(self, path: str | Path) -> str:
         return str(path)
 

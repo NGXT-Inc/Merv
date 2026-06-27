@@ -149,7 +149,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         source = FACADE.read_text(encoding="utf-8")
         # Job/daemon threads live in the provisioner and daemons modules.
         self.assertNotIn("threading.Thread(", source)
-        # Tunnel subprocesses and MLflow probing live in sandbox_dashboards.
+        # Tunnel subprocesses live in sandbox_dashboards.
         self.assertNotIn("subprocess", source)
         self.assertNotIn("httpx", source)
         # Local IO (conn files and tunnels) lives behind the worker.

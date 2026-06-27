@@ -98,8 +98,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertTrue(Path(result["ssh"]["key_path"] + ".pub").exists())
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["status"], "ready_to_run")
-        tracking_env = self.backend.acquired[-1].tracking_env
-        self.assertEqual(tracking_env, {})
 
     def test_request_without_experiment_creates_standalone_sandbox(self) -> None:
         result = self.call("sandbox.request", project_id=self.project_id)
@@ -638,9 +636,10 @@ class SandboxServiceTest(unittest.TestCase):
         finally:
             fake_ssh.kill()
 
-    def test_request_surfaces_tensorboard_and_central_mlflow_context(self) -> None:
-        # TensorBoard remains a dashboard URL. MLflow is backend-owned tracking
-        # context that agents must apply to quantitative training commands.
+    def test_request_surfaces_tensorboard_without_mlflow_context(self) -> None:
+        # TensorBoard remains a sandbox dashboard. Central MLflow is experiment
+        # context exposed through experiment.transition / experiment.mlflow, not
+        # sandbox.request.
         exp_id = self._experiment()
         result = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
@@ -648,124 +647,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("dashboards", result)
         self.assertIn("tensorboard", result["dashboards"])
         self.assertNotIn("mlflow", result["dashboards"])
-        self.assertEqual(result["mlflow"]["tracking_uri"], "https://mlflow.test")
-        self.assertEqual(
-            result["mlflow"]["experiment_name"], f"rp/{self.project_id}/{exp_id}"
-        )
-        self.assertEqual(
-            result["mlflow"]["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.test"
-        )
-        self.assertEqual(
-            result["mlflow"]["env"]["MLFLOW_EXPERIMENT_NAME"],
-            f"rp/{self.project_id}/{exp_id}",
-        )
-        self.assertIn("MLFLOW_TRACKING_URI", result["hint"])
-        self.assertIn("centralized MLflow", result["hint"])
+        self.assertNotIn("mlflow", result)
+        self.assertNotIn("MLFLOW_TRACKING_URI", result["hint"])
+        self.assertNotIn("centralized MLflow", result["hint"])
         self.assertIn("$RP_TB_LOGDIR", result["hint"])
-        self.assertIn("params, metrics, and artifacts", result["hint"])
-        self.assertIn("mlflow.autolog", result["hint"])
         self.assertIn("figures/*.png", result["hint"])
         self.assertIn("report.md", result["hint"])
         self.assertIn("rsync the files you need off", result["hint"])
-
-    def test_local_loopback_mlflow_starts_reverse_tunnel_for_remote_sandbox(self) -> None:
-        self.app.sandboxes.mlflow_tracking = CentralMlflowService(
-            mode="managed",
-            tracking_uri="http://127.0.0.1:5678",
-            server_uri="http://127.0.0.1:5678",
-            dashboard_url="http://127.0.0.1:5678",
-            health_check=lambda: True,
-        )
-        self.app.sandboxes.metrics.mlflow_tracking = self.app.sandboxes.mlflow_tracking
-        process = MagicMock()
-        process.poll.return_value = None
-        exp_id = self._experiment()
-        self.app.worker.ensure_keypair(experiment_id=exp_id)
-        real_popen = subprocess.Popen
-
-        def mlflow_popen(command, **kwargs):
-            command = list(command)
-            # Mgmt-key minting (ssh-keygen) runs for real; the patch stands in
-            # only for the mlflow reverse tunnel.
-            if command and command[0] == "ssh-keygen":
-                return real_popen(command, **kwargs)
-            return process
-
-        with (
-            patch(
-                "backend.dataplane.mlflow_tunnels.subprocess.Popen",
-                side_effect=mlflow_popen,
-            ) as popen,
-            patch("backend.dataplane.mlflow_tunnels._forward_bound", return_value=True),
-        ):
-            result = self.call(
-                "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-            )
-
-        command = popen.call_args.args[0]
-        self.assertIn("-R", command)
-        self.assertIn("127.0.0.1:5678:127.0.0.1:5678", command)
-        self.assertEqual(result["mlflow"]["access"]["ready"], True)
-        self.assertEqual(
-            result["mlflow"]["access"]["tracking_uri"], "http://127.0.0.1:5678"
-        )
-        self.assertIn("MLFLOW_TRACKING_URI", result["hint"])
-
-    def test_mlflow_reverse_tunnel_ensure_is_single_flight(self) -> None:
-        from backend.dataplane.mlflow_tunnels import MlflowReverseTunnels
-
-        process = MagicMock()
-        process.poll.return_value = None
-        row = {
-            "project_id": self.project_id,
-            "experiment_id": "exp_single",
-            "sandbox_id": "sbx_single",
-            "status": "running",
-            "ssh_host": "sandbox.modal.test",
-            "ssh_port": 22,
-            "ssh_user": "root",
-        }
-        manager = MlflowReverseTunnels(key_path=lambda **_: self.repo / "key")
-        barrier = threading.Barrier(6)
-        results: list[dict] = []
-
-        def ensure() -> None:
-            barrier.wait()
-            results.append(
-                manager.ensure(row=row, tracking_uri="http://127.0.0.1:5678")
-            )
-
-        def ready(_process) -> bool:
-            time.sleep(0.02)
-            return True
-
-        threads = [threading.Thread(target=ensure) for _ in range(5)]
-        with (
-            patch(
-                "backend.dataplane.mlflow_tunnels.subprocess.Popen",
-                return_value=process,
-            ) as popen,
-            patch(
-                "backend.dataplane.mlflow_tunnels._forward_bound",
-                side_effect=ready,
-            ),
-        ):
-            for thread in threads:
-                thread.start()
-            barrier.wait()
-            for thread in threads:
-                thread.join(timeout=1.0)
-        try:
-            self.assertEqual(popen.call_count, 1)
-            self.assertEqual(len(results), 5)
-            self.assertTrue(all(result["ready"] for result in results))
-        finally:
-            manager.stop()
-
-    def test_shutdown_stops_mlflow_tunnels(self) -> None:
-        with patch.object(self.app.sandboxes.worker, "stop_mlflow_access") as stop:
-            self.app.sandboxes.shutdown()
-        stop.assert_called_once_with()
 
     def test_ui_view_exposes_dashboards(self) -> None:
         # The HTTP API surfaces dashboards in the sandbox row so the UI can
@@ -907,7 +795,7 @@ class SandboxServiceTest(unittest.TestCase):
         row = self.app.sandboxes.registry.fetch_scoped(
             experiment_id=exp_id, project_id=self.project_id
         )
-        self.app.sandboxes.mlflow_tracking.server_uri = "http://mlflow:5000"
+        self.app.sandboxes.metrics.mlflow_tracking.server_uri = "http://mlflow:5000"
         legacy = {"source": "mlflow", "experiments": [{"name": "legacy_local"}]}
         with patch(
             "backend.services.sandbox.sandbox_metrics.snapshot_mlflow",

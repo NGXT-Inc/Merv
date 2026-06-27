@@ -80,7 +80,7 @@ class SandboxService:
         self.mgmt_keys = mgmt_keys
         # Conn files and local tunnels route through the data-plane worker.
         self.worker = worker
-        self.mlflow_tracking = mlflow_tracking or CentralMlflowService()
+        mlflow_tracking = mlflow_tracking or CentralMlflowService()
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
             request_wait_seconds,
@@ -94,7 +94,7 @@ class SandboxService:
             mgmt_keys=self.mgmt_keys,
             metrics_archive=metrics_archive,
             store=store,
-            mlflow_tracking=self.mlflow_tracking,
+            mlflow_tracking=mlflow_tracking,
         )
         # Backward-compatible public handles used by tests and thin UI helpers.
         self.metrics_archive = self.metrics.metrics_archive
@@ -275,7 +275,6 @@ class SandboxService:
         #    `provisioning` (the agent polls sandbox.get); a fast one returns SSH
         #    inline, exactly like before. Backend errors are handled inside the
         #    job, which lands the row in `failed` — so request never times out.
-        tracking_env: dict[str, str] = {}
         remote_dir = remote_experiment_dir(
             experiment_id=sandbox_uid,
             name=f"sandbox-{sandbox_uid[:12]}",
@@ -293,7 +292,6 @@ class SandboxService:
             time_limit=time_limit,
             instance_type=instance_type,
             region=region,
-            tracking_env=tracking_env,
             # A sandbox is a machine first: its workdir is sandbox-owned. Any
             # experiment relationship lives only in sandbox_attachments.
             remote_workdir=remote_dir,
@@ -794,7 +792,6 @@ class SandboxService:
         health = self.backend.health()
         result = {
             "ok": bool(health.get("ok")),
-            "mlflow": self.mlflow_tracking.health(),
         }
         if not result["ok"] and health.get("error"):
             result["error"] = health["error"]
@@ -830,9 +827,7 @@ class SandboxService:
 
     def backend_health(self) -> dict[str, Any]:
         """Full backend health payload (the slim ``health`` tool trims this)."""
-        health = dict(self.backend.health())
-        health["mlflow"] = self.mlflow_tracking.health()
-        return health
+        return dict(self.backend.health())
 
     def sample_metrics(
         self,
@@ -872,11 +867,10 @@ class SandboxService:
     # ---------- lifecycle plumbing ----------
 
     def shutdown(self) -> None:
-        """Stop the daemons, in-flight provisioning jobs, and tunnels."""
+        """Stop the daemons, in-flight provisioning jobs, and dashboard tunnels."""
         self.daemons.stop()
         self.provisioner.shutdown()
         self.worker.stop_dashboards()
-        self.worker.stop_mlflow_access()
 
     def reap_expired(self, **kwargs: Any) -> int:
         """Terminate running sandboxes past expires_at (see SandboxDaemons)."""
@@ -1094,7 +1088,6 @@ class SandboxService:
         return sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
-            mlflow=self._mlflow_context(row=row),
             reused=reused,
         )
 
@@ -1112,22 +1105,9 @@ class SandboxService:
         row = self._with_active_experiment_ids(row=row)
         sandbox_uid = str(row.get("sandbox_uid") or "")
         view_name = f"sandbox-{sandbox_uid[:12]}"
-        mlflow = self._mlflow_context(row=row)
-        current_access = mlflow.get("access")
-        access_ready = not (
-            isinstance(current_access, dict) and current_access.get("ready") is False
-        )
-        if bool(mlflow.get("configured")) and access_ready:
-            access = self.worker.ensure_mlflow_access(
-                row=row, tracking_uri=str(mlflow.get("tracking_uri") or "")
-            )
-            mlflow["access"] = access
-            if access.get("ready") is False and access.get("note"):
-                mlflow["note"] = str(access["note"])
         facts = sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
-            mlflow=mlflow,
             reused=reused,
         )
         enrichment = self.worker.sandbox_enrichment(
@@ -1140,25 +1120,6 @@ class SandboxService:
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
         return sandbox_views.agent_summary(row=self._with_active_experiment_ids(row=row))
 
-    def _mlflow_context(self, *, row: dict[str, Any]) -> dict[str, object]:
-        project_id = str(row.get("project_id") or "")
-        active_experiment_ids = self._active_experiment_ids_for_row(row=row)
-        experiment_id = active_experiment_ids[0] if len(active_experiment_ids) == 1 else ""
-        if not project_id or not experiment_id:
-            return {}
-        context = self.mlflow_tracking.context(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            sandbox_id=str(row.get("sandbox_id") or ""),
-            execution_backend=self.backend.capabilities.name,
-        ).to_dict()
-        health = self.mlflow_tracking.health()
-        if health.get("reachable") is False:
-            note = str(health.get("note") or "MLflow is not reachable.")
-            context["access"] = {"required": False, "ready": False, "note": note}
-            context["note"] = note
-        return context
-
     def _row_view(
         self, *, row: dict[str, Any], conn: Connection | None = None
     ) -> dict[str, Any]:
@@ -1169,7 +1130,6 @@ class SandboxService:
         local_name = f"sandbox-{sandbox_uid[:12]}"
         return sandbox_views.sandbox_row_view(
             row=row,
-            mlflow=self._mlflow_context(row=row),
             local_sync_dir=str(
                 self.worker.local_experiment_dir(
                     experiment_id=local_key,

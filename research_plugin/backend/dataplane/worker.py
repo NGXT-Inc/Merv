@@ -25,7 +25,6 @@ from .metrics_archive import MetricsArchive, snapshot_mlflow_db
 from .sandbox_dashboards import DashboardTunnels
 from ..sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ..workspace import LocalWorkspace
-from .mlflow_tunnels import MlflowReverseTunnels
 from .sandbox_conn import SandboxConnFiles
 from .state import SandboxLocalState
 
@@ -70,12 +69,6 @@ class DataPlaneWorker(Protocol):
 
     def stop_dashboards(self, *, sandbox_id: str = "") -> None: ...
 
-    def ensure_mlflow_access(
-        self, *, row: dict[str, Any], tracking_uri: str
-    ) -> dict[str, Any]: ...
-
-    def stop_mlflow_access(self, *, sandbox_id: str = "") -> None: ...
-
     def pulled_mlflow_db_path(self, *, experiment_id: str, name: str = "") -> Path: ...
 
     def capture_metrics_fallback(
@@ -116,8 +109,6 @@ class LocalDataPlaneWorker:
             key_path=self.key_path,
             local_state=self.state,
         )
-        self.mlflow_tunnels = MlflowReverseTunnels(key_path=self.key_path)
-
     # ---------- identity ----------
 
     def client_id(self) -> str:
@@ -228,14 +219,6 @@ class LocalDataPlaneWorker:
     def stop_dashboards(self, *, sandbox_id: str = "") -> None:
         self.dashboards.stop(sandbox_id=sandbox_id)
 
-    def ensure_mlflow_access(
-        self, *, row: dict[str, Any], tracking_uri: str
-    ) -> dict[str, Any]:
-        return self.mlflow_tunnels.ensure(row=row, tracking_uri=tracking_uri)
-
-    def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
-        self.mlflow_tunnels.stop(sandbox_id=sandbox_id)
-
     # ---------- pulled-metrics fallback ----------
 
     def pulled_mlflow_db_path(self, *, experiment_id: str, name: str = "") -> Path:
@@ -295,4 +278,3 @@ class LocalDataPlaneWorker:
         reports through this hook; Phase 4's task channel formalizes it.
         """
         self.dashboards.emit_event = emit_event
-        self.mlflow_tunnels.emit_event = emit_event

@@ -329,7 +329,6 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
                 experiment_id=request.experiment_id, root=remote_root_of(workdir)
             ),
             sandbox_data_dir=self.config.sandbox_data_dir,
-            tracking_env=request.tracking_env,
         )
         command = ssh_command(
             host=host,
@@ -403,7 +402,6 @@ def build_thunder_bootstrap_script(
     workdir: str,
     sessions_dir: str,
     sandbox_data_dir: str,
-    tracking_env: Mapping[str, str] | None = None,
 ) -> str:
     apt_packages = " ".join(shlex.quote(pkg) for pkg in THUNDER_APT_PACKAGES)
     python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
@@ -414,7 +412,6 @@ def build_thunder_bootstrap_script(
         sessions_dir=sessions_dir,
         sandbox_data_dir=sandbox_data_dir,
         management_public_key=management_public_key,
-        tracking_env=tracking_env,
         sshd_apply_command="systemctl reload ssh || systemctl reload sshd || service ssh reload || true",
     )
     return f"""#!/usr/bin/env bash

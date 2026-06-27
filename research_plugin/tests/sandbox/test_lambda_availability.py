@@ -276,28 +276,17 @@ class LambdaAvailabilityTest(unittest.TestCase):
             workdir="/workspace/exp1",
             sessions_dir="/workspace/.research_plugin_sessions/exp1",
             sandbox_data_dir="/workspace/data",
-            tracking_env={
-                "MLFLOW_TRACKING_URI": "https://mlflow.test",
-                "MLFLOW_EXPERIMENT_NAME": "rp/proj1/exp1",
-                "RP_PROJECT_ID": "proj1",
-                "RP_EXECUTION_BACKEND": "lambda_labs",
-                "UNRELATED": "ignored",
-            },
         )
 
         self.assertIn("RP_WORKDIR=/workspace/exp1", user_data)
         self.assertIn("RP_EXPERIMENT_DIR=/workspace/exp1", user_data)
         self.assertIn("RP_SANDBOX_DATA_DIR=/workspace/data", user_data)
         self.assertIn("RP_DASH_DIR=/workspace/.research_plugin_sessions/exp1", user_data)
-        self.assertIn("MLFLOW_TRACKING_URI=https://mlflow.test", user_data)
-        self.assertIn("MLFLOW_EXPERIMENT_NAME=rp/proj1/exp1", user_data)
-        self.assertIn("RP_PROJECT_ID=proj1", user_data)
-        self.assertIn("RP_EXECUTION_BACKEND=lambda_labs", user_data)
-        self.assertNotIn("UNRELATED", user_data)
-        self.assertIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
+        self.assertNotIn("MLFLOW_TRACKING_URI", user_data)
+        self.assertNotIn("MLFLOW_EXPERIMENT_NAME", user_data)
+        self.assertNotIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
         self.assertIn("start_dashboards.sh", user_data)
         self.assertIn("/opt/rp/start_dashboards.sh || true", user_data)
-        self.assertNotIn("MLFLOW_TRACKING_URI=http://localhost:5000", user_data)
 
     def test_lambda_backend_advertises_local_dashboard_ports(self) -> None:
         backend = LambdaLabsSandboxBackend()

@@ -116,42 +116,14 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("sandbox.request", names)
         self.assertIn("feed.post", names)
 
-    def test_daemon_stop_stops_mlflow_reverse_tunnels(self) -> None:
-        class _Control:
-            pass
-
-        class _Worker:
-            def __init__(self) -> None:
-                self.calls: list[dict[str, str]] = []
-
-            def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
-                self.calls.append({"sandbox_id": sandbox_id})
-
-        worker = _Worker()
-        server = DaemonServer(
-            worker=worker,
-            control=_Control(),
-            task_loop=_NoopLoop(),
-            project_links=self.links,
-            loopback_secret="secret",
-        )
-
-        server.stop()
-
-        self.assertEqual(worker.calls, [{"sandbox_id": ""}])
-
-    def test_daemon_teardown_stops_mlflow_reverse_tunnel(self) -> None:
+    def test_daemon_teardown_stops_dashboard_tunnel(self) -> None:
         class _Worker:
             def __init__(self) -> None:
                 self.dashboard_stops: list[str] = []
-                self.mlflow_stops: list[str] = []
                 self.removed_conn: list[str] = []
 
             def stop_dashboards(self, *, sandbox_id: str = "") -> None:
                 self.dashboard_stops.append(sandbox_id)
-
-            def stop_mlflow_access(self, *, sandbox_id: str = "") -> None:
-                self.mlflow_stops.append(sandbox_id)
 
             def remove_conn_file(self, *, experiment_id: str, **_kwargs) -> None:
                 self.removed_conn.append(experiment_id)
@@ -166,7 +138,6 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         )
 
         self.assertEqual(worker.dashboard_stops, ["sbx_1"])
-        self.assertEqual(worker.mlflow_stops, ["sbx_1"])
         self.assertEqual(worker.removed_conn, ["exp_1"])
 
     def test_feed_post_reads_image_locally_and_submits_bytes(self) -> None:

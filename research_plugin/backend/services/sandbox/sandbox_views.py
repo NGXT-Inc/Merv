@@ -18,8 +18,6 @@ They are pure projection logic — no DB, backend, or filesystem calls.
 """
 
 from __future__ import annotations
-
-import shlex
 from typing import Any
 
 from ...domain.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
@@ -79,7 +77,6 @@ def agent_row_facts(
     *,
     row: dict[str, Any],
     env_info: dict[str, Any],
-    mlflow: dict[str, object] | None = None,
     reused: bool | None,
 ) -> dict[str, Any]:
     """Provider-portable half of the agent view — pure row projection.
@@ -131,8 +128,6 @@ def agent_row_facts(
         # Observability dashboards visible to the user.
         "dashboards": decode_dashboards(row.get("dashboards_json")),
     }
-    if mlflow:
-        facts["mlflow"] = mlflow
     if env_info.get("available_tokens"):
         facts["environment"] = env_info
     if status == "provisioning":
@@ -178,36 +173,6 @@ def merge_agent_view(
             "available inside the sandbox environment; use it through "
             "Hugging Face tooling and do not print or write the token. "
         )
-    mlflow_info = view.get("mlflow") if isinstance(view.get("mlflow"), dict) else {}
-    mlflow_env = mlflow_info.get("env") if isinstance(mlflow_info, dict) else {}
-    mlflow_configured = bool(
-        isinstance(mlflow_info, dict) and mlflow_info.get("configured")
-    )
-    mlflow_access = mlflow_info.get("access") if isinstance(mlflow_info, dict) else {}
-    mlflow_ready = not isinstance(mlflow_access, dict) or (
-        mlflow_access.get("ready") is not False
-    )
-    if mlflow_configured and mlflow_ready and isinstance(mlflow_env, dict):
-        mlflow_assignments = " ".join(
-            f"{key}={shlex.quote(str(value))}"
-            for key, value in sorted(mlflow_env.items())
-        )
-        mlflow_note = (
-            "Quantitative experiment tracking: use MLflow for params, metrics, "
-            "and artifacts. The backend owns the MLflow server; use the "
-            f"provided mlflow.env block, or prefix training commands with: "
-            f"{mlflow_assignments}. "
-        )
-    elif mlflow_configured:
-        mlflow_note = (
-            "Centralized MLflow is configured, but the sandbox access path is "
-            "not ready yet; poll sandbox.get until mlflow.access.ready is true. "
-        )
-    else:
-        mlflow_note = (
-            "Quantitative experiment tracking should use centralized MLflow, "
-            "but this backend has not provided an MLflow tracking URI yet. "
-        )
     if status == "provisioning":
         view["hint"] = (
             "Provisioning. A fresh GPU VM commonly takes 5-15 minutes "
@@ -229,13 +194,8 @@ def merge_agent_view(
     elif live:
         if attached_to_experiment:
             dashboard_note = (
-                "Training observability: the backend provides centralized MLflow "
-                "tracking context and the sandbox provides TensorBoard event "
-                "logging. Write TensorBoard events to $RP_TB_LOGDIR. Framework "
-                "integrations such as Hugging Face "
-                "Trainer and PyTorch Lightning's MLFlowLogger can use these "
-                "env vars directly; for plain PyTorch, add mlflow.autolog() "
-                "when useful. The user sees dashboard tabs in the UI once "
+                "Training observability: write TensorBoard events to "
+                "$RP_TB_LOGDIR when useful. The user sees dashboard tabs in the UI once "
                 "the servers are reachable; you do not need to fetch or "
                 "share the URLs. Also save selected plot images or compact result "
                 "tables under $RP_EXPERIMENT_DIR (e.g. figures/*.png, "
@@ -283,7 +243,6 @@ def merge_agent_view(
                 attached_to_experiment=attached_to_experiment,
             )
             + credential_note
-            + mlflow_note
             + dashboard_note
             + "The dispatcher multiplexes one SSH connection and auto-retries "
             "transient connect failures, so do not wrap it in your own retry "
@@ -313,7 +272,6 @@ def sandbox_row_view(
     *,
     row: dict[str, Any],
     local_sync_dir: str,
-    mlflow: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Canonical sandbox-row projection (workflow status + HTTP/UI).
 
@@ -358,8 +316,7 @@ def sandbox_row_view(
         "local_sync_dir": local_sync_dir,
         "sandbox_data_dir": data_dir,
         "volume_name": row.get("volume_name"),
-        # Sandbox-local dashboards. Centralized MLflow is surfaced separately
-        # because it is backend-owned, not a sandbox tunnel.
+        # Sandbox-local dashboards.
         "dashboards": decode_dashboards(row.get("dashboards_json")),
         "requested_at": row.get("requested_at"),
         "expires_at": row.get("expires_at"),
@@ -368,8 +325,6 @@ def sandbox_row_view(
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
-    if mlflow:
-        view["mlflow"] = mlflow
     return view
 
 

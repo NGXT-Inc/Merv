@@ -223,20 +223,6 @@ class ModalSandboxBackendTest(unittest.TestCase):
             time_limit=1234,
         )
 
-    def _request_with_tracking_env(self) -> SandboxRequest:
-        return SandboxRequest(
-            experiment_id="exp1",
-            project_id="proj1",
-            public_key="ssh-ed25519 AAAA",
-            tracking_env={
-                "MLFLOW_TRACKING_URI": "https://mlflow.test",
-                "MLFLOW_EXPERIMENT_NAME": "rp/proj1/exp1",
-                "RP_PROJECT_ID": "proj1",
-                "RP_EXECUTION_BACKEND": "modal",
-                "UNRELATED": "ignored",
-            },
-        )
-
     def test_acquire_wires_ssh_tunnel(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         self.assertEqual(provisioned.ssh_host, "sandbox.modal.test")
@@ -250,7 +236,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
         kwargs = create["kwargs"]
         self.assertEqual(kwargs["unencrypted_ports"], [22])
         # TensorBoard on 6006 is requested as an encrypted port so Modal exposes
-        # it as an HTTPS tunnel. MLflow is centralized by the backend.
+        # it as an HTTPS tunnel.
         self.assertEqual(kwargs["encrypted_ports"], [6006])
         self.assertEqual(kwargs["timeout"], 1234)
         self.assertEqual(kwargs["gpu"], "A100")
@@ -267,25 +253,17 @@ class ModalSandboxBackendTest(unittest.TestCase):
         )
         self.assertEqual(kwargs["env"]["RP_SANDBOX_DATA_DIR"], self.backend.config.sandbox_data_dir)
         self.assertEqual(kwargs["env"]["RP_EXPERIMENT_ID"], "exp1")
+        self.assertNotIn("MLFLOW_TRACKING_URI", kwargs["env"])
+        self.assertNotIn("MLFLOW_EXPERIMENT_NAME", kwargs["env"])
         self.assertNotIn("HF_TOKEN", kwargs["env"])
         # tags applied
         sandbox = FakeSandbox.registry[provisioned.sandbox_id]
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
 
-    def test_acquire_exports_central_mlflow_tracking_env(self) -> None:
-        self.backend.acquire(request=self._request_with_tracking_env())
-        env = FakeSandboxClass.created[-1]["kwargs"]["env"]
-        self.assertEqual(env["MLFLOW_TRACKING_URI"], "https://mlflow.test")
-        self.assertEqual(env["MLFLOW_EXPERIMENT_NAME"], "rp/proj1/exp1")
-        self.assertEqual(env["RP_PROJECT_ID"], "proj1")
-        self.assertEqual(env["RP_EXECUTION_BACKEND"], "modal")
-        self.assertNotIn("UNRELATED", env)
-
     def test_acquire_captures_dashboard_urls(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         # ProvisionedSandbox.dashboards mirrors the encrypted-tunnel .url fields.
-        # MLflow is centralized backend tracking context, not a sandbox tunnel.
         self.assertEqual(set(provisioned.dashboards.keys()), {"tensorboard"})
         self.assertTrue(
             provisioned.dashboards["tensorboard"].startswith("https://tensorboard-")
@@ -308,12 +286,11 @@ class ModalSandboxBackendTest(unittest.TestCase):
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
         from backend.execution.backends.modal.sandbox_backend import BOOT_SCRIPT, REC_SCRIPT
 
-        # MLflow is not served inside the sandbox anymore; agents receive the
-        # centralized tracking URI from the backend tool response.
+        # MLflow is not served or configured inside the sandbox by provisioning.
         self.assertNotIn("mlflow server", BOOT_SCRIPT)
         self.assertNotIn("backend-store-uri", BOOT_SCRIPT)
-        self.assertIn("MLFLOW_TRACKING_URI", BOOT_SCRIPT)
-        self.assertIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
+        self.assertNotIn("MLFLOW_TRACKING_URI", BOOT_SCRIPT)
+        self.assertNotIn("export MLFLOW_TRACKING_URI", REC_SCRIPT)
         # TensorBoard, same Volume-backed logdir pattern.
         self.assertIn("tensorboard.main", BOOT_SCRIPT)
         self.assertIn("--port 6006", BOOT_SCRIPT)
