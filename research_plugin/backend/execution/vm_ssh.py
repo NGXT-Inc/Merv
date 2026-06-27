@@ -16,7 +16,6 @@ from .vm_bootstrap import (
     MGMT_SSH_USER,
     SESSIONS_DIR_NAME,
     TRANSCRIPT_FILENAME,
-    build_runtime_env,
 )
 
 
@@ -139,81 +138,6 @@ def write_secrets_via_mgmt_ssh(
     except Exception:  # noqa: BLE001
         return False
     return result.returncode == 0
-
-
-def retarget_via_mgmt_ssh(
-    *,
-    ssh_runner: SshInputRunner,
-    sandbox_id: str,
-    experiment_id: str,
-    public_key: str,
-    workdir: str,
-    sandbox_data_dir: str,
-    tracking_env: Mapping[str, str],
-    ssh_host: str,
-    ssh_port: int,
-    key_path: str,
-) -> bool:
-    if not sandbox_id or not ssh_host or not key_path or not workdir:
-        raise BackendUnavailableError("retarget needs the SSH endpoint and management key")
-    sessions_dir = remote_sessions_dir(
-        experiment_id=experiment_id, root=remote_root_of(workdir)
-    )
-    env_body = build_runtime_env(
-        experiment_id=experiment_id,
-        workdir=workdir,
-        sessions_dir=sessions_dir,
-        sandbox_data_dir=sandbox_data_dir,
-        tracking_env=tracking_env,
-    )
-    mkdirs = " ".join(
-        shlex.quote(path)
-        for path in (workdir, f"{workdir}/artifacts_to_keep", sandbox_data_dir, sessions_dir)
-        if path
-    )
-    pub = shlex.quote(public_key)
-    remote_command = (
-        "sudo -n bash -c "
-        + shlex.quote(
-            "umask 022; "
-            f"mkdir -p {mkdirs} /root/.ssh; "
-            "touch /root/.ssh/authorized_keys; chmod 700 /root/.ssh; "
-            "chmod 600 /root/.ssh/authorized_keys; "
-            f"pub={pub}; "
-            'grep -qxF "$pub" /root/.ssh/authorized_keys '
-            '|| printf "%s\\n" "$pub" >> /root/.ssh/authorized_keys; '
-            "if id ubuntu >/dev/null 2>&1; then "
-            "mkdir -p /home/ubuntu/.ssh; "
-            "touch /home/ubuntu/.ssh/authorized_keys; "
-            'grep -qxF "$pub" /home/ubuntu/.ssh/authorized_keys '
-            '|| printf "%s\\n" "$pub" >> /home/ubuntu/.ssh/authorized_keys; '
-            "chown -R ubuntu:ubuntu /home/ubuntu/.ssh; "
-            "chmod 700 /home/ubuntu/.ssh; "
-            "chmod 600 /home/ubuntu/.ssh/authorized_keys; "
-            "fi; "
-            "cat > /opt/rp/env; chmod 644 /opt/rp/env"
-        )
-    )
-    try:
-        result = ssh_runner(
-            ssh_command(
-                host=ssh_host,
-                port=int(ssh_port) or 22,
-                user=MGMT_SSH_USER,
-                key_path=key_path,
-                remote_command=remote_command,
-            ),
-            env_body + "\n",
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BackendUnavailableError(f"retarget over SSH timed out: {exc}") from exc
-    except OSError as exc:
-        raise BackendUnavailableError(f"could not run ssh for retarget: {exc}") from exc
-    if result.returncode != 0:
-        raise BackendUnavailableError(
-            f"retarget over SSH failed (exit {result.returncode}): {stderr_detail(result)}"
-        )
-    return True
 
 
 def sandbox_tokens() -> dict[str, str]:

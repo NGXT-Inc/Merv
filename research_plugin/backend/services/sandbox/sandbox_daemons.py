@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from ...sandbox.sandbox_backend import SandboxBackend
 from ...env import env_bool, env_float
-from ...ports.sandbox_lifecycle import ExperimentTransitions, ProvisionReaper
+from ...ports.sandbox_lifecycle import ProvisionReaper
 from .sandbox_registry import SandboxRegistry
 from ...sandbox.sandbox_support import (
     DEFAULT_REAPER_INTERVAL_SECONDS,
@@ -29,7 +29,6 @@ class SandboxDaemons:
         registry: SandboxRegistry,
         backend: SandboxBackend,
         provisioner: ProvisionReaper,
-        experiments: ExperimentTransitions,
         persist_metrics: Callable[..., None],
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
@@ -37,7 +36,6 @@ class SandboxDaemons:
         self.registry = registry
         self.backend = backend
         self.provisioner = provisioner
-        self.experiments = experiments
         self._persist_metrics = persist_metrics
         self.heartbeat = SandboxHeartbeatMonitor(
             registry=registry,
@@ -163,7 +161,6 @@ class SandboxDaemons:
         *,
         row: dict[str, Any],
         event_type: str = "sandbox.expired",
-        transition_reason: str = "sandbox reaped at expires_at deadline",
         payload_extra: dict[str, Any] | None = None,
     ) -> None:
         experiment_id = str(row.get("experiment_id") or "")
@@ -186,28 +183,12 @@ class SandboxDaemons:
         self.registry.mark_terminated(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
-        # An experiment whose sandbox expired underneath it must not stay
-        # 'running' forever; ready_to_run is truthful (nothing is executing)
-        # and lets the agent simply request a fresh sandbox. The system
-        # transition no-ops for experiments already past running.
-        active_remain = bool(
-            experiment_id
-            and self.registry.has_active_for_experiment(experiment_id=experiment_id)
-        )
-        reverted = False
-        if experiment_id and not active_remain:
-            reverted = self.experiments.apply_system_transition(
-                experiment_id=experiment_id,
-                transition="sandbox_expired",
-                reason=transition_reason,
-            )
         payload = {
             "sandbox_id": sandbox_id,
             "sandbox_uid": sandbox_uid,
             "reaped": True,
             "expires_at": row.get("expires_at"),
             "stopped": stopped,
-            "experiment_reverted": reverted,
         }
         if payload_extra:
             payload.update(payload_extra)

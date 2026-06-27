@@ -17,13 +17,6 @@ three surfaces that used to hand-maintain parallel copies cannot drift:
 
 ``abandon``/``mark_failed`` stay out of the table (available from any
 non-terminal status), and terminal statuses have no forward transition.
-
-SYSTEM TRANSITIONS are sandbox-lifecycle moves (``sandbox_started``,
-``sandbox_expired``). They live in ``TRANSITION_GRAPH`` so the workflow engine
-is the single writer of experiment status, but they are *not* agent-callable:
-``allowed_transitions_for`` hides them and ``experiment.transition`` rejects
-them. The sandbox registry applies them via
-``ExperimentService.apply_system_transition``.
 """
 
 from __future__ import annotations
@@ -182,22 +175,14 @@ GATE_TABLE: dict[str, ForwardTransition] = {
 }
 
 
-# Sandbox-lifecycle transitions. In the graph (the workflow engine is the only
-# writer of experiment status) but never agent-callable.
-SYSTEM_TRANSITIONS = frozenset({"sandbox_started", "sandbox_expired"})
+SYSTEM_TRANSITIONS = frozenset()
 
-# (from_status, transition) -> next_status. Derived from GATE_TABLE plus the
-# system transitions, so the graph and the gate contracts cannot diverge.
+# (from_status, transition) -> next_status. Derived from GATE_TABLE so the graph
+# and the gate contracts cannot diverge.
 TRANSITION_GRAPH: dict[tuple[str, str], str] = {
     (status, forward.name): forward.to_status
     for status, forward in GATE_TABLE.items()
 }
-TRANSITION_GRAPH.update(
-    {
-        ("ready_to_run", "sandbox_started"): "running",
-        ("running", "sandbox_expired"): "ready_to_run",
-    }
-)
 
 # Plain-language preconditions surfaced on experiment.get_state and in
 # 'not allowed' errors. Derived from the same table.
@@ -213,14 +198,13 @@ def allowed_transitions_for(status: str) -> list[dict[str, Any]]:
 
     Surfaced on ``experiment.get_state`` and in 'not allowed' errors so the
     agent can see what to do next (and what each step requires) without
-    trial-and-error. System (sandbox-lifecycle) transitions are excluded: the
-    agent cannot call them.
+    trial-and-error.
     """
     if status in TERMINAL_STATUSES:
         return []
     out: list[dict[str, Any]] = []
     for (frm, transition), nxt in TRANSITION_GRAPH.items():
-        if frm == status and transition not in SYSTEM_TRANSITIONS:
+        if frm == status:
             entry: dict[str, Any] = {"transition": transition, "leads_to": nxt}
             if transition in TRANSITION_REQUIREMENTS:
                 entry["requires"] = TRANSITION_REQUIREMENTS[transition]

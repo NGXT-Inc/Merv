@@ -76,7 +76,6 @@ class ControlApp:
             sandbox_backend=self.execution_backend,
             worker=self.worker,
             activity=None,
-            experiments=self.experiments,
             mgmt_keys=mgmt_keys,
             metrics_archive=ControlMetricsArchive(),
             quotas=self.quotas,

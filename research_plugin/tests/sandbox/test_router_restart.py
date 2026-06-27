@@ -5,7 +5,7 @@ shared multi-project mode the router builds apps lazily on first tool call.
 These tests pin the startup behavior that keeps an expired Lambda VM from
 billing forever after a restart: any registered project whose state DB has a
 running/provisioning sandbox gets its app (and therefore its reaper) eagerly
-on router construction, and reaping reverts the experiment to ready_to_run.
+on router construction, and reaping terminates the expired sandbox row.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class RouterRestartReaperTest(unittest.TestCase):
         self.routers.append(router)
         return router
 
-    def _seed_expired_running_sandbox(self, router: ProjectRouter) -> tuple[str, str]:
+    def _seed_expired_running_sandbox(self, router: ProjectRouter) -> tuple[str, str, str]:
         """One project with a running-but-expired sandbox, one idle project."""
         project = router.create_project(repo_root=self.repo_active, name="Active")
         router.create_project(repo_root=self.repo_idle, name="Idle")
@@ -81,16 +81,17 @@ class RouterRestartReaperTest(unittest.TestCase):
             "sandbox.request", {"project_id": project["id"], "experiment_id": exp_id}
         )
         self.assertEqual(result["status"], "running")
+        sandbox_uid = result["sandbox_uid"]
         with app.store.transaction() as conn:
             conn.execute(
-                "UPDATE sandboxes SET expires_at = ? WHERE experiment_id = ?",
-                ("2000-01-01T00:00:00Z", exp_id),
+                "UPDATE sandboxes SET expires_at = ? WHERE sandbox_uid = ?",
+                ("2000-01-01T00:00:00Z", sandbox_uid),
             )
-        return project["id"], exp_id
+        return project["id"], exp_id, sandbox_uid
 
     def test_restart_resumes_reaper_for_project_with_running_sandbox(self) -> None:
         first = self._make_router()
-        project_id, exp_id = self._seed_expired_running_sandbox(first)
+        project_id, _exp_id, sandbox_uid = self._seed_expired_running_sandbox(first)
         first.shutdown()
 
         restarted = self._make_router()
@@ -104,20 +105,16 @@ class RouterRestartReaperTest(unittest.TestCase):
         self.assertTrue(app.sandboxes.daemons.reaper_thread.is_alive())
 
         # What the reaper thread will do on its next tick: terminate the
-        # expired sandbox and put the experiment back where the agent can act.
+        # expired sandbox without changing experiment state.
         self.assertEqual(app.sandboxes.reap_expired(), 1)
         sandbox = app.call_tool(
-            "sandbox.get", {"project_id": project_id, "experiment_id": exp_id}
+            "sandbox.get", {"project_id": project_id, "sandbox_uid": sandbox_uid}
         )
         self.assertEqual(sandbox["status"], "terminated")
-        state = app.call_tool(
-            "experiment.get_state", {"project_id": project_id, "experiment_id": exp_id}
-        )
-        self.assertEqual(state["status"], "ready_to_run")
 
     def test_restart_stays_lazy_when_no_sandboxes_are_active(self) -> None:
         first = self._make_router()
-        project_id, exp_id = self._seed_expired_running_sandbox(first)
+        project_id, exp_id, _sandbox_uid = self._seed_expired_running_sandbox(first)
         app = first.app_for_project(project_id)
         app.call_tool(
             "sandbox.release",

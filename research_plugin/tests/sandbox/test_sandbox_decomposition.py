@@ -120,31 +120,6 @@ class SandboxDecompositionTest(unittest.TestCase):
                 task_channel=object(),
             )
 
-    def test_facade_requires_explicit_experiment_transitions(self) -> None:
-        with self.assertRaisesRegex(ValidationError, "experiments is required"):
-            SandboxService(
-                store=self.app.store,
-                sandbox_backend=self.app.execution_backend,
-                worker=self.app.worker,
-                mgmt_keys=self.app.sandboxes.mgmt_keys,
-                metrics_archive=self.app.sandboxes.metrics_archive,
-                task_channel=self.app.sandboxes.tasks,
-            )
-
-    def test_facade_requires_experiment_transition_port(self) -> None:
-        with self.assertRaisesRegex(
-            ValidationError, "experiments.apply_system_transition is required"
-        ):
-            SandboxService(
-                store=self.app.store,
-                sandbox_backend=self.app.execution_backend,
-                worker=self.app.worker,
-                mgmt_keys=self.app.sandboxes.mgmt_keys,
-                metrics_archive=self.app.sandboxes.metrics_archive,
-                task_channel=self.app.sandboxes.tasks,
-                experiments=object(),
-            )
-
     def test_facade_requires_explicit_quota_admission(self) -> None:
         with self.assertRaisesRegex(ValidationError, "quotas is required"):
             SandboxService(
@@ -154,7 +129,6 @@ class SandboxDecompositionTest(unittest.TestCase):
                 mgmt_keys=self.app.sandboxes.mgmt_keys,
                 metrics_archive=self.app.sandboxes.metrics_archive,
                 task_channel=self.app.sandboxes.tasks,
-                experiments=self.app.experiments,
             )
 
     def test_facade_requires_quota_admission_port(self) -> None:
@@ -168,7 +142,6 @@ class SandboxDecompositionTest(unittest.TestCase):
                 mgmt_keys=self.app.sandboxes.mgmt_keys,
                 metrics_archive=self.app.sandboxes.metrics_archive,
                 task_channel=self.app.sandboxes.tasks,
-                experiments=self.app.experiments,
                 quotas=object(),
             )
 
@@ -218,11 +191,11 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertNotIn("run_parachute", source)
         self.assertNotIn("PARACHUTE_", source)
         self.assertNotIn("self.parachute", source)
-        # Row SQL lives in SandboxRegistry. The two conn-scoped view helpers
-        # for the workflow layer are the only SELECTs allowed to remain.
+        # Row SQL lives in SandboxRegistry. The conn-scoped view helper for the
+        # workflow layer is the only SELECT allowed to remain.
         self.assertNotIn("UPDATE sandboxes", source)
         self.assertNotIn("INSERT INTO sandboxes", source)
-        self.assertEqual(source.count("SELECT * FROM sandboxes"), 2)
+        self.assertEqual(source.count("SELECT * FROM sandboxes"), 1)
 
     def test_facade_import_does_not_load_data_plane_task_machinery(self) -> None:
         code = """

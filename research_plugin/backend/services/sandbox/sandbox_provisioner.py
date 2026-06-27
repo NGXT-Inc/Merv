@@ -1,13 +1,10 @@
 """Background sandbox provisioning: job threads, cancellation, reconcile.
 
-`SandboxProvisioner` owns the acquire lifecycle — idempotent experiment-keyed
-jobs for attached default sandboxes, uid-keyed jobs for standalone/additional
-sandboxes, cooperative cancellation, orphan cleanup, and the reconcile pass that
+`SandboxProvisioner` owns the acquire lifecycle — uid-keyed jobs, cooperative
+cancellation, orphan cleanup, and the reconcile pass that
 keeps a polled row truthful after crashes or restarts.
-It talks to persistence through `SandboxRegistry`, applies experiment status
-changes only through the workflow engine's system transitions, and reaches
-the facade only through ``refresh_row`` (endpoint + dashboard refresh for a
-live row).
+It talks to persistence through `SandboxRegistry` and reaches the facade only
+through ``refresh_row`` (endpoint + dashboard refresh for a live row).
 
 ``connecting``; then a successfully acquired sandbox is recorded as
 ``running``. The row status stays ``provisioning`` until that handoff, so the
@@ -30,7 +27,6 @@ from ...sandbox.sandbox_backend import (
     SandboxRequest,
 )
 from ...domain.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
-from ...ports.sandbox_lifecycle import ExperimentTransitions
 from ...ports.sandbox_worker import SandboxWorker
 from ...utils import iso_after, now_iso
 from .sandbox_registry import SandboxRegistry
@@ -67,18 +63,15 @@ class SandboxProvisioner:
         *,
         registry: SandboxRegistry,
         backend: SandboxBackend,
-        experiments: ExperimentTransitions,
         worker: SandboxWorker,
         refresh_row: RefreshRow,
         stale_provision_seconds: float,
     ) -> None:
         self.registry = registry
         self.backend = backend
-        self.experiments = experiments
         self.worker = worker
         self._refresh_row = refresh_row
         self.stale_provision_seconds = stale_provision_seconds
-        # Attached default jobs are keyed by experiment; standalone/additional by uid.
         self._jobs: dict[str, _ProvisionJob] = {}
         self._jobs_lock = threading.Lock()
 
@@ -117,25 +110,13 @@ class SandboxProvisioner:
                 self.registry.touch_alive(experiment_id=exp, sandbox_uid=sandbox_uid)
                 return self._refresh_row(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
             self.registry.mark_terminated(experiment_id=exp, sandbox_uid=sandbox_uid)
-            # An experiment whose sandbox died underneath it must not stay
-            # 'running' forever — mirror the reaper's _reap_row and revert to
-            # ready_to_run so the agent can request a fresh sandbox. The
-            # has_active guard keeps a parallel-sandbox experiment running while
-            # a sibling sandbox is still alive; the transition no-ops past running.
-            reverted = False
-            if exp and not self.registry.has_active_for_experiment(experiment_id=exp):
-                reverted = self.experiments.apply_system_transition(
-                    experiment_id=exp,
-                    transition="sandbox_expired",
-                    reason="sandbox terminated (provider reported not alive)",
-                )
             self.registry.emit_event(
                 project_id=str(row["project_id"]),
                 event_type="sandbox.expired",
                 experiment_id=exp,
                 payload={
                     "sandbox_id": row.get("sandbox_id", ""),
-                    "experiment_reverted": reverted,
+                    "sandbox_uid": sandbox_uid,
                 },
             )
             return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
@@ -192,21 +173,17 @@ class SandboxProvisioner:
         sandbox_uid = str(sandbox_uid or req.sandbox_uid or "").strip()
         if not sandbox_uid:
             sandbox_uid = self.registry.new_sandbox_uid()
-        job_key = self._job_key(
-            experiment_id=experiment_id,
-            sandbox_uid=sandbox_uid if create_new or not experiment_id else "",
-        )
         with self._jobs_lock:
-            job = self._jobs.get(job_key)
+            job = self._jobs.get(sandbox_uid)
             if job is not None and job.thread.is_alive():
                 return job
         # No live job. Clear any prior/orphan sandbox before a fresh provision so
-        # the deterministic Modal name cannot collide (the wedge we hit). Done
-        # outside the lock — it may make a network call.
+        # deterministic provider names cannot collide. Done outside the lock — it
+        # may make a network call.
         if not create_new:
             self.cleanup_orphan(experiment_id=experiment_id, row=existing)
         with self._jobs_lock:
-            job = self._jobs.get(job_key)
+            job = self._jobs.get(sandbox_uid)
             if job is not None and job.thread.is_alive():
                 return job
             self.begin_provisioning_row(
@@ -231,7 +208,7 @@ class SandboxProvisioner:
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
             )
-            self._jobs[job_key] = job
+            self._jobs[sandbox_uid] = job
             thread.start()
             return job
 
@@ -366,11 +343,6 @@ class SandboxProvisioner:
                 )
             except Exception:  # noqa: BLE001
                 pass
-            if experiment_id:
-                self.experiments.apply_system_transition(
-                    experiment_id=experiment_id,
-                    transition="sandbox_started",
-                )
             self.registry.emit_event(
                 project_id=project_id,
                 event_type="sandbox.created",
@@ -575,7 +547,9 @@ class SandboxProvisioner:
             lookup_uids: list[str] = []
             if sandbox_uid:
                 lookup_uids.append(sandbox_uid)
-            # Avoid the experiment alias while a sibling is live; it names the primary.
+            # Legacy fallback: old providers may only be findable by the
+            # experiment-derived deterministic name. Skip that broad lookup
+            # while another live sandbox is attached to the same experiment.
             if not active_sibling:
                 lookup_uids.append("")
             if not lookup_uids:

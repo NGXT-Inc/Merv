@@ -12,18 +12,15 @@ from ...state.activity import ActivityLogger
 from ...state.store import BaseStateStore, Connection, row_to_dict
 from ...utils import (
     NotFoundError,
-    PermissionDeniedError,
     ValidationError,
 )
 from ...sandbox.sandbox_backend import (
-    BackendUnavailableError,
     SandboxBackend,
     SandboxRequest,
 )
 from ...ports.metrics_archive import MetricsArchive
 from ...ports.mgmt_keys import MgmtKeyStore
 from ...ports.quota_admission import QuotaAdmission
-from ...ports.sandbox_lifecycle import ExperimentTransitions
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
 from ..mlflow_tracking import CentralMlflowService
@@ -58,7 +55,6 @@ class SandboxService:
         activity: ActivityLogger | None = None,
         request_wait_seconds: float | None = None,
         stale_provision_seconds: float | None = None,
-        experiments: ExperimentTransitions | None = None,
         quotas: QuotaAdmission | None = None,
         task_channel: TaskChannel | None = None,
         mlflow_tracking: CentralMlflowService | None = None,
@@ -70,10 +66,6 @@ class SandboxService:
             raise ValidationError("task_channel is required")
         if not callable(getattr(task_channel, "submit", None)):
             raise ValidationError("task_channel.submit is required")
-        if experiments is None:
-            raise ValidationError("experiments is required")
-        if not callable(getattr(experiments, "apply_system_transition", None)):
-            raise ValidationError("experiments.apply_system_transition is required")
         if quotas is None:
             raise ValidationError("quotas is required")
         if not callable(getattr(quotas, "check_admission", None)):
@@ -86,9 +78,6 @@ class SandboxService:
         # control-plane custody; transcript reads and metrics sampling use
         # these, never the user key.
         self.mgmt_keys = mgmt_keys
-        # Sandbox lifecycle changes experiment status only through the workflow
-        # engine's system transitions — never by writing the experiments table.
-        self.experiments = experiments
         # Conn files and local tunnels route through the data-plane worker.
         self.worker = worker
         self.mlflow_tracking = mlflow_tracking or CentralMlflowService()
@@ -121,7 +110,6 @@ class SandboxService:
         self.provisioner = SandboxProvisioner(
             registry=self.registry,
             backend=sandbox_backend,
-            experiments=self.experiments,
             worker=self.worker,
             refresh_row=self._refresh_row,
             stale_provision_seconds=env_float(
@@ -134,7 +122,6 @@ class SandboxService:
             registry=self.registry,
             backend=sandbox_backend,
             provisioner=self.provisioner,
-            experiments=self.experiments,
             persist_metrics=self.metrics.persist_row,
             sample_metrics=self.metrics.sample_metrics,
         )
@@ -174,9 +161,8 @@ class SandboxService:
         instance_type = (instance_type or "").strip() or None
         region = (region or "").strip() or None
 
-        # Resolve scope. Experiment attachment is optional: an unattached
-        # sandbox is project-scoped and addressed by sandbox_uid.
-        experiment_name = ""
+        # Resolve scope. Experiment attachment is optional and is represented
+        # only by sandbox_attachments; it never controls sandbox eligibility.
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if experiment_id:
@@ -187,11 +173,6 @@ class SandboxService:
                     raise NotFoundError(
                         f"experiment not found in project {project_id}: {experiment_id}"
                     )
-                if experiment["status"] not in {"ready_to_run", "running"}:
-                    raise PermissionDeniedError(
-                        "sandbox.request requires experiment status ready_to_run or running"
-                    )
-                experiment_name = str(experiment["name"] or "")
         if experiment_id:
             try:
                 existing = self.registry.load_row(experiment_id=experiment_id)
@@ -213,11 +194,10 @@ class SandboxService:
                 )
             )
         )
-        local_key = experiment_id or sandbox_uid
         if public_key_override:
             public_key = public_key_override
         else:
-            public_key, _key_path = self._ensure_keypair(local_key=local_key)
+            public_key, _key_path = self._ensure_keypair(local_key=sandbox_uid)
         # Mint the management keypair before any provision so key injection
         # always precedes the management read paths (plan Phase 5 sequencing).
         management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
@@ -234,7 +214,6 @@ class SandboxService:
                 experiment_id=experiment_id,
                 sandbox_uid=str(existing.get("sandbox_uid") or ""),
             )
-            self._mark_experiment_running(experiment_id=experiment_id)
             row = self._refresh_row(
                 row=self.registry.get_by_uid(
                     sandbox_uid=str(existing.get("sandbox_uid") or "")
@@ -249,13 +228,16 @@ class SandboxService:
                 payload={
                     "sandbox_id": existing["sandbox_id"],
                     "sandbox_uid": existing.get("sandbox_uid", ""),
+                    "active_experiment_ids": self.registry.active_experiment_ids(
+                        sandbox_uid=str(existing.get("sandbox_uid") or "")
+                    ),
                 },
             )
             return self._agent_result(
                 row=row,
                 reused=True,
                 include_data_plane_enrichment=include_data_plane_enrichment,
-                use_sandbox_uid_command=False,
+                use_sandbox_uid_command=True,
             )
 
         # 2) Hardware-selection gate. A provider that bundles GPU + CPU + RAM into
@@ -293,17 +275,13 @@ class SandboxService:
         #    `provisioning` (the agent polls sandbox.get); a fast one returns SSH
         #    inline, exactly like before. Backend errors are handled inside the
         #    job, which lands the row in `failed` — so request never times out.
-        tracking_env = self._mlflow_tracking_env(
-            project_id=project_id,
-            experiment_id=experiment_id,
-        )
+        tracking_env: dict[str, str] = {}
         remote_dir = remote_experiment_dir(
-            experiment_id=experiment_id or sandbox_uid,
-            name=experiment_name or (f"sandbox-{sandbox_uid[:12]}" if not experiment_id else ""),
-            sandbox_uid=sandbox_uid if additional else "",
+            experiment_id=sandbox_uid,
+            name=f"sandbox-{sandbox_uid[:12]}",
         )
         req = SandboxRequest(
-            experiment_id=experiment_id or sandbox_uid,
+            experiment_id=sandbox_uid,
             project_id=project_id,
             public_key=public_key,
             sandbox_uid=sandbox_uid,
@@ -316,9 +294,8 @@ class SandboxService:
             instance_type=instance_type,
             region=region,
             tracking_env=tracking_env,
-            # The remote folder is named after the experiment so the VM layout
-            # mirrors experiments/<name>/ locally; additional sandboxes get a
-            # uid suffix so their VM-local experiment dirs never collide.
+            # A sandbox is a machine first: its workdir is sandbox-owned. Any
+            # experiment relationship lives only in sandbox_attachments.
             remote_workdir=remote_dir,
         )
         job = self.provisioner.ensure_job(
@@ -344,7 +321,7 @@ class SandboxService:
             row=row,
             reused=reused,
             include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=additional or not experiment_id,
+            use_sandbox_uid_command=True,
         )
 
     def request_from_data_plane(
@@ -417,7 +394,7 @@ class SandboxService:
             row=row,
             reused=None,
             include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=bool(sandbox_uid),
+            use_sandbox_uid_command=True,
         )
 
     def attach(
@@ -429,7 +406,8 @@ class SandboxService:
         include_data_plane_enrichment: bool = True,
         public_key_override: str | None = None,
     ) -> dict[str, Any]:
-        """Reuse a running sandbox for another experiment, sequentially."""
+        """Associate a running sandbox with another experiment."""
+        _ = public_key_override
         sandbox_uid = sandbox_uid.strip()
         if not sandbox_uid:
             raise ValidationError("sandbox.attach requires sandbox_uid")
@@ -442,9 +420,6 @@ class SandboxService:
             source_row = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
         except NotFoundError as exc:
             raise NotFoundError(f"sandbox not found: {sandbox_uid}") from exc
-        source_experiment_id = str(source_row.get("experiment_id") or "")
-        if source_experiment_id == experiment_id:
-            raise ValidationError("sandbox.attach target must be a different experiment")
         if source_row.get("project_id") != project_id:
             raise NotFoundError(f"sandbox not found in project {project_id}: {sandbox_uid}")
         source_row = self.provisioner.reconcile(row=source_row)
@@ -460,68 +435,16 @@ class SandboxService:
                 raise NotFoundError(
                     f"experiment not found in project {project_id}: {experiment_id}"
                 )
-            if target["status"] not in {"ready_to_run", "running"}:
-                raise PermissionDeniedError(
-                    "sandbox.attach requires target experiment status ready_to_run or running"
-                )
-        target_has_active = self.registry.has_active_for_experiment(
-            experiment_id=experiment_id
-        )
-        target_name = self.registry.experiment_name(experiment_id=experiment_id)
-        remote_dir = remote_experiment_dir(
-            experiment_id=experiment_id,
-            name=target_name,
-            sandbox_uid=sandbox_uid if target_has_active else "",
-        )
-        if public_key_override:
-            public_key = public_key_override
-        else:
-            public_key, _ = self._ensure_keypair(experiment_id=experiment_id)
-        self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
-        management_key_path = self._mgmt_key_path(row=source_row)
-        data_dir = str(
-            source_row.get("sandbox_data_dir") or source_row.get("unsynced_dir") or ""
-        )
-        tracking_env = self._mlflow_tracking_env(
-            project_id=project_id,
-            experiment_id=experiment_id,
-        )
-        if not self.backend.retarget(
-            sandbox_id=str(source_row["sandbox_id"]),
-            experiment_id=experiment_id,
-            public_key=public_key,
-            workdir=remote_dir,
-            sandbox_data_dir=data_dir,
-            tracking_env=tracking_env,
-            ssh_host=str(source_row.get("ssh_host") or ""),
-            ssh_port=int(source_row.get("ssh_port") or 0),
-            key_path=str(management_key_path),
-        ):
-            raise BackendUnavailableError("sandbox backend cannot retarget a live sandbox")
-        row = self.registry.reattach(
+        row = self.registry.attach(
             sandbox_uid=sandbox_uid,
             experiment_id=experiment_id,
             project_id=project_id,
-            workdir=remote_dir,
-            sync_dir=remote_dir,
-            sandbox_data_dir=data_dir,
-            unsynced_dir=data_dir,
-            mgmt_key_ref=sandbox_uid,
         )
-        self._mark_experiment_running(experiment_id=experiment_id)
-        source_active = self._has_active_sandbox(experiment_id=source_experiment_id)
-        source_reverted = False
-        if source_experiment_id and not source_active:
-            source_reverted = self.experiments.apply_system_transition(
-                experiment_id=source_experiment_id,
-                transition="sandbox_expired",
-                reason=f"sandbox {sandbox_uid} attached to {experiment_id}",
-            )
-            self._remove_conn_alias(experiment_id=source_experiment_id)
-        elif source_experiment_id:
-            self._refresh_conn_alias(experiment_id=source_experiment_id)
         if include_data_plane_enrichment:
             row = self.worker.ensure_local_dashboards(row=row)
+        active_experiment_ids = self.registry.active_experiment_ids(
+            sandbox_uid=sandbox_uid
+        )
         self.registry.emit_event(
             project_id=project_id,
             event_type="sandbox.attached",
@@ -529,18 +452,16 @@ class SandboxService:
             payload={
                 "sandbox_id": row.get("sandbox_id", ""),
                 "sandbox_uid": sandbox_uid,
-                "source_experiment_id": source_experiment_id,
-                "source_experiment_reverted": source_reverted,
+                "active_experiment_ids": active_experiment_ids,
             },
         )
         result = self._agent_result(
             row=row,
             reused=True,
             include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=target_has_active,
+            use_sandbox_uid_command=True,
         )
-        result["source_experiment_id"] = source_experiment_id
-        result["source_experiment_reverted"] = source_reverted
+        result["active_experiment_ids"] = active_experiment_ids
         return result
 
     def attach_from_data_plane(
@@ -694,12 +615,20 @@ class SandboxService:
         if was_active:
             # Final metrics capture is best-effort. Central MLflow is durable;
             # legacy sandbox-local MLflow DB snapshots remain a fallback path.
-            self.metrics.persist_row(
-                row=row,
-                force=True,
-                snapshot=None,
-                snapshot_provided=False,
-            )
+            active_experiment_ids = self._active_experiment_ids_for_row(row=row)
+            if not active_experiment_ids and experiment_id:
+                active_experiment_ids = [experiment_id]
+            for metrics_experiment_id in active_experiment_ids:
+                self.metrics.persist_row(
+                    row={
+                        **row,
+                        "experiment_id": metrics_experiment_id,
+                        "active_experiment_ids": [metrics_experiment_id],
+                    },
+                    force=True,
+                    snapshot=None,
+                    snapshot_provided=False,
+                )
         if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
             try:
                 stopped = self.backend.terminate(sandbox_id=str(row["sandbox_id"]))
@@ -719,6 +648,7 @@ class SandboxService:
             payload={
                 "sandbox_id": row.get("sandbox_id", ""),
                 "sandbox_uid": sandbox_uid,
+                "active_experiment_ids": self._active_experiment_ids_for_row(row=row),
                 "stopped": stopped,
             },
         )
@@ -921,7 +851,13 @@ class SandboxService:
 
     def sandboxes_for_experiment(self, *, conn, experiment_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
-            "SELECT * FROM sandboxes WHERE experiment_id = ? ORDER BY created_seq DESC",
+            """
+            SELECT s.*
+            FROM sandboxes s
+            JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+            WHERE a.experiment_id = ? AND a.detached_at IS NULL
+            ORDER BY s.created_seq DESC
+            """,
             (experiment_id,),
         ).fetchall()
         return [self._row_view(row=row_to_dict(row=row) or {}, conn=conn) for row in rows]
@@ -950,29 +886,6 @@ class SandboxService:
         """Terminate running sandboxes idle past the heartbeat threshold."""
         return self.daemons.reap_idle(**kwargs)
 
-    def _mark_experiment_running(self, *, experiment_id: str) -> None:
-        """A live sandbox means execution started: ready_to_run → running.
-
-        Routed through the workflow engine's system transitions (so the move
-        lands in the experiment.transitioned event log); a no-op when the
-        experiment is already running or past it.
-        """
-        if not experiment_id:
-            return
-        self.experiments.apply_system_transition(
-            experiment_id=experiment_id,
-            transition="sandbox_started",
-        )
-
-    def _has_active_sandbox(
-        self, *, experiment_id: str, exclude_sandbox_uid: str | None = None
-    ) -> bool:
-        if not experiment_id:
-            return False
-        return self.registry.has_active_for_experiment(
-            experiment_id=experiment_id, exclude_sandbox_uid=exclude_sandbox_uid
-        )
-
     def _on_terminal_row(
         self,
         experiment_id: str,
@@ -989,7 +902,6 @@ class SandboxService:
         with the sandbox (per-sandbox keys, plan Phase 5): control-side
         custody, so it is dropped here rather than in the data-plane task.
         """
-        active_remain = self._has_active_sandbox(experiment_id=experiment_id)
         # The management keypair dies with the sandbox (per-sandbox keys); drop
         # it here on the control side. Removing one box's key never touches a
         # sibling, so it is unconditional.
@@ -1001,7 +913,6 @@ class SandboxService:
         # Teardown is best-effort data-plane cleanup (conn files, tunnels). It
         # must never block or abort the terminal mark — in split mode the
         # HttpTaskChannel could time out (daemon long-poll asleep), and the
-        # reaper still has to revert the experiment and free billing. The
         # daemon also drops stale conn state on its next reconnect/get.
         try:
             self.tasks.submit(
@@ -1010,7 +921,7 @@ class SandboxService:
                     "experiment_id": experiment_id,
                     "sandbox_id": sandbox_id,
                     "sandbox_uid": sandbox_uid or "",
-                    "remove_experiment_alias": not active_remain,
+                    "remove_experiment_alias": True,
                 },
                 tenant_id=self._tenant_for_sandbox(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid or ""
@@ -1095,13 +1006,6 @@ class SandboxService:
             ssh_port=port,
         )
         fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-        # Additional sandboxes are uid-addressed (their workdir carries the uid
-        # suffix); their conn file must re-render in uid form, else the secondary
-        # alias breaks. The primary stays experiment-aliased — every row has a uid,
-        # so a bare bool(sandbox_uid) would wrongly uid-form the primary too.
-        uid_addressed = bool(sandbox_uid) and str(fresh.get("workdir") or "").rstrip(
-            "/"
-        ).endswith(f"-{sandbox_uid[:12]}")
         # The agent's conn file must follow the endpoint: a conn_refresh task
         # re-renders it through the data plane (plan Phase 4). Best-effort,
         # like the refresh itself — the next agent view re-renders it anyway.
@@ -1110,8 +1014,8 @@ class SandboxService:
                 task_type="conn_refresh",
                 payload={
                     "row": fresh,
-                    "name": self.registry.experiment_name(experiment_id=experiment_id),
-                    "use_sandbox_uid_command": uid_addressed,
+                    "name": f"sandbox-{sandbox_uid[:12]}",
+                    "use_sandbox_uid_command": True,
                 },
                 tenant_id=self.registry.tenant_for_project(project_id=str(fresh.get("project_id") or "")),
             )
@@ -1167,43 +1071,6 @@ class SandboxService:
     def _mgmt_key_path(self, *, row: dict[str, Any]) -> Path:
         return self.mgmt_keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))
 
-    def _remove_conn_alias(self, *, experiment_id: str) -> None:
-        if not experiment_id:
-            return
-        try:
-            self.tasks.submit(
-                task_type="teardown",
-                payload={
-                    "experiment_id": experiment_id,
-                    "sandbox_id": None,
-                    "sandbox_uid": "",
-                    "remove_experiment_alias": True,
-                },
-                tenant_id=self._tenant_for_experiment(experiment_id=experiment_id),
-            )
-        except Exception:  # noqa: BLE001 — stale alias cleanup must not block attach
-            pass
-
-    def _refresh_conn_alias(self, *, experiment_id: str) -> None:
-        if not experiment_id:
-            return
-        try:
-            row = self.registry.fetch_scoped(
-                experiment_id=experiment_id,
-                project_id=None,
-            )
-            self.tasks.submit(
-                task_type="conn_refresh",
-                payload={
-                    "row": row,
-                    "name": self.registry.experiment_name(experiment_id=experiment_id),
-                    "use_sandbox_uid_command": False,
-                },
-                tenant_id=self._tenant_for_experiment(experiment_id=experiment_id),
-            )
-        except Exception:  # noqa: BLE001 — alias refresh must not block attach
-            pass
-
     # ---------- views (delegated to sandbox_views) ----------
 
     def _agent_result(
@@ -1212,7 +1079,7 @@ class SandboxService:
         row: dict[str, Any],
         reused: bool | None,
         include_data_plane_enrichment: bool,
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         if include_data_plane_enrichment:
             return self._agent_view(
@@ -1223,6 +1090,7 @@ class SandboxService:
         return self._agent_facts(row=row, reused=reused)
 
     def _agent_facts(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
+        row = self._with_active_experiment_ids(row=row)
         return sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
@@ -1235,19 +1103,15 @@ class SandboxService:
         *,
         row: dict[str, Any],
         reused: bool | None,
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         # Plane decomposition (plan §3.3): provider-portable row facts are a
         # pure projection; the ssh command / key path / local folder come from
         # the worker. Local mode merges them here, so tool results are
         # unchanged; split mode performs the same merge across the seam.
-        experiment_id = str(row.get("experiment_id") or "")
+        row = self._with_active_experiment_ids(row=row)
         sandbox_uid = str(row.get("sandbox_uid") or "")
-        view_name = (
-            self.registry.experiment_name(experiment_id=experiment_id)
-            if experiment_id
-            else f"sandbox-{sandbox_uid[:12]}"
-        )
+        view_name = f"sandbox-{sandbox_uid[:12]}"
         mlflow = self._mlflow_context(row=row)
         current_access = mlflow.get("access")
         access_ready = not (
@@ -1274,11 +1138,12 @@ class SandboxService:
         return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        return sandbox_views.agent_summary(row=row)
+        return sandbox_views.agent_summary(row=self._with_active_experiment_ids(row=row))
 
     def _mlflow_context(self, *, row: dict[str, Any]) -> dict[str, object]:
         project_id = str(row.get("project_id") or "")
-        experiment_id = str(row.get("experiment_id") or "")
+        active_experiment_ids = self._active_experiment_ids_for_row(row=row)
+        experiment_id = active_experiment_ids[0] if len(active_experiment_ids) == 1 else ""
         if not project_id or not experiment_id:
             return {}
         context = self.mlflow_tracking.context(
@@ -1294,30 +1159,14 @@ class SandboxService:
             context["note"] = note
         return context
 
-    def _mlflow_tracking_env(self, *, project_id: str, experiment_id: str) -> dict[str, str]:
-        if not experiment_id:
-            return {}
-        context = self.mlflow_tracking.context(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            execution_backend=self.backend.capabilities.name,
-        )
-        if not context.configured:
-            return {}
-        return dict(context.env)
-
     def _row_view(
         self, *, row: dict[str, Any], conn: Connection | None = None
     ) -> dict[str, Any]:
-        experiment_id = str(row.get("experiment_id") or "")
+        row = self._with_active_experiment_ids(row=row)
         sandbox_uid = str(row.get("sandbox_uid") or "")
         row = self.worker.merge_local_dashboards(row=row)
-        local_key = experiment_id or sandbox_uid
-        local_name = (
-            self._experiment_name(experiment_id=experiment_id, conn=conn)
-            if experiment_id
-            else f"sandbox-{sandbox_uid[:12]}"
-        )
+        local_key = sandbox_uid
+        local_name = f"sandbox-{sandbox_uid[:12]}"
         return sandbox_views.sandbox_row_view(
             row=row,
             mlflow=self._mlflow_context(row=row),
@@ -1329,17 +1178,19 @@ class SandboxService:
             ),
         )
 
-    def _experiment_name(
-        self, *, experiment_id: str, conn: Connection | None = None
-    ) -> str:
-        # Conn-scoped callers (workflow status) resolve the folder name on
-        # their own connection instead of opening a fresh one per row.
-        if conn is None:
-            return self.registry.experiment_name(experiment_id=experiment_id)
-        row = conn.execute(
-            "SELECT name FROM experiments WHERE id = ?", (experiment_id,)
-        ).fetchone()
-        return str(row["name"]) if row is not None and row["name"] else ""
+    def _active_experiment_ids_for_row(self, *, row: dict[str, Any]) -> list[str]:
+        raw = row.get("active_experiment_ids")
+        if isinstance(raw, list):
+            return [str(item) for item in raw if str(item)]
+        sandbox_uid = str(row.get("sandbox_uid") or "")
+        if not sandbox_uid:
+            return []
+        return self.registry.active_experiment_ids(sandbox_uid=sandbox_uid)
+
+    def _with_active_experiment_ids(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        out = dict(row)
+        out["active_experiment_ids"] = self._active_experiment_ids_for_row(row=row)
+        return out
 
     def _needs_selection_view(
         self,

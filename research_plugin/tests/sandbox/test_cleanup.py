@@ -164,7 +164,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid="uid_connecting")
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-connecting", self.backend.terminated)
 

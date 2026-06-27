@@ -1,11 +1,12 @@
 """Durable sandbox-row persistence for the sandbox registry.
 
-`SandboxRegistry` owns every read and write of the `sandboxes` table (plus the
-sandbox event stream). It knows nothing about backends, threads, tunnels, or
-rsync — callers hand it row dicts and field updates. The one outward edge is
-``on_terminal``: a hook the facade wires so that marking a row failed or
-terminated also tears down the row's runtime attachments (dashboard tunnels,
-the agent's conn file) without the registry knowing what those are.
+`SandboxRegistry` owns every read and write of the `sandboxes` table, the
+active sandbox↔experiment attachment table, and the sandbox event stream. It
+knows nothing about backends, threads, tunnels, or rsync — callers hand it row
+dicts and field updates. The one outward edge is ``on_terminal``: a hook the
+facade wires so that marking a row failed or terminated also tears down the
+row's runtime attachments (dashboard tunnels, conn files) without the registry
+knowing what those are.
 """
 
 from __future__ import annotations
@@ -66,10 +67,32 @@ class SandboxRegistry:
         conn = self.store.connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM sandboxes WHERE experiment_id = ? ORDER BY created_seq DESC",
+                """
+                SELECT s.*
+                FROM sandboxes s
+                JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+                WHERE a.experiment_id = ? AND a.detached_at IS NULL
+                ORDER BY s.created_seq DESC
+                """,
                 (experiment_id,),
             ).fetchall()
             return [row_to_dict(row=row) or {} for row in rows]
+        finally:
+            conn.close()
+
+    def active_experiment_ids(self, *, sandbox_uid: str) -> list[str]:
+        conn = self.store.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT experiment_id
+                FROM sandbox_attachments
+                WHERE sandbox_uid = ? AND detached_at IS NULL
+                ORDER BY attached_at, experiment_id
+                """,
+                (sandbox_uid,),
+            ).fetchall()
+            return [str(row["experiment_id"]) for row in rows]
         finally:
             conn.close()
 
@@ -122,8 +145,17 @@ class SandboxRegistry:
                 if target_uid:
                     raise NotFoundError(f"sandbox not found: {target_uid}")
                 raise NotFoundError(f"no sandbox for experiment: {experiment_id}")
-            if experiment_id and row["experiment_id"] != experiment_id:
-                raise NotFoundError(f"no sandbox for experiment: {experiment_id}")
+            if experiment_id:
+                attached = conn.execute(
+                    """
+                    SELECT 1 FROM sandbox_attachments
+                    WHERE sandbox_uid = ? AND experiment_id = ? AND detached_at IS NULL
+                    LIMIT 1
+                    """,
+                    (row["sandbox_uid"], experiment_id),
+                ).fetchone()
+                if attached is None:
+                    raise NotFoundError(f"no sandbox for experiment: {experiment_id}")
             if project_id is not None and row["project_id"] != project_id:
                 raise NotFoundError(
                     f"sandbox not found in project {project_id}: {experiment_id}"
@@ -137,7 +169,12 @@ class SandboxRegistry:
         try:
             return (
                 conn.execute(
-                    "SELECT 1 FROM sandboxes WHERE experiment_id = ?", (experiment_id,)
+                    """
+                    SELECT 1
+                    FROM sandbox_attachments
+                    WHERE experiment_id = ? AND detached_at IS NULL
+                    """,
+                    (experiment_id,),
                 ).fetchone()
                 is not None
             )
@@ -196,18 +233,20 @@ class SandboxRegistry:
         return str(row["name"]) if row is not None and row["name"] else ""
 
     def _primary_uid(self, *, conn: Any, experiment_id: str) -> str | None:
-        """Most recent running sandbox for experiment-keyed reads. Callers fall
-        back to _latest_uid, so together they reproduce the prior running →
-        newest-of-any resolution (a lone provisioning row stays reachable)."""
+        """Most recent running sandbox attached to the experiment."""
         statuses = tuple(ACTIVE_SANDBOX_STATUSES)
         if not statuses:
             return None
         placeholders = ", ".join("?" for _ in statuses)
         row = conn.execute(
             f"""
-            SELECT sandbox_uid FROM sandboxes
-            WHERE experiment_id = ? AND status IN ({placeholders})
-            ORDER BY created_seq DESC
+            SELECT s.sandbox_uid
+            FROM sandboxes s
+            JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+            WHERE a.experiment_id = ?
+              AND a.detached_at IS NULL
+              AND s.status IN ({placeholders})
+            ORDER BY s.created_seq DESC
             LIMIT 1
             """,
             (experiment_id, *statuses),
@@ -215,13 +254,16 @@ class SandboxRegistry:
         return str(row["sandbox_uid"]) if row is not None and row["sandbox_uid"] else None
 
     def _latest_uid(self, *, conn: Any, experiment_id: str) -> str | None:
-        """Newest sandbox of any status — the experiment-keyed read fallback when
-        none is running, so terminal/provisioning rows stay reachable."""
+        """Newest non-terminal sandbox attached to the experiment."""
         row = conn.execute(
             """
-            SELECT sandbox_uid FROM sandboxes
-            WHERE experiment_id = ?
-            ORDER BY created_seq DESC
+            SELECT s.sandbox_uid
+            FROM sandboxes s
+            JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+            WHERE a.experiment_id = ?
+              AND a.detached_at IS NULL
+              AND s.status NOT IN ('terminated', 'failed')
+            ORDER BY s.created_seq DESC
             LIMIT 1
             """,
             (experiment_id,),
@@ -231,9 +273,7 @@ class SandboxRegistry:
     def has_active_for_experiment(
         self, *, experiment_id: str, exclude_sandbox_uid: str | None = None
     ) -> bool:
-        """Whether another live row keeps the experiment running."""
-        # A still-provisioning sibling keeps the experiment alive too: reaping one
-        # running box while another is mid-boot must not revert the experiment.
+        """Whether the experiment has another live/provisioning sandbox."""
         statuses = tuple({*ACTIVE_SANDBOX_STATUSES, "provisioning"})
         if not statuses:
             return False
@@ -242,14 +282,17 @@ class SandboxRegistry:
         clause = ""
         exclude = (exclude_sandbox_uid or "").strip()
         if exclude:
-            clause = "AND sandbox_uid != ?"
+            clause = "AND sandboxes.sandbox_uid != ?"
             params.append(exclude)
         conn = self.store.connect()
         try:
             row = conn.execute(
                 f"""
                 SELECT 1 FROM sandboxes
-                WHERE experiment_id = ? AND status IN ({placeholders}) {clause}
+                JOIN sandbox_attachments a ON a.sandbox_uid = sandboxes.sandbox_uid
+                WHERE a.experiment_id = ?
+                  AND a.detached_at IS NULL
+                  AND sandboxes.status IN ({placeholders}) {clause}
                 LIMIT 1
                 """,
                 params,
@@ -336,19 +379,14 @@ class SandboxRegistry:
     def provision_additional(self, *, experiment_id: str, **fields: Any) -> str:
         return self.create_sandbox(experiment_id=experiment_id, **fields)
 
-    def reattach(
+    def attach(
         self,
         *,
         sandbox_uid: str,
         experiment_id: str,
         project_id: str,
-        workdir: str,
-        sync_dir: str,
-        sandbox_data_dir: str,
-        unsynced_dir: str,
-        mgmt_key_ref: str,
     ) -> dict[str, Any]:
-        """Atomically move one live sandbox row to another current experiment."""
+        """Add an active experiment association to a live sandbox row."""
         now = now_iso()
         with self.store.transaction() as conn:
             row = conn.execute(
@@ -356,17 +394,10 @@ class SandboxRegistry:
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"sandbox not found: {sandbox_uid}")
-            source_experiment_id = str(row["experiment_id"] or "")
             tenant_row = conn.execute(
                 "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
             ).fetchone()
             tenant_id = str(tenant_row["tenant_id"]) if tenant_row is not None else "local"
-            self._close_attachment(
-                conn=conn,
-                sandbox_uid=sandbox_uid,
-                experiment_id=source_experiment_id,
-                detached_at=now,
-            )
             self._ensure_attachment(
                 conn=conn,
                 sandbox_uid=sandbox_uid,
@@ -376,21 +407,13 @@ class SandboxRegistry:
             conn.execute(
                 """
                 UPDATE sandboxes
-                SET experiment_id = ?, project_id = ?, tenant_id = ?,
-                    workdir = ?, sync_dir = ?, sandbox_data_dir = ?,
-                    unsynced_dir = ?, mgmt_key_ref = ?, phase = '', detail = '',
+                SET project_id = ?, tenant_id = ?, phase = '', detail = '',
                     error = '', updated_at = ?
                 WHERE sandbox_uid = ?
                 """,
                 (
-                    experiment_id,
                     project_id,
                     tenant_id,
-                    workdir,
-                    sync_dir,
-                    sandbox_data_dir,
-                    unsynced_dir,
-                    mgmt_key_ref,
                     now,
                     sandbox_uid,
                 ),
@@ -466,11 +489,18 @@ class SandboxRegistry:
         closed_at = now or now_iso()
         with self.store.transaction() as conn:
             if sandbox_id:
-                conn.execute(
-                    "UPDATE sandbox_generations SET ended_at = ? "
-                    "WHERE experiment_id = ? AND sandbox_id = ? AND ended_at IS NULL",
-                    (closed_at, experiment_id, sandbox_id),
-                )
+                if experiment_id:
+                    conn.execute(
+                        "UPDATE sandbox_generations SET ended_at = ? "
+                        "WHERE experiment_id = ? AND sandbox_id = ? AND ended_at IS NULL",
+                        (closed_at, experiment_id, sandbox_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE sandbox_generations SET ended_at = ? "
+                        "WHERE sandbox_id = ? AND ended_at IS NULL",
+                        (closed_at, sandbox_id),
+                    )
             else:
                 conn.execute(
                     "UPDATE sandbox_generations SET ended_at = ? "
@@ -579,10 +609,9 @@ class SandboxRegistry:
                     (status, error, now, now, row_uid),
                 )
             if row is not None:
-                self._close_attachment(
+                self._close_all_attachments(
                     conn=conn,
                     sandbox_uid=row_uid,
-                    experiment_id=experiment_id,
                     detached_at=now,
                 )
         # Only a recorded provider id can identify this row's spend generation.
@@ -657,6 +686,20 @@ class SandboxRegistry:
             WHERE sandbox_uid = ? AND experiment_id = ? AND detached_at IS NULL
             """,
             (detached_at, sandbox_uid, experiment_id),
+        )
+
+    def _close_all_attachments(
+        self, *, conn: Any, sandbox_uid: str, detached_at: str
+    ) -> None:
+        if not sandbox_uid:
+            return
+        conn.execute(
+            """
+            UPDATE sandbox_attachments
+            SET detached_at = ?
+            WHERE sandbox_uid = ? AND detached_at IS NULL
+            """,
+            (detached_at, sandbox_uid),
         )
 
     def _fire_terminal(

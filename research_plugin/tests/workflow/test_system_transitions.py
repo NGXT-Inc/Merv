@@ -1,11 +1,8 @@
-"""System (sandbox-lifecycle) transitions route through the workflow engine.
+"""Sandbox lifecycle is not an experiment-status transition.
 
-Covers the correctness boundary: the sandbox registry must never write the
-experiments table directly. Status changes driven by sandbox lifecycle go
-through ExperimentService.apply_system_transition, which keeps the
-experiment.transitioned event log complete and keeps TRANSITION_GRAPH the
-single writer of experiment status. Also pins the declarative gate table as
-the shared source for enforcement, guidance, and discovery.
+Pins the correctness boundary: sandbox code must not write experiments or call
+a hidden experiment transition. Experiments move through explicit workflow
+transitions; sandboxes are linked through sandbox_attachments only.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ from backend.domain.workflow_gates import (
     TRANSITION_GRAPH,
     TRANSITION_REQUIREMENTS,
 )
-from backend.utils import ValidationError, WorkflowError
+from backend.utils import WorkflowError
 from tests.paths import SERVICES_ROOT
 
 
@@ -70,102 +67,48 @@ class SystemTransitionTestBase(unittest.TestCase):
 
 
 class SandboxDrivenTransitionTest(SystemTransitionTestBase):
-    def test_sandbox_request_transitions_experiment_via_event_log(self) -> None:
+    def test_sandbox_request_does_not_transition_experiment(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(state["status"], "running")
-        events = self._transition_events(exp_id)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["from"], "ready_to_run")
-        self.assertEqual(events[0]["to"], "running")
-        self.assertEqual(events[0]["transition"], "sandbox_started")
-        self.assertTrue(events[0]["system"])
+        self.assertEqual(state["status"], "ready_to_run")
+        self.assertEqual(self._transition_events(exp_id), [])
 
-    def test_sandbox_reuse_does_not_duplicate_the_transition_event(self) -> None:
+    def test_sandbox_reuse_still_does_not_transition_experiment(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        # Second request reuses the live sandbox; the experiment is already
-        # running, so the system transition is a no-op — no second event.
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        events = [e for e in self._transition_events(exp_id) if e["transition"] == "sandbox_started"]
-        self.assertEqual(len(events), 1)
+        self.assertEqual(self._transition_events(exp_id), [])
 
-    def test_reaper_expiry_reverts_and_logs_system_transition(self) -> None:
+    def test_reaper_expiry_does_not_transition_experiment(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
-        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with self.app.store.transaction() as conn:
             conn.execute(
-                "UPDATE sandboxes SET expires_at=? WHERE experiment_id=?",
-                ("2000-01-01T00:00:00Z", exp_id),
+                "UPDATE sandboxes SET expires_at=? WHERE sandbox_uid=?",
+                ("2000-01-01T00:00:00Z", created["sandbox_uid"]),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["status"], "ready_to_run")
-        expired = [e for e in self._transition_events(exp_id) if e["transition"] == "sandbox_expired"]
-        self.assertEqual(len(expired), 1)
-        self.assertEqual(expired[0]["from"], "running")
-        self.assertEqual(expired[0]["to"], "ready_to_run")
-        self.assertTrue(expired[0]["system"])
-        self.assertIn("reason", expired[0])
+        self.assertEqual(self._transition_events(exp_id), [])
 
-    def test_agent_cannot_call_system_transitions(self) -> None:
-        exp_id = self._experiment(status="ready_to_run")
-        for transition in sorted(SYSTEM_TRANSITIONS):
-            # Layer 1: the tool contract's Literal whitelist rejects the name
-            # before it ever reaches the service.
-            with self.assertRaises(ValidationError):
-                self.call(
-                    "experiment.transition",
-                    project_id=self.project_id,
-                    experiment_id=exp_id,
-                    transition=transition,
-                )
-            # Layer 2: a direct service call (bypassing contracts) is rejected
-            # by the workflow engine itself.
-            with self.assertRaises(WorkflowError) as ctx:
-                self.app.experiments.transition(
-                    project_id=self.project_id,
-                    experiment_id=exp_id,
-                    transition=transition,
-                )
-            self.assertIn("system-driven", str(ctx.exception))
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(state["status"], "ready_to_run")
+    def test_no_sandbox_system_transitions_are_registered(self) -> None:
+        self.assertEqual(SYSTEM_TRANSITIONS, frozenset())
 
-    def test_system_transitions_hidden_from_discovery(self) -> None:
+    def test_no_system_transitions_in_discovery(self) -> None:
         exp_id = self._experiment(status="ready_to_run")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         names = {t["transition"] for t in state["allowed_transitions"]}
         self.assertIn("start_running", names)
         self.assertFalse(names & SYSTEM_TRANSITIONS)
 
-    def test_apply_system_transition_is_a_tolerated_noop_when_inapplicable(self) -> None:
-        exp_id = self._experiment(status="planned")
-        applied = self.app.experiments.apply_system_transition(
-            experiment_id=exp_id, transition="sandbox_started"
-        )
-        self.assertFalse(applied)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
-        self.assertEqual(state["status"], "planned")
-        self.assertEqual(self._transition_events(exp_id), [])
-        # Unknown experiments no-op too (a late sandbox event must never raise).
-        self.assertFalse(
-            self.app.experiments.apply_system_transition(
-                experiment_id="exp_nope", transition="sandbox_started"
-            )
-        )
-
-    def test_apply_system_transition_rejects_agent_transition_names(self) -> None:
-        exp_id = self._experiment(status="planned")
-        with self.assertRaises(WorkflowError):
-            self.app.experiments.apply_system_transition(
-                experiment_id=exp_id, transition="submit_design"
-            )
+    def test_experiment_service_has_no_system_transition_escape_hatch(self) -> None:
+        self.assertFalse(hasattr(self.app.experiments, "apply_system_transition"))
 
     def test_sandbox_code_has_no_raw_experiment_writes(self) -> None:
-        # The boundary itself: the sandbox registry must not UPDATE/INSERT the
-        # experiments table. Status changes go through apply_system_transition.
+        # The boundary itself: sandbox services must not UPDATE/INSERT the
+        # experiments table.
         source = (SERVICES_ROOT / "sandbox" / "sandboxes.py").read_text(
             encoding="utf-8"
         )

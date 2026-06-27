@@ -73,7 +73,13 @@ class TaskChannelTest(TaskChannelTestBase):
         created = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
-        conn_file = self.repo / ".research_plugin" / "sandboxes" / "conn" / exp_id
+        conn_file = (
+            self.repo
+            / ".research_plugin"
+            / "sandboxes"
+            / "conn"
+            / created["sandbox_uid"]
+        )
         self.assertTrue(conn_file.exists())
         stopped: list[str] = []
         original_stop = self.app.worker.stop_dashboards
@@ -102,11 +108,11 @@ class TaskChannelTest(TaskChannelTestBase):
         state = self.call(
             "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
         )
-        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["status"], "ready_to_run")
         with self.app.store.transaction() as conn:
             conn.execute(
-                "UPDATE sandboxes SET expires_at=? WHERE experiment_id=?",
-                ("2000-01-01T00:00:00Z", exp_id),
+                "UPDATE sandboxes SET expires_at=? WHERE sandbox_uid=?",
+                ("2000-01-01T00:00:00Z", created["sandbox_uid"]),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
         self.assertEqual(self._task_types(), ["teardown"])
@@ -115,7 +121,9 @@ class TaskChannelTest(TaskChannelTestBase):
             "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
         )
         self.assertEqual(state["status"], "ready_to_run")
-        got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        got = self.call(
+            "sandbox.get", project_id=self.project_id, sandbox_uid=created["sandbox_uid"]
+        )
         self.assertEqual(got["status"], "terminated")
 
     def test_endpoint_move_emits_a_conn_refresh_task(self) -> None:
@@ -131,7 +139,11 @@ class TaskChannelTest(TaskChannelTestBase):
         self.assertEqual(refresh.payload["row"]["ssh_host"], "r999.modal.host")
         # The task re-rendered the conn file the dispatcher sources.
         body = (
-            self.repo / ".research_plugin" / "sandboxes" / "conn" / exp_id
+            self.repo
+            / ".research_plugin"
+            / "sandboxes"
+            / "conn"
+            / created["sandbox_uid"]
         ).read_text()
         self.assertIn("r999.modal.host", body)
         self.assertIn("55555", body)

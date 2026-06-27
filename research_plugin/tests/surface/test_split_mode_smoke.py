@@ -710,7 +710,7 @@ class SplitModeSmokeTest(unittest.TestCase):
             project_id=project_id,
         )
         self.assertTrue(durable_metrics["available"])
-        self.assertEqual(durable_metrics["sandbox_status"], "terminated")
+        self.assertEqual(durable_metrics["sandbox_status"], "none")
 
         # ---- assertions ----
         conn = self.store.connect()

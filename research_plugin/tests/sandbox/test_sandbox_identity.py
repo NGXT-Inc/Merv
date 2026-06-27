@@ -68,16 +68,26 @@ class SandboxIdentityTest(unittest.TestCase):
                 """,
                 (sandbox_uid, experiment_id, self.project_id, status, now, now, seq),
             )
+            if status not in {"terminated", "failed"}:
+                conn.execute(
+                    """
+                    INSERT INTO sandbox_attachments (
+                      sandbox_uid, experiment_id, attached_at, detached_at
+                    )
+                    VALUES (?, ?, ?, NULL)
+                    """,
+                    (sandbox_uid, experiment_id, now),
+                )
 
-    def test_experiment_read_prefers_running_then_newest_of_any(self) -> None:
-        # An older provisioning sibling must NOT shadow a newer terminal row when
-        # nothing is running: reads resolve running -> newest-of-any.
+    def test_experiment_read_prefers_running_then_newest_active_attachment(self) -> None:
+        # Terminal rows are detached from experiment lookup; a provisioning row
+        # stays reachable until it fails or terminates.
         exp = self._experiment("multi")
         self._seed_row(experiment_id=exp, sandbox_uid="uid_old", status="provisioning", seq=1)
         self._seed_row(experiment_id=exp, sandbox_uid="uid_new", status="failed", seq=2)
         self.assertEqual(
             self.app.sandboxes.registry.load_row(experiment_id=exp)["sandbox_uid"],
-            "uid_new",
+            "uid_old",
         )
         # A running row always wins, regardless of recency.
         self._seed_row(experiment_id=exp, sandbox_uid="uid_run", status="running", seq=3)

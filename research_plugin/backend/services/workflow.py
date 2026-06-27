@@ -191,7 +191,14 @@ class WorkflowService:
                 processes=[
                     self._process_view(
                         sandbox=sandbox,
-                        experiment=experiments_by_id.get(str(sandbox.get("experiment_id"))),
+                        experiment=experiments_by_id.get(
+                            str((sandbox.get("active_experiment_ids") or [""])[0])
+                        ),
+                        experiments=[
+                            experiments_by_id[exp_id]
+                            for exp_id in sandbox.get("active_experiment_ids") or []
+                            if exp_id in experiments_by_id
+                        ],
                     )
                     for sandbox in sandboxes
                     if sandbox.get("status") in ACTIVE_PROCESS_STATUSES
@@ -203,12 +210,14 @@ class WorkflowService:
                 if experiment["status"] in TERMINAL_STATUSES:
                     continue
                 experiment_sandboxes = [
-                    sandbox for sandbox in sandboxes if sandbox.get("experiment_id") == experiment["id"]
+                    sandbox
+                    for sandbox in sandboxes
+                    if experiment["id"] in (sandbox.get("active_experiment_ids") or [])
                 ]
                 experiment_active_processes = [
                     process
                     for process in active_processes
-                    if process.get("experiment_id") == experiment["id"]
+                    if experiment["id"] in (process.get("active_experiment_ids") or [])
                 ]
                 active_experiments.append(
                     {
@@ -787,9 +796,10 @@ class WorkflowService:
             "template": "skills/research-workflow/plan-template.md",
             "guidance": (
                 f"Write the experiment plan as one markdown file at {folder}plan.md "
-                "— the folder experiment.create made for this experiment. That "
-                "folder is also the sandbox working folder: keep the plan, "
-                "scripts, configs, and everything a run needs inside it from the start. "
+                "— the folder experiment.create made for this experiment. Keep "
+                "the plan, scripts, configs, and durable inputs there; live "
+                "sandboxes have their own work folders and can later be "
+                "associated with this experiment. "
                 "Start from the template's required sections, then register the "
                 "file and associate it with role 'plan'. Consider seeding the "
                 f"logic graph now too ({folder}graph.json, see "
@@ -807,22 +817,21 @@ class WorkflowService:
             "allowed_resource_roles": sorted(RESOURCE_ROLES),
             "dataset_guidance": (
                 "Prefer CPU-only sandboxes for data inspection and data engineering "
-                "unless the command needs GPU. Work inside the experiment folder "
-                "($RP_EXPERIMENT_DIR on the sandbox) for scripts, configs, metrics, "
-                "and compact results. Download large datasets, caches, checkpoints, "
-                "parquet files, and other heavy intermediates OUTSIDE the folder "
-                "(e.g. $RP_DATASET_DIR); copy out or upload only the files that "
+                "unless the command needs GPU. Work inside the sandbox work folder "
+                "for scripts, configs, metrics, and compact results. Download "
+                "large datasets, caches, checkpoints, parquet files, and other "
+                "heavy intermediates into the sandbox's dataset/cache locations; "
+                "copy out or upload only the files that "
                 "must persist before releasing the sandbox. Prefer "
                 "saving a data.md in the experiment folder that records dataset "
                 "sources, splits, filters, schema/row-count notes, caveats, and "
                 "where ephemeral data lives on the VM."
             ),
             "retention_guidance": (
-                "While a sandbox is live it owns the experiment folder: make all "
-                "experiment file changes inside $RP_EXPERIMENT_DIR over SSH, not "
-                "in the local repo. Before registering or associating result "
-                "resources, copy light files out over SSH into the local experiment "
-                "folder or upload heavy files with storage.put_object, then register "
+                "While a sandbox is live, treat its work folder as ephemeral "
+                "scratch. Before registering or associating result resources, "
+                "copy light files out over SSH into the local experiment folder "
+                "or upload heavy files with storage.put_object, then register "
                 "those retained files."
             ),
             "report_guidance": (
@@ -850,7 +859,7 @@ class WorkflowService:
             "template": "skills/research-workflow/report-template.md",
             "guidance": (
                 "Write a SHORT markdown results report in the experiment folder "
-                f"($RP_EXPERIMENT_DIR on the sandbox), i.e. {folder}report.md. "
+                f"after retaining sandbox outputs, i.e. {folder}report.md. "
                 "Required sections: Summary; Results — MUST contain a markdown "
                 "table of metrics (paper/target value vs achieved, per task/seed "
                 "where relevant); Deviations from plan ('none' if faithful); "
@@ -943,7 +952,11 @@ class WorkflowService:
         )
 
     def _process_view(
-        self, *, sandbox: dict[str, Any], experiment: dict[str, Any] | None
+        self,
+        *,
+        sandbox: dict[str, Any],
+        experiment: dict[str, Any] | None,
+        experiments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         process = {
             **sandbox,
@@ -956,4 +969,14 @@ class WorkflowService:
                 "status": experiment["status"],
                 "attempt_index": experiment["attempt_index"],
             }
+        if experiments:
+            process["active_experiments"] = [
+                {
+                    "id": item["id"],
+                    "intent": item["intent"],
+                    "status": item["status"],
+                    "attempt_index": item["attempt_index"],
+                }
+                for item in experiments
+            ]
         return process

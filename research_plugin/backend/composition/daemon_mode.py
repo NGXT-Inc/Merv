@@ -177,25 +177,22 @@ class DaemonServer:
     ) -> dict[str, Any]:
         _repo_root, project_id = self._linked_scope(context=context)
         experiment_id = str(arguments.get("experiment_id") or "").strip()
-        requested_uid = "" if experiment_id else uuid.uuid4().hex
-        local_key = experiment_id or requested_uid
-        public_key, _key_path = self.worker.ensure_keypair(experiment_id=local_key)
+        requested_uid = str(arguments.get("sandbox_uid") or uuid.uuid4().hex)
+        public_key, _key_path = self.worker.ensure_keypair(experiment_id=requested_uid)
         payload = dict(arguments)
         payload["project_id"] = project_id
         if experiment_id:
             payload["experiment_id"] = experiment_id
-        else:
-            payload["sandbox_uid"] = requested_uid
+        payload["sandbox_uid"] = requested_uid
         payload["public_key"] = public_key
         facts = self.control.request_sandbox(payload)
         sandbox_uid = str(facts.get("sandbox_uid") or "")
-        name = str(facts.pop("_experiment_name", "") or "") or (
-            f"sandbox-{sandbox_uid[:12]}" if sandbox_uid else ""
-        )
+        facts.pop("_experiment_name", None)
+        name = f"sandbox-{sandbox_uid[:12]}" if sandbox_uid else ""
         return self._merge_sandbox_enrichment(
             facts=facts,
             name=name,
-            use_sandbox_uid_command=bool(arguments.get("additional") or not experiment_id),
+            use_sandbox_uid_command=True,
         )
 
     def _attach_sandbox(
@@ -203,18 +200,19 @@ class DaemonServer:
     ) -> dict[str, Any]:
         _repo_root, project_id = self._linked_scope(context=context)
         experiment_id = self._required_arg(arguments, "experiment_id")
-        public_key, _key_path = self.worker.ensure_keypair(experiment_id=experiment_id)
         payload = dict(arguments)
         payload["project_id"] = project_id
         payload["experiment_id"] = experiment_id
-        payload["public_key"] = public_key
+        payload.setdefault("public_key", "")
         facts = self.control.attach_sandbox(payload)
-        name = str(facts.pop("_experiment_name", "") or "")
-        use_uid = bool(facts.pop("_use_sandbox_uid_command", False))
+        sandbox_uid = str(facts.get("sandbox_uid") or "")
+        facts.pop("_experiment_name", None)
+        facts.pop("_use_sandbox_uid_command", None)
+        name = f"sandbox-{sandbox_uid[:12]}" if sandbox_uid else ""
         return self._merge_sandbox_enrichment(
             facts=facts,
             name=name,
-            use_sandbox_uid_command=use_uid,
+            use_sandbox_uid_command=True,
         )
 
     def _post_feed(
@@ -257,11 +255,13 @@ class DaemonServer:
         args = dict(arguments)
         args["project_id"] = project_id
         facts = self.control.call("sandbox.get", args)
-        name = str(facts.pop("_experiment_name", "") or "")
+        sandbox_uid = str(facts.get("sandbox_uid") or "")
+        facts.pop("_experiment_name", None)
+        name = f"sandbox-{sandbox_uid[:12]}" if sandbox_uid else ""
         enrichment = self._sandbox_enrichment(
             facts=facts,
             name=name,
-            use_sandbox_uid_command=bool(arguments.get("sandbox_uid")),
+            use_sandbox_uid_command=True,
         )
         return {
             "command": enrichment.get("command", ""),
@@ -275,7 +275,7 @@ class DaemonServer:
         *,
         facts: dict[str, Any],
         name: str,
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         enrichment = self._sandbox_enrichment(
             facts=facts,
@@ -289,7 +289,7 @@ class DaemonServer:
         *,
         facts: dict[str, Any],
         name: str,
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         return self.worker.sandbox_enrichment(
             row=self._sandbox_row_from_facts(facts=facts),
@@ -464,7 +464,9 @@ def build_daemon_executor(*, worker: LocalDataPlaneWorker):
             return worker.sandbox_enrichment(
                 row=payload["row"],
                 name=str(payload.get("name") or ""),
-                use_sandbox_uid_command=bool(payload.get("use_sandbox_uid_command")),
+                use_sandbox_uid_command=bool(
+                    payload.get("use_sandbox_uid_command", True)
+                ),
             )
         if task_type == "teardown":
             sandbox_id = payload.get("sandbox_id")

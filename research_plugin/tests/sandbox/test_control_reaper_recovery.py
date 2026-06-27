@@ -144,7 +144,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
     def test_control_restart_resumes_reaping_of_running_rows(self) -> None:
         self._stop_drain = None  # reset per test
         first, _q = self._build()
-        project_id, exp_id, sandbox_uid = self._seed_expired_running_sandbox(first)
+        project_id, _exp_id, sandbox_uid = self._seed_expired_running_sandbox(first)
         first.shutdown()
         self._apps.remove(first)
 
@@ -155,22 +155,18 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         # (alive_ids), so reconcile keeps the row running and the resumed reaper
         # reaps it on its expiry deadline.
         restarted, _q2 = self._build(alive_ids=("sb-recovery",))
-        # The experiment is reverted at the END of the reap (after terminate),
-        # so wait on the experiment status — it implies the row was reaped too.
+        # Reaping no longer mutates experiment status, so wait on the sandbox
+        # row itself.
         self._await(
             lambda: restarted.call_tool(
-                "experiment.get_state",
-                {"project_id": project_id, "experiment_id": exp_id},
+                "sandbox.get",
+                {"project_id": project_id, "sandbox_uid": sandbox_uid},
             )["status"]
-            == "ready_to_run"
+            == "terminated"
         )
         sandbox = restarted.call_tool(
             "sandbox.get",
-            {
-                "project_id": project_id,
-                "experiment_id": exp_id,
-                "sandbox_uid": sandbox_uid,
-            },
+            {"project_id": project_id, "sandbox_uid": sandbox_uid},
         )
         self.assertEqual(sandbox["status"], "terminated")
 

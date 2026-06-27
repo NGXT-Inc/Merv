@@ -34,7 +34,6 @@ BACKEND_METHODS = (
     "find_sandbox_id",
     "sandbox_secrets",
     "write_secrets",
-    "retarget",
     "shutdown",
 )
 
@@ -85,7 +84,6 @@ class SandboxBackendContractTest(unittest.TestCase):
             registry=object(),  # type: ignore[arg-type]
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
-            experiments=object(),  # type: ignore[arg-type]
             persist_metrics=lambda **_kwargs: None,
         )
 
@@ -112,16 +110,6 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertIsNone(backend.dashboard_urls(sandbox_id="sb"))
         self.assertEqual(backend.local_dashboard_ports(), {})
         self.assertIsNone(backend.find_sandbox_id(experiment_id="exp"))
-        self.assertFalse(
-            backend.retarget(
-                sandbox_id="sb",
-                experiment_id="exp",
-                public_key="ssh-ed25519 AAAAuser",
-                workdir="/workspace/exp",
-                sandbox_data_dir="/workspace/data",
-                tracking_env={},
-            )
-        )
         self.assertIsNone(backend.shutdown())
 
     def test_services_do_not_probe_backend_optional_methods(self) -> None:

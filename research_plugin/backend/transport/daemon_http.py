@@ -197,11 +197,7 @@ def register_daemon_routes(
                 additional=bool(payload.get("additional")),
                 sandbox_uid=payload.get("sandbox_uid"),
             )
-            result["_experiment_name"] = (
-                app.sandboxes.registry.experiment_name(experiment_id=experiment_id)
-                if experiment_id
-                else ""
-            )
+            result["_experiment_name"] = ""
             return result
 
         @http.post("/api/daemon/sandboxes/attach")
@@ -217,15 +213,10 @@ def register_daemon_routes(
                 project_id=project_id,
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
-                public_key=_required_text(payload, "public_key"),
+                public_key=str(payload.get("public_key") or ""),
             )
-            result["_experiment_name"] = app.sandboxes.registry.experiment_name(
-                experiment_id=experiment_id
-            )
-            result["_use_sandbox_uid_command"] = app.sandboxes.registry.has_active_for_experiment(
-                experiment_id=experiment_id,
-                exclude_sandbox_uid=sandbox_uid,
-            )
+            result["_experiment_name"] = ""
+            result["_use_sandbox_uid_command"] = True
             return result
 
         @http.post("/api/daemon/sandboxes/metrics")

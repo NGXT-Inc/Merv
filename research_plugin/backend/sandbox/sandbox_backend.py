@@ -182,22 +182,6 @@ class SandboxBackend(Protocol):
         """Optionally deliver provider credentials post-boot."""
         ...
 
-    def retarget(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        public_key: str,
-        workdir: str,
-        sandbox_data_dir: str,
-        tracking_env: Mapping[str, str],
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        key_path: str = "",
-    ) -> bool:
-        """Optionally point a live sandbox at another experiment."""
-        ...
-
     def shutdown(self) -> None:
         """Optionally release backend-level resources. Unsupported backends no-op."""
         ...
@@ -254,22 +238,6 @@ class SandboxBackendBase:
         key_path: str = "",
     ) -> bool:
         """Unsupported default: no post-boot secret channel."""
-        return False
-
-    def retarget(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        public_key: str,
-        workdir: str,
-        sandbox_data_dir: str,
-        tracking_env: Mapping[str, str],
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        key_path: str = "",
-    ) -> bool:
-        """Unsupported default: this backend cannot reuse across experiments."""
         return False
 
     def shutdown(self) -> None:

@@ -193,7 +193,6 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         self.assertEqual(
             self.app.sandboxes.get(
                 project_id=self.project_id,
-                experiment_id=idle_exp,
                 sandbox_uid=str(idle["sandbox_uid"]),
             )["status"],
             "terminated",
@@ -239,7 +238,6 @@ class SandboxHeartbeatEnvTest(unittest.TestCase):
             registry=object(),  # type: ignore[arg-type]
             backend=FakeSandboxBackend(),
             provisioner=object(),  # type: ignore[arg-type]
-            experiments=object(),  # type: ignore[arg-type]
             persist_metrics=lambda **_kwargs: None,
         )
 

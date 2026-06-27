@@ -89,7 +89,9 @@ class InProcessTaskChannel:
             return self.worker.sandbox_enrichment(
                 row=payload["row"],
                 name=str(payload.get("name") or ""),
-                use_sandbox_uid_command=bool(payload.get("use_sandbox_uid_command")),
+                use_sandbox_uid_command=bool(
+                    payload.get("use_sandbox_uid_command", True)
+                ),
             )
         if task.type == "teardown":
             # sandbox_id is None when the row itself was missing: skip tunnel

@@ -447,56 +447,6 @@ class ModalSandboxBackend(SandboxBackendBase):
             return None
         return parse_metrics(output)
 
-    def retarget(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        public_key: str,
-        workdir: str,
-        sandbox_data_dir: str,
-        tracking_env: Mapping[str, str],
-        ssh_host: str = "",  # noqa: ARG002 — Modal retargets via control-plane exec
-        ssh_port: int = 0,  # noqa: ARG002
-        key_path: str = "",  # noqa: ARG002
-    ) -> bool:
-        if not sandbox_id or not workdir:
-            raise BackendUnavailableError("retarget needs a sandbox id and workdir")
-        sandbox = self._sandbox_from_id(sandbox_id)
-        data_dir = sandbox_data_dir or self.config.sandbox_data_dir
-        sessions_dir = remote_sessions_dir(
-            experiment_id=experiment_id, root=remote_root_of(workdir)
-        )
-        for path in (workdir, f"{workdir}/artifacts_to_keep", data_dir, sessions_dir):
-            ensure_remote_dir(sandbox=sandbox, path=path)
-        env_body = build_runtime_env(
-            experiment_id=experiment_id,
-            workdir=workdir,
-            sessions_dir=sessions_dir,
-            sandbox_data_dir=data_dir,
-            tracking_env=tracking_env,
-        )
-        encoded = base64.b64encode(env_body.encode("utf-8")).decode("ascii")
-        exec_checked(
-            sandbox=sandbox,
-            command=f"printf '%s' {shlex.quote(encoded)} | base64 -d > /opt/rp/env",
-            timeout=60,
-        )
-        if public_key:
-            pub = shlex.quote(public_key)
-            exec_checked(
-                sandbox=sandbox,
-                command=(
-                    "mkdir -p /root/.ssh; touch /root/.ssh/authorized_keys; "
-                    f"pub={pub}; "
-                    'grep -qxF "$pub" /root/.ssh/authorized_keys '
-                    '|| printf "%s\\n" "$pub" >> /root/.ssh/authorized_keys; '
-                    "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys"
-                ),
-                timeout=60,
-            )
-        return True
-
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any]:

@@ -61,7 +61,7 @@ class DataPlaneWorker(Protocol):
         *,
         row: dict[str, Any],
         name: str = "",
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]: ...
 
     def ensure_local_dashboards(self, *, row: dict[str, Any]) -> dict[str, Any]: ...
@@ -145,13 +145,6 @@ class LocalDataPlaneWorker:
             return Path(stored)
         return self.workspace.experiment_dir(experiment_id=experiment_id, name=name)
 
-    @staticmethod
-    def _local_dir_uid(*, remote_dir: str, sandbox_uid: str) -> str:
-        """The uid to suffix the local dir with — set only for an additional
-        sandbox, whose remote dir carries the uid suffix (sync_contract)."""
-        uid = (sandbox_uid or "")[:12]
-        return sandbox_uid if uid and remote_dir.rstrip("/").endswith(f"-{uid}") else ""
-
     def repo_relative(self, path: str | Path) -> str:
         return self.workspace.relative(path)
 
@@ -183,7 +176,7 @@ class LocalDataPlaneWorker:
         *,
         row: dict[str, Any],
         name: str = "",
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         """The machine-local half of the agent view (plan §3.3).
 
@@ -193,7 +186,7 @@ class LocalDataPlaneWorker:
         """
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
-        local_key = experiment_id or sandbox_uid
+        local_key = sandbox_uid or experiment_id
         key_path = self.key_path(experiment_id=local_key)
         live = bool(
             row.get("ssh_host")
@@ -220,10 +213,6 @@ class LocalDataPlaneWorker:
                 self.local_experiment_dir(
                     experiment_id=local_key,
                     name=name,
-                    sandbox_uid=self._local_dir_uid(
-                        remote_dir=str(row.get("workdir") or row.get("sync_dir") or ""),
-                        sandbox_uid=sandbox_uid,
-                    ),
                 )
             ),
         }

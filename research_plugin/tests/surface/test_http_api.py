@@ -166,7 +166,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         project_id = project["id"]
         exp = self.request("POST", f"/api/projects/{project_id}/experiments", {"name": "exp-2", "intent": "Run an experiment"})
         exp_id = exp["id"]
-        # Drive the experiment to ready_to_run so a sandbox may be requested.
+        # Keep the rest of the endpoint fixture in the usual runnable state.
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
         # Procuring is an agent action (MCP tool); the UI observes the result.
@@ -174,7 +174,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "sandbox.request", {"project_id": project_id, "experiment_id": exp_id, "gpu": "A100"}
         )
         self.assertEqual(requested["status"], "running")
-        self.assertEqual(requested["ssh"]["command"], f".research_plugin/sbx {exp_id}")
+        sandbox_uid = requested["sandbox_uid"]
+        self.assertEqual(requested["ssh"]["command"], f".research_plugin/sbx {sandbox_uid}")
         self.assertTrue(requested["ssh"]["raw_command"].startswith("ssh -i "))
 
         sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
@@ -287,7 +288,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox/release")
         durable = self.request("GET", url)
         self.assertTrue(durable["available"])
-        self.assertEqual(durable["sandbox_status"], "terminated")
+        self.assertEqual(durable["sandbox_status"], "none")
         run = durable["experiments"][0]["runs"][0]
         self.assertEqual(run["metrics"]["acc"]["last"], 0.91)
         self.assertEqual(run["history"]["acc"], [[10, 0.85], [20, 0.91]])
@@ -449,6 +450,15 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 VALUES ('uid_active', ?, ?, 'sb_active', 'running', ?, ?)
                 """,
                 (running["id"], project_id, now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO sandbox_attachments (
+                  sandbox_uid, experiment_id, attached_at
+                )
+                VALUES ('uid_active', ?, ?)
+                """,
+                (running["id"], now),
             )
             conn.execute(
                 """

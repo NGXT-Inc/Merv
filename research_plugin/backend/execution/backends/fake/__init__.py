@@ -7,10 +7,7 @@ import threading
 from ...sync_dirs import (
     DEFAULT_DATA_DIR,
     remote_experiment_dir,
-    remote_root_of,
-    remote_sessions_dir,
 )
-from ...vm_bootstrap import build_runtime_env
 from ....sandbox.sandbox_backend import (
     BackendCapabilities,
     BackendUnavailableError,
@@ -75,7 +72,6 @@ class FakeSandboxBackend(SandboxBackendBase):
         # would authorize — the fake's stand-in for Modal's BOOT_SCRIPT env and
         # Lambda's user_data.
         self.bootstraps: dict[str, dict] = {}
-        self.retarget_calls: list[dict] = []
         self.remote_envs: dict[str, str] = {}
         self.by_experiment: dict[str, str] = {}
         # Live SSH endpoint per sandbox id; move_endpoint() simulates a tunnel
@@ -261,45 +257,6 @@ class FakeSandboxBackend(SandboxBackendBase):
         if not self.alive.get(sandbox_id):
             return None
         return self.metrics.get(sandbox_id)
-
-    def retarget(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        public_key: str,
-        workdir: str,
-        sandbox_data_dir: str,
-        tracking_env: dict[str, str],
-        ssh_host: str = "",  # noqa: ARG002
-        ssh_port: int = 0,  # noqa: ARG002
-        key_path: str = "",
-    ) -> bool:
-        if not self.alive.get(sandbox_id):
-            raise BackendUnavailableError("fake sandbox is not alive")
-        sessions_dir = remote_sessions_dir(
-            experiment_id=experiment_id, root=remote_root_of(workdir)
-        )
-        env = build_runtime_env(
-            experiment_id=experiment_id,
-            workdir=workdir,
-            sessions_dir=sessions_dir,
-            sandbox_data_dir=sandbox_data_dir or DEFAULT_DATA_DIR,
-            tracking_env=tracking_env,
-        )
-        self.retarget_calls.append(
-            {
-                "sandbox_id": sandbox_id,
-                "experiment_id": experiment_id,
-                "public_key": public_key,
-                "workdir": workdir,
-                "sandbox_data_dir": sandbox_data_dir or DEFAULT_DATA_DIR,
-                "tracking_env": dict(tracking_env),
-                "key_path": key_path,
-            }
-        )
-        self.remote_envs[sandbox_id] = env
-        return True
 
     def sandbox_environment(self) -> dict:
         return {"available_tokens": [], "notes": []}

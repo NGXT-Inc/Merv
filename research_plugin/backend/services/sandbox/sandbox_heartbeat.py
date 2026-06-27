@@ -172,7 +172,6 @@ class SandboxHeartbeatMonitor:
         self.reap_row(
             row=row,
             event_type="sandbox.idle_reaped",
-            transition_reason="sandbox reaped after idle threshold",
             payload_extra={
                 "idle_since": format_iso(next_idle_since),
                 "idle_seconds": int((now - next_idle_since).total_seconds()),

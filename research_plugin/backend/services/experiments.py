@@ -20,9 +20,7 @@ from ..domain.reflection_policy import (
 from ..domain.review_snapshot import review_snapshot_id
 from ..domain.workflow_gates import (
     GATE_TABLE,
-    SYSTEM_TRANSITIONS,
     TERMINAL_STATUSES,
-    TRANSITION_GRAPH,
     allowed_transitions_for,
 )
 from ..state.blobs import BlobStore
@@ -507,11 +505,6 @@ class ExperimentService:
             return "abandoned"
         if transition == "mark_failed":
             return "failed"
-        if transition in SYSTEM_TRANSITIONS:
-            raise WorkflowError(
-                f"transition {transition!r} is system-driven (sandbox lifecycle); "
-                "it cannot be applied via experiment.transition"
-            )
         forward = GATE_TABLE.get(status)
         if forward is None or forward.name != transition:
             options = ", ".join(t["transition"] for t in allowed_transitions_for(status))
@@ -557,54 +550,6 @@ class ExperimentService:
         except WorkflowError as exc:
             return [str(exc)]
         return []
-
-    def apply_system_transition(
-        self, *, experiment_id: str, transition: str, reason: str = ""
-    ) -> bool:
-        """Apply a sandbox-lifecycle transition through the workflow graph.
-
-        This is the only path by which infrastructure (the sandbox registry)
-        may change experiment status — never raw UPDATEs — so every status
-        change lands in the `experiment.transitioned` event log. Unlike agent
-        transitions, an inapplicable system transition is a tolerated no-op
-        (returns False): the triggering sandbox event may arrive after the
-        experiment has already moved on (reuse of a live sandbox, an expiry
-        racing a review submission).
-        """
-        if transition not in SYSTEM_TRANSITIONS:
-            raise WorkflowError(f"not a system transition: {transition!r}")
-        with self.store.transaction() as conn:
-            row = conn.execute(
-                "SELECT project_id, status FROM experiments WHERE id = ?",
-                (experiment_id,),
-            ).fetchone()
-            if row is None:
-                return False
-            status = row["status"]
-            next_status = TRANSITION_GRAPH.get((status, transition))
-            if next_status is None:
-                return False
-            conn.execute(
-                "UPDATE experiments SET status = ?, updated_at = ? WHERE id = ?",
-                (next_status, now_iso(), experiment_id),
-            )
-            payload: dict[str, Any] = {
-                "from": status,
-                "to": next_status,
-                "transition": transition,
-                "system": True,
-            }
-            if reason:
-                payload["reason"] = reason
-            self.store.record_event(
-                conn=conn,
-                project_id=row["project_id"],
-                event_type="experiment.transitioned",
-                target_type="experiment",
-                target_id=experiment_id,
-                payload=payload,
-            )
-            return True
 
     def _has_resource_role(self, *, conn, experiment_id: str, role: str) -> bool:
         row = conn.execute(

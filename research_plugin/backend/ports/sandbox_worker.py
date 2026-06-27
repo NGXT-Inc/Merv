@@ -44,5 +44,5 @@ class SandboxWorker(Protocol):
         *,
         row: dict[str, Any],
         name: str = "",
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]: ...

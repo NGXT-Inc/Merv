@@ -10,7 +10,6 @@ from ..vm_ssh import (
     read_transcript_via_mgmt_ssh,
     run_ssh,
     run_ssh_input,
-    retarget_via_mgmt_ssh,
     sample_metrics_via_mgmt_ssh,
     sandbox_tokens,
     write_secrets_via_mgmt_ssh,
@@ -117,37 +116,6 @@ class VmSshSandboxBackend(SandboxBackendBase):
             ssh_runner=self._ssh_input_runner,
             sandbox_id=sandbox_id,
             secrets=secrets,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            key_path=key_path,
-        )
-
-    def retarget(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        public_key: str,
-        workdir: str,
-        sandbox_data_dir: str,
-        tracking_env: Mapping[str, str],
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        key_path: str = "",
-    ) -> bool:
-        """Re-point a live VM at another experiment over the management channel.
-
-        Authorizes the target user key, rewrites /opt/rp/env, and creates the
-        target workdir/data dirs so a reused sandbox serves the new experiment.
-        """
-        return retarget_via_mgmt_ssh(
-            ssh_runner=self._ssh_input_runner,
-            sandbox_id=sandbox_id,
-            experiment_id=experiment_id,
-            public_key=public_key,
-            workdir=workdir,
-            sandbox_data_dir=sandbox_data_dir or self.config.sandbox_data_dir,
-            tracking_env=tracking_env,
             ssh_host=ssh_host,
             ssh_port=ssh_port,
             key_path=key_path,

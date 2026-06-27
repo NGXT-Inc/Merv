@@ -34,10 +34,9 @@ def _folder_contract_note(
     *, remote_dir: str, local_dir: str, attached_to_experiment: bool
 ) -> str:
     """The sandbox file durability rule, told at the moment it matters."""
-    folder_label = "experiment folder" if attached_to_experiment else "work folder"
-    local_label = (
-        "local experiment folder" if attached_to_experiment else "local sandbox folder"
-    )
+    _ = attached_to_experiment
+    folder_label = "work folder"
+    local_label = "local sandbox folder"
     return (
         f"The sandbox {folder_label} is {remote_dir} ($RP_EXPERIMENT_DIR). "
         "Work in it over SSH — scripts, results, report.md, graph.json. "
@@ -60,14 +59,9 @@ def _folder_contract_note(
 def _expiry_note(expires_at: Any, *, attached_to_experiment: bool) -> str:
     if not expires_at:
         return ""
-    local_label = (
-        "local experiment folder" if attached_to_experiment else "local sandbox folder"
-    )
-    retry_note = (
-        "the experiment can request a new one from ready_to_run"
-        if attached_to_experiment
-        else "you can request a new sandbox"
-    )
+    _ = attached_to_experiment
+    local_label = "local sandbox folder"
+    retry_note = "you can request a new sandbox"
     return (
         f"Sandbox lifetime expires at {expires_at}. Before that deadline, pull "
         f"anything you need off the box yourself (rsync light files into the {local_label}, "
@@ -97,10 +91,13 @@ def agent_row_facts(
     """
     status = row.get("status") or "none"
     experiment_id = str(row.get("experiment_id") or "")
+    active_experiment_ids = list(row.get("active_experiment_ids") or [])
     remote_dir = str(
         row.get("sync_dir")
         or row.get("workdir")
-        or remote_experiment_dir(experiment_id=experiment_id)
+        or remote_experiment_dir(
+            experiment_id=str(row.get("sandbox_uid") or experiment_id)
+        )
     )
     data_dir = str(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
@@ -108,6 +105,7 @@ def agent_row_facts(
     facts: dict[str, Any] = {
         "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
+        "active_experiment_ids": active_experiment_ids,
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
         "status": status,
@@ -160,7 +158,7 @@ def merge_agent_view(
     view = dict(facts)
     status = str(view.get("status") or "none")
     live = _is_live(status=status, ssh=view.get("ssh") or {})
-    attached_to_experiment = bool(str(view.get("experiment_id") or ""))
+    attached_to_experiment = bool(view.get("active_experiment_ids") or [])
     command = str(enrichment.get("command") or "") if live else ""
     raw_command = str(enrichment.get("raw_command") or "") if live else ""
     local_dir = str(enrichment.get("local_dir") or "")
@@ -255,8 +253,8 @@ def merge_agent_view(
         view["hint"] = (
             f"Run commands with: {command} '<your shell command>' (from the repo root). "
             + (
-                "Commands start inside the experiment folder. "
-                "Output streams back and is recorded to the experiment terminal. "
+                "Commands start inside the sandbox work folder. "
+                "Output streams back and is recorded to the sandbox terminal. "
                 if attached_to_experiment
                 else (
                     "Commands start inside the sandbox work folder. "
@@ -278,7 +276,7 @@ def merge_agent_view(
             )
             + "Before registering result resources, rsync the files you need off "
             "the box yourself (see the folder note) into the local "
-            + ("experiment folder" if attached_to_experiment else "sandbox folder")
+            + "sandbox folder"
             + ", then register those local files. "
             + _expiry_note(
                 view.get('expires_at'),
@@ -301,6 +299,7 @@ def agent_summary(*, row: dict[str, Any]) -> dict[str, Any]:
     return {
         "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
+        "active_experiment_ids": list(row.get("active_experiment_ids") or []),
         "sandbox_id": row.get("sandbox_id"),
         "status": row.get("status"),
         "gpu": row.get("gpu") or None,
@@ -322,10 +321,13 @@ def sandbox_row_view(
     it through the worker (it no longer lives in the row).
     """
     experiment_id = str(row.get("experiment_id") or "")
+    active_experiment_ids = list(row.get("active_experiment_ids") or [])
     remote_dir = str(
         row.get("sync_dir")
         or row.get("workdir")
-        or remote_experiment_dir(experiment_id=experiment_id)
+        or remote_experiment_dir(
+            experiment_id=str(row.get("sandbox_uid") or experiment_id)
+        )
     )
     data_dir = str(
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
@@ -333,6 +335,7 @@ def sandbox_row_view(
     view = {
         "sandbox_uid": row.get("sandbox_uid"),
         "experiment_id": row.get("experiment_id"),
+        "active_experiment_ids": active_experiment_ids,
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
         "status": row.get("status"),

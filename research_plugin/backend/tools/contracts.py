@@ -428,9 +428,9 @@ class SandboxRequestInput(ProjectScopedInput):
     additional: bool = Field(
         default=False,
         description=(
-            "When true, provision a new parallel sandbox for the supplied "
-            "experiment instead of reusing that experiment's current primary "
-            "sandbox."
+            "When true with experiment_id, provision a new sandbox and add it "
+            "to that experiment's active sandbox list instead of reusing an "
+            "already attached live sandbox."
         ),
     )
 
@@ -450,7 +450,8 @@ class SandboxGetInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
         description=(
-            "Experiment to read by primary sandbox. Omit when sandbox_uid is supplied."
+            "Experiment whose live sandbox association should be read. Omit "
+            "when sandbox_uid is supplied."
         ),
     )
     sandbox_uid: str | None = Field(
@@ -464,7 +465,7 @@ class SandboxAttachInput(ProjectScopedInput):
         description="Target experiment to attach the live sandbox to."
     )
     sandbox_uid: str = Field(
-        description="Existing running sandbox_uid to re-point to the target experiment."
+        description="Existing running sandbox_uid to associate with the target experiment."
     )
 
 
@@ -773,8 +774,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "an experiment, and return SSH details plus runtime guidance for the "
             "remote work folder, expiry, and sandbox TensorBoard observability. "
             "Attached experiment sandboxes also include centralized MLflow tracking "
-            "context. Put anything an experiment run needs in experiments/<name>/ "
-            "before provisioning. "
+            "context when the sandbox has exactly one active experiment. "
             "On Thunder Compute or Lambda Labs, omit instance_type to "
             "receive a live menu of available machines to pick from."
         ),
@@ -791,8 +791,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=SandboxGetInput,
         description=(
             "Get sandbox status, SSH details, expiry, and polling/runtime "
-            "guidance by experiment_id or sandbox_uid. Use it to poll "
-            "provisioning and inspect terminated or expired sandboxes."
+            "guidance by sandbox_uid or by an experiment's active sandbox "
+            "association. Use it to poll provisioning and inspect terminated "
+            "or expired sandboxes."
         ),
         plane="aggregate",
         hosted_control_sandbox_lookup=True,
@@ -800,9 +801,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.attach": ToolContract(
         input_model=SandboxAttachInput,
         description=(
-            "Reuse an existing running sandbox for a different ready/running "
-            "experiment by re-pointing its workdir, conn file, lifecycle, and "
-            "attachment history without terminating the VM."
+            "Associate an existing running sandbox with an experiment without "
+            "changing the VM, workdir, SSH connection, or lifecycle. A live "
+            "sandbox can be associated with multiple active experiments."
         ),
         plane="data",
     ),

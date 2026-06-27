@@ -113,7 +113,6 @@ class ResearchPluginApp:
             sandbox_backend=self.execution_backend,
             worker=self.worker,
             activity=self.activity,
-            experiments=self.experiments,
             # Per-sandbox management keys (plan Phase 5): control-plane
             # custody — local mode roots them under .research_plugin/ beside
             # the rest of the control state.

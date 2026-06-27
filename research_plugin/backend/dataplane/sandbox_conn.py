@@ -75,7 +75,7 @@ class SandboxConnFiles:
         *,
         row: dict[str, Any],
         key_path: Path,
-        use_sandbox_uid_command: bool = False,
+        use_sandbox_uid_command: bool = True,
     ) -> str:
         """Refresh the sandbox conn file and return the short command.
 
@@ -84,10 +84,10 @@ class SandboxConnFiles:
         back to the raw ssh line.
         """
         dispatcher, conn_dir = self.command_paths()
+        _ = use_sandbox_uid_command
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
         safe_uid = _safe_name(sandbox_uid or experiment_id)
-        safe_exp = _safe_name(experiment_id) if experiment_id else ""
         try:
             self.ensure_dispatcher(dispatcher=dispatcher)
             conn_dir.mkdir(parents=True, exist_ok=True)
@@ -100,15 +100,10 @@ class SandboxConnFiles:
             conn_file = conn_dir / safe_uid
             conn_file.write_text(body)
             os.chmod(conn_file, 0o600)
-            if experiment_id and safe_exp and not use_sandbox_uid_command:
-                # The experiment alias preserves the single-sandbox command.
-                alias = conn_dir / safe_exp
-                alias.write_text(body)
-                os.chmod(alias, 0o600)
         except OSError:
             return ""
         rel = os.path.relpath(dispatcher, self.repo_root)
-        return f"{rel} {safe_uid if use_sandbox_uid_command else safe_exp or safe_uid}"
+        return f"{rel} {safe_uid}"
 
     def remove_conn(
         self,
