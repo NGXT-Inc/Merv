@@ -62,6 +62,15 @@ RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL=https://backend.example.com/mlflow
 - `managed`: local backend starts MLflow itself.
 - `external`: backend points at an existing MLflow service.
 
+`TRACKING_URI` and `SERVER_URI` intentionally mean different things in hosted
+control mode. `SERVER_URI` may be an internal service name such as
+`http://mlflow:5000`; the control plane can use it to read metrics, but remote
+sandboxes cannot. Agents only receive `MLFLOW_TRACKING_URI` when
+`RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` is set to a URL reachable from the run
+location, usually the public HTTPS MLflow endpoint. A deployment with only
+`SERVER_URI` configured can still show backend-read metrics, but agent logging is
+reported as unconfigured until `TRACKING_URI` is supplied.
+
 ## Agent Contract
 
 `experiment.mlflow` and `experiment.transition(start_running)` return the
@@ -101,4 +110,6 @@ MLflow is best-effort for now:
 - If unreachable, report readiness in experiment MLflow helpers and health output.
 - Training is not blocked solely because MLflow is down.
 
-Future user auth should scope the same environment injection point.
+Future user auth should scope the same environment injection point. Do not point
+`RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` at a Docker-internal hostname unless all
+training clients run on that same network.

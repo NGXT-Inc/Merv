@@ -1,4 +1,4 @@
-"""Compact MLflow REST snapshotting for durable result records."""
+"""Compact MLflow REST snapshotting for result read models."""
 
 from __future__ import annotations
 

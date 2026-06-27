@@ -73,6 +73,12 @@ therefore fails fast unless the durable DB, durable blob store, and mounted
 management key variables are present. Passing an explicit `repo_root` is only
 for dev/test compatibility.
 
+For MLflow, `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` alone is enough for the control
+plane to read metrics from an internal service, but it is not enough for agents
+to log runs. Set `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` to the public HTTPS URL
+reachable by remote sandboxes before expecting training code to emit MLflow
+runs.
+
 ## Operating
 
 - **Version floor:** clients send `X-RP-Client-Version`; below-floor clients get

@@ -50,7 +50,7 @@ from ..execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
 from ..services.cleanup import CleanupService
-from ..services.mlflow_tracking import CentralMlflowService
+from ..mlflow import CentralMlflowService
 from ..storage.service import StorageLedgerService
 from ..state.managed_mgmt_keys import MountedMgmtKeyStore
 from ..utils import ValidationError

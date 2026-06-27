@@ -13,7 +13,7 @@ from .state import BaseStateStore, StateStore
 from .state.blobs import BlobStore
 from .observability import StructuredLogger
 from .control.record_core import build_record_core
-from .services.mlflow_tracking import CentralMlflowService
+from .mlflow import CentralMlflowService
 from .tools.tool_facade import ToolDispatcher
 from .tools.contracts import available_tool_names
 from .tools.tool_handlers import build_local_tool_handlers

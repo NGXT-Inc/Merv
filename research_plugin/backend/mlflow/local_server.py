@@ -15,7 +15,7 @@ from typing import BinaryIO
 
 import httpx
 
-from .services.mlflow_tracking import CentralMlflowService
+from .tracking import CentralMlflowService
 
 
 @dataclass

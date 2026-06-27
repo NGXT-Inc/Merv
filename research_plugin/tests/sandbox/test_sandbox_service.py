@@ -9,7 +9,7 @@ from pathlib import Path
 
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.services.mlflow_tracking import CentralMlflowService
+from backend.mlflow import CentralMlflowService
 from backend.sandbox.sandbox_backend import SandboxRequest
 from backend.utils import NotFoundError, ValidationError
 

@@ -236,7 +236,7 @@ class ControlAppTest(unittest.TestCase):
             )
 
             with patch(
-                "backend.services.mlflow_tracking.snapshot_mlflow",
+                "backend.mlflow.tracking.snapshot_mlflow",
                 return_value=dict(snapshot),
             ) as capture:
                 result = app.mlflow_tracking.results_metrics(

@@ -41,7 +41,7 @@ from .http_policy import (
 from .mcp_http import register_mcp_routes
 from ..services.figure_view import build_experiment_figure
 from ..services.identity import LOCAL_PRINCIPAL
-from ..services.mlflow_tracking import mlflow_experiment_name
+from ..mlflow import mlflow_experiment_name
 from ..utils import (
     ContentUnavailableError,
     DataPlaneRequiredError,

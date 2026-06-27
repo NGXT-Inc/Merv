@@ -21,9 +21,8 @@ from typing import Any, Callable
 
 from .daemon_marker import clear_marker, write_marker
 from ..app import ResearchPluginApp
-from ..local_mlflow import LocalMlflowServer
 from ..sandbox.sandbox_backend import SandboxBackend
-from ..services.mlflow_tracking import CentralMlflowService
+from ..mlflow import CentralMlflowService, LocalMlflowServer
 from ..tools.contracts import PROJECT_SCOPED_TOOL_NAMES, static_tool_catalog
 from ..utils import NotFoundError, ValidationError, now_iso
 

@@ -40,6 +40,9 @@ def _mlflow_connection(
 
 def _mlflow_guidance(block: dict[str, Any]) -> str:
     if not block.get("configured"):
+        note = str(block.get("note") or "").strip()
+        if note:
+            return note
         return (
             "If you run a quantitative experiment, log it to MLflow — but no "
             "central MLflow tracking URI is configured on this backend yet."

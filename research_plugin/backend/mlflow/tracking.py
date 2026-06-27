@@ -8,7 +8,7 @@ from typing import Callable, Mapping
 
 import httpx
 
-from ..mlflow_metrics import snapshot_mlflow
+from .metrics import snapshot_mlflow
 from ..config import (
     resolve_mlflow_dashboard_url,
     resolve_mlflow_mode,
@@ -112,6 +112,14 @@ class CentralMlflowService:
         if execution_backend:
             env["RP_EXECUTION_BACKEND"] = execution_backend
         configured = bool(self.tracking_uri)
+        note = ""
+        if not configured and self.server_uri:
+            note = (
+                "Backend MLflow reads are configured through "
+                "RESEARCH_PLUGIN_MLFLOW_SERVER_URI, but agents cannot log until "
+                "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI is set to a URL reachable "
+                "from the run location."
+            )
         return MlflowTrackingContext(
             configured=configured,
             mode=self.mode or ("external" if configured else "unconfigured"),
@@ -122,24 +130,35 @@ class CentralMlflowService:
             note=(
                 ""
                 if configured
-                else self.note
+                else note
+                or self.note
                 or "Centralized MLflow is not configured; set RESEARCH_PLUGIN_MLFLOW_TRACKING_URI."
             ),
         )
 
     def health(self) -> dict[str, object]:
-        configured = bool(self.tracking_uri)
+        tracking_configured = bool(self.tracking_uri)
+        read_configured = bool(self.server_uri)
+        configured = tracking_configured or read_configured
         result: dict[str, object] = {
             "configured": configured,
+            "tracking_configured": tracking_configured,
+            "read_configured": read_configured,
             "mode": self.mode or ("external" if configured else "unconfigured"),
             "tracking_uri": self.tracking_uri,
             "dashboard_url": self.dashboard_url,
         }
-        if configured:
+        if read_configured:
             reachable = self._reachable()
             result["reachable"] = reachable
             if not reachable and not self.note:
                 result["note"] = "MLflow is configured but not reachable."
+        if read_configured and not tracking_configured and not result.get("note"):
+            result["note"] = (
+                "Backend MLflow reads are configured, but agents cannot log "
+                "until RESEARCH_PLUGIN_MLFLOW_TRACKING_URI is set to a "
+                "run-reachable URL."
+            )
         if self.server_uri and self.server_uri != self.tracking_uri:
             result["server_uri"] = self.server_uri
         if self.note:
@@ -149,7 +168,8 @@ class CentralMlflowService:
     def results_metrics(self, *, project_id: str, experiment_id: str) -> dict[str, object]:
         """Read experiment metrics from the centralized MLflow server."""
         context = self.context(project_id=project_id, experiment_id=experiment_id)
-        if not context.configured:
+        read_uri = self.server_uri or context.tracking_uri
+        if not read_uri:
             return {
                 "experiment_id": experiment_id,
                 "available": False,
@@ -157,7 +177,7 @@ class CentralMlflowService:
                 "hint": context.note,
             }
         snapshot = snapshot_mlflow(
-            self.server_uri or context.tracking_uri,
+            read_uri,
             experiment_name=context.experiment_name,
         )
         if not isinstance(snapshot, dict):

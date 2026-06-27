@@ -20,7 +20,7 @@ from ..observability import StructuredLogger
 from ..ports.mgmt_keys import MgmtKeyStore
 from .record_core import build_record_core
 from ..sandbox.sandbox_backend import SandboxBackend
-from ..services.mlflow_tracking import CentralMlflowService
+from ..mlflow import CentralMlflowService
 from ..services.sandbox.sandboxes import SandboxService
 from ..storage.service import StorageLedgerService
 from ..services.workflow import WorkflowService

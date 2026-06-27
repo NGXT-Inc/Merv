@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 from backend.config import resolve_mlflow_mode
 from backend.daemon.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.local_mlflow import LocalMlflowServer
-from backend.services.mlflow_tracking import CentralMlflowService
+from backend.mlflow.local_server import LocalMlflowServer
+from backend.mlflow.tracking import CentralMlflowService
 from backend.utils import ValidationError
 
 
@@ -73,8 +73,47 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         health = service.health()
 
         self.assertTrue(health["configured"])
+        self.assertTrue(health["tracking_configured"])
+        self.assertTrue(health["read_configured"])
         self.assertFalse(health["reachable"])
         self.assertIn("not reachable", health["note"])
+
+    def test_server_uri_only_allows_backend_reads_but_not_agent_logging(self) -> None:
+        service = CentralMlflowService(
+            mode="external",
+            server_uri="http://mlflow:5000",
+            health_check=lambda: True,
+        )
+
+        context = service.context(
+            project_id="proj_123", experiment_id="exp_456"
+        ).to_dict()
+        health = service.health()
+        snapshot = {
+            "source": "mlflow",
+            "base_url": "http://mlflow:5000",
+            "experiments": [{"name": "rp/proj_123/exp_456", "runs": []}],
+        }
+        with patch(
+            "backend.mlflow.tracking.snapshot_mlflow",
+            return_value=snapshot,
+        ) as snapshot_mlflow:
+            metrics = service.results_metrics(
+                project_id="proj_123", experiment_id="exp_456"
+            )
+
+        self.assertFalse(context["configured"])
+        self.assertNotIn("MLFLOW_TRACKING_URI", context["env"])
+        self.assertIn("agents cannot log", context["note"])
+        self.assertTrue(health["configured"])
+        self.assertFalse(health["tracking_configured"])
+        self.assertTrue(health["read_configured"])
+        self.assertIn("agents cannot log", health["note"])
+        snapshot_mlflow.assert_called_once_with(
+            "http://mlflow:5000", experiment_name="rp/proj_123/exp_456"
+        )
+        self.assertTrue(metrics["available"])
+        self.assertNotIn("base_url", metrics)
 
 
 class LocalMlflowServerTest(unittest.TestCase):
@@ -84,7 +123,7 @@ class LocalMlflowServerTest(unittest.TestCase):
             "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI": "http://mlflow.example.test",
         }
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, env, clear=True):
-            with patch("backend.local_mlflow.subprocess.Popen") as popen:
+            with patch("backend.mlflow.local_server.subprocess.Popen") as popen:
                 service = LocalMlflowServer(root=Path(tmp)).start()
 
         popen.assert_not_called()
@@ -99,8 +138,8 @@ class LocalMlflowServerTest(unittest.TestCase):
             with (
                 patch.object(LocalMlflowServer, "_choose_port", return_value=5678),
                 patch.object(LocalMlflowServer, "_wait_until_ready", return_value=True),
-                patch("backend.local_mlflow.subprocess.Popen", return_value=process) as popen,
-                patch("backend.local_mlflow.os.killpg") as killpg,
+                patch("backend.mlflow.local_server.subprocess.Popen", return_value=process) as popen,
+                patch("backend.mlflow.local_server.os.killpg") as killpg,
             ):
                 server = LocalMlflowServer(root=Path(tmp))
                 service = server.start()
@@ -120,7 +159,7 @@ class LocalMlflowServerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
             with (
                 patch.object(LocalMlflowServer, "_choose_port", return_value=5678),
-                patch("backend.local_mlflow.subprocess.Popen", return_value=process),
+                patch("backend.mlflow.local_server.subprocess.Popen", return_value=process),
             ):
                 service = LocalMlflowServer(root=Path(tmp)).start()
 
