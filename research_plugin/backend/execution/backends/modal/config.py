@@ -68,8 +68,7 @@ class ModalConfig:
     sandbox_timeout: int
     job_timeout: int
     idle_timeout: int
-    # Remote root under which each experiment's one synced folder
-    # (`<root>/<experiment_id>`) is created.
+    # Remote root under which each sandbox work folder (`<root>/<sandbox>`) is created.
     remote_root: str
     sandbox_data_dir: str
     runner_dir: str
@@ -123,8 +122,7 @@ class ModalConfig:
     def validated(self) -> "ModalConfig":
         # The data dir may live under the remote root (e.g. /workspace/data),
         # but must never collide with the locations the plugin manages there:
-        # the per-experiment synced folders (`<root>/exp_*`) and the sessions
-        # tree — that would drag heavy datasets into the rsynced mirror.
+        # sandbox work folders (`<root>/sandbox-*`) and the sessions tree.
         root = self.remote_root.rstrip("/")
         data = self.sandbox_data_dir.rstrip("/")
         if data == root:

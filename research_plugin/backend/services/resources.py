@@ -18,7 +18,11 @@ from ..state.store import (
     row_to_dict,
     rows_to_dicts,
 )
-from ..domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES, markdown_image_links
+from ..domain.markdown_images import (
+    MARKDOWN_FIGURE_MAX_BYTES,
+    MARKDOWN_FIGURE_ROLES,
+    markdown_image_links,
+)
 from ..domain.reflection_projection import external_reflection_target_type
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from .pinned import pinned_text_for_version as load_pinned_text_for_version
@@ -596,7 +600,7 @@ class ResourceService:
                 data=content_bytes,
                 content_type=str(version["content_type"]),
             )
-            if role in {"report", "reflection_doc", "synthesis_doc"}:
+            if role in MARKDOWN_FIGURE_ROLES:
                 self._capture_submitted_markdown_figures(
                     conn=conn,
                     version_id=version_id,
@@ -740,7 +744,7 @@ class ResourceService:
             data=content_bytes,
             content_type=str(version["content_type"]),
         )
-        if role in {"report", "reflection_doc", "synthesis_doc"}:
+        if role in MARKDOWN_FIGURE_ROLES:
             self._capture_submitted_markdown_figures(
                 conn=conn,
                 version_id=version_id,

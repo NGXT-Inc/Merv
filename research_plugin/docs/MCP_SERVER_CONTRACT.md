@@ -331,21 +331,18 @@ filtering, and other data engineering unless a command specifically needs GPU
 acceleration. On Lambda that means picking the smallest/cheapest viable SKU from
 the menu; on Modal, omitting `gpu`.
 
-There is exactly **one synced location** on the VM: the experiment's own
-folder, `experiment_dir` (`/workspace/<name>`, exported inside SSH
-commands as `$RP_EXPERIMENT_DIR`; `workdir` is the same path — SSH commands
-start there). It mirrors the local `experiments/<name>/` folder both
-ways: pushed wholesale at provisioning, pulled back continuously while the
-sandbox lives. Everything outside that folder stays on the VM and dies with
-it — there is no "unsynced directory" concept, just *outside the folder*.
+There is no synced VM location. The sandbox's work folder is `experiment_dir`
+(`/workspace/<name>`, exported inside SSH commands as `$RP_EXPERIMENT_DIR`;
+`workdir` is the same path, and SSH commands start there). Files written there
+stay on the VM until the agent explicitly copies selected outputs back to the
+local checkout over SSH. Everything left on the VM dies with release or expiry.
 `data_dir` (`/workspace/data`, exported as `$RP_DATASET_DIR` /
 `$RP_SANDBOX_DATA_DIR`) is the conventional home for large datasets, caches,
-checkpoints, parquet files, and heavy intermediates. If a large artifact
-deliberately must be preserved locally, agents place it under
-`$RP_EXPERIMENT_DIR/artifacts_to_keep`; this subdirectory syncs via a separate
-higher-size rsync pass (5 GB per-file cap vs the usual 100 MB). Agents should
-also prefer to save a Markdown data note in the experiment folder (for example
-`experiments/<name>/data.md`) describing datasets used, source
+checkpoints, parquet files, and heavy intermediates. Heavy artifacts that need
+to survive should be uploaded through durable storage tools instead of copied
+into the repo. Agents should also prefer to save a Markdown data note in the
+local experiment folder (for example `experiments/<name>/data.md`) describing
+datasets used, source
 identifiers, split/filter choices, important columns, row counts, caveats, and
 where large ephemeral files were placed outside the folder.
 
@@ -359,7 +356,7 @@ Agents must not print the token, write it into synced files, or register it as a
 resource.
 
 When a fresh sandbox/VM is created, setup returns SSH details and a remote work
-folder (`$RP_EXPERIMENT_DIR`). Nothing is mirrored automatically. Agents fetch
+folder (`$RP_EXPERIMENT_DIR`). No files are copied automatically. Agents fetch
 code/data on the box, keep disposable bulk data under `$RP_DATASET_DIR`, and
 explicitly retain outputs before release: copy light files back over SSH or
 upload heavy artifacts with storage tools. Resource tools only operate on local
@@ -368,7 +365,7 @@ copied back locally. Release and expiry destroy the VM and any files the agent
 did not retain.
 
 Provisioning is **best-effort-synchronous**. Creating a sandbox can outlast the
-MCP call timeout (large first sync, cold GPU), so `sandbox.request` provisions on
+MCP call timeout (cold GPU, image/bootstrap work), so `sandbox.request` provisions on
 a background thread and waits up to a budget (default 45s,
 `RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT`):
 
@@ -398,10 +395,11 @@ normal SSH endpoint and needs `RESEARCH_PLUGIN_THUNDER_API_KEY` (or
 `LAMBDA_LABS_API_KEY` (region/instance type are chosen per request, with optional
 `RESEARCH_PLUGIN_LAMBDA_REGION` / `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`
 fallbacks). Modal exposes SSH over an unencrypted Modal tunnel
-(`unencrypted_ports=[22]`). The registry generates a per-experiment SSH keypair
-and authorizes its public key in the sandbox/VM. File sync is provider-neutral
-SSH rsync owned by `SandboxService`. The execution contract (`SandboxBackend`)
-stays narrow so additional providers can live inside `execution/backends/`; a
+(`unencrypted_ports=[22]`). The registry generates a per-sandbox SSH keypair
+and authorizes its public key in the sandbox/VM. Output retention is explicit:
+the agent copies selected light files back over SSH, while heavy files should go
+through durable storage tools. The execution contract (`SandboxBackend`) stays
+narrow so additional providers can live inside `execution/backends/`; a
 backend advertises whether it `requires_hardware_selection` (bundled SKUs) and
 may expose an optional `hardware_catalog()` that powers `sandbox.options` and the
 `needs_selection` menu.
@@ -409,8 +407,7 @@ may expose an optional `hardware_catalog()` that powers `sandbox.options` and th
 `time_limit` is enforced. Modal sandboxes self-terminate at their server-side
 timeout; for backends without server-side lifetime (Lambda Labs VMs, which
 otherwise bill until manually killed), the daemon runs a background **reaper**
-that terminates any running sandbox past its `expires_at` (a best-effort final
-rsync runs first so results survive). The reaper polls every
+that terminates any running sandbox past its `expires_at`. The reaper polls every
 `RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL` seconds (default 30) and can be
 disabled with `RESEARCH_PLUGIN_SANDBOX_REAPER=0`.
 

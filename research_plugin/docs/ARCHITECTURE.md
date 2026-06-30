@@ -78,14 +78,15 @@ The same code base runs in three process roles selected by
 - **`local` (default)** — today's single-process topology, both planes in one
   process. Byte-identical to before the migration; tier-1 supported forever.
 - **`control`** — the cloud **control plane**: multi-tenant records, gates,
-  lifecycle, blob store, leases, quotas, auth, and the daemon task/sync-target
-  endpoints. It never touches a user checkout.
-- **`daemon`** — the slim user-machine **data plane**: rsync, key custody, file
-  observation, and the machine-local repo-folder to hosted-project link
+  lifecycle, blob store, quotas, auth, and daemon task endpoints. It never
+  touches a user checkout.
+- **`daemon`** — the slim user-machine **data plane**: key custody, file
+  observation, SSH command material, and the machine-local repo-folder to
+  hosted-project link
   registry. It dials the control plane over HTTP (the cloud never dials in).
 
 The split is built end-to-end. The load-bearing rule — *the cloud cannot see a
-user's local filesystem* — is what puts file IO (rsync/ssh) on the daemon and
+user's local filesystem* — is what puts file IO and SSH key material on the daemon and
 everything else (orchestration, records, credentials, authz, cost governance)
 on the control plane. The module-by-module assignment is in
 **`docs/CONTROL_DATA_PLANE_SPLIT.md`**; operating the control plane (modes, env,
@@ -102,7 +103,7 @@ Codex owns:
 - running local commands when cheap and safe
 - asking MCP for project memory, experiment status, and next action
 - launching separate reviewer agents when MCP requires design or experiment review
-- syncing created or modified files back into MCP as resources
+- registering and associating retained local files as resources
 - reading MCP-returned resource paths directly from the local repo on later turns
 
 MCP owns:
@@ -254,7 +255,7 @@ Possible next steps include:
 - launch design reviewer
 - revise plan from design review feedback
 - request a sandbox and run the experiment over SSH
-- sync resources
+- retain outputs and register resources
 - launch experiment reviewer
 - revise plan from experiment review feedback
 - propose claim update
@@ -328,7 +329,7 @@ The primary skill should make Codex follow the research loop:
 4. edit local files as needed
 5. run lightweight checks locally
 6. request a sandbox from MCP and run long work on it over SSH
-7. sync created/modified files as resources
+7. retain outputs and register/associate local files as resources
 8. launch design or experiment reviewer agent when MCP requires it
 9. ensure the reviewer submits review directly to MCP
 10. propose claim/experiment updates through MCP

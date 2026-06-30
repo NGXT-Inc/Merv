@@ -1176,6 +1176,40 @@ class ResourceRelFileTest(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertTrue(response.content.startswith(b"\x89PNG"))
 
+    def test_serves_submitted_plan_figure_without_live_file(self) -> None:
+        exp = self.client.post(
+            f"/api/projects/{self.project_id}/experiments",
+            json={"name": "plan-figure", "intent": "Verify submitted plan image."},
+        ).json()
+        (self.repo / "plans" / "figures").mkdir(parents=True)
+        figure_path = self.repo / "plans" / "figures" / "diagram.png"
+        figure_path.write_bytes(b"\x89PNG\r\n\x1a\nplan")
+        (self.repo / "plans" / "plan.md").write_text(
+            "## Summary\nPlan with a diagram.\n\n"
+            "![diagram](figures/diagram.png)\n\n"
+            "## Objective & hypothesis\nTest plan image serving.\n\n"
+            "## Evaluation\nSuccess means the backend serves submitted bytes.\n"
+        )
+        resource = self.client.post(
+            f"/api/projects/{self.project_id}/resources",
+            json={"path": "plans/plan.md", "kind": "plan"},
+        ).json()
+        assoc = self.client.post(
+            f"/api/projects/{self.project_id}/resources/{resource['id']}/associate",
+            json={"target_type": "experiment", "target_id": exp["id"], "role": "plan"},
+        )
+        self.assertLess(assoc.status_code, 400, assoc.text)
+
+        figure_path.unlink()
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/resources/{resource['id']}/file",
+            params={"rel": "figures/diagram.png"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nplan")
+
     def test_rejects_escape_outside_repo_root(self) -> None:
         response = self.client.get(
             f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",

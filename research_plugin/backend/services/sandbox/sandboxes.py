@@ -576,7 +576,7 @@ class SandboxService:
                     if self.storage_enabled
                     else "; heavy-file storage is not enabled on this backend"
                 )
-                + ". Nothing is auto-synced — anything you do "
+                + ". Nothing is copied automatically — anything you do "
                 "not pull is lost. When you have everything, re-call sandbox.release "
                 "with confirm_retained=true to terminate."
             ),

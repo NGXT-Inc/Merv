@@ -9,15 +9,13 @@ from typing import Any
 
 from ..domain.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
+    MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
     markdown_image_targets,
 )
 from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from ..utils import NotFoundError, ValidationError
 from .repo_paths import resolve_repo_path
-
-
-MARKDOWN_FIGURE_ROLES = frozenset({"report", "reflection_doc", "synthesis_doc"})
 
 
 class LocalResourceArtifactReader:
@@ -105,7 +103,7 @@ class LocalResourceArtifactReader:
                 resolved.relative_to(self.repo_root)
             except ValueError as exc:
                 raise ValidationError(
-                    f"report image link escapes the repo: {link}",
+                    f"markdown image link escapes the repo: {link}",
                     details={"link": link, "resource": markdown_rel_path},
                 ) from exc
             if not resolved.is_file():

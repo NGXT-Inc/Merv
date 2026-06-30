@@ -9,12 +9,12 @@
 
 ## Why this doc exists
 
-Today the backend runs entirely on the user's machine. Both the long-lived
+Today the backend can run entirely on the user's machine. Both the long-lived
 HTTP daemon (`python -m backend.transport.http_server`) and the stdlib-only stdio proxy
 (`python -m mcp_server`) are local, and the daemon happens to sit on the same
-filesystem as the user's research repo. That co-location is the only reason
-sync works: the daemon can `rsync` between a Modal/Lambda VM and a local path
-like `experiments/<id>/`.
+filesystem as the user's research repo. That co-location is why file observation
+and resource byte capture work: the daemon can read repo-relative files before
+sending metadata and submitted bytes to the control plane.
 
 When the backend moves to the cloud and serves multiple users, that assumption
 breaks. This doc proposes splitting the monolith into a **cloud control plane**
@@ -26,10 +26,10 @@ which side.
 > **The cloud backend cannot see a user's local filesystem.**
 
 A cloud-hosted backend has no access to `experiments/<id>/`, the user's
-repo files, or their SSH `known_hosts`. Therefore **any code that reads or
-writes local files, or spawns processes that do (rsync, ssh, ssh-keygen), must
-run in a process on the user's machine.** Everything else — orchestration,
-records, credentials, authz — can and should move to the cloud.
+repo files, or their SSH `known_hosts`. Therefore **any code that reads local
+files, writes local files, or owns local SSH key material must run in a process
+on the user's machine.** Everything else — orchestration, records, provider
+credentials, authz — can and should move to the cloud.
 
 This single rule determines the entire split.
 
@@ -47,8 +47,8 @@ Three roles instead of two:
 │   MCP server  ──────────── control-plane tools ──────────► CLOUD       │
 │   (thin proxy)  ──── data-plane tools ───► Local data-plane daemon     │
 │                                                 │                      │
-│                                                 │ rsync / ssh          │
-│                                   reads/writes  ▼                      │
+│                                                 │ local file reads     │
+│                                      observes   ▼                      │
 │                              experiments/<id>/, repo files,             │
 │                              .research_plugin/ keys + state            │
 │                                                 │                      │
@@ -59,27 +59,28 @@ Three roles instead of two:
 CLOUD (multi-tenant)
    Control plane: auth, ownership, project/experiment/claim/review records,
    sandbox lifecycle, provider credentials + billing, SSH credential issuance,
-   sync-session + lease authority, status aggregation, cleanup jobs.
+   status aggregation, cleanup jobs.
 ```
 
 - **Cloud control plane** — multi-tenant, the source of truth for orchestration
   and records. Provisions VMs, but never touches a user's filesystem.
 - **Local data-plane daemon** — one long-lived process per user machine. Has
-  filesystem access; runs rsync/watch; authenticates to the cloud as the user.
+  filesystem access for resource observation and owns local SSH key material;
+  authenticates to the cloud as the user.
   Keeps a daemon-local registry with many `repo_root -> project_id` links.
-  This is the role the **current HTTP daemon already plays for sync** — we keep
-  that half and shed the rest to the cloud.
+  This is the role the **current HTTP daemon already plays for local data-plane
+  work** — we keep that half and shed the rest to the cloud.
 - **MCP server** — stays a thin, stateless stdio proxy. It gains a second
   upstream: control-plane tool calls go to the cloud, data-plane tool calls go
   to the local daemon.
 
-### Key recommendation: do **not** move the sync worker into the MCP server
+### Key recommendation: do **not** move local state into the MCP server
 
 The MCP server is deliberately stdlib-only and stateless. It is spawned and
 killed by the agent client, and is typically one process per client session.
-Hosting a long-lived sync worker there means (a) sync dies when the editor
-closes, and (b) two editor windows = two workers fighting over the same
-experiment folder. Keep the worker in a single per-machine daemon; let MCP
+Hosting long-lived local state there means (a) local connection state dies when
+the editor closes, and (b) two editor windows can race over the same key and
+repo mapping files. Keep local state in a single per-machine daemon; let MCP
 processes be thin clients to it. **We already have that daemon — keep it,
 shrink it to data-plane-only.**
 
@@ -109,13 +110,10 @@ wires the services below. Here is where each lands.
 
 | Component | Module today | Why it's local |
 |---|---|---|
-| **rsync transfer** | [`execution/ssh_rsync.py`](../backend/execution/ssh_rsync.py) | Reads/writes the local experiment folder; spawns `rsync`/`ssh`. |
-| **Auto-sync poller + per-experiment sync locks** | `services/sandboxes.py` `_auto_sync_loop` / `_sync_row` / `_push_initial_files` | Drives the local rsync; must be near the files. |
-| **Local sync directory layout** | [`execution/sync_dirs.py`](../backend/execution/sync_dirs.py) `local_experiment_dir` | `experiments/<id>/` is a local path. |
+| **Local retained-output target layout** | [`execution/sync_dirs.py`](../backend/execution/sync_dirs.py) path helpers | `experiments/<id>/` is a local path. |
 | **SSH keypair material on disk** | `services/sandbox_conn.py` `SandboxConnFiles.ensure_keypair` (ssh-keygen → `.research_plugin/sandboxes/keys`) | Private key stays on the user's machine (see credential model below). |
 | **Sandbox dispatcher + conn files** | `services/sandbox_conn.py` (`.research_plugin/sbx`, `conn/<id>`) | Local helper the agent shells out to. |
 | **Resource file observation** | `services/resources.py` `register_file` (single `path` or `paths` batch) | Hashes/reads **repo-relative local files**; only the resulting metadata is cloud state. |
-| **Local rsync binary resolution** | `execution/ssh_rsync.py` `resolve_rsync` | Inspects the local machine's installed rsync (the reason this doc's sibling fix exists). |
 | **Daemon discovery marker** | `daemon_marker.py`, `.research_plugin/daemon.json` | Local process discovery. |
 
 ### Splits across the seam
@@ -123,12 +121,13 @@ wires the services below. Here is where each lands.
 A few responsibilities are genuinely two-sided. The **bytes/IO half is local;
 the record/metadata half is cloud.**
 
-- **Sandbox sync.** Cloud sets up the remote `/workspace/<name>` contract and
-  tracks status/last-sync metadata; the local daemon moves the bytes.
+- **Sandbox output handoff.** Cloud sets up the remote `/workspace/<name>`
+  contract and returns SSH details; the agent explicitly copies retained light
+  files back before release, or uploads heavy artifacts to durable storage.
 - **Resources.** Local daemon reads the file and computes the version hash;
   cloud stores the resource record and immutable version history.
 - **SSH access.** Cloud authorizes access and owns credential validity/rotation;
-  local daemon holds the private key and runs the `ssh`/`rsync` client.
+  local daemon holds the private key and renders local SSH command material.
 - **Tenancy routing.** Today [`project_router.py`](../backend/daemon/project_router.py)
   multiplexes a shared daemon into per-`repo_root` app instances — a local,
   directory-keyed primitive. In production, **tenancy (user/project) moves to
@@ -138,37 +137,36 @@ the record/metadata half is cloud.**
 
 ## The seam: contracts between cloud and local
 
-### Sync session (cloud → local)
+### Sandbox SSH handoff (cloud to local)
 
-When the agent procures a sandbox, the cloud returns a **sync session** the
-local daemon acts on:
+When the agent procures a sandbox, the cloud returns SSH details and remote
+workspace paths. The local daemon contributes the local key path and command
+wrapper so the agent can drive the VM directly:
 
 ```jsonc
 {
   "experiment_id": "...",
+  "sandbox_uid": "...",
   "sandbox_id": "...",
   "ssh": { "host": "...", "port": 22, "user": "root",
-           "credential": "<short-lived cert or ephemeral key ref>" },
+           "key_path": "~/.research_plugin/...",
+           "command": ".research_plugin/sbx ..." },
   "remote": { "experiment_dir": "/workspace/<name>",
-              "data_dir": "/workspace/data",
-              "artifacts_to_keep": "/workspace/<name>/artifacts_to_keep" },
-  "lease": { "id": "...", "ttl_seconds": 120, "holder_client_id": "..." },
-  "direction_policy": {
-    // per-subtree authority — closes the --delete footgun
-    "experiment_dir": "remote_authoritative_for_results",
-    "artifacts_to_keep": "remote_append_only"
-  }
+              "data_dir": "/workspace/data" },
+  "local": { "retained_output_dir": "experiments/<name>/" }
 }
 ```
 
-### Lease authority lives in the cloud
+There is no daemon-owned file-transfer lease. Output handoff is explicit: the
+agent copies selected light files back over SSH before release, and uses durable
+storage tools for large artifacts.
 
-The lease is the **only** safe place to coordinate multiple local clients,
-because the cloud is the only thing all of them can see. A lease is
-`{experiment_id, holder_client_id, ttl}`, renewed by the holding daemon. If the
-daemon dies the lease expires and another client can claim it. **Do not attempt
-peer-to-peer lease coordination between local processes.** This directly
-addresses the "two local clients fight over one experiment" problem.
+### Local command material lives in the daemon
+
+The daemon is the only long-lived process that should own local SSH key paths,
+connection wrappers, and repo/project links. MCP proxies remain stateless and ask
+the daemon for this enrichment when `sandbox.request` or `sandbox.get` needs to
+return an actionable command.
 
 ### MCP tool surface
 
@@ -184,9 +182,8 @@ copied explicitly by the agent over SSH or uploaded to durable storage.
 
 1. **Production auth.** The current private operator-run deployment has no user
    auth. Before broad exposure, the local daemon must authenticate to the cloud
-   *as the user* so ownership checks mean anything. Device-flow OAuth → local
-   refresh token → exchange for short-lived sync-session credentials is the
-   expected shape.
+   *as the user* so ownership checks mean anything. Device-flow OAuth with a
+   local refresh token is the expected shape.
 
 2. **SSH credential model.** Prefer an **SSH CA**: the local daemon generates a
    keypair (private key never leaves the machine), the cloud signs the public
@@ -206,7 +203,7 @@ copied explicitly by the agent over SSH or uploaded to durable storage.
      UX. Pick deliberately.
 
 5. **Cleanup jobs for abandoned VMs.** With provisioning server-side, the cloud
-   must reap VMs whose lease/owner has gone away (today reconciliation is
+   must reap VMs whose owner/session has gone away (today reconciliation is
    best-effort and local).
 
 6. **Per-sandbox isolation.** One namespace per user/experiment; per-sandbox SSH
@@ -224,11 +221,12 @@ stays the default with relay as a fallback transport.
 
 ## Suggested migration path (incremental)
 
-This is evolution, not a rewrite — the local daemon already owns sync.
+This is evolution, not a rewrite — the local daemon already owns local data-plane
+state.
 
 1. **Carve the seam in-process first.** Split `SandboxService` into a
-   control half (lifecycle records, provisioning) and a data half (sync worker,
-   keys, local dirs) behind an interface, while both still run locally. No
+   control half (lifecycle records, provisioning) and a data half (keys,
+   local dirs, resource observation) behind an interface, while both still run locally. No
    behavior change; just a clean boundary.
 2. **Define the sandbox identity and attachment contract** so project sandboxes
    can be standalone, attached to experiments, or reattached without VM churn.
@@ -238,14 +236,12 @@ This is evolution, not a rewrite — the local daemon already owns sync.
 4. **Ship the local data-plane daemon** as the slimmed-down successor to
    `backend.transport.http_server`: data half only, registering with the cloud
    control plane.
-5. **Keep file handoff explicit**: no automatic daemon mirror or sync lease.
+5. **Keep file handoff explicit**: no automatic daemon copy job or transfer lease.
 
 ## Open decisions
 
 - SSH CA vs. ephemeral-keypair-per-session (recommend CA).
 - Platform-owned vs. bring-your-own provider credentials.
-- Does the local daemon run continuously (background sync even with no agent
-  session) or only while an agent is connected?
 - Where the activity/audit log lives — cloud-only, or cloud with a local mirror
   for offline debugging.
 - One local daemon per machine vs. per-user on shared machines.
@@ -255,6 +251,4 @@ This is evolution, not a rewrite — the local daemon already owns sync.
 - [`STARTUP_CHEATSHEET.md`](STARTUP_CHEATSHEET.md) — current process topology
   (daemon vs. MCP proxy).
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — current component architecture.
-- [`execution/ssh_rsync.py`](../backend/execution/ssh_rsync.py) — the local
-  rsync transfer that anchors the data plane.
 </content>

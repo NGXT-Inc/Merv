@@ -550,12 +550,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
 .sync-dot.paused { background: var(--faint); box-shadow: none; }
 .sync-dot.stale { background: var(--qualifies); box-shadow: 0 0 0 2px rgba(var(--qualifies-rgb), 0.15); }
 
-/* Volume-sync indicator — backend (local repo ↔ Modal volume) sync state.
-   Sits in the sidebar foot above the UI-feed indicator. The two are visually
-   related (both about "syncing"), but conceptually different layers, so we
-   give the volume one a small bordered card to set it apart while keeping
-   the typography hierarchy compatible with the rest of the sidebar foot. */
-.vsync {
+/* Sandbox retention card: active VMs whose outputs must be retained manually. */
+.retention {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -566,34 +562,34 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   font-size: var(--text-xs);
   color: var(--muted);
 }
-.vsync-row {
+.retention-row {
   display: flex;
   align-items: center;
   gap: 6px;
   font-variant-numeric: tabular-nums;
   min-width: 0;
 }
-.vsync-row--head { gap: 7px; }
-.vsync-row--head .vsync-status { margin-left: auto; }
-.vsync-title {
+.retention-row--head { gap: 7px; }
+.retention-row--head .retention-status { margin-left: auto; }
+.retention-title {
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 10px;
 }
-.vsync-status {
+.retention-status {
   color: var(--text);
   font-size: var(--text-xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.vsync-row--last { color: var(--faint); }
-.vsync-row--faint { color: var(--faint); font-style: italic; }
-.vsync-row--hint { color: var(--faint); font-size: 10px; font-style: italic; }
+.retention-row--last { color: var(--faint); }
+.retention-row--faint { color: var(--faint); font-style: italic; }
+.retention-row--hint { color: var(--faint); font-size: 10px; font-style: italic; }
 
-.vsync-dot {
+.retention-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -601,24 +597,16 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   background: var(--supports);
   box-shadow: 0 0 0 2px rgba(var(--supports-rgb), 0.15);
 }
-.vsync-dot--idle { background: var(--supports); box-shadow: 0 0 0 2px rgba(var(--supports-rgb), 0.15); }
-.vsync-dot--pending { background: var(--faint); box-shadow: none; }
-.vsync-dot--error {
+.retention-dot--idle { background: var(--supports); box-shadow: 0 0 0 2px rgba(var(--supports-rgb), 0.15); }
+.retention-dot--pending { background: var(--faint); box-shadow: none; }
+.retention-dot--error {
   background: var(--refutes);
   box-shadow: 0 0 0 2px rgba(var(--refutes-rgb), 0.18);
 }
-/* Sync deferred because an active job holds the volume. Neutral / muted so it
-   reads as "nothing wrong, just waiting" — distinct from --pending (bootstrap)
-   and --conflict (action required). */
 
-
-/* The head row doubles as a "open details" button. Keep it visually identical
-   to the old static row; reveal interactivity only on hover. */
-
-/* Per-experiment sync rows in the sidebar foot. One row per active sandbox;
-   each opens the details modal. */
-.vsync-exp-list { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
-.vsync-exp-row {
+/* Per-experiment retention rows in the sidebar foot. */
+.retention-exp-list { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+.retention-exp-row {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -634,9 +622,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   cursor: pointer;
   min-width: 0;
 }
-.vsync-exp-row:hover { background: var(--bg-soft); }
-.vsync-exp-row:focus-visible { outline: 2px solid var(--active); outline-offset: 1px; }
-.vsync-exp-title {
+.retention-exp-row:hover { background: var(--bg-soft); }
+.retention-exp-row:focus-visible { outline: 2px solid var(--active); outline-offset: 1px; }
+.retention-exp-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -645,7 +633,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   font-size: var(--text-xs);
   color: var(--text);
 }
-.vsync-exp-meta {
+.retention-exp-meta {
   flex: none;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -653,8 +641,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   font-variant-numeric: tabular-nums;
 }
 
-/* ===== Sandbox sync details modal (vsdm) ============================ */
-.vsdm-overlay {
+/* ===== Sandbox retention details modal ============================== */
+.retention-modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -665,7 +653,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   background: var(--scrim);
   backdrop-filter: blur(1.5px);
 }
-.vsdm {
+.retention-modal {
   /* Plain block + scroll, NOT a flex column: a column flexbox that overflows
      max-height shrinks its children, and the file/history tables (overflow:hidden)
      would collapse to their borders. Normal flow + overflow-y keeps them intact. */
@@ -682,14 +670,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   color: var(--text);
   font-size: var(--text-sm);
 }
-.vsdm-head {
+.retention-modal-head {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.vsdm-head-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.vsdm-title { font-size: var(--text-md); font-weight: 600; margin: 0; }
-.vsdm-close {
+.retention-modal-head-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.retention-modal-title { font-size: var(--text-md); font-weight: 600; margin: 0; }
+.retention-modal-close {
   margin-left: auto;
   flex: none;
   width: 24px;
@@ -704,9 +692,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   font-size: 13px;
   cursor: pointer;
 }
-.vsdm-close:hover { background: var(--bg-soft); border-color: var(--line); color: var(--text); }
+.retention-modal-close:hover { background: var(--bg-soft); border-color: var(--line); color: var(--text); }
 
-.vsdm-pill {
+.retention-modal-pill {
   flex: none;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
@@ -716,14 +704,14 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   letter-spacing: 0.05em;
   border: 1px solid transparent;
 }
-.vsdm-pill--idle    { background: rgba(var(--supports-rgb), 0.10);  color: var(--supports);  border-color: rgba(var(--supports-rgb), 0.25); }
-.vsdm-pill--active  { background: rgba(var(--active-rgb), 0.10);  color: var(--active);    border-color: rgba(var(--active-rgb), 0.25); }
-.vsdm-pill--error   { background: rgba(var(--refutes-rgb), 0.10);  color: var(--refutes);   border-color: rgba(var(--refutes-rgb), 0.25); }
-.vsdm-pill--pending { background: var(--bg-soft);           color: var(--faint);     border-color: var(--line); }
+.retention-modal-pill--idle    { background: rgba(var(--supports-rgb), 0.10);  color: var(--supports);  border-color: rgba(var(--supports-rgb), 0.25); }
+.retention-modal-pill--active  { background: rgba(var(--active-rgb), 0.10);  color: var(--active);    border-color: rgba(var(--active-rgb), 0.25); }
+.retention-modal-pill--error   { background: rgba(var(--refutes-rgb), 0.10);  color: var(--refutes);   border-color: rgba(var(--refutes-rgb), 0.25); }
+.retention-modal-pill--pending { background: var(--bg-soft);           color: var(--faint);     border-color: var(--line); }
 
-/* Minimal variant — signal only: status, dir mapping, sync state, errors. */
-.vsdm--min { max-width: 440px; padding: 16px 18px 14px; }
-.vsdm-sub {
+/* Minimal variant: status, retention paths, sandbox id. */
+.retention-modal--min { max-width: 440px; padding: 16px 18px 14px; }
+.retention-modal-sub {
   margin: 8px 0 0;
   font-size: var(--text-xs);
   color: var(--muted);
@@ -731,8 +719,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.vsdm--min .vsdm-dirs { margin-top: 13px; }
-.vsdm-status {
+.retention-modal--min .retention-modal-dirs { margin-top: 13px; }
+.retention-modal-status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -741,30 +729,7 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.vsdm-status .vsdm-dot-sep { margin: 0 6px; }
-.vsdm-status-btn { margin-left: auto; flex: none; }
-.vsdm-err {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  margin-top: 10px;
-  padding: 7px 9px;
-  border-radius: var(--radius-md);
-  background: rgba(var(--refutes-rgb), 0.07);
-  border: 1px solid rgba(var(--refutes-rgb), 0.22);
-  font-size: 11px;
-  line-height: var(--leading-tight);
-}
-.vsdm-err-tag { flex: none; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; color: var(--refutes); }
-.vsdm-err-msg {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--refutes);
-  font-family: var(--font-mono);
-}
-.vsdm-min-foot {
+.retention-modal-min-foot {
   display: flex;
   align-items: center;
   margin-top: 13px;
@@ -774,13 +739,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   color: var(--faint);
 }
 
-
-.vsdm-dot-sep { color: var(--faint); }
-
-
-/* Directory mapping cards — remote ↔ local for synced / unsynced / keep. */
-.vsdm-dirs { display: flex; flex-direction: column; gap: 6px; }
-.vsdm-dir {
+/* Directory cards for remote workspace, local checkout target, and durable storage. */
+.retention-modal-dirs { display: flex; flex-direction: column; gap: 6px; }
+.retention-modal-dir {
   display: flex;
   gap: 8px;
   align-items: flex-start;
@@ -789,16 +750,19 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   border-radius: var(--radius-md);
   background: var(--bg);
 }
-.vsdm-dir .vsdm-chip { margin-top: 1px; }
-.vsdm-dir-paths { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
-.vsdm-dir-remote,
-.vsdm-dir-local { font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vsdm-dir-remote { font-size: 11px; color: var(--text); }
-.vsdm-dir-local { font-size: 10.5px; color: var(--muted); }
-.vsdm-dir-local::before { content: "↔ "; color: var(--faint); }
+.retention-modal-dir .retention-modal-chip { margin-top: 1px; }
+.retention-modal-dir-paths { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.retention-modal-dir-path {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text);
+}
 
 
-.vsdm-chip {
+.retention-modal-chip {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -809,9 +773,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: inher
   border: 1px solid transparent;
   white-space: nowrap;
 }
-.vsdm-chip--push     { background: rgba(var(--active-rgb), 0.10); color: var(--active);    border-color: rgba(var(--active-rgb), 0.22); }
-.vsdm-chip--pull     { background: rgba(var(--supports-rgb), 0.10); color: var(--supports);  border-color: rgba(var(--supports-rgb), 0.22); }
-.vsdm-chip--del      { background: rgba(var(--refutes-rgb), 0.08); color: var(--refutes);   border-color: rgba(var(--refutes-rgb), 0.22); }
+.retention-modal-chip--workspace { background: rgba(var(--active-rgb), 0.10); color: var(--active); border-color: rgba(var(--active-rgb), 0.22); }
+.retention-modal-chip--local     { background: rgba(var(--supports-rgb), 0.10); color: var(--supports); border-color: rgba(var(--supports-rgb), 0.22); }
+.retention-modal-chip--scratch   { background: rgba(var(--qualifies-rgb), 0.10); color: var(--qualifies); border-color: rgba(var(--qualifies-rgb), 0.22); }
 
 
 .shell-main { flex: 1; min-width: 0; }

@@ -1,8 +1,8 @@
 """Lambda Labs VM sandbox backend.
 
 This backend provisions a Lambda Cloud VM and returns SSH details to the agent.
-File sync is handled by SandboxService through provider-neutral SSH rsync; this
-backend only prepares a normal developer shell with the tools agents expect.
+Output retention is explicit over SSH; this backend only prepares a normal
+developer shell with the tools agents expect.
 """
 
 from __future__ import annotations

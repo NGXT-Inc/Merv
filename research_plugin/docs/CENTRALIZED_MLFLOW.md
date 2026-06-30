@@ -93,6 +93,11 @@ central MLflow block:
 
 Agents should use those env vars for quantitative experiments, whether running
 locally or inside a sandbox. They should not start MLflow servers in sandboxes.
+The plugin does not rely on ambient shell state for this: a local agent or an
+SSH-driven sandbox run must read this block from MCP and set the returned env
+vars on the command that starts training. If `MLFLOW_TRACKING_URI` is absent
+from the current shell, call `experiment.mlflow`; do not fall back to a
+file-backed local MLflow store for a Research Plugin experiment.
 
 ## Metrics
 

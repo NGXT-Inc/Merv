@@ -279,6 +279,66 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
 
         self.assertEqual(captured["arguments"]["project_id"], "proj_authoritative")
 
+    def test_project_current_reports_unlinked_folder_without_cloud_lookup(self) -> None:
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                daemon_url="http://daemon.invalid",
+                control_url="http://control.invalid",
+            )
+        )
+        proxy._resolve_project_id = lambda: None  # type: ignore[method-assign]
+
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "project.current", "arguments": {}},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        current = response["result"]["structuredContent"]
+        self.assertFalse(current["exists"])
+        self.assertIsNone(current["project"])
+        self.assertIn("link --project-id", current["hint"])
+        self.assertEqual(current["repo_root"], str(self.repo))
+
+    def test_project_current_fetches_linked_cloud_project_by_id(self) -> None:
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                daemon_url="http://daemon.invalid",
+                control_url="http://control.invalid",
+            )
+        )
+        proxy._resolve_project_id = lambda: "proj_linked"  # type: ignore[method-assign]
+        captured: dict = {}
+
+        def _fake_cloud(**kwargs):  # noqa: ANN003
+            captured.update(kwargs)
+            return {"id": kwargs["arguments"]["project_id"], "name": "Linked"}
+
+        proxy._call_cloud = _fake_cloud  # type: ignore[method-assign]
+
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "project.current", "arguments": {}},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(captured["name"], "project.get")
+        self.assertEqual(captured["arguments"], {"project_id": "proj_linked"})
+        current = response["result"]["structuredContent"]
+        self.assertTrue(current["exists"])
+        self.assertEqual(current["project"]["id"], "proj_linked")
+        self.assertEqual(current["project"]["repo_root"], str(self.repo))
+
     def test_split_proxy_strips_project_id_from_daemon_calls(self) -> None:
         proxy = HttpProxyMcpServer(
             config=ProxyConfig(

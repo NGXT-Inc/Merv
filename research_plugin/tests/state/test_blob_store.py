@@ -234,6 +234,29 @@ class AssociateByteCaptureTest(unittest.TestCase):
             self.app.blobs.get(namespace=self.project_id, sha256=sha), content
         )
 
+    def test_plan_markdown_figures_are_submitted_with_plan(self) -> None:
+        (self.repo / "experiments" / "exp-1" / "figures").mkdir(parents=True)
+        (self.repo / "experiments" / "exp-1" / "figures" / "diagram.png").write_bytes(
+            b"\x89PNG\r\n\x1a\nplan"
+        )
+        (self.repo / "experiments" / "exp-1" / "plan.md").write_text(
+            "## Summary\nPlan with an architecture diagram.\n\n"
+            "![architecture](figures/diagram.png)\n\n"
+            "## Objective & hypothesis\nTest the plan figure capture path.\n\n"
+            "## Evaluation\nSuccess means the submitted figure bytes are retrievable.\n"
+        )
+
+        resource = self._associate(path="experiments/exp-1/plan.md", role="plan")
+        version_id = resource["current_version_id"]
+
+        self.assertEqual(
+            self.app.resources.submitted_figure(
+                version_id=version_id,
+                link_path="figures/diagram.png",
+            ),
+            b"\x89PNG\r\n\x1a\nplan",
+        )
+
     def test_result_role_associate_stores_no_blob(self) -> None:
         content = b"big result payload"
         (self.repo / "out.txt").write_bytes(content)

@@ -5,9 +5,9 @@ import { CLIENT_VERSION } from '../api';
 import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
-import ExperimentSyncIndicator from './ExperimentSyncIndicator';
+import SandboxRetentionIndicator from './SandboxRetentionIndicator';
 
-function fmtSyncedAgo(ms) {
+function fmtUpdatedAgo(ms) {
   if (!ms) return 'never';
   const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (s < 5) return 'just now';
@@ -57,7 +57,7 @@ export default function Sidebar({ onRefresh }) {
   }, [onResourcesPath]);
 
   const dotClass = lastSyncError ? 'sync-dot stale' : (isPolling ? 'sync-dot' : 'sync-dot paused');
-  const syncLabel = lastSyncError ? 'stale' : (isPolling ? 'live' : 'paused');
+  const pollLabel = lastSyncError ? 'stale' : (isPolling ? 'live' : 'paused');
 
   const resourcesCount = stats.resources ?? home?.resources?.length ?? 0;
   // Live backend version from the /api/meta handshake; fall back to the UI's
@@ -158,10 +158,10 @@ export default function Sidebar({ onRefresh }) {
       </NavLink>
 
       <div className="sidebar-foot">
-        <ExperimentSyncIndicator />
+        <SandboxRetentionIndicator />
         <div className="sync-indicator">
           <span className={dotClass} />
-          <span>ui {syncLabel} · synced {fmtSyncedAgo(lastSyncedAt)}</span>
+          <span>ui {pollLabel} · updated {fmtUpdatedAgo(lastSyncedAt)}</span>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <button className="btn btn--ghost btn--sm" onClick={onRefresh}>Refresh now</button>

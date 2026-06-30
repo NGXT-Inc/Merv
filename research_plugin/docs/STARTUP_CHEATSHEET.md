@@ -207,8 +207,8 @@ Also check sandbox.health so we know whether the configured execution backend is
 available.
 
 In project-local MCP, the proxy supplies project scope from the current repo.
-Treat local repo files as resources only after syncing/registering them through
-MCP.
+Treat local repo files as resources only after registering and associating them
+through MCP.
 ```
 
 For an existing project:
@@ -223,10 +223,11 @@ For an experiment run:
 
 ```text
 Use Research Plugin with project_id proj_...
-Create or select the experiment, write/sync required plan resources, submit the
-design for review, launch a read-only design reviewer agent, and submit the
-review back to MCP. If approved, request a sandbox and run the experiment over SSH.
-After execution, sync changed output files as resources and run full experiment
+Create or select the experiment, write and associate required plan resources,
+submit the design for review, launch a read-only design reviewer agent, and
+submit the review back to MCP. If approved, request a sandbox and run the
+experiment over SSH. After execution, copy retained sandbox outputs back to the
+local checkout, register/associate them as resources, and run full experiment
 review before completing the experiment.
 ```
 
@@ -263,7 +264,8 @@ Additional, for the Lambda Labs backend (daemon env only):
 - `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`, for example `gpu_1x_a10`
 
 Thunder and Lambda provisioning create SSH-ready VMs with the agent shell/ML
-tooling baseline. Repo sync is provider-neutral SSH rsync.
+tooling baseline. Output handoff is explicit: copy retained light files back
+over SSH before release, and use durable storage for heavy artifacts.
 
 Recommended while debugging:
 

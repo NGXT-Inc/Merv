@@ -4,7 +4,7 @@ Builds the multi-tenant control plane: record services + workflow + reviews +
 sandbox lifecycle/provisioner/reaper + blob store + quotas.
 Store from build_state_store (Postgres in hosted/no-repo-root control; SQLite
 only when an explicit dev/test repo_root is supplied). Blob store from
-build_blob_store. NO DataPlaneWorker rsync runs here — the cloud never touches
+build_blob_store. NO DataPlaneWorker file IO runs here — the cloud never touches
 a user checkout; data-plane tool calls are
 routed to the daemon by the proxy. The control plane enqueues data-plane work to
 the daemon via the HttpTaskQueue and serves the daemon's task long-poll over
@@ -65,7 +65,7 @@ class ControlPlaneServer:
 
     Holds the app (record services), the HttpTaskQueue (the cloud→daemon task
     channel), and the FastAPI app that serves /mcp/* + /api/* + the daemon
-    task/sync-target endpoints. ``fastapi_app`` is what uvicorn serves.
+    task endpoints. ``fastapi_app`` is what uvicorn serves.
     """
 
     def __init__(

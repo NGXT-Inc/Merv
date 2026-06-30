@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -24,6 +26,7 @@ from backend.config import (
     resolve_daemon_state_dir,
 )
 from backend.dataplane.project_links import ProjectLinks
+import mcp_server.__main__ as mcp_entrypoint
 from mcp_server.__main__ import _repo_is_linked
 
 
@@ -140,6 +143,51 @@ class ClientConfigTest(unittest.TestCase):
             config = {"daemon_state_dir": str(root)}
             self.assertTrue(_repo_is_linked(config=config, repo_root=linked))
             self.assertFalse(_repo_is_linked(config=config, repo_root=unlinked))
+
+    def test_mcp_launcher_uses_machine_transport_config_for_unlinked_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "client.json"
+            unlinked = root / "unlinked"
+            unlinked.mkdir()
+            config = configure_client(
+                config_path=config_path,
+                control_url="https://control.example.test",
+                daemon_url="http://127.0.0.1:18787",
+            )
+            Path(config["daemon_secret_file"]).write_text("daemon-secret", encoding="utf-8")
+            captured = {}
+
+            class FakeProxy:
+                def __init__(self, *, config):
+                    captured["config"] = config
+
+                def serve(self) -> None:
+                    return None
+
+            env = {
+                CLIENT_CONFIG_ENV_VAR: str(config_path),
+                "RESEARCH_PLUGIN_CONTROL_URL": "",
+                "RESEARCH_PLUGIN_DAEMON_SECRET_FILE": "",
+            }
+            argv = [
+                "research-plugin-mcp",
+                "--repo",
+                str(unlinked),
+                "--daemon-url",
+                "http://127.0.0.1:18787",
+            ]
+            with (
+                patch.dict(os.environ, env, clear=False),
+                patch.object(sys, "argv", argv),
+                patch.object(mcp_entrypoint, "HttpProxyMcpServer", FakeProxy),
+            ):
+                self.assertEqual(mcp_entrypoint.main(), 0)
+
+            proxy_config = captured["config"]
+            self.assertEqual(proxy_config.daemon_url, "http://127.0.0.1:18787")
+            self.assertEqual(proxy_config.control_url, "https://control.example.test")
+            self.assertEqual(proxy_config.daemon_secret, "daemon-secret")
 
     def test_stop_ignores_pid_that_is_not_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

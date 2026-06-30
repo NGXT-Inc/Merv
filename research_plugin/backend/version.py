@@ -9,7 +9,7 @@ Floors are plain constants bumped by hand when a wire change makes an older
 client unsafe to serve. Within a major version the contract is additive-only
 (plan §4 Phase 9), so the floor moves rarely; it exists so a breaking change has
 a refusal mechanism instead of a confusing partial failure. The header is the
-shared client-version channel for BOTH the daemon (its long-poll/sync-target
+    shared client-version channel for BOTH the daemon (its long-poll task
 calls) and the stdio proxy (its /mcp + /api forwards); they send the same field.
 
 Kept tiny and dependency-free so the stdlib-only proxy could read it if it ever
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from . import __version__
 
-# The header clients stamp their version on (daemon long-poll + sync-target
+# The header clients stamp their version on (daemon long-poll task
 # calls, stdio proxy forwards). Missing header is TOLERATED (documented choice):
 # a pre-Phase-9 client predates the handshake, and refusing it would strand
 # in-flight upgrades; only an explicitly-too-old version is rejected. Once every

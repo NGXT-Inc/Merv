@@ -55,6 +55,7 @@ from ..state.activity import effective_source, is_event_ok
 
 
 JsonBody = dict[str, Any] | None
+UI_CORS_HEADERS = ["Content-Type", "Accept", "Authorization", "X-RP-Client-Version"]
 
 
 def _activity_event_project_id(event: dict[str, Any]) -> str | None:
@@ -1079,16 +1080,16 @@ def create_fastapi_app(
             CORSMiddleware,
             allow_origins=allowed_origins or [],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version"],
+            allow_headers=UI_CORS_HEADERS,
         )
     else:
         http.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            # The client always stamps X-RP-Client-Version; include it so the
-            # documented cross-origin dev override passes preflight.
-            allow_headers=["Content-Type", "Accept", "X-RP-Client-Version"],
+            # The hosted UI sends Authorization; every UI request also stamps
+            # X-RP-Client-Version. Include both so dev overrides pass preflight.
+            allow_headers=UI_CORS_HEADERS,
         )
 
     @http.middleware("http")

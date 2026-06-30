@@ -265,8 +265,6 @@ export const api = {
   // dashboard_experiment_url, metrics:{...results_metrics...}}] }.
   getMlflowOverview: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/mlflow`),
-  syncSandbox: (pid, eid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/sandbox/sync`, { method: 'POST' }),
   releaseSandbox: (pid, eid, { sandboxUid = null } = {}) =>
     request(sandboxPath(pid, eid, sandboxUid, '/release'), { method: 'POST' }),
 

@@ -5,7 +5,6 @@ import FileRenderer from './FileRenderer';
 import ExperimentReviewStepper from './ExperimentReviewStepper';
 import ContentUnavailable from './ContentUnavailable';
 import { isMarkdown } from '../utils/format';
-import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 
 /**
  * ReportSpotlight — the results artifact.
@@ -16,9 +15,11 @@ import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjec
  * treatment as PlanSpotlight: compact header bar (status + path + size +
  * toggle) above the rendered body.
  *
- * The body renders inline markdown — prose and GFM metrics tables. In local
- * mode, relative image links resolve through the resource file endpoint's
- * `rel` parameter so PNGs saved next to the report display inline.
+ * The body renders inline markdown — prose and GFM metrics tables. Relative
+ * image links resolve through the resource file endpoint's `rel` parameter, so
+ * figures submitted with the report display inline in any mode (the backend
+ * serves them from the blob store); a link never submitted falls back to a
+ * "figure not available" placeholder.
  */
 export default function ReportSpotlight({
   projectId,
@@ -26,7 +27,6 @@ export default function ReportSpotlight({
   experimentReviews,
   experimentStatus,
 }) {
-  const hasLocalDataPlane = useProjectStore(selectHasLocalDataPlaneHttp);
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -109,11 +109,7 @@ export default function ReportSpotlight({
             ) : isMarkdown(reportResource.path) ? (
               <MarkdownView
                 text={content.content ?? ''}
-                resolveImageSrc={
-                  hasLocalDataPlane
-                    ? (src) => api.resourceFileUrl(projectId, reportResource.id, src)
-                    : null
-                }
+                resolveImageSrc={(src) => api.resourceFileUrl(projectId, reportResource.id, src)}
               />
             ) : (
               <FileRenderer text={content.content ?? ''} path={reportResource.path} />

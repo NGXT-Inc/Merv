@@ -6,7 +6,7 @@ process roles selected by ``RESEARCH_PLUGIN_MODE``:
 - ``local``  — today's topology: one process binds the control plane and the
   data plane in-process (default, and the only mode implemented so far).
 - ``control`` — cloud control plane (multi-tenant records, gates, lifecycle).
-- ``daemon`` — slim local data-plane daemon (rsync, keys, file observation).
+- ``daemon`` — slim local data-plane daemon (keys, file observation, SSH command material).
 
 Mode resolution is fail-fast: an unknown value refuses to start rather than
 silently running in the wrong topology. All later config (DB URLs, blob

@@ -14,10 +14,10 @@ import { isMarkdown } from '../utils/format';
  * Falls back to a plain markdown / file render when the plan doesn't follow the
  * schema (legacy freeform plans, or non-markdown files) — never hides content.
  */
-export default function PlanBody({ text, path }) {
+export default function PlanBody({ text, path, resolveImageSrc = null }) {
   const parsed = isMarkdown(path) ? parsePlanSections(text) : { structured: false };
   if (!parsed.structured) {
-    return <FileRenderer text={text} path={path} />;
+    return <FileRenderer text={text} path={path} resolveImageSrc={resolveImageSrc} />;
   }
 
   const { summary, spine, recommended, log } = parsed;
@@ -25,7 +25,7 @@ export default function PlanBody({ text, path }) {
     <div className="plan-structured">
       {summary && (
         <div className="plan-summary">
-          <MarkdownView text={summary.body} />
+          <MarkdownView text={summary.body} resolveImageSrc={resolveImageSrc} />
         </div>
       )}
 
@@ -33,23 +33,23 @@ export default function PlanBody({ text, path }) {
         <section key={section.heading} className="plan-section plan-section--spine">
           <h3 className="plan-section-head">{section.heading}</h3>
           <div className="plan-section-body">
-            <MarkdownView text={section.body} />
+            <MarkdownView text={section.body} resolveImageSrc={resolveImageSrc} />
           </div>
         </section>
       ))}
 
       {recommended.map(section => (
-        <PlanDetails key={section.heading} section={section} />
+        <PlanDetails key={section.heading} section={section} resolveImageSrc={resolveImageSrc} />
       ))}
 
       {log.map(section => (
-        <PlanDetails key={section.heading} section={section} variant="log" />
+        <PlanDetails key={section.heading} section={section} variant="log" resolveImageSrc={resolveImageSrc} />
       ))}
     </div>
   );
 }
 
-function PlanDetails({ section, variant }) {
+function PlanDetails({ section, variant, resolveImageSrc }) {
   const empty = !section.body || !section.body.trim();
   return (
     <details className={`plan-section plan-section--details${variant ? ` plan-section--${variant}` : ''}`}>
@@ -59,7 +59,7 @@ function PlanDetails({ section, variant }) {
       </summary>
       {!empty && (
         <div className="plan-section-body">
-          <MarkdownView text={section.body} />
+          <MarkdownView text={section.body} resolveImageSrc={resolveImageSrc} />
         </div>
       )}
     </details>

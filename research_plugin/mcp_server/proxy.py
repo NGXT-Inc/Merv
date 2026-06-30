@@ -289,6 +289,8 @@ class HttpProxyMcpServer:
         if not self.config.split_mode:
             # Single upstream (local): everything to the daemon with repo_root.
             return self._call_daemon(name=name, arguments=arguments)
+        if name == "project.current":
+            return self._current_project()
         plane = self._plane_for(name=name)
         if plane == "control":
             return self._call_cloud(name=name, arguments=arguments)
@@ -390,6 +392,30 @@ class HttpProxyMcpServer:
                 "configured": self.config.split_mode,
                 **cloud_detail,
             },
+        }
+
+    def _current_project(self) -> dict[str, Any]:
+        """Resolve the current folder without sending repo_root to the cloud."""
+        project_id = self._resolve_project_id()
+        if not project_id:
+            return {
+                "exists": False,
+                "project": None,
+                "repo_root": str(self.config.repo_root),
+                "hint": (
+                    "No hosted Research Plugin project is linked for this folder. "
+                    "Ask the user which existing project_id to link, then run "
+                    "research-plugin-client link --project-id <project_id>; or ask "
+                    "for a project name and short summary, call project.create, "
+                    "then link the returned project_id."
+                ),
+            }
+        project = dict(self._call_cloud(name="project.get", arguments={"project_id": project_id}))
+        project["repo_root"] = str(self.config.repo_root)
+        return {
+            "exists": True,
+            "project": project,
+            "repo_root": str(self.config.repo_root),
         }
 
     def _probe(self, *, is_cloud: bool) -> tuple[bool, dict[str, Any]]:

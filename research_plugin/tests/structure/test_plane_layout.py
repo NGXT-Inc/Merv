@@ -861,6 +861,17 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                     f"{path.name} imports non-stdlib modules: {sorted(external)}",
                 )
 
+    def test_mcp_server_does_not_require_datetime_utc_alias(self) -> None:
+        # Codex may launch the stdio proxy with Apple CLT Python 3.9.
+        # datetime.UTC was added in 3.11, so proxy modules must use
+        # datetime.timezone.utc instead.
+        plugin_root = BACKEND_ROOT.parent
+        for path in sorted((plugin_root / "mcp_server").glob("*.py")):
+            with self.subTest(module=path.name):
+                source = path.read_text(encoding="utf-8")
+                self.assertNotIn("from datetime import UTC", source)
+                self.assertNotIn("datetime.UTC", source)
+
 
 if __name__ == "__main__":
     unittest.main()

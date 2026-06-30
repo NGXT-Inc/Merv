@@ -385,7 +385,7 @@ CREATE TABLE IF NOT EXISTS sandbox_attachments (
 );
 
 -- Figures submitted alongside a markdown gated artifact (cloud plan Phase 2):
--- when a report or reflection_doc (legacy synthesis_doc) is associated, each resolvable relative image
+-- when a plan, report, or reflection_doc (legacy synthesis_doc) is associated, each resolvable relative image
 -- link's bytes are captured to the blob store and recorded here, keyed by the
 -- artifact's pinned version. Markdown lints check THIS mapping (submitted
 -- figures), never the disk.

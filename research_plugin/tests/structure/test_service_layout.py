@@ -11,6 +11,7 @@ from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERV
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
+UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
     BACKEND_ROOT / "transport" / "admin_http.py",
     BACKEND_ROOT / "transport" / "daemon_http.py",
@@ -422,14 +423,30 @@ class ServiceLayoutTest(unittest.TestCase):
         daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
         daemon_source = daemon_mode.read_text(encoding="utf-8")
         local_source = _source("sandbox/sandbox_daemons.py")
+        http_source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(
+            encoding="utf-8"
+        )
+        api_source = (UI_SRC / "api.js").read_text(encoding="utf-8")
+        components = UI_SRC / "components"
 
         self.assertFalse((BACKEND_ROOT / "sandbox" / "sandbox_autosync.py").exists())
+        self.assertFalse((components / "ExperimentSyncIndicator.jsx").exists())
+        self.assertFalse((components / "ExperimentSyncDetailsModal.jsx").exists())
         for source in (daemon_source, local_source):
             self.assertNotIn("run_auto_sync_target", source)
             self.assertNotIn("_auto_sync_loop", source)
             self.assertNotIn("auto_sync_thread", source)
             self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", source)
             self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL", source)
+        for source in (http_source, api_source):
+            self.assertNotIn("/sandbox/sync", source)
+            self.assertNotIn("syncSandbox", source)
+        for path in components.glob("*.jsx"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("sandbox.rsynced", source)
+            self.assertNotIn("sandbox.synced", source)
+            self.assertNotIn("sandbox.rsync_error", source)
+            self.assertNotIn("initial_rsynchronized", source)
 
     def test_resource_service_records_observations_without_local_observer(self) -> None:
         source = _source("resources.py")

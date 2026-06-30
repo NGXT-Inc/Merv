@@ -11,11 +11,11 @@ mode is unaffected by everything here — it is the byte-identical default.
 
 `RESEARCH_PLUGIN_MODE` selects the process role (`backend/config.py`):
 
-| Mode | Role | Reaper | Auto-rsync | Console script |
+| Mode | Role | Reaper | Auto-copy | Console script |
 |---|---|---|---|---|
-| `local` (default) | both planes in one process | on | on | `research-plugin-http` |
+| `local` (default) | both planes in one process | on | off | `research-plugin-http` |
 | `control` | cloud control plane | on | off | `research-plugin-control` |
-| `daemon` | user-machine data plane | off | on | `research-plugin-daemon` |
+| `daemon` | user-machine data plane | off | off | `research-plugin-daemon` |
 
 Mode validation is fail-fast: a daemon without `RESEARCH_PLUGIN_CONTROL_URL`, or
 an unknown mode value, refuses to start.
@@ -83,9 +83,8 @@ runs four sweeps:
 1. **orphan-VM sweep** — reconcile running rows against the provider; terminate
    rows whose VM is gone.
 2. **blob TTL GC** — delete expired blobs across tenants.
-3. **lease-expiry sweep** — release abandoned sync leases.
-4. **stale `awaiting_initial_push` reap** — terminate billing VMs whose initial
-   push never completed past a deadline (a dead daemon mid-provision, risk 8).
+3. **stale-provision sweep** — fail or terminate provisioning rows whose setup
+   never reached a usable VM.
 
 Wire a managed cron / sidecar tick to **`POST /api/admin/cleanup`** on your
 cadence. The reaper thread (billing protection) IS owned and runs on its own

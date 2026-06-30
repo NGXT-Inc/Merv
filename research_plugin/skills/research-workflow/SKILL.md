@@ -148,14 +148,17 @@ mkdir -p "$RP_EXPERIMENT_DIR"/results "$RP_EXPERIMENT_DIR"/figures
 ```
 
 For local non-sandbox runs, call `experiment.mlflow` to get the central tracking
-URI, the `rp/<project>/<experiment>` name, and the env vars (the same block
-sandboxes export) and set them before the run. `experiment.transition` to
-`start_running` also returns that `mlflow` block. To review or compare runs
-across experiments, call `mlflow.traces` (pass `experiment_id` for one
-experiment's full curves), then plot the comparison yourself — a labeled figure
-you can analyze and post to the feed. Do not create a file-backed
-local MLflow store as the default tracking path for Research Plugin experiments.
-If MLflow is unavailable, say so in the report and still save compact result files.
+URI, the `rp/<project>/<experiment>` name, and the env vars, then set them in
+the shell command that runs training. A missing `MLFLOW_TRACKING_URI` in your
+current shell is not evidence that the backend lacks MLflow; fetch it with
+`experiment.mlflow`. Do not create a file-backed local MLflow store just
+because the shell env is empty. `experiment.transition` to `start_running`
+also returns that `mlflow` block. To review or compare runs across experiments,
+call `mlflow.traces` (pass `experiment_id` for one experiment's full curves),
+then plot the comparison yourself — a labeled figure you can analyze and post
+to the feed. Do not create a file-backed local MLflow store as the default
+tracking path for Research Plugin experiments. If MLflow is unavailable, say so
+in the report and still save compact result files.
 
 Do not make tracking stores the only submitted result. Save compact evidence
 under the experiment folder, especially `results/*.json`, `results/*.csv`, and
@@ -184,15 +187,17 @@ repo root. Use `sandbox.terminal(experiment_id)` to inspect transcript output
 and command exit markers before re-running anything long.
 
 While the sandbox is live, make experiment-folder edits on the VM under
-`$RP_EXPERIMENT_DIR`. Nothing is mirrored automatically. Keep datasets, caches,
+`$RP_EXPERIMENT_DIR`. No files are copied automatically. Keep datasets, caches,
 temporary checkpoints, and other disposable bulk files under `$RP_DATASET_DIR`.
 Keep durable scripts, configs, notes, compact outputs, report figures/tables,
 and deliberate final artifacts under `$RP_EXPERIMENT_DIR` so you can copy them
 off deliberately before release.
 
 Use the centralized MLflow env from `experiment.mlflow` /
-`experiment.transition(start_running)` and save compact evidence under
-`$RP_EXPERIMENT_DIR`.
+`experiment.transition(start_running)` inside the SSH command that performs the
+run. Sandbox provisioning does not automatically export MLflow env vars, and
+sandbox responses are not the source of truth for tracking configuration. Save
+compact evidence under `$RP_EXPERIMENT_DIR`.
 
 Before registering or associating result resources, use `rsync` or `scp`
 yourself with the returned SSH details, or upload heavy artifacts with

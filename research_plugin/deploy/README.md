@@ -76,8 +76,9 @@ for dev/test compatibility.
 For MLflow, `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` alone is enough for the control
 plane to read metrics from an internal service, but it is not enough for agents
 to log runs. Set `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` to the public HTTPS URL
-reachable by remote sandboxes before expecting training code to emit MLflow
-runs.
+reachable by every run location — local client machines and remote sandboxes —
+before expecting training code to emit MLflow runs. Agents retrieve that URL
+through `experiment.mlflow`; sandbox provisioning does not inject it by itself.
 
 ## Operating
 

@@ -67,6 +67,23 @@ class LocalResourceArtifactReaderTest(unittest.TestCase):
             [("fig.png", b"png")],
         )
 
+    def test_collects_plan_markdown_figures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "experiments").mkdir()
+            (repo / "experiments" / "diagram.png").write_bytes(b"png")
+            (repo / "experiments" / "plan.md").write_text("![arch](diagram.png)\n")
+
+            observed = LocalResourceArtifactReader(repo_root=repo).read_for_association(
+                path="experiments/plan.md",
+                role="plan",
+            )
+
+        self.assertEqual(
+            [(figure["link_path"], figure["data"]) for figure in observed["figures"]],
+            [("diagram.png", b"png")],
+        )
+
     def test_rejects_absolute_markdown_figure_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

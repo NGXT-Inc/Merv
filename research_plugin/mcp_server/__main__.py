@@ -54,20 +54,24 @@ def main() -> int:
         client_config if _repo_is_linked(config=client_config, repo_root=repo_root) else {}
     )
     control_url = (
-        args.control_url or linked_client_config.get("control_url", "")
+        args.control_url
+        or linked_client_config.get("control_url", "")
+        or client_config.get("control_url", "")
     ).rstrip("/") or None
     daemon_url = (
         args.daemon_url
         or discover_daemon_url(repo_root=repo_root)
         or linked_client_config.get("daemon_url", "")
+        or client_config.get("daemon_url", "")
     )
     # The daemon loopback secret protects the local daemon API and is read from
     # a file so it never sits in a process arg that gets logged.
     daemon_secret_file = (
         os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
         or linked_client_config.get("daemon_secret_file")
+        or client_config.get("daemon_secret_file")
     )
-    if control_url and not daemon_secret_file:
+    if (daemon_url or control_url) and not daemon_secret_file:
         daemon_secret_file = str(Path.home() / ".research_plugin" / DAEMON_SECRET_FILE_NAME)
     daemon_secret = read_secret_file(daemon_secret_file, keys=("token", "secret"))
 

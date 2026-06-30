@@ -651,7 +651,7 @@ class ReviewService:
         if target_type == "experiment" and return_to == "running":
             pieces.append(
                 "Sent back to running: the approved plan stands; fix execution "
-                "and/or the conclusion, then sync results and resubmit"
+                "and/or the conclusion, then retain/associate results and resubmit"
             )
         if target_type == "synthesis":
             if return_to == "reflecting":

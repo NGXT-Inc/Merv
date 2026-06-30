@@ -219,7 +219,7 @@ def control_main() -> int:
     The console-script entry for the ``control`` extra and the deploy Dockerfile:
     forces control mode (RESEARCH_PLUGIN_MODE=control) so the image entrypoint
     never accidentally binds the local or daemon topology. Auth is ON, the
-    daemon task/sync-target endpoints are served, and the reaper runs. Cleanup
+    daemon task endpoints are served, and the reaper runs. Cleanup
     sweeps are BUILT (ControlPlaneServer.cleanup) but scheduling them is a
     documented seam — a managed cron / sidecar POSTs /api/admin/cleanup.
     """

@@ -109,7 +109,11 @@ export default function PlanSpotlight({
             ) : content.is_binary ? (
               <div className="empty">Binary plan file</div>
             ) : (
-              <PlanBody text={content.content ?? ''} path={planResource.path} />
+              <PlanBody
+                text={content.content ?? ''}
+                path={planResource.path}
+                resolveImageSrc={(src) => api.resourceFileUrl(projectId, planResource.id, src)}
+              />
             )
           ) : null}
         </div>

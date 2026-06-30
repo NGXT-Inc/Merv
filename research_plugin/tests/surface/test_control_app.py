@@ -108,6 +108,50 @@ class ControlAppTest(unittest.TestCase):
             self.assertIn("claim.create", names)
             self.assertNotIn("resource.register_file", names)
 
+    def test_hosted_control_cors_allows_authorized_ui_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app, _queue = build_control_app(
+                repo_root=root,
+                env=_mounted_mgmt_key_env(root),
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
+            client = TestClient(
+                create_fastapi_app(
+                    app=app,
+                    allowed_origins=["http://localhost:5173"],
+                    surface_policy=HttpSurfacePolicy.for_surface(
+                        restrict_cors=True,
+                        hosted_control=True,
+                        expose_local_data_plane=False,
+                    ),
+                ),
+                raise_server_exceptions=False,
+            )
+
+            preflight = client.options(
+                "/api/projects",
+                headers={
+                    "Origin": "http://localhost:5173",
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": (
+                        "authorization,x-rp-client-version,content-type"
+                    ),
+                },
+            )
+
+            self.assertEqual(preflight.status_code, 200, preflight.text)
+            self.assertEqual(
+                preflight.headers.get("access-control-allow-origin"),
+                "http://localhost:5173",
+            )
+            allowed_headers = preflight.headers.get(
+                "access-control-allow-headers", ""
+            ).lower()
+            self.assertIn("authorization", allowed_headers)
+            self.assertIn("x-rp-client-version", allowed_headers)
+
     def test_control_app_uses_mounted_management_key_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

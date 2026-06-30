@@ -20,11 +20,11 @@ ordinary files as part of normal development and experimentation.
 
 Those files are not research resources yet.
 
-A file becomes a research resource only when Codex runs sync/register through
-the MCP server and the server accepts it. At that point, MCP stores:
+A file becomes a research resource only when Codex registers it through the MCP
+server and the server accepts it. At that point, MCP stores:
 
 - which repo-relative file path is the resource
-- what file version was observed at sync time
+- what file version was observed at registration time
 - which experiment, claim, run, or review the file is associated with
 - what role the file played, such as plan, input, code, config, result, note, or
   model
@@ -121,8 +121,8 @@ version rows when a file is re-observed without semantic change.
 The MCP server should expose resource operations that are intentionally boring:
 
 - `resource.register_file(project_id, path?, paths?, kind, title?)` — register/observe a
-  single `path` or a `paths` batch (the latter folds in the old `observe_file` /
-  `sync_changed_files`)
+  single `path` or a `paths` batch (the latter folds in the old `observe_file`
+  helper)
 - `resource.associate(project_id, resource_id, target_type, target_id, role)`
 - `resource.delete(project_id, resource_id)`
 - `resource.list(project_id, filters?)`
@@ -139,8 +139,8 @@ agents do not need to guess.
 
 No `artifact_ref.create`, `resource_version.create`, `manifest.create`,
 `cache_resource`, `verify_artifact`, or `restore` tool in the MVP. Restoring old
-content should happen as a normal live file edit followed by a new sync, which
-preserves append-only history.
+content should happen as a normal live file edit followed by a new
+`resource.register_file`, which preserves append-only history.
 
 ## Rules
 

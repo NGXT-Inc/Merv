@@ -53,7 +53,7 @@ def _folder_contract_note(
     return (
         f"The sandbox {folder_label} is {remote_dir} ($RP_EXPERIMENT_DIR). "
         "Work in it over SSH — scripts, results, report.md, graph.json. "
-        "This sandbox is an EPHEMERAL SSH window: nothing is synced for you, and "
+        "This sandbox is an EPHEMERAL SSH window: nothing is copied for you, and "
         "when it is released or reaped the VM and everything on it is destroyed. "
         "So pull anything you want to keep BEFORE then, yourself, from the "
         "terminal: you have the SSH connection details (ssh.key_path / ssh.host / "
@@ -135,9 +135,9 @@ def agent_row_facts(
         },
         "workdir": row.get("workdir"),
         # The work folder on the box; the agent rsyncs what it needs off it over
-        # SSH before the sandbox is destroyed (nothing is auto-synced).
+        # SSH before the sandbox is destroyed (nothing is copied automatically).
         "experiment_dir": remote_dir,
-        # VM-local conventional home for datasets/caches. Never synced —
+        # VM-local conventional home for datasets/caches. Never copied —
         # like everything else outside the work folder.
         "data_dir": data_dir,
         "volume": row.get("volume_name"),

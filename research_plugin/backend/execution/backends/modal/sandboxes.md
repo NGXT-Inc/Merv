@@ -111,10 +111,12 @@ live from the running sandbox.
 
 ## Training observability: centralized MLflow
 
-Every sandbox installs the MLflow client package and receives the central
-tracking env through experiment MLflow helpers. It does not run an MLflow
-tracking server, TensorBoard server, or sandbox-local dashboard tunnel.
-Training code logs to the backend-owned tracking URI in `MLFLOW_TRACKING_URI`.
+Every sandbox installs the MLflow client package, but sandbox provisioning does
+not automatically export tracking env vars. Agents get the central tracking
+URI and experiment name from `experiment.mlflow` or
+`experiment.transition(start_running)`, then set those env vars in the SSH
+command that runs training. The sandbox does not run an MLflow tracking server,
+TensorBoard server, or sandbox-local dashboard tunnel.
 
 ## Shutdown / status
 

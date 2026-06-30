@@ -38,13 +38,13 @@ MVP gates:
 1. Plan gate: before expensive execution, the plan must identify claim, method,
    inputs, outputs, metric, and expected resource files.
 2. Design review gate: a separate read-only design reviewer must pass the plan.
-3. Result sync gate: after execution, Codex must sync created/modified files as
-   resources.
+3. Result retention gate: after execution, Codex must retain the selected
+   outputs locally and register/associate them as resources.
 4. Results report gate: before `submit_results`, the current attempt must carry
    a short markdown report (role `report`) with Summary, Results (containing a
    metrics table: target vs achieved), Deviations from plan, and Conclusion
    applying the plan's pre-registered decision rule; under 16 KB; every
-   relative figure link must resolve to a synced file. See
+   relative figure link must resolve to a submitted figure file. See
    `skills/research-workflow/report-template.md`.
 5. Logic graph gate: before `submit_results`, the current attempt must also
    carry the experiment's logic graph (role `graph`) — a qualitative story
@@ -164,7 +164,7 @@ After any experiment execution, Codex should:
 
 1. identify changed files with git/status or filesystem checks
 2. decide which files are research resources
-3. call `resource.register_file` with the changed `paths`
+3. call `resource.register_file` with the retained local `paths`
 4. ask `workflow.status_and_next`
 5. launch experiment reviewer if requested
 6. wait for review submission status through MCP
@@ -173,16 +173,17 @@ After any experiment execution, Codex should:
 8. propose experiment conclusion or claim update only after passing review
 
 Resources from prior attempts remain visible as experiment history, but MCP only
-uses current-attempt resource associations to decide whether result sync or
+uses current-attempt resource associations to decide whether result retention or
 review gates are satisfied.
 
 While an experiment is `running` and no result resource is associated yet,
-`workflow.status_and_next` returns `run_experiment_and_sync_results` with
-`resource_guidance`. Agents run the experiment on the sandbox over SSH, then sync
-the output files and associate them to the experiment with
-`association_role: "result"`. Once results are synced but no report exists, the
-gate becomes `results_report_required` with report-specific guidance; once a
-report exists but no logic graph does, the gate becomes `logic_graph_required`.
+`workflow.status_and_next` returns `run_experiment_and_retain_results` with
+`resource_guidance`. Agents run the experiment on the sandbox over SSH, then
+copy selected output files back to the local checkout and associate them to the
+experiment with `association_role: "result"`. Once result resources exist but no
+report exists, the gate becomes `results_report_required` with report-specific
+guidance; once a report exists but no logic graph does, the gate becomes
+`logic_graph_required`.
 The `submit_results` transition lints the report file (sections, metrics table,
 size, figure links) and the logic graph's envelope (valid JSON, node budget,
 DAG) before the experiment enters review.
@@ -204,7 +205,7 @@ applies.
 
 An experiment can complete only when:
 
-- its result resources are synced
+- its result resources are retained and associated
 - its design and experiment review gates are satisfied
 - its conclusion is tied to resources and/or sandbox outputs
 - MCP accepts the completion transition

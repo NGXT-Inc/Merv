@@ -472,7 +472,6 @@ GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics
 GET  /api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal?tail=50000
 GET  /api/projects/{project_id}/experiments/{experiment_id}/results/metrics
-POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/sync
 POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 ```
 
@@ -480,7 +479,7 @@ POST /api/projects/{project_id}/experiments/{experiment_id}/sandbox/release
 
 MLflow tracking is backend-owned. The backend archives a compact structured
 snapshot of the centralized MLflow experiment (runs → params, final metric
-values, and downsampled per-metric history) on sync and before release/reap.
+values, and downsampled per-metric history) before release/reap.
 For older sandbox-local runs, the pulled `mlflow.db` fallback remains readable.
 
 `GET .../results/metrics` serves that archive at any time, including long after
@@ -543,7 +542,7 @@ MLflow tool responses, not through sandbox tunnels.
 
 The terminal endpoint returns `{ experiment_id, sandbox_id, status, transcript }`
 where `transcript` is the recorded command/output log for the sandbox. Fresh
-sandbox setup returns SSH details and a remote work folder. Nothing is mirrored
+sandbox setup returns SSH details and a remote work folder. No files are copied
 automatically: agents fetch code/data on the box and explicitly retain outputs
 before release by copying light files over SSH or uploading heavy artifacts with
 storage tools. Everything left on the VM at release or expiry is destroyed.
