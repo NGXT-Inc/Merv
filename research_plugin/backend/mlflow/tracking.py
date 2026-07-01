@@ -202,11 +202,35 @@ class CentralMlflowService:
             }
         portable = dict(snapshot)
         portable.pop("base_url", None)
-        return {
+        result = {
             "experiment_id": experiment_id,
             "available": True,
             **portable,
         }
+        drill_url = self._dashboard_experiment_url(portable, context.experiment_name)
+        if drill_url:
+            result["dashboard_experiment_url"] = drill_url
+        return result
+
+    def _dashboard_experiment_url(
+        self, snapshot: dict[str, object], experiment_name: str
+    ) -> str:
+        """Deep link into the MLflow UI for this experiment, if resolvable.
+
+        The backend owns the namespace→URL mapping so UI surfaces never have to
+        reconstruct MLflow's ``#/experiments/<numeric_id>`` route themselves.
+        """
+        if not self.dashboard_url:
+            return ""
+        experiments = snapshot.get("experiments") if isinstance(snapshot, dict) else None
+        numeric_id = ""
+        for entry in experiments or []:
+            if str(entry.get("name") or "") == experiment_name:
+                numeric_id = str(entry.get("experiment_id") or "")
+                break
+        if not numeric_id and experiments:
+            numeric_id = str(experiments[0].get("experiment_id") or "")
+        return f"{self.dashboard_url}/#/experiments/{numeric_id}" if numeric_id else ""
 
     def _reachable(self) -> bool:
         if self._health_check is not None:

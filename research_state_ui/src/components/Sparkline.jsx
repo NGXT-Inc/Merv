@@ -1,6 +1,7 @@
 /**
- * Sparkline — a dependency-free SVG polyline for a metric series. The mobile
- * answer to "watch the loss/accuracy curve" without embedding the MLflow UI.
+ * Sparkline — a dependency-free SVG polyline for a metric series. The answer to
+ * "watch the loss/accuracy curve" without embedding the MLflow UI; used inline
+ * on the experiment page, the project MLflow page, and mobile.
  */
 export default function Sparkline({ points, height = 46, stroke = 'var(--active)' }) {
   const ys = (points || []).filter(v => Number.isFinite(v));

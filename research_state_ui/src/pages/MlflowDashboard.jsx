@@ -2,21 +2,7 @@ import { useEffect, useState } from 'react';
 import { useProjectStore } from '../store/useProjectStore';
 import { api } from '../api';
 import StatusPill from '../components/StatusPill';
-import Sparkline from '../mobile/Sparkline';
-
-// Up to 4 significant digits; integers stay integers; non-numbers pass through.
-function fmtNum(v) {
-  if (typeof v !== 'number' || !Number.isFinite(v)) return String(v ?? '');
-  if (Number.isInteger(v)) return String(v);
-  return Number(v.toPrecision(4)).toString();
-}
-
-// A metric history entry is [[step, value], …]; extract the finite y-values.
-function seriesValues(points) {
-  return (Array.isArray(points) ? points : [])
-    .map(p => (Array.isArray(p) ? p[1] : null))
-    .filter(v => Number.isFinite(v));
-}
+import RunMetrics, { runsFromMetrics } from '../components/RunMetrics';
 
 /**
  * MlflowDashboard — the project-scoped MLflow page. The central tracking server
@@ -100,10 +86,8 @@ export default function MlflowDashboard() {
 }
 
 function ExperimentMlflowCard({ exp, embedded, onToggleEmbed }) {
-  const metrics = exp.metrics && typeof exp.metrics === 'object' ? exp.metrics : {};
-  const runs = (Array.isArray(metrics.experiments) ? metrics.experiments : [])
-    .flatMap(me => (Array.isArray(me.runs) ? me.runs : []));
-  const hasRuns = metrics.available !== false && runs.length > 0;
+  const runs = runsFromMetrics(exp.metrics);
+  const hasRuns = runs.length > 0;
   const drillUrl = exp.dashboard_experiment_url || null;
 
   return (
@@ -127,9 +111,7 @@ function ExperimentMlflowCard({ exp, embedded, onToggleEmbed }) {
       </div>
 
       {hasRuns ? (
-        <div className="mlf-runs">
-          {runs.map((run, ri) => <RunCurves key={run.run_id || ri} run={run} />)}
-        </div>
+        <RunMetrics runs={runs} />
       ) : (
         <p className="mlf-empty">No runs recorded yet.</p>
       )}
@@ -147,47 +129,5 @@ function ExperimentMlflowCard({ exp, embedded, onToggleEmbed }) {
         </div>
       )}
     </section>
-  );
-}
-
-function RunCurves({ run }) {
-  const history = run.history && typeof run.history === 'object' ? run.history : {};
-  const params = run.params && typeof run.params === 'object' ? run.params : {};
-  const metricKeys = Object.keys(history);
-  const paramEntries = Object.entries(params);
-
-  return (
-    <div className="mlf-run">
-      <div className="mlf-run-head">
-        <span className="mlf-run-name">{run.run_name || run.run_id}</span>
-        {run.status && <span className="mlf-run-status">{run.status}</span>}
-      </div>
-      {metricKeys.length === 0 ? (
-        <p className="mlf-empty">No metric history.</p>
-      ) : (
-        <div className="mlf-curve-grid">
-          {metricKeys.map(key => {
-            const values = seriesValues(history[key]);
-            const final = values.length ? values[values.length - 1] : null;
-            return (
-              <div className="mlf-curve" key={key}>
-                <div className="mlf-curve-head">
-                  <span className="mlf-curve-key" title={key}>{key}</span>
-                  <span className="mlf-curve-val">{fmtNum(final)}</span>
-                </div>
-                <Sparkline points={values} height={48} />
-              </div>
-            );
-          })}
-        </div>
-      )}
-      {paramEntries.length > 0 && (
-        <div className="mlf-params">
-          {paramEntries.map(([k, v]) => (
-            <span className="mlf-param" key={k}><span className="mlf-param-k">{k}</span> {String(v)}</span>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

@@ -12,6 +12,7 @@ import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
 import ReportSpotlight from '../components/ReportSpotlight';
 import ExperimentGraphs from '../components/ExperimentGraphs';
+import ExperimentMetrics from '../components/ExperimentMetrics';
 import SandboxTerminal from '../components/SandboxTerminal';
 import ResourceList from '../components/ResourceList';
 import AddResourceToExperiment from '../components/AddResourceToExperiment';
@@ -227,6 +228,14 @@ export default function ExperimentDetail() {
           experimentStatus={experiment.status}
         />
       )}
+
+      {/* Durable quantitative results from the centralized MLflow ledger —
+          refetched as the run's lifecycle advances (absent until a run logs). */}
+      <ExperimentMetrics
+        projectId={projectId}
+        experimentId={experimentId}
+        refreshKey={`${experiment.status}:${currentAttempt}`}
+      />
 
       {/* ═════════════  EXECUTION  ══════════════════════════════════════
           The sandbox: expanded while a run is live/provisioning, collapsed to

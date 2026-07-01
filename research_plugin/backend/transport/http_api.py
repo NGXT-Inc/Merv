@@ -662,36 +662,27 @@ class ResearchHttpApi:
         the central MLflow UI spans multiple projects.
         """
         health = self.app.mlflow_tracking.health()
-        dashboard_url = str(health.get("dashboard_url") or "").rstrip("/")
         experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
         items: list[dict[str, Any]] = []
         for exp in experiments:
             eid = str(exp.get("id") or "")
             if not eid:
                 continue
+            # results_metrics owns the deep-link (namespace→#/experiments/<id>).
             metrics = self.app.mlflow_tracking.results_metrics(
                 experiment_id=eid, project_id=project_id
             )
-            mlflow_name = mlflow_experiment_name(project_id=project_id, experiment_id=eid)
-            # Resolve MLflow's numeric experiment id from the snapshot so the UI
-            # can deep-link the embedded drill-in to {dashboard}/#/experiments/<id>.
-            captured = metrics.get("experiments") if isinstance(metrics, dict) else None
-            numeric_id = ""
-            for me in captured or []:
-                if str(me.get("name") or "") == mlflow_name:
-                    numeric_id = str(me.get("experiment_id") or "")
-                    break
-            if not numeric_id and captured:
-                numeric_id = str(captured[0].get("experiment_id") or "")
             items.append({
                 "experiment_id": eid,
                 "name": exp.get("name") or eid,
                 "status": exp.get("status") or "",
                 "intent": exp.get("intent") or "",
-                "mlflow_experiment_name": mlflow_name,
+                "mlflow_experiment_name": mlflow_experiment_name(
+                    project_id=project_id, experiment_id=eid
+                ),
                 "dashboard_experiment_url": (
-                    f"{dashboard_url}/#/experiments/{numeric_id}"
-                    if dashboard_url and numeric_id else ""
+                    metrics.get("dashboard_experiment_url", "")
+                    if isinstance(metrics, dict) else ""
                 ),
                 "metrics": metrics,
             })

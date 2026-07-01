@@ -6,6 +6,7 @@ import FSMStrip from '../components/FSMStrip';
 import GateBanner from '../components/GateBanner';
 import PlanSpotlight from '../components/PlanSpotlight';
 import ReportSpotlight from '../components/ReportSpotlight';
+import ExperimentMetrics from '../components/ExperimentMetrics';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
 import { Skeleton } from './Skeleton';
@@ -211,6 +212,11 @@ export default function MobileExperimentDetail() {
               experimentStatus={experiment.status}
             />
           )}
+          <ExperimentMetrics
+            projectId={projectId}
+            experimentId={experimentId}
+            refreshKey={`${experiment.status}:${currentAttempt}`}
+          />
         </>
       )}
     </div>

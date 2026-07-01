@@ -4290,19 +4290,14 @@ button.review-stepper-version:hover {
 }
 .figure-missing-name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); word-break: break-all; }
 
-/* Durable results-metrics panel — final MLflow numbers that outlive
-   the sandbox VM (recorded on sync + at release). */
+/* Inline per-experiment metrics panel — durable numbers from the centralized
+   MLflow ledger, on the experiment detail page. Wraps the shared run/curve
+   renderer (the mlf-run and mlf-curve rules below). */
 .results-metrics { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg-elev); padding: 14px 16px; }
 .results-metrics-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .results-metrics-title { font-weight: 600; font-size: var(--text-md); }
-.results-metrics-sub { font-size: var(--text-xs); color: var(--faint); }
-.results-metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.results-metric { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 8px 10px; background: var(--bg-soft); }
-.results-metric-key { font-size: var(--text-xs); color: var(--muted); margin-bottom: 2px; word-break: break-word; }
-.results-metric-val { font-family: var(--font-mono); font-size: var(--text-base); color: var(--text); }
-.results-metrics-run { margin-top: 12px; }
-.results-metrics-run-head { font-size: var(--text-sm); font-weight: 600; margin-bottom: 6px; }
-.results-metrics-run-meta { font-size: var(--text-xs); color: var(--faint); font-weight: 400; margin-left: 6px; }
+.results-metrics-sub { font-size: var(--text-xs); color: var(--faint); text-decoration: none; }
+a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; }
 
 /* Project MLflow page (/p/<id>/mlflow): per-experiment runs + metric curves,
    with an embedded MLflow drill-in. */

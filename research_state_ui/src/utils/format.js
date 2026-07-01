@@ -1,5 +1,12 @@
 // Shared display formatters. Keep these dumb and dependency-free.
 
+// Up to 4 significant digits; integers stay integers; non-numbers pass through.
+export function fmtNum(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return String(v ?? '');
+  if (Number.isInteger(v)) return String(v);
+  return Number(v.toPrecision(4)).toString();
+}
+
 export function formatBytes(n) {
   if (n == null) return '';
   if (n < 1024) return `${n} B`;

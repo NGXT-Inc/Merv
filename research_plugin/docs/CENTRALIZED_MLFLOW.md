@@ -190,10 +190,13 @@ links.
 
 ## UI Compatibility Views
 
-The existing `/results/metrics` endpoint and project MLflow page expose bounded
+The `/results/metrics` endpoint and project MLflow page expose bounded
 plugin-side views of MLflow data for UI compatibility. They are intentionally
 compact: recent runs, params, final metric values, and downsampled metric
-histories.
+histories. Both feed one shared renderer: an inline per-experiment panel on the
+experiment detail page and the project-wide MLflow page. The service owns the
+`dashboard_experiment_url` deep link (namespace → `#/experiments/<id>`) so UI
+surfaces never reconstruct MLflow routes themselves.
 
 These views are not the quantitative ledger. They should not be extended into a
 full MLflow mirror or agent query layer. The durable record is the centralized

@@ -151,18 +151,20 @@ def build_control_tool_handlers(
             evidence=evidence,
             project_id=project_id,
         )
+        resolved_project_id = str(result.get("project_id") or project_id or "")
+        slim = slim_experiment_state(result)
         # The moment an experiment starts running, hand the agent the MLflow
         # connection block so a quantitative run — including a local, non-sandbox
         # one — can log to the centralized server without hunting for the URI.
-        if isinstance(result, dict) and result.get("status") == "running":
+        if slim.get("status") == "running":
             block = _mlflow_connection(
                 mlflow_tracking=mlflow_tracking,
-                project_id=str(result.get("project_id") or project_id or ""),
+                project_id=resolved_project_id,
                 experiment_id=experiment_id,
             )
-            result["mlflow"] = block
-            result["mlflow_guidance"] = _mlflow_guidance(block)
-        return result
+            slim["mlflow"] = block
+            slim["mlflow_guidance"] = _mlflow_guidance(block)
+        return slim
 
     def mlflow_context_agent(
         *, project_id: str, experiment_id: str | None = None
