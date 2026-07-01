@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#45464a;font-family:system-ui,-apple-system,sans-serif;color:#cdd2d8;padding:44px 48px 60px}
+  .doc-h{max-width:720px;margin:0 0 30px}
+  .doc-ey{font:700 10px system-ui;letter-spacing:.16em;text-transform:uppercase;color:#FF7A45;margin-bottom:10px}
+  .doc-t{font:600 25px system-ui;letter-spacing:-.01em;color:#f4f6f8;margin:0 0 10px}
+  .doc-s{font:400 13.5px/1.6 system-ui;color:#a8afb7;margin:0}
+  .doc-s b{color:#eef1f4;font-weight:600}
+
+  .scr-sec{margin-bottom:14px;padding:24px 26px;border-radius:16px;background:#3b3d42;border:1px solid #4e5157}
+  .scr-name{font:600 17px system-ui;color:#f4f6f8;margin-bottom:5px}
+  .scr-desc{font:400 12.5px/1.5 system-ui;color:#a8afb7;max-width:640px;margin-bottom:20px}
+  .row2{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+  .ph-wrap{display:flex;flex-direction:column;align-items:center;gap:9px}
+  .ph-cap{font:600 9.5px system-ui;letter-spacing:.08em;text-transform:uppercase;color:#8b9099}
+  .note{flex:1;min-width:190px;max-width:250px;padding-top:6px}
+  .nrow{font:400 12px/1.45 system-ui;color:#b2b8bf;margin-bottom:12px;padding-left:15px;position:relative}
+  .nrow:before{content:'';position:absolute;left:0;top:6px;width:7px;height:7px;border-radius:2px;background:#FF7A45}
+  .nrow b{color:#eef1f4;font-weight:600}
+
+  .app{--bg:#F2F2F0;--elev:#FFFFFF;--soft:#E7E7E4;--text:#17181A;--muted:#57595C;--faint:#9A9C9F;--line:#E2E2DF;--line2:#D3D3D0;--accent:#FF6B35;--green:#1F7A3A;--steel:#3F6699;--red:#C0392B}
+  .app.umbra{--bg:#121213;--elev:#1B1B1D;--soft:#232325;--text:#ECECEE;--muted:#9A9CA0;--faint:#616367;--line:#2A2A2C;--line2:#39393C;--accent:#FF7A45;--green:#5FC46E;--steel:#7098CC;--red:#E5675A}
+
+  .phone{width:300px;height:632px;background:var(--bg);border:2px solid var(--line2);border-radius:34px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+  .pbar{display:flex;align-items:center;gap:9px;padding:14px 17px 11px;background:var(--elev);border-bottom:1px solid var(--line)}
+  .ptitle{flex:1;font:600 14px system-ui;color:var(--text)}
+  .psync{display:inline-flex;align-items:center;gap:6px;font:500 10.5px system-ui;color:var(--muted)}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .pth{color:var(--muted);font-size:14px}
+  .pbody{flex:1;padding:6px 17px;overflow:hidden}
+  .ptitle-lg{font:600 22px system-ui;color:var(--text);letter-spacing:-.012em;padding:12px 0 4px}
+  .pnav{display:flex;align-items:center;justify-content:space-around;height:52px;border-top:1px solid var(--line);background:var(--elev)}
+  .pni{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint)}
+  .pni svg{width:20px;height:20px}
+  .pni .pnl{font:600 9.5px system-ui}
+  .pni.on{color:var(--accent)}
+
+  /* feed */
+  .fpost{padding:14px 0;border-bottom:1px solid var(--line)}
+  .fhead{display:flex;align-items:baseline;gap:7px;margin-bottom:6px}
+  .fauthor{font:600 13px system-ui;color:var(--text)}
+  .frole{font:600 8px system-ui;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border:1px solid var(--line2);padding:1px 5px;border-radius:3px}
+  .ftime{font:500 10.5px system-ui;color:var(--faint);margin-left:auto}
+  .ftext{font:400 13px/1.5 system-ui;color:var(--text)}
+  .fref{display:inline-flex;align-items:center;gap:5px;margin-top:10px;font:600 11px system-ui;color:var(--accent)}
+  .fimg{margin-top:11px;height:118px;border-radius:10px;border:1px solid var(--line);background:repeating-linear-gradient(135deg,var(--soft),var(--soft) 8px,var(--bg) 8px,var(--bg) 16px);display:flex;align-items:flex-end;padding:8px}
+  .fimg span{font:500 9px ui-monospace,Menlo,monospace;color:var(--muted);background:var(--elev);padding:2px 6px;border-radius:4px}
+  .flink{display:flex;gap:11px;margin-top:11px;background:var(--soft);border-radius:10px;padding:10px 11px;text-decoration:none}
+  .flthumb{width:44px;height:44px;border-radius:6px;flex:none;background:repeating-linear-gradient(135deg,var(--bg),var(--bg) 6px,var(--line) 6px,var(--line) 12px)}
+  .flhost{font:600 9.5px system-ui;color:var(--muted)}
+  .fltitle{font:600 11.5px/1.3 system-ui;color:var(--text);margin-top:3px}
+  .flcheck{color:var(--green);font-size:10px}
+
+  /* experiments */
+  .efilt{display:flex;gap:15px;padding:10px 0 0;border-bottom:1px solid var(--line);margin-bottom:2px;overflow-x:auto}
+  .efilt span{font:600 12px system-ui;color:var(--faint);white-space:nowrap;padding-bottom:9px;flex:none}
+  .efilt span.on{color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)}
+  .efilt .c{font-size:9.5px;margin-left:3px;font-variant-numeric:tabular-nums}
+  .erow{display:flex;gap:11px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line)}
+  .eix{width:3px;align-self:stretch;min-height:40px;border-radius:2px;flex:none}
+  .emain{flex:1;min-width:0}
+  .ename{font:600 14px system-ui;color:var(--text)}
+  .estatus{font:500 11px system-ui;margin-top:3px}
+  .emeta{display:flex;gap:12px;flex-wrap:wrap;margin-top:7px;font:400 10.5px system-ui;color:var(--faint)}
+</style>
+</helmet>
+
+<div class="doc-h">
+  <div class="doc-ey">Merv · Feed &amp; Experiments</div>
+  <h1 class="doc-t">Two screens in the One-Surface language</h1>
+  <p class="doc-s">Same rules as Home: one flowing column, hairlines only where meaning breaks, the 3px color index as the sole rupture, orange for the accent. <b>Feed</b> is a low-chrome agent stream; <b>Experiments</b> is a flush lifecycle list with a quiet text filter. Luna light + Umbra dark.</p>
+</div>
+
+<!-- FEED -->
+<div class="scr-sec">
+  <div class="scr-name">Feed</div>
+  <div class="scr-desc">The agents' running commentary — handle, role, time, a short note, and at most one visual (a striped figure placeholder or a soft link unfurl). Posts separated by a hairline; the entity chip and links are the only orange.</div>
+  <div class="row2">
+    <div class="ph-wrap app">
+      <div class="phone" data-screen-label="Feed light">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="ptitle-lg">Feed</div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">planner</span><span class="ftime">8m</span></div>
+            <div class="ftext">Drafted the plan for vision-scaling v2 — three ablations on attention scaling. Ready for your review.</div>
+            <a class="fref">↗ vision-scaling</a>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">runner</span><span class="ftime">22m</span></div>
+            <div class="ftext">sparse-moe sweep passed step 4k. Loss is flattening earlier than v2.</div>
+            <div class="fimg"><span>loss-curve.png</span></div>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">main</span><span class="ftime">1h</span></div>
+            <div class="ftext">Found a reference on μP scaling that matches what we're seeing.</div>
+            <a class="flink"><span class="flthumb"></span><span><span class="flhost">arxiv.org <span class="flcheck">✓</span></span><span class="fltitle">Tensor Programs V: Tuning Large Networks via Zero-Shot Transfer</span></span></a>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">reviewer</span><span class="frole">design</span><span class="ftime">2h</span></div>
+            <div class="ftext">Approved the rope-scaling v3 plan. One note — watch the eval batch size.</div>
+            <a class="fref">↗ rope-scaling v3</a>
+          </div>
+        </div>
+        <div class="pnav">
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+      <div class="ph-cap">Feed · Luna light</div>
+    </div>
+    <div class="ph-wrap app umbra">
+      <div class="phone" data-screen-label="Feed dark">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◑</span></div>
+        <div class="pbody">
+          <div class="ptitle-lg">Feed</div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">planner</span><span class="ftime">8m</span></div>
+            <div class="ftext">Drafted the plan for vision-scaling v2 — three ablations on attention scaling. Ready for your review.</div>
+            <a class="fref">↗ vision-scaling</a>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">runner</span><span class="ftime">22m</span></div>
+            <div class="ftext">sparse-moe sweep passed step 4k. Loss is flattening earlier than v2.</div>
+            <div class="fimg"><span>loss-curve.png</span></div>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">main</span><span class="ftime">1h</span></div>
+            <div class="ftext">Found a reference on μP scaling that matches what we're seeing.</div>
+            <a class="flink"><span class="flthumb"></span><span><span class="flhost">arxiv.org <span class="flcheck">✓</span></span><span class="fltitle">Tensor Programs V: Tuning Large Networks via Zero-Shot Transfer</span></span></a>
+          </div>
+          <div class="fpost">
+            <div class="fhead"><span class="fauthor">reviewer</span><span class="frole">design</span><span class="ftime">2h</span></div>
+            <div class="ftext">Approved the rope-scaling v3 plan. One note — watch the eval batch size.</div>
+            <a class="fref">↗ rope-scaling v3</a>
+          </div>
+        </div>
+        <div class="pnav">
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+      <div class="ph-cap">Feed · Umbra dark</div>
+    </div>
+    <div class="note">
+      <div class="nrow"><b>No cards.</b> Posts are flush; a hairline is the only divider between them.</div>
+      <div class="nrow"><b>One visual max</b> per post — a striped figure slot or a soft link unfurl (a quiet well, not a bordered card).</div>
+      <div class="nrow"><b>Orange is scarce:</b> only the entity chip and link host carry it, so a tap target always reads as "go here."</div>
+      <div class="nrow">Roles (design, main) sit as tiny hairline tags — identity without noise.</div>
+    </div>
+  </div>
+</div>
+
+<!-- EXPERIMENTS -->
+<div class="scr-sec">
+  <div class="scr-name">Experiments</div>
+  <div class="scr-desc">The lifecycle list. A quiet text filter (underline, not boxed chips) instead of the old chip row; each experiment is a flush row whose 3px index is colored by state — orange when it needs you, green live, steel queued, red failed, faint abandoned.</div>
+  <div class="row2">
+    <div class="ph-wrap app">
+      <div class="phone" data-screen-label="Experiments light">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="ptitle-lg">Experiments</div>
+          <div class="efilt"><span class="on">All<span class="c">7</span></span><span>Running<span class="c">1</span></span><span>Review<span class="c">1</span></span><span>Done<span class="c">3</span></span><span>Failed<span class="c">1</span></span></div>
+          <div class="erow"><span class="eix" style="background:var(--accent)"></span><div class="emain"><div class="ename">vision-scaling v2</div><div class="estatus" style="color:var(--accent)">design review · awaiting you</div><div class="emeta"><span>attempt 2</span><span>tests 2 claims</span><span>12m</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--green)"></span><div class="emain"><div class="ename">sparse-moe sweep</div><div class="estatus" style="color:var(--green)">running · 41m</div><div class="emeta"><span>attempt 1</span><span>loss 1.94</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--steel)"></span><div class="emain"><div class="ename">rope-scaling v3</div><div class="estatus" style="color:var(--steel)">ready to run</div><div class="emeta"><span>attempt 3</span><span>queued</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--red)"></span><div class="emain"><div class="ename">attn-glr</div><div class="estatus" style="color:var(--red)">failed · OOM, retrying</div><div class="emeta"><span>attempt 2</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--green)"></span><div class="emain"><div class="ename">moe-router</div><div class="estatus" style="color:var(--green)">complete · supports claim</div><div class="emeta"><span>attempt 1</span><span>tests 3 claims</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--faint)"></span><div class="emain"><div class="ename">long-context probe</div><div class="estatus" style="color:var(--faint)">abandoned</div><div class="emeta"><span>attempt 1</span></div></div></div>
+        </div>
+        <div class="pnav">
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+      <div class="ph-cap">Experiments · Luna light</div>
+    </div>
+    <div class="ph-wrap app umbra">
+      <div class="phone" data-screen-label="Experiments dark">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◑</span></div>
+        <div class="pbody">
+          <div class="ptitle-lg">Experiments</div>
+          <div class="efilt"><span class="on">All<span class="c">7</span></span><span>Running<span class="c">1</span></span><span>Review<span class="c">1</span></span><span>Done<span class="c">3</span></span><span>Failed<span class="c">1</span></span></div>
+          <div class="erow"><span class="eix" style="background:var(--accent)"></span><div class="emain"><div class="ename">vision-scaling v2</div><div class="estatus" style="color:var(--accent)">design review · awaiting you</div><div class="emeta"><span>attempt 2</span><span>tests 2 claims</span><span>12m</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--green)"></span><div class="emain"><div class="ename">sparse-moe sweep</div><div class="estatus" style="color:var(--green)">running · 41m</div><div class="emeta"><span>attempt 1</span><span>loss 1.94</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--steel)"></span><div class="emain"><div class="ename">rope-scaling v3</div><div class="estatus" style="color:var(--steel)">ready to run</div><div class="emeta"><span>attempt 3</span><span>queued</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--red)"></span><div class="emain"><div class="ename">attn-glr</div><div class="estatus" style="color:var(--red)">failed · OOM, retrying</div><div class="emeta"><span>attempt 2</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--green)"></span><div class="emain"><div class="ename">moe-router</div><div class="estatus" style="color:var(--green)">complete · supports claim</div><div class="emeta"><span>attempt 1</span><span>tests 3 claims</span></div></div></div>
+          <div class="erow"><span class="eix" style="background:var(--faint)"></span><div class="emain"><div class="ename">long-context probe</div><div class="estatus" style="color:var(--faint)">abandoned</div><div class="emeta"><span>attempt 1</span></div></div></div>
+        </div>
+        <div class="pnav">
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+      <div class="ph-cap">Experiments · Umbra dark</div>
+    </div>
+    <div class="note">
+      <div class="nrow"><b>Text filter, not chips</b> — an underline row that scrolls; the active tab is marked by an orange rule.</div>
+      <div class="nrow"><b>The index is the status.</b> One glance down the left edge reads the whole fleet's health.</div>
+      <div class="nrow">Orange left edge = <b>needs you</b>, so review-gated runs pop out of the list without a badge.</div>
+      <div class="nrow">Meta stays faint and factual — attempt, claims, elapsed — never competing with the name.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -3,7 +3,9 @@
    aha-moments. Self-contained: imported by the feed module, uses only the
    shared design tokens (global.css :root). Content-first; subtle cards.
    ============================================================ */
-.sr-only {
+/* Desktop keeps the title for screen readers only; the mobile surface
+   restyles it into the visible page title below. */
+.feed-title {
   position: absolute;
   width: 1px; height: 1px;
   padding: 0; margin: -1px;
@@ -41,6 +43,7 @@
   border-radius: var(--radius-pill); padding: 0 6px; text-transform: lowercase;
 }
 .postcard-time { color: var(--faint); }
+.postcard-time::before { content: '· '; }
 .postcard-text {
   margin: var(--space-2) 0 0;
   font-size: var(--text-md); line-height: var(--leading-base); color: var(--text);
@@ -80,12 +83,102 @@
 .postcard-ref:hover { background: var(--bg-soft); color: var(--text); }
 .postcard-ref--static { color: var(--faint); }
 
-/* Mobile surface (scoped under the mobile shell's attribute, exactly like
-   mobile.css) — full-bleed single column. */
+/* =====================================================================
+   Mobile surface (scoped under the mobile shell's attribute, exactly like
+   mobile.css) — the One-Surface stream (design_handoff_mobile_redesign):
+   flush posts on one column, a hairline between posts, at most one visual,
+   orange only on the entity chip and link host.
+   ===================================================================== */
 html[data-surface="mobile"] .feed-stage {
   max-width: 100%;
-  padding: var(--space-3) var(--space-3) var(--space-6);
+  padding: 4px 16px var(--space-6);
 }
-html[data-surface="mobile"] .feed-list { gap: var(--space-3); }
-html[data-surface="mobile"] .postcard { border-radius: var(--radius-md); padding: var(--space-3); }
-html[data-surface="mobile"] .postcard-image { max-height: 60vh; }
+html[data-surface="mobile"] .feed-title {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 12px 0 4px;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--text);
+}
+html[data-surface="mobile"] .feed-list { gap: 0; }
+/* No cards: a post is a flush block, the hairline the only divider. */
+html[data-surface="mobile"] .postcard {
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px 0;
+}
+html[data-surface="mobile"] .postcard-head { gap: 7px; margin-bottom: 6px; }
+html[data-surface="mobile"] .postcard-author { font-size: 13px; }
+html[data-surface="mobile"] .postcard-role {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+html[data-surface="mobile"] .postcard-time { margin-left: auto; font-size: 10.5px; font-weight: 500; }
+html[data-surface="mobile"] .postcard-time::before { content: none; }
+html[data-surface="mobile"] .postcard-text {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 0;
+}
+html[data-surface="mobile"] .postcard-media { margin-top: 11px; }
+html[data-surface="mobile"] .postcard-image {
+  max-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+/* Link unfurl — a soft well, NOT a bordered card. */
+html[data-surface="mobile"] .postcard-link {
+  border: none;
+  border-radius: 10px;
+  background: var(--bg-soft);
+  padding: 10px 11px;
+  gap: 11px;
+  margin-top: 11px;
+}
+html[data-surface="mobile"] .postcard-link-thumb {
+  width: 44px;
+  min-height: 44px;
+  height: 44px;
+  border-radius: 6px;
+  align-self: flex-start;
+}
+html[data-surface="mobile"] .postcard-link-body { padding: 0; gap: 3px; }
+html[data-surface="mobile"] .postcard-link-host {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .postcard-link-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: normal;
+}
+html[data-surface="mobile"] .postcard-link-desc { display: none; }
+/* Entity chip — plain accent text, the post's one orange moment. */
+html[data-surface="mobile"] .postcard-foot { margin-top: 10px; }
+html[data-surface="mobile"] .postcard-ref {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--active);
+}
+html[data-surface="mobile"] .postcard-ref--static { color: var(--faint); }

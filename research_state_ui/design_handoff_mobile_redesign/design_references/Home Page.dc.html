@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#45464a;font-family:system-ui,-apple-system,sans-serif;color:#cdd2d8}
+  .dv-turn{padding:44px 48px 40px}
+  .dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 6px}
+  .dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#17170f;color:#fff;border-radius:4px;text-decoration:none}
+  .dv-tname{font:600 13px system-ui;color:#f2f5f8}
+  .dv-intro{font:400 13px/1.6 system-ui;color:#a8afb7;max-width:660px;margin:0 0 28px}
+  .dv-intro b{color:#eef1f4;font-weight:600}
+  .dv-opts{display:flex;flex-wrap:wrap;gap:34px;align-items:flex-start}
+  .dv-opt{flex:none;display:flex;flex-direction:column;gap:12px;width:300px}
+  .dv-olabel{display:flex;align-items:baseline;gap:9px}
+  .dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(255,255,255,.12);color:#eef1f4;border-radius:5px;text-decoration:none}
+  .dv-opt:target .dv-oid{background:#FF7A45;color:#17170f}
+  .dv-oname{font:600 13px system-ui;color:#f2f5f8}
+  .rec{font:700 8px system-ui;letter-spacing:.1em;text-transform:uppercase;color:#17170f;background:#FF7A45;padding:2px 6px;border-radius:3px}
+  .dv-desc{font:400 12px/1.5 system-ui;color:#9aa1a9;min-height:52px}
+  .dv-next{margin:30px 0 0;font:12px/1.6 system-ui;color:#9aa1a9}
+  .dv-next a{color:#eef1f4}
+
+  /* LUNA light tokens */
+  .app{--bg:#F2F2F0;--elev:#FFFFFF;--soft:#E7E7E4;--text:#17181A;--muted:#57595C;--faint:#9A9C9F;--line:#E2E2DF;--line2:#D3D3D0;--accent:#FF6B35;--green:#1F7A3A;--steel:#3F6699;--red:#C0392B}
+
+  .phone{width:300px;height:632px;background:var(--bg);border:2px solid var(--line2);border-radius:34px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+  .pbar{display:flex;align-items:center;gap:9px;padding:14px 17px 11px;background:var(--elev);border-bottom:1px solid var(--line);position:relative;z-index:2}
+  .ptitle{flex:1;font:600 14px system-ui;color:var(--text)}
+  .psync{display:inline-flex;align-items:center;gap:6px;font:500 10.5px system-ui;color:var(--muted)}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .pth{color:var(--muted);font-size:14px}
+  .pbody{flex:1;padding:4px 17px;overflow:hidden}
+  .ml{font:700 9px system-ui;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+  .prow{display:flex;gap:11px;align-items:flex-start;padding:8px 0}
+  .pix{width:3px;align-self:stretch;min-height:30px;border-radius:2px;flex:none;background:var(--accent)}
+  .pt{font:600 14px system-ui;color:var(--text);line-height:1.2}
+  .ps{font:400 11px system-ui;color:var(--muted);margin-top:3px}
+  .pbreak{border-top:1px solid var(--line);margin:13px 0 9px}
+  .prow2{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0}
+  .spk{width:50px;height:16px;flex:none}
+  .pchev{color:var(--faint);font-size:17px}
+  .pnav{display:flex;align-items:center;justify-content:space-around;height:52px;border-top:1px solid var(--line);background:var(--elev)}
+  .pni{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint)}
+  .pni svg{width:20px;height:20px}
+  .pni .pnl{font:600 9.5px system-ui}
+  .pni.on{color:var(--accent)}
+
+  /* 1a pulse headline */
+  .hlead{padding:16px 0 4px}
+  .hbig{font:600 25px system-ui;letter-spacing:-.015em;color:var(--text);line-height:1.15}
+  .hbig em{color:var(--accent);font-style:normal}
+  .hsubline{font:400 12px system-ui;color:var(--muted);margin-top:7px}
+  .cstrip{display:flex;margin:12px 0 2px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .cstat{flex:1;text-align:center;padding:9px 0;border-right:1px solid var(--line)}
+  .cstat:last-child{border-right:none}
+  .cnum{font:700 17px system-ui;color:var(--text);font-variant-numeric:tabular-nums;line-height:1}
+  .cnum.acc{color:var(--accent)}
+  .clab{font:600 8px system-ui;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin-top:4px}
+
+  /* 1b focus hero */
+  .hkick{font:700 10px system-ui;letter-spacing:.13em;text-transform:uppercase;color:var(--accent);margin:20px 0 12px}
+  .htitle{font:600 25px system-ui;color:var(--text);line-height:1.08;letter-spacing:-.01em}
+  .hcount{font:700 44px system-ui;color:var(--text);letter-spacing:-.02em;margin:14px 0 8px;font-variant-numeric:tabular-nums;line-height:.9}
+  .hsub{font:400 12px system-ui;color:var(--muted);line-height:1.45}
+  .hactions{display:flex;gap:10px;margin-top:18px}
+  .hbtn{font:600 12.5px system-ui;padding:9px 18px;border-radius:10px;border:1px solid var(--line2);color:var(--text);background:var(--elev)}
+  .hbtn--accent{border-color:var(--accent);color:var(--accent)}
+  .hbtn--danger{border-color:var(--red);color:var(--red)}
+  .hdots{display:flex;gap:7px;align-items:center;margin-top:20px}
+  .hdots i{width:6px;height:6px;border-radius:50%;background:var(--line2)}
+  .hdots i.on{background:var(--accent);width:8px;height:8px}
+  .hdots span{font:500 10px system-ui;color:var(--faint);margin-left:5px;letter-spacing:.03em}
+  .peek{margin-top:22px}
+
+  /* 1c board */
+  .abanner{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--accent) 11%,var(--bg));border:1px solid color-mix(in srgb,var(--accent) 34%,var(--line));margin:14px 0 6px}
+  .abanner .at{font:600 13px system-ui;color:var(--text)}
+  .abanner .at b{color:var(--accent);font-weight:700}
+  .abanner .ac{color:var(--accent);font-size:17px}
+  .lrow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .lmain{flex:1;min-width:0}
+  .lspk{width:78px;height:28px;flex:none}
+  .ldot{width:6px;height:6px;border-radius:50%;flex:none}
+
+  /* UMBRA dark tokens */
+  .app.umbra{--bg:#121213;--elev:#1B1B1D;--soft:#232325;--text:#ECECEE;--muted:#9A9CA0;--faint:#616367;--line:#2A2A2C;--line2:#39393C;--accent:#FF7A45;--green:#5FC46E;--steel:#7098CC;--red:#E5675A}
+
+  /* briefing home */
+  .ghead{padding:14px 0 4px}
+  .geyebrow{font:600 9.5px system-ui;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:9px}
+  .gline{font:500 20px/1.34 system-ui;color:var(--text);letter-spacing:-.01em}
+  .gline em{color:var(--accent);font-style:normal;font-weight:600}
+  .dig{display:flex;gap:10px;align-items:baseline;justify-content:space-between;padding:8px 0}
+  .dig-l{display:flex;gap:10px;align-items:baseline;min-width:0}
+  .dig-dot{width:7px;height:7px;border-radius:50%;flex:none;transform:translateY(1px)}
+  .dig-t{font:400 12.5px/1.4 system-ui;color:var(--text)}
+  .dig-t b{font-weight:600}
+  .dig-time{font:500 10px system-ui;color:var(--faint);white-space:nowrap;flex:none;margin-left:8px}
+  .qrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;font:400 12px system-ui;color:var(--muted)}
+  .qrow .qlab{color:var(--text);font-weight:500}
+  .qrow .qurg{color:var(--accent);font-weight:600}
+
+  /* instrument home */
+  .stand{display:flex;align-items:center;justify-content:space-between;padding:14px 0 12px}
+  .stand-date{font:500 12px system-ui;color:var(--muted)}
+  .stand-need{font:600 12px system-ui;color:var(--accent)}
+  .tiles{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .tile{padding:13px 14px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .tile:nth-child(2n){border-right:none}
+  .tile:nth-child(n+3){border-bottom:none}
+  .tile-v{font:700 24px system-ui;color:var(--text);letter-spacing:-.01em;font-variant-numeric:tabular-nums;line-height:1;display:flex;align-items:baseline;gap:5px}
+  .tile-v small{font-size:13px;font-weight:600;color:var(--muted)}
+  .tile-v .up{font-size:10px;font-weight:700;color:var(--green)}
+  .tile-l{font:500 10px system-ui;color:var(--muted);margin-top:6px}
+  .livehead{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .umeter{height:5px;border-radius:3px;background:var(--soft);position:relative;margin:11px 0 5px}
+  .umeter i{position:absolute;left:0;top:0;height:5px;border-radius:3px;background:var(--green)}
+  .umlab{display:flex;justify-content:space-between;font:500 10px system-ui;color:var(--muted)}
+  .metricline{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0}
+  .metrickey{font:500 11px system-ui;color:var(--muted)}
+  .metricval{display:flex;align-items:center;gap:8px;font:700 15px system-ui;color:var(--text);font-variant-numeric:tabular-nums}
+  .metricval .dn{font-size:12px;color:var(--green);font-weight:700}
+</style>
+</helmet>
+
+<section class="dv-turn" id="t3">
+  <div class="dv-thd"><a class="dv-tid" href="#t3">3</a><span class="dv-tname">Instrument snapshot — numbers over prose</span></div>
+  <p class="dv-intro">Per your steer: less newsletter, more instrument. A one-line standing, a <b>24h snapshot band</b> (experiments run · GPU compute · live · reviews), <b>what's live now</b> with real GPU-util + the run's metric curve, then a compact <b>Needs you</b>. Every figure maps to real API data (counts, sandbox GPU-util, per-run metric curves); GPU·hours and "24h" throughput are derived client-side. Luna light + Umbra dark.</p>
+
+  <div class="dv-opts">
+
+    <!-- Instrument LIGHT -->
+    <div class="dv-opt app" id="3a">
+      <div class="dv-olabel"><a class="dv-oid" href="#3a">3a</a><span class="dv-oname">Instrument · Luna light</span><span class="rec">direction</span></div>
+      <div class="dv-desc">Snapshot band up top, live run with GPU-util + loss curve, compact attention below. Minimal words.</div>
+      <div class="phone" data-screen-label="3a Home Instrument light">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="stand"><span class="stand-date">Tue · 2:14pm</span><span class="stand-need">2 need you →</span></div>
+          <div class="tiles">
+            <div class="tile"><div class="tile-v">5 <span class="up">▲2</span></div><div class="tile-l">experiments · 24h</div></div>
+            <div class="tile"><div class="tile-v">31<small>h</small></div><div class="tile-l">GPU compute · 24h</div></div>
+            <div class="tile"><div class="tile-v">1</div><div class="tile-l">live now · 8×H100</div></div>
+            <div class="tile"><div class="tile-v">2</div><div class="tile-l">reviews open</div></div>
+          </div>
+          <div class="ml" style="margin-top:20px">Live now</div>
+          <div class="livehead"><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m</div></div>
+          <div class="umeter"><i style="width:74%"></i></div>
+          <div class="umlab"><span>GPU 74% · VRAM 61%</span><span>8×H100</span></div>
+          <div class="metricline"><span class="metrickey">loss · last 30 steps</span><span class="metricval"><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,3 10,6 20,5 30,10 40,9 50,13"/></svg>1.94 <span class="dn">↓</span></span></div>
+          <div class="pbreak"></div>
+          <div class="ml">Needs you</div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">vision-scaling</div><div class="ps">design review · approve the plan</div></div></div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">Sandbox · attn-glr</div><div class="ps">expiring in 4m · release or extend</div></div></div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Instrument DARK -->
+    <div class="dv-opt app umbra" id="3b">
+      <div class="dv-olabel"><a class="dv-oid" href="#3b">3b</a><span class="dv-oname">Instrument · Umbra dark</span></div>
+      <div class="dv-desc">Same layout, near-black. The GPU-util bar and metric curve read as the live pulse.</div>
+      <div class="phone" data-screen-label="3b Home Instrument dark">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◑</span></div>
+        <div class="pbody">
+          <div class="stand"><span class="stand-date">Tue · 2:14pm</span><span class="stand-need">2 need you →</span></div>
+          <div class="tiles">
+            <div class="tile"><div class="tile-v">5 <span class="up">▲2</span></div><div class="tile-l">experiments · 24h</div></div>
+            <div class="tile"><div class="tile-v">31<small>h</small></div><div class="tile-l">GPU compute · 24h</div></div>
+            <div class="tile"><div class="tile-v">1</div><div class="tile-l">live now · 8×H100</div></div>
+            <div class="tile"><div class="tile-v">2</div><div class="tile-l">reviews open</div></div>
+          </div>
+          <div class="ml" style="margin-top:20px">Live now</div>
+          <div class="livehead"><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m</div></div>
+          <div class="umeter"><i style="width:74%"></i></div>
+          <div class="umlab"><span>GPU 74% · VRAM 61%</span><span>8×H100</span></div>
+          <div class="metricline"><span class="metrickey">loss · last 30 steps</span><span class="metricval"><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,3 10,6 20,5 30,10 40,9 50,13"/></svg>1.94 <span class="dn">↓</span></span></div>
+          <div class="pbreak"></div>
+          <div class="ml">Needs you</div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">vision-scaling</div><div class="ps">design review · approve the plan</div></div></div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">Sandbox · attn-glr</div><div class="ps">expiring in 4m · release or extend</div></div></div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <p class="dv-next">Try next: "add a second live run" · "swap GPU compute for a different stat" · "show the metric as a bigger chart" · "this is it — build the other screens"</p>
+</section>
+
+<section class="dv-turn" id="t2">
+  <div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Briefing — a real snapshot home</span></div>
+  <p class="dv-intro">Refined from <a class="dv-oid" href="#1a">1a</a> per your steer: a home that reads like a <b>briefing</b>, not a dashboard. A plain-language standing at the top, then <b>Needs you</b>, a human <b>What you missed</b> digest (the part that answers "did I miss anything"), what's <b>In motion</b> with the sandbox demoted to one quiet line, and a small state strip to anchor. Numbers stay in service of sentences. Shown in Luna light and Umbra dark.</p>
+
+  <div class="dv-opts">
+
+    <!-- Briefing LIGHT -->
+    <div class="dv-opt app" id="2a">
+      <div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a><span class="dv-oname">Briefing · Luna light</span><span class="rec">direction</span></div>
+      <div class="dv-desc">The snapshot: standing → needs you → what changed → what's moving → state. Balanced, human, glanceable.</div>
+      <div class="phone" data-screen-label="2a Home Briefing light">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="ghead">
+            <div class="geyebrow">Since you last checked · 3h</div>
+            <div class="gline"><em>Two things</em> need you. Three runs are in flight — all healthy.</div>
+          </div>
+          <div class="ml" style="margin-top:26px">Needs you</div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">vision-scaling</div><div class="ps">design review · approve the plan</div></div></div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">sparse-moe review</div><div class="ps">requested by main · 4h waiting</div></div></div>
+          <div class="pbreak"></div>
+          <div class="ml">What you missed</div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--green)"></span><span class="dig-t"><b>rope-scaling v3</b> finished — supports the scaling claim</span></span><span class="dig-time">2h</span></div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--steel)"></span><span class="dig-t"><b>Reflection wave 4</b> published — 5 lenses</span></span><span class="dig-time">2h</span></div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--red)"></span><span class="dig-t"><b>attn-glr</b> run failed — out of memory, retrying</span></span><span class="dig-time">5h</span></div>
+          <div class="pbreak"></div>
+          <div class="ml">In motion</div>
+          <div class="prow2"><div><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m · loss 1.94</div></div><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="#1F7A3A" stroke-width="1.6"><polyline points="0,12 10,10 20,11 30,5 40,7 50,2"/></svg></div>
+          <div class="qrow"><span><span class="qlab">Sandbox</span> · attn-glr · H100</span><span class="qurg">4m left</span></div>
+          <div class="cstrip" style="margin-top:12px">
+            <div class="cstat"><div class="cnum">18</div><div class="clab">Claims</div></div>
+            <div class="cstat"><div class="cnum">7</div><div class="clab">Exps</div></div>
+            <div class="cstat"><div class="cnum">2</div><div class="clab">Reviews</div></div>
+            <div class="cstat"><div class="cnum acc">1</div><div class="clab">Running</div></div>
+          </div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Briefing DARK -->
+    <div class="dv-opt app umbra" id="2b">
+      <div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a><span class="dv-oname">Briefing · Umbra dark</span></div>
+      <div class="dv-desc">Same layout, Umbra near-black. Orange carries attention and the active tab; semantic dots stay quiet.</div>
+      <div class="phone" data-screen-label="2b Home Briefing dark">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◑</span></div>
+        <div class="pbody">
+          <div class="ghead">
+            <div class="geyebrow">Since you last checked · 3h</div>
+            <div class="gline"><em>Two things</em> need you. Three runs are in flight — all healthy.</div>
+          </div>
+          <div class="ml" style="margin-top:26px">Needs you</div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">vision-scaling</div><div class="ps">design review · approve the plan</div></div></div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">sparse-moe review</div><div class="ps">requested by main · 4h waiting</div></div></div>
+          <div class="pbreak"></div>
+          <div class="ml">What you missed</div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--green)"></span><span class="dig-t"><b>rope-scaling v3</b> finished — supports the scaling claim</span></span><span class="dig-time">2h</span></div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--steel)"></span><span class="dig-t"><b>Reflection wave 4</b> published — 5 lenses</span></span><span class="dig-time">2h</span></div>
+          <div class="dig"><span class="dig-l"><span class="dig-dot" style="background:var(--red)"></span><span class="dig-t"><b>attn-glr</b> run failed — out of memory, retrying</span></span><span class="dig-time">5h</span></div>
+          <div class="pbreak"></div>
+          <div class="ml">In motion</div>
+          <div class="prow2"><div><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m · loss 1.94</div></div><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="#5FC46E" stroke-width="1.6"><polyline points="0,12 10,10 20,11 30,5 40,7 50,2"/></svg></div>
+          <div class="qrow"><span><span class="qlab">Sandbox</span> · attn-glr · H100</span><span class="qurg">4m left</span></div>
+          <div class="cstrip" style="margin-top:12px">
+            <div class="cstat"><div class="cnum">18</div><div class="clab">Claims</div></div>
+            <div class="cstat"><div class="cnum">7</div><div class="clab">Exps</div></div>
+            <div class="cstat"><div class="cnum">2</div><div class="clab">Reviews</div></div>
+            <div class="cstat"><div class="cnum acc">1</div><div class="clab">Running</div></div>
+          </div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <p class="dv-next">Try next: "tighten the standing sentence" · "make What-you-missed longer / show more" · "this is it — build the other screens" · "try a warmer greeting"</p>
+</section>
+
+<section class="dv-turn" id="t1">
+  <div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Home page — three concepts (Luna light)</span></div>
+  <p class="dv-intro">Replacing "Now" with a real home. All three answer the supervisor's glance — <b>does anything need me, what's moving, is it healthy</b> — but weight it differently. <a class="dv-oid" href="#1a">1a</a> leads with a plain-language standing, <a class="dv-oid" href="#1b">1b</a> with the single most urgent thing, <a class="dv-oid" href="#1c">1c</a> with live monitoring. Same nav; the tab is now <b>Home</b>.</p>
+
+  <div class="dv-opts">
+
+    <!-- 1a PULSE -->
+    <div class="dv-opt app" id="1a">
+      <div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a><span class="dv-oname">Pulse</span><span class="rec">lean</span></div>
+      <div class="dv-desc">Opens with a sentence: how many things need you, stated plainly. Then the attention stack, a one-line count strip, what's moving, and synthesis. A calm, complete standing.</div>
+      <div class="phone" data-screen-label="1a Home Pulse">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="hlead">
+            <div class="hbig"><em>2 things</em> need you.</div>
+            <div class="hsubline">3 in flight · 1 running · everything healthy</div>
+          </div>
+          <div class="cstrip">
+            <div class="cstat"><div class="cnum">18</div><div class="clab">Claims</div></div>
+            <div class="cstat"><div class="cnum">7</div><div class="clab">Exps</div></div>
+            <div class="cstat"><div class="cnum">2</div><div class="clab">Reviews</div></div>
+            <div class="cstat"><div class="cnum acc">1</div><div class="clab">Running</div></div>
+          </div>
+          <div class="ml" style="margin-top:14px">Needs you</div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">Sandbox expiring 4m</div><div class="ps">attn-glr · H100 · release or extend</div></div></div>
+          <div class="prow"><span class="pix"></span><div><div class="pt">vision-scaling</div><div class="ps">design review · approve plan</div></div></div>
+          <div class="pbreak"></div>
+          <div class="ml">In flight</div>
+          <div class="prow2"><div><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m elapsed</div></div><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="#1F7A3A" stroke-width="1.6"><polyline points="0,12 10,10 20,11 30,5 40,7 50,2"/></svg></div>
+          <div class="pbreak"></div>
+          <div class="ml">Synthesis</div>
+          <div class="prow2"><div><div class="pt">Wave 4 · published 2h</div><div class="ps">5 lenses · reflection ready</div></div><span class="pchev">›</span></div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1b FOCUS -->
+    <div class="dv-opt app" id="1b">
+      <div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a><span class="dv-oname">Focus</span></div>
+      <div class="dv-desc">One decision fills the screen — the single most urgent item, actionable right here. A dot index shows how many remain; swipe through. When zero, it becomes a calm "all clear." Boldest read of Frictionlessness.</div>
+      <div class="phone" data-screen-label="1b Home Focus">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="hkick">Needs you — most urgent</div>
+          <div class="htitle">Sandbox<br>expiring soon</div>
+          <div class="hcount">04:12</div>
+          <div class="hsub">attn-glr · 8× H100 · sparse-moe sweep<br>Extend the lease, or release it now.</div>
+          <div class="hactions">
+            <span class="hbtn hbtn--accent">Extend</span>
+            <span class="hbtn hbtn--danger">Release</span>
+            <span class="hbtn">Open</span>
+          </div>
+          <div class="hdots"><i class="on"></i><i></i><span>1 of 2 · swipe →</span></div>
+          <div class="peek">
+            <div class="pbreak" style="margin-top:0"></div>
+            <div class="ml">Then · in flight</div>
+            <div class="prow2"><div><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m</div></div><svg class="spk" viewBox="0 0 50 16" fill="none" stroke="#1F7A3A" stroke-width="1.6"><polyline points="0,12 10,10 20,11 30,5 40,7 50,2"/></svg></div>
+          </div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 1c BOARD -->
+    <div class="dv-opt app" id="1c">
+      <div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a><span class="dv-oname">Board</span></div>
+      <div class="dv-desc">Monitoring-first. A slim orange banner surfaces anything that needs you; below, the live experiments run with prominent sparklines so the whole thing feels alive. Counts anchor the bottom.</div>
+      <div class="phone" data-screen-label="1c Home Board">
+        <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+        <div class="pbody">
+          <div class="abanner"><span class="at"><b>2</b> need you</span><span class="ac">→</span></div>
+          <div class="ml" style="margin-top:14px">Live · in flight</div>
+          <div class="lrow"><span class="ldot" style="background:#1F7A3A"></span><div class="lmain"><div class="pt">sparse-moe sweep</div><div class="ps">running · 41m · loss 1.94</div></div><svg class="lspk" viewBox="0 0 78 28" fill="none" stroke="#1F7A3A" stroke-width="1.8"><polyline points="0,22 12,20 24,21 36,12 48,15 60,7 78,3"/></svg></div>
+          <div class="lrow"><span class="ldot" style="background:var(--steel)"></span><div class="lmain"><div class="pt">rope-scaling v3</div><div class="ps">ready to run</div></div><svg class="lspk" viewBox="0 0 78 28" fill="none" stroke="var(--steel)" stroke-width="1.8"><polyline points="0,14 12,15 24,11 36,14 48,8 60,11 78,9"/></svg></div>
+          <div class="lrow"><span class="ldot" style="background:var(--accent)"></span><div class="lmain"><div class="pt">vision-scaling</div><div class="ps">design review · awaiting you</div></div><span class="pchev">›</span></div>
+          <div class="cstrip" style="border-radius:0;margin-top:16px">
+            <div class="cstat"><div class="cnum">18</div><div class="clab">Claims</div></div>
+            <div class="cstat"><div class="cnum">7</div><div class="clab">Exps</div></div>
+            <div class="cstat"><div class="cnum">2</div><div class="clab">Reviews</div></div>
+            <div class="cstat"><div class="cnum acc">1</div><div class="clab">Running</div></div>
+          </div>
+          <div class="ml" style="margin-top:16px">Synthesis</div>
+          <div class="prow2"><div><div class="pt">Wave 4 · published 2h</div><div class="ps">5 lenses · reflection ready</div></div><span class="pchev">›</span></div>
+        </div>
+        <div class="pnav">
+          <a class="pni on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+          <a class="pni"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <p class="dv-next">Try next: "go with <a class="dv-oid" href="#1a">1a</a>, show it in Umbra dark" · "combine <a class="dv-oid" href="#1a">1a</a>'s headline with <a class="dv-oid" href="#1c">1c</a>'s live sparklines" · "show the all-clear / zero state" · "new directions"</p>
+</section>
+</x-dc>
+</body>
+</html>

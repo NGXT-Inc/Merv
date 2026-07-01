@@ -6,33 +6,41 @@
 
 :root {
   color-scheme: light;
-  --bg: #fafaf7;
-  --bg-elev: #ffffff;
-  --bg-soft: #f4f2ed;
-  --text: #1a1a1a;
-  --muted: #6b6b6b;
-  --faint: #a8a8a8;
-  --line: #e8e6e1;
-  --line-soft: #f1efea;
-  --line-strong: #d6d3cd;
-  --supports: #2f6e35;
+  /* "Luna" — warm-paper light theme read from the project's brand deck
+     (design_handoff_mobile_redesign). The single universal accent is the
+     brand orange; green/steel/red do quiet semantic duty only. Shared by
+     desktop and mobile by design. */
+  --bg: #F2F2F0;
+  --bg-elev: #FFFFFF;
+  --bg-soft: #E7E7E4;
+  --text: #17181A;
+  --muted: #57595C;
+  --faint: #9A9C9F;
+  --line: #E2E2DF;
+  --line-soft: #ECECE9;
+  --line-strong: #D3D3D0;
+  --supports: #1F7A3A;
   --qualifies: #9e6500;
-  --refutes: #a82e25;
-  --active: #1f4faf;
+  --refutes: #C0392B;
+  --active: #FF6B35;
   --hover: rgba(var(--active-rgb), 0.06);
   --select: rgba(var(--active-rgb), 0.10);
-  --ice: #0e96c4;
-  --ice-rgb: 14, 150, 196;
+  /* Steel — neutral info (planned / queued / ready). --ice tracks it so the
+     gate banners and FSM gates inherit the palette. */
+  --steel: #3F6699;
+  --steel-rgb: 63, 102, 153;
+  --ice: #3F6699;
+  --ice-rgb: 63, 102, 153;
   /* -rgb twins let alpha tints (rgba(var(--x-rgb), .1)) retheme with the
      palette — same pattern as --ice-rgb. Keep in lockstep with the hex. */
-  --supports-rgb: 47, 110, 53;
+  --supports-rgb: 31, 122, 58;
   --qualifies-rgb: 158, 101, 0;
-  --refutes-rgb: 168, 46, 37;
-  --active-rgb: 31, 79, 175;
-  --faint-rgb: 168, 168, 168;
+  --refutes-rgb: 192, 57, 43;
+  --active-rgb: 255, 107, 53;
+  --faint-rgb: 154, 156, 159;
   --mcp: #6c4faf;
   --mcp-rgb: 108, 79, 175;
-  --danger: #e5484d;
+  --danger: #C0392B;
 
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -77,38 +85,41 @@
 }
 
 /* =====================================================================
-   DARK THEME — warm near-black, editor/terminal adjacent.
+   DARK THEME — "Umbra": near-black with a faint cool undertone so the
+   orange accent pops and dense content (terminals, graphs) stays calm.
    Same token contract as light; semantic hues brightened for contrast
    on dark surfaces. data-theme is set pre-paint in index.html and kept
    in sync by src/store/useTheme.js.
    ===================================================================== */
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #131311;
-  --bg-elev: #1b1b18;
-  --bg-soft: #232320;
-  --text: #e8e6e1;
-  --muted: #9a978f;
-  --faint: #67645d;
-  --line: #2b2b27;
-  --line-soft: #232320;
-  --line-strong: #3d3c36;
-  --supports: #74bf7c;
+  --bg: #121213;
+  --bg-elev: #1B1B1D;
+  --bg-soft: #232325;
+  --text: #ECECEE;
+  --muted: #9A9CA0;
+  --faint: #616367;
+  --line: #2A2A2C;
+  --line-soft: #222224;
+  --line-strong: #39393C;
+  --supports: #5FC46E;
   --qualifies: #d4a045;
-  --refutes: #e07a70;
-  --active: #82a9f5;
-  --hover: rgba(130, 169, 245, 0.07);
-  --select: rgba(130, 169, 245, 0.13);
-  --ice: #43b6de;
-  --ice-rgb: 67, 182, 222;
-  --supports-rgb: 116, 191, 124;
+  --refutes: #E5675A;
+  --active: #FF7A45;
+  --hover: rgba(var(--active-rgb), 0.08);
+  --select: rgba(var(--active-rgb), 0.14);
+  --steel: #7098CC;
+  --steel-rgb: 112, 152, 204;
+  --ice: #7098CC;
+  --ice-rgb: 112, 152, 204;
+  --supports-rgb: 95, 196, 110;
   --qualifies-rgb: 212, 160, 69;
-  --refutes-rgb: 224, 122, 112;
-  --active-rgb: 130, 169, 245;
-  --faint-rgb: 103, 100, 93;
+  --refutes-rgb: 229, 103, 90;
+  --active-rgb: 255, 122, 69;
+  --faint-rgb: 97, 99, 103;
   --mcp: #ab91e8;
   --mcp-rgb: 171, 145, 232;
-  --danger: #f0635d;
+  --danger: #E5675A;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.55);
   --scrim: rgba(0, 0, 0, 0.55);

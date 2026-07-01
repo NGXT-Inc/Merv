@@ -7,7 +7,7 @@ import Sidebar from './components/Sidebar';
 import CompatBanner from './components/CompatBanner';
 import LogicGraphHero from './components/LogicGraphHero';
 import MobileShell from './mobile/MobileShell';
-import NowScreen from './mobile/NowScreen';
+import HomeScreen from './mobile/HomeScreen';
 import ExperimentCardList from './mobile/ExperimentCardList';
 import MobileExperimentDetail from './mobile/MobileExperimentDetail';
 import SandboxCardList from './mobile/SandboxCardList';
@@ -17,6 +17,7 @@ import MobileReviews from './mobile/MobileReviews';
 import MobileProjects from './mobile/MobileProjects';
 import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
 import MobileSynthesisScreen from './mobile/MobileSynthesisScreen';
+import MobileMlflow from './mobile/MobileMlflow';
 import Home from './pages/Home';
 import Feed from './feed/Feed';
 import CreateProject from './pages/CreateProject';
@@ -150,7 +151,7 @@ export default function App() {
           <Route path="/projects/new" element={<MobileProjectCreateNotice />} />
           {/* Project-scoped surface */}
           <Route path="/p/:projectId" element={<ProjectScope />}>
-            <Route index element={<NowScreen />} />
+            <Route index element={<HomeScreen />} />
             <Route path="feed" element={<Feed />} />
             <Route path="claims" element={<MobileClaims />} />
             <Route path="claims/:claimId" element={<ClaimDetail />} />
@@ -164,7 +165,7 @@ export default function App() {
             <Route path="reviews" element={<MobileReviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<SandboxCardList />} />
-            <Route path="mlflow" element={<MobileMlflowNotice />} />
+            <Route path="mlflow" element={<MobileMlflow />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
             <Route path="visual/dag" element={<MobileDagNotice />} />
@@ -229,24 +230,6 @@ function MobileDagNotice() {
       </header>
       <div className="empty-state">
         <p>The interactive lineage map is hover-driven and sized for a wide canvas. Open it on desktop, or browse the same evidence per experiment.</p>
-        <Link to={px('/experiments')} className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
-      </div>
-    </div>
-  );
-}
-
-// The MLflow page pairs native curves with an embedded MLflow drill-in sized
-// for a wide canvas; on touch, point to desktop rather than render the iframe.
-function MobileMlflowNotice() {
-  const px = useProjectHref();
-  return (
-    <div className="page-stage">
-      <header className="page-header">
-        <div className="page-eyebrow">MLflow</div>
-        <h1 className="page-title">Desktop only</h1>
-      </header>
-      <div className="empty-state">
-        <p>The project MLflow dashboard renders runs, metric curves, and the embedded MLflow UI on a wide canvas. Open it on desktop, or browse per-experiment metrics here.</p>
         <Link to={px('/experiments')} className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
       </div>
     </div>

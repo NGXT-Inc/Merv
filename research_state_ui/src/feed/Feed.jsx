@@ -103,7 +103,9 @@ export default function Feed() {
 
   return (
     <div className="feed-stage">
-      <h1 className="sr-only">Feed</h1>
+      {/* Visually hidden on desktop; the mobile surface styles it as the
+          page title (One-Surface redesign). */}
+      <h1 className="feed-title">Feed</h1>
       {status === 'loading' && <div className="feed-note">Loading feed…</div>}
       {status === 'error' && <div className="error-message feed-note">{error}</div>}
       {status === 'ready' && posts.length === 0 && (

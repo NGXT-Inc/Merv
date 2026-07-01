@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { feedApi } from './feedApi';
 import { fmtAgo } from '../utils/format';
-import { useProjectHref } from '../store/useProjectStore';
+import { useProjectStore, useProjectHref, selectExperiments } from '../store/useProjectStore';
+import { expName } from '../utils/experiment';
 
 // Load a feed media path through an authenticated fetch and expose it as a
 // blob: object URL. Needed because hosted control mode serves feed bytes behind
@@ -30,12 +31,16 @@ function useAuthedImage(relPath) {
   return url;
 }
 
-// Map a post's optional entity ref to the route that shows it. Unknown kinds
-// (rver_/rev_/syn_ on desktop) render as a static chip — there is no single
-// detail page for them.
-function refTarget(ref) {
+// Map a post's optional entity ref to the route that shows it. Experiments
+// resolve to their display name (the chip should read "↗ vision-scaling",
+// not "↗ experiment"). Unknown kinds (rver_/rev_/syn_) render as a static
+// chip — there is no single detail page for them.
+function refTarget(ref, experiments) {
   if (!ref) return null;
-  if (ref.startsWith('exp_')) return { to: `/experiments/${ref}`, label: 'experiment' };
+  if (ref.startsWith('exp_')) {
+    const exp = experiments.find(e => e.id === ref);
+    return { to: `/experiments/${ref}`, label: exp ? expName(exp) : 'experiment' };
+  }
   if (ref.startsWith('claim_')) return { to: `/claims/${ref}`, label: 'claim' };
   if (ref.startsWith('res_')) return { to: `/resources/${ref}`, label: 'resource' };
   return null;
@@ -52,6 +57,7 @@ function hostOf(url) {
  */
 export default function PostCard({ post, projectId, onView }) {
   const px = useProjectHref();
+  const experiments = useProjectStore(selectExperiments);
   const cardRef = useRef(null);
   const viewedRef = useRef(false);
 
@@ -75,7 +81,7 @@ export default function PostCard({ post, projectId, onView }) {
   // fmtAgo expects an elapsed duration (ms), not an absolute timestamp.
   const ts = post.created_at ? new Date(post.created_at).getTime() : null;
   const ago = ts != null ? Date.now() - ts : null;
-  const ref = refTarget(post.ref);
+  const ref = refTarget(post.ref, experiments);
   const preview = post.link_preview;
   const imageSrc = useAuthedImage(post.image_url);
   const linkThumbSrc = useAuthedImage(
@@ -89,7 +95,7 @@ export default function PostCard({ post, projectId, onView }) {
         {post.author_role && post.author_role !== 'main' && (
           <span className="postcard-role">{post.author_role}</span>
         )}
-        {ago != null && <span className="postcard-time">· {fmtAgo(ago)}</span>}
+        {ago != null && <span className="postcard-time">{fmtAgo(ago)}</span>}
       </header>
 
       {post.text && <p className="postcard-text">{post.text}</p>}

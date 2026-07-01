@@ -1,5 +1,6 @@
 import Sparkline from './Sparkline';
 import { fmtNum } from '../utils/format';
+import { curveValues } from '../utils/metrics';
 
 /**
  * The single renderer for the centralized-MLflow read model — one plugin-side
@@ -13,13 +14,6 @@ export function runsFromMetrics(payload) {
   if (!payload || payload.available === false) return [];
   return (Array.isArray(payload.experiments) ? payload.experiments : [])
     .flatMap(e => (Array.isArray(e.runs) ? e.runs : []));
-}
-
-// A history entry is [[step, value], …]; pull the finite y-values for charting.
-function curveValues(points) {
-  return (Array.isArray(points) ? points : [])
-    .map(p => (Array.isArray(p) ? p[1] : null))
-    .filter(v => Number.isFinite(v));
 }
 
 export default function RunMetrics({ runs }) {

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#45464a;font-family:system-ui,-apple-system,sans-serif;color:#cdd2d8;padding:44px 48px 60px}
+  .doc-h{max-width:720px;margin:0 0 30px}
+  .doc-ey{font:700 10px system-ui;letter-spacing:.16em;text-transform:uppercase;color:#FF7A45;margin-bottom:10px}
+  .doc-t{font:600 25px system-ui;letter-spacing:-.01em;color:#f4f6f8;margin:0 0 10px}
+  .doc-s{font:400 13.5px/1.6 system-ui;color:#a8afb7;margin:0}
+  .doc-s b{color:#eef1f4;font-weight:600}
+
+  .row2{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;margin-top:6px}
+  .ph-wrap{display:flex;flex-direction:column;align-items:center;gap:9px}
+  .ph-cap{font:600 9.5px system-ui;letter-spacing:.08em;text-transform:uppercase;color:#8b9099}
+  .note{flex:1;min-width:190px;max-width:250px;padding-top:6px}
+  .nrow{font:400 12px/1.45 system-ui;color:#b2b8bf;margin-bottom:12px;padding-left:15px;position:relative}
+  .nrow:before{content:'';position:absolute;left:0;top:6px;width:7px;height:7px;border-radius:2px;background:#FF7A45}
+  .nrow b{color:#eef1f4;font-weight:600}
+
+  .app{--bg:#F2F2F0;--elev:#FFFFFF;--soft:#E7E7E4;--text:#17181A;--muted:#57595C;--faint:#9A9C9F;--line:#E2E2DF;--line2:#D3D3D0;--accent:#FF6B35;--green:#1F7A3A;--steel:#3F6699;--red:#C0392B}
+  .app.umbra{--bg:#121213;--elev:#1B1B1D;--soft:#232325;--text:#ECECEE;--muted:#9A9CA0;--faint:#616367;--line:#2A2A2C;--line2:#39393C;--accent:#FF7A45;--green:#5FC46E;--steel:#7098CC;--red:#E5675A}
+
+  .phone{width:300px;height:632px;background:var(--bg);border:2px solid var(--line2);border-radius:34px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+  .pbar{display:flex;align-items:center;gap:9px;padding:14px 17px 11px;background:var(--elev);border-bottom:1px solid var(--line)}
+  .ptitle{flex:1;font:600 14px system-ui;color:var(--text)}
+  .psync{display:inline-flex;align-items:center;gap:6px;font:500 10.5px system-ui;color:var(--muted)}
+  .live{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .pth{color:var(--muted);font-size:14px}
+  .pbody{flex:1;padding:6px 17px;overflow:hidden}
+  .peyebrow{font:600 11px system-ui;color:var(--faint);padding:10px 0 2px}
+  .ptitle-lg{font:600 22px system-ui;color:var(--text);letter-spacing:-.012em;padding:2px 0 3px}
+  .plede{font:400 11.5px system-ui;color:var(--muted);margin-bottom:2px}
+  .pnav{display:flex;align-items:center;justify-content:space-around;height:52px;border-top:1px solid var(--line);background:var(--elev)}
+  .pni{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint)}
+  .pni svg{width:20px;height:20px}
+  .pni .pnl{font:600 9.5px system-ui}
+  .pni.on{color:var(--accent)}
+
+  /* metric focus filter */
+  .mfocus{display:flex;gap:15px;padding:11px 0 0;border-bottom:1px solid var(--line);margin:10px 0 2px;overflow-x:auto}
+  .mfocus span{font:600 12px system-ui;color:var(--faint);white-space:nowrap;padding-bottom:9px;flex:none;font-variant-numeric:tabular-nums}
+  .mfocus span.on{color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)}
+  .mfocus .mono{font-family:ui-monospace,Menlo,monospace;font-size:11px}
+
+  /* experiment group */
+  .mexp{padding:15px 0 2px;border-top:1px solid var(--line);margin-top:6px;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+  .mexp:first-of-type{border-top:none;margin-top:0}
+  .mexp-name{font:600 14.5px system-ui;color:var(--text)}
+  .mexp-meta{font:500 10px system-ui;color:var(--faint);white-space:nowrap}
+  .mrun{display:flex;align-items:baseline;gap:7px;padding:6px 0 2px}
+  .mrun-name{font:600 11px ui-monospace,Menlo,monospace;color:var(--muted)}
+  .mrun-status{font:600 8px system-ui;letter-spacing:.05em;text-transform:uppercase}
+  .mgrid{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:11px;overflow:hidden;margin:8px 0 4px}
+  .mcell{padding:9px 11px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .mcell:nth-child(2n){border-right:none}
+  .mc-head{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+  .mc-key{font:500 10px ui-monospace,Menlo,monospace;color:var(--muted)}
+  .mc-val{font:700 14px system-ui;color:var(--text);font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:3px}
+  .mc-val .tr{font-size:9px;font-weight:700}
+  .mc-spark{display:block;width:100%;height:26px;margin-top:7px}
+</style>
+</helmet>
+
+<div class="doc-h">
+  <div class="doc-ey">Merv · MLflow (mobile)</div>
+  <h1 class="doc-t">The quantitative ledger, on a phone</h1>
+  <p class="doc-s">MLflow is one ledger over all of the project's numbers. The desktop shows a wide curve grid; here it becomes a single scroll: a <b>metric-focus</b> filter to scan one signal project-wide, then experiment → run → metric curves. Charts earn their place — this is the one screen that's meant to be quantitative. Luna light + Umbra dark.</p>
+</div>
+
+<div class="row2">
+
+  <!-- LIGHT -->
+  <div class="ph-wrap app">
+    <div class="phone" data-screen-label="MLflow light">
+      <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◐</span></div>
+      <div class="pbody">
+        <div class="peyebrow">‹ More</div>
+        <div class="ptitle-lg">MLflow</div>
+        <div class="plede">6 experiments · 14 runs · 5 metrics · updated 2m ago</div>
+        <div class="mfocus"><span class="on">All</span><span class="mono">loss</span><span class="mono">eval_acc</span><span class="mono">grad_norm</span><span class="mono">lr</span></div>
+
+        <div class="mexp"><span class="mexp-name">sparse-moe sweep</span><span class="mexp-meta">running · 3 runs</span></div>
+        <div class="mrun"><span class="mrun-name">run-4 · moe-8e</span><span class="mrun-status" style="color:var(--green)">running</span></div>
+        <div class="mgrid">
+          <div class="mcell"><div class="mc-head"><span class="mc-key">loss</span><span class="mc-val">1.94 <span class="tr" style="color:var(--green)">▼</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--steel)" stroke-width="1.6"><polyline points="0,4 14,9 28,8 42,14 56,13 70,19 84,21 100,24"/></svg></div>
+          <div class="mcell"><div class="mc-head"><span class="mc-key">eval_acc</span><span class="mc-val">0.82 <span class="tr" style="color:var(--green)">▲</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,23 14,20 28,21 42,14 56,12 70,8 84,7 100,4"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">grad_norm</span><span class="mc-val">0.41</span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--muted)" stroke-width="1.6"><polyline points="0,14 14,9 28,18 42,11 56,16 70,10 84,15 100,13"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">lr</span><span class="mc-val">3.0e-4</span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--muted)" stroke-width="1.6"><polyline points="0,24 12,5 28,7 44,11 60,15 76,19 100,23"/></svg></div>
+        </div>
+
+        <div class="mexp"><span class="mexp-name">vision-scaling v2</span><span class="mexp-meta">complete · 2 runs</span></div>
+        <div class="mrun"><span class="mrun-name">baseline</span><span class="mrun-status" style="color:var(--muted)">finished</span></div>
+        <div class="mgrid">
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">loss</span><span class="mc-val">2.11 <span class="tr" style="color:var(--green)">▼</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--steel)" stroke-width="1.6"><polyline points="0,3 16,8 32,11 48,13 64,17 80,20 100,22"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">eval_acc</span><span class="mc-val">0.79 <span class="tr" style="color:var(--green)">▲</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,22 16,18 32,16 48,13 64,11 80,8 100,6"/></svg></div>
+        </div>
+      </div>
+      <div class="pnav">
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+        <a class="pni on"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+      </div>
+    </div>
+    <div class="ph-cap">MLflow · Luna light</div>
+  </div>
+
+  <!-- DARK -->
+  <div class="ph-wrap app umbra">
+    <div class="phone" data-screen-label="MLflow dark">
+      <div class="pbar"><span class="ptitle">researchd</span><span class="psync"><i class="live"></i>synced 2s</span><span class="pth">◑</span></div>
+      <div class="pbody">
+        <div class="peyebrow">‹ More</div>
+        <div class="ptitle-lg">MLflow</div>
+        <div class="plede">6 experiments · 14 runs · 5 metrics · updated 2m ago</div>
+        <div class="mfocus"><span class="on">All</span><span class="mono">loss</span><span class="mono">eval_acc</span><span class="mono">grad_norm</span><span class="mono">lr</span></div>
+
+        <div class="mexp"><span class="mexp-name">sparse-moe sweep</span><span class="mexp-meta">running · 3 runs</span></div>
+        <div class="mrun"><span class="mrun-name">run-4 · moe-8e</span><span class="mrun-status" style="color:var(--green)">running</span></div>
+        <div class="mgrid">
+          <div class="mcell"><div class="mc-head"><span class="mc-key">loss</span><span class="mc-val">1.94 <span class="tr" style="color:var(--green)">▼</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--steel)" stroke-width="1.6"><polyline points="0,4 14,9 28,8 42,14 56,13 70,19 84,21 100,24"/></svg></div>
+          <div class="mcell"><div class="mc-head"><span class="mc-key">eval_acc</span><span class="mc-val">0.82 <span class="tr" style="color:var(--green)">▲</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,23 14,20 28,21 42,14 56,12 70,8 84,7 100,4"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">grad_norm</span><span class="mc-val">0.41</span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--muted)" stroke-width="1.6"><polyline points="0,14 14,9 28,18 42,11 56,16 70,10 84,15 100,13"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">lr</span><span class="mc-val">3.0e-4</span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--muted)" stroke-width="1.6"><polyline points="0,24 12,5 28,7 44,11 60,15 76,19 100,23"/></svg></div>
+        </div>
+
+        <div class="mexp"><span class="mexp-name">vision-scaling v2</span><span class="mexp-meta">complete · 2 runs</span></div>
+        <div class="mrun"><span class="mrun-name">baseline</span><span class="mrun-status" style="color:var(--muted)">finished</span></div>
+        <div class="mgrid">
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">loss</span><span class="mc-val">2.11 <span class="tr" style="color:var(--green)">▼</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--steel)" stroke-width="1.6"><polyline points="0,3 16,8 32,11 48,13 64,17 80,20 100,22"/></svg></div>
+          <div class="mcell" style="border-bottom:none"><div class="mc-head"><span class="mc-key">eval_acc</span><span class="mc-val">0.79 <span class="tr" style="color:var(--green)">▲</span></span></div><svg class="mc-spark" viewBox="0 0 100 26" preserveAspectRatio="none" fill="none" stroke="var(--green)" stroke-width="1.6"><polyline points="0,22 16,18 32,16 48,13 64,11 80,8 100,6"/></svg></div>
+        </div>
+      </div>
+      <div class="pnav">
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11.5 12 5l8 6.5"/><path d="M6 10v9h12v-9"/></svg><span class="pnl">Home</span></a>
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7 9h6M7 12.5h10M7 16h10"/></svg><span class="pnl">Feed</span></a>
+        <a class="pni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 3h6M10 3v6.5L5.5 17.5A2 2 0 007.3 20.5h9.4a2 2 0 001.8-3L14 9.5V3M8 15h8"/></svg><span class="pnl">Exps</span></a>
+        <a class="pni on"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="pnl">More</span></a>
+      </div>
+    </div>
+    <div class="ph-cap">MLflow · Umbra dark</div>
+  </div>
+
+  <div class="note">
+    <div class="nrow"><b>Metric-focus filter</b> up top (loss · eval_acc · grad_norm · lr) — tap one to scan that signal across every run, project-wide.</div>
+    <div class="nrow"><b>Grouped: experiment → run → curves.</b> Mirrors the real <code>results_metrics</code> shape from the ledger.</div>
+    <div class="nrow"><b>Curves read directionally:</b> loss/eval trend arrows go green when they're heading the right way; grad_norm / lr stay neutral.</div>
+    <div class="nrow">Two-up chart grid keeps sparklines legible without horizontal scroll. Tap a curve → full chart.</div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

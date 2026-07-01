@@ -5,7 +5,16 @@
    does, so the two surfaces cannot collide.
    ===================================================================== */
 
+/* Width invariant: the surface is exactly the viewport wide. Text may break
+   anywhere rather than widen the page (overflow-wrap inherits everywhere),
+   and the root clips whatever residue remains — pre/tables scroll internally
+   instead of dragging the whole surface sideways. */
+html[data-surface="mobile"] {
+  overflow-x: clip;
+}
+
 html[data-surface="mobile"] body {
+  overflow-wrap: anywhere;
   overscroll-behavior-y: contain;
   /* height of the fixed bottom nav incl. the iOS home indicator — sheets rest
      on top of it so the nav (and the More toggle) stays tappable while open. */
@@ -38,7 +47,7 @@ html[data-surface="mobile"] .mbar {
   gap: 10px;
   padding: 10px 14px;
   padding-top: calc(10px + env(safe-area-inset-top, 0px));
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
@@ -46,7 +55,7 @@ html[data-surface="mobile"] .mbar {
 html[data-surface="mobile"] .mbar-title {
   flex: 1;
   min-width: 0;
-  font-size: var(--text-md);
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -112,21 +121,6 @@ html[data-surface="mobile"] .mnav-tab .mnav-glyph {
   line-height: 1;
 }
 html[data-surface="mobile"] .mnav-tab.active { color: var(--active); font-weight: 600; }
-html[data-surface="mobile"] .mnav-badge {
-  position: absolute;
-  top: 6px;
-  right: calc(50% - 22px);
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: var(--radius-pill);
-  background: var(--refutes);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-}
 
 /* More sheet */
 html[data-surface="mobile"] .msheet-backdrop {
@@ -232,11 +226,12 @@ html[data-surface="mobile"] .kv-row { grid-template-columns: 104px 1fr; }
 html[data-surface="mobile"] .timeline-row { grid-template-columns: 86px 1fr; }
 html[data-surface="mobile"] .timeline-time { font-size: 10.5px; }
 
-/* Long ids / paths / endpoints must wrap, not push the layout. */
+/* Long ids / paths / endpoints must wrap, not push the layout (the surface
+   already inherits overflow-wrap: anywhere; these also need their desktop
+   nowrap lifted so they actually get wrap opportunities). */
 html[data-surface="mobile"] .mono,
 html[data-surface="mobile"] .obj-id,
 html[data-surface="mobile"] .res-path {
-  overflow-wrap: anywhere;
   white-space: normal;
 }
 
@@ -387,38 +382,27 @@ html[data-surface="mobile"] .mchip-count {
   font-variant-numeric: tabular-nums;
 }
 
-/* ─────────────────── segmented control (detail) ──────────────────── */
-
+/* ─────────────── view toggle (graph Figure/Story) ─────────────────
+   An underline text toggle, not a boxed control — same idiom as the
+   Experiments filter and the MLflow metric focus. */
 html[data-surface="mobile"] .mseg {
-  position: sticky;
-  /* below the app bar: ~40px content row + 2×10px padding ≈ 60px */
-  top: calc(58px + env(safe-area-inset-top, 0px));
-  z-index: 30;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  gap: 4px;
-  padding: 4px;
-  margin: 12px 0 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--line);
-  background: var(--bg-soft);
+  display: inline-flex;
+  gap: 15px;
 }
 html[data-surface="mobile"] .mseg-btn {
-  min-height: 36px;
   border: none;
-  border-radius: var(--radius-md);
   background: none;
-  color: var(--muted);
-  font-size: var(--text-sm);
+  padding: 0 0 7px;
   font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--faint);
 }
 html[data-surface="mobile"] .mseg-btn.active {
-  background: var(--bg-elev);
   color: var(--text);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
+  box-shadow: inset 0 -2px 0 var(--active);
 }
+html[data-surface="mobile"] .mseg-btn:disabled { opacity: 0.4; }
 
 /* Inline two-step confirm row (sandbox release). */
 html[data-surface="mobile"] .mconfirm {
@@ -608,24 +592,10 @@ html[data-surface="mobile"] .slide-confirm-knob {
   touch-action: none;
 }
 
-/* ── Inline segmented control (graph Figure/Story toggle) ──────────── */
-html[data-surface="mobile"] .mseg--inline {
-  position: static;
-  display: inline-grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(62px, auto);
-  margin: 0;
-  top: auto;
-}
-
-/* ── Graph outline (depth-ordered node rows) ───────────────────────── */
+/* ── Graph outline (depth-ordered node rows) — flush on the surface ── */
 html[data-surface="mobile"] .goutline {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elev);
-  overflow: hidden;
 }
 html[data-surface="mobile"] .goutline-row {
   display: flex;
@@ -768,52 +738,8 @@ html[data-surface="mobile"] .gcanvas-node-label {
   -webkit-box-orient: vertical;
 }
 
-/* ── Metric curves (durable results) ───────────────────────────────── */
-html[data-surface="mobile"] .mmetric-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-}
-html[data-surface="mobile"] .mmetric {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-md);
-  background: var(--bg-soft);
-  padding: 8px 10px;
-}
-html[data-surface="mobile"] .mmetric-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-html[data-surface="mobile"] .mmetric-key {
-  font-size: var(--text-xs);
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-html[data-surface="mobile"] .mmetric-val {
-  font-size: var(--text-md);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
+/* ── Sparkline (shared SVG) ────────────────────────────────────────── */
 html[data-surface="mobile"] .msparkline { display: block; margin-top: 6px; }
-html[data-surface="mobile"] .mmetric-params {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-html[data-surface="mobile"] .mmetric-param {
-  font-size: var(--text-xs);
-  color: var(--text);
-  background: var(--bg-soft);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-pill);
-  padding: 3px 9px;
-}
-html[data-surface="mobile"] .mmetric-param-key { color: var(--faint); }
 
 /* =====================================================================
    REUSED DESKTOP PAGES — mobile.css can't replace these (Events/Activity/
@@ -1113,37 +1039,643 @@ html[data-surface="mobile"] .msyn-revision {
   overflow-wrap: anywhere;
 }
 
-/* ── Now-screen counts strip ───────────────────────────────────────── */
-html[data-surface="mobile"] .mcounts {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin-bottom: 18px;
+/* =====================================================================
+   ONE SURFACE (design_handoff_mobile_redesign) — shared primitives for
+   the redesigned mobile screens. One flowing column: no cards, hairlines
+   only where meaning breaks, the 3px orange index the sole rupture.
+   ===================================================================== */
+
+/* Small section label — the .ml of the design references. */
+html[data-surface="mobile"] .mml {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 0 0 8px;
 }
-html[data-surface="mobile"] .mcount {
+/* Section-break hairline. */
+html[data-surface="mobile"] .mbreak {
+  border-top: 1px solid var(--line);
+  margin: 13px 0 9px;
+}
+/* Large page title (Feed / Experiments / MLflow). */
+html[data-surface="mobile"] .mtitle-lg {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--text);
+  padding: 12px 0 4px;
+  margin: 0;
+}
+/* Quiet inline empty state — a line, not a hero. */
+html[data-surface="mobile"] .mquiet {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 4px 0 8px;
+}
+/* Attention row: the 3px orange index is the only decorative color moment. */
+html[data-surface="mobile"] .mprow {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  padding: 10px 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--bg-elev);
+  gap: 11px;
+  align-items: flex-start;
+  padding: 8px 0;
   color: var(--text);
   text-decoration: none;
+  min-height: 44px;
 }
-html[data-surface="mobile"] .mcount:active { background: var(--hover); }
-html[data-surface="mobile"] .mcount--accent { border-color: var(--active); }
-html[data-surface="mobile"] .mcount-value {
-  font-size: var(--text-lg);
+html[data-surface="mobile"] .mprow:active { background: var(--hover); }
+html[data-surface="mobile"] .mprow-ix {
+  width: 3px;
+  align-self: stretch;
+  min-height: 30px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--active);
+}
+html[data-surface="mobile"] .mprow-ix--faint { background: var(--line-strong); }
+html[data-surface="mobile"] .mprow-t {
+  display: block;
+  font-size: 14px;
   font-weight: 600;
-  line-height: 1.1;
+  line-height: 1.2;
 }
-html[data-surface="mobile"] .mcount--accent .mcount-value { color: var(--active); }
-html[data-surface="mobile"] .mcount-label {
+html[data-surface="mobile"] .mprow-s {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+html[data-surface="mobile"] .mprow--more { min-height: 34px; align-items: center; }
+html[data-surface="mobile"] .mprow--more .mprow-s { margin-top: 0; color: var(--faint); }
+
+/* ── Home — "Instrument snapshot" ──────────────────────────────────── */
+html[data-surface="mobile"] .mhome { padding: 4px 16px 40px; }
+html[data-surface="mobile"] .mhome .mbanner { margin-top: 10px; }
+html[data-surface="mobile"] .mstand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0 12px;
+}
+html[data-surface="mobile"] .mstand-date {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mstand-need {
+  border: none;
+  background: none;
+  padding: 4px 0;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--active);
+}
+/* 24h snapshot band — the one hairline grid Home is allowed (figures need
+   containment). */
+html[data-surface="mobile"] .mtiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+html[data-surface="mobile"] .mtile {
+  padding: 13px 14px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+html[data-surface="mobile"] .mtile:nth-child(2n) { border-right: none; }
+html[data-surface="mobile"] .mtile:nth-child(n+3) { border-bottom: none; }
+html[data-surface="mobile"] .mtile-v {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: var(--text);
+}
+html[data-surface="mobile"] .mtile-v small {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mtile-v .up {
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--faint);
-  text-align: center;
+  font-weight: 700;
+  color: var(--supports);
 }
+html[data-surface="mobile"] .mtile-v .down {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--faint);
+}
+html[data-surface="mobile"] .mtile-l {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 6px;
+}
+/* Live-now block — flush on the surface, tappable as one unit. */
+html[data-surface="mobile"] .mlive {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+html[data-surface="mobile"] .mlivehead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+html[data-surface="mobile"] .mlive-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text);
+}
+html[data-surface="mobile"] .mlive-sub {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+html[data-surface="mobile"] .mumeter {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-soft);
+  position: relative;
+  margin: 11px 0 5px;
+  overflow: hidden;
+}
+html[data-surface="mobile"] .mumeter i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: var(--supports);
+}
+html[data-surface="mobile"] .mumlab {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mmetricline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+}
+html[data-surface="mobile"] .mmetricline-key {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mmetricline-val {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+html[data-surface="mobile"] .mmetricline-val .tr { font-size: 12px; font-weight: 700; }
+html[data-surface="mobile"] .tr--good { color: var(--supports); }
+html[data-surface="mobile"] .tr--bad { color: var(--refutes); }
+html[data-surface="mobile"] .mspk { width: 50px; height: 16px; flex: none; }
+
+/* ── Experiments — flush lifecycle rows ────────────────────────────── */
+html[data-surface="mobile"] .mexps { padding: 4px 16px 40px; }
+/* Underline text filter — a quiet row, not boxed chips. */
+html[data-surface="mobile"] .mefilt {
+  display: flex;
+  gap: 15px;
+  padding: 10px 0 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+html[data-surface="mobile"] .mefilt::-webkit-scrollbar { display: none; }
+html[data-surface="mobile"] .mefilt button {
+  border: none;
+  background: none;
+  padding: 0 0 9px;
+  flex: none;
+  white-space: nowrap;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--faint);
+}
+html[data-surface="mobile"] .mefilt button.on {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--active);
+}
+html[data-surface="mobile"] .mefilt .c {
+  font-size: 9.5px;
+  margin-left: 3px;
+}
+/* One experiment = one flush row; the hairline separates rows, the 3px
+   index carries the state. */
+html[data-surface="mobile"] .merow {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+  text-decoration: none;
+  min-height: 44px;
+}
+html[data-surface="mobile"] .merow:active { background: var(--hover); }
+html[data-surface="mobile"] .merow-ix {
+  width: 3px;
+  align-self: stretch;
+  min-height: 40px;
+  border-radius: 2px;
+  flex: none;
+}
+html[data-surface="mobile"] .merow-main { flex: 1; min-width: 0; }
+html[data-surface="mobile"] .merow-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+html[data-surface="mobile"] .merow-status {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  margin-top: 3px;
+}
+html[data-surface="mobile"] .merow-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Experiment detail — one scroll + scrub rail ───────────────────── */
+html[data-surface="mobile"] .mxd { padding: 16px 16px 40px; }
+/* The back eyebrow is a quiet pointer, not a shouted breadcrumb. */
+html[data-surface="mobile"] .mxd .page-eyebrow {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 500;
+}
+/* FSM strip reads as a quiet track: steps size to their labels and the
+   strip scrolls (desktop's equal-width flex crushes nowrap labels on a
+   phone); the current step is marked by its dot + ink label, not a box. */
+html[data-surface="mobile"] .fsm-step { flex: 0 0 auto; min-width: auto; }
+html[data-surface="mobile"] .fsm-step--current {
+  background: none;
+  border-color: transparent;
+}
+/* Desktop's 56px section rhythm is dead space inside the one scroll. */
+html[data-surface="mobile"] .mxd .section { margin-bottom: 0; }
+
+/* Gate row — flush: the 3px index carries it (steel = neutral workflow
+   info, orange = a review gate awaiting the human). The banner's tinted
+   card chrome is desktop-only. */
+html[data-surface="mobile"] .mxd .gate-banner {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 2px 0 2px 14px;
+  margin: 2px 0 6px;
+}
+html[data-surface="mobile"] .mxd .gate-banner::before {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--steel);
+}
+html[data-surface="mobile"] .mxd .mxd-gate--attn .gate-banner::before { background: var(--active); }
+
+/* Spotlights (plan / report) sit flush on the surface; the section's own
+   label already names them, so the card and its eyebrow go. */
+html[data-surface="mobile"] .mxd .spotlight {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin-bottom: 0;
+}
+html[data-surface="mobile"] .mxd .spotlight-eyebrow { display: none; }
+/* Status reads as colored text, not a pill. */
+html[data-surface="mobile"] .mxd .plan-status {
+  background: none;
+  border: none;
+  padding: 0;
+}
+/* Head row as an explicit grid: status left, quiet toggle buttons right,
+   the file path on its own faint line below — no wrapped pill soup on a
+   375px column. display:contents lifts the buttons/path out of their
+   desktop wrapper so the grid can place them. */
+html[data-surface="mobile"] .mxd .spotlight-head--row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin-bottom: 8px;
+}
+html[data-surface="mobile"] .mxd .spotlight-head-left { grid-row: 1; grid-column: 1; }
+html[data-surface="mobile"] .mxd .spotlight-head-right { display: contents; }
+html[data-surface="mobile"] .mxd .spotlight-head-right .spotlight-bar-path {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  max-width: none;
+  font-size: 10px;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+html[data-surface="mobile"] .mxd .spotlight-head-right .btn { grid-row: 1; }
+html[data-surface="mobile"] .mxd .spotlight .btn {
+  min-height: 30px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Recorded results — flush, with the curves in the sanctioned hairline
+   chart grid (same language as mobile MLflow). */
+html[data-surface="mobile"] .mxd .results-metrics {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+html[data-surface="mobile"] .mxd .results-metrics-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mxd .mlf-runs { margin-top: 8px; gap: 12px; }
+html[data-surface="mobile"] .mxd .mlf-run { border-top: none; padding-top: 0; }
+html[data-surface="mobile"] .mxd .mlf-run-name { font-size: 11px; font-weight: 600; color: var(--muted); }
+html[data-surface="mobile"] .mxd .mlf-curve-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  overflow: hidden;
+}
+html[data-surface="mobile"] .mxd .mlf-curve {
+  background: var(--bg);
+  border: none;
+  border-radius: 0;
+  padding: 9px 11px;
+  min-width: 0;
+  /* hairlines paint into the 1px gap; container overflow clips the edges */
+  box-shadow: 1px 1px 0 0 var(--line);
+}
+html[data-surface="mobile"] .mxd .mlf-curve-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+html[data-surface="mobile"] .mxd .mlf-curve-val {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+html[data-surface="mobile"] .mxd .mbreak { margin: 18px 0 14px; }
+html[data-surface="mobile"] .mxd-section { scroll-margin-top: 74px; }
+html[data-surface="mobile"] .mxd-section > .mml { margin-top: 4px; }
+html[data-surface="mobile"] .mxd .fsm-strip-wrap { margin-bottom: 18px; }
+html[data-surface="mobile"] .mxd-intent {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0 0 10px;
+}
+/* Collapsed heavy pane — mounts (and starts polling) only on tap. */
+html[data-surface="mobile"] .mterm-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mterm-row:active { background: var(--hover); }
+html[data-surface="mobile"] .mterm-twist { color: var(--faint); font-size: 12px; }
+
+/* The right-edge scrub rail — a pure overlay pinned between the app bar
+   and the bottom nav; content stays full-width behind it. */
+html[data-surface="mobile"] .mrail {
+  position: fixed;
+  top: calc(96px + env(safe-area-inset-top, 0px));
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  right: 0;
+  width: 15px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-left: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  touch-action: none;
+  transition: width 160ms ease;
+}
+html[data-surface="mobile"] .mrail-tick {
+  width: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--line-strong);
+}
+html[data-surface="mobile"] .mrail-tick.on {
+  width: 10px;
+  background: var(--active);
+}
+/* Engaged: a frosted panel with the section labels. */
+html[data-surface="mobile"] .mrail--open {
+  width: 104px;
+  align-items: stretch;
+  gap: 0;
+  padding: 5px 0;
+  background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+  border-left: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+}
+html[data-surface="mobile"] .mrail-lab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 0 13px 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+html[data-surface="mobile"] .mrail-lab .mrail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: none;
+}
+html[data-surface="mobile"] .mrail-lab.on {
+  color: var(--text);
+  box-shadow: inset -3px 0 0 var(--active);
+}
+html[data-surface="mobile"] .mrail-lab.on .mrail-dot {
+  background: var(--active);
+  box-shadow: 0 0 0 3px rgba(var(--active-rgb), 0.16);
+}
+/* ── MLflow — the quantitative ledger ──────────────────────────────── */
+html[data-surface="mobile"] .mlfm { padding: 4px 16px 40px; }
+html[data-surface="mobile"] .mlfm-eyebrow {
+  display: block;
+  border: none;
+  background: none;
+  padding: 10px 0 2px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--faint);
+  text-align: left;
+}
+html[data-surface="mobile"] .mlfm .mtitle-lg { padding: 2px 0 3px; }
+html[data-surface="mobile"] .mlfm-lede {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 2px;
+  font-variant-numeric: tabular-nums;
+}
+html[data-surface="mobile"] .mlfm-focus { margin: 10px 0 2px; padding-top: 11px; }
+html[data-surface="mobile"] .mlfm-focus .mono { font-size: 11px; }
+/* Experiment group header — a hairline only where meaning breaks. */
+html[data-surface="mobile"] .mlfm-exp {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 15px 0 2px;
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+html[data-surface="mobile"] .mlfm-exp:first-of-type { border-top: none; margin-top: 0; }
+html[data-surface="mobile"] .mlfm-exp-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+html[data-surface="mobile"] .mlfm-exp-meta {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--faint);
+  white-space: nowrap;
+}
+html[data-surface="mobile"] .mlfm-run {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 0 2px;
+}
+html[data-surface="mobile"] .mlfm-run-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+html[data-surface="mobile"] .mlfm-run-status {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+/* 2-up curve grid — charts need containment, so this is the one place a
+   hairline grid is allowed. Each cell paints its hairline into a 1px gap
+   (box-shadow right+down), so lines stay exact even when a cell spans the
+   row, and an odd count leaves a clean canvas-colored empty slot. */
+html[data-surface="mobile"] .mlfm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  overflow: hidden;
+  margin: 8px 0 4px;
+}
+html[data-surface="mobile"] .mlfm-grid--single { grid-template-columns: 1fr; }
+html[data-surface="mobile"] .mlfm-cell {
+  border: none;
+  background: var(--bg);
+  text-align: left;
+  font-family: var(--font-body);
+  padding: 9px 11px;
+  min-width: 0;
+  box-shadow: 1px 1px 0 0 var(--line);
+}
+/* Tap a curve → it takes the full row as a bigger chart. */
+html[data-surface="mobile"] .mlfm-cell--big { grid-column: 1 / -1; }
+html[data-surface="mobile"] .mlfm-cell-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+html[data-surface="mobile"] .mlfm-cell-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-surface="mobile"] .mlfm-cell-val {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+html[data-surface="mobile"] .mlfm-cell-val .tr { font-size: 9px; font-weight: 700; }
+html[data-surface="mobile"] .mlfm-cell .msparkline { margin-top: 7px; }
+
+/* While scrubbing, the surface recedes behind a light veil. */
+html[data-surface="mobile"] .mrail-dim {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: color-mix(in srgb, var(--bg) 34%, transparent);
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-surface="mobile"] .mrail { transition: none; }
+}
+

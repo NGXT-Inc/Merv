@@ -16,11 +16,11 @@ const base = {
   'aria-hidden': true,
 };
 
-export function IconNow(props) {
+export function IconHome(props) {
   return (
     <svg {...base} {...props}>
-      <circle cx="12" cy="12" r="8" />
-      <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none" />
+      <path d="M4 11.5 12 5l8 6.5" />
+      <path d="M6 10v9h12v-9" />
     </svg>
   );
 }

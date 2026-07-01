@@ -1,19 +1,15 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
-import { useProjectStore, useProjectHref, selectStats, selectSandboxes, selectActiveExperiments, selectReviewRequests } from '../store/useProjectStore';
+import { useProjectStore, useProjectHref, selectStats, selectSandboxes } from '../store/useProjectStore';
 import { useTheme } from '../store/useTheme';
 import ProjectSwitcher from '../components/ProjectSwitcher';
 import { setSurfaceOverride } from '../store/useViewport';
 import BottomSheet from './BottomSheet';
 import ToastHost from './Toast';
 import { usePullToRefresh } from './usePullToRefresh';
-import { IconFeed, IconNow, IconExperiments, IconMore } from './icons';
+import { IconFeed, IconHome, IconExperiments, IconMore } from './icons';
 
 const NEXT_THEME_MODE = { light: 'dark', dark: 'system', system: 'light' };
-
-// Statuses where an experiment sits at a review gate — the supervisor's
-// main "needs attention" signal for the Now tab badge.
-const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
 
 function fmtSyncedAgo(ms, now) {
   if (!ms) return 'never';
@@ -38,8 +34,6 @@ export default function MobileShell({ children, onRefresh }) {
   const lastSyncedAt = useProjectStore(s => s.lastSyncedAt);
   const lastSyncError = useProjectStore(s => s.lastSyncError);
   const isPolling = useProjectStore(s => s.isPolling);
-  const activeExperiments = useProjectStore(selectActiveExperiments);
-  const reviewRequests = useProjectStore(selectReviewRequests);
   const [sheetOpen, setSheetOpen] = useState(false);
   const { distance, refreshing } = usePullToRefresh(onRefresh);
   const px = useProjectHref();
@@ -63,17 +57,13 @@ export default function MobileShell({ children, onRefresh }) {
   const stale = lastSyncError || (lastSyncedAt && now - lastSyncedAt > 30000);
   const dotClass = stale ? 'sync-dot stale' : (isPolling ? 'sync-dot' : 'sync-dot paused');
 
-  const attentionCount =
-    activeExperiments.filter(e => REVIEW_STATES.has(e.status)).length +
-    reviewRequests.filter(r => r.status === 'requested' || r.status === 'started').length;
-
   return (
     <div className="mshell">
       <header className="mbar">
         <div className="mbar-title">{projectName}</div>
         <div className="mbar-sync" aria-label={stale ? 'data stale' : 'data live'}>
           <span className={dotClass} />
-          {fmtSyncedAgo(lastSyncedAt, now)}
+          synced {fmtSyncedAgo(lastSyncedAt, now)}
         </div>
         <ThemeButton />
       </header>
@@ -87,18 +77,17 @@ export default function MobileShell({ children, onRefresh }) {
       <main className="mshell-main">{children}</main>
 
       <nav className="mnav" aria-label="Primary">
+        <NavLink to={px('')} end className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
+          <IconHome className="mnav-glyph" />
+          Home
+        </NavLink>
         <NavLink to={px('/feed')} className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
           <IconFeed className="mnav-glyph" />
           Feed
         </NavLink>
-        <NavLink to={px('')} end className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
-          <IconNow className="mnav-glyph" />
-          Now
-          {attentionCount > 0 && <span className="mnav-badge">{attentionCount}</span>}
-        </NavLink>
         <NavLink to={px('/experiments')} className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
           <IconExperiments className="mnav-glyph" />
-          Experiments
+          Exps
         </NavLink>
         <button
           type="button"
@@ -157,6 +146,8 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <div className="msheet-section">Browse</div>
       <SheetLink to={px('/claims')} label="Claims" count={stats.claims ?? home?.claims?.length ?? 0} />
       <SheetLink to={px('/reviews')} label="Reviews" count={stats.open_reviews ?? stats.reviews ?? 0} />
+      <SheetLink to={px('/synthesis')} label="Synthesis" />
+      <SheetLink to={px('/mlflow')} label="MLflow" />
       <SheetLink to={px('/resources')} label="Resources" count={stats.resources ?? 0} />
       <SheetLink to={px('/sandboxes')} label="Sandboxes" count={runningSandboxes ? `${runningSandboxes} running` : null} />
       <SheetLink to="/projects" label="Projects" />

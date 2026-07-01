@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useProjectStore, selectResources, useProjectHref } from '../store/useProjectStore';
@@ -9,32 +9,24 @@ import ReportSpotlight from '../components/ReportSpotlight';
 import ExperimentMetrics from '../components/ExperimentMetrics';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
+import ScrubRail from './ScrubRail';
 import { Skeleton } from './Skeleton';
 import { expName } from '../utils/experiment';
 
-const SEGMENTS = [
-  { id: 'status',   label: 'Status' },
-  { id: 'graph',    label: 'Graph' },
-  { id: 'plan',     label: 'Plan' },
-  { id: 'run',      label: 'Run' },
-  { id: 'outcomes', label: 'Outcomes' },
-];
-
-// Where a supervisor most likely wants to land, by lifecycle position.
-function defaultSegment(status) {
-  if (status === 'planned' || status === 'design_review') return 'plan';
-  if (status === 'ready_to_run' || status === 'running') return 'run';
-  if (status === 'experiment_review' || status === 'complete' || status === 'failed' || status === 'abandoned') return 'outcomes';
-  return 'status';
-}
+// At a review gate the workflow needs the human — the gate row's 3px index
+// goes orange; otherwise it stays steel (neutral workflow info).
+const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
 
 /**
- * Mobile experiment detail: FSM strip + segmented control where ONLY the
- * active segment mounts — so the terminal polls only on Run, the plan
- * fetches only on Plan, and the page never stacks five pollers the way the
- * desktop detail does. Read-only: the gate panel shows the server's
- * workflow state without transition buttons (reviews and transitions are
- * the agent's job; sandbox release lives on the Sandboxes screen).
+ * Mobile experiment detail — one continuous scroll (design handoff, sketch
+ * 2b): Status → Plan → Run → Outcomes flow down a single surface, each
+ * introduced by a small label and separated by a hairline. No tab strip;
+ * the right-edge ScrubRail (experiment-only) is the section index.
+ *
+ * Heavy panes attach on tap: the terminal (its poller) and the logic graph
+ * mount only when opened, so a long scroll never stacks pollers. Read-only:
+ * the gate panel shows the server's workflow state without transition
+ * buttons (reviews and transitions are the agent's job).
  */
 export default function MobileExperimentDetail() {
   const { experimentId } = useParams();
@@ -44,8 +36,22 @@ export default function MobileExperimentDetail() {
 
   const [statusData, setStatusData] = useState(null);
   const [error, setError] = useState(null);
-  const [segment, setSegment] = useState(null); // null until first load picks a default
-  const [gateOpen, setGateOpen] = useState(false);
+  const [termOpen, setTermOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+
+  const statusRef = useRef(null);
+  const planRef = useRef(null);
+  const runRef = useRef(null);
+  const outcomesRef = useRef(null);
+  // Run only exists while a sandbox is attached — no sandbox, no section
+  // (and no rail stop): a terminal with nothing to attach to is dead chrome.
+  const hasSandbox = (statusData?.sandboxes || []).length > 0;
+  const sections = [
+    { id: 'status', label: 'Status', ref: statusRef },
+    { id: 'plan', label: 'Plan', ref: planRef },
+    ...(hasSandbox ? [{ id: 'run', label: 'Run', ref: runRef }] : []),
+    { id: 'outcomes', label: 'Outcomes', ref: outcomesRef },
+  ];
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -57,13 +63,13 @@ export default function MobileExperimentDetail() {
     }
   }, [projectId, experimentId]);
 
-  // Navigating experiment→experiment keeps this component mounted; without a
-  // reset the old experiment flashes for a tick and the landing segment never
-  // re-defaults to the new one's lifecycle (docs/MOBILE_UX_REVIEW.md §1.8).
+  // Navigating experiment→experiment keeps this component mounted; reset so
+  // the old experiment never flashes and heavy panes fold back shut.
   useEffect(() => {
     setStatusData(null);
-    setSegment(null);
     setError(null);
+    setTermOpen(false);
+    setGraphOpen(false);
   }, [experimentId]);
 
   useEffect(() => {
@@ -80,14 +86,9 @@ export default function MobileExperimentDetail() {
   const experiment = statusData?.experiment;
   const workflow = statusData?.workflow;
 
-  // Pick the landing segment once, from the first loaded status.
-  useEffect(() => {
-    if (experiment && segment == null) setSegment(defaultSegment(experiment.status));
-  }, [experiment, segment]);
-
   if (error) {
     return (
-      <div className="page-stage">
+      <div className="mxd">
         <div className="error-message">{error}</div>
         <Link className="btn" to={px('/experiments')} style={{ marginTop: 12 }}>← Experiments</Link>
       </div>
@@ -95,7 +96,7 @@ export default function MobileExperimentDetail() {
   }
   if (!experiment) {
     return (
-      <div className="page-stage">
+      <div className="mxd">
         <header className="page-header"><Skeleton lines={1} /></header>
         <Skeleton lines={5} />
       </div>
@@ -103,8 +104,9 @@ export default function MobileExperimentDetail() {
   }
 
   const currentAttempt = experiment.attempt_index;
+  // Closed experiments need no gate panel — the strip already says it, and
+  // the FSM's terminal gate only reports what can no longer happen.
   const isClosed = ['complete', 'failed', 'abandoned'].includes(experiment.status);
-  const seg = segment || defaultSegment(experiment.status);
 
   // ── Resource partition (same derivation as the desktop detail page) ──
   const currentRes = (experiment.current_attempt_resources || [])
@@ -124,64 +126,58 @@ export default function MobileExperimentDetail() {
   );
   const designReviews = allReviews.filter(r => (r.role || '').toLowerCase().includes('design'));
   const experimentReviews = allReviews.filter(r => !(r.role || '').toLowerCase().includes('design'));
+  const claimCount = Array.isArray(experiment.tested_claims) ? experiment.tested_claims.length : 0;
 
   return (
-    <div className="page-stage">
+    <div className="mxd">
       <header className="page-header">
         <div className="page-eyebrow">
-          <Link to={px('/experiments')}>Experiments</Link>
+          <Link to={px('/experiments')}>‹ Experiments</Link>
           {' · '}attempt {currentAttempt}
         </div>
         <h1 className="page-title">{expName(experiment)}</h1>
       </header>
 
-      <FSMStrip
-        status={experiment.status}
-        expanded={!isClosed && gateOpen}
-        onToggle={isClosed ? null : () => setGateOpen(v => !v)}
-      >
-        <div className="fsm-gate-panel">
-          {/* Read-only: no transition buttons on mobile — the strip shows
-              where it stands, the banner shows what the server wants next. */}
-          <GateBanner workflow={workflow} />
+      {/* The strip shows where it stands; the gate row in Status shows what
+          the server wants next. One statement each — no disclosure duplicate. */}
+      <FSMStrip status={experiment.status} />
+
+      {/* ── Status ─────────────────────────────────────────────────── */}
+      <section ref={statusRef} className="mxd-section">
+        <div className="mml">Status</div>
+        {experiment.intent && <p className="mxd-intent">{experiment.intent}</p>}
+        {workflow && !isClosed && (
+          <div className={`mxd-gate${REVIEW_STATES.has(experiment.status) ? ' mxd-gate--attn' : ''}`}>
+            {/* Read-only: no transition buttons on mobile — reviews and
+                transitions are the agent's job. */}
+            <GateBanner workflow={workflow} />
+          </div>
+        )}
+        <div className="merow-meta" style={{ marginTop: 10 }}>
+          <span>{currentRes.length} resource{currentRes.length === 1 ? '' : 's'}</span>
+          {claimCount > 0 && <span>tests {claimCount} claim{claimCount === 1 ? '' : 's'}</span>}
+          {allReviews.length > 0 && <span>{allReviews.length} review{allReviews.length === 1 ? '' : 's'}</span>}
         </div>
-      </FSMStrip>
+        <LazyRow
+          open={graphOpen}
+          onOpen={() => setGraphOpen(true)}
+          label="graph — tap to load"
+        >
+          <MobileGraphSection
+            projectId={projectId}
+            experimentId={experimentId}
+            experimentStatus={experiment.status}
+            attemptIndex={currentAttempt}
+          />
+        </LazyRow>
+      </section>
 
-      <div className="mseg" role="tablist" aria-label="Experiment sections">
-        {SEGMENTS.map(s => (
-          <button
-            key={s.id}
-            type="button"
-            role="tab"
-            aria-selected={seg === s.id}
-            className={`mseg-btn${seg === s.id ? ' active' : ''}`}
-            onClick={() => setSegment(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
+      <div className="mbreak" />
 
-      {seg === 'status' && (
-        <StatusSegment
-          experiment={experiment}
-          workflow={workflow}
-          currentRes={currentRes}
-          reviewCount={allReviews.length}
-        />
-      )}
-
-      {seg === 'graph' && (
-        <MobileGraphSection
-          projectId={projectId}
-          experimentId={experimentId}
-          experimentStatus={experiment.status}
-          attemptIndex={currentAttempt}
-        />
-      )}
-
-      {seg === 'plan' && (
-        <>
+      {/* ── Plan ───────────────────────────────────────────────────── */}
+      <section ref={planRef} className="mxd-section">
+        <div className="mml">Plan</div>
+        {planRes ? (
           <PlanSpotlight
             projectId={projectId}
             planResource={planRes}
@@ -190,65 +186,63 @@ export default function MobileExperimentDetail() {
             experimentStatus={experiment.status}
             defaultOpen
           />
-          {!planRes && (
-            <div className="empty-state empty-state--compact">
-              <p>No plan synced yet.</p>
-            </div>
-          )}
-        </>
-      )}
+        ) : (
+          <div className="mquiet">no plan synced yet</div>
+        )}
+      </section>
 
-      {seg === 'run' && (
-        <SandboxTerminal projectId={projectId} experimentId={experimentId} readOnly />
-      )}
+      <div className="mbreak" />
 
-      {seg === 'outcomes' && (
+      {/* ── Run — only while a sandbox is attached; terminal attaches
+             (and starts polling) on tap ── */}
+      {hasSandbox && (
         <>
-          {reportRes && (
-            <ReportSpotlight
-              projectId={projectId}
-              reportResource={reportRes}
-              experimentReviews={experimentReviews}
-              experimentStatus={experiment.status}
-            />
-          )}
-          <ExperimentMetrics
-            projectId={projectId}
-            experimentId={experimentId}
-            refreshKey={`${experiment.status}:${currentAttempt}`}
-          />
+          <section ref={runRef} className="mxd-section">
+            <div className="mml">Run</div>
+            <LazyRow
+              open={termOpen}
+              onOpen={() => setTermOpen(true)}
+              label="terminal — tap to attach"
+            >
+              <SandboxTerminal projectId={projectId} experimentId={experimentId} readOnly />
+            </LazyRow>
+          </section>
+
+          <div className="mbreak" />
         </>
       )}
+
+      {/* ── Outcomes ───────────────────────────────────────────────── */}
+      <section ref={outcomesRef} className="mxd-section">
+        <div className="mml">Outcomes</div>
+        {reportRes && (
+          <ReportSpotlight
+            projectId={projectId}
+            reportResource={reportRes}
+            experimentReviews={experimentReviews}
+            experimentStatus={experiment.status}
+          />
+        )}
+        <ExperimentMetrics
+          projectId={projectId}
+          experimentId={experimentId}
+          refreshKey={`${experiment.status}:${currentAttempt}`}
+        />
+      </section>
+
+      <ScrubRail sections={sections} />
     </div>
   );
 }
 
-function StatusSegment({ experiment, workflow, currentRes, reviewCount }) {
-  const claimCount = Array.isArray(experiment.tested_claims) ? experiment.tested_claims.length : 0;
+// A heavy pane folded into the surface: a quiet disclosure row that mounts
+// its children only once opened (preserves the "polls only when open" rule).
+function LazyRow({ open, onOpen, label, children }) {
+  if (open) return children;
   return (
-    <>
-      {experiment.intent && (
-        <section className="section">
-          <div className="section-title">Intent</div>
-          <p style={{ fontSize: 'var(--text-md)' }}>{experiment.intent}</p>
-        </section>
-      )}
-      {workflow && (
-        <section className="section">
-          <div className="section-title">Workflow</div>
-          <GateBanner workflow={workflow} />
-        </section>
-      )}
-      <section className="section">
-        <div className="section-title">At a glance</div>
-        <div className="mcard">
-          <div className="mcard-meta">
-            <span>{currentRes.length} current-attempt resource{currentRes.length === 1 ? '' : 's'}</span>
-            {claimCount > 0 && <span>tests {claimCount} claim{claimCount === 1 ? '' : 's'}</span>}
-            {reviewCount > 0 && <span>{reviewCount} review{reviewCount === 1 ? '' : 's'}</span>}
-          </div>
-        </div>
-      </section>
-    </>
+    <button type="button" className="mterm-row" onClick={onOpen}>
+      <span className="mterm-twist" aria-hidden="true">▸</span>
+      {label}
+    </button>
   );
 }

@@ -88,7 +88,8 @@ def bar_chart(title, bars, ylabel, ymax):
 def write_svg(name, svg):
     p = TMP / name
     p.write_text(svg)
-    return str(p)
+    # feed.post requires repo-relative image paths (repo_root is TMP).
+    return name
 
 
 # ---- the demo images --------------------------------------------------------
