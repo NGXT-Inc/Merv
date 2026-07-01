@@ -23,6 +23,7 @@ class DeployArtifactsTest(unittest.TestCase):
             "Dockerfile",
             "Dockerfile.mlflow",
             "docker-compose.yml",
+            "doctor.py",
             "README.md",
             ".dockerignore",
             ".env.example",
@@ -77,6 +78,14 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("postgresql://", text)
         self.assertIn("RESEARCH_PLUGIN_BLOB_BUCKET", text)
         self.assertIn("RESEARCH_PLUGIN_MGMT_KEY_PATH", text)
+        self.assertIn("RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW", text)
+        self.assertIn("RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND", text)
+        self.assertIn("RESEARCH_PLUGIN_EXECUTION_BACKEND", text)
+        self.assertIn("RESEARCH_PLUGIN_LAMBDA_API_KEY", text)
+        self.assertIn("LAMBDA_LABS_API_KEY", text)
+        self.assertIn("HF_TOKEN", text)
+        self.assertIn("${RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL:-http://minio:9000}", text)
+        self.assertIn("${AWS_ENDPOINT_URL_S3:-http://minio:9000}", text)
         self.assertIn("ssh-keygen", text)
         self.assertIn("mgmtkey:/run/secrets/research_plugin_mgmt_key:ro", text)
         # Builds from the deploy Dockerfile.
@@ -92,8 +101,27 @@ class DeployArtifactsTest(unittest.TestCase):
             "RESEARCH_PLUGIN_MGMT_KEY_PATH",
             "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY",
             "RESEARCH_PLUGIN_ALLOWED_ORIGINS",
+            "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI",
+            "RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW",
+            "RESEARCH_PLUGIN_EXECUTION_BACKEND",
+            "RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND",
+            "RESEARCH_PLUGIN_LAMBDA_API_KEY",
+            "AWS_ENDPOINT_URL_S3",
         ):
             self.assertIn(var, text)
+
+    def test_doctor_script_covers_startup_readiness_sweep(self) -> None:
+        text = (DEPLOY / "doctor.py").read_text(encoding="utf-8")
+        for token in (
+            "/api/meta",
+            "/api/sandboxes/health",
+            "sandbox.options",
+            "storage.put_object",
+            "storage.complete_upload",
+            "deploy_doctor_ready",
+            "RP_DOCTOR_URL_REWRITE",
+        ):
+            self.assertIn(token, text)
 
     def test_no_real_secrets_committed(self) -> None:
         # .env.example must only carry placeholders, never a filled-in token.

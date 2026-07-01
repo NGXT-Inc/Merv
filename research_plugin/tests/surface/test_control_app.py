@@ -19,6 +19,8 @@ from backend.config import (
     MLFLOW_TRACKING_URI_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
+    REQUIRE_AGENT_MLFLOW_ENV_VAR,
+    REQUIRE_SANDBOX_BACKEND_ENV_VAR,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
@@ -227,6 +229,8 @@ class ControlAppTest(unittest.TestCase):
                     MLFLOW_MODE_ENV_VAR: "external",
                     MLFLOW_TRACKING_URI_ENV_VAR: "https://mlflow.example.test/",
                     MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000/",
+                    REQUIRE_AGENT_MLFLOW_ENV_VAR: "1",
+                    REQUIRE_SANDBOX_BACKEND_ENV_VAR: "1",
                 },
                 execution_backend=FakeSandboxBackend(),
             )
@@ -235,6 +239,42 @@ class ControlAppTest(unittest.TestCase):
             self.assertEqual(app.mlflow_tracking.tracking_uri, "https://mlflow.example.test")
             self.assertEqual(app.mlflow_tracking.server_uri, "http://mlflow:5000")
             self.assertNotIn("mlflow", app.sandboxes.backend_health())
+
+    def test_control_app_can_require_agent_mlflow_tracking_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValidationError) as ctx:
+                build_control_app(
+                    repo_root=root,
+                    env={
+                        **_mounted_mgmt_key_env(root),
+                        MLFLOW_MODE_ENV_VAR: "external",
+                        MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000",
+                        REQUIRE_AGENT_MLFLOW_ENV_VAR: "1",
+                    },
+                    execution_backend=FakeSandboxBackend(),
+                )
+
+        self.assertIn(REQUIRE_AGENT_MLFLOW_ENV_VAR, ctx.exception.message)
+        self.assertIn(MLFLOW_TRACKING_URI_ENV_VAR, ctx.exception.message)
+
+    def test_control_app_can_require_healthy_sandbox_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = FakeSandboxBackend()
+            backend.healthy = False
+            with self.assertRaises(ValidationError) as ctx:
+                build_control_app(
+                    repo_root=root,
+                    env={
+                        **_mounted_mgmt_key_env(root),
+                        REQUIRE_SANDBOX_BACKEND_ENV_VAR: "1",
+                    },
+                    execution_backend=backend,
+                )
+
+        self.assertIn(REQUIRE_SANDBOX_BACKEND_ENV_VAR, ctx.exception.message)
+        self.assertIn("fake", ctx.exception.message)
 
     def test_control_app_lazy_central_metrics_record_without_archive(self) -> None:
         snapshot = {

@@ -150,23 +150,40 @@ services:
       # S3-compatible path used for R2/S3 production deployments.
       RESEARCH_PLUGIN_STORAGE_PROVIDER: s3
       RESEARCH_PLUGIN_STORAGE_BUCKET: research-plugin-storage
-      RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL: http://minio:9000
-      RESEARCH_PLUGIN_STORAGE_REGION: us-east-1
+      RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL: ${RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL:-http://minio:9000}
+      RESEARCH_PLUGIN_STORAGE_REGION: ${RESEARCH_PLUGIN_STORAGE_REGION:-us-east-1}
       # Centralized MLflow: tracking/dashboard URLs are reported to agents.
       # Override the tracking URI to the public HTTPS host for remote sandboxes.
       RESEARCH_PLUGIN_MLFLOW_MODE: external
       RESEARCH_PLUGIN_MLFLOW_TRACKING_URI: ${RESEARCH_PLUGIN_MLFLOW_TRACKING_URI:-}
       RESEARCH_PLUGIN_MLFLOW_SERVER_URI: ${RESEARCH_PLUGIN_MLFLOW_SERVER_URI:-http://mlflow:5000}
       RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL: ${RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL:-}
+      # Hosted deployments can opt into fail-fast startup if the control plane
+      # would otherwise give agents no run-reachable MLFLOW_TRACKING_URI.
+      RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW: ${RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW:-0}
       # Dev-only mounted management key from the mgmtkey one-shot above.
       RESEARCH_PLUGIN_MGMT_KEY_PATH: /run/secrets/research_plugin_mgmt_key/key
       AWS_ACCESS_KEY_ID: rpminio
       AWS_SECRET_ACCESS_KEY: rpminio_dev_password
       AWS_DEFAULT_REGION: us-east-1
-      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_ENDPOINT_URL_S3: ${AWS_ENDPOINT_URL_S3:-http://minio:9000}
       # Provider creds come from the env / a secret store ONLY in control mode
       # (.env discovery is disabled). Leave unset for a record-only dev stack;
       # set THUNDER_* / MODAL_* / LAMBDA_* (and HF_TOKEN) to provision sandboxes.
+      RESEARCH_PLUGIN_EXECUTION_BACKEND: ${RESEARCH_PLUGIN_EXECUTION_BACKEND:-lambda_labs}
+      RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND: ${RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND:-0}
+      RESEARCH_PLUGIN_LAMBDA_API_KEY: ${RESEARCH_PLUGIN_LAMBDA_API_KEY:-}
+      LAMBDA_LABS_API_KEY: ${LAMBDA_LABS_API_KEY:-}
+      LAMBDA_API_KEY: ${LAMBDA_API_KEY:-}
+      RESEARCH_PLUGIN_LAMBDA_API_BASE: ${RESEARCH_PLUGIN_LAMBDA_API_BASE:-}
+      RESEARCH_PLUGIN_LAMBDA_REGION: ${RESEARCH_PLUGIN_LAMBDA_REGION:-}
+      RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE: ${RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE:-}
+      RESEARCH_PLUGIN_THUNDER_API_KEY: ${RESEARCH_PLUGIN_THUNDER_API_KEY:-}
+      THUNDER_COMPUTE_API_KEY: ${THUNDER_COMPUTE_API_KEY:-}
+      MODAL_TOKEN_ID: ${MODAL_TOKEN_ID:-}
+      MODAL_TOKEN_SECRET: ${MODAL_TOKEN_SECRET:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:
       - "8787:8787"
     volumes:

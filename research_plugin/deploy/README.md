@@ -46,6 +46,21 @@ curl -s http://localhost:8787/api/meta
 # {"server_version":"...","min_daemon_version":"...","min_proxy_version":"..."}
 ```
 
+Run the one-shot readiness sweep after startup/restart:
+
+```sh
+python3 deploy/doctor.py --control-url http://localhost:8787
+```
+
+For the local MinIO reference stack, presigned storage URLs may use the Docker
+hostname. If running the doctor from the host, rewrite that hostname to the
+published loopback port:
+
+```sh
+RP_DOCTOR_URL_REWRITE=http://minio:9000=http://127.0.0.1:9000 \
+  python3 deploy/doctor.py --control-url http://localhost:8787
+```
+
 The current operator-run setup is a private control plane. Client VMs run
 `research-plugin-client configure --control-url ...` without any control-plane
 token. Put the service behind trusted network boundaries until the real auth
@@ -65,6 +80,9 @@ control-mode variables (full list in `.env.example`):
 | `RESEARCH_PLUGIN_MLFLOW_MODE` + `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` | prod | centralized MLflow endpoint reported to training clients |
 | `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` | optional | backend-internal MLflow URL for metrics reads when it differs from the client URL |
 | `RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL` | optional | human-facing MLflow UI URL when it differs from the tracking URI |
+| `RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW` | prod | set `1` so control startup fails if agents would not receive `MLFLOW_TRACKING_URI` |
+| `RESEARCH_PLUGIN_EXECUTION_BACKEND` + provider creds | to provision | sandbox backend (`lambda_labs` by default) plus `RESEARCH_PLUGIN_LAMBDA_API_KEY` / `LAMBDA_LABS_API_KEY` / `LAMBDA_API_KEY`, or another backend's credentials |
+| `RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND` | prod | set `1` so control startup fails when the configured sandbox backend health check fails |
 | `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
 | `THUNDER_COMPUTE_API_KEY` / `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
 
@@ -82,12 +100,23 @@ through `mlflow.context`; sandbox provisioning does not inject it by itself.
 When serving MLflow through the same host as the control plane, use a path such
 as `https://backend.example.com/mlflow` and set
 `RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX=/mlflow` so MLflow generates UI/static
-links under that prefix.
+links under that prefix. Production hosted stacks should also set
+`RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW=1`; otherwise a deployment with only the
+backend-internal `SERVER_URI` can read MLflow but agents will not be able to log.
+
+Lambda Labs is the default execution backend. Hosted stacks that should serve
+`sandbox.request` must inject one of `RESEARCH_PLUGIN_LAMBDA_API_KEY`,
+`LAMBDA_LABS_API_KEY`, or `LAMBDA_API_KEY` into the control container. Set
+`RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND=1` so startup fails if the key is
+missing or the lightweight Lambda catalog health check cannot reach the API.
 
 ## Operating
 
 - **Version floor:** clients send `X-RP-Client-Version`; below-floor clients get
   a `426` with an upgrade message. Floors are constants in `backend/version.py`.
+- **Post-start readiness:** run `python3 deploy/doctor.py` once after each deploy
+  or restart. It checks control, MLflow tracking/write, sandbox provider health
+  and options, and object-storage upload/download.
 - **Cleanup jobs:** the control plane BUILDS the cleanup sweeps (orphan VMs,
   blob TTL GC, lease expiry, stale-provision reap) but does **not** schedule
   them — POST `/api/admin/cleanup` from a managed cron / sidecar tick on your
@@ -132,6 +161,20 @@ backend.example.com {
     reverse_proxy 127.0.0.1:5000
   }
 
+  # Reference MinIO buckets. Preserve the path exactly so S3 presigned URLs
+  # signed for https://backend.example.com/<bucket>/<key> remain valid.
+  handle /research-plugin-blobs/* {
+    reverse_proxy 127.0.0.1:9000
+  }
+
+  handle /research-plugin-storage/* {
+    reverse_proxy 127.0.0.1:9000
+  }
+
+  handle /research-plugin-mlflow-artifacts/* {
+    reverse_proxy 127.0.0.1:9000
+  }
+
   handle {
     reverse_proxy 127.0.0.1:8787
   }
@@ -142,6 +185,11 @@ This split is intentional: MLflow's tracking and artifact APIs stay mounted at
 the server root, so ingress strips `/mlflow` for API routes. The MLflow UI is
 served under the static prefix, so ingress preserves `/mlflow` for UI/static
 routes.
+
+For the reference MinIO stack, set `RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL` and
+`AWS_ENDPOINT_URL_S3` to the public HTTPS origin routed above. Leaving them at
+`http://minio:9000` only proves storage works inside Docker; remote agents and
+Lambda VMs cannot use those presigned URLs.
 
 ## What this stack does NOT do (documented seams)
 

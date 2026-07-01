@@ -37,6 +37,9 @@ from ..config import (
     build_blob_store,
     build_object_store,
     build_state_store,
+    MLFLOW_TRACKING_URI_ENV_VAR,
+    REQUIRE_AGENT_MLFLOW_ENV_VAR,
+    REQUIRE_SANDBOX_BACKEND_ENV_VAR,
     resolve_blob_bucket,
     resolve_db_url,
     resolve_allowed_origins,
@@ -119,6 +122,9 @@ def build_control_app(
     task_channel = HttpTaskChannel(queue=task_queue, result_timeout_seconds=result_timeout)
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
+    mlflow_tracking = CentralMlflowService.from_env(env)
+    _validate_agent_mlflow_requirement(mlflow_tracking=mlflow_tracking, env=env)
+    _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
     app = ControlApp(
         repo_root=staging,
         store=store,
@@ -127,7 +133,7 @@ def build_control_app(
         task_channel=task_channel,
         execution_backend=execution_backend,
         mgmt_keys=_build_mgmt_key_store(env=env),
-        mlflow_tracking=CentralMlflowService.from_env(env),
+        mlflow_tracking=mlflow_tracking,
     )
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
     # live VMs must re-acquire reaping. SandboxService already started the
@@ -211,6 +217,45 @@ def _build_mgmt_key_store(*, env: Mapping[str, str] | None = None):
     return MountedMgmtKeyStore(
         private_key_path=Path(key_path),
         public_key=public_key,
+    )
+
+
+def _validate_agent_mlflow_requirement(
+    *,
+    mlflow_tracking: CentralMlflowService,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    if not env_bool(REQUIRE_AGENT_MLFLOW_ENV_VAR, False, env=env):
+        return
+    if mlflow_tracking.tracking_uri:
+        return
+    raise ValidationError(
+        f"{REQUIRE_AGENT_MLFLOW_ENV_VAR}=1 requires "
+        f"{MLFLOW_TRACKING_URI_ENV_VAR}; set it to the public, run-reachable "
+        "MLflow URL agents should receive as MLFLOW_TRACKING_URI, or disable "
+        "the requirement for an intentional read-only/server-only deployment.",
+        details={"missing": [MLFLOW_TRACKING_URI_ENV_VAR]},
+    )
+
+
+def _validate_sandbox_backend_requirement(
+    *,
+    execution_backend: Any,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    if not env_bool(REQUIRE_SANDBOX_BACKEND_ENV_VAR, False, env=env):
+        return
+    health = dict(execution_backend.health())
+    if health.get("ok"):
+        return
+    backend = str(
+        health.get("backend") or health.get("name") or health.get("provider") or "unknown"
+    )
+    error = str(health.get("error") or "sandbox backend health check failed")
+    raise ValidationError(
+        f"{REQUIRE_SANDBOX_BACKEND_ENV_VAR}=1 requires a healthy sandbox backend "
+        f"before control startup; {backend} reported: {error}",
+        details={"backend": backend, "error": error},
     )
 
 
