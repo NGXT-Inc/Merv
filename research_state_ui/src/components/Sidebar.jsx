@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useProjectStore, useProjectHref, selectStats, selectResources, selectSandboxes } from '../store/useProjectStore';
 import { CLIENT_VERSION } from '../api';
 import { useTheme } from '../store/useTheme';
+import { setSurfaceOverride } from '../store/useViewport';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
 import SandboxRetentionIndicator from './SandboxRetentionIndicator';
@@ -172,6 +173,9 @@ export default function Sidebar({ onRefresh }) {
           >
             <span aria-hidden="true">{theme === 'dark' ? '◑' : '◐'}</span>
             {themeMode === 'system' ? `auto · ${theme}` : themeMode}
+          </button>
+          <button className="btn btn--ghost btn--sm" onClick={() => setSurfaceOverride('mobile')}>
+            Switch to mobile
           </button>
         </div>
         {lastSyncError && <div className="error-message" style={{ fontSize: 11 }}>{lastSyncError}</div>}
