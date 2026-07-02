@@ -17,6 +17,7 @@ from backend.tools.contracts import (
     ResourceValidateInput,
     ReviewRequestAndStartInput,
     ResultsMergeTsvInput,
+    SandboxPullOutputsInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
     StorageListInput,
@@ -112,6 +113,8 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
         self.assertIn("retention checklist", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
+        self.assertIn("local experiment folder", tools["sandbox.pull_outputs"]["description"])
+        self.assertIn("sandbox.release", tools["sandbox.pull_outputs"]["description"])
 
     def test_storage_tools_registered_with_expected_input_models(self) -> None:
         expected = {
@@ -152,6 +155,13 @@ class ToolContractRegistryTest(unittest.TestCase):
             ResultsMergeTsvInput,
         )
         self.assertEqual(TOOL_CONTRACTS["results.merge_tsv"].plane, "data")
+
+    def test_sandbox_pull_outputs_is_data_plane(self) -> None:
+        self.assertIs(
+            TOOL_CONTRACTS["sandbox.pull_outputs"].input_model,
+            SandboxPullOutputsInput,
+        )
+        self.assertEqual(TOOL_CONTRACTS["sandbox.pull_outputs"].plane, "data")
 
     def test_experiment_materialize_folders_is_data_plane(self) -> None:
         self.assertIs(

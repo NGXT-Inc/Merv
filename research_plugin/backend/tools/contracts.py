@@ -617,6 +617,42 @@ class SandboxAttachInput(ProjectScopedInput):
     )
 
 
+class SandboxPullOutputsInput(ProjectScopedInput):
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "Experiment whose running sandbox should be copied from. Omit when "
+            "sandbox_uid is supplied."
+        ),
+    )
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to copy from; omitted targets the primary sandbox.",
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repo-relative paths under the sandbox experiment_dir to pull. Omit "
+            "to pull existing common outputs: results/, figures/, report.md, "
+            "graph.json, metrics.json, results.json, and results.tsv."
+        ),
+    )
+    destination_path: str = Field(
+        default="",
+        description=(
+            "Repo-relative local destination directory. Defaults to the "
+            "sandbox's local_experiment_dir."
+        ),
+    )
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "When false, existing local files are preserved/refused. Set true "
+            "only when replacing local retained outputs is intentional."
+        ),
+    )
+
+
 class SandboxListInput(ProjectScopedInput):
     pass
 
@@ -1012,6 +1048,16 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Associate an existing running sandbox with an experiment without "
             "changing the VM, workdir, SSH connection, or lifecycle. A live "
             "sandbox can be associated with multiple active experiments."
+        ),
+        plane="data",
+    ),
+    "sandbox.pull_outputs": ToolContract(
+        input_model=SandboxPullOutputsInput,
+        description=(
+            "Copy selected files or directories from a running sandbox's remote "
+            "experiment_dir into the local experiment folder over SSH/rsync. "
+            "Use this before resource.register_file/resource.associate or "
+            "sandbox.release; omit paths to pull common retained outputs."
         ),
         plane="data",
     ),

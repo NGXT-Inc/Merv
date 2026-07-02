@@ -189,10 +189,11 @@ review gates are satisfied.
 While an experiment is `running` and no result resource is associated yet,
 `workflow.status_and_next` returns `run_experiment_and_retain_results` with
 `resource_guidance`. Agents run the experiment on the sandbox over SSH, then
-copy selected output files back to the local checkout and associate them to the
-experiment with `association_role: "result"`. Once result resources exist but no
-report exists, the gate becomes `results_report_required` with report-specific
-guidance; once a report exists but no logic graph does, the gate becomes
+pull selected output files back to the local checkout with `sandbox.pull_outputs`
+and associate them to the experiment with `association_role: "result"`. Once
+result resources exist but no report exists, the gate becomes
+`results_report_required` with report-specific guidance; once a report exists
+but no logic graph does, the gate becomes
 `logic_graph_required`.
 The `submit_results` transition lints the report file (sections, metrics table,
 size, figure links) and the logic graph's envelope (valid JSON, node budget,

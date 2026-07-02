@@ -114,6 +114,7 @@ wires the services below. Here is where each lands.
 | **Experiment folder materialization** | `dataplane/experiment_folders.py` (`experiment.materialize_folders`) | Creates repo-local `experiments/<name>/` directories; hosted control records the experiment but cannot mkdir in the checkout. |
 | **SSH keypair material on disk** | `services/sandbox_conn.py` `SandboxConnFiles.ensure_keypair` (ssh-keygen → `.research_plugin/sandboxes/keys`) | Private key stays on the user's machine (see credential model below). |
 | **Sandbox dispatcher + conn files** | `services/sandbox_conn.py` (`.research_plugin/sbx`, `conn/<id>`) | Local helper the agent shells out to. |
+| **Sandbox retained output pull** | `dataplane/sandbox_outputs.py` (`sandbox.pull_outputs`) | Uses local SSH key material and writes selected remote outputs into the repo-local experiment folder. |
 | **Resource file observation + validation** | `dataplane/resource_observer.py`, `dataplane/resource_validation.py` (`resource.register_file`, `resource.validate`) | Hashes/reads **repo-relative local files**; preflight lint reads artifact bytes before any cloud-state mutation. |
 | **Result TSV safe merge** | `dataplane/results_tsv.py` (`results.merge_tsv`) | Parses and atomically updates repo-local result ledgers; conflicting incoming rows must fail before local files change. |
 | **Daemon discovery marker** | `daemon_marker.py`, `.research_plugin/daemon.json` | Local process discovery. |
@@ -124,8 +125,9 @@ A few responsibilities are genuinely two-sided. The **bytes/IO half is local;
 the record/metadata half is cloud.**
 
 - **Sandbox output handoff.** Cloud sets up the remote `/workspace/<name>`
-  contract and returns SSH details; the agent explicitly copies retained light
-  files back before release, or uploads heavy artifacts to durable storage.
+  contract and returns SSH details; the local daemon can explicitly pull
+  retained light files back with `sandbox.pull_outputs` before release, while
+  heavy artifacts should go to durable storage.
 - **Resources.** Local daemon reads the file and computes the version hash;
   cloud stores the resource record and immutable version history.
 - **SSH access.** Cloud authorizes access and owns credential validity/rotation;
@@ -159,9 +161,10 @@ wrapper so the agent can drive the VM directly:
 }
 ```
 
-There is no daemon-owned file-transfer lease. Output handoff is explicit: the
-agent copies selected light files back over SSH before release, and uses durable
-storage tools for large artifacts.
+There is no background sync or daemon-owned transfer lease. Output handoff is
+explicit: the agent calls `sandbox.pull_outputs` to copy selected light files
+back over SSH before release, and uses durable storage tools for large
+artifacts.
 
 ### Local command material lives in the daemon
 
@@ -178,6 +181,7 @@ copied explicitly by the agent over SSH or uploaded to durable storage.
 
 - `sandbox.request` — data-plane key/conn setup plus control-plane provisioning.
 - `sandbox.get` — aggregate control row facts plus local SSH enrichment.
+- `sandbox.pull_outputs` — data-plane SSH/rsync transfer into the local experiment folder.
 - `sandbox.release` — control-plane lifecycle termination after retention confirm.
 
 ## Cross-cutting concerns to design before this is real

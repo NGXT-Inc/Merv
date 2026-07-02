@@ -349,6 +349,7 @@ per-resource version history, use `resource.resolve(include_history=true)`.
 ```text
 sandbox.options(gpu?, region?)
 sandbox.request(experiment_id?, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
+sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, overwrite?)
 sandbox.get(experiment_id? | sandbox_uid)
 sandbox.list()
 sandbox.release(experiment_id? | sandbox_uid)
@@ -428,6 +429,17 @@ datasets used, source
 identifiers, split/filter choices, important columns, row counts, caveats, and
 where large ephemeral files were placed outside the folder.
 
+`sandbox.pull_outputs` is the explicit retained-output helper for light files
+created under the remote `experiment_dir`. It copies selected repo-relative
+files or directories into the local experiment folder over SSH/rsync; with no
+`paths`, it first checks for common outputs (`results/`, `figures/`,
+`report.md`, `graph.json`, `metrics.json`, `results.json`, `results.tsv`) and
+pulls the ones that exist. Existing local files are preserved/refused unless
+`overwrite: true` is supplied. After pulling files locally, use
+`resource.register_file` / `resource.associate` for retained artifacts and
+`results.merge_tsv` for remote `results.tsv` rows that need to enter a
+canonical local ledger.
+
 When the backend has `HF_TOKEN` in its env file or process environment,
 `sandbox.request` / `sandbox.get` include an `environment.available_tokens`
 entry naming `HF_TOKEN`. The token value is not returned. Inside SSH commands,
@@ -440,11 +452,11 @@ resource.
 When a fresh sandbox/VM is created, setup returns SSH details and a remote work
 folder (`$RP_EXPERIMENT_DIR`). No files are copied automatically. Agents fetch
 code/data on the box, keep disposable bulk data under `$RP_DATASET_DIR`, and
-explicitly retain outputs before release: copy light files back over SSH or
-upload heavy artifacts with storage tools. Resource tools only operate on local
-repo files, so a file produced remotely cannot be associated until it has been
-copied back locally. Release and expiry destroy the VM and any files the agent
-did not retain.
+explicitly retain outputs before release: pull light files with
+`sandbox.pull_outputs` or upload heavy artifacts with storage tools. Resource
+tools only operate on local repo files, so a file produced remotely cannot be
+associated until it has been copied back locally. Release and expiry destroy
+the VM and any files the agent did not retain.
 
 Provisioning is **best-effort-synchronous**. Creating a sandbox can outlast the
 MCP call timeout (cold GPU, image/bootstrap work), so `sandbox.request` provisions on
@@ -483,9 +495,10 @@ fallbacks). Thunder Compute remains available with `RESEARCH_PLUGIN_THUNDER_API_
 (or `THUNDER_COMPUTE_API_KEY`). Modal exposes SSH over an unencrypted Modal tunnel
 (`unencrypted_ports=[22]`). The registry generates a per-sandbox SSH keypair
 and authorizes its public key in the sandbox/VM. Output retention is explicit:
-the agent copies selected light files back over SSH, while heavy files should go
-through durable storage tools. The execution contract (`SandboxBackend`) stays
-narrow so additional providers can live inside `execution/backends/`; a
+the agent pulls selected light files back over SSH with `sandbox.pull_outputs`,
+while heavy files should go through durable storage tools. The execution
+contract (`SandboxBackend`) stays narrow so additional providers can live inside
+`execution/backends/`; a
 backend advertises whether it `requires_hardware_selection` (bundled SKUs) and
 may expose an optional `hardware_catalog()` that powers `sandbox.options` and the
 `needs_selection` menu.

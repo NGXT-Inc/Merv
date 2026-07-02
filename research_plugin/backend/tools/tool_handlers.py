@@ -348,6 +348,7 @@ def build_local_tool_handlers(
     feed_post: Callable[..., dict[str, Any]] | None = None,
     storage_upload_file: Callable[..., dict[str, Any]] | None = None,
     storage_download_file: Callable[..., dict[str, Any]] | None = None,
+    sandbox_pull_outputs: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Map all local-mode tool names to service methods."""
     def resource_associate_batch(
@@ -388,6 +389,11 @@ def build_local_tool_handlers(
             "results.merge_tsv": results_merge_tsv,
             "sandbox.request": sandboxes.request,
             "sandbox.attach": sandboxes.attach,
+            "sandbox.pull_outputs": (
+                sandbox_pull_outputs
+                if sandbox_pull_outputs is not None
+                else sandboxes.pull_outputs
+            ),
             "feed.post": feed_post if feed_post is not None else feed.post,
         }
     )

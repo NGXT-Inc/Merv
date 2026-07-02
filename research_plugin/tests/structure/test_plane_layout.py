@@ -302,6 +302,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
                 "storage.download_file",
                 "sandbox.request",
                 "sandbox.attach",
+                "sandbox.pull_outputs",
                 # feed.post reads a local image file before recording the post,
                 # so it lives on the data plane (byte capture mirrors
                 # resource.associate); register/list are pure control records.

@@ -19,8 +19,8 @@ happened for user visibility.
 - **Workspace convention** is provider-neutral. The experiment's remote work
   folder is `/workspace/<name>` and `/workspace/data` is the conventional
   scratch home for datasets/caches. Nothing is copied back automatically:
-  agents explicitly copy light retained files over SSH or upload heavy outputs
-  with storage tools before release.
+  agents explicitly pull light retained files with `sandbox.pull_outputs` or
+  upload heavy outputs with storage tools before release.
 
 ## Procurement: request, reuse, or attach
 
@@ -78,8 +78,9 @@ ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no \
 Use `$RP_EXPERIMENT_DIR` for scripts, configs, compact outputs, reports, and
 figures that may need to be retained. Use `$RP_DATASET_DIR` (or anywhere
 outside the experiment folder) for large datasets, caches, checkpoints, and
-temporary derived data. Before release, copy light retained files into the
-local experiment folder or upload heavy outputs with storage tools.
+temporary derived data. Before release, pull light retained files into the
+local experiment folder with `sandbox.pull_outputs` or upload heavy outputs
+with storage tools.
 
 Agents should use CPU-only sandboxes for dataset inspection and data engineering
 unless the command needs GPU acceleration. They can request more RAM with
@@ -139,12 +140,13 @@ TensorBoard server, or sandbox-local dashboard tunnel.
 |------|---------|
 | `sandbox.request` | Procure or reuse the project's live sandbox; returns SSH details and remote/local path guidance. |
 | `sandbox.get` | Current sandbox status + SSH details for the experiment. |
+| `sandbox.pull_outputs` | Copy selected files or directories from the remote experiment folder into the local experiment folder. |
 | `sandbox.list` | All experiment sandboxes in the project. |
 | `sandbox.release` | Terminate the experiment's sandbox after confirming needed files were retained. |
 | `sandbox.terminal` | Read the experiment's terminal transcript tail. |
 | `sandbox.health` | Is the execution backend reachable. |
 
 The agent's normal loop is: `sandbox.request` -> run/edit/write files over SSH
-in `$RP_EXPERIMENT_DIR` (heavy files outside it) -> copy light retained files
-out over SSH or upload heavy files to durable storage -> register/associate
-resources -> transition to review.
+in `$RP_EXPERIMENT_DIR` (heavy files outside it) -> `sandbox.pull_outputs` for
+light retained files or upload heavy files to durable storage ->
+register/associate resources -> transition to review.

@@ -423,3 +423,34 @@ Verification:
 - `git diff --check`
 - `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_service.SandboxServiceTest.test_reaper_does_not_change_experiment_status tests.sandbox.test_sandbox_service.SandboxServiceTest.test_get_reconciles_dead_sandbox tests.sandbox.test_sandbox_service.SandboxServiceTest.test_release_terminates tests.sandbox.test_sandbox_heartbeat.SandboxHeartbeatMonitorTest.test_idle_sandbox_is_reaped_while_busy_sandbox_is_spared tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (44 tests)
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (878 tests, 25 skipped)
+
+## Batch 16: sandbox output pull helper
+
+Status: complete
+
+Request addressed:
+
+- Automatic artifact retention from sandboxes.
+
+Implementation notes:
+
+- Added `sandbox.pull_outputs` as a data-plane helper that copies selected
+  files or directories from a running sandbox's remote `experiment_dir` into
+  the local experiment folder over SSH/rsync.
+- With no explicit paths, the tool checks for common retained outputs:
+  `results/`, `figures/`, `report.md`, `graph.json`, `metrics.json`,
+  `results.json`, and `results.tsv`, then pulls only the paths that exist.
+- Existing local files are preserved by default; callers must set
+  `overwrite=true` before replacing retained local outputs.
+- Wired the tool through local mode and split-mode daemon routing, including
+  daemon-side SSH key/local folder enrichment before the rsync step.
+- Updated MCP, workflow, and split-mode docs so agents use
+  `sandbox.pull_outputs` before resource registration/association or sandbox
+  release.
+
+Verification:
+
+- `git diff --check`
+- `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_outputs tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.surface.test_split_mode_smoke.DaemonResourceForwardingTest -v` (33 tests)
+- `PYTHONPATH=. python -m unittest tests.structure.test_plane_layout.PlaneImportLintTest -v` (26 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (883 tests, 25 skipped)

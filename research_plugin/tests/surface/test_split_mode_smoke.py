@@ -33,6 +33,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -95,9 +96,9 @@ class DaemonResourceForwardingTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _server(self, control):
+    def _server(self, control, *, worker=None):
         return DaemonServer(
-            worker=object(),
+            worker=worker or object(),
             control=control,
             task_loop=_NoopLoop(),
             project_links=self.links,
@@ -117,6 +118,7 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertIn("results.merge_tsv", names)
         self.assertIn("sandbox.get", names)
         self.assertIn("sandbox.request", names)
+        self.assertIn("sandbox.pull_outputs", names)
         self.assertIn("feed.post", names)
 
     def test_resource_validate_reads_local_file_without_control_mutation(self) -> None:
@@ -221,6 +223,85 @@ class DaemonResourceForwardingTest(unittest.TestCase):
         self.assertEqual(result["folders"][0]["folder"], "experiments/planned-one/")
         self.assertTrue((self.repo / "experiments" / "planned-one").is_dir())
         self.assertFalse((self.repo / "experiments" / "done-one").exists())
+
+    def test_sandbox_pull_outputs_uses_linked_project_and_enrichment(self) -> None:
+        class _Control:
+            def list_tools(self):
+                return []
+
+            def call(self, name, arguments):
+                self.last_call = (name, arguments)
+                if name == "sandbox.get":
+                    return {
+                        "project_id": arguments["project_id"],
+                        "experiment_id": arguments["experiment_id"],
+                        "sandbox_uid": "uid_1234567890",
+                        "sandbox_id": "sb_1",
+                        "status": "running",
+                        "ssh": {
+                            "host": "sandbox.example",
+                            "port": 2222,
+                            "user": "root",
+                        },
+                        "experiment_dir": "/workspace/experiments/exp-one",
+                        "workdir": "/workspace/experiments/exp-one",
+                    }
+                raise AssertionError(name)
+
+        class _Worker:
+            def __init__(self, repo: Path) -> None:
+                self.repo = repo
+
+            def sandbox_enrichment(
+                self,
+                *,
+                row,
+                name: str,
+                use_sandbox_uid_command: bool,
+            ):
+                self.last_row = row
+                self.last_name = name
+                self.last_uid_flag = use_sandbox_uid_command
+                return {
+                    "command": "ssh root@sandbox.example",
+                    "raw_command": "ssh root@sandbox.example",
+                    "key_path": "/tmp/sandbox-key",
+                    "local_dir": str(self.repo / "experiments" / "exp-one"),
+                }
+
+        control = _Control()
+        worker = _Worker(self.repo)
+        server = self._server(control, worker=worker)
+        with patch("backend.composition.daemon_mode.pull_sandbox_outputs") as pull:
+            pull.return_value = {"ok": True, "paths_pulled": ["report.md"]}
+            result = server.call_tool(
+                name="sandbox.pull_outputs",
+                arguments={
+                    "experiment_id": "exp_1",
+                    "paths": ["report.md"],
+                    "overwrite": True,
+                },
+                context={"repo_root": str(self.repo)},
+            )
+
+        self.assertEqual(result, {"ok": True, "paths_pulled": ["report.md"]})
+        self.assertEqual(
+            control.last_call,
+            ("sandbox.get", {"project_id": "proj_1", "experiment_id": "exp_1"}),
+        )
+        self.assertEqual(worker.last_row["sync_dir"], "/workspace/experiments/exp-one")
+        self.assertEqual(worker.last_name, "sandbox-uid_12345678")
+        self.assertTrue(worker.last_uid_flag)
+        pull.assert_called_once()
+        kwargs = pull.call_args.kwargs
+        self.assertEqual(Path(kwargs["repo_root"]).resolve(), self.repo.resolve())
+        self.assertEqual(kwargs["paths"], ["report.md"])
+        self.assertTrue(kwargs["overwrite"])
+        self.assertEqual(kwargs["sandbox"]["ssh"]["key_path"], "/tmp/sandbox-key")
+        self.assertEqual(
+            kwargs["sandbox"]["local_experiment_dir"],
+            str(self.repo / "experiments" / "exp-one"),
+        )
 
     def test_daemon_teardown_removes_conn_file(self) -> None:
         class _Worker:

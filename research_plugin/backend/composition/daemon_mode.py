@@ -37,6 +37,7 @@ from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
 from ..dataplane.resource_validation import validate_local_resource_artifact
 from ..dataplane.results_tsv import merge_results_tsv
+from ..dataplane.sandbox_outputs import pull_sandbox_outputs
 from ..dataplane.experiment_folders import materialize_experiment_folders
 from ..secret_tokens import mint_secret
 from ..services.sandbox import sandbox_views
@@ -173,6 +174,8 @@ class DaemonServer:
             return self._request_sandbox(arguments=arguments, context=context)
         if name == "sandbox.attach":
             return self._attach_sandbox(arguments=arguments, context=context)
+        if name == "sandbox.pull_outputs":
+            return self._pull_sandbox_outputs(arguments=arguments, context=context)
         if name == "sandbox.get":
             return self._sandbox_get_enrichment(arguments=arguments, context=context)
         if name not in (DATA_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES):
@@ -400,6 +403,34 @@ class DaemonServer:
             "local_dir": enrichment.get("local_dir", ""),
             "key_path": enrichment.get("key_path", ""),
         }
+
+    def _pull_sandbox_outputs(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root, project_id = self._linked_scope(context=context)
+        args: dict[str, Any] = {"project_id": project_id}
+        for key in ("experiment_id", "sandbox_uid"):
+            if arguments.get(key):
+                args[key] = arguments[key]
+        facts = self.control.call("sandbox.get", args)
+        sandbox_uid = str(facts.get("sandbox_uid") or "")
+        facts.pop("_experiment_name", None)
+        name = f"sandbox-{sandbox_uid[:12]}" if sandbox_uid else ""
+        sandbox = self._merge_sandbox_enrichment(
+            facts=facts,
+            name=name,
+            use_sandbox_uid_command=True,
+        )
+        paths = arguments.get("paths") or []
+        if not isinstance(paths, list):
+            raise ValidationError("paths must be a list")
+        return pull_sandbox_outputs(
+            repo_root=repo_root,
+            sandbox=sandbox,
+            paths=[str(path) for path in paths],
+            destination_path=str(arguments.get("destination_path") or ""),
+            overwrite=bool(arguments.get("overwrite")),
+        )
 
     def _merge_sandbox_enrichment(
         self,

@@ -164,6 +164,7 @@ class ResearchPluginApp:
                 feed_post=self.post_feed,
                 storage_upload_file=self.upload_storage_file,
                 storage_download_file=self.download_storage_file,
+                sandbox_pull_outputs=self.pull_sandbox_outputs,
             ),
             permissions=self.permissions,
             activity=self.activity,
@@ -417,6 +418,31 @@ class ResearchPluginApp:
             object_id=object_id,
             name=name,
             version=version,
+            overwrite=overwrite,
+        )
+
+    def pull_sandbox_outputs(
+        self,
+        *,
+        experiment_id: str | None = None,
+        sandbox_uid: str | None = None,
+        paths: list[str] | None = None,
+        destination_path: str = "",
+        overwrite: bool = False,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        from .dataplane.sandbox_outputs import pull_sandbox_outputs
+
+        sandbox = self.sandboxes.get(
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            project_id=project_id,
+        )
+        return pull_sandbox_outputs(
+            repo_root=self.workspace.repo_root,
+            sandbox=sandbox,
+            paths=paths or [],
+            destination_path=destination_path,
             overwrite=overwrite,
         )
 
