@@ -9,7 +9,7 @@ import RunMetrics, { runsFromMetrics } from './RunMetrics';
  * `refreshKey` re-fetches when the run's lifecycle advances. Renders nothing
  * until a run is recorded — quiet for qualitative or not-yet-run experiments.
  */
-export default function ExperimentMetrics({ projectId, experimentId, refreshKey }) {
+export default function ExperimentMetrics({ projectId, experimentId, refreshKey, dense = false }) {
   const [data, setData] = useState(null);
 
   useEffect(() => {
@@ -24,6 +24,19 @@ export default function ExperimentMetrics({ projectId, experimentId, refreshKey 
   if (runs.length === 0) return null;
 
   const drillUrl = data.dashboard_experiment_url || null;
+
+  // Dense (mobile): the numbers speak for themselves — no title, no
+  // "durable" architecture vocabulary; just the results and the drill link.
+  if (dense) {
+    return (
+      <section className="results-metrics results-metrics--dense">
+        <RunMetrics runs={runs} />
+        {drillUrl && (
+          <a className="results-metrics-drill" href={drillUrl} target="_blank" rel="noreferrer">MLflow ↗</a>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="results-metrics">

@@ -243,13 +243,6 @@ html[data-surface="mobile"] .sbx-term { max-height: 56dvh; }
 html[data-surface="mobile"] .md-table-wrap,
 html[data-surface="mobile"] .code-block { -webkit-overflow-scrolling: touch; }
 
-/* Spotlight headers: let the path wrap instead of ellipsizing to nothing. */
-html[data-surface="mobile"] .spotlight-bar-path {
-  max-width: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
 /* ───────────────────────── cards ─────────────────────────────────── */
 
 html[data-surface="mobile"] .mcard-list {
@@ -311,7 +304,6 @@ html[data-surface="mobile"] .mcard-meta {
   color: var(--faint);
 }
 html[data-surface="mobile"] .mcard-meta .mono { font-size: var(--text-xs); }
-html[data-surface="mobile"] .mcard .fsm-strip-wrap { margin-top: 10px; }
 html[data-surface="mobile"] .mcard-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1334,130 +1326,53 @@ html[data-surface="mobile"] .mxd .page-eyebrow {
   font-size: 11px;
   font-weight: 500;
 }
-/* FSM strip reads as a quiet track: steps size to their labels and the
-   strip scrolls (desktop's equal-width flex crushes nowrap labels on a
-   phone); the current step is marked by its dot + ink label, not a box. */
-html[data-surface="mobile"] .fsm-step { flex: 0 0 auto; min-width: auto; }
-html[data-surface="mobile"] .fsm-step--current {
-  background: none;
-  border-color: transparent;
-}
 /* Desktop's 56px section rhythm is dead space inside the one scroll. */
 html[data-surface="mobile"] .mxd .section { margin-bottom: 0; }
 
-/* Gate row — flush: the 3px index carries it (steel = neutral workflow
-   info, orange = a review gate awaiting the human). The banner's tinted
-   card chrome is desktop-only. */
-html[data-surface="mobile"] .mxd .gate-banner {
-  background: none;
-  border: none;
-  border-radius: 0;
-  padding: 2px 0 2px 14px;
-  margin: 2px 0 6px;
+/* The status statement — the entire workflow apparatus as one line: a 3px
+   index in the state's color (the list rows' facet language) beside the
+   state sentence, with the server's next move underneath while live. */
+html[data-surface="mobile"] .mxd-status {
+  display: flex;
+  gap: 11px;
+  margin: 2px 0 10px;
 }
-html[data-surface="mobile"] .mxd .gate-banner::before {
+html[data-surface="mobile"] .mxd-status-ix {
   width: 3px;
   border-radius: 2px;
-  background: var(--steel);
+  align-self: stretch;
+  flex: none;
 }
-html[data-surface="mobile"] .mxd .mxd-gate--attn .gate-banner::before { background: var(--active); }
-
-/* Spotlights (plan / report) sit flush on the surface; the section's own
-   label already names them, so the card and its eyebrow go. */
-html[data-surface="mobile"] .mxd .spotlight {
-  background: none;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  margin-bottom: 0;
-}
-html[data-surface="mobile"] .mxd .spotlight-eyebrow { display: none; }
-/* Status reads as colored text, not a pill. */
-html[data-surface="mobile"] .mxd .plan-status {
-  background: none;
-  border: none;
-  padding: 0;
-}
-/* Head row as an explicit grid: status left, quiet toggle buttons right,
-   the file path on its own faint line below — no wrapped pill soup on a
-   375px column. display:contents lifts the buttons/path out of their
-   desktop wrapper so the grid can place them. */
-html[data-surface="mobile"] .mxd .spotlight-head--row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin-bottom: 8px;
-}
-html[data-surface="mobile"] .mxd .spotlight-head-left { grid-row: 1; grid-column: 1; }
-html[data-surface="mobile"] .mxd .spotlight-head-right { display: contents; }
-html[data-surface="mobile"] .mxd .spotlight-head-right .spotlight-bar-path {
-  grid-row: 2;
-  grid-column: 1 / -1;
-  max-width: none;
-  font-size: 10px;
-  color: var(--faint);
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-html[data-surface="mobile"] .mxd .spotlight-head-right .btn { grid-row: 1; }
-html[data-surface="mobile"] .mxd .spotlight .btn {
-  min-height: 30px;
-  padding: 2px 0;
-  border: none;
-  background: none;
-  font-size: 12px;
+html[data-surface="mobile"] .mxd-status-body { min-width: 0; }
+html[data-surface="mobile"] .mxd-status-line {
+  font-size: 13px;
   font-weight: 600;
+}
+html[data-surface="mobile"] .mxd-status-next {
+  margin-top: 1px;
+  font-size: 11.5px;
   color: var(--muted);
 }
 
-/* Recorded results — flush, with the curves in the sanctioned hairline
-   chart grid (same language as mobile MLflow). */
-html[data-surface="mobile"] .mxd .results-metrics {
-  background: none;
-  border: none;
-  border-radius: 0;
-  padding: 0;
-}
-html[data-surface="mobile"] .mxd .results-metrics-title {
+/* Plan / report documents are pure content; their review trail is one
+   quiet disclosure row (the mterm-row grammar) above the body. */
+html[data-surface="mobile"] .mdoc-review { margin: 2px 0 8px; }
+
+/* Recorded results — the renderer is flush by default now; mobile only
+   trims the section hairline (the .mml label already breaks the section). */
+html[data-surface="mobile"] .mxd .results-metrics { border-top: none; padding-top: 0; }
+html[data-surface="mobile"] .mxd .rr-key { min-width: 108px; }
+html[data-surface="mobile"] .results-metrics-drill {
+  display: inline-block;
+  margin-top: 8px;
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
-}
-html[data-surface="mobile"] .mxd .mlf-runs { margin-top: 8px; gap: 12px; }
-html[data-surface="mobile"] .mxd .mlf-run { border-top: none; padding-top: 0; }
-html[data-surface="mobile"] .mxd .mlf-run-name { font-size: 11px; font-weight: 600; color: var(--muted); }
-html[data-surface="mobile"] .mxd .mlf-curve-grid {
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  overflow: hidden;
-}
-html[data-surface="mobile"] .mxd .mlf-curve {
-  background: var(--bg);
-  border: none;
-  border-radius: 0;
-  padding: 9px 11px;
-  min-width: 0;
-  /* hairlines paint into the 1px gap; container overflow clips the edges */
-  box-shadow: 1px 1px 0 0 var(--line);
-}
-html[data-surface="mobile"] .mxd .mlf-curve-key {
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-html[data-surface="mobile"] .mxd .mlf-curve-val {
-  font-family: var(--font-body);
-  font-size: 14px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  text-decoration: none;
 }
 html[data-surface="mobile"] .mxd .mbreak { margin: 18px 0 14px; }
 html[data-surface="mobile"] .mxd-section { scroll-margin-top: 74px; }
 html[data-surface="mobile"] .mxd-section > .mml { margin-top: 4px; }
-html[data-surface="mobile"] .mxd .fsm-strip-wrap { margin-bottom: 18px; }
 html[data-surface="mobile"] .mxd-intent {
   font-size: 13px;
   line-height: 1.5;
@@ -1503,6 +1418,16 @@ html[data-surface="mobile"] .mrail {
   border-left: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
   touch-action: none;
   transition: width 160ms ease;
+}
+/* An invisible gutter doubles the hit target (a 15px strip alone is under
+   any comfortable touch size) without widening the visible rail. */
+html[data-surface="mobile"] .mrail::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -14px;
+  width: 14px;
 }
 html[data-surface="mobile"] .mrail-tick {
   width: 6px;
@@ -1668,12 +1593,13 @@ html[data-surface="mobile"] .mlfm-cell-val .tr { font-size: 9px; font-weight: 70
 html[data-surface="mobile"] .mlfm-cell .msparkline { margin-top: 7px; }
 
 /* While scrubbing, the surface recedes behind a light veil. */
+/* The dim is also the dismiss surface: while the panel is open it catches
+   the tap-away (and keeps stray taps off the content underneath). */
 html[data-surface="mobile"] .mrail-dim {
   position: fixed;
   inset: 0;
   z-index: 49;
   background: color-mix(in srgb, var(--bg) 34%, transparent);
-  pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) {
   html[data-surface="mobile"] .mrail { transition: none; }

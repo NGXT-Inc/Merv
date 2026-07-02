@@ -2,9 +2,8 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useProjectStore, selectExperiments, useProjectHref } from '../store/useProjectStore';
 import { SkeletonCards } from './Skeleton';
-import { expName } from '../utils/experiment';
+import { expName, statusColor, statusLine } from '../utils/experiment';
 import { fmtDuration } from '../utils/format';
-import { classifyExperiment, outcomeLabel } from '../utils/evidence';
 
 // Lifecycle groups for the underline text filter, in FSM order.
 const GROUPS = [
@@ -15,35 +14,6 @@ const GROUPS = [
   { id: 'failed', label: 'Failed', statuses: ['failed'] },
   { id: 'abandoned', label: 'Abandoned', statuses: ['abandoned'] },
 ];
-
-// The 3px left index IS the status: scanning the edge reads the fleet's
-// health. Orange = needs you, green = healthy motion/outcome, steel =
-// queued, red = failed, faint = abandoned.
-function indexColor(status) {
-  if (status === 'design_review' || status === 'experiment_review') return 'var(--active)';
-  if (status === 'running' || status === 'complete') return 'var(--supports)';
-  if (status === 'failed') return 'var(--refutes)';
-  if (status === 'abandoned') return 'var(--faint)';
-  return 'var(--steel)'; // planned / ready_to_run
-}
-
-function statusLine(e, status, now) {
-  switch (status) {
-    case 'design_review': return 'design review · awaiting you';
-    case 'experiment_review': return 'experiment review · awaiting you';
-    case 'running': {
-      const since = e.updated_at ? now - Date.parse(e.updated_at) : NaN;
-      return Number.isFinite(since) ? `running · ${fmtDuration(since)}` : 'running';
-    }
-    case 'ready_to_run': return 'ready to run';
-    case 'complete': {
-      const outcome = classifyExperiment(e);
-      return outcome === 'supports' ? 'complete · supports claim' : `complete · ${outcomeLabel(outcome)}`;
-    }
-    case 'failed': return 'failed';
-    default: return status.replace(/_/g, ' ');
-  }
-}
 
 /**
  * Experiments — the lifecycle list in the One-Surface language
@@ -113,7 +83,7 @@ export default function ExperimentCardList() {
 function ExperimentRow({ experiment: e, now }) {
   const px = useProjectHref();
   const status = (e.status || 'planned').toLowerCase();
-  const color = indexColor(status);
+  const color = statusColor(status);
   const settled = ['complete', 'failed', 'abandoned'].includes(status);
   const endMs = settled && e.updated_at ? Date.parse(e.updated_at) : now;
   const durationMs = e.created_at ? Math.max(0, endMs - Date.parse(e.created_at)) : NaN;

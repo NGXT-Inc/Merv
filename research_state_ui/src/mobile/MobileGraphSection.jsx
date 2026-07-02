@@ -54,37 +54,44 @@ export default function MobileGraphSection({ projectId, experimentId, experiment
     ? makeLogicDetail(logic?.ref_index || {})
     : makeFigureDetail();
 
+  // Controls exist only when there is a choice to make: the Figure/Story
+  // toggle needs both views, the expand button needs content.
+  const showToggle = figAvail && logicAvail;
+  const showExpand = view && model.nodes.length > 0;
+
   return (
     <section className="section">
-      <div className="cluster--between" style={{ marginBottom: 10 }}>
-        <div className="mseg mseg--inline" role="tablist" aria-label="Graph view">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'figure'}
-            className={`mseg-btn${view === 'figure' ? ' active' : ''}`}
-            disabled={!figAvail}
-            onClick={() => setChosen('figure')}
-          >
-            Figure
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={view === 'logic'}
-            className={`mseg-btn${view === 'logic' ? ' active' : ''}`}
-            disabled={!logicAvail}
-            onClick={() => setChosen('logic')}
-          >
-            Story
-          </button>
+      {(showToggle || showExpand) && (
+        <div className="cluster--between" style={{ marginBottom: 10 }}>
+          {showToggle ? (
+            <div className="mseg mseg--inline" role="tablist" aria-label="Graph view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'figure'}
+                className={`mseg-btn${view === 'figure' ? ' active' : ''}`}
+                onClick={() => setChosen('figure')}
+              >
+                Figure
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'logic'}
+                className={`mseg-btn${view === 'logic' ? ' active' : ''}`}
+                onClick={() => setChosen('logic')}
+              >
+                Story
+              </button>
+            </div>
+          ) : <span />}
+          {showExpand && (
+            <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowCanvas(true)}>
+              expand ⤢
+            </button>
+          )}
         </div>
-        {view && model.nodes.length > 0 && (
-          <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowCanvas(true)}>
-            View as graph ⤢
-          </button>
-        )}
-      </div>
+      )}
 
       {!view ? (
         <div className="empty-state empty-state--compact">

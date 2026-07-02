@@ -4302,38 +4302,133 @@ button.review-stepper-version:hover {
 .figure-missing-name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); word-break: break-all; }
 
 /* Inline per-experiment metrics panel — durable numbers from the centralized
-   MLflow ledger, on the experiment detail page. Wraps the shared run/curve
-   renderer (the mlf-run and mlf-curve rules below). */
-.results-metrics { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg-elev); padding: 14px 16px; }
-.results-metrics-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-.results-metrics-title { font-weight: 600; font-size: var(--text-md); }
+   MLflow ledger, on the experiment detail page. Flush: a hairline at the
+   section break, headline metrics as rows, telemetry as a quiet line. */
+.results-metrics { border-top: 1px solid var(--line); padding-top: 12px; }
+.results-metrics-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.results-metrics-title { font-weight: 600; font-size: var(--text-sm); color: var(--muted); }
 .results-metrics-sub { font-size: var(--text-xs); color: var(--faint); text-decoration: none; }
 a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; }
 
-/* Project MLflow page (/p/<id>/mlflow): per-experiment runs + metric curves,
-   with an embedded MLflow drill-in. */
-.mlf-card { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg-elev); padding: 16px 18px; }
-.mlf-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.mlf-card-titles { min-width: 0; }
-.mlf-card-name { font-size: var(--text-lg); margin: 0; }
-.mlf-card-intent { font-size: var(--text-sm); color: var(--muted); margin: 4px 0 0; }
-.mlf-runs { margin-top: 14px; display: flex; flex-direction: column; gap: 16px; }
-.mlf-run { border-top: 1px solid var(--line-soft); padding-top: 12px; }
-.mlf-run:first-child { border-top: 0; padding-top: 0; }
-.mlf-run-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
-.mlf-run-name { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text); }
-.mlf-run-status { font-size: var(--text-xs); color: var(--faint); }
-.mlf-curve-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-.mlf-curve { border: 1px solid var(--line-soft); border-radius: var(--radius-md); padding: 8px 10px; background: var(--bg-soft); }
-.mlf-curve-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.mlf-curve-key { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mlf-curve-val { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text); }
+/* Recorded-results renderer (RunMetrics): headline results with folded-in
+   baseline deltas, then telemetry and diagnostics as quiet lines. No tiles. */
+.rr { display: flex; flex-direction: column; gap: 14px; }
+.rr-run + .rr-run { border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.rr-run-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.rr-run-name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); }
+.rr-run-status { font-size: var(--text-xs); font-weight: 600; color: var(--active); }
+.rr-head-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 3px 0; }
+.rr-key { min-width: 130px; font-size: var(--text-xs); color: var(--muted); }
+.rr-dir { color: var(--faint); }
+.rr-val { font-family: var(--font-mono); font-size: 15px; }
+.rr-delta { font-family: var(--font-mono); font-size: var(--text-xs); }
+.rr-delta.good { color: var(--supports); }
+.rr-delta.bad { color: var(--refutes); }
+.rr-anchor { color: var(--faint); }
+.rr-spark { flex: 1 1 90px; max-width: 170px; margin-left: auto; }
+.rr-more { display: block; margin-top: 6px; padding: 2px 0; border: none; background: none; font-size: var(--text-xs); color: var(--faint); cursor: pointer; }
+.rr-more:hover { color: var(--muted); }
+.rr-line { font-size: var(--text-xs); color: var(--muted); margin: 6px 0 0; }
+.rr-line-k { font-family: var(--font-mono); color: var(--faint); }
+.rr-chip { font-family: var(--font-mono); }
+.rr-chip.ok { color: var(--supports); }
+.rr-chip.bad { color: var(--refutes); }
+
 .mlf-params { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .mlf-param { font-size: var(--text-xs); color: var(--muted); font-family: var(--font-mono); }
 .mlf-param-k { color: var(--faint); }
 .mlf-empty { font-size: var(--text-sm); color: var(--faint); margin: 8px 0 0; }
-.mlf-embed { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
-.mlf-embed-frame { display: block; width: 100%; height: 70vh; border: 0; background: var(--bg); }
+
+/* ── Project ledger (MLflow page): profiler-planned analytics.
+   .lgd-* = page layout, .lgc-* = chart primitives (LedgerCharts.jsx). ── */
+/* Pulse: a flush instrument band — hairline verticals, no tinted boxes. */
+.lgd-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin-bottom: 44px; }
+.lgd-tile { padding: 2px 18px 4px; border-left: 1px solid var(--line); }
+.lgd-tile:first-child { border-left: 0; padding-left: 0; }
+.lgd-tile-k { font-size: var(--text-xs); color: var(--muted); }
+.lgd-tile-v { font-family: var(--font-mono); font-size: 22px; margin-top: 2px; }
+.lgd-tile-v.good { color: var(--supports); }
+.lgd-tile-v.bad { color: var(--refutes); }
+.lgd-tile-s { font-size: var(--text-xs); color: var(--faint); margin-top: 2px; }
+.lgd-note { font-size: var(--text-xs); color: var(--faint); margin: 8px 0 0; }
+
+.lgd-focus { border-left: 3px solid var(--active); padding: 4px 0 6px 14px; margin-bottom: 40px; }
+.lgd-focus-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lgd-focus-name { font-size: var(--text-lg); font-weight: 600; }
+.lgd-focus-status { font-size: var(--text-xs); font-weight: 600; }
+.lgd-focus-intent { font-size: var(--text-sm); color: var(--muted); margin: 6px 0 12px; max-width: 78ch; }
+.lgd-focus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 20px; }
+.lgd-focus-cell { display: flex; align-items: baseline; gap: 8px; font-size: var(--text-sm); }
+.lgd-focus-key { flex: 1; min-width: 0; font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lgd-focus-val { font-family: var(--font-mono); }
+.lgd-focus-rank { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
+.lgd-focus-rank.top { color: var(--active); }
+
+.lgc-dot { position: absolute; transform: translate(-50%, -50%); border: none; border-radius: 50%; padding: 0; cursor: pointer; }
+.lgc-dot:hover, .lgc-dot:focus-visible { box-shadow: 0 0 0 3px rgba(var(--active-rgb), 0.25); outline: none; }
+
+.lgc-frontier { position: relative; padding: 6px 0 22px 58px; }
+.lgc-plot { position: relative; height: 200px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.lgc-plot > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.lgc-y { position: absolute; left: 0; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
+.lgc-y--max { top: 0; }
+.lgc-y--min { bottom: 16px; }
+.lgc-xlab { position: absolute; right: 0; bottom: 0; font-size: var(--text-xs); color: var(--faint); font-family: var(--font-mono); }
+.lgc-xlab--left { right: auto; left: 58px; }
+
+.lgd-strips { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 0 44px; }
+.lgd-striprow { display: grid; grid-template-columns: 150px 1fr auto; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.lgd-strip-key { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lgd-strip-key .dir { color: var(--faint); }
+.lgc-strip { position: relative; height: 28px; }
+.lgc-strip::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--line-soft); }
+.lgd-strip-range { font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
+
+.lgd-board { max-width: 720px; }
+.lgd-row { display: flex; align-items: baseline; gap: 14px; padding: 8px 10px 8px 11px; border-bottom: 1px solid var(--line-soft); border-left: 3px solid transparent; cursor: pointer; }
+.lgd-row:hover { background: var(--hover); }
+.lgd-row.champ { border-left-color: var(--active); }
+.lgd-row.focused { background: var(--select); }
+.lgd-rank { width: 18px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
+.lgd-run-name { flex: 1; min-width: 0; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lgd-run-sub { margin-left: 8px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
+.lgd-val { font-family: var(--font-mono); font-size: var(--text-sm); }
+.lgd-delta { width: 84px; text-align: right; font-family: var(--font-mono); font-size: var(--text-xs); }
+.lgd-delta.good { color: var(--supports); }
+.lgd-delta.bad { color: var(--refutes); }
+.lgd-delta.na { color: var(--faint); }
+.lgd-open { font-size: var(--text-xs); white-space: nowrap; }
+
+/* Knob scatters sit flush on the canvas — their axes are the only lines. */
+.lgd-knobs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 22px 32px; }
+.lgc-knob-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.lgc-knob-key { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
+.lgc-knob-assoc { font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+.lgc-scatter { position: relative; height: 130px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.lgc-xlabels { position: relative; height: 16px; margin-top: 4px; }
+.lgc-xlabels span { position: absolute; transform: translateX(-50%); font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; max-width: 76px; overflow: hidden; text-overflow: ellipsis; }
+
+.lgd-line { font-size: var(--text-xs); color: var(--muted); margin: 6px 0; }
+.lgd-line-k { font-family: var(--font-mono); color: var(--faint); }
+.lgd-chip { font-family: var(--font-mono); }
+.lgd-chip.ok { color: var(--supports); }
+.lgd-chip.bad { color: var(--refutes); }
+
+/* Timeline: the project's attempts in order — stamp, state index, intent,
+   and how each landed on the focus metric. Flush rows, no cards. */
+.lgd-tlrow { display: flex; align-items: baseline; gap: 14px; padding: 9px 10px 9px 11px; border-bottom: 1px solid var(--line-soft); border-left: 3px solid var(--steel); cursor: pointer; }
+.lgd-tlrow:hover { background: var(--hover); }
+.lgd-tlrow.focused { background: var(--select); }
+.lgd-tl-when { width: 96px; flex: none; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); }
+.lgd-tl-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; overflow: hidden; }
+.lgd-tl-name { font-size: var(--text-sm); font-weight: 600; white-space: nowrap; }
+.lgd-tl-status { flex: none; font-size: var(--text-xs); }
+.lgd-tl-intent { font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lgd-tl-read { flex: none; font-family: var(--font-mono); font-size: var(--text-xs); }
+.lgd-tl-read.na { color: var(--faint); }
+.lgd-tl-read .good { color: var(--supports); }
+.lgd-tl-read .bad { color: var(--refutes); }
+.lgd-tl-read .n { color: var(--faint); }
 
 /* Parachute lifecycle chip (derived from sandbox.parachuted /
    parachute_restored / parachute_failed events). */

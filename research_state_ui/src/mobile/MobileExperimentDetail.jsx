@@ -2,20 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useProjectStore, selectResources, useProjectHref } from '../store/useProjectStore';
-import FSMStrip from '../components/FSMStrip';
-import GateBanner from '../components/GateBanner';
-import PlanSpotlight from '../components/PlanSpotlight';
-import ReportSpotlight from '../components/ReportSpotlight';
 import ExperimentMetrics from '../components/ExperimentMetrics';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
+import MobileDoc from './MobileDoc';
 import ScrubRail from './ScrubRail';
 import { Skeleton } from './Skeleton';
-import { expName } from '../utils/experiment';
-
-// At a review gate the workflow needs the human — the gate row's 3px index
-// goes orange; otherwise it stays steel (neutral workflow info).
-const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
+import { expName, statusColor, statusLine, TERMINAL_STATUSES } from '../utils/experiment';
 
 /**
  * Mobile experiment detail — one continuous scroll (design handoff, sketch
@@ -23,10 +16,12 @@ const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
  * introduced by a small label and separated by a hairline. No tab strip;
  * the right-edge ScrubRail (experiment-only) is the section index.
  *
- * Heavy panes attach on tap: the terminal (its poller) and the logic graph
- * mount only when opened, so a long scroll never stacks pollers. Read-only:
- * the gate panel shows the server's workflow state without transition
- * buttons (reviews and transitions are the agent's job).
+ * design_philosophy.md is the law here: the artifacts (intent, plan,
+ * terminal, report, curves) are the content; everything about the workflow
+ * collapses into ONE color-indexed status statement — no FSM enumeration,
+ * no gate card, no counts. Heavy panes attach on tap: the terminal (its
+ * poller) and the graph mount only when opened, so a long scroll never
+ * stacks pollers. Read-only: reviews and transitions are the agent's job.
  */
 export default function MobileExperimentDetail() {
   const { experimentId } = useParams();
@@ -104,9 +99,7 @@ export default function MobileExperimentDetail() {
   }
 
   const currentAttempt = experiment.attempt_index;
-  // Closed experiments need no gate panel — the strip already says it, and
-  // the FSM's terminal gate only reports what can no longer happen.
-  const isClosed = ['complete', 'failed', 'abandoned'].includes(experiment.status);
+  const isClosed = TERMINAL_STATUSES.includes(experiment.status);
 
   // ── Resource partition (same derivation as the desktop detail page) ──
   const currentRes = (experiment.current_attempt_resources || [])
@@ -126,7 +119,6 @@ export default function MobileExperimentDetail() {
   );
   const designReviews = allReviews.filter(r => (r.role || '').toLowerCase().includes('design'));
   const experimentReviews = allReviews.filter(r => !(r.role || '').toLowerCase().includes('design'));
-  const claimCount = Array.isArray(experiment.tested_claims) ? experiment.tested_claims.length : 0;
 
   return (
     <div className="mxd">
@@ -138,31 +130,12 @@ export default function MobileExperimentDetail() {
         <h1 className="page-title">{expName(experiment)}</h1>
       </header>
 
-      {/* The strip shows where it stands; the gate row in Status shows what
-          the server wants next. One statement each — no disclosure duplicate. */}
-      <FSMStrip status={experiment.status} />
-
       {/* ── Status ─────────────────────────────────────────────────── */}
       <section ref={statusRef} className="mxd-section">
         <div className="mml">Status</div>
+        <StatusStatement experiment={experiment} workflow={isClosed ? null : workflow} />
         {experiment.intent && <p className="mxd-intent">{experiment.intent}</p>}
-        {workflow && !isClosed && (
-          <div className={`mxd-gate${REVIEW_STATES.has(experiment.status) ? ' mxd-gate--attn' : ''}`}>
-            {/* Read-only: no transition buttons on mobile — reviews and
-                transitions are the agent's job. */}
-            <GateBanner workflow={workflow} />
-          </div>
-        )}
-        <div className="merow-meta" style={{ marginTop: 10 }}>
-          <span>{currentRes.length} resource{currentRes.length === 1 ? '' : 's'}</span>
-          {claimCount > 0 && <span>tests {claimCount} claim{claimCount === 1 ? '' : 's'}</span>}
-          {allReviews.length > 0 && <span>{allReviews.length} review{allReviews.length === 1 ? '' : 's'}</span>}
-        </div>
-        <LazyRow
-          open={graphOpen}
-          onOpen={() => setGraphOpen(true)}
-          label="graph — tap to load"
-        >
+        <LazyRow open={graphOpen} onOpen={() => setGraphOpen(true)} label="graph">
           <MobileGraphSection
             projectId={projectId}
             experimentId={experimentId}
@@ -178,13 +151,13 @@ export default function MobileExperimentDetail() {
       <section ref={planRef} className="mxd-section">
         <div className="mml">Plan</div>
         {planRes ? (
-          <PlanSpotlight
+          <MobileDoc
             projectId={projectId}
-            planResource={planRes}
-            designReviews={designReviews}
-            attemptIndex={currentAttempt}
+            resource={planRes}
+            reviews={designReviews}
+            kind="plan"
             experimentStatus={experiment.status}
-            defaultOpen
+            attemptIndex={currentAttempt}
           />
         ) : (
           <div className="mquiet">no plan synced yet</div>
@@ -199,11 +172,7 @@ export default function MobileExperimentDetail() {
         <>
           <section ref={runRef} className="mxd-section">
             <div className="mml">Run</div>
-            <LazyRow
-              open={termOpen}
-              onOpen={() => setTermOpen(true)}
-              label="terminal — tap to attach"
-            >
+            <LazyRow open={termOpen} onOpen={() => setTermOpen(true)} label="terminal">
               <SandboxTerminal projectId={projectId} experimentId={experimentId} readOnly />
             </LazyRow>
           </section>
@@ -216,10 +185,11 @@ export default function MobileExperimentDetail() {
       <section ref={outcomesRef} className="mxd-section">
         <div className="mml">Outcomes</div>
         {reportRes && (
-          <ReportSpotlight
+          <MobileDoc
             projectId={projectId}
-            reportResource={reportRes}
-            experimentReviews={experimentReviews}
+            resource={reportRes}
+            reviews={experimentReviews}
+            kind="report"
             experimentStatus={experiment.status}
           />
         )}
@@ -227,12 +197,50 @@ export default function MobileExperimentDetail() {
           projectId={projectId}
           experimentId={experimentId}
           refreshKey={`${experiment.status}:${currentAttempt}`}
+          dense
         />
       </section>
 
       <ScrubRail sections={sections} />
     </div>
   );
+}
+
+// The entire workflow apparatus as one statement: a 3px index in the state's
+// color (the same facet language as the list rows), the state sentence, and
+// — only while live — the server's next move, humanized from its snake_case.
+// FSM enumeration, gate cards, and counts are struck (design_philosophy §II).
+function StatusStatement({ experiment, workflow }) {
+  const status = (experiment.status || 'planned').toLowerCase();
+  const color = statusColor(status);
+  const next = workflow?.next_action && workflow.next_action !== 'none'
+    ? humanizeAction(workflow.next_action)
+    : null;
+  const missing = workflow?.missing_evidence || [];
+
+  return (
+    <div className="mxd-status">
+      <span className="mxd-status-ix" style={{ background: color }} aria-hidden="true" />
+      <div className="mxd-status-body">
+        <div className="mxd-status-line" style={{ color }}>
+          {statusLine(experiment, status, Date.now())}
+        </div>
+        {next && <div className="mxd-status-next">{next}</div>}
+        {missing.map((m, i) => (
+          <div key={i} className="mxd-status-next">missing · {String(m).replace(/_/g, ' ')}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// "wait_for_reviewer" → "waiting on reviewer"; "launch_design_reviewer" →
+// "next · launch design reviewer". The wait_ prefix is the backend's "in
+// motion, nothing needed from you".
+function humanizeAction(action) {
+  const a = String(action);
+  if (/^wait[_-]/.test(a)) return `waiting on ${a.replace(/^wait[_-](for[_-])?/, '').replace(/_/g, ' ')}`;
+  return `next · ${a.replace(/_/g, ' ')}`;
 }
 
 // A heavy pane folded into the surface: a quiet disclosure row that mounts

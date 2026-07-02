@@ -14,6 +14,13 @@ export function formatBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+// Compact absolute stamp for chronological scanning ("Jul 1, 21:05").
+// 24-hour on purpose: fixed width, sorts visually.
+export function fmtStamp(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 export function tsToTime(iso) {
   if (!iso) return '';
   try {
