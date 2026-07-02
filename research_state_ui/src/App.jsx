@@ -5,7 +5,7 @@ import { usePolling } from './store/usePolling';
 import { useViewport } from './store/useViewport';
 import Sidebar from './components/Sidebar';
 import CompatBanner from './components/CompatBanner';
-import LogicGraphHero from './components/LogicGraphHero';
+import AppBackdrop from './bg/AppBackdrop';
 import MobileShell from './mobile/MobileShell';
 import HomeScreen from './mobile/HomeScreen';
 import ExperimentCardList from './mobile/ExperimentCardList';
@@ -180,7 +180,7 @@ export default function App() {
 
   return (
     <>
-      <div className="app-bg" aria-hidden="true"><LogicGraphHero /></div>
+      <AppBackdrop />
       <div className="shell">
         <Sidebar onRefresh={refreshHome} />
         <main className="shell-main">
