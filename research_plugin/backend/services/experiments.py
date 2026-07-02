@@ -363,6 +363,11 @@ class ExperimentService:
             data["current_attempt_resources"] = [
                 res for res in data["resources"] if res.get("association_attempt_index") == data["attempt_index"]
             ]
+            data["storage_objects"] = self._storage_objects_for_experiment(
+                conn=conn,
+                project_id=str(data["project_id"]),
+                experiment_id=experiment_id,
+            )
             review_rows = conn.execute(
                 """
                 SELECT * FROM reviews
@@ -521,6 +526,23 @@ class ExperimentService:
             "experiment_reviewer": "Experiment review passed",
         }
         return labels.get(role, f"{role} review passed")
+
+    def _storage_objects_for_experiment(
+        self, *, conn, project_id: str, experiment_id: str
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """
+            SELECT id, name, version, kind, content_sha256, size_bytes,
+                   content_type, status, expires_at, producing_run, source_uri,
+                   notes, created_at, updated_at, last_accessed_at
+            FROM storage_objects
+            WHERE project_id = ? AND producing_experiment_id = ?
+              AND status != 'deleted'
+            ORDER BY kind, name, version DESC, created_seq DESC
+            """,
+            (project_id, experiment_id),
+        ).fetchall()
+        return rows_to_dicts(rows=rows)
 
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
         conn = self.store.connect()

@@ -113,6 +113,57 @@ class StorageHttpApiTest(unittest.TestCase):
             b"tool bytes",
         )
 
+    def test_experiment_state_surfaces_produced_storage_objects(self) -> None:
+        exp = self.app.call_tool(
+            "experiment.create",
+            {
+                "project_id": self.project_id,
+                "name": "storage-visible",
+                "intent": "Retain heavy artifacts in storage.",
+            },
+        )
+        source = self.repo / "experiments" / "storage-visible" / "model.bin"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"model bytes")
+
+        uploaded = self.app.call_tool(
+            "storage.upload_file",
+            {
+                "project_id": self.project_id,
+                "path": "experiments/storage-visible/model.bin",
+                "kind": "model",
+                "producing_experiment_id": exp["id"],
+                "producing_run": "run-001",
+                "notes": "checkpoint retained for reviewer inspection",
+            },
+        )
+
+        state = self.app.call_tool(
+            "experiment.get_state",
+            {"project_id": self.project_id, "experiment_id": exp["id"]},
+        )
+        objects = state["storage_objects"]
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["id"], uploaded["object"]["id"])
+        self.assertEqual(objects[0]["kind"], "model")
+        self.assertEqual(objects[0]["status"], "available")
+        self.assertEqual(objects[0]["producing_run"], "run-001")
+        self.assertEqual(
+            objects[0]["content_sha256"],
+            hashlib.sha256(b"model bytes").hexdigest(),
+        )
+        self.assertNotIn("namespace", objects[0])
+
+        self.app.call_tool(
+            "storage.delete",
+            {"project_id": self.project_id, "object_id": uploaded["object"]["id"]},
+        )
+        state = self.app.call_tool(
+            "experiment.get_state",
+            {"project_id": self.project_id, "experiment_id": exp["id"]},
+        )
+        self.assertEqual(state["storage_objects"], [])
+
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         response = self.client.request(method, path, json=body)
         self.assertLess(response.status_code, 400, response.text)

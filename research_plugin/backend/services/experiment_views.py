@@ -17,6 +17,11 @@ from typing import Any
 # project_id). The UI keeps the full shape (it calls the service method
 # directly). See docs/MCP_SERVER_CONTRACT.md.
 _SLIM_RESOURCE_FIELDS = ("id", "association_role", "path", "kind", "size_bytes", "missing", "title")
+_SLIM_STORAGE_FIELDS = (
+    "id", "name", "version", "kind", "content_sha256", "size_bytes",
+    "content_type", "status", "expires_at", "producing_run", "source_uri",
+    "notes",
+)
 _PRIOR_RESOURCE_FIELDS = ("id", "association_role", "path", "association_attempt_index")
 _SLIM_CLAIM_FIELDS = ("id", "statement", "confidence", "status", "scope")
 _SLIM_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "findings", "notes", "evidence")
@@ -50,6 +55,10 @@ def slim_experiment_state(full: dict[str, Any]) -> dict[str, Any]:
         "current_attempt_resources": [
             {field: res.get(field) for field in _SLIM_RESOURCE_FIELDS}
             for res in current
+        ],
+        "storage_objects": [
+            {field: obj.get(field) for field in _SLIM_STORAGE_FIELDS}
+            for obj in full.get("storage_objects", [])
         ],
         "reviews": [
             {field: review.get(field) for field in _SLIM_REVIEW_FIELDS}

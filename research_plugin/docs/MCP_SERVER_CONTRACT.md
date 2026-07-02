@@ -300,8 +300,12 @@ forward gate derived from the same workflow table, for example:
 ```
 
 Review-gated statuses expose a `review:<role>` item with `status` of
-`pending`, `requested`, `started`, or `passed`. What `experiment.get_state`
-drops is pure waste:
+`pending`, `requested`, `started`, or `passed`. Storage uploads that declare
+`producing_experiment_id` appear as compact `storage_objects` references
+alongside resources, with `{id, name, version, kind, content_sha256, size_bytes,
+content_type, status, expires_at, producing_run, source_uri, notes}` for every
+non-deleted storage object produced by the experiment. What
+`experiment.get_state` drops is pure waste:
 
 - the duplicate all-attempts `resources` list (a copy of
   `current_attempt_resources`); resources from *earlier* attempts appear instead

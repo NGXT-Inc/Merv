@@ -173,3 +173,32 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.structure.test_plane_layout.PlaneImportLintTest -v`
 - `PYTHONPATH=. python -m unittest tests.surface.test_control_plane_contract tests.surface.test_http_api -v`
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (866 tests, 25 skipped)
+
+## Batch 7: storage object visibility in experiment state
+
+Status: complete
+
+Request addressed:
+
+- Associate storage objects with experiments and reports more visibly.
+
+Implementation notes:
+
+- Surfaced a compact `storage_objects` list on experiment state for
+  non-deleted durable storage objects whose `producing_experiment_id` matches
+  the experiment.
+- Kept the visibility path tied to existing storage ledger metadata rather
+  than adding a second association model.
+- The agent-facing `experiment.get_state` projection keeps stable fields such
+  as id, name, version, kind, checksum, size, status, expiry, run id, source
+  URI, and notes while omitting internal storage namespace details.
+- Added docs for both MCP and UI consumers so reviewers can find retained
+  checkpoints, logs, datasets, and similar heavy artifacts directly from
+  experiment state.
+
+Verification:
+
+- `PYTHONPATH=. python -m unittest tests.surface.test_storage_http.StorageHttpApiTest.test_experiment_state_surfaces_produced_storage_objects tests.workflow.test_experiment_slim.ExperimentSlimTest.test_get_state_tool_is_slim -v`
+- `PYTHONPATH=. python -m unittest tests.storage.test_storage_ledger tests.surface.test_storage_http tests.workflow.test_experiment_slim -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.structure.test_plane_layout.PlaneImportLintTest -v`
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (867 tests, 25 skipped)

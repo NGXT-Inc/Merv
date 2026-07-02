@@ -305,6 +305,11 @@ Review gates stay as user-facing stages such as `design_review` and
 The UI should render this as detail inside the review stage, not as a separate
 top-level stage.
 
+Experiment state also includes `storage_objects`: compact references to
+non-deleted durable storage objects whose `producing_experiment_id` matches the
+experiment. Use these for large retained artifacts such as checkpoints, logs,
+or datasets that should be visible to reviewers but are not repo resources.
+
 ## Syntheses
 
 Project reflection waves. Each wave reconciles five lens reflections into the

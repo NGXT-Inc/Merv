@@ -79,6 +79,7 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertIn("intent", slim)
         self.assertIn("conclusion", slim)
         self.assertIn("gate_checklist", slim)
+        self.assertEqual(slim["storage_objects"], [])
         self.assertEqual({"id", "statement", "confidence", "status", "scope"},
                          set(slim["tested_claims"][0]) if slim["tested_claims"] else {"id", "statement", "confidence", "status", "scope"})
         # Single-attempt experiment: no prior-attempt block.
