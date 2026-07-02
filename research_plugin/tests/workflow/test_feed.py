@@ -168,6 +168,20 @@ class FeedServiceTest(unittest.TestCase):
         preview = result["post"]["link_preview"]
         self.assertTrue(preview and preview.get("error"))
 
+    def test_non_web_scheme_never_stores_a_clickable_link(self) -> None:
+        # javascript:/data: are attacker-shaped, not degradable — the post
+        # survives but nothing that could become an href is persisted.
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        for url in ("javascript:alert(1)", "data:text/html,<script>1</script>", "file:///etc/passwd"):
+            with self.subTest(url=url):
+                result = self.call(
+                    "feed.post", project_id=self.pid, handle="Nova-7", text="see", url=url
+                )
+                post = result["post"]
+                self.assertIsNone(post["link_url"])
+                self.assertFalse(post["link_preview"]["url"])
+                self.assertTrue(post["link_preview"]["error"])
+
     def test_post_kind_persists_and_lists(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call(

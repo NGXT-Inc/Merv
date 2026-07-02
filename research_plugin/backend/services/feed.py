@@ -15,6 +15,7 @@ UI consumes and the soft posting nudge surfaced through ``workflow``.
 from __future__ import annotations
 
 import json
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -422,9 +423,13 @@ class FeedService:
         """Unfurl ``url`` into a static preview; degrade to a plain link on failure.
 
         Per the PRD edge case, a bad or disallowed link never fails the post — it
-        becomes a plain, non-embedded chip (``preview.error`` set).
+        becomes a plain, non-embedded chip (``preview.error`` set). Exception:
+        a non-web scheme (javascript:/data:/file:…) is attacker-shaped, not
+        degradable — the post survives, but nothing clickable is stored.
         """
         url = url.strip()
+        if urllib.parse.urlparse(url).scheme.lower() not in ("http", "https"):
+            return "", {"url": "", "error": "only http and https links can be embedded"}
         try:
             card = unfurl(url)
         except UnfurlError as exc:

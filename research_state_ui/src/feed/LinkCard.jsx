@@ -4,6 +4,16 @@ function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
 }
 
+// Defense in depth against stored non-web schemes (javascript:/data:) — the
+// backend refuses to store them, but rows written before that guard (or by
+// another writer) must still never reach a clickable anchor.
+function safeHref(url) {
+  try {
+    const p = new URL(url).protocol;
+    return p === 'http:' || p === 'https:' ? url : null;
+  } catch { return null; }
+}
+
 // "Loshchilov, Ilya" / "Ilya Loshchilov" -> "Loshchilov"; first three + count.
 function authorLine(authors) {
   const last = authors
@@ -31,12 +41,17 @@ function repoSlug(url) {
 export default function LinkCard({ post, preview, thumbUrl, projectId }) {
   const track = () =>
     feedApi.trackFeed(projectId, 'link_clicked', { post_id: post.id }).catch(() => {});
+  const href = safeHref(post.link_url);
 
   if (!preview || preview.error) {
+    if (!href) {
+      // Unlinkable scheme: show the text, never an anchor.
+      return <span className="postcard-link postcard-link--bare">{post.link_url}</span>;
+    }
     return (
       <a
         className="postcard-link postcard-link--bare"
-        href={post.link_url}
+        href={href}
         target="_blank"
         rel="noopener noreferrer nofollow"
         onClick={track}
@@ -46,6 +61,8 @@ export default function LinkCard({ post, preview, thumbUrl, projectId }) {
     );
   }
 
+  if (!href) return null;
+
   const kind = preview.kind || 'page';
   const authors = kind === 'paper' ? authorLine(preview.authors || []) : '';
   const slug = kind === 'repo' ? repoSlug(preview.url || post.link_url) : null;
@@ -54,7 +71,7 @@ export default function LinkCard({ post, preview, thumbUrl, projectId }) {
   return (
     <a
       className="postcard-link"
-      href={post.link_url}
+      href={href}
       target="_blank"
       rel="noopener noreferrer nofollow"
       onClick={track}
