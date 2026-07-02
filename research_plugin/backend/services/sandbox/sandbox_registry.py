@@ -608,6 +608,62 @@ class SandboxRegistry:
                 ),
             )
 
+    def command_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
+        command_id = str(row.get("last_command_id") or "")
+        command_status = str(row.get("last_command_status") or "")
+        if not command_id and not command_status:
+            return None
+        exit_code_raw = row.get("last_command_exit_code")
+        exit_code = int(exit_code_raw) if exit_code_raw is not None else None
+        return {
+            "command_id": command_id or None,
+            "command": str(row.get("last_command_text") or ""),
+            "started_at": row.get("last_command_started_at"),
+            "status": command_status or "unknown",
+            "exit_code": exit_code,
+            "finished_at": row.get("last_command_finished_at"),
+            "output_tail": str(row.get("last_command_output_tail") or ""),
+            "snapshot_at": row.get("last_command_snapshot_at"),
+        }
+
+    def record_command_snapshot(
+        self, *, sandbox_uid: str, snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
+        now = now_iso()
+        command_id = str(snapshot.get("command_id") or "")
+        with self.store.transaction() as conn:
+            target_uid = str(sandbox_uid or "").strip()
+            if not target_uid:
+                return {**snapshot, "snapshot_at": now}
+            conn.execute(
+                """
+                UPDATE sandboxes
+                SET last_command_id = ?,
+                    last_command_text = ?,
+                    last_command_started_at = ?,
+                    last_command_status = ?,
+                    last_command_exit_code = ?,
+                    last_command_finished_at = ?,
+                    last_command_output_tail = ?,
+                    last_command_snapshot_at = ?,
+                    updated_at = ?
+                WHERE sandbox_uid = ?
+                """,
+                (
+                    command_id,
+                    str(snapshot.get("command") or ""),
+                    snapshot.get("started_at"),
+                    str(snapshot.get("status") or "unknown"),
+                    snapshot.get("exit_code"),
+                    snapshot.get("finished_at"),
+                    str(snapshot.get("output_tail") or ""),
+                    now,
+                    now,
+                    target_uid,
+                ),
+            )
+        return {**snapshot, "snapshot_at": now}
+
     def mark_terminated(
         self, *, experiment_id: str, sandbox_uid: str, reason: str = "terminated"
     ) -> None:

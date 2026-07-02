@@ -887,6 +887,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(term["last_exit_code"], 0)
         self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:05Z")
         self.assertFalse(term["command_running"])
+        self.assertFalse(term["command_status_stale"])
+        self.assertEqual(term["last_command"]["command"], "python train.py")
+        self.assertEqual(term["last_command"]["started_at"], "2026-06-09T12:00:05Z")
+        self.assertEqual(term["last_command"]["status"], "succeeded")
+        self.assertEqual(term["last_command"]["exit_code"], 0)
+        self.assertIn("loss 0.1", term["last_command"]["output_tail"])
+        self.assertTrue(term["last_command"]["command_id"].startswith("cmd_"))
 
     def test_terminal_reports_nonzero_exit_code(self) -> None:
         exp_id = self._experiment()
@@ -909,6 +916,23 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertTrue(term["command_running"])
         self.assertIsNone(term["last_exit_code"])
         self.assertIsNone(term["last_command_finished_at"])
+
+    def test_terminal_keeps_last_finished_exit_while_next_command_runs(self) -> None:
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.append_transcript(
+            experiment_id=exp_id,
+            text=(
+                self._rec("true", "", 0, ts="2026-06-09T12:00:01Z")
+                + "\n[2026-06-09T12:00:10Z] $ sleep 100\npartial...\n"
+            ),
+        )
+        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        self.assertTrue(term["command_running"])
+        self.assertEqual(term["last_exit_code"], 0)
+        self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:01Z")
+        self.assertEqual(term["last_command"]["command"], "sleep 100")
+        self.assertEqual(term["last_command"]["status"], "running")
 
     def test_terminal_uses_latest_exit_marker(self) -> None:
         exp_id = self._experiment()
@@ -970,6 +994,36 @@ class SandboxServiceTest(unittest.TestCase):
         )
         self.assertFalse(term["running"])
         self.assertFalse(term["command_running"])
+
+    def test_terminal_returns_stale_command_status_when_read_unavailable(self) -> None:
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.append_transcript(
+            experiment_id=exp_id,
+            text=self._rec("python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"),
+        )
+        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        cursor = first["cursor"]
+
+        def unavailable(**_kwargs):
+            raise RuntimeError("ssh unavailable")
+
+        self.backend.read_transcript = unavailable  # type: ignore[method-assign]
+        term = self.call(
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=cursor,
+        )
+
+        self.assertIn("terminal unavailable", term["transcript"])
+        self.assertTrue(term["command_status_stale"])
+        self.assertEqual(term["last_exit_code"], 0)
+        self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:05Z")
+        self.assertFalse(term["command_running"])
+        self.assertEqual(term["last_command"]["command"], "python train.py")
+        self.assertEqual(term["last_command"]["status"], "succeeded")
+        self.assertEqual(term["last_command"]["exit_code"], 0)
 
     # ---- release ----
 

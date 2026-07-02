@@ -215,7 +215,9 @@ poll `sandbox.get` after `poll_after_seconds`; do not use repeated
 When `status` is `running`, run commands with the returned `ssh.command`
 dispatcher from the repo root, or `ssh.raw_command` if you cannot run from the
 repo root. Use `sandbox.terminal(experiment_id)` to inspect transcript output
-and command exit markers before re-running anything long.
+and the structured `last_command` status before re-running anything long. If
+`command_status_stale` is true, the transcript read failed and `last_command` is
+the last successful snapshot, which is still useful for recovery decisions.
 
 While the sandbox is live, make experiment-folder edits on the VM under
 `$RP_EXPERIMENT_DIR`. No files are copied automatically. Keep datasets, caches,

@@ -8,6 +8,7 @@ importing the service package.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from typing import Any
@@ -156,7 +157,54 @@ def _shq(value: str) -> str:
 # the transcript tail. Best-effort: a sandbox created before the marker landed,
 # an empty log, or a read taken mid-command simply yields None / False.
 _EXIT_MARKER_RE = re.compile(r"^\[([^\]]*)\] \(exit (-?\d+)\)[ \t]*$", re.MULTILINE)
-_CMD_MARKER_RE = re.compile(r"^\[([^\]]*)\] \$ ", re.MULTILINE)
+_CMD_MARKER_RE = re.compile(r"^\[([^\]]*)\] \$ (.*)$", re.MULTILINE)
+COMMAND_OUTPUT_TAIL_CHARS = 2000
+
+
+def parse_terminal_snapshot(transcript: str) -> dict[str, Any]:
+    """Extract structured status for the latest command in a transcript."""
+    empty = {
+        "command_id": None,
+        "command": "",
+        "started_at": None,
+        "status": "unknown",
+        "exit_code": None,
+        "finished_at": None,
+        "output_tail": "",
+    }
+    if not transcript:
+        return empty
+    commands = list(_CMD_MARKER_RE.finditer(transcript))
+    if not commands:
+        return empty
+    command = commands[-1]
+    started_at = command.group(1).strip() or None
+    command_text = command.group(2).strip()
+    exits_after_command = [
+        match for match in _EXIT_MARKER_RE.finditer(transcript, command.end())
+    ]
+    exit_match = exits_after_command[0] if exits_after_command else None
+    if exit_match is None:
+        output = transcript[command.end():]
+        exit_code = None
+        finished_at = None
+        status = "running"
+    else:
+        output = transcript[command.end():exit_match.start()]
+        exit_code = int(exit_match.group(2))
+        finished_at = exit_match.group(1).strip() or None
+        status = "succeeded" if exit_code == 0 else "failed"
+    command_key = f"{len(commands)}\0{started_at or ''}\0{command_text}"
+    command_id = "cmd_" + hashlib.sha1(command_key.encode("utf-8")).hexdigest()[:12]
+    return {
+        "command_id": command_id,
+        "command": command_text,
+        "started_at": started_at,
+        "status": status,
+        "exit_code": exit_code,
+        "finished_at": finished_at,
+        "output_tail": output[-COMMAND_OUTPUT_TAIL_CHARS:].lstrip("\n"),
+    }
 
 
 def parse_terminal_markers(transcript: str) -> tuple[int | None, str | None, bool]:

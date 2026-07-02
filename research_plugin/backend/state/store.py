@@ -368,6 +368,14 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   last_seen_at TEXT,
   idle_since TEXT,
   heartbeat_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  last_command_id TEXT NOT NULL DEFAULT '',
+  last_command_text TEXT NOT NULL DEFAULT '',
+  last_command_started_at TEXT,
+  last_command_status TEXT NOT NULL DEFAULT '',
+  last_command_exit_code INTEGER,
+  last_command_finished_at TEXT,
+  last_command_output_tail TEXT NOT NULL DEFAULT '',
+  last_command_snapshot_at TEXT,
   terminated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -1043,6 +1051,18 @@ class StateStore(BaseStateStore):
                 # — non-empty when a control-plane management key exists for
                 # this sandbox. Never key material.
                 "mgmt_key_ref": "TEXT NOT NULL DEFAULT ''",
+                # Command status snapshot (July 2026): populated by
+                # sandbox.terminal from rec.sh transcript markers so agents
+                # keep the last known command state even if a later transcript
+                # SSH read is unavailable.
+                "last_command_id": "TEXT NOT NULL DEFAULT ''",
+                "last_command_text": "TEXT NOT NULL DEFAULT ''",
+                "last_command_started_at": "TEXT",
+                "last_command_status": "TEXT NOT NULL DEFAULT ''",
+                "last_command_exit_code": "INTEGER",
+                "last_command_finished_at": "TEXT",
+                "last_command_output_tail": "TEXT NOT NULL DEFAULT ''",
+                "last_command_snapshot_at": "TEXT",
             },
         )
         conn.execute(

@@ -357,7 +357,7 @@ sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, ov
 sandbox.get(experiment_id? | sandbox_uid)
 sandbox.list()
 sandbox.release(experiment_id? | sandbox_uid)
-sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_exit_code / last_command_finished_at / command_running per command.
+sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_command, last_exit_code / last_command_finished_at / command_running, and command_status_stale.
 sandbox.health()
 ```
 
@@ -486,8 +486,15 @@ Terminal rows include `lifecycle_reason` so `terminated` is explainable:
 
 Visibility: every SSH command and its output are recorded to a per-experiment
 transcript inside the sandbox. `sandbox.terminal` reads it live from the sandbox.
-The UI renders it as a terminal window. `workflow.status_and_next` may surface a
-last-known sandbox summary but stays a high-level orientation endpoint.
+The response also persists and returns `last_command`, a compact snapshot of the
+latest parsed command marker: command id, command text, started/finished times,
+status (`running`, `succeeded`, `failed`, or `interrupted`), exit code, and a
+capped output tail. If a later transcript read fails, `sandbox.terminal` still
+returns that last-known command snapshot with `command_status_stale: true`, so
+agents can recover status even when SSH is temporarily unavailable. The UI
+renders the transcript as a terminal window. `workflow.status_and_next` may
+surface a last-known sandbox summary but stays a high-level orientation
+endpoint.
 
 The default backend is `lambda_labs`. Backend selection is controlled by
 `RESEARCH_PLUGIN_EXECUTION_BACKEND`; supported values are `thunder_compute`,

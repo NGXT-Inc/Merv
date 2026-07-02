@@ -503,3 +503,32 @@ Verification:
 - `git diff --check`
 - `PYTHONPATH=. python -m unittest tests.workflow.test_synthesis_gates.SynthesisGateTest.test_publish_materializes_claim_changes_and_experiment_wave tests.surface.test_plugin_skills -v`
 - `PYTHONPATH=. python -m unittest tests.workflow.test_synthesis_gates -v` (51 tests)
+
+## Batch 19: durable sandbox command status snapshot
+
+Status: complete
+
+Request addressed:
+
+- Persist command status independently of SSH.
+
+Implementation notes:
+
+- Extended transcript marker parsing to produce a structured latest-command
+  snapshot: command id, command text, start/finish times, status, exit code, and
+  a capped output tail.
+- Added sandbox-row columns for the last known command snapshot and persist them
+  on every successful `sandbox.terminal` transcript read.
+- When a later transcript read fails, `sandbox.terminal` now returns the last
+  persisted command snapshot with `command_status_stale: true` instead of
+  dropping command status to null.
+- Kept backward-compatible top-level fields: `last_exit_code`,
+  `last_command_finished_at`, and `command_running`.
+- Updated MCP/tool/workflow docs to advertise `last_command` and the stale
+  status fallback.
+
+Verification:
+
+- `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_parses_successful_exit_code tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_reports_nonzero_exit_code tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_command_running_when_no_exit_marker_yet tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_keeps_last_finished_exit_while_next_command_runs tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_exit_code_survives_since_cursor tests.sandbox.test_sandbox_service.SandboxServiceTest.test_terminal_returns_stale_command_status_when_read_unavailable -v` (6 tests)
+- `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_service tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (107 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (885 tests, 25 skipped)

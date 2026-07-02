@@ -112,7 +112,9 @@ $RP_SESSION_DIR/transcript.log
 
 The wrapper records commands, streams stdout/stderr back to the SSH channel, and
 preserves the real command exit status. `sandbox.terminal` reads the transcript
-live from the running sandbox.
+live from the running sandbox and persists a compact `last_command` snapshot
+from the transcript markers, so the latest command status remains visible if a
+later transcript read is temporarily unavailable.
 
 ## Training observability: centralized MLflow
 
@@ -143,7 +145,7 @@ TensorBoard server, or sandbox-local dashboard tunnel.
 | `sandbox.pull_outputs` | Copy selected files or directories from the remote experiment folder into the local experiment folder. |
 | `sandbox.list` | All experiment sandboxes in the project. |
 | `sandbox.release` | Terminate the experiment's sandbox after confirming needed files were retained. |
-| `sandbox.terminal` | Read the experiment's terminal transcript tail. |
+| `sandbox.terminal` | Read the experiment's terminal transcript tail and latest command-status snapshot. |
 | `sandbox.health` | Is the execution backend reachable. |
 
 The agent's normal loop is: `sandbox.request` -> run/edit/write files over SSH

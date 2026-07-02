@@ -34,6 +34,7 @@ from ...sandbox.sandbox_support import (
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     parse_terminal_markers,
+    parse_terminal_snapshot,
     validate_request_inputs,
 )
 from ...env import env_float
@@ -803,12 +804,43 @@ class SandboxService:
         # Parse exit markers from the FULL transcript (the last one may predate
         # the `since` cursor) and gate "command running" on the sandbox actually
         # being alive — a dead sandbox isn't running a command, even if its log
-        # ends on a command-start marker with no recorded exit.
+        # ends on a command-start marker with no recorded exit. On a successful
+        # read, persist the snapshot so the next SSH failure can still return a
+        # useful last-known command status.
+        last_command: dict[str, Any] | None = None
+        command_status_stale = False
         if unavailable:
-            last_exit_code: int | None = None
-            last_command_finished_at: str | None = None
-            command_running: bool | None = None
+            last_command = self.registry.command_snapshot(row=row)
+            command_status_stale = last_command is not None
+            last_exit_code = (
+                None if last_command is None else last_command.get("exit_code")
+            )
+            last_command_finished_at = (
+                None if last_command is None else last_command.get("finished_at")
+            )
+            command_running = (
+                None
+                if last_command is None
+                else (
+                    last_command.get("status") == "running"
+                    and status in ACTIVE_SANDBOX_STATUSES
+                )
+            )
         else:
+            snapshot = parse_terminal_snapshot(full)
+            if (
+                snapshot.get("status") == "running"
+                and status not in ACTIVE_SANDBOX_STATUSES
+            ):
+                snapshot = {**snapshot, "status": "interrupted"}
+            last_command = (
+                self.registry.record_command_snapshot(
+                    sandbox_uid=sandbox_uid,
+                    snapshot=snapshot,
+                )
+                if snapshot.get("command_id")
+                else None
+            )
             last_exit_code, last_command_finished_at, in_flight = parse_terminal_markers(full)
             command_running = in_flight and status in ACTIVE_SANDBOX_STATUSES
         return {
@@ -823,6 +855,8 @@ class SandboxService:
             "last_exit_code": last_exit_code,
             "last_command_finished_at": last_command_finished_at,
             "command_running": command_running,
+            "last_command": last_command,
+            "command_status_stale": command_status_stale,
         }
 
     def health(self) -> dict[str, Any]:

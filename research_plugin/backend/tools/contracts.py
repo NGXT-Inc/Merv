@@ -1073,9 +1073,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "metrics snapshot. "
             "Two-step by design: the first call WITHOUT confirm_retained does "
             "not delete — it returns a retention checklist asking you to confirm "
-            "you have everything you need. Retain first (rsync light files off "
-            "the box yourself over SSH, and use configured durable storage for "
-            "heavy ones when available), then "
+            "you have everything you need. Retain first with sandbox.pull_outputs "
+            "for light files and configured durable storage for heavy ones when "
+            "available, then "
             "re-call with confirm_retained=true to actually terminate."
         ),
     ),
@@ -1091,7 +1091,11 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "in flight, and once it finishes 'last_exit_code' (0 = success) and "
             "'last_command_finished_at' report its result — so you can tell a "
             "command is done and whether it succeeded without re-reading output "
-            "(null on sandboxes created before this was added)."
+            "(null on sandboxes created before this was added). The structured "
+            "'last_command' block persists the latest parsed command id, text, "
+            "status, exit code, timestamps, and output tail; "
+            "'command_status_stale' is true when that block is from the last "
+            "successful transcript read because the current read failed."
         ),
     ),
     "sandbox.health": ToolContract(
