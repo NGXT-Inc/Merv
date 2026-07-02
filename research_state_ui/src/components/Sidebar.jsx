@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useProjectStore, useProjectHref, selectStats, selectResources, selectSandboxes } from '../store/useProjectStore';
 import { CLIENT_VERSION } from '../api';
 import { useTheme } from '../store/useTheme';
+import { useBackdrop, setBackdrop } from '../store/useBackdrop';
 import { setSurfaceOverride } from '../store/useViewport';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
@@ -51,6 +52,7 @@ export function IconSidebar(props) {
 
 export default function Sidebar({ onRefresh, onHide }) {
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
+  const backdropOn = useBackdrop();
   const home = useProjectStore(s => s.home);
   const stats = useProjectStore(selectStats);
   const lastSyncedAt = useProjectStore(s => s.lastSyncedAt);
@@ -211,6 +213,14 @@ export default function Sidebar({ onRefresh, onHide }) {
           >
             <span aria-hidden="true">{theme === 'dark' ? '◑' : '◐'}</span>
             {themeMode === 'system' ? `auto · ${theme}` : themeMode}
+          </button>
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => setBackdrop(!backdropOn)}
+            title={backdropOn ? 'Turn off the ambient background' : 'Turn on the ambient background'}
+          >
+            <span aria-hidden="true">{backdropOn ? '◈' : '◇'}</span>
+            backdrop
           </button>
           <button className="btn btn--ghost btn--sm" onClick={() => setSurfaceOverride('mobile')}>
             Switch to mobile

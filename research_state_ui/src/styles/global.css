@@ -4574,9 +4574,10 @@ a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; 
 }
 .boot-graph { width: 100%; height: 100%; }
 
-/* Ambient backdrop for the regular app — the onboarding logic graph reused as a
-   fixed, far fainter, calmer texture behind real content. Sits below the shell
-   (z-index:-1) and never intercepts input. */
+/* Ambient backdrop for the regular app — a live, project-seeded constellation
+   (src/bg/) drawn on one fixed canvas behind the shell. Depth comes from
+   parallax layers and soft glow sprites, so no CSS blur is needed; the canvas
+   never intercepts input. */
 .app-bg {
   position: fixed;
   inset: 0;
@@ -4585,25 +4586,18 @@ a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; 
   z-index: 0;
   pointer-events: none;
   /* Light-on-light reads fainter, so light gets a touch more presence than dark. */
-  opacity: 0.34;
-  /* Depth without motion: a strong depth-of-field blur + slight scale push the
-     network several layers back so it reads as a still, recessed texture rather
-     than something competing for attention. No parallax, no pulse. */
-  filter: blur(4px);
-  transform: scale(1.06);
-  /* Let the network recede into the dark at the far corners. */
+  opacity: 0.38;
+  /* Glass: one GPU blur over the whole field melts it behind the content —
+     element sizes in src/bg/renderer.js are chosen to survive it. The slight
+     scale hides the transparent fringe blur sampling creates at the edges. */
+  filter: blur(3px);
+  transform: scale(1.02);
+  /* Let the field recede into the dark at the far corners. */
   -webkit-mask-image: radial-gradient(140% 135% at 50% 42%, #000 58%, transparent 100%);
   mask-image: radial-gradient(140% 135% at 50% 42%, #000 58%, transparent 100%);
 }
-html[data-theme="dark"] .app-bg { opacity: 0.22; }
-/* Quieter than onboarding: drop the travelling pulses and expanding rings, and
-   slow the breathing so it stays a near-still, unobtrusive texture. The soft node
-   glow is kept — it lets faint dots read without being harsh. */
-.app-bg .boot-edge--flow,
-.app-bg .boot-node__halo { display: none; }
-/* Fully static — no breathing, no glow flicker. Just a still graph. */
-.app-bg .boot-node__dot { animation: none; filter: none; }
-.app-bg .boot-edge { opacity: 0.8; }
+html[data-theme="dark"] .app-bg { opacity: 0.3; }
+.app-bg__canvas { width: 100%; height: 100%; display: block; }
 
 /* Foreground: the single action. One line — name the project — and nothing else
    competing with it. The graph behind supplies all the context. */
