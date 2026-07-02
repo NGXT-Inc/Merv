@@ -34,6 +34,10 @@ POST_TEXT_MAX = 280
 
 AUTHOR_ROLES = frozenset({"main", "reviewer", "lens"})
 
+# Optional editorial kind, self-declared by the posting agent (never inferred
+# from text). Drives the type accent in the UI.
+POST_KINDS = frozenset({"finding", "hunch", "bottleneck", "kill", "direction"})
+
 # Backward-compatible import surface for HTTP code/tests.
 MAX_IMAGE_BYTES = MAX_FEED_IMAGE_BYTES
 
@@ -61,6 +65,7 @@ FEED_SCHEMA: tuple[str, ...] = (
       link_url TEXT NOT NULL DEFAULT '',
       link_preview_json TEXT NOT NULL DEFAULT '{}',
       ref TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       created_seq INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -110,6 +115,15 @@ class FeedService:
         with self.store.transaction() as conn:
             for statement in FEED_SCHEMA:
                 conn.execute(statement)
+        # Columns added after first ship. Each runs in its own transaction (a
+        # failed ALTER aborts the whole transaction on Postgres) and failure
+        # means the column already exists — both dialects lack a portable
+        # IF NOT EXISTS for columns.
+        try:
+            with self.store.transaction() as conn:
+                conn.execute("ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- identity -----------------------------------------------------------
 
@@ -189,6 +203,7 @@ class FeedService:
         image_path: str | None = None,
         url: str | None = None,
         ref: str | None = None,
+        kind: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Write a post. ``handle`` must already be registered in this project."""
@@ -203,6 +218,7 @@ class FeedService:
             image_bytes=None,
             url=url,
             ref=ref,
+            kind=kind,
             project_id=project_id,
         )
 
@@ -215,6 +231,7 @@ class FeedService:
         image_bytes: bytes | None = None,
         url: str | None = None,
         ref: str | None = None,
+        kind: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Write a post from daemon-submitted local image bytes."""
@@ -225,6 +242,7 @@ class FeedService:
             image_bytes=image_bytes,
             url=url,
             ref=ref,
+            kind=kind,
             project_id=project_id,
         )
 
@@ -234,11 +252,12 @@ class FeedService:
         handle: str,
         text: str,
         ref: str | None = None,
+        kind: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         """Validate feed post metadata without reading/storing image bytes."""
-        handle, text, ref = self._validate_post_fields(
-            handle=handle, text=text, ref=ref
+        handle, text, ref, kind = self._validate_post_fields(
+            handle=handle, text=text, ref=ref, kind=kind
         )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -256,6 +275,7 @@ class FeedService:
                 "handle": handle,
                 "text": text,
                 "ref": ref,
+                "kind": kind,
                 "author_role": str(author["role"] or "main"),
             }
 
@@ -268,10 +288,11 @@ class FeedService:
         image_bytes: bytes | None,
         url: str | None,
         ref: str | None,
+        kind: str | None,
         project_id: str | None,
     ) -> dict[str, Any]:
-        handle, text, ref = self._validate_post_fields(
-            handle=handle, text=text, ref=ref
+        handle, text, ref, kind = self._validate_post_fields(
+            handle=handle, text=text, ref=ref, kind=kind
         )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -313,9 +334,9 @@ class FeedService:
                 INSERT INTO posts (
                     id, project_id, author_handle, author_role, text,
                     image_sha256, image_content_type, link_url, link_preview_json,
-                    ref, created_at, created_seq
+                    ref, kind, created_at, created_seq
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     post_id,
@@ -328,6 +349,7 @@ class FeedService:
                     link_url,
                     json.dumps(link_preview, sort_keys=True),
                     ref,
+                    kind,
                     created_at,
                     seq,
                 ),
@@ -353,8 +375,8 @@ class FeedService:
             return {"post": self._post_view(row_to_dict(row=row) or {})}
 
     def _validate_post_fields(
-        self, *, handle: str, text: str, ref: str | None
-    ) -> tuple[str, str, str]:
+        self, *, handle: str, text: str, ref: str | None, kind: str | None = None
+    ) -> tuple[str, str, str, str]:
         handle = _validate_handle(handle)
         text = (text or "").strip()
         if not text:
@@ -370,7 +392,12 @@ class FeedService:
                 "ref must point at a project entity "
                 f"({', '.join(p.rstrip('_') for p in _KNOWN_REF_PREFIXES)})"
             )
-        return handle, text, ref
+        kind = (kind or "").strip().lower()
+        if kind and kind not in POST_KINDS:
+            raise ValidationError(
+                f"unknown post kind: {kind}. Allowed: {', '.join(sorted(POST_KINDS))} (or omit it)"
+            )
+        return handle, text, ref, kind
 
     def _capture_image_bytes(
         self, *, project_id: str, image_path: str, data: bytes
@@ -546,6 +573,7 @@ class FeedService:
             "author_role": item.get("author_role"),
             "text": item.get("text"),
             "ref": item.get("ref") or None,
+            "kind": item.get("kind") or None,
             "has_image": bool(item.get("image_sha256")),
             "link_url": item.get("link_url") or None,
             "link_preview": clean_preview,

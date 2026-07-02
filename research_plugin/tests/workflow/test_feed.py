@@ -168,6 +168,37 @@ class FeedServiceTest(unittest.TestCase):
         preview = result["post"]["link_preview"]
         self.assertTrue(preview and preview.get("error"))
 
+    def test_post_kind_persists_and_lists(self) -> None:
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        result = self.call(
+            "feed.post", project_id=self.pid, handle="Nova-7", text="ruled out", kind="kill"
+        )
+        self.assertEqual(result["post"]["kind"], "kill")
+        posts = self.call("feed.list", project_id=self.pid)["posts"]
+        self.assertEqual(posts[0]["kind"], "kill")
+
+    def test_post_kind_optional_and_validated(self) -> None:
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        plain = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hi")
+        self.assertIsNone(plain["post"]["kind"])
+        # The MCP contract enum rejects bad kinds up front; the service check
+        # covers the daemon/HTTP paths that bypass pydantic.
+        with self.assertRaisesRegex(ValidationError, "unknown post kind"):
+            self.app.feed.validate_post_intent(
+                project_id=self.pid, handle="Nova-7", text="x", kind="rant"
+            )
+
+    def test_kind_column_migration_is_idempotent(self) -> None:
+        # Rebuilding the service on an existing DB must survive the ALTER.
+        from backend.services.feed import FeedService
+
+        FeedService(store=self.app.store, blobs=self.app.feed.blobs)
+        self.call("feed.register", project_id=self.pid, handle="Nova-7")
+        result = self.call(
+            "feed.post", project_id=self.pid, handle="Nova-7", text="still fine", kind="finding"
+        )
+        self.assertEqual(result["post"]["kind"], "finding")
+
     def test_post_view_does_not_leak_blob_hash(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         (self.repo / "p.png").write_bytes(_PNG)

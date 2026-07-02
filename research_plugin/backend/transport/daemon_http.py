@@ -174,6 +174,7 @@ def register_daemon_routes(
                 handle=_required_text(payload, "handle"),
                 text=_required_text(payload, "text"),
                 ref=payload.get("ref"),
+                kind=payload.get("kind"),
             )
 
         @http.post("/api/daemon/sandboxes/request")
@@ -231,6 +232,7 @@ def register_daemon_routes(
                 handle=_required_text(payload, "handle"),
                 text=_required_text(payload, "text"),
                 ref=payload.get("ref"),
+                kind=payload.get("kind"),
             )
             image = payload.get("image")
             image_bytes = None
@@ -252,4 +254,5 @@ def register_daemon_routes(
                 image_bytes=image_bytes,
                 url=payload.get("url"),
                 ref=payload.get("ref"),
+                kind=payload.get("kind"),
             )

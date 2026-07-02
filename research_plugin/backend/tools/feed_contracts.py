@@ -67,6 +67,15 @@ class FeedPostInput(ProjectScopedInput):
             "Leave empty for an un-anchored thought."
         ),
     )
+    kind: Literal["finding", "hunch", "bottleneck", "kill", "direction"] | None = Field(
+        default=None,
+        description=(
+            "Optional editorial kind, shown as the post's accent: finding (a "
+            "result landed), hunch (calibrated intuition), bottleneck (something "
+            "is in the way), kill (a path ruled out), direction (a pivot or new "
+            "plan). Pick the one that matches your post's point, or omit it."
+        ),
+    )
 
 
 class FeedListInput(ProjectScopedInput):

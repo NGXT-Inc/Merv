@@ -366,6 +366,7 @@ class ResearchPluginApp:
         image_path: str | None = None,
         url: str | None = None,
         ref: str | None = None,
+        kind: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         if image_path:
@@ -373,6 +374,7 @@ class ResearchPluginApp:
                 handle=handle,
                 text=text,
                 ref=ref,
+                kind=kind,
                 project_id=project_id,
             )
         image = (
@@ -387,6 +389,7 @@ class ResearchPluginApp:
             image_bytes=image["data"] if image else None,
             url=url,
             ref=ref,
+            kind=kind,
             project_id=project_id,
         )
 

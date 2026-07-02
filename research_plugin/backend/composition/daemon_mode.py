@@ -152,6 +152,8 @@ class DaemonServer:
             return self._register_resource_files(arguments=arguments, context=context)
         if name == "resource.associate":
             return self._associate_resource(arguments=arguments, context=context)
+        if name == "resource.associate_batch":
+            return self._associate_resource_batch(arguments=arguments, context=context)
         if name == "feed.post":
             return self._post_feed(arguments=arguments, context=context)
         if name == "storage.upload_file":
@@ -525,6 +527,18 @@ class DaemonServer:
                     if isinstance(figure.get("data"), bytes)
                 ]
         return self.control.submit_resource_association(payload)
+
+    def _associate_resource_batch(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        associations = arguments.get("associations")
+        if not isinstance(associations, list) or not associations:
+            raise ValidationError("associations must be a non-empty list")
+        applied = [
+            self._associate_resource(arguments=dict(association), context=context)
+            for association in associations
+        ]
+        return {"associations": applied, "count": len(applied)}
 
     def _submit_resource_observation(
         self,
