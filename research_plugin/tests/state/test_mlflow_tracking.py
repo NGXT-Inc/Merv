@@ -286,7 +286,8 @@ class MlflowTrackingServiceTest(unittest.TestCase):
             server_uri="http://mlflow.internal:5000",
             dashboard_url="https://mlflow.ui.test",
         )
-        client = _FinalizeRunClient(["RUNNING", "FINISHED"])
+        # Pre-update read sees RUNNING, first poll still RUNNING, then FINISHED.
+        client = _FinalizeRunClient(["RUNNING", "RUNNING", "FINISHED"])
 
         with (
             patch("backend.mlflow.tracking.httpx.Client", return_value=client),
@@ -309,7 +310,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
             client.posts[0][1],
             {"run_id": "run_123", "status": "FINISHED", "end_time": 2000000},
         )
-        self.assertEqual(len(client.gets), 2)
+        self.assertEqual(len(client.gets), 3)
         self.assertTrue(result["update"]["applied"])
         self.assertTrue(result["terminal"])
         self.assertEqual(result["readback_attempts"], 2)
@@ -328,7 +329,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
             tracking_uri="https://mlflow.agent.test",
             server_uri="http://mlflow.internal:5000",
         )
-        client = _FinalizeRunClient(["FINISHED"], update_status_code=500)
+        client = _FinalizeRunClient(["RUNNING", "FINISHED"], update_status_code=500)
 
         with (
             patch("backend.mlflow.tracking.httpx.Client", return_value=client),
@@ -345,6 +346,88 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         self.assertEqual(result["readback_attempts"], 1)
         self.assertTrue(result["terminal"])
         self.assertEqual(result["run"]["status"], "FINISHED")
+
+    def test_finalize_run_readback_only_polls_until_terminal(self) -> None:
+        service = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.agent.test",
+            server_uri="http://mlflow.internal:5000",
+        )
+        client = _FinalizeRunClient(["RUNNING", "RUNNING", "FINISHED"])
+
+        with (
+            patch("backend.mlflow.tracking.httpx.Client", return_value=client),
+            patch("backend.mlflow.tracking.time.sleep"),
+        ):
+            result = service.finalize_run(
+                project_id="proj_123",
+                experiment_id="exp_456",
+                run_id="run_123",
+                status=None,
+                wait_seconds=5.0,
+            )
+
+        # status=null is the documented "script already ended the run" mode;
+        # it must absorb the stale immediate RUNNING readback, not persist it.
+        self.assertEqual(client.posts, [])
+        self.assertEqual(result["readback_attempts"], 3)
+        self.assertTrue(result["terminal"])
+        self.assertEqual(result["run"]["status"], "FINISHED")
+
+    def test_finalize_run_refuses_to_overwrite_a_terminal_status(self) -> None:
+        service = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.agent.test",
+            server_uri="http://mlflow.internal:5000",
+        )
+        client = _FinalizeRunClient(["FAILED", "FAILED"])
+
+        with patch("backend.mlflow.tracking.httpx.Client", return_value=client):
+            result = service.finalize_run(
+                project_id="proj_123",
+                experiment_id="exp_456",
+                run_id="run_123",
+                status="FINISHED",
+            )
+
+        # The script already recorded FAILED; the FINISHED default must not
+        # rewrite it.
+        self.assertEqual(client.posts, [])
+        self.assertFalse(result["update"]["applied"])
+        self.assertEqual(result["update"]["skipped_already_terminal"], "FAILED")
+        self.assertTrue(result["terminal"])
+        self.assertEqual(result["run"]["status"], "FAILED")
+
+    def test_finalize_run_errors_never_leak_the_server_uri(self) -> None:
+        service = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.agent.test",
+            server_uri="http://mlflow.internal:5000",
+        )
+
+        class _ExplodingClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def get(self, url: str, params: dict | None = None):
+                raise RuntimeError(f"connect failed for {url}")
+
+        with patch(
+            "backend.mlflow.tracking.httpx.Client", return_value=_ExplodingClient()
+        ):
+            result = service.finalize_run(
+                project_id="proj_123",
+                experiment_id="exp_456",
+                run_id="run_123",
+                status=None,
+            )
+
+        self.assertIn("finalize/readback failed", result["error"])
+        self.assertNotIn("mlflow.internal", result["error"])
+        self.assertIn("<mlflow-server>", result["error"])
 
 
 class LocalMlflowServerTest(unittest.TestCase):

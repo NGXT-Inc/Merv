@@ -156,7 +156,11 @@ plugin-created run id, sets terminal status to `FINISHED` through the backend
 MLflow write URI, then performs a short REST readback loop so stale immediate
 `RUNNING` statuses do not remain in experiment state. Pass `status="FAILED"` or
 `"KILLED"` for unsuccessful executions, or `status=null` when the script has
-already finalized the run and only readback is needed.
+already finalized the run and only readback is needed (readback-only mode runs
+the same poll loop). The update is read-before-write: a run that already reads
+back terminal keeps its status — a script-recorded `FAILED` is never rewritten
+by the `FINISHED` default (the response reports
+`update.skipped_already_terminal`).
 
 ### Quantitative Run Metadata V0
 

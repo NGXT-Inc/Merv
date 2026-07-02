@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Mapping
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -221,7 +222,7 @@ class CentralMlflowService:
                 run = response.json().get("run") or {}
                 info = run.get("info") or {}
         except Exception as exc:  # noqa: BLE001 - run creation is advisory
-            result["error"] = f"MLflow run creation failed: {exc}"
+            result["error"] = f"MLflow run creation failed: {self._redacted(exc)}"
             return result
 
         run_id = str(info.get("run_id") or info.get("run_uuid") or "")
@@ -306,43 +307,70 @@ class CentralMlflowService:
         try:
             with httpx.Client(timeout=3.0) as client:
                 if update_attempted:
-                    try:
-                        response = client.post(
-                            f"{self._control_uri}/api/2.0/mlflow/runs/update",
-                            json={
-                                "run_id": run_id,
-                                "status": normalized_status,
-                                "end_time": int(time.time() * 1000),
-                            },
-                        )
-                        response.raise_for_status()
+                    # Read before write: the training script is usually the
+                    # primary writer, so a run that is already terminal keeps
+                    # its status (e.g. a script-recorded FAILED must not be
+                    # rewritten by our FINISHED default).
+                    pre_status = str(
+                        self._read_run(
+                            client=client, base=read_uri, run_id=run_id
+                        ).get("status")
+                        or ""
+                    )
+                    if pre_status in MLFLOW_TERMINAL_RUN_STATUSES:
                         result["update"] = {
-                            "attempted": True,
-                            "status": normalized_status,
-                            "applied": True,
-                        }
-                    except Exception as exc:  # noqa: BLE001
-                        result["update"] = {
-                            "attempted": True,
+                            "attempted": False,
                             "status": normalized_status,
                             "applied": False,
-                            "error": f"MLflow run status update failed: {exc}",
+                            "skipped_already_terminal": pre_status,
+                            "note": (
+                                f"run is already {pre_status}; refusing to "
+                                "overwrite a terminal status — readback only"
+                            ),
                         }
+                    else:
+                        try:
+                            response = client.post(
+                                f"{self._control_uri}/api/2.0/mlflow/runs/update",
+                                json={
+                                    "run_id": run_id,
+                                    "status": normalized_status,
+                                    "end_time": int(time.time() * 1000),
+                                },
+                            )
+                            response.raise_for_status()
+                            result["update"] = {
+                                "attempted": True,
+                                "status": normalized_status,
+                                "applied": True,
+                            }
+                        except Exception as exc:  # noqa: BLE001
+                            result["update"] = {
+                                "attempted": True,
+                                "status": normalized_status,
+                                "applied": False,
+                                "error": (
+                                    "MLflow run status update failed: "
+                                    f"{self._redacted(exc)}"
+                                ),
+                            }
                 run: dict[str, object] = {}
+                # Poll until the run reads back terminal or the deadline hits —
+                # in readback-only mode (status=null) just as much as after an
+                # update, since the stale immediate RUNNING readback is exactly
+                # what this helper exists to absorb.
                 while True:
                     attempts += 1
                     run = self._read_run(client=client, base=read_uri, run_id=run_id)
                     status_seen = str(run.get("status") or "")
                     if (
-                        not normalized_status
-                        or status_seen == normalized_status
-                        or status_seen in MLFLOW_TERMINAL_RUN_STATUSES
+                        status_seen in MLFLOW_TERMINAL_RUN_STATUSES
                         or time.monotonic() >= deadline
                     ):
                         break
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
         except Exception as exc:  # noqa: BLE001 - readback is advisory
-            result["error"] = f"MLflow run finalize/readback failed: {exc}"
+            result["error"] = f"MLflow run finalize/readback failed: {self._redacted(exc)}"
             result["readback_attempts"] = attempts
             return result
 
@@ -350,6 +378,20 @@ class CentralMlflowService:
         result["terminal"] = str(run.get("status") or "") in MLFLOW_TERMINAL_RUN_STATUSES
         result["run"] = run
         return result
+
+    def _redacted(self, exc: object) -> str:
+        """Exception text with the configured server URIs/hosts stripped —
+        raw httpx errors embed full request URLs, and these strings are
+        persisted into agent- and UI-visible state."""
+        message = str(exc)
+        for uri in (self._control_uri, self.server_uri, self.tracking_uri):
+            if not uri:
+                continue
+            message = message.replace(uri, "<mlflow-server>")
+            host = urlsplit(uri).netloc
+            if host:
+                message = message.replace(host, "<mlflow-server>")
+        return message
 
     def _read_run(
         self, *, client: httpx.Client, base: str, run_id: str
