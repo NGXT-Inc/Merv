@@ -19,11 +19,16 @@ function dayKey(ts) {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
-const DAY_MS = 86_400_000;
+// Calendar-aware (setDate handles DST days that aren't 24h long).
+function yesterdayKey(now) {
+  const d = new Date(now);
+  d.setDate(d.getDate() - 1);
+  return dayKey(d);
+}
 
 export function dayLabel(ts, now) {
   if (dayKey(ts) === dayKey(now)) return 'Today';
-  if (dayKey(ts) === dayKey(now - DAY_MS)) return 'Yesterday';
+  if (dayKey(ts) === yesterdayKey(now)) return 'Yesterday';
   const d = new Date(ts);
   const sameYear = d.getFullYear() === new Date(now).getFullYear();
   return d.toLocaleDateString([], {
@@ -37,7 +42,7 @@ export function dayLabel(ts, now) {
 // A post's timestamp: relative while it is from today ("5m ago"); on older
 // days the divider already names the date, so just the clock time ("2:05 PM").
 export function postTime(ts, now) {
-  if (ts == null) return '';
+  if (ts == null || !Number.isFinite(ts)) return '';
   if (dayKey(ts) === dayKey(now)) return fmtAgo(now - ts);
   return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
@@ -68,7 +73,9 @@ export function withDayDividers(posts, now, lastSeenSeq = null) {
     if (Number.isFinite(ts)) {
       const key = dayKey(ts);
       if (key !== prevKey) {
-        items.push({ type: 'day', id: `day-${key}`, ts });
+        // Key includes the post id: agent clock skew can interleave days
+        // within seq order, and duplicate keys would break reconciliation.
+        items.push({ type: 'day', id: `day-${key}-${post.id}`, ts });
         prevKey = key;
         prevPost = null;
       }
@@ -85,5 +92,8 @@ export function withDayDividers(posts, now, lastSeenSeq = null) {
     items.push(item);
     prevPost = item;
   }
+  // Everything loaded is new (the boundary post is beyond this page): close
+  // the list with the marker so the heaviest backlog still gets its signal.
+  if (!unseenPlaced && posts.length) items.push({ type: 'unseen', id: 'unseen' });
   return items;
 }

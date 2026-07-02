@@ -29,11 +29,16 @@ export default function Feed() {
   const [retryKey, setRetryKey] = useState(0);
   const loadingMoreRef = useRef(false);
   const sentinelRef = useRef(null);
-  // Newest seq across visible + buffered posts, so the poll closure never
-  // re-fetches what it already holds.
+  // Mirrors for the async paths: newest seq across visible + buffered posts
+  // (so the poll never re-adds what we hold), the buffer itself (so reveal's
+  // state updaters stay pure), and a generation counter that invalidates any
+  // in-flight response from a previous project.
   const topSeqRef = useRef(0);
+  const pendingRef = useRef([]);
+  const genRef = useRef(0);
   useEffect(() => {
     topSeqRef.current = pending[0]?.created_seq ?? posts[0]?.created_seq ?? 0;
+    pendingRef.current = pending;
   }, [posts, pending]);
 
   const seenKey = projectId ? `rsui:feed:lastSeen:${projectId}` : null;
@@ -42,6 +47,7 @@ export default function Feed() {
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;
+    genRef.current += 1;
     setStatus('loading');
     setPosts([]);
     setPending([]);
@@ -82,44 +88,58 @@ export default function Feed() {
   // Poll for newer posts. Fresh posts are buffered, never prepended straight
   // into the list — a stream that shoves content under the reader teaches them
   // not to trust their scroll position. The pill releases the buffer; when the
-  // reader is already at the top, it releases itself.
+  // reader is already at the top, it releases itself. The controller aborts
+  // any in-flight response when the project changes, and the in-updater dedupe
+  // absorbs overlapping responses that raced past the topSeq check.
   useEffect(() => {
     if (!projectId || status !== 'ready') return;
+    const controller = new AbortController();
     const t = setInterval(() => {
-      feedApi.getFeed(projectId, { limit: PAGE_SIZE })
+      feedApi.getFeed(projectId, { limit: PAGE_SIZE, signal: controller.signal })
         .then((data) => {
           const fresh = (data.posts || []).filter((p) => p.created_seq > topSeqRef.current);
-          if (fresh.length) setPending((prev) => [...fresh, ...prev]);
+          if (!fresh.length) return;
+          setPending((prev) => {
+            const seen = new Set(prev.map((p) => p.id));
+            const add = fresh.filter((p) => !seen.has(p.id));
+            return add.length ? [...add, ...prev] : prev;
+          });
         })
         .catch(() => {});
     }, POLL_MS);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); controller.abort(); };
   }, [projectId, status]);
 
   const revealPending = useCallback((scroll) => {
-    setPending((buffered) => {
-      if (buffered.length) {
-        setPosts((prev) => {
-          const seen = new Set(prev.map((p) => p.id));
-          return [...buffered.filter((p) => !seen.has(p.id)), ...prev];
-        });
-      }
-      return [];
-    });
+    const buffered = pendingRef.current;
+    if (buffered.length) {
+      setPosts((prev) => {
+        const seen = new Set(prev.map((p) => p.id));
+        const add = buffered.filter((p) => !seen.has(p.id));
+        return add.length ? [...add, ...prev] : prev;
+      });
+      setPending([]);
+    }
     if (scroll) window.scrollTo({ top: 0 });
   }, []);
 
   // At (or near) the top, new posts just appear — the pill is only for readers
-  // who have scrolled into the past.
+  // who have scrolled into the past, and it dissolves when they scroll back up.
   useEffect(() => {
-    if (pending.length && window.scrollY <= 80) revealPending(false);
+    if (!pending.length) return;
+    if (window.scrollY <= 80) { revealPending(false); return; }
+    const onScroll = () => { if (window.scrollY <= 80) revealPending(false); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, [pending, revealPending]);
 
   const loadMore = useCallback(() => {
     if (!projectId || loadingMoreRef.current || cursor == null) return;
     loadingMoreRef.current = true;
+    const gen = genRef.current;
     feedApi.getFeed(projectId, { limit: PAGE_SIZE, cursor })
       .then((data) => {
+        if (gen !== genRef.current) return; // response belongs to a previous project
         const older = data.posts || [];
         setPosts((prev) => {
           const seen = new Set(prev.map((p) => p.id));
@@ -164,15 +184,18 @@ export default function Feed() {
         )}
       </div>
       {status === 'loading' && (
-        <div className="feed-list" aria-hidden="true">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="postcard postcard--skeleton">
-              <div className="skel skel--handle" />
-              <div className="skel skel--line" />
-              <div className="skel skel--line skel--short" />
-            </div>
-          ))}
-        </div>
+        <>
+          <div className="feed-sr" role="status">Loading feed…</div>
+          <div className="feed-list" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="postcard postcard--skeleton">
+                <div className="skel skel--handle" />
+                <div className="skel skel--line" />
+                <div className="skel skel--line skel--short" />
+              </div>
+            ))}
+          </div>
+        </>
       )}
       {status === 'error' && (
         <div className="feed-empty" role="alert">
@@ -198,16 +221,18 @@ export default function Feed() {
       {posts.length > 0 && (
         <div className="feed-list">
           {items.map((item) => {
+            // Plain divs, not role="separator" — several screen readers skip
+            // separator children, and these labels are content.
             if (item.type === 'day') {
               return (
-                <div key={item.id} className="feed-day" role="separator">
+                <div key={item.id} className="feed-day">
                   {dayLabel(item.ts, now)}
                 </div>
               );
             }
             if (item.type === 'unseen') {
               return (
-                <div key={item.id} className="feed-unseen" role="separator">
+                <div key={item.id} className="feed-unseen">
                   new since your last visit
                 </div>
               );

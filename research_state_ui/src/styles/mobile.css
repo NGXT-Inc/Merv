@@ -41,7 +41,9 @@ html[data-surface="mobile"] .mshell-main {
   padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
 }
 
-/* Top app bar */
+/* Top app bar. --mbar-h mirrors its rendered height for anything that must
+   stick or float beneath it (MLflow's split header, the feed's new-posts pill). */
+html[data-surface="mobile"] { --mbar-h: calc(61px + env(safe-area-inset-top, 0px)); }
 html[data-surface="mobile"] .mbar {
   position: sticky;
   top: 0;
@@ -1451,8 +1453,8 @@ html[data-surface="mobile"] .mterm-twist { color: var(--faint); font-size: 12px;
 /* ── MLflow — the ledger as a split instrument. The top block (pulse →
    metric chips → frontier → column headers) sticks under the app bar; run
    rows scroll beneath with native physics — split screen, no scroll hijack.
-   --mbar-h mirrors the app bar's rendered height. ── */
-html[data-surface="mobile"] .mlg { --mbar-h: calc(61px + env(safe-area-inset-top, 0px)); padding: 0 0 40px; }
+   (--mbar-h comes from the mobile scope root, next to .mbar.) ── */
+html[data-surface="mobile"] .mlg { padding: 0 0 40px; }
 html[data-surface="mobile"] .mlg-top {
   position: sticky;
   top: var(--mbar-h);

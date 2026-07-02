@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { feedApi } from './feedApi';
 import { postTime } from './feedModel';
@@ -6,7 +6,7 @@ import Lightbox from './Lightbox';
 import LinkCard from './LinkCard';
 import { useProjectStore, useProjectHref, selectExperiments } from '../store/useProjectStore';
 import { expName } from '../utils/experiment';
-import { authorColor } from '../utils/authorIdentity';
+import { authorHue } from '../utils/authorIdentity';
 
 // Load a feed media path through an authenticated fetch and expose it as a
 // blob: object URL. Needed because hosted control mode serves feed bytes behind
@@ -89,27 +89,40 @@ export default function PostCard({ post, projectId, onView, now, grouped = false
   );
   const [imageLoaded, setImageLoaded] = useState(false);
   const [zoomed, setZoomed] = useState(false);
+  const mediaBtnRef = useRef(null);
 
   const openZoom = () => {
     setZoomed(true);
     feedApi.trackFeed(projectId, 'image_viewed', { post_id: post.id }).catch(() => {});
   };
+  // Stable identity: it sits in the Lightbox effect deps, and this card
+  // re-renders every clock tick.
+  const closeZoom = useCallback(() => {
+    setZoomed(false);
+    mediaBtnRef.current?.focus();
+  }, []);
 
   return (
     <article className={`postcard${grouped ? ' postcard--cont' : ''}`} ref={cardRef}>
-      {/* A continuation post (same author, moments later) drops the byline —
-          the missing header is what reads as "…and then they added". */}
-      <header className="postcard-head">
-        {!grouped && (
-          <span className="postcard-author" style={{ color: authorColor(post.author_handle) }}>
-            {post.author_handle}
-          </span>
-        )}
-        {!grouped && post.author_role && post.author_role !== 'main' && (
+      {/* A continuation post (same author, moments later) visually drops the
+          byline — the missing header is what reads as "…and then they added".
+          It stays in the DOM so the article keeps its attribution for
+          screen readers. */}
+      <header className={`postcard-head${grouped ? ' postcard-head--cont' : ''}`}>
+        <span
+          className="postcard-author"
+          style={{ '--author-hue': authorHue(post.author_handle) }}
+        >
+          {post.author_handle}
+        </span>
+        {post.author_role && post.author_role !== 'main' && (
           <span className={`postcard-role postcard-role--${post.author_role}`}>{post.author_role}</span>
         )}
         {timeLabel && (
-          <span className="postcard-time" title={ts != null ? new Date(ts).toLocaleString() : undefined}>
+          <span
+            className="postcard-time"
+            title={Number.isFinite(ts) ? new Date(ts).toLocaleString() : undefined}
+          >
             {timeLabel}
           </span>
         )}
@@ -123,6 +136,7 @@ export default function PostCard({ post, projectId, onView, now, grouped = false
       {post.image_url && !image.failed && (
         <div className="postcard-media">
           <button
+            ref={mediaBtnRef}
             type="button"
             className="postcard-media-btn"
             onClick={openZoom}
@@ -141,7 +155,7 @@ export default function PostCard({ post, projectId, onView, now, grouped = false
         </div>
       )}
       {zoomed && image.url && (
-        <Lightbox src={image.url} onClose={() => setZoomed(false)} />
+        <Lightbox src={image.url} onClose={closeZoom} />
       )}
 
       {post.link_url && (

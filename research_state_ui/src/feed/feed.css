@@ -18,7 +18,14 @@
   margin: 0 auto;
   padding: var(--page-pad-top) var(--space-4) var(--page-pad-bottom);
 }
-.feed-note { color: var(--muted); font-size: var(--text-sm); padding: var(--space-4) 0; }
+/* Screen-reader-only text (same clip recipe as .feed-title on desktop). */
+.feed-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0;
+}
 .feed-empty { text-align: center; padding: 64px var(--space-4); }
 .feed-empty-title { font-size: var(--text-lg); color: var(--text); margin: 0 0 6px; }
 .feed-empty-sub { font-size: var(--text-sm); color: var(--muted); margin: 0; max-width: 36ch; margin-inline: auto; }
@@ -78,7 +85,19 @@
   display: flex; align-items: baseline; gap: var(--space-2);
   font-size: var(--text-sm);
 }
-.postcard-author { font-weight: 600; color: var(--text); }
+/* Byline tint: the hue is the author's (set inline via --author-hue); the
+   theme owns lightness so identity reads on both canvases. */
+.postcard-author { font-weight: 600; color: oklch(46% 0.09 var(--author-hue, 250)); }
+html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hue, 250)); }
+/* Continuation posts keep the byline for the a11y tree, hidden visually. */
+.postcard-head--cont .postcard-author,
+.postcard-head--cont .postcard-role {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0;
+}
 .postcard-role {
   font-size: var(--text-xs); color: var(--mcp);
   border: 1px solid color-mix(in srgb, var(--mcp) 35%, transparent);
@@ -117,6 +136,13 @@
   transition: opacity var(--motion-fast, 160ms) ease;
 }
 .postcard-image.is-loaded { opacity: 1; }
+/* Once decoded, release the reservation: the box takes the image's natural
+   ratio (capped) instead of letterboxing tall charts into gray bars forever.
+   One reflow at decode-time is the price. */
+.postcard-media:has(.postcard-image.is-loaded) { aspect-ratio: auto; }
+.postcard-media:has(.postcard-image.is-loaded) .postcard-image {
+  height: auto; max-height: 520px; margin-inline: auto; width: auto; max-width: 100%;
+}
 
 /* Zoomed media viewer. */
 .feed-lightbox {
@@ -133,7 +159,9 @@
   cursor: default;
 }
 .feed-lightbox-close {
-  position: absolute; top: 14px; right: 14px;
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: 14px;
   width: 34px; height: 34px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
@@ -180,7 +208,7 @@
 }
 .postcard-foot { margin-top: var(--space-3); }
 
-/* Continuation posts — same author within minutes. The byline drops, the gap
+/* Continuation posts — same author within minutes. The byline hides, the gap
    closes, and only a right-aligned time remains. */
 .postcard--cont { margin-top: calc(6px - var(--space-4)); }
 .postcard--cont .postcard-head { justify-content: flex-end; }
@@ -237,9 +265,9 @@ html[data-surface="mobile"] .feed-title {
   color: var(--text);
 }
 html[data-surface="mobile"] .feed-list { gap: 0; }
-/* The pill clears the sticky top app bar. */
+/* The pill clears the sticky top app bar (--mbar-h from mobile.css). */
 html[data-surface="mobile"] .feed-newpill-wrap {
-  top: calc(60px + env(safe-area-inset-top, 0px));
+  top: calc(var(--mbar-h) + 10px);
 }
 html[data-surface="mobile"] .feed-unseen { padding: 12px 0; font-size: 11px; }
 /* Mobile posts already end in a hairline — the divider is just a quiet label. */
