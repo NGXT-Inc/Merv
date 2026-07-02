@@ -310,3 +310,31 @@ Verification:
 - `git diff --check`
 - `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_review_request_and_start_opens_read_only_session tests.workflow.test_workflow_gates.WorkflowGateTest.test_review_request_and_start_rejects_same_session_before_mint tests.workflow.test_workflow_gates.WorkflowGateTest.test_pending_review_allows_fresh_request_for_lost_capability tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (43 tests)
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (871 tests, 25 skipped)
+
+## Batch 12: claim update suggestions after completion
+
+Status: complete
+
+Request addressed:
+
+- Auto-suggest claim updates after reviewed completion.
+
+Implementation notes:
+
+- Completed experiments with tested claims and a persisted conclusion now
+  include `claim_update_suggestions` in experiment state.
+- Each suggestion is a scoped `claim.update` call skeleton with `project_id`
+  and `claim_id`, plus current claim metadata and the experiment conclusion.
+- Added conservative deterministic status inference from conclusion text for
+  `supported`, `weakened`, and `contradicted`; unclear conclusions leave
+  `suggested_status` unset rather than guessing.
+- Kept the behavior advisory: suggestions require confirmation and never mutate
+  claims automatically.
+- Preserved the suggestions in the agent-facing `experiment.get_state` slim
+  projection and documented the shape for MCP/UI consumers.
+
+Verification:
+
+- `git diff --check`
+- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_complete_suggests_scoped_claim_update_for_negative_result tests.workflow.test_workflow_gates.WorkflowGateTest.test_complete_suggests_scoped_claim_update_for_supported_result tests.workflow.test_experiment_slim -v` (7 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (873 tests, 25 skipped)

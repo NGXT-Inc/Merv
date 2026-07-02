@@ -177,6 +177,11 @@ After any experiment execution, Codex should:
    execution/conclusion and resubmit results when sent back to `running`
 8. propose experiment conclusion or claim update only after passing review
 
+Once a reviewed experiment is completed, `experiment.get_state` includes
+`claim_update_suggestions` for every tested claim when a conclusion is present.
+These are pre-scoped `claim.update` call skeletons; they are suggestions, not
+automatic mutations.
+
 Resources from prior attempts remain visible as experiment history, but MCP only
 uses current-attempt resource associations to decide whether result retention or
 review gates are satisfied.

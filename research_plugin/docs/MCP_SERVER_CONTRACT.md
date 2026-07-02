@@ -307,7 +307,11 @@ content_type, status, expires_at, producing_run, source_uri, notes}` for every
 non-deleted storage object produced by the experiment. Once status is `running`
 or later, `experiment.get_state` also includes the experiment-scoped `mlflow`
 block and `mlflow_guidance`, matching the central tracking context returned by
-`experiment.transition(start_running)` and `mlflow.context`. What
+`experiment.transition(start_running)` and `mlflow.context`. Completed
+experiments with tested claims and a conclusion include
+`claim_update_suggestions`: conservative `claim.update` call skeletons scoped
+by `project_id` and `claim_id`, with an inferred `suggested_status` only when
+the conclusion text is clear enough. What
 `experiment.get_state` drops is pure waste:
 
 - the duplicate all-attempts `resources` list (a copy of

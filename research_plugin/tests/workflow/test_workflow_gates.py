@@ -112,8 +112,16 @@ class WorkflowGateTest(unittest.TestCase):
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         return exp_id
 
-    def _drive_to_complete(self, *, conclusion: str = "") -> str:
-        exp_id = self.call("experiment.create", name="exp-2", project_id=self.project_id, intent="Full loop.")["id"]
+    def _drive_to_complete(
+        self, *, conclusion: str = "", tested_claim_ids: list[str] | None = None
+    ) -> str:
+        exp_id = self.call(
+            "experiment.create",
+            name="exp-2",
+            project_id=self.project_id,
+            intent="Full loop.",
+            tested_claim_ids=tested_claim_ids or [],
+        )["id"]
         self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
@@ -330,6 +338,48 @@ class WorkflowGateTest(unittest.TestCase):
         exp_id = self._drive_to_complete(conclusion="The claim is supported by results.json.")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["conclusion"], "The claim is supported by results.json.")
+
+    def test_complete_suggests_scoped_claim_update_for_negative_result(self) -> None:
+        claim = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="The threshold rule improves accuracy.",
+        )
+        exp_id = self._drive_to_complete(
+            conclusion="The result does not support the claim; accuracy failed to improve.",
+            tested_claim_ids=[claim["id"]],
+        )
+
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        suggestion = state["claim_update_suggestions"][0]
+        self.assertEqual(suggestion["tool"], "claim.update")
+        self.assertEqual(suggestion["suggested_status"], "weakened")
+        self.assertTrue(suggestion["requires_confirmation"])
+        self.assertEqual(
+            suggestion["arguments"],
+            {
+                "project_id": self.project_id,
+                "claim_id": claim["id"],
+                "status": "weakened",
+            },
+        )
+
+    def test_complete_suggests_scoped_claim_update_for_supported_result(self) -> None:
+        claim = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="The threshold rule improves accuracy.",
+        )
+        exp_id = self._drive_to_complete(
+            conclusion="Accuracy improved and the claim is supported by results.json.",
+            tested_claim_ids=[claim["id"]],
+        )
+
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        suggestion = state["claim_update_suggestions"][0]
+        self.assertEqual(suggestion["suggested_status"], "supported")
+        self.assertEqual(suggestion["arguments"]["claim_id"], claim["id"])
+        self.assertEqual(suggestion["arguments"]["status"], "supported")
 
     # ---- results report gate ----
 

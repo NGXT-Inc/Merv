@@ -383,10 +383,103 @@ class ExperimentService:
             data["reviews"] = reviews
             data["allowed_transitions"] = allowed_transitions_for(str(data.get("status", "")))
             data["gate_checklist"] = self._gate_checklist(conn=conn, experiment=data)
+            data["claim_update_suggestions"] = self._claim_update_suggestions(
+                experiment=data
+            )
             return data
         finally:
             if owns_conn:
                 conn.close()
+
+    def _claim_update_suggestions(
+        self, *, experiment: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        if experiment.get("status") != "complete":
+            return []
+        conclusion = str(experiment.get("conclusion") or "").strip()
+        if not conclusion:
+            return []
+        suggested_status = self._infer_claim_status_from_conclusion(conclusion)
+        suggestions: list[dict[str, Any]] = []
+        for claim in experiment.get("tested_claims") or []:
+            claim_id = str(claim.get("id") or "")
+            if not claim_id:
+                continue
+            arguments: dict[str, Any] = {
+                "project_id": experiment.get("project_id"),
+                "claim_id": claim_id,
+            }
+            if suggested_status is not None:
+                arguments["status"] = suggested_status
+            suggestions.append(
+                {
+                    "tool": "claim.update",
+                    "arguments": arguments,
+                    "claim": {
+                        "id": claim_id,
+                        "statement": claim.get("statement"),
+                        "status": claim.get("status"),
+                        "confidence": claim.get("confidence"),
+                        "scope": claim.get("scope"),
+                    },
+                    "suggested_status": suggested_status,
+                    "reason": (
+                        "Experiment completed with a passing review; apply a "
+                        "scoped claim.update if this conclusion changes the "
+                        "claim's standing."
+                    ),
+                    "conclusion": conclusion,
+                    "requires_confirmation": True,
+                }
+            )
+        return suggestions
+
+    def _infer_claim_status_from_conclusion(self, conclusion: str) -> str | None:
+        text = conclusion.lower()
+        contradicted_markers = (
+            "contradict",
+            "refut",
+            "falsif",
+            "opposite",
+        )
+        weakened_markers = (
+            "negative result",
+            "not supported",
+            "not support",
+            "does not support",
+            "did not support",
+            "failed to support",
+            "weaken",
+            "mixed",
+            "inconclusive",
+            "partial",
+            "no effect",
+            "not significant",
+            "did not improve",
+            "failed to improve",
+            "did not beat",
+            "failed to beat",
+            "below baseline",
+        )
+        supported_markers = (
+            "supported",
+            "support the claim",
+            "confirmed",
+            "confirm",
+            "target met",
+            "criterion met",
+            "criteria met",
+            "beat",
+            "improved",
+            "positive result",
+        )
+        if any(marker in text for marker in contradicted_markers):
+            return "contradicted"
+        if any(marker in text for marker in weakened_markers):
+            return "weakened"
+        if any(marker in text for marker in supported_markers):
+            return "supported"
+        return None
 
     def _gate_checklist(self, *, conn, experiment: dict[str, Any]) -> dict[str, Any]:
         """Current forward gate as machine-readable checklist data.

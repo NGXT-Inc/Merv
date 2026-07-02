@@ -311,6 +311,9 @@ experiment. Use these for large retained artifacts such as checkpoints, logs,
 or datasets that should be visible to reviewers but are not repo resources.
 Once an experiment is `running` or later, experiment state also includes
 `mlflow`, the central tracking context and dashboard link for that experiment.
+Completed experiments with tested claims and a conclusion include
+`claim_update_suggestions`, a list of scoped `claim.update` call skeletons that
+the UI can show as follow-up actions after review.
 
 ## Syntheses
 
