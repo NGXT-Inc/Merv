@@ -7,6 +7,10 @@ This list comes from hands-on use of the Research Plugin while running the
 was intentionally omitted per request, except for the results ledger clobbering
 issue explicitly called out as fair game.
 
+Excluded from this saved list: built-in sandbox git sync, and automatic
+candidate reset on discard. `Protect results.tsv from clobbering` is retained
+below because it was explicitly marked fair game.
+
 ## Highest Impact
 
 1. **Make sandbox lifecycle more explicit and durable**
