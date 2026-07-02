@@ -91,3 +91,29 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest -v`
 - `PYTHONPATH=. python -m unittest tests.surface.test_split_mode_smoke.DaemonResourceForwardingTest.test_resource_validate_reads_local_file_without_control_mutation tests.surface.test_split_mode_smoke.DaemonResourceForwardingTest.test_daemon_catalog_only_advertises_implemented_data_tools -v`
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (854 tests, 25 skipped)
+
+## Batch 4: safe TSV results merge
+
+Status: complete
+
+Request addressed:
+
+- Protect `results.tsv` from clobbering.
+
+Implementation notes:
+
+- Added `results.merge_tsv` as a data-plane helper for merging a sandbox
+  produced TSV into a canonical local results ledger.
+- The merge parses TSV structurally, requires stable key columns or infers a
+  common row id column, skips identical duplicate rows, atomically appends new
+  rows, and refuses conflicting rows before changing the target file.
+- Wired the tool through local mode and split-mode daemon routing, with docs
+  updates for the MCP contract and control/data-plane split.
+
+Verification:
+
+- `PYTHONPATH=. python -m unittest tests.sandbox.test_results_tsv_merge -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_results_merge_tool -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_split_mode_smoke.DaemonResourceForwardingTest.test_results_merge_tsv_updates_local_ledger_without_control_mutation tests.surface.test_split_mode_smoke.DaemonResourceForwardingTest.test_daemon_catalog_only_advertises_implemented_data_tools -v`
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (862 tests, 25 skipped)

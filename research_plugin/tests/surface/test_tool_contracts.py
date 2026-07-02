@@ -14,6 +14,7 @@ from backend.tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     ResourceAssociateBatchInput,
     ResourceValidateInput,
+    ResultsMergeTsvInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
     StorageListInput,
@@ -140,6 +141,13 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(TOOL_CONTRACTS["resource.validate"].plane, "data")
 
+    def test_results_merge_tsv_is_data_plane(self) -> None:
+        self.assertIs(
+            TOOL_CONTRACTS["results.merge_tsv"].input_model,
+            ResultsMergeTsvInput,
+        )
+        self.assertEqual(TOOL_CONTRACTS["results.merge_tsv"].plane, "data")
+
 
 class StaticCatalogNoSideEffectTest(unittest.TestCase):
     def test_router_tool_listing_creates_no_template_repo(self) -> None:
@@ -182,6 +190,7 @@ class ToolHandlerRegistryTest(unittest.TestCase):
             **_handler_targets(),
             resource_register_file=target.register_file,
             resource_validate=target.validate,
+            results_merge_tsv=target.merge_tsv,
         )
 
         self.assertEqual(set(handlers), set(TOOL_CONTRACTS))

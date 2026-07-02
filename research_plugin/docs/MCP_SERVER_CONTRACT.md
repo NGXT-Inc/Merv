@@ -159,6 +159,7 @@ resource.register_file(project_id, path?, paths?, kind, title?)  # single file o
 resource.validate(project_id, path, role)                         # preflight local lint
 resource.associate_batch(project_id, associations=[{resource_id, target_type, target_id, role}, ...])
 resource.resolve(project_id, resource_id, include_history?)       # include_history adds versions
+results.merge_tsv(project_id, source_path, target_path, key_columns?, dry_run?)
 ```
 
 The server observes local repo files by path, stores latest metadata in
@@ -187,6 +188,12 @@ a version and stored in the blob store), never the live working tree. There is
 no background reconciliation: editing or deleting a file after association
 changes nothing the workflow can see — re-associate the resource to submit the
 new content. MCP does not scan the repo or register new files.
+
+`results.merge_tsv` is a local safe-import helper for sandbox-produced result
+ledgers. It parses TSV rows by stable key columns, skips identical duplicates,
+atomically appends new rows, and refuses conflicting rows without modifying
+`target_path`; use it instead of copying a partial remote `results.tsv` over a
+full local ledger.
 
 ### Workflow tools
 

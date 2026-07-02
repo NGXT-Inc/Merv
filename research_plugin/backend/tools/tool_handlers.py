@@ -260,6 +260,7 @@ def build_local_tool_handlers(
     feed: Any,
     resource_register_file: Callable[..., dict[str, Any]],
     resource_validate: Callable[..., dict[str, Any]],
+    results_merge_tsv: Callable[..., dict[str, Any]],
     resource_associate: Callable[..., dict[str, Any]] | None = None,
     feed_post: Callable[..., dict[str, Any]] | None = None,
     storage_upload_file: Callable[..., dict[str, Any]] | None = None,
@@ -300,6 +301,7 @@ def build_local_tool_handlers(
                 resource_associate if resource_associate is not None else resources.associate
             ),
             "resource.associate_batch": resource_associate_batch,
+            "results.merge_tsv": results_merge_tsv,
             "sandbox.request": sandboxes.request,
             "sandbox.attach": sandboxes.attach,
             "feed.post": feed_post if feed_post is not None else feed.post,
