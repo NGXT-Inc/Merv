@@ -370,6 +370,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,))
 
+        before_start = self.app.call_tool(
+            "experiment.get_state",
+            {"project_id": project_id, "experiment_id": exp_id},
+        )
+        self.assertNotIn("mlflow", before_start)
+
         # Transitioning into running hands back the MLflow connection block.
         transitioned = self.app.call_tool(
             "experiment.transition",
@@ -380,6 +386,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(transitioned["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
         self.assertEqual(transitioned["mlflow"]["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.test")
         self.assertIn("MLflow", transitioned["mlflow_guidance"])
+
+        state = self.app.call_tool(
+            "experiment.get_state",
+            {"project_id": project_id, "experiment_id": exp_id},
+        )
+        self.assertTrue(state["mlflow"]["configured"])
+        self.assertEqual(state["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
+        self.assertIn("MLflow", state["mlflow_guidance"])
+
+        http_state = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}")
+        self.assertTrue(http_state["mlflow"]["configured"])
+        self.assertEqual(http_state["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
 
         # The standalone MLflow context tool returns the same block on demand.
         ctx = self.app.call_tool(

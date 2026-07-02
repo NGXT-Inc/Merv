@@ -309,6 +309,8 @@ Experiment state also includes `storage_objects`: compact references to
 non-deleted durable storage objects whose `producing_experiment_id` matches the
 experiment. Use these for large retained artifacts such as checkpoints, logs,
 or datasets that should be visible to reviewers but are not repo resources.
+Once an experiment is `running` or later, experiment state also includes
+`mlflow`, the central tracking context and dashboard link for that experiment.
 
 ## Syntheses
 

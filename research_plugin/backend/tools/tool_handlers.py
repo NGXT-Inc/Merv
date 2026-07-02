@@ -5,15 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ..mlflow import mlflow_experiment_name
+from ..mlflow import mlflow_experiment_name, mlflow_visible_for_status
 from ..services.experiment_views import slim_experiment_state
 
 
 def _experiment_get_state_agent(
-    *, experiments: Any, experiment_id: str, project_id: str | None = None
+    *,
+    experiments: Any,
+    mlflow_tracking: Any,
+    experiment_id: str,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
-    return slim_experiment_state(
-        experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+    full = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+    slim = slim_experiment_state(full)
+    return _with_mlflow_if_visible(
+        state=slim,
+        mlflow_tracking=mlflow_tracking,
+        project_id=str(full.get("project_id") or project_id or ""),
+        experiment_id=experiment_id,
     )
 
 
@@ -104,6 +113,25 @@ def _mlflow_context_response(
     return result
 
 
+def _with_mlflow_if_visible(
+    *,
+    state: dict[str, Any],
+    mlflow_tracking: Any,
+    project_id: str,
+    experiment_id: str,
+) -> dict[str, Any]:
+    if not mlflow_visible_for_status(state.get("status")):
+        return state
+    block = _mlflow_connection(
+        mlflow_tracking=mlflow_tracking,
+        project_id=project_id,
+        experiment_id=experiment_id,
+    )
+    state["mlflow"] = block
+    state["mlflow_guidance"] = _mlflow_guidance(block)
+    return state
+
+
 def build_control_tool_handlers(
     *,
     workflow: Any,
@@ -129,6 +157,7 @@ def build_control_tool_handlers(
     ) -> dict[str, Any]:
         return _experiment_get_state_agent(
             experiments=experiments,
+            mlflow_tracking=mlflow_tracking,
             experiment_id=experiment_id,
             project_id=project_id,
         )
@@ -156,14 +185,13 @@ def build_control_tool_handlers(
         # The moment an experiment starts running, hand the agent the MLflow
         # connection block so a quantitative run — including a local, non-sandbox
         # one — can log to the centralized server without hunting for the URI.
-        if slim.get("status") == "running":
-            block = _mlflow_connection(
+        if mlflow_visible_for_status(slim.get("status")):
+            slim = _with_mlflow_if_visible(
+                state=slim,
                 mlflow_tracking=mlflow_tracking,
                 project_id=resolved_project_id,
                 experiment_id=experiment_id,
             )
-            slim["mlflow"] = block
-            slim["mlflow_guidance"] = _mlflow_guidance(block)
         return slim
 
     def mlflow_context_agent(

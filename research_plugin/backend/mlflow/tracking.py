@@ -22,6 +22,14 @@ def mlflow_experiment_name(*, project_id: str, experiment_id: str) -> str:
     return f"rp/{project_id}/{experiment_id}"
 
 
+MLFLOW_STATE_STATUSES = frozenset({"running", "experiment_review", "complete", "failed"})
+
+
+def mlflow_visible_for_status(status: object) -> bool:
+    """Whether experiment state should carry the MLflow context block."""
+    return str(status or "") in MLFLOW_STATE_STATUSES
+
+
 @dataclass(frozen=True)
 class MlflowTrackingContext:
     """The agent-facing MLflow block for one experiment."""

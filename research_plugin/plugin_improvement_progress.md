@@ -253,3 +253,32 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates tests.workflow.test_synthesis_gates tests.surface.test_tenancy -v`
 - `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.surface.test_http_api -v`
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (868 tests, 25 skipped)
+
+## Batch 10: MLflow context in experiment state
+
+Status: complete
+
+Request addressed:
+
+- Surface MLflow links directly in experiment state.
+
+Implementation notes:
+
+- Added a shared MLflow visibility predicate for experiment statuses at
+  `running` or later: `running`, `experiment_review`, `complete`, and `failed`.
+- `experiment.get_state` now includes the central experiment-scoped `mlflow`
+  block and `mlflow_guidance` once the experiment reaches a visible status,
+  without querying MLflow or creating runs.
+- The HTTP experiment state endpoint now includes the same `mlflow` context for
+  UI navigation once the experiment is running or later.
+- Kept pre-run state quiet: `ready_to_run` still omits MLflow context, while
+  `experiment.transition(start_running)` continues to hand back the connection
+  block at the moment a run begins.
+- Updated MCP, UI, centralized MLflow, and tool-contract docs to describe the
+  state-level surface.
+
+Verification:
+
+- `git diff --check`
+- `PYTHONPATH=. python -m unittest tests.surface.test_http_api.ResearchPluginHttpApiTest.test_running_transition_and_tool_hand_mlflow_block tests.state.test_mlflow_tracking tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (51 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (868 tests, 25 skipped)

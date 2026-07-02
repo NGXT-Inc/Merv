@@ -722,7 +722,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Get one experiment state. Includes 'allowed_transitions': the "
             "transitions available from the current status, each with what it "
-            "'requires' (e.g. a registered plan resource, a passing review)."
+            "'requires' (e.g. a registered plan resource, a passing review). "
+            "Once running or later, includes the central 'mlflow' context for "
+            "quantitative logging."
         ),
     ),
     "experiment.materialize_folders": ToolContract(

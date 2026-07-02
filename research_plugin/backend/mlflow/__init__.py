@@ -6,10 +6,15 @@ server wrapper.
 """
 
 from .local_server import LocalMlflowServer
-from .tracking import CentralMlflowService, mlflow_experiment_name
+from .tracking import (
+    CentralMlflowService,
+    mlflow_experiment_name,
+    mlflow_visible_for_status,
+)
 
 __all__ = [
     "CentralMlflowService",
     "LocalMlflowServer",
     "mlflow_experiment_name",
+    "mlflow_visible_for_status",
 ]

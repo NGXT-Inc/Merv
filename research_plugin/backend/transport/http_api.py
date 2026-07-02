@@ -41,7 +41,7 @@ from .http_policy import (
 from .mcp_http import register_mcp_routes
 from ..services.figure_view import build_experiment_figure
 from ..services.identity import LOCAL_PRINCIPAL
-from ..mlflow import mlflow_experiment_name
+from ..mlflow import mlflow_experiment_name, mlflow_visible_for_status
 from ..utils import (
     ContentUnavailableError,
     DataPlaneRequiredError,
@@ -110,6 +110,20 @@ class ResearchHttpApi:
         if self.expose_local_data_plane:
             return value
         return self._strip_local_data_plane(value)
+
+    def experiment_state_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+        state = self.app.experiments.get_state(
+            experiment_id=experiment_id,
+            project_id=project_id,
+        )
+        if not mlflow_visible_for_status(state.get("status")):
+            return self._present(state)
+        enriched = dict(state)
+        enriched["mlflow"] = self.app.mlflow_tracking.context(
+            project_id=project_id,
+            experiment_id=experiment_id,
+        ).to_dict()
+        return self._present(enriched)
 
     @classmethod
     def _strip_local_data_plane(cls, value: Any) -> Any:
@@ -1334,7 +1348,10 @@ def create_fastapi_app(
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}")
     def get_experiment(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
-        return api_for_project(project_id).app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+        return api_for_project(project_id).experiment_state_view(
+            experiment_id=experiment_id,
+            project_id=project_id,
+        )
 
     @http.get("/api/projects/{project_id}/experiments/{experiment_id}/status")
     def experiment_status(project_id: str, experiment_id: str) -> dict[str, Any]:

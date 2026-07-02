@@ -304,7 +304,10 @@ Review-gated statuses expose a `review:<role>` item with `status` of
 `producing_experiment_id` appear as compact `storage_objects` references
 alongside resources, with `{id, name, version, kind, content_sha256, size_bytes,
 content_type, status, expires_at, producing_run, source_uri, notes}` for every
-non-deleted storage object produced by the experiment. What
+non-deleted storage object produced by the experiment. Once status is `running`
+or later, `experiment.get_state` also includes the experiment-scoped `mlflow`
+block and `mlflow_guidance`, matching the central tracking context returned by
+`experiment.transition(start_running)` and `mlflow.context`. What
 `experiment.get_state` drops is pure waste:
 
 - the duplicate all-attempts `resources` list (a copy of

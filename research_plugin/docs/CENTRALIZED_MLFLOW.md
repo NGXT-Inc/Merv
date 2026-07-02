@@ -130,7 +130,10 @@ and env vars for a quantitative run:
 ```
 
 `experiment.transition(start_running)` also returns the same experiment-scoped
-MLflow block as a convenience when a run begins.
+MLflow block as a convenience when a run begins. After that point,
+`experiment.get_state` and the HTTP experiment state endpoint keep surfacing the
+experiment-scoped block so agents and the UI do not need to rediscover the
+tracking namespace.
 
 Agents should use those env vars for quantitative experiments, whether running
 locally or inside a sandbox. They should not start MLflow servers in sandboxes.
