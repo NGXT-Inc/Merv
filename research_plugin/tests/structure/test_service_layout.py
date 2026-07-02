@@ -955,7 +955,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "mcp_http.py"),
-            {"collections.abc", "json", "typing", "fastapi", "utils"},
+            {"collections.abc", "json", "typing", "fastapi", "fastapi.concurrency", "utils"},
         )
         for owner_source in (source, daemon_source):
             self.assertIn("register_mcp_routes(", owner_source)
