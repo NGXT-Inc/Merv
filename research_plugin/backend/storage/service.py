@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ports.object_store import ObjectStore
+from ..domain.storage_guidance import storage_guidance
 from ..state.blobs import _validate_keys
 from ..state.store import (
     BaseStateStore,
@@ -379,6 +380,7 @@ class StorageLedgerService:
                 "offset": int(offset),
                 "has_more": (int(offset) + returned) < total,
                 "compact": bool(compact),
+                "guidance": storage_guidance(enabled=True),
             }
         finally:
             conn.close()

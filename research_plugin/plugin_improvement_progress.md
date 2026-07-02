@@ -202,3 +202,27 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.storage.test_storage_ledger tests.surface.test_storage_http tests.workflow.test_experiment_slim -v`
 - `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.structure.test_plane_layout.PlaneImportLintTest -v`
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (867 tests, 25 skipped)
+
+## Batch 8: storage usage guidance
+
+Status: complete
+
+Request addressed:
+
+- Give clearer guidance on what belongs in storage.
+
+Implementation notes:
+
+- Added one shared storage guidance policy covering what belongs in durable
+  storage, what should stay as repo resources, and what can remain ephemeral.
+- Surfaced that policy from `storage.list`, storage tool descriptions, workflow
+  result-retention guidance, sandbox request hints, and sandbox release
+  retention warnings.
+- Documented the same "what belongs where" rule in `docs/STORAGE_MODEL.md`.
+
+Verification:
+
+- `PYTHONPATH=. python -m unittest tests.storage.test_storage_ledger.StorageLedgerServiceTest.test_default_list_only_returns_available_objects tests.surface.test_tool_contracts.ToolContractRegistryTest.test_storage_tools_registered_with_expected_input_models -v`
+- `PYTHONPATH=. python -m unittest tests.storage.test_storage_ledger tests.surface.test_storage_http tests.sandbox.test_sandbox_service -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.structure.test_plane_layout.PlaneImportLintTest -v`
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (868 tests, 25 skipped)

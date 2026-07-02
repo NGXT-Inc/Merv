@@ -165,6 +165,13 @@ class StorageLedgerServiceTest(unittest.TestCase):
         )
         self.assertEqual(uploading["total"], 1)
         self.assertEqual(uploading["objects"][0]["id"], registered["object"]["id"])
+        self.assertTrue(
+            any(
+                "logs or traces over about 10 MB" in item
+                for item in listed["guidance"]["use_storage_for"]
+            )
+        )
+        self.assertIn("metrics TSV/JSON", " ".join(listed["guidance"]["keep_as_resources"]))
 
     def test_resolve_latest_download_and_extend_only_access_touch(self) -> None:
         self._put_and_complete(name="models/latest.pt", kind="model", data=b"old")

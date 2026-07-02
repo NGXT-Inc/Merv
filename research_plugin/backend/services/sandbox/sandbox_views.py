@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...domain.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
+from ...domain.storage_guidance import STORAGE_RULE_OF_THUMB
 from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     POLL_AFTER_SECONDS,
@@ -40,9 +41,9 @@ def _folder_contract_note(
     local_label = "local sandbox folder"
     if storage_enabled:
         heavy_note = (
-            "Heavy files (trained models, precious datasets, multi-GB checkpoints) "
-            "should NOT be rsynced into the repo — upload them to durable storage with "
-            "storage.put_object instead. "
+            f"{STORAGE_RULE_OF_THUMB} Upload those durable files with "
+            "storage.put_object or storage.upload_file instead of rsyncing them "
+            "into the repo. "
         )
     else:
         heavy_note = (

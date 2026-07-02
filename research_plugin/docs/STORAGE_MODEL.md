@@ -14,6 +14,21 @@ keeping** (e.g. a base model fine-tuned many ways later). It is architecturally
 separate from the rest of the product — the rest of the system reaches it only
 through a thin, one-directional bridge.
 
+## What Belongs Where
+
+Rule of thumb: use storage for files that are too large or noisy for repo
+resources, or expensive to regenerate.
+
+- Use storage for checkpoints/model weights, precious datasets, dataset shards,
+  parquet/archive outputs, generated caches that must survive, and logs/traces
+  over about 10 MB that a reviewer may need.
+- Keep repo resources for `plan.md`, `report.md`, `graph.json`, scripts,
+  configs, small retained result files, metrics TSV/JSON, summarized logs, and
+  plots referenced by the report.
+- Leave ephemeral on the sandbox when the file is a regenerable package cache,
+  scratch download, temporary preprocessing output, or large intermediate not
+  needed after the run.
+
 ## Mental model
 
 The backend keeps a **ledger** of named aliases. Each alias points at a physical,

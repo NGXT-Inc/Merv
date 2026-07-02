@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import storage_feature_enabled
+from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB
 from ..domain.vocabulary import (
     RESOURCE_ROLES,
     RESOURCE_TARGET_TYPES,
@@ -866,7 +867,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=StoragePutObjectInput,
         description=(
             "Register a heavy storage object intent. Returns a presigned upload "
-            "target unless the content is already present in the project."
+            "target unless the content is already present in the project. "
+            f"{STORAGE_RULE_OF_THUMB}"
         ),
     ),
     "storage.upload_file": ToolContract(
@@ -874,7 +876,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Upload a local file to durable storage and complete the ledger "
             "object in one call. Relative paths are resolved against the "
-            "project repo root; omit name to use the repo-relative path."
+            "project repo root; omit name to use the repo-relative path. "
+            f"{STORAGE_RULE_OF_THUMB}"
         ),
         plane="data",
     ),

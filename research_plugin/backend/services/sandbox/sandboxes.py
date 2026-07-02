@@ -7,6 +7,7 @@ from typing import Any
 
 from ...domain.quota_contract import AdmissionRequest
 from ...domain.sandbox_paths import remote_experiment_dir
+from ...domain.storage_guidance import STORAGE_RULE_OF_THUMB
 
 from ...state.activity import ActivityLogger
 from ...state.store import BaseStateStore, Connection, row_to_dict
@@ -571,8 +572,8 @@ class SandboxService:
                 "everything you need: rsync the light files you want off the box "
                 "yourself over SSH into the local work folder"
                 + (
-                    ", and storage.put_object for any heavy file (a trained model, "
-                    "a precious dataset) worth keeping"
+                    f", and storage.put_object/storage.upload_file for durable "
+                    f"heavy artifacts. {STORAGE_RULE_OF_THUMB}"
                     if self.storage_enabled
                     else "; heavy-file storage is not enabled on this backend"
                 )

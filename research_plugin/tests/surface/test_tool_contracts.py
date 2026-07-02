@@ -127,6 +127,8 @@ class ToolContractRegistryTest(unittest.TestCase):
         for name, (model, plane) in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
             self.assertEqual(TOOL_CONTRACTS[name].plane, plane)
+        self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
+        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.upload_file"].description)
 
     def test_resource_batch_association_is_data_plane(self) -> None:
         self.assertIs(

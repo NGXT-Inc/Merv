@@ -7,6 +7,7 @@ from typing import Any
 from ..domain.gates import ReviewRequirement, RoleRequirement
 from ..domain.paths import experiment_folder_rel
 from ..domain.reflection_projection import external_reflection_target_type
+from ..domain.storage_guidance import storage_guidance
 from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
 from ..domain.vocabulary import (
     PROJECT_GRAPH_ROLE,
@@ -846,6 +847,7 @@ class WorkflowService:
                 "scratch. Before registering or associating result resources, "
                 + heavy_retention
             ),
+            "storage_guidance": storage_guidance(enabled=self.storage_enabled),
             "report_guidance": (
                 "A results report (role 'report') is also required before "
                 "submit_results — write it in the same pass as your result files. "
