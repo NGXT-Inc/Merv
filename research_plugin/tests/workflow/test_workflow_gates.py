@@ -236,6 +236,12 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertEqual(trans["submit_design"]["leads_to"], "design_review")
         self.assertIn("requires", trans["submit_design"])  # precondition surfaced up front
         self.assertIn("abandon", trans)  # always available from a non-terminal state
+        checklist = state["gate_checklist"]
+        self.assertEqual(checklist["transition"], "submit_design")
+        self.assertFalse(checklist["ready"])
+        self.assertEqual(checklist["items"][0]["id"], "resource:plan")
+        self.assertEqual(checklist["items"][0]["status"], "missing")
+        self.assertIn("experiment plan resource", checklist["items"][0]["missing"])
 
     def test_disallowed_transition_error_lists_allowed_options(self) -> None:
         exp = self.call("experiment.create", name="exp-6", project_id=self.project_id, intent="bad jump")
@@ -253,6 +259,8 @@ class WorkflowGateTest(unittest.TestCase):
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="abandon")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
         self.assertEqual(state["allowed_transitions"], [])
+        self.assertEqual(state["gate_checklist"]["transition"], None)
+        self.assertTrue(state["gate_checklist"]["ready"])
 
     def test_experiment_create_enforces_active_experiment_cap(self) -> None:
         for index in range(ACTIVE_EXPERIMENT_CAP):
@@ -510,6 +518,13 @@ class WorkflowGateTest(unittest.TestCase):
         nodes = ",".join(f'{{"id": "n{i}", "label": "step {i}"}}' for i in range(17))
         over_budget = f'{{"version": 1, "nodes": [{nodes}]}}'
         self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=over_budget)
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        graph_item = {
+            item["id"]: item for item in state["gate_checklist"]["items"]
+        }["resource:graph"]
+        self.assertEqual(graph_item["status"], "invalid")
+        self.assertTrue(any("17 nodes" in p for p in graph_item["problems"]))
+        self.assertFalse(state["gate_checklist"]["ready"])
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         # The workflow never says "submit" while the live graph would be rejected.
@@ -524,6 +539,12 @@ class WorkflowGateTest(unittest.TestCase):
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "graph_invalid")
         self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        graph_item = {
+            item["id"]: item for item in state["gate_checklist"]["items"]
+        }["resource:graph"]
+        self.assertEqual(graph_item["status"], "valid")
+        self.assertTrue(state["gate_checklist"]["ready"])
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "experiment_review_required")
@@ -549,11 +570,21 @@ class WorkflowGateTest(unittest.TestCase):
             role="design_reviewer",
         )
 
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
+        review_item = state["gate_checklist"]["items"][0]
+        self.assertEqual(review_item["id"], "review:design_reviewer")
+        self.assertEqual(review_item["status"], "requested")
+        self.assertFalse(review_item["satisfied"])
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["review_gate"]["status"], "requested")
         self.assertIn("review.status", workflow["allowed_actions"])
         self.assertIn("review.request", workflow["allowed_actions"])
+        self._pass_review(exp_id=exp["id"], role="design_reviewer")
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
+        review_item = state["gate_checklist"]["items"][0]
+        self.assertEqual(review_item["status"], "passed")
+        self.assertTrue(review_item["satisfied"])
 
     # ---- review rejection routing (return_to) ----
 

@@ -145,3 +145,31 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest -v`
 - `PYTHONPATH=. python -m unittest tests.structure.test_plane_layout.PlaneImportLintTest.test_app_import_keeps_local_io_modules_unloaded -v`
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (866 tests, 25 skipped)
+
+## Batch 6: experiment gate checklist
+
+Status: complete
+
+Request addressed:
+
+- Show review gate checklist in experiment state.
+
+Implementation notes:
+
+- Added `gate_checklist` to experiment state, derived from the same
+  `GATE_TABLE` that drives workflow enforcement and `allowed_transitions`.
+- Checklist items show resource/review requirements for the current forward
+  transition, including missing artifacts, pending/requested/started review
+  state, and ready status.
+- Validator-backed artifacts (`plan`, `report`, `graph`) run the same
+  pinned-byte lints used by transitions, so invalid submitted artifacts appear
+  as checklist problems before the transition is attempted.
+- Preserved review snapshot stability because snapshot ids already use a
+  field-limited equality key.
+
+Verification:
+
+- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_get_state_surfaces_allowed_transitions_with_requirements tests.workflow.test_workflow_gates.WorkflowGateTest.test_terminal_experiment_has_no_allowed_transitions tests.workflow.test_workflow_gates.WorkflowGateTest.test_ready_guidance_pre_lints_the_graph tests.workflow.test_workflow_gates.WorkflowGateTest.test_pending_review_allows_fresh_request_for_lost_capability tests.workflow.test_experiment_slim -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_tool_contracts tests.structure.test_plane_layout.ToolPlanePartitionTest tests.structure.test_plane_layout.PlaneImportLintTest -v`
+- `PYTHONPATH=. python -m unittest tests.surface.test_control_plane_contract tests.surface.test_http_api -v`
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (866 tests, 25 skipped)

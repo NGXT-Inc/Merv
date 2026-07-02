@@ -377,10 +377,150 @@ class ExperimentService:
                 review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
             data["reviews"] = reviews
             data["allowed_transitions"] = allowed_transitions_for(str(data.get("status", "")))
+            data["gate_checklist"] = self._gate_checklist(conn=conn, experiment=data)
             return data
         finally:
             if owns_conn:
                 conn.close()
+
+    def _gate_checklist(self, *, conn, experiment: dict[str, Any]) -> dict[str, Any]:
+        """Current forward gate as machine-readable checklist data.
+
+        This mirrors the declarative gate table and uses the same pinned-byte
+        validators as transitions, so experiment state can show both missing
+        artifacts and submitted artifact lint failures before the caller tries
+        the transition.
+        """
+        status = str(experiment.get("status") or "")
+        forward = GATE_TABLE.get(status)
+        if forward is None:
+            return {
+                "status": status,
+                "transition": None,
+                "leads_to": None,
+                "ready": status in TERMINAL_STATUSES,
+                "items": [],
+            }
+
+        resources = experiment.get("current_attempt_resources") or []
+        present_roles = {
+            str(res.get("association_role"))
+            for res in resources
+            if res.get("association_role") and not res.get("missing")
+        }
+        items: list[dict[str, Any]] = []
+        for requirement in forward.requirements:
+            present = requirement.role in present_roles
+            problems: list[str] = []
+            state = "present" if present else "missing"
+            if present and requirement.validator:
+                problems = self.validator_problems(
+                    conn=conn,
+                    experiment_id=str(experiment["id"]),
+                    name=requirement.validator,
+                )
+                state = "invalid" if problems else "valid"
+            item: dict[str, Any] = {
+                "id": f"resource:{requirement.role}",
+                "kind": "resource",
+                "role": requirement.role,
+                "label": self._gate_resource_label(role=requirement.role),
+                "satisfied": present and not problems,
+                "status": state,
+                "gate": requirement.gate,
+                "action": requirement.action,
+            }
+            if requirement.validator:
+                item["validator"] = requirement.validator
+            if not present:
+                item["missing"] = requirement.missing or f"{requirement.role} resource"
+            if problems:
+                item["problems"] = problems
+            items.append(item)
+
+        if forward.review is not None:
+            review = forward.review
+            snapshot_id = review_snapshot_id(target_type="experiment", target=experiment)
+            passed = any(
+                row.get("role") == review.role
+                and row.get("verdict") == "pass"
+                and row.get("target_snapshot_id") == snapshot_id
+                for row in experiment.get("reviews", [])
+            )
+            request = self._latest_review_request(
+                conn=conn,
+                experiment_id=str(experiment["id"]),
+                role=review.role,
+                target_snapshot_id=snapshot_id,
+            )
+            review_status = "passed" if passed else self._review_gate_status(request=request)
+            item = {
+                "id": f"review:{review.role}",
+                "kind": "review",
+                "role": review.role,
+                "label": self._gate_review_label(role=review.role),
+                "satisfied": passed,
+                "status": review_status,
+                "gate": status,
+                "action": review.pass_action if passed else f"launch_{review.action_name}er",
+                "skill": review.skill,
+            }
+            if request is not None:
+                item["request_id"] = request["id"]
+                item["expires_at"] = request["expires_at"]
+            items.append(item)
+
+        return {
+            "status": status,
+            "transition": forward.name,
+            "leads_to": forward.to_status,
+            "ready": all(bool(item.get("satisfied")) for item in items),
+            "items": items,
+        }
+
+    def _latest_review_request(
+        self,
+        *,
+        conn,
+        experiment_id: str,
+        role: str,
+        target_snapshot_id: str,
+    ) -> dict[str, Any] | None:
+        row = conn.execute(
+            """
+            SELECT id, status, expires_at
+            FROM review_requests
+            WHERE target_type = 'experiment' AND target_id = ? AND role = ?
+              AND target_snapshot_id = ?
+            ORDER BY created_seq DESC
+            LIMIT 1
+            """,
+            (experiment_id, role, target_snapshot_id),
+        ).fetchone()
+        return row_to_dict(row=row)
+
+    def _review_gate_status(self, *, request: dict[str, Any] | None) -> str:
+        if request is None:
+            return "pending"
+        if request.get("status") in {"requested", "started"}:
+            return str(request["status"])
+        return "pending"
+
+    def _gate_resource_label(self, *, role: str) -> str:
+        labels = {
+            "plan": "Plan associated and valid",
+            "result": "Result resource present",
+            "report": "Results report present and valid",
+            "graph": "Logic graph present and valid",
+        }
+        return labels.get(role, f"{role} resource present")
+
+    def _gate_review_label(self, *, role: str) -> str:
+        labels = {
+            "design_reviewer": "Design review passed",
+            "experiment_reviewer": "Experiment review passed",
+        }
+        return labels.get(role, f"{role} review passed")
 
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
         conn = self.store.connect()

@@ -42,6 +42,7 @@ def slim_experiment_state(full: dict[str, Any]) -> dict[str, Any]:
         "created_at": full.get("created_at"),
         "updated_at": full.get("updated_at"),
         "allowed_transitions": full.get("allowed_transitions", []),
+        "gate_checklist": full.get("gate_checklist", {}),
         "tested_claims": [
             {field: claim.get(field) for field in _SLIM_CLAIM_FIELDS}
             for claim in full.get("tested_claims", [])

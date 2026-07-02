@@ -278,7 +278,30 @@ resource list, and full review `findings` / `notes` / `evidence` / `verdict`.
 It also carries `allowed_transitions`: the transitions available from the
 current status, each with `leads_to` and (where gated) a `requires` hint — so
 the agent learns the next legal step and its preconditions without trial and
-error. What it drops is pure waste:
+error. It also carries `gate_checklist`, a machine-readable view of the current
+forward gate derived from the same workflow table, for example:
+
+```json
+{
+  "status": "running",
+  "transition": "submit_results",
+  "leads_to": "experiment_review",
+  "ready": false,
+  "items": [
+    { "id": "resource:result", "kind": "resource", "role": "result",
+      "status": "present", "satisfied": true },
+    { "id": "resource:report", "kind": "resource", "role": "report",
+      "status": "valid", "validator": "report", "satisfied": true },
+    { "id": "resource:graph", "kind": "resource", "role": "graph",
+      "status": "invalid", "validator": "graph", "satisfied": false,
+      "problems": ["..."] }
+  ]
+}
+```
+
+Review-gated statuses expose a `review:<role>` item with `status` of
+`pending`, `requested`, `started`, or `passed`. What `experiment.get_state`
+drops is pure waste:
 
 - the duplicate all-attempts `resources` list (a copy of
   `current_attempt_resources`); resources from *earlier* attempts appear instead
