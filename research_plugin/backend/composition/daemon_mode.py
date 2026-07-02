@@ -35,6 +35,7 @@ from ..dataplane.project_links import ProjectLinks
 from ..dataplane.remote_view import HttpControlPlaneView
 from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
+from ..dataplane.resource_validation import validate_local_resource_artifact
 from ..secret_tokens import mint_secret
 from ..services.sandbox import sandbox_views
 from ..storage.file_transfer import (
@@ -150,6 +151,8 @@ class DaemonServer:
             }
         if name == "resource.register_file":
             return self._register_resource_files(arguments=arguments, context=context)
+        if name == "resource.validate":
+            return self._validate_resource_file(arguments=arguments, context=context)
         if name == "resource.associate":
             return self._associate_resource(arguments=arguments, context=context)
         if name == "resource.associate_batch":
@@ -527,6 +530,16 @@ class DaemonServer:
                     if isinstance(figure.get("data"), bytes)
                 ]
         return self.control.submit_resource_association(payload)
+
+    def _validate_resource_file(
+        self, *, arguments: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
+        repo_root, _project_id = self._linked_scope(context=context)
+        return validate_local_resource_artifact(
+            repo_root=repo_root,
+            path=self._required_arg(arguments, "path"),
+            role=self._required_arg(arguments, "role"),
+        )
 
     def _associate_resource_batch(
         self, *, arguments: dict[str, Any], context: dict[str, Any]

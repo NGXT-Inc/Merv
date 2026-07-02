@@ -259,6 +259,7 @@ def build_local_tool_handlers(
     mlflow_tracking: Any,
     feed: Any,
     resource_register_file: Callable[..., dict[str, Any]],
+    resource_validate: Callable[..., dict[str, Any]],
     resource_associate: Callable[..., dict[str, Any]] | None = None,
     feed_post: Callable[..., dict[str, Any]] | None = None,
     storage_upload_file: Callable[..., dict[str, Any]] | None = None,
@@ -294,6 +295,7 @@ def build_local_tool_handlers(
     handlers.update(
         {
             "resource.register_file": resource_register_file,
+            "resource.validate": resource_validate,
             "resource.associate": (
                 resource_associate if resource_associate is not None else resources.associate
             ),

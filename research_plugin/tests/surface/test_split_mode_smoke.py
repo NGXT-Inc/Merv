@@ -111,10 +111,35 @@ class DaemonResourceForwardingTest(unittest.TestCase):
 
         names = {tool["name"] for tool in self._server(_Control()).list_tools()}
         self.assertIn("resource.register_file", names)
+        self.assertIn("resource.validate", names)
         self.assertIn("resource.associate", names)
         self.assertIn("sandbox.get", names)
         self.assertIn("sandbox.request", names)
         self.assertIn("feed.post", names)
+
+    def test_resource_validate_reads_local_file_without_control_mutation(self) -> None:
+        (self.repo / "plan.md").write_text("## Summary\nToo thin.\n", encoding="utf-8")
+
+        class _Control:
+            def list_tools(self):
+                return []
+
+            def submit_resource_observation(self, _payload):
+                raise AssertionError("resource.validate must not register resources")
+
+            def submit_resource_association(self, _payload):
+                raise AssertionError("resource.validate must not associate resources")
+
+        result = self._server(_Control()).call_tool(
+            name="resource.validate",
+            arguments={"path": "plan.md", "role": "plan"},
+            context={"repo_root": str(self.repo)},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("Objective & hypothesis" in problem for problem in result["problems"])
+        )
 
     def test_daemon_teardown_removes_conn_file(self) -> None:
         class _Worker:

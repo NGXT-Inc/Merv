@@ -113,7 +113,7 @@ wires the services below. Here is where each lands.
 | **Local retained-output target layout** | [`execution/sync_dirs.py`](../backend/execution/sync_dirs.py) path helpers | `experiments/<id>/` is a local path. |
 | **SSH keypair material on disk** | `services/sandbox_conn.py` `SandboxConnFiles.ensure_keypair` (ssh-keygen → `.research_plugin/sandboxes/keys`) | Private key stays on the user's machine (see credential model below). |
 | **Sandbox dispatcher + conn files** | `services/sandbox_conn.py` (`.research_plugin/sbx`, `conn/<id>`) | Local helper the agent shells out to. |
-| **Resource file observation** | `services/resources.py` `register_file` (single `path` or `paths` batch) | Hashes/reads **repo-relative local files**; only the resulting metadata is cloud state. |
+| **Resource file observation + validation** | `dataplane/resource_observer.py`, `dataplane/resource_validation.py` (`resource.register_file`, `resource.validate`) | Hashes/reads **repo-relative local files**; preflight lint reads artifact bytes before any cloud-state mutation. |
 | **Daemon discovery marker** | `daemon_marker.py`, `.research_plugin/daemon.json` | Local process discovery. |
 
 ### Splits across the seam

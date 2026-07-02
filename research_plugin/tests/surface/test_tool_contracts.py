@@ -13,6 +13,7 @@ from backend.tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
     ResourceAssociateBatchInput,
+    ResourceValidateInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
     StorageListInput,
@@ -132,6 +133,13 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(TOOL_CONTRACTS["resource.associate_batch"].plane, "data")
 
+    def test_resource_validate_is_data_plane(self) -> None:
+        self.assertIs(
+            TOOL_CONTRACTS["resource.validate"].input_model,
+            ResourceValidateInput,
+        )
+        self.assertEqual(TOOL_CONTRACTS["resource.validate"].plane, "data")
+
 
 class StaticCatalogNoSideEffectTest(unittest.TestCase):
     def test_router_tool_listing_creates_no_template_repo(self) -> None:
@@ -173,6 +181,7 @@ class ToolHandlerRegistryTest(unittest.TestCase):
         handlers = build_local_tool_handlers(
             **_handler_targets(),
             resource_register_file=target.register_file,
+            resource_validate=target.validate,
         )
 
         self.assertEqual(set(handlers), set(TOOL_CONTRACTS))

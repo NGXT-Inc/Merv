@@ -234,6 +234,22 @@ class ResourceAssociateInput(ProjectScopedInput):
     )
 
 
+class ResourceValidateInput(ProjectScopedInput):
+    path: str = Field(
+        description=(
+            "Repo-relative file path to lint before registering or associating "
+            "it as a resource."
+        )
+    )
+    role: str = Field(
+        description=(
+            "Intended resource association role. For gated artifacts, the "
+            "validator applies the same role-specific lint used by workflow gates."
+        ),
+        json_schema_extra={"enum": sorted(RESOURCE_ROLES)},
+    )
+
+
 class ResourceAssociationItemInput(ContractModel):
     resource_id: str
     target_type: str = Field(json_schema_extra={"enum": sorted(RESOURCE_TARGET_TYPES)})
@@ -729,6 +745,16 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "reflection_doc, reflection_lens_doc, change_spec) are "
             "size-capped at associate time — keep them lean and reference raw "
             "data instead of inlining it."
+        ),
+        plane="data",
+    ),
+    "resource.validate": ToolContract(
+        input_model=ResourceValidateInput,
+        description=(
+            "Preflight-lint a repo file before resource.register_file or "
+            "resource.associate. For gated roles such as plan, report, and graph, "
+            "this checks the same byte caps, required sections, report figures, "
+            "and graph envelope constraints enforced at workflow transitions."
         ),
         plane="data",
     ),

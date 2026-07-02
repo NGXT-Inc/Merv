@@ -293,6 +293,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
             DATA_PLANE_TOOL_NAMES,
             {
                 "resource.register_file",
+                "resource.validate",
                 "resource.associate",
                 "resource.associate_batch",
                 "storage.upload_file",

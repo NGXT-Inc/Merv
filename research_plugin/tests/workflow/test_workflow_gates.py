@@ -196,6 +196,36 @@ class WorkflowGateTest(unittest.TestCase):
             {"Summary", "Objective & hypothesis", "Evaluation"},
         )
 
+    def test_resource_validate_preflights_plan_before_association(self) -> None:
+        (self.repo / "plan.md").write_text("## Summary\nToo thin.\n", encoding="utf-8")
+
+        invalid = self.call(
+            "resource.validate",
+            project_id=self.project_id,
+            path="plan.md",
+            role="plan",
+        )
+
+        self.assertFalse(invalid["ok"])
+        self.assertTrue(invalid["gated"])
+        self.assertTrue(
+            any("Objective & hypothesis" in problem for problem in invalid["problems"])
+        )
+        self.assertEqual(
+            self.call("resource.list", project_id=self.project_id)["resources"],
+            [],
+        )
+
+        (self.repo / "plan.md").write_text(VALID_PLAN, encoding="utf-8")
+        valid = self.call(
+            "resource.validate",
+            project_id=self.project_id,
+            path="plan.md",
+            role="plan",
+        )
+        self.assertTrue(valid["ok"])
+        self.assertEqual(valid["problems"], [])
+
     # ---- transition discovery (allowed_transitions + helpful errors) ----
 
     def test_get_state_surfaces_allowed_transitions_with_requirements(self) -> None:

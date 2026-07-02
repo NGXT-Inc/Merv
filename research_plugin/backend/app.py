@@ -18,6 +18,7 @@ from .tools.tool_facade import ToolDispatcher
 from .tools.contracts import available_tool_names
 from .tools.tool_handlers import build_local_tool_handlers
 from .utils import ValidationError
+from .dataplane.resource_validation import validate_local_resource_artifact
 
 if TYPE_CHECKING:
     from .local_runtime import LocalRuntime
@@ -151,6 +152,7 @@ class ResearchPluginApp:
                 resources=self.resources,
                 storage=self.storage,
                 resource_register_file=self.register_resource_file,
+                resource_validate=self.validate_resource_file,
                 resource_associate=self.associate_resource,
                 reviews=self.reviews,
                 sandboxes=self.sandboxes,
@@ -244,6 +246,24 @@ class ResearchPluginApp:
         return self.resources.record_observation(
             project_id=project_id,
             **observation,
+        )
+
+    def validate_resource_file(
+        self,
+        *,
+        path: str,
+        role: str,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        conn = self.store.connect()
+        try:
+            self.store.require_project_id(conn=conn, project_id=project_id)
+        finally:
+            conn.close()
+        return validate_local_resource_artifact(
+            repo_root=self.workspace.repo_root,
+            path=path,
+            role=role,
         )
 
     def associate_resource(

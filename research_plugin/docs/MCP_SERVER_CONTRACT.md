@@ -156,6 +156,7 @@ but the `project_reflection` side block still carries the signal.
 
 ```text
 resource.register_file(project_id, path?, paths?, kind, title?)  # single file or batch
+resource.validate(project_id, path, role)                         # preflight local lint
 resource.associate_batch(project_id, associations=[{resource_id, target_type, target_id, role}, ...])
 resource.resolve(project_id, resource_id, include_history?)       # include_history adds versions
 ```
@@ -165,6 +166,12 @@ The server observes local repo files by path, stores latest metadata in
 Each observed version captures size, mtime, content sha256, and mimetype;
 file content itself is not stored — historical content lives in the user's
 own repo / git history.
+
+`resource.validate` reads the current local file without registering or
+associating it. For gated roles such as `plan`, `report`, and `graph`, it
+preflights the same byte caps, required sections, report figure availability,
+and graph envelope checks that would otherwise fail at association or
+transition time.
 
 When a resource is associated with an experiment, MCP stores the experiment's
 current `attempt_index` and current `version_id` on that association. Workflow
