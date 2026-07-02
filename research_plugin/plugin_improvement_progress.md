@@ -336,7 +336,7 @@ Verification:
 
 ## Batch 13: project active sandbox reuse
 
-Status: complete
+Status: canceled
 
 Request addressed:
 
@@ -345,23 +345,16 @@ Request addressed:
 
 Implementation notes:
 
-- `sandbox.request` now searches the project for the newest confirmed-live
-  sandbox before provisioning another VM, attaches it to the requested
-  experiment, and returns `reuse_source: "project_active_sandbox"`.
-- `additional=true` remains the explicit escape hatch for a parallel sandbox,
-  and tests that intentionally need separate VMs now request that explicitly.
-- Split-mode daemon requests no longer let their provisional generated
-  `sandbox_uid` accidentally force a new VM when a reusable project sandbox
-  already exists.
-- Hardware selection menus for Lambda Labs and Thunder Compute are skipped when
-  a project sandbox can be reused, preserving the incumbent instance type.
-- Updated MCP/tool/backend docs to describe the project-level reuse default.
+- The project-wide active sandbox reuse default was removed because it can
+  attach a new agent to a sandbox another agent is actively using.
+- `sandbox.request` only reuses an active sandbox already attached to the
+  requested experiment unless the caller explicitly uses a dedicated attach
+  flow.
+- The tool and backend docs no longer describe project-wide default reuse.
 
 Verification:
 
-- `git diff --check`
-- `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_heartbeat.SandboxHeartbeatMonitorTest.test_idle_sandbox_is_reaped_while_busy_sandbox_is_spared tests.sandbox.test_sandbox_identity.SandboxIdentityTest.test_sandbox_uid_is_unique_and_stable_across_upserts tests.sandbox.test_sandbox_service.SandboxServiceTest.test_request_reuses_project_live_sandbox_for_new_experiment tests.sandbox.test_sandbox_service.SandboxServiceTest.test_request_additional_bypasses_project_live_sandbox_reuse tests.sandbox.test_sandbox_service.SandboxServiceTest.test_data_plane_request_reuses_project_live_sandbox_despite_provisional_uid tests.sandbox.test_sandbox_service.SandboxServiceTest.test_standalone_request_reuses_project_live_sandbox -v` (6 tests)
-- `PYTHONPATH=. python -m unittest discover -s tests -v` (877 tests, 25 skipped)
+- Superseded by the cancellation batch below.
 
 ## Batch 14: active sandbox expiry warnings
 

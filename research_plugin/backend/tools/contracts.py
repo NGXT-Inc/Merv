@@ -521,11 +521,8 @@ class SandboxRequestInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
         description=(
-            "Optional experiment to attach the sandbox to. If the project "
-            "already has a live sandbox and additional=false, request reuses "
-            "and attaches that project sandbox instead of creating a new VM. "
-            "Omit to create or reuse a standalone project sandbox addressed by "
-            "sandbox_uid."
+            "Optional experiment to attach the sandbox to. Omit to create a "
+            "standalone sandbox addressed by sandbox_uid."
         ),
     )
     instance_type: str | None = Field(
@@ -576,7 +573,7 @@ class SandboxRequestInput(ProjectScopedInput):
         description=(
             "When true with experiment_id, provision a new sandbox and add it "
             "to that experiment's active sandbox list instead of reusing an "
-            "already attached or project-active live sandbox."
+            "already attached live sandbox."
         ),
     )
 
@@ -1020,9 +1017,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=SandboxRequestInput,
         description=(
             "Procure (reuse or create) a project sandbox, optionally attached to "
-            "an experiment. Reuses the project's live sandbox by default unless "
-            "additional=true, then returns SSH details plus runtime guidance for "
-            "the remote work folder, expiry, copy-out, and durable storage. "
+            "an experiment, and return SSH details plus runtime guidance for the "
+            "remote work folder, expiry, copy-out, and durable storage. "
             "On Thunder Compute or Lambda Labs, omit instance_type to "
             "receive a live menu of available machines to pick from."
         ),

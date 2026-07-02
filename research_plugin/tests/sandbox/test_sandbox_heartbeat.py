@@ -141,14 +141,10 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
             )
         return exp_id
 
-    def _request(self, exp_id: str, *, additional: bool = False) -> dict:
+    def _request(self, exp_id: str) -> dict:
         return self.app.call_tool(
             "sandbox.request",
-            {
-                "project_id": self.project_id,
-                "experiment_id": exp_id,
-                "additional": additional,
-            },
+            {"project_id": self.project_id, "experiment_id": exp_id},
         )
 
     def _seed_heartbeat(
@@ -174,7 +170,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         idle_exp = self._experiment("idle")
         busy_exp = self._experiment("busy")
         idle = self._request(idle_exp)
-        busy = self._request(busy_exp, additional=True)
+        busy = self._request(busy_exp)
         for exp_id, sandbox_uid in (
             (idle_exp, idle["sandbox_uid"]),
             (busy_exp, busy["sandbox_uid"]),

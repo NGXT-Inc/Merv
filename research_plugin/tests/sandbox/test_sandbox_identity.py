@@ -35,14 +35,10 @@ class SandboxIdentityTest(unittest.TestCase):
             )
         return exp_id
 
-    def _request(self, experiment_id: str, *, additional: bool = False) -> dict:
+    def _request(self, experiment_id: str) -> dict:
         return self.app.call_tool(
             "sandbox.request",
-            {
-                "project_id": self.project_id,
-                "experiment_id": experiment_id,
-                "additional": additional,
-            },
+            {"project_id": self.project_id, "experiment_id": experiment_id},
         )
 
     def _attachment(self, sandbox_uid: str, experiment_id: str):
@@ -104,7 +100,7 @@ class SandboxIdentityTest(unittest.TestCase):
         exp_a = self._experiment("exp-a")
         exp_b = self._experiment("exp-b")
         self._request(exp_a)
-        self._request(exp_b, additional=True)
+        self._request(exp_b)
         uid_a = str(self.app.sandboxes.registry.load_row(experiment_id=exp_a)["sandbox_uid"])
         uid_b = str(self.app.sandboxes.registry.load_row(experiment_id=exp_b)["sandbox_uid"])
 
