@@ -7,7 +7,7 @@ from pathlib import Path
 from backend.app import ResearchPluginApp
 from backend.domain.artifacts import plan_sections_missing
 from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
-from backend.utils import ValidationError, WorkflowError
+from backend.utils import PermissionDeniedError, ValidationError, WorkflowError
 
 # A plan that satisfies the required spine (Summary; Objective & hypothesis;
 # Evaluation), so submit_design's section lint passes.
@@ -714,6 +714,93 @@ class WorkflowGateTest(unittest.TestCase):
         review_item = state["gate_checklist"]["items"][0]
         self.assertEqual(review_item["status"], "passed")
         self.assertTrue(review_item["satisfied"])
+
+    def test_fresh_capability_revokes_the_open_request(self) -> None:
+        exp = self.call("experiment.create", name="revoke-on-refresh", project_id=self.project_id, intent="Revoke on refresh.")
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        old = self.call(
+            "review.request",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="design_reviewer",
+        )
+        fresh = self.call(
+            "review.request",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="design_reviewer",
+        )
+        # The superseded capability can no longer open a session.
+        with self.assertRaises(PermissionDeniedError):
+            self.call(
+                "review.start",
+                review_request_id=old["review_request_id"],
+                reviewer_capability=old["reviewer_capability"],
+                caller_session_id="stale-reviewer",
+            )
+        session = self.call(
+            "review.start",
+            review_request_id=fresh["review_request_id"],
+            reviewer_capability=fresh["reviewer_capability"],
+            caller_session_id="fresh-reviewer",
+        )
+        self.call("review.submit", review_session_id=session["review_session_id"], verdict="pass")
+        # After the gate passed, review.status no longer advertises a refresh.
+        status = self.call(
+            "review.status",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+        )
+        self.assertFalse(
+            any(r["recovery"]["can_request_fresh_capability"] for r in status["requests"])
+        )
+
+    def test_stale_review_session_cannot_yank_an_advanced_experiment(self) -> None:
+        exp = self.call("experiment.create", name="stale-session", project_id=self.project_id, intent="Stale session.")
+        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        old = self.call(
+            "review.request",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="design_reviewer",
+        )
+        stale_session = self.call(
+            "review.start",
+            review_request_id=old["review_request_id"],
+            reviewer_capability=old["reviewer_capability"],
+            caller_session_id="reviewer-a",
+        )
+        # A fresh request supersedes the started one; its reviewer passes the
+        # gate and the experiment advances to running.
+        self._pass_review(exp_id=exp["id"], role="design_reviewer")
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="mark_ready_to_run")
+        self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="start_running")
+        with self.assertRaises(PermissionDeniedError):
+            self.call(
+                "review.submit",
+                review_session_id=stale_session["review_session_id"],
+                verdict="needs_changes",
+                notes="stale objection",
+            )
+        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["attempt_index"], 1)
+
+    def test_send_back_to_planned_requires_a_review_status(self) -> None:
+        exp_id = self._drive_to_running()
+        with self.app.store.transaction() as conn:
+            with self.assertRaises(WorkflowError):
+                self.app.experiments.send_back_to_planned(
+                    conn=conn,
+                    experiment_id=exp_id,
+                    revision_context="should not apply",
+                )
 
     def test_review_request_and_start_opens_read_only_session(self) -> None:
         exp = self.call("experiment.create", name="review-helper", project_id=self.project_id, intent="Review helper.")

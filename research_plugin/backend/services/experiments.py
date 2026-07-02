@@ -821,6 +821,11 @@ class ExperimentService:
         row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
         if row is None:
             raise NotFoundError(f"experiment not found: {experiment_id}")
+        if row["status"] not in {"design_review", "experiment_review"}:
+            raise WorkflowError(
+                f"experiment is {row['status']!r}; only an experiment under "
+                "review can be sent back to planned"
+            )
         now = now_iso()
         conn.execute(
             """

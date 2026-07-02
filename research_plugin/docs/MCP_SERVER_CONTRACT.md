@@ -602,12 +602,17 @@ capabilities, for example `{capability_returned_once: true,
 capability_available: false, can_request_fresh_capability: true, tool:
 "review.request", arguments: {target_type, target_id, role}}`. The plaintext
 reviewer capability is still returned only by `review.request` at creation time.
+Requesting a fresh capability is revoke-and-reissue: it marks every prior open
+request for the same target/role `superseded`, so a lost or stale capability
+can no longer start a session, and its already-started session can no longer
+submit.
 
 MCP should reject a review when:
 
-- the capability is expired or reused
+- the capability is expired, reused, or superseded by a fresh request
 - the role does not match the active gate
-- the target snapshot changed after the capability was issued
+- the target snapshot changed after the capability was issued or after the
+  review started (a stale session cannot mutate a target that moved on)
 - the review session matches the producer session for the plan/result
 - the reviewer attempts any mutation except `review.submit`
 

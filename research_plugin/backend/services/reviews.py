@@ -79,6 +79,26 @@ class ReviewService:
             self._validate_role_matches_gate(
                 target_type=target_type, target_status=target["status"], role=role
             )
+            # Refresh is revoke-and-reissue: a new capability for the same gate
+            # closes every prior open request, so a lost or stale capability can
+            # never race the fresh one to submit.
+            superseded = [
+                str(row["id"])
+                for row in conn.execute(
+                    """
+                    SELECT id FROM review_requests
+                    WHERE project_id = ? AND target_type = ? AND target_id = ?
+                      AND role = ? AND status IN ('requested', 'started')
+                    """,
+                    (project_id, target_type, target_id, role),
+                ).fetchall()
+            ]
+            if superseded:
+                placeholders = ", ".join("?" for _ in superseded)
+                conn.execute(
+                    f"UPDATE review_requests SET status = 'superseded' WHERE id IN ({placeholders})",
+                    (*superseded,),
+                )
             request_id = new_id(prefix="rr")
             # The plaintext capability is minted here, returned ONCE to the
             # caller, and never stored — only its sha256 lands in the row (cloud
@@ -116,7 +136,11 @@ class ReviewService:
                 event_type="review.requested",
                 target_type=target_type,
                 target_id=target_id,
-                payload={"role": role, "request_id": request_id},
+                payload={
+                    "role": role,
+                    "request_id": request_id,
+                    "superseded_request_ids": superseded,
+                },
             )
             return {
                 "review_request_id": request_id,
@@ -281,6 +305,22 @@ class ReviewService:
             req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (session["request_id"],)).fetchone()
             if req is None:
                 raise NotFoundError(f"review request not found: {session['request_id']}")
+            if req["status"] != "started":
+                raise PermissionDeniedError(
+                    "review request is no longer open (superseded by a fresh "
+                    "capability or already submitted)"
+                )
+            # The verdict applies to the pinned snapshot the reviewer graded.
+            # If the target moved on (e.g. a sibling review already passed the
+            # gate), a stale session must not mutate it.
+            snapshot_now = self._target_snapshot_id(
+                conn=conn, target_type=req["target_type"], target_id=req["target_id"]
+            )
+            if snapshot_now != req["target_snapshot_id"]:
+                raise PermissionDeniedError(
+                    "target changed after this review started; the verdict no "
+                    "longer applies — request a fresh review"
+                )
             return_to = self._validate_return_to(
                 target_type=req["target_type"], role=req["role"], verdict=verdict, return_to=return_to
             )
@@ -704,7 +744,8 @@ class ReviewService:
         can_refresh = open_status
         reason = (
             "capability lost or expired; request a fresh reviewer capability "
-            "for the same target and role"
+            "for the same target and role (this revokes the open request — "
+            "the old capability can no longer start or submit)"
             if can_refresh
             else "review request is closed; inspect submitted reviews instead"
         )
