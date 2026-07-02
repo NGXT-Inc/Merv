@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from ..domain.gates import ReviewRequirement, RoleRequirement
@@ -28,6 +29,7 @@ from ..ports.workflow_readers import (
 )
 from .workflow_views import slim_status_and_next, slim_synthesis
 from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
+from ..utils import parse_iso
 
 
 EXPERIMENT_STATUS_PRIORITY = {
@@ -41,6 +43,7 @@ PROCESS_STATUS_PRIORITY = {
     "running": 0,
     "provisioning": 1,
 }
+SANDBOX_EXPIRY_WARNING_SECONDS = 3600
 
 
 class WorkflowService:
@@ -139,6 +142,12 @@ class WorkflowService:
                 takeover = self._reflection_workflow_takeover(reflection=reflection)
                 if takeover is not None:
                     workflow = takeover
+            if experiment:
+                workflow = self._with_sandbox_expiry_warning(
+                    workflow=workflow,
+                    experiment=experiment,
+                    sandboxes=sandboxes,
+                )
             result = {
                 "project": {
                     **(project or {}),
@@ -354,6 +363,63 @@ class WorkflowService:
             if any(sb.get("status") in ACTIVE_PROCESS_STATUSES for sb in sandboxes):
                 return "execution_active"
         return requirement.gate
+
+    def _with_sandbox_expiry_warning(
+        self,
+        *,
+        workflow: dict[str, Any],
+        experiment: dict[str, Any],
+        sandboxes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if experiment.get("status") != "running":
+            return workflow
+        now = datetime.now(UTC)
+        soonest: tuple[datetime, dict[str, Any]] | None = None
+        for sandbox in sandboxes:
+            if sandbox.get("status") not in ACTIVE_PROCESS_STATUSES:
+                continue
+            expires_at = parse_iso(sandbox.get("expires_at"))
+            if expires_at is None:
+                continue
+            if soonest is None or expires_at < soonest[0]:
+                soonest = (expires_at, sandbox)
+        if soonest is None:
+            return workflow
+        expires_at, sandbox = soonest
+        seconds_remaining = int((expires_at - now).total_seconds())
+        if seconds_remaining > SANDBOX_EXPIRY_WARNING_SECONDS:
+            return workflow
+        if seconds_remaining <= 0:
+            message = (
+                "Active sandbox expiry has passed. Call sandbox.get to reconcile "
+                "liveness, retain any reachable outputs immediately, and call "
+                "sandbox.request if a replacement VM is needed."
+            )
+        else:
+            minutes = max(1, (seconds_remaining + 59) // 60)
+            message = (
+                f"Active sandbox expires in about {minutes} minutes. Retain "
+                "needed outputs now by copying light files out over SSH or "
+                "uploading heavy files to durable storage before expiry or release."
+            )
+        warning = {
+            "kind": "sandbox_expiry",
+            "severity": "critical" if seconds_remaining <= 900 else "warning",
+            "sandbox_uid": sandbox.get("sandbox_uid"),
+            "sandbox_id": sandbox.get("sandbox_id"),
+            "expires_at": sandbox.get("expires_at"),
+            "seconds_remaining": seconds_remaining,
+            "message": message,
+            "recommended_actions": [
+                "sandbox.get",
+                "sandbox.terminal",
+                "retain_outputs_before_release",
+            ],
+        }
+        return {
+            **workflow,
+            "warnings": [*workflow.get("warnings", []), warning],
+        }
 
     def _resource_guidance(
         self, *, key: str, experiment: dict[str, Any]

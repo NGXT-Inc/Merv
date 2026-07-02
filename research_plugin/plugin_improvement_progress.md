@@ -367,3 +367,30 @@ Verification:
 - `git diff --check`
 - `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_heartbeat.SandboxHeartbeatMonitorTest.test_idle_sandbox_is_reaped_while_busy_sandbox_is_spared tests.sandbox.test_sandbox_identity.SandboxIdentityTest.test_sandbox_uid_is_unique_and_stable_across_upserts tests.sandbox.test_sandbox_service.SandboxServiceTest.test_request_reuses_project_live_sandbox_for_new_experiment tests.sandbox.test_sandbox_service.SandboxServiceTest.test_request_additional_bypasses_project_live_sandbox_reuse tests.sandbox.test_sandbox_service.SandboxServiceTest.test_data_plane_request_reuses_project_live_sandbox_despite_provisional_uid tests.sandbox.test_sandbox_service.SandboxServiceTest.test_standalone_request_reuses_project_live_sandbox -v` (6 tests)
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (877 tests, 25 skipped)
+
+## Batch 14: active sandbox expiry warnings
+
+Status: complete
+
+Request addressed:
+
+- Provide expiry warnings during active runs.
+
+Implementation notes:
+
+- `workflow.status_and_next` now adds a `workflow.warnings[]` entry for
+  `running` experiments whose live sandbox expires within one hour.
+- The warning identifies the sandbox, expiry time, seconds remaining, severity,
+  and concrete retention-oriented next actions.
+- Expired sandboxes report a critical warning that tells the agent to reconcile
+  with `sandbox.get`, retain reachable outputs immediately, and request a
+  replacement if needed.
+- Kept this advisory rather than provider-specific auto-extension; no sandbox
+  lifecycle mutation or provider call is performed during workflow polling.
+- Documented the optional warning shape in the MCP contract.
+
+Verification:
+
+- `git diff --check`
+- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_running_workflow_warns_when_live_sandbox_expiry_is_close tests.workflow.test_workflow_slim.WorkflowSlimTest.test_active_sandbox_is_summarized tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (42 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (878 tests, 25 skipped)

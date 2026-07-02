@@ -230,7 +230,19 @@ the service directly.) The slim shape, scoped to an experiment:
       { "action": "experiment.complete", "reason": "missing passing experiment review" }
     ],
     "missing_evidence": [],
-    "revision_context": ""
+    "revision_context": "",
+    "warnings": [
+      {
+        "kind": "sandbox_expiry",
+        "severity": "warning",
+        "sandbox_uid": "sbx_...",
+        "sandbox_id": "provider-id",
+        "expires_at": "2026-06-03T05:11:37Z",
+        "seconds_remaining": 1800,
+        "message": "Active sandbox expires in about 30 minutes...",
+        "recommended_actions": ["sandbox.get", "sandbox.terminal", "retain_outputs_before_release"]
+      }
+    ]
   },
   "experiment": {
     "id": "exp_...",
@@ -261,6 +273,9 @@ the service directly.) The slim shape, scoped to an experiment:
 When a sandbox is live, `sandbox` is `{ "active": true, "sandbox_id", "status",
 "gpu", "cpu", "memory", "ssh_host", "ssh_port", "ssh_user", "workdir",
 "sandbox_data_dir", "expires_at" }`.
+For a `running` experiment with a live sandbox at or under one hour from
+`expires_at`, the workflow block includes a `sandbox_expiry` warning so the
+agent retains outputs before release or provider expiry destroys the VM.
 Dropped vs. the underlying `experiment.get_state`: the duplicate
 all-attempts `resources` list, per-resource version bookkeeping (`version_token`,
 `mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review
