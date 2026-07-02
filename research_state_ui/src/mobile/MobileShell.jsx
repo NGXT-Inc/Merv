@@ -152,6 +152,7 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <SheetLink to={px('/reviews')} label="Reviews" count={stats.open_reviews ?? stats.reviews ?? 0} />
       <SheetLink to={px('/synthesis')} label="Synthesis" />
       <SheetLink to={px('/resources')} label="Resources" count={stats.resources ?? 0} />
+      <SheetLink to={px('/storage')} label="Storage" />
       <SheetLink to={px('/sandboxes')} label="Sandboxes" count={runningSandboxes ? `${runningSandboxes} running` : null} />
       <SheetLink to="/projects" label="Projects" />
 
