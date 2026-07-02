@@ -198,6 +198,13 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
             self.app.sandboxes.get(
                 project_id=self.project_id,
                 sandbox_uid=str(idle["sandbox_uid"]),
+            )["lifecycle_reason"],
+            "idle_timeout",
+        )
+        self.assertEqual(
+            self.app.sandboxes.get(
+                project_id=self.project_id,
+                sandbox_uid=str(idle["sandbox_uid"]),
             )["status"],
             "terminated",
         )

@@ -394,3 +394,32 @@ Verification:
 - `git diff --check`
 - `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_running_workflow_warns_when_live_sandbox_expiry_is_close tests.workflow.test_workflow_slim.WorkflowSlimTest.test_active_sandbox_is_summarized tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (42 tests)
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (878 tests, 25 skipped)
+
+## Batch 15: sandbox lifecycle reason surface
+
+Status: complete
+
+Request addressed:
+
+- Make sandbox lifecycle more explicit and durable.
+
+Implementation notes:
+
+- Terminal sandbox paths now persist a reason code in the sandbox row's
+  terminal detail: `user_release`, `expired`, `idle_timeout`, or
+  `provider_unreachable`.
+- Shared sandbox projections now expose `lifecycle_reason` and
+  `lifecycle_detail` across `sandbox.request`, `sandbox.get`, `sandbox.list`,
+  workflow sandbox summaries, and HTTP/UI sandbox views.
+- Provider liveness reconciliation now emits `sandbox.terminated` with
+  `reason: "provider_unreachable"` instead of labeling that case as expiry.
+- Failed provisioning rows derive `provisioning_failed` or
+  `provisioning_interrupted` from the existing error text.
+- Updated the MCP contract and `sandbox.get` tool description to make the
+  lifecycle reason field discoverable.
+
+Verification:
+
+- `git diff --check`
+- `PYTHONPATH=. python -m unittest tests.sandbox.test_sandbox_service.SandboxServiceTest.test_reaper_does_not_change_experiment_status tests.sandbox.test_sandbox_service.SandboxServiceTest.test_get_reconciles_dead_sandbox tests.sandbox.test_sandbox_service.SandboxServiceTest.test_release_terminates tests.sandbox.test_sandbox_heartbeat.SandboxHeartbeatMonitorTest.test_idle_sandbox_is_reaped_while_busy_sandbox_is_spared tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (44 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (878 tests, 25 skipped)

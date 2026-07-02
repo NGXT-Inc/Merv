@@ -105,14 +105,19 @@ class SandboxProvisioner:
             if self.is_alive(sandbox_id=str(row["sandbox_id"])):
                 self.registry.touch_alive(experiment_id=exp, sandbox_uid=sandbox_uid)
                 return self._refresh_row(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
-            self.registry.mark_terminated(experiment_id=exp, sandbox_uid=sandbox_uid)
+            self.registry.mark_terminated(
+                experiment_id=exp,
+                sandbox_uid=sandbox_uid,
+                reason="provider_unreachable",
+            )
             self.registry.emit_event(
                 project_id=str(row["project_id"]),
-                event_type="sandbox.expired",
+                event_type="sandbox.terminated",
                 experiment_id=exp,
                 payload={
                     "sandbox_id": row.get("sandbox_id", ""),
                     "sandbox_uid": sandbox_uid,
+                    "reason": "provider_unreachable",
                 },
             )
             return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
@@ -569,7 +574,9 @@ class SandboxProvisioner:
         self, *, experiment_id: str, project_id: str, sandbox_uid: str = ""
     ) -> None:
         self.registry.mark_terminated(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            reason="user_release",
         )
         self.registry.emit_event(
             project_id=project_id,

@@ -683,7 +683,9 @@ class SandboxService:
         if not stopped:
             self.provisioner.cleanup_orphan(experiment_id=experiment_id, row=row)
         self.registry.mark_terminated(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            reason="user_release",
         )
         self.registry.emit_event(
             project_id=str(row["project_id"]),
