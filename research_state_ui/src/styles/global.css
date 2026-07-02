@@ -4172,9 +4172,9 @@ button.review-stepper-version:hover {
 .refl-versions-meta .fsm-strip { opacity: .85; }
 
 /* =====================================================================
-   Experiments — the record of attempts as a ledger: flush hairline rows,
-   quiet lowercase headers (.th--led). Character kept: two-line title+intent
-   cell, StatusPill, live duration dot.
+   Experiments — console dialect via the DS grammar (.con-head band,
+   .th--con headers), boxed like the sandbox fleet. Character: two-line
+   title+intent cell, StatusPill, live duration dot.
    ===================================================================== */
 .expt-scroll { overflow-x: auto; margin-top: 16px; }
 .expt {
@@ -4182,6 +4182,10 @@ button.review-stepper-version:hover {
      lines. The trailing facts columns hold the minimum their content needs. */
   --expt-cols: minmax(280px, 1fr) 126px 84px 84px 90px;
   min-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-elev);
 }
 .expt-head,
 .expt-row {
@@ -4189,8 +4193,9 @@ button.review-stepper-version:hover {
   grid-template-columns: var(--expt-cols);
   align-items: center;
   gap: 10px;
+  padding: 0 14px;
 }
-.expt-head { padding: 0 0 6px; border-bottom: 1px solid var(--line); }
+.expt-head { height: 32px; }
 
 .expt-row {
   min-height: 52px;
@@ -4199,6 +4204,7 @@ button.review-stepper-version:hover {
   text-align: left;
   transition: background var(--motion-fast);
 }
+.expt-row:last-child { border-bottom: none; }
 @media (hover: hover) {
   .expt-row:hover { background: var(--hover); }
 }

@@ -110,11 +110,11 @@ export default function Experiments() {
 }
 
 const COLUMNS = [
-  { key: 'title', label: 'experiment' },
-  { key: 'status', label: 'status' },
-  { key: 'created', label: 'created' },
-  { key: 'finished', label: 'finished' },
-  { key: 'duration', label: 'duration', right: true },
+  { key: 'title', label: 'Experiment' },
+  { key: 'status', label: 'Status' },
+  { key: 'created', label: 'Created' },
+  { key: 'finished', label: 'Finished' },
+  { key: 'duration', label: 'Duration', right: true },
 ];
 
 function WhenCell({ parts, title }) {
@@ -133,7 +133,7 @@ function ExperimentTable({ rows, sortKey, sortDir, onSort }) {
   return (
     <div className="expt-scroll">
       <div className="expt" role="table" aria-label="Experiments">
-        <div className="expt-head" role="row">
+        <div className="expt-head con-head" role="row">
           {COLUMNS.map(col => (
             <button
               key={col.key}
@@ -142,7 +142,7 @@ function ExperimentTable({ rows, sortKey, sortDir, onSort }) {
               aria-sort={sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
               className={[
                 'th',
-                'th--led',
+                'th--con',
                 col.right ? 'th--r' : '',
                 sortKey === col.key ? 'on' : '',
               ].filter(Boolean).join(' ')}
