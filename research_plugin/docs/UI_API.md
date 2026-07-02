@@ -287,10 +287,16 @@ Supported transitions in v0.0001:
 - `submit_design`
 - `mark_ready_to_run`
 - `start_running`
+- `retry_running`
 - `submit_results`
 - `complete`
 - `mark_failed`
 - `abandon`
+
+`retry_running` is only valid from `running`. It keeps the same status and
+attempt index, and uses `revision_context` to tell the agent that the previous
+execution was interrupted by infrastructure rather than rejected as a plan
+change.
 
 The UI should generally use `workflow.next_action` from status/home to decide
 which action button to show.

@@ -625,3 +625,34 @@ Verification:
 - `PYTHONPATH=. python -m unittest tests.state.test_mlflow_tracking tests.surface.test_http_api.ResearchPluginHttpApiTest.test_running_transition_and_tool_hand_mlflow_block tests.surface.test_tool_contracts tests.surface.test_plugin_skills -v` (34 tests)
 - `PYTHONPATH=. python -m unittest tests.state.test_mlflow_tracking tests.state.test_store_migrations tests.surface.test_http_api tests.workflow.test_experiment_slim tests.surface.test_tool_contracts tests.surface.test_plugin_skills tests.structure.test_plane_layout.PlaneImportLintTest -v` (103 tests)
 - `PYTHONPATH=. python -m unittest discover -s tests -v` (891 tests, 25 skipped)
+
+## Batch 23: infrastructure retry while running
+
+Status: complete
+
+Request addressed:
+
+- Better attempt retry semantics.
+
+Implementation notes:
+
+- Added `retry_running` as an explicit `experiment.transition` option available
+  only from `running`.
+- The transition is a same-status retry: the experiment remains `running`, the
+  approved plan stays in force, and `attempt_index` is unchanged.
+- Retry evidence is preserved in `revision_context` so future workflow guidance
+  explains that execution is being rerun for infrastructure/interruption rather
+  than because the design changed.
+- `experiment.get_state.allowed_transitions` now advertises `retry_running`
+  with its same-attempt precondition, and `workflow.status_and_next` keeps
+  `experiment.transition` in the running execution gate's allowed actions.
+- Updated MCP/UI/workflow docs and the research workflow skill so agents use
+  this path when a sandbox dies or expires mid-run.
+
+Verification:
+
+- `git diff --check`
+- `python -m py_compile backend/domain/workflow_gates.py backend/services/experiments.py backend/tools/contracts.py backend/services/workflow.py`
+- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_retry_running_keeps_current_attempt_and_records_infra_context tests.workflow.test_workflow_gates.WorkflowGateTest.test_retry_running_is_rejected_outside_running_status tests.workflow.test_workflow_gates.WorkflowGateTest.test_disallowed_transition_error_lists_allowed_options tests.surface.test_tool_contracts tests.surface.test_plugin_skills -v` (21 tests)
+- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates tests.workflow.test_system_transitions tests.workflow.test_workflow_slim tests.surface.test_tool_contracts tests.surface.test_control_plane_contract tests.surface.test_http_api tests.surface.test_plugin_skills tests.structure.test_plane_layout.PlaneImportLintTest -v` (129 tests)
+- `PYTHONPATH=. python -m unittest discover -s tests -v` (893 tests, 25 skipped)

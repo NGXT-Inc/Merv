@@ -96,13 +96,24 @@ class WorkflowGateTest(unittest.TestCase):
         session_id = self._open_review_session(exp_id=exp_id, role=role)
         self.call("review.submit", review_session_id=session_id, verdict="pass")
 
-    def _drive_to_running_with_result(self) -> str:
-        exp_id = self.call("experiment.create", name="exp-1", project_id=self.project_id, intent="Rejection routing.")["id"]
+    def _drive_to_running(
+        self, *, name: str = "exp-1", intent: str = "Rejection routing."
+    ) -> str:
+        exp_id = self.call(
+            "experiment.create",
+            name=name,
+            project_id=self.project_id,
+            intent=intent,
+        )["id"]
         self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running")
+        return exp_id
+
+    def _drive_to_running_with_result(self) -> str:
+        exp_id = self._drive_to_running()
         self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
         return exp_id
 
@@ -262,6 +273,63 @@ class WorkflowGateTest(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("not allowed", msg)
         self.assertIn("submit_design", msg)  # tells the agent what IS allowed from here
+
+    def test_retry_running_keeps_current_attempt_and_records_infra_context(self) -> None:
+        exp_id = self._drive_to_running(
+            name="infra-retry",
+            intent="Retry current approved attempt after VM failure.",
+        )
+        before = self.call(
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+        transitions = {t["transition"]: t for t in before["allowed_transitions"]}
+        self.assertEqual(transitions["retry_running"]["leads_to"], "running")
+        self.assertIn("attempt_index is unchanged", transitions["retry_running"]["requires"])
+
+        out = self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="retry_running",
+            evidence={
+                "reason": "sandbox expired",
+                "detail": "provider terminated the VM before outputs were retained",
+            },
+        )
+
+        self.assertEqual(out["status"], "running")
+        self.assertEqual(out["attempt_index"], before["attempt_index"])
+        self.assertIn("Infrastructure retry requested", out["revision_context"])
+        self.assertIn("sandbox expired", out["revision_context"])
+        self.assertIn("provider terminated", out["revision_context"])
+
+        wf = self.call(
+            "workflow.status_and_next",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )["workflow"]
+        self.assertEqual(wf["current_gate"], "execution_ready")
+        self.assertEqual(wf["next_action"], "run_experiment_and_retain_results")
+        self.assertIn("experiment.transition", wf["allowed_actions"])
+        self.assertIn("Infrastructure retry requested", wf["revision_context"])
+
+    def test_retry_running_is_rejected_outside_running_status(self) -> None:
+        exp = self.call(
+            "experiment.create",
+            name="retry-too-soon",
+            project_id=self.project_id,
+            intent="Cannot retry before execution.",
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.transition",
+                project_id=self.project_id,
+                experiment_id=exp["id"],
+                transition="retry_running",
+            )
+        self.assertIn("not allowed from 'planned'", str(ctx.exception))
 
     def test_terminal_experiment_has_no_allowed_transitions(self) -> None:
         exp = self.call("experiment.create", name="exp-7", project_id=self.project_id, intent="dead end")

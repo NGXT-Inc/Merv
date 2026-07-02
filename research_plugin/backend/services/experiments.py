@@ -761,6 +761,15 @@ class ExperimentService:
                     "UPDATE experiments SET status = ?, conclusion = ?, updated_at = ? WHERE id = ?",
                     (next_status, self._conclusion_from_evidence(evidence), now, experiment_id),
                 )
+            elif transition == "retry_running":
+                revision_context = self._retry_running_context(
+                    evidence=evidence,
+                    previous=str(experiment.get("revision_context") or ""),
+                )
+                conn.execute(
+                    "UPDATE experiments SET status = ?, revision_context = ?, updated_at = ? WHERE id = ?",
+                    (next_status, revision_context, now, experiment_id),
+                )
             else:
                 conn.execute(
                     "UPDATE experiments SET status = ?, updated_at = ? WHERE id = ?",
@@ -786,6 +795,27 @@ class ExperimentService:
         if isinstance(conclusion, str) and conclusion.strip():
             return conclusion.strip()
         return json.dumps(evidence, sort_keys=True)
+
+    def _retry_running_context(
+        self, *, evidence: dict[str, Any] | None, previous: str = ""
+    ) -> str:
+        evidence = evidence or {}
+        reason = str(evidence.get("reason") or "infrastructure failure").strip()
+        detail = str(
+            evidence.get("detail")
+            or evidence.get("notes")
+            or evidence.get("note")
+            or ""
+        ).strip()
+        parts = [
+            "Infrastructure retry requested while experiment was running.",
+            "Approved plan and current attempt stay in force; rerun execution and retain fresh results before submit_results.",
+            f"Reason: {reason}.",
+        ]
+        if detail:
+            parts.append(f"Detail: {detail}")
+        context = " ".join(parts)
+        return f"{previous}\n\n{context}".strip() if previous else context
 
     def send_back_to_planned(self, *, conn, experiment_id: str, revision_context: str) -> None:
         row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
@@ -848,6 +878,14 @@ class ExperimentService:
             return "abandoned"
         if transition == "mark_failed":
             return "failed"
+        if transition == "retry_running":
+            if status == "running":
+                return "running"
+            options = ", ".join(t["transition"] for t in allowed_transitions_for(status))
+            raise WorkflowError(
+                f"transition {transition!r} is not allowed from {status!r}; "
+                f"allowed from here: {options}"
+            )
         forward = GATE_TABLE.get(status)
         if forward is None or forward.name != transition:
             options = ", ".join(t["transition"] for t in allowed_transitions_for(status))

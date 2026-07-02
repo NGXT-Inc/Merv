@@ -233,6 +233,12 @@ repo root. Use `sandbox.terminal(experiment_id)` to inspect transcript output
 and the structured `last_command` status before re-running anything long. If
 `command_status_stale` is true, the transcript read failed and `last_command` is
 the last successful snapshot, which is still useful for recovery decisions.
+If the sandbox died, expired, or the command was interrupted by infrastructure
+while the approved plan still stands, call
+`experiment.transition(transition="retry_running", evidence={...})` before
+requesting or attaching the replacement sandbox. This keeps the same attempt and
+records why execution is being rerun; use a planned retry only when the design
+itself needs to change.
 
 While the sandbox is live, make experiment-folder edits on the VM under
 `$RP_EXPERIMENT_DIR`. No files are copied automatically. Keep datasets, caches,

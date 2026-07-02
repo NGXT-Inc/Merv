@@ -99,6 +99,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                     "sandbox.attach",
                     "sandbox.terminal",
                     "sandbox.get",
+                    "experiment.transition",
                     "resource.register_file",
                     "resource.associate",
                 ),
@@ -155,8 +156,9 @@ GATE_TABLE: dict[str, ForwardTransition] = {
             "experiment should continue running; continue with "
             "sandbox.* and resource.* calls instead and only "
             "transition once the work is truly done; if revision_context "
-            "is present, the last review rejected this attempt — address "
-            "it before resubmitting)"
+            "is present, the last review rejected this attempt or an "
+            "infrastructure retry was requested — address it before "
+            "resubmitting)"
         ),
         ready_allowed=("experiment.transition",),
     ),
@@ -209,6 +211,18 @@ def allowed_transitions_for(status: str) -> list[dict[str, Any]]:
             if transition in TRANSITION_REQUIREMENTS:
                 entry["requires"] = TRANSITION_REQUIREMENTS[transition]
             out.append(entry)
+    if status == "running":
+        out.append(
+            {
+                "transition": "retry_running",
+                "leads_to": "running",
+                "requires": (
+                    "use only for infrastructure failure or interrupted "
+                    "execution when the approved plan still stands; the "
+                    "experiment remains running and attempt_index is unchanged"
+                ),
+            }
+        )
     out.append({"transition": "abandon", "leads_to": "abandoned"})
     out.append({"transition": "mark_failed", "leads_to": "failed"})
     return out

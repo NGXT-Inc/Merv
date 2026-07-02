@@ -156,6 +156,7 @@ class ExperimentTransitionInput(ProjectScopedInput):
         "submit_design",
         "mark_ready_to_run",
         "start_running",
+        "retry_running",
         "submit_results",
         "complete",
         "abandon",
@@ -819,6 +820,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "starts the experiment running, the result includes an 'mlflow' "
             "connection block for quantitative logging and, when the backend "
             "MLflow write URI is configured, a plugin-created run id to resume."
+            " Use retry_running only for infrastructure/interruption reruns "
+            "where the experiment should stay running on the same attempt."
         ),
     ),
     "mlflow.context": ToolContract(

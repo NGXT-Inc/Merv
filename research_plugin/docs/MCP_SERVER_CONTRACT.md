@@ -285,6 +285,12 @@ When a sandbox is live, `sandbox` is `{ "active": true, "sandbox_id", "status",
 For a `running` experiment with a live sandbox at or under one hour from
 `expires_at`, the workflow block includes a `sandbox_expiry` warning so the
 agent retains outputs before release or provider expiry destroys the VM.
+If the sandbox is lost or execution is interrupted for infrastructure reasons
+while the approved plan still stands, `allowed_transitions` includes
+`retry_running`. Calling `experiment.transition` with that transition keeps the
+experiment in `running`, preserves `attempt_index`, and stores the evidence in
+`revision_context` so the next run is explicitly a same-attempt infrastructure
+retry rather than a plan revision.
 Dropped vs. the underlying `experiment.get_state`: the duplicate
 all-attempts `resources` list, per-resource version bookkeeping (`version_token`,
 `mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review

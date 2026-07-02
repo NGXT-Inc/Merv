@@ -199,6 +199,14 @@ The `submit_results` transition lints the report file (sections, metrics table,
 size, figure links) and the logic graph's envelope (valid JSON, node budget,
 DAG) before the experiment enters review.
 
+If infrastructure fails while the experiment is already `running` and the
+approved plan still stands, call
+`experiment.transition(transition="retry_running", evidence={...})`. This is a
+self-transition: the experiment remains `running`, `attempt_index` is unchanged,
+and `revision_context` records the retry reason so the agent reruns execution
+and retains fresh outputs before `submit_results`. Use `return_to="planned"` or
+a new experiment instead when the plan itself needs to change.
+
 `workflow.status_and_next` runs those same deep lints once every required
 artifact exists: if a submitted artifact would fail the transition's lint, the gate is
 `plan_invalid` / `report_invalid` / `graph_invalid` with the lint problems in
