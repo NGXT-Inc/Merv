@@ -107,8 +107,8 @@ Project-scoped; the server rejects a missing `project_id`.
 - `storage.upload_file(project_id, path, kind, name?, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
   — data-plane convenience helper for local agents. Computes sha256 + size,
   registers the intent, streams the file to the presigned target, and completes
-  the upload. Relative paths resolve under the project repo; omitted `name`
-  defaults to the repo-relative path.
+  the upload. `path` must stay inside the project repo (`..` and absolute paths
+  are rejected); omitted `name` defaults to the repo-relative path.
 - `storage.complete_upload(project_id, upload_id, parts?)` — finalize after the
   producer streamed bytes: verifies size + sha256, lands the object, sets
   `available` + a 60-day TTL.
@@ -116,7 +116,8 @@ Project-scoped; the server rejects a missing `project_id`.
 - `storage.resolve(project_id, object_id? | name?, version?, include_download?)` — resolve to a presigned **download** URL; bumps the TTL.
 - `storage.download_file(project_id, path, object_id? | name?, version?, overwrite?)`
   — data-plane convenience helper. Resolves the object, downloads to a temp
-  file, verifies sha256 + size, then atomically replaces `path`.
+  file, verifies sha256 + size, then atomically replaces `path` (which must
+  stay inside the project repo).
 - `storage.pin / storage.unpin / storage.renew (project_id, object_id)`.
 - `storage.delete(project_id, object_id)` — drop the alias (kept for audit);
   reclaim the physical bytes when no alias references them.

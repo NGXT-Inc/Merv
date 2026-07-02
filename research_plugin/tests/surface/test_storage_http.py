@@ -19,6 +19,7 @@ from backend.execution.backends.fake import FakeSandboxBackend
 from backend.state.store import StateStore
 from backend.storage.service import StorageLedgerService
 from backend.transport.http_api import create_fastapi_app
+from backend.utils import ValidationError
 
 
 class StorageHttpApiTest(unittest.TestCase):
@@ -112,6 +113,32 @@ class StorageHttpApiTest(unittest.TestCase):
             (self.repo / "experiments" / "storage_demo" / "copy.log").read_bytes(),
             b"tool bytes",
         )
+
+    def test_storage_file_tools_reject_paths_outside_the_repo(self) -> None:
+        outside = Path(self.tmp.name).parent / "outside-secret.txt"
+        for path in ("../outside-secret.txt", str(outside), ".research_plugin/state.sqlite"):
+            with self.assertRaises(ValidationError):
+                self.app.call_tool(
+                    "storage.upload_file",
+                    {"project_id": self.project_id, "path": path, "kind": "other"},
+                )
+        source = self.repo / "in-repo.log"
+        source.write_bytes(b"contained")
+        uploaded = self.app.call_tool(
+            "storage.upload_file",
+            {"project_id": self.project_id, "path": "in-repo.log", "kind": "other"},
+        )
+        for path in ("../escape.log", str(outside), ".research_plugin/clobber"):
+            with self.assertRaises(ValidationError):
+                self.app.call_tool(
+                    "storage.download_file",
+                    {
+                        "project_id": self.project_id,
+                        "object_id": uploaded["object"]["id"],
+                        "path": path,
+                        "overwrite": True,
+                    },
+                )
 
     def test_experiment_state_surfaces_produced_storage_objects(self) -> None:
         exp = self.app.call_tool(

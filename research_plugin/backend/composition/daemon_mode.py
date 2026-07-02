@@ -33,6 +33,7 @@ from ..dataplane.feed_images import LocalFeedImageReader
 from ..dataplane.http_channel import DaemonTaskLoop
 from ..dataplane.project_links import ProjectLinks
 from ..dataplane.remote_view import HttpControlPlaneView
+from ..dataplane.repo_paths import resolve_repo_path
 from ..dataplane.resource_artifacts import LocalResourceArtifactReader
 from ..dataplane.resource_observer import LocalResourceObserver
 from ..dataplane.resource_validation import validate_local_resource_artifact
@@ -665,10 +666,10 @@ class DaemonServer:
         return str(value)
 
     def _resolve_local_path(self, *, repo_root: Path, path: str) -> Path:
-        candidate = Path(path).expanduser()
-        if not candidate.is_absolute():
-            candidate = repo_root / candidate
-        return candidate
+        # Same containment as every other data-plane file tool: repo-relative
+        # only, no '..', never inside .research_plugin.
+        _rel, full = resolve_repo_path(repo_root=repo_root, path=path)
+        return full
 
     def _default_storage_name(self, *, repo_root: Path, path: Path) -> str:
         try:

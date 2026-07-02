@@ -379,17 +379,14 @@ class StoragePutObjectInput(ProjectScopedInput):
 class StorageUploadFileInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Local file path to upload. Relative paths resolve against the "
-            "project repo root."
+            "Repo-relative file path to upload ('..' and absolute paths are "
+            "rejected)."
         )
     )
     kind: Literal["dataset", "model", "other"]
     name: str = Field(
         default="",
-        description=(
-            "Optional storage object name. Defaults to the repo-relative path "
-            "when path is inside the project, otherwise the file basename."
-        ),
+        description="Optional storage object name. Defaults to the repo-relative path.",
     )
     content_type: str = ""
     producing_experiment_id: str = ""
@@ -426,8 +423,8 @@ class StorageResolveInput(ProjectScopedInput):
 class StorageDownloadFileInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Local destination path. Relative paths resolve against the "
-            "project repo root."
+            "Repo-relative destination path ('..' and absolute paths are "
+            "rejected)."
         )
     )
     object_id: str | None = None

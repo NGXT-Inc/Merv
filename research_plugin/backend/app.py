@@ -18,6 +18,7 @@ from .tools.tool_facade import ToolDispatcher
 from .tools.contracts import available_tool_names
 from .tools.tool_handlers import build_local_tool_handlers
 from .utils import ValidationError
+from .dataplane.repo_paths import resolve_repo_path
 from .dataplane.resource_validation import validate_local_resource_artifact
 
 if TYPE_CHECKING:
@@ -423,10 +424,12 @@ class ResearchPluginApp:
         )
 
     def _resolve_project_path(self, path: str) -> Path:
-        candidate = Path(path).expanduser()
-        if not candidate.is_absolute():
-            candidate = self.workspace.repo_root / candidate
-        return candidate
+        # Same containment as every other data-plane file tool: repo-relative
+        # only, no '..', never inside .research_plugin.
+        _rel, full = resolve_repo_path(
+            repo_root=self.workspace.repo_root, path=path
+        )
+        return full
 
     def _default_storage_name(self, path: Path) -> str:
         try:
