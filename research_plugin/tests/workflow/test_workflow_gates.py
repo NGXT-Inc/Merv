@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from backend.app import ResearchPluginApp
 from backend.domain.artifacts import plan_sections_missing
 from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
-from backend.utils import ValidationError, WorkflowError, format_iso
+from backend.utils import ValidationError, WorkflowError
 
 # A plan that satisfies the required spine (Summary; Objective & hypothesis;
 # Evaluation), so submit_design's section lint passes.
@@ -628,39 +627,6 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertEqual(workflow["next_action"], "write_and_associate_logic_graph")
         self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
         self.assertIn("experiments/exp-1/graph.json", workflow["resource_guidance"]["guidance"])
-
-    def test_running_workflow_warns_when_live_sandbox_expiry_is_close(self) -> None:
-        exp_id = self._drive_to_running_with_result()
-        expires_at = format_iso(datetime.now(UTC) + timedelta(minutes=30))
-        sandbox_uid = "sbx_workflow_warning"
-        self.app.sandboxes.registry.upsert(
-            experiment_id=exp_id,
-            sandbox_uid=sandbox_uid,
-            project_id=self.project_id,
-            sandbox_id="provider-warning",
-            status="running",
-            ssh_host="127.0.0.1",
-            ssh_port=22,
-            ssh_user="root",
-            expires_at=expires_at,
-        )
-
-        wf = self.call(
-            "workflow.status_and_next",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-        )
-        warnings = wf["workflow"]["warnings"]
-
-        self.assertEqual(len(warnings), 1)
-        warning = warnings[0]
-        self.assertEqual(warning["kind"], "sandbox_expiry")
-        self.assertEqual(warning["severity"], "warning")
-        self.assertEqual(warning["sandbox_uid"], sandbox_uid)
-        self.assertEqual(warning["expires_at"], expires_at)
-        self.assertLessEqual(warning["seconds_remaining"], 1800)
-        self.assertIn("Retain needed outputs", warning["message"])
-        self.assertIn("sandbox.get", warning["recommended_actions"])
 
     # ---- readiness pre-lint (status_and_next runs the deep lints) ----
 

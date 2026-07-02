@@ -365,7 +365,7 @@ Verification:
 
 ## Batch 14: active sandbox expiry warnings
 
-Status: complete
+Status: canceled
 
 Request addressed:
 
@@ -373,22 +373,14 @@ Request addressed:
 
 Implementation notes:
 
-- `workflow.status_and_next` now adds a `workflow.warnings[]` entry for
-  `running` experiments whose live sandbox expires within one hour.
-- The warning identifies the sandbox, expiry time, seconds remaining, severity,
-  and concrete retention-oriented next actions.
-- Expired sandboxes report a critical warning that tells the agent to reconcile
-  with `sandbox.get`, retain reachable outputs immediately, and request a
-  replacement if needed.
-- Kept this advisory rather than provider-specific auto-extension; no sandbox
-  lifecycle mutation or provider call is performed during workflow polling.
-- Documented the optional warning shape in the MCP contract.
+- The expiry-warning surface was removed because these sandbox UX changes are
+  being replaced by a cleaner design.
+- `workflow.status_and_next` no longer returns `sandbox_expiry` warning entries.
+- The MCP contract no longer documents expiry warnings.
 
 Verification:
 
-- `git diff --check`
-- `PYTHONPATH=. python -m unittest tests.workflow.test_workflow_gates.WorkflowGateTest.test_running_workflow_warns_when_live_sandbox_expiry_is_close tests.workflow.test_workflow_slim.WorkflowSlimTest.test_active_sandbox_is_summarized tests.surface.test_tool_contracts tests.structure.test_plane_layout.PlaneImportLintTest -v` (42 tests)
-- `PYTHONPATH=. python -m unittest discover -s tests -v` (878 tests, 25 skipped)
+- Superseded by the cancellation batch below.
 
 ## Batch 15: sandbox lifecycle reason surface
 
