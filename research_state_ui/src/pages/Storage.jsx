@@ -1,73 +1,109 @@
-import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { useProjectStore, useProjectHref } from '../store/useProjectStore';
+import { useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useProjectStore, useProjectHref, selectExperiments } from '../store/useProjectStore';
 import { useStorageLedger } from '../store/useStorageLedger';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
-import { formatBytes, fmtDuration } from '../utils/format';
+import { expName } from '../utils/experiment';
+import { formatBytes, fmtDuration, fmtStamp, fmtDayTime } from '../utils/format';
 import './storage.css';
 
-const KINDS = ['all', 'dataset', 'model', 'other'];
+const DAY = 86400000;
 
-// One small badge describing where the object stands against its 60-day shelf.
-function ttlBadge(o) {
-  if (o.status === 'expired') return { text: 'expired', tone: 'danger' };
-  if (!o.expires_at) return { text: 'pinned', tone: 'pin' };
+// The shelf verdict — one phrase per object. `sort` orders by how loudly the
+// object needs attention: expiring soonest first, then shelf, kept, gone cold.
+function shelfState(o) {
+  if (o.status === 'expired') {
+    const past = o.expires_at ? Date.now() - new Date(o.expires_at).getTime() : 0;
+    const ago = past >= DAY ? `${Math.round(past / DAY)}d` : past > 0 ? fmtDuration(past) : '';
+    return { key: 'cold', label: ago ? `gone cold ${ago}` : 'gone cold', sort: 2e15 };
+  }
+  if (!o.expires_at) return { key: 'kept', label: 'kept', sort: 1e15 };
   const ms = new Date(o.expires_at).getTime() - Date.now();
-  if (ms <= 0) return { text: 'expiring', tone: 'danger' };
-  return { text: `expires in ${fmtDuration(ms)}`, tone: ms < 7 * 86400000 ? 'soon' : 'ok' };
+  if (ms <= 0) return { key: 'cold', label: 'gone cold', sort: 2e15 };
+  if (ms < 7 * DAY) return { key: 'soon', label: `expires ${fmtDuration(ms)}`, sort: ms };
+  return { key: 'shelf', label: `expires ${Math.round(ms / DAY)}d`, sort: ms };
 }
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
-  catch { return iso; }
-}
+const stamp = (iso) => (iso ? fmtStamp(new Date(iso).getTime()) : '—');
 
+const COLS = [
+  ['no', 'no.', 'vlt-c-no'],
+  ['object', 'object', 'vlt-c-name'],
+  ['kind', 'kind', 'vlt-c-kind'],
+  ['mass', 'mass', 'vlt-c-mass'],
+  ['saved', 'saved', 'vlt-c-saved'],
+  ['state', 'state', 'vlt-c-state'],
+];
+
+/**
+ * Vault — long-term storage as a typed manifest. A ring gauge carries the
+ * project's preserved mass (tap a segment ↔ focus its row); mono manifest
+ * rows carry accession no. / object / kind / mass / saved / shelf state;
+ * the focused row slides open into a retrieval record. Focus is URL state
+ * (/storage/:objectId), the same contract as everywhere else.
+ */
 export default function Storage() {
   const { objectId } = useParams();
   const navigate = useNavigate();
   const px = useProjectHref();
   const projectId = useProjectStore(s => s.projectId);
-  const [kind, setKind] = useState('all');
-  const [includeExpired, setIncludeExpired] = useState(false);
-  const { objects, loading, error, unsupported, reload } = useStorageLedger(projectId, { kind, includeExpired });
+  const experiments = useProjectStore(selectExperiments);
+  const { objects, loading, error, unsupported, reload } = useStorageLedger(projectId);
+  const [sort, setSort] = useState({ col: 'mass', asc: null }); // asc null → column default
+
+  // Accession numbers are permanent: assigned by save order, immune to sorting.
+  const rows = useMemo(() => {
+    const byAge = objects.slice().sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+    const no = new Map(byAge.map((o, i) => [o.id, i + 1]));
+    return objects.map(o => ({
+      o,
+      no: no.get(o.id),
+      mass: o.size_bytes || 0,
+      saved: o.created_at ? new Date(o.created_at).getTime() : 0,
+      state: shelfState(o),
+    }));
+  }, [objects]);
+
+  const defaultAsc = { no: true, object: true, kind: true, mass: false, saved: false, state: true };
+  const sortAsc = sort.asc ?? defaultAsc[sort.col];
+  const board = useMemo(() => {
+    const cmp = {
+      no: (a, b) => a.no - b.no,
+      object: (a, b) => (a.o.name || '').localeCompare(b.o.name || ''),
+      kind: (a, b) => (a.o.kind || '').localeCompare(b.o.kind || ''),
+      mass: (a, b) => a.mass - b.mass,
+      saved: (a, b) => a.saved - b.saved,
+      state: (a, b) => a.state.sort - b.state.sort,
+    }[sort.col];
+    const s = rows.slice().sort(cmp);
+    if (!sortAsc) s.reverse();
+    return s;
+  }, [rows, sort, sortAsc]);
+  const onSort = (col) =>
+    setSort(prev => (prev.col === col ? { col, asc: !(prev.asc ?? defaultAsc[col]) } : { col, asc: null }));
+
+  // The ring holds what still occupies the vault; gone-cold objects live only
+  // in the manifest, as ghosts. Segment order mirrors the default sort (mass).
+  const ring = useMemo(
+    () => rows.filter(r => r.state.key !== 'cold').sort((a, b) => b.mass - a.mass),
+    [rows],
+  );
+  const totalMass = ring.reduce((s, r) => s + r.mass, 0);
+  const kept = ring.filter(r => r.state.key === 'kept').length;
+  const onShelf = ring.length - kept;
+  const cold = rows.length - ring.length;
+  const soonest = ring.filter(r => r.state.key === 'soon').sort((a, b) => a.state.sort - b.state.sort)[0] || null;
+
+  const toggle = (id) => navigate(px(!id || id === objectId ? '/storage' : `/storage/${id}`));
+  const expOf = (id) => (id ? experiments.find(e => e.id === id || e.experiment_id === id) || null : null);
 
   return (
     <div className="page-stage">
       <header className="page-header page-header--lg">
-        <div className="page-head-row">
-          <div>
-            <h1 className="page-title">Long-term storage</h1>
-            <p className="page-summary">
-              Datasets and trained models preserved off-repo in S3-compatible storage.
-              Objects keep a 60-day shelf life that renews on access — pin the ones worth keeping forever.
-            </p>
-          </div>
-          <div className="page-actions">
-            <button className="btn btn--ghost" onClick={reload} disabled={loading}>
-              {loading ? 'Refreshing…' : 'Refresh'}
-            </button>
-          </div>
-        </div>
+        <h1 className="page-title">Vault</h1>
+        <p className="page-summary">Heavy artifacts preserved off-repo. A 60-day shelf life, renewed on touch.</p>
       </header>
-
-      <div className="cluster" style={{ gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {KINDS.map(k => (
-          <button
-            key={k}
-            type="button"
-            className={`btn btn--sm ${kind === k ? 'btn--primary' : 'btn--ghost'}`}
-            onClick={() => setKind(k)}
-          >
-            {k}
-          </button>
-        ))}
-        <label className="cluster" style={{ gap: 6, marginLeft: 'auto', fontSize: 'var(--text-sm)' }}>
-          <input type="checkbox" checked={includeExpired} onChange={e => setIncludeExpired(e.target.checked)} />
-          Show expired
-        </label>
-      </div>
 
       {error && <div className="error-message">{error}</div>}
 
@@ -80,131 +116,239 @@ export default function Storage() {
         <div className="empty">Loading…</div>
       ) : objects.length === 0 ? (
         <div className="empty-state">
-          <h2>Nothing in long-term storage yet</h2>
-          <p>Agents save precious datasets and trained models here with the <span className="mono">storage.*</span> tools. Preserved objects show up in this ledger.</p>
+          <h2>The vault is empty</h2>
+          <p>Agents preserve precious datasets and trained models with the <span className="mono">storage.*</span> tools. Objects keep a 60-day shelf life that renews on access; kept objects never expire.</p>
         </div>
       ) : (
-        <div className="storage-list">
-          {objects.map(o => (
-            <StorageRow
-              key={o.id}
-              o={o}
-              projectId={projectId}
-              expanded={o.id === objectId}
-              onToggle={() => navigate(px(o.id === objectId ? '/storage' : `/storage/${o.id}`))}
-              onChanged={reload}
-            />
-          ))}
+        <div className="vlt">
+          {ring.length > 0 && (
+            <div className="vlt-instrument">
+              <VaultRing ring={ring} total={totalMass} focusId={objectId} onPick={toggle} />
+              <div className="vlt-legend">
+                {kept > 0 && <div className="vlt-leg vlt-leg--kept">{kept} kept</div>}
+                {onShelf > 0 && <div className="vlt-leg">{onShelf} on the shelf</div>}
+                {soonest && <div className="vlt-leg vlt-leg--warn">{soonest.o.name} {soonest.state.label}</div>}
+                {cold > 0 && <div className="vlt-leg vlt-leg--cold">{cold} gone cold</div>}
+              </div>
+            </div>
+          )}
+
+          <div className="vlt-board">
+            <div className="vlt-head">
+              {COLS.map(([col, label, cls]) => (
+                <button key={col} type="button" className={`vlt-hbtn ${cls}`} onClick={() => onSort(col)}>
+                  {label}{sort.col === col && <span className="arr"> {sortAsc ? '▲' : '▼'}</span>}
+                </button>
+              ))}
+            </div>
+            {board.map(r => (
+              <ManifestRow
+                key={r.o.id}
+                r={r}
+                open={r.o.id === objectId}
+                onToggle={() => toggle(r.o.id)}
+                projectId={projectId}
+                exp={expOf(r.o.producing_experiment_id)}
+                px={px}
+                onChanged={reload}
+                onDiscarded={() => { toggle(null); reload(); }}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function StorageRow({ o, projectId, expanded, onToggle, onChanged }) {
-  const ttl = ttlBadge(o);
+const RING_R = 62;
+const RING_C = 2 * Math.PI * RING_R;
+
+// Mass gauge. Arc length is honest byte proportion, with a legibility floor:
+// slivers get ≥6px of arc so they stay visible and tappable, paid for by the
+// segments that can afford it.
+function VaultRing({ ring, total, focusId, onPick }) {
+  const GAP = ring.length > 1 ? 2 : 0;
+  const MIN = 6;
+  const avail = RING_C - GAP * ring.length;
+  let lens = ring.map(r => (total > 0 ? (r.mass / total) * avail : avail / ring.length));
+  const deficit = lens.reduce((s, l) => s + Math.max(0, MIN - l), 0);
+  const surplus = lens.reduce((s, l) => s + Math.max(0, l - MIN), 0);
+  lens = lens.map(l => (l < MIN ? MIN : l - (surplus > 0 ? deficit * ((l - MIN) / surplus) : 0)));
+
+  let off = 0;
+  const segs = ring.map((r, i) => {
+    const seg = { r, len: lens[i], off };
+    off += lens[i] + GAP;
+    return seg;
+  });
+
   return (
-    <div className={`storage-row${expanded ? ' is-open' : ''}`}>
-      <button type="button" className="storage-row-head" onClick={onToggle} aria-expanded={expanded}>
-        <span className="storage-row-twist" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-        <span className="storage-row-name">
-          {o.name}{o.version != null && <span className="storage-row-ver">v{o.version}</span>}
+    <svg className="vlt-ring" width="150" height="150" viewBox="0 0 150 150" role="group"
+      aria-label={`${formatBytes(total)} preserved across ${ring.length} object${ring.length === 1 ? '' : 's'}`}>
+      <g transform="rotate(-90 75 75)">
+        {segs.map(({ r, len, off: o }) => (
+          <circle
+            key={r.o.id}
+            className={`vlt-seg${focusId === r.o.id ? ' on' : ''}`}
+            cx="75" cy="75" r={RING_R} fill="none" strokeWidth="10"
+            strokeDasharray={`${len} ${RING_C}`} strokeDashoffset={-o}
+            role="button" tabIndex={0}
+            aria-label={`${r.o.name} · ${formatBytes(r.mass)}`}
+            onClick={() => onPick(r.o.id)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(r.o.id); } }}
+          >
+            <title>{`${r.o.name} · ${formatBytes(r.mass)}`}</title>
+          </circle>
+        ))}
+      </g>
+      <text x="75" y="72" textAnchor="middle" className="vlt-hub-total">{formatBytes(total)}</text>
+      <text x="75" y="89" textAnchor="middle" className="vlt-hub-count">{ring.length} object{ring.length === 1 ? '' : 's'}</text>
+    </svg>
+  );
+}
+
+function ManifestRow({ r, open, onToggle, projectId, exp, px, onChanged, onDiscarded }) {
+  const { o, no, state } = r;
+  return (
+    <div className={`vlt-obj${open ? ' is-open' : ''}${state.key === 'cold' ? ' is-cold' : ''}`}>
+      <div
+        className="vlt-row"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+      >
+        <span className="vlt-c-no">{String(no).padStart(3, '0')}</span>
+        <span className="vlt-c-name">
+          {o.name}{o.version != null && <span className="vlt-ver"> v{o.version}</span>}
         </span>
-        <span className={`ft-tag storage-kind storage-kind--${o.kind}`}>{o.kind}</span>
-        <span className="storage-row-size">{formatBytes(o.size_bytes)}</span>
-        <span className={`storage-ttl storage-ttl--${ttl.tone}`}>{ttl.text}</span>
-        {o.status && o.status !== 'available' && <span className="ft-tag">{o.status}</span>}
-      </button>
-      {expanded && (
-        <StorageDetail o={o} projectId={projectId} onChanged={onChanged} />
+        <span className="vlt-c-kind">{o.kind}</span>
+        <span className="vlt-c-mass">{formatBytes(o.size_bytes)}</span>
+        <span className="vlt-c-saved">{fmtDayTime(o.created_at)?.day || '—'}</span>
+        <span className={`vlt-c-state vlt-c-state--${state.key}`}>{state.label}</span>
+      </div>
+      {open && (
+        <RetrievalRecord o={o} projectId={projectId} exp={exp} px={px} onChanged={onChanged} onDiscarded={onDiscarded} />
       )}
     </div>
   );
 }
 
-function StorageDetail({ o, projectId, onChanged }) {
+// The specimen drawer: one field per line in an aligned label column, notes
+// apart, custodial verbs apart. retrieve = presigned download (also renews
+// the shelf), keep/release = pin/unpin, extend = reset the 60 days.
+function RetrievalRecord({ o, projectId, exp, px, onChanged, onDiscarded }) {
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState(null);
   const [link, setLink] = useState(null);
+  const [confirming, setConfirming] = useState(false);
 
-  async function run(action, fn) {
-    setBusy(action);
+  async function run(verb, fn) {
+    setBusy(verb);
     setErr(null);
-    try { return await fn(); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(''); }
+    try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(''); }
   }
 
   const pinned = !o.expires_at && o.status !== 'expired';
+  const expired = o.status === 'expired';
+  const sha = o.content_sha256 || '';
 
   return (
-    <div className="storage-detail">
-      <div className="storage-detail-grid">
-        <Meta label="id"><ObjId id={o.id} /></Meta>
-        <Meta label="sha256"><span className="mono">{(o.content_sha256 || '').slice(0, 16)}…</span></Meta>
-        <Meta label="type">{o.content_type || '—'}</Meta>
-        <Meta label="created">{fmtDate(o.created_at)}</Meta>
-        <Meta label="last access">{fmtDate(o.last_accessed_at)}</Meta>
-        {o.producing_experiment_id && <Meta label="from experiment"><span className="mono">{o.producing_experiment_id}</span></Meta>}
-        {o.producing_run && <Meta label="run"><span className="mono">{o.producing_run}</span></Meta>}
-        {o.source_uri && <Meta label="source">{o.source_uri}</Meta>}
-      </div>
-      {o.notes && <div className="storage-detail-notes">{o.notes}</div>}
-
-      <div className="storage-detail-actions">
-        <button
-          className="btn btn--sm btn--primary"
-          disabled={!!busy || o.status === 'expired'}
-          onClick={() => run('download', async () => {
-            const r = await api.storageDownloadLink(projectId, o.id);
-            setLink(r?.download?.url || null);
-            onChanged();
-          })}
-        >
-          {busy === 'download' ? '…' : 'Get download link'}
-        </button>
-        {pinned ? (
-          <button className="btn btn--sm btn--ghost" disabled={!!busy}
-            onClick={() => run('unpin', async () => { await api.unpinStorage(projectId, o.id); onChanged(); })}>
-            {busy === 'unpin' ? '…' : 'Unpin'}
-          </button>
-        ) : (
-          <button className="btn btn--sm btn--ghost" disabled={!!busy}
-            onClick={() => run('pin', async () => { await api.pinStorage(projectId, o.id); onChanged(); })}>
-            {busy === 'pin' ? '…' : 'Pin (keep forever)'}
-          </button>
-        )}
-        <button className="btn btn--sm btn--ghost" disabled={!!busy || pinned}
-          title={pinned ? 'Pinned objects have no expiry to renew' : 'Reset the 60-day shelf life'}
-          onClick={() => run('renew', async () => { await api.renewStorage(projectId, o.id); onChanged(); })}>
-          {busy === 'renew' ? '…' : 'Renew 60d'}
-        </button>
-        <button className="btn btn--sm btn--danger" disabled={!!busy}
-          onClick={() => run('delete', async () => {
-            if (!window.confirm(`Delete "${o.name}" from storage? The bytes are removed if no other version references them.`)) return;
-            await api.deleteStorage(projectId, o.id);
-            onChanged();
-          })}>
-          {busy === 'delete' ? 'Deleting…' : 'Delete'}
-        </button>
-      </div>
-
-      {link && (
-        <div className="storage-detail-link">
-          <a className="mono" href={link} target="_blank" rel="noreferrer">{link.slice(0, 80)}…</a>
-          <span className="storage-detail-link-note">short-lived presigned URL</span>
+    <div className="vlt-record">
+      <div className="vlt-record-inner">
+        <div className="vlt-fields">
+          <Field k="id"><ObjId id={o.id} /></Field>
+          {sha && <Field k="seal"><span title={sha}>{sha.slice(0, 8)}…{sha.slice(-8)}</span></Field>}
+          {o.content_type && <Field k="type">{o.content_type}</Field>}
+          <Field k="kept since">{stamp(o.created_at)}</Field>
+          <Field k="last touched">{stamp(o.last_accessed_at)}</Field>
+          {exp ? (
+            <Field k="from">
+              <Link className="vlt-from" to={px(`/experiments/${exp.id || exp.experiment_id}`)}>{expName(exp)} →</Link>
+            </Field>
+          ) : o.producing_experiment_id && (
+            <Field k="from"><ObjId id={o.producing_experiment_id} /></Field>
+          )}
+          {o.producing_run && <Field k="run">{o.producing_run}</Field>}
+          {o.source_uri && <Field k="source">{o.source_uri}</Field>}
         </div>
-      )}
-      {err && <div className="error-message">{err}</div>}
+
+        {o.notes && <p className="vlt-notes">{o.notes}</p>}
+
+        {link && (
+          <div className="vlt-linkline">
+            <a href={link} target="_blank" rel="noreferrer">{link.length > 72 ? `${link.slice(0, 72)}…` : link}</a>
+            <span className="vlt-linknote">short-lived retrieval link</span>
+          </div>
+        )}
+
+        <div className="vlt-verbs">
+          {!expired && (
+            <button
+              type="button" className="vlt-verb vlt-verb--lead" disabled={!!busy}
+              onClick={() => run('retrieve', async () => {
+                const res = await api.storageDownloadLink(projectId, o.id);
+                setLink(res?.download?.url || null);
+                onChanged();
+              })}
+            >
+              {busy === 'retrieve' ? 'retrieving…' : 'retrieve'}
+            </button>
+          )}
+          {pinned ? (
+            <button
+              type="button" className="vlt-verb" disabled={!!busy}
+              onClick={() => run('release', async () => { await api.unpinStorage(projectId, o.id); onChanged(); })}
+            >
+              {busy === 'release' ? '…' : 'release'}
+            </button>
+          ) : (
+            <button
+              type="button" className="vlt-verb" disabled={!!busy}
+              onClick={() => run('keep', async () => { await api.pinStorage(projectId, o.id); onChanged(); })}
+            >
+              {busy === 'keep' ? '…' : 'keep'}
+            </button>
+          )}
+          {!pinned && (
+            <button
+              type="button" className="vlt-verb" disabled={!!busy}
+              onClick={() => run('extend', async () => { await api.renewStorage(projectId, o.id); onChanged(); })}
+            >
+              {busy === 'extend' ? '…' : 'extend 60d'}
+            </button>
+          )}
+          {confirming ? (
+            <span className="vlt-confirm">
+              discard forever?
+              <button
+                type="button" className="vlt-verb vlt-verb--danger" disabled={!!busy}
+                onClick={() => run('discard', async () => { await api.deleteStorage(projectId, o.id); onDiscarded(); })}
+              >
+                {busy === 'discard' ? 'discarding…' : 'discard'}
+              </button>
+              <button type="button" className="vlt-verb" disabled={!!busy} onClick={() => setConfirming(false)}>cancel</button>
+            </span>
+          ) : (
+            <button type="button" className="vlt-verb vlt-verb--danger" disabled={!!busy} onClick={() => setConfirming(true)}>
+              discard
+            </button>
+          )}
+        </div>
+
+        {err && <div className="vlt-err">{err}</div>}
+      </div>
     </div>
   );
 }
 
-function Meta({ label, children }) {
+function Field({ k, children }) {
   return (
-    <div className="storage-meta">
-      <span className="storage-meta-label">{label}</span>
-      <span className="storage-meta-value">{children}</span>
+    <div className="vlt-field">
+      <span className="vlt-k">{k}</span>
+      <span className="vlt-v">{children}</span>
     </div>
   );
 }

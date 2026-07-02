@@ -1,63 +1,105 @@
-/* Long-term storage ledger — self-contained styles for the Storage page. */
+/* Vault — long-term storage as a typed manifest. Flush mono rows under a
+   mass-gauge ring; the focused row slides open like a specimen drawer (the
+   page's one motion). No cards, no badges — hairlines and type only. */
 
-.storage-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.vlt { max-width: 860px; }
 
-.storage-row {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--bg-elev);
-  overflow: hidden;
-}
-.storage-row.is-open { border-color: var(--line-strong); }
+/* Instrument: ring + custodial legend */
+.vlt-instrument { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 36px; margin-bottom: 26px; }
+.vlt-ring { flex-shrink: 0; }
+.vlt-seg { stroke: var(--faint); cursor: pointer; transition: stroke 140ms ease; outline: none; }
+.vlt-seg:hover, .vlt-seg:focus-visible { stroke: var(--muted); }
+.vlt-seg.on { stroke: var(--active); }
+.vlt-hub-total { font-family: var(--font-mono); font-size: 17px; font-weight: 600; fill: var(--text); }
+.vlt-hub-count { font-family: var(--font-mono); font-size: 11px; fill: var(--faint); }
+.vlt-legend { display: flex; flex-direction: column; gap: 7px; font-family: var(--font-mono); font-size: 12.5px; }
+.vlt-leg { color: var(--muted); }
+.vlt-leg--kept { color: var(--text); font-weight: 600; }
+.vlt-leg--warn { color: var(--qualifies); }
+.vlt-leg--cold { color: var(--faint); }
 
-.storage-row-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  padding: 10px var(--space-3);
-  background: none;
-  border: 0;
-  cursor: pointer;
-  text-align: left;
-  color: var(--text);
-  font-size: var(--text-base);
-}
-.storage-row-head:hover { background: var(--hover); }
-.storage-row-twist { color: var(--faint); width: 12px; flex-shrink: 0; }
-.storage-row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.storage-row-ver { color: var(--muted); font-size: var(--text-xs); margin-left: 6px; font-weight: 500; }
-.storage-row-size { color: var(--muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-
-/* Kind badges reuse .ft-tag; colour by class. */
-.storage-kind { margin-left: 0; }
-.storage-kind--dataset { color: var(--ice); background: rgba(var(--ice-rgb), 0.10); }
-.storage-kind--model { color: var(--mcp); background: rgba(var(--mcp-rgb), 0.10); }
-.storage-kind--other { color: var(--muted); background: rgba(var(--faint-rgb), 0.12); }
-
-.storage-ttl { font-size: var(--text-xs); flex-shrink: 0; white-space: nowrap; }
-.storage-ttl--ok { color: var(--muted); }
-.storage-ttl--soon { color: var(--qualifies); }
-.storage-ttl--danger { color: var(--refutes); }
-.storage-ttl--pin { color: var(--active); font-weight: 600; }
-
-.storage-detail { padding: var(--space-3); border-top: 1px solid var(--line-soft); background: var(--bg-soft); }
-.storage-detail-grid {
+/* Manifest */
+.vlt-board { font-family: var(--font-mono); font-size: 12.5px; }
+.vlt-head, .vlt-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--space-2) var(--space-4);
-  margin-bottom: var(--space-3);
+  grid-template-columns: 40px minmax(0, 1fr) 72px 84px 64px 132px;
+  gap: 12px;
+  align-items: baseline;
 }
-.storage-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.storage-meta-label { font-size: var(--text-xs); color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
-.storage-meta-value { font-size: var(--text-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-.storage-detail-notes {
-  font-size: var(--text-sm);
-  color: var(--muted);
-  margin-bottom: var(--space-3);
-  white-space: pre-wrap;
+.vlt-head { padding: 0 0 6px 16px; border-bottom: 1px solid var(--line); }
+.vlt-hbtn {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--faint); text-align: left;
 }
-.storage-detail-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.storage-detail-link { margin-top: var(--space-3); display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
-.storage-detail-link a { word-break: break-all; }
-.storage-detail-link-note { font-size: var(--text-xs); color: var(--faint); }
+.vlt-hbtn:hover { color: var(--text); }
+.vlt-hbtn .arr { color: var(--active); }
+
+/* 3px index + 13px inset on every row so the focus rupture never shifts text. */
+.vlt-obj { border-left: 3px solid transparent; padding-left: 13px; }
+.vlt-obj.is-open { border-left-color: var(--active); }
+
+.vlt-row { padding: 10px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.vlt-row:hover { background: var(--hover); }
+.vlt-c-no { color: var(--faint); }
+.vlt-c-name { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vlt-ver { color: var(--faint); font-weight: 400; }
+.vlt-c-kind { color: var(--faint); }
+.vlt-c-mass { text-align: right; color: var(--text); font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+.vlt-c-saved { color: var(--faint); white-space: nowrap; }
+.vlt-c-state { text-align: right; white-space: nowrap; color: var(--muted); }
+.vlt-c-state--soon { color: var(--qualifies); }
+.vlt-c-state--kept { color: var(--active); font-weight: 600; }
+.vlt-c-state--cold { color: var(--faint); }
+
+/* Gone cold: the whole row is ash, its rule crumbles to dashes. */
+.vlt-obj.is-cold .vlt-row { border-bottom-style: dashed; }
+.vlt-obj.is-cold .vlt-c-name,
+.vlt-obj.is-cold .vlt-c-mass { color: var(--faint); font-weight: 400; }
+.vlt-obj.is-cold .vlt-c-kind { color: var(--faint); }
+
+/* Retrieval record — the drawer. One damped slide, the page's only motion. */
+@keyframes vlt-slide { from { grid-template-rows: 0fr; opacity: 0.4; } to { grid-template-rows: 1fr; opacity: 1; } }
+.vlt-record {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: vlt-slide 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  border-bottom: 1px solid var(--line);
+}
+.vlt-record-inner { overflow: hidden; min-height: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .vlt-record { animation: none; }
+}
+
+.vlt-fields { padding-top: 14px; display: flex; flex-direction: column; gap: 7px; }
+.vlt-field { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; }
+.vlt-k { color: var(--faint); }
+.vlt-v { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vlt-from { color: var(--text); text-decoration: none; }
+.vlt-from:hover { color: var(--active); }
+
+.vlt-notes { margin: 14px 0 0; font-size: var(--text-sm); color: var(--muted); max-width: 62ch; white-space: pre-wrap; }
+
+.vlt-linkline { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+.vlt-linkline a { word-break: break-all; }
+.vlt-linknote { font-size: 11px; color: var(--faint); }
+
+.vlt-verbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 26px; padding: 18px 0 14px; }
+.vlt-verb { background: none; border: 0; padding: 0; font: inherit; color: var(--muted); cursor: pointer; }
+.vlt-verb:hover { color: var(--text); }
+.vlt-verb--lead { color: var(--text); font-weight: 600; }
+.vlt-verb--lead:hover { color: var(--active); }
+.vlt-verb--danger { color: var(--refutes); }
+.vlt-verb--danger:hover { color: var(--refutes); }
+.vlt-verb:disabled { color: var(--faint); cursor: default; }
+.vlt-confirm { color: var(--refutes); display: inline-flex; align-items: baseline; gap: 16px; }
+
+.vlt-err { color: var(--refutes); font-size: var(--text-sm); padding-bottom: 12px; }
+
+/* Narrow surfaces: kind + saved fold away; the record's label column tightens. */
+@media (max-width: 640px) {
+  .vlt-instrument { gap: 14px 24px; }
+  .vlt-head, .vlt-row { grid-template-columns: 30px minmax(0, 1fr) 64px 104px; gap: 9px; }
+  .vlt-c-kind, .vlt-c-saved { display: none; }
+  .vlt-field { grid-template-columns: 96px minmax(0, 1fr); }
+  .vlt-verbs { gap: 20px; }
+}
