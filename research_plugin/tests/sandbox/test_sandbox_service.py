@@ -83,7 +83,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertIn("work folder", result["hint"])
         self.assertIn("EPHEMERAL SSH window", result["hint"])
         self.assertIn("$RP_DATASET_DIR", result["hint"])
-        self.assertIn("rsync", result["hint"])
+        self.assertIn("sandbox.pull_outputs", result["hint"])
         self.assertIn("Heavy-file storage is not enabled", result["hint"])
         self.assertIn("expires at", result["hint"])
         self.assertNotIn("ready_to_run", result["hint"])
@@ -583,7 +583,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotIn("$RP_TB_LOGDIR", result["hint"])
         self.assertIn("figures/*.png", result["hint"])
         self.assertIn("report.md", result["hint"])
-        self.assertIn("rsync the files you need off", result["hint"])
+        self.assertIn("pull the files you need off the box with sandbox.pull_outputs", result["hint"])
 
     # ---- status / liveness ----
 

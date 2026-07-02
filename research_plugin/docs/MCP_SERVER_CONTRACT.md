@@ -443,9 +443,14 @@ created under the remote `experiment_dir`. It copies selected repo-relative
 files or directories into the local experiment folder over SSH/rsync; with no
 `paths`, it first checks for common outputs (`results/`, `figures/`,
 `report.md`, `graph.json`, `metrics.json`, `results.json`) and
-pulls the ones that exist. Existing local files are preserved/refused unless
-`overwrite: true` is supplied. After pulling files locally, use
-`resource.register_file` / `resource.associate` for retained artifacts.
+pulls the ones that exist. Existing local files are kept unless
+`overwrite: true` is supplied; kept files that differ from the sandbox are
+named in `files_kept_stale` (check it before registering results from a
+re-run), and `files_transferred` counts what actually landed. Remote symlinks
+and device nodes are never recreated locally. A failing path is reported in
+`errors` / `paths_failed` without discarding the paths that succeeded. After
+pulling files locally, use `resource.register_file` / `resource.associate`
+for retained artifacts.
 
 When the backend has `HF_TOKEN` in its env file or process environment,
 `sandbox.request` / `sandbox.get` include an `environment.available_tokens`

@@ -220,6 +220,7 @@ class ToolHandlerRegistryTest(unittest.TestCase):
             resource_register_file=target.register_file,
             resource_validate=target.validate,
             experiment_materialize_folders=target.materialize_folders,
+            sandbox_pull_outputs=target.pull_outputs,
         )
 
         self.assertEqual(set(handlers), set(TOOL_CONTRACTS))

@@ -78,23 +78,32 @@ def pull_sandbox_outputs(
         )
 
     copied: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
     for rel_path in requested:
-        copied.append(
-            _rsync_one(
-                runner=runner,
-                repo_root=repo_root,
-                destination=destination,
-                remote_dir=remote_dir,
-                rel_path=rel_path,
-                ssh_host=ssh_host,
-                ssh_port=ssh_port,
-                ssh_user=ssh_user,
-                key_path=key_path,
-                overwrite=overwrite,
+        try:
+            copied.append(
+                _rsync_one(
+                    runner=runner,
+                    repo_root=repo_root,
+                    destination=destination,
+                    remote_dir=remote_dir,
+                    rel_path=rel_path,
+                    ssh_host=ssh_host,
+                    ssh_port=ssh_port,
+                    ssh_user=ssh_user,
+                    key_path=key_path,
+                    overwrite=overwrite,
+                )
             )
-        )
+        except ValidationError as exc:
+            # One failing path must not discard (or hide) the paths that
+            # already landed — report per-path and keep going.
+            errors.append({"path": rel_path, "error": str(exc)})
+    kept_stale = [
+        name for item in copied for name in item.get("files_kept_stale", [])
+    ]
     return {
-        "ok": True,
+        "ok": not errors,
         "experiment_id": sandbox.get("experiment_id"),
         "sandbox_uid": sandbox.get("sandbox_uid"),
         "sandbox_id": sandbox.get("sandbox_id"),
@@ -105,9 +114,17 @@ def pull_sandbox_outputs(
         ),
         "paths_requested": requested,
         "paths_pulled": [item["remote_path"] for item in copied],
+        "paths_failed": [item["path"] for item in errors],
+        "errors": errors,
         "copied": copied,
+        "files_transferred": sum(int(item["files_transferred"]) for item in copied),
+        # Local files now present under the pulled paths — including ones that
+        # already existed and were deliberately kept (see files_kept_stale).
         "files_present": sum(int(item["files_present"]) for item in copied),
         "bytes_present": sum(int(item["bytes_present"]) for item in copied),
+        # Existing local files that differ from the sandbox and were kept
+        # because overwrite=false. Re-pull with overwrite=true to replace.
+        "files_kept_stale": kept_stale,
     }
 
 
@@ -210,11 +227,6 @@ def _rsync_one(
     is_dir_hint = rel_path.endswith("/")
     clean_rel = rel_path.rstrip("/")
     local_target = destination / clean_rel
-    if local_target.exists() and local_target.is_file() and not overwrite:
-        raise ValidationError(
-            "local output file already exists; pass overwrite=true to replace it",
-            details={"path": _repo_relative_or_absolute(repo_root=repo_root, path=local_target)},
-        )
     if is_dir_hint:
         local_target.mkdir(parents=True, exist_ok=True)
         destination_arg = f"{local_target}/"
@@ -224,34 +236,65 @@ def _rsync_one(
         destination_arg = f"{local_target.parent}/"
         remote_path = f"{remote_dir.rstrip('/')}/{clean_rel}"
 
-    command = [
-        "rsync",
-        "-az",
-        *([] if overwrite else ["--ignore-existing"]),
-        "-e",
-        _ssh_transport(ssh_port=ssh_port, key_path=key_path),
-        f"{ssh_user}@{ssh_host}:{shlex.quote(remote_path)}",
-        destination_arg,
-    ]
-    result = runner(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=RSYNC_TIMEOUT_SECONDS,
-    )
-    if result.returncode != 0:
-        raise ValidationError(
-            f"rsync from sandbox failed for {rel_path}",
-            details={"stderr": _stderr(result), "path": rel_path},
+    def run_rsync(*, dry_run: bool, ignore_existing: bool):
+        command = [
+            "rsync",
+            "-az",
+            "--itemize-changes",
+            # Sandbox content is semi-trusted (the experiment code wrote it):
+            # never recreate its symlinks or device nodes inside the repo.
+            "--no-links",
+            "--no-devices",
+            "--no-specials",
+            *(["--dry-run"] if dry_run else []),
+            *(["--ignore-existing"] if ignore_existing else []),
+            "-e",
+            _ssh_transport(ssh_port=ssh_port, key_path=key_path),
+            f"{ssh_user}@{ssh_host}:{shlex.quote(remote_path)}",
+            destination_arg,
+        ]
+        result = runner(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=RSYNC_TIMEOUT_SECONDS,
         )
+        if result.returncode != 0:
+            raise ValidationError(
+                f"rsync from sandbox failed for {rel_path}",
+                details={"stderr": _stderr(result), "path": rel_path},
+            )
+        return _itemized_files(result.stdout or "")
+
+    # Without overwrite, a dry run WITHOUT --ignore-existing lists every file
+    # that differs from the sandbox; subtracting what the real run actually
+    # transferred names the existing local files that were kept stale.
+    would_change = run_rsync(dry_run=True, ignore_existing=False) if not overwrite else set()
+    transferred = run_rsync(dry_run=False, ignore_existing=not overwrite)
+    kept_stale = sorted(would_change - transferred)
+
     files, bytes_present = _local_stats(local_target)
     return {
         "remote_path": rel_path,
         "local_path": _repo_relative_or_absolute(repo_root=repo_root, path=local_target),
+        "files_transferred": len(transferred),
+        "files_kept_stale": kept_stale,
         "files_present": files,
         "bytes_present": bytes_present,
     }
+
+
+def _itemized_files(stdout: str) -> set[str]:
+    # --itemize-changes emits one line per changed item, e.g.
+    # ">f+++++++++ results.json"; the second column is the file when the
+    # item type flag (second char) is 'f'.
+    files: set[str] = set()
+    for line in stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and len(parts[0]) > 1 and parts[0][1] == "f":
+            files.add(parts[1])
+    return files
 
 
 def _ssh_command(
@@ -285,14 +328,14 @@ def _ssh_transport(*, ssh_port: int, key_path: str) -> str:
 
 
 def _local_stats(path: Path) -> tuple[int, int]:
-    if not path.exists():
+    if path.is_symlink() or not path.exists():
         return 0, 0
     if path.is_file():
         return 1, path.stat().st_size
     files = 0
     bytes_present = 0
     for child in path.rglob("*"):
-        if child.is_file():
+        if child.is_file() and not child.is_symlink():
             files += 1
             bytes_present += child.stat().st_size
     return files, bytes_present

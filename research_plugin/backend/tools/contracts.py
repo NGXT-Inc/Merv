@@ -1044,7 +1044,12 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Copy selected files or directories from a running sandbox's remote "
             "experiment_dir into the local experiment folder over SSH/rsync. "
             "Use this before resource.register_file/resource.associate or "
-            "sandbox.release; omit paths to pull common retained outputs."
+            "sandbox.release; omit paths to pull common retained outputs. "
+            "Existing local files are kept unless overwrite=true — ones that "
+            "differ from the sandbox are reported in files_kept_stale, so check "
+            "it before registering results from a re-run. Remote symlinks and "
+            "device nodes are never recreated locally. One failing path is "
+            "reported in errors/paths_failed without discarding the rest."
         ),
         plane="data",
     ),

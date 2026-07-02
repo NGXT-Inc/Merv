@@ -459,11 +459,12 @@ def build_local_tool_handlers(
     resource_register_file: Callable[..., dict[str, Any]],
     resource_validate: Callable[..., dict[str, Any]],
     experiment_materialize_folders: Callable[..., dict[str, Any]],
+    # Data-plane local IO: required — there is no control-plane fallback.
+    sandbox_pull_outputs: Callable[..., dict[str, Any]],
     resource_associate: Callable[..., dict[str, Any]] | None = None,
     feed_post: Callable[..., dict[str, Any]] | None = None,
     storage_upload_file: Callable[..., dict[str, Any]] | None = None,
     storage_download_file: Callable[..., dict[str, Any]] | None = None,
-    sandbox_pull_outputs: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Map all local-mode tool names to service methods."""
     def resource_associate_batch(
@@ -503,11 +504,7 @@ def build_local_tool_handlers(
             "experiment.materialize_folders": experiment_materialize_folders,
             "sandbox.request": sandboxes.request,
             "sandbox.attach": sandboxes.attach,
-            "sandbox.pull_outputs": (
-                sandbox_pull_outputs
-                if sandbox_pull_outputs is not None
-                else sandboxes.pull_outputs
-            ),
+            "sandbox.pull_outputs": sandbox_pull_outputs,
             "feed.post": feed_post if feed_post is not None else feed.post,
         }
     )

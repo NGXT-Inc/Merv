@@ -56,13 +56,11 @@ def _folder_contract_note(
         "Work in it over SSH — scripts, results, report.md, graph.json. "
         "This sandbox is an EPHEMERAL SSH window: nothing is copied for you, and "
         "when it is released or reaped the VM and everything on it is destroyed. "
-        "So pull anything you want to keep BEFORE then, yourself, from the "
-        "terminal: you have the SSH connection details (ssh.key_path / ssh.host / "
-        "ssh.port in this response), so rsync the light files you need off the box "
-        f"into the {local_label} ({local_dir}) and then register them as "
-        "resources, e.g. "
-        f"rsync -az -e 'ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no' "
-        f"<user>@<host>:{remote_dir}/ {local_dir}/ . "
+        "So pull anything you want to keep BEFORE then with "
+        "sandbox.pull_outputs — it copies the light retained files into the "
+        f"{local_label} ({local_dir}) without clobbering existing local files "
+        "(kept files are reported as files_kept_stale; pass overwrite=true to "
+        "replace them) — and then register them as resources. "
         + heavy_note
         + "Keep caches and scratch data under "
         f"$RP_DATASET_DIR, outside the {folder_label}. "
@@ -84,7 +82,7 @@ def _expiry_note(
     )
     return (
         f"Sandbox lifetime expires at {expires_at}. Before that deadline, pull "
-        f"anything you need off the box yourself (rsync light files into the {local_label}, "
+        f"anything you need off the box (sandbox.pull_outputs for light files into the {local_label}, "
         f"{heavy_note}) and register/associate the outputs. "
         "If it expires, the reaper terminates the sandbox and "
         f"{retry_note}. "
@@ -219,12 +217,13 @@ def merge_agent_view(
             output_note = (
                 "Save selected plot images or compact result tables under "
                 "$RP_EXPERIMENT_DIR (e.g. figures/*.png, results/*.json/csv) "
-                "so you can rsync them off and reference them from report.md. "
+                "so sandbox.pull_outputs can bring them off and report.md can "
+                "reference them. "
             )
         else:
             output_note = (
                 "Save selected outputs under $RP_EXPERIMENT_DIR so "
-                "you can rsync them off before release. "
+                "sandbox.pull_outputs can bring them off before release. "
             )
         view["hint"] = (
             f"Run commands with: {command} '<your shell command>' (from the repo root). "
@@ -251,8 +250,8 @@ def merge_agent_view(
                 attached_to_experiment=attached_to_experiment,
                 storage_enabled=bool(view.get("storage_enabled")),
             )
-            + "Before registering result resources, rsync the files you need off "
-            "the box yourself (see the folder note) into the local "
+            + "Before registering result resources, pull the files you need off "
+            "the box with sandbox.pull_outputs (see the folder note) into the local "
             + "sandbox folder"
             + ", then register those local files. "
             + _expiry_note(
