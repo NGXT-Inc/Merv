@@ -177,7 +177,11 @@ export function planLedger(payload) {
     fp.role =
       matchesTarget(keys, key, anchorTarget(key)) || keys.has(anchorTarget(key)) ? 'anchor'
       : deltaTarget(key) != null ? 'derived'
-      : (/_exit(?:_code)?$|_code$/.test(key) || (allBinary && values.length > 1)) ? 'diagnostic'
+      // Exit/return codes are always diagnostics; an unnamed 0/1 metric is one
+      // only if it actually flips (both a clean 0 and a failing 1). A constant
+      // flag like ve_scale_final=1 is config, not a health signal — treating it
+      // as nonzero would read as a failure it isn't.
+      : (/_exit(?:_code)?$|_code$/.test(key) || (allBinary && distinct > 1)) ? 'diagnostic'
       // "Shared across runs" is a full-coverage claim — a constant logged by
       // a subset is neither shared nor comparable, so it simply doesn't show.
       : (values.length === n && n > 1 && distinct === 1) ? 'invariant'
