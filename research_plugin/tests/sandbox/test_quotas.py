@@ -121,6 +121,22 @@ class QuotaAdmissionTest(unittest.TestCase):
                 request=AdmissionRequest(tenant_id="tenant_q", time_limit_seconds=7200)
             )
 
+    def test_lifetime_extension_skips_concurrent_count_but_enforces_time_limit(self) -> None:
+        self.quotas.set_quota(
+            tenant_id="tenant_q",
+            max_concurrent_sandboxes=0,
+            max_time_limit_seconds=3600,
+        )
+        self.quotas.check_lifetime_extension(
+            tenant_id="tenant_q",
+            total_time_limit_seconds=3600,
+        )
+        with self.assertRaises(PermissionDeniedError):
+            self.quotas.check_lifetime_extension(
+                tenant_id="tenant_q",
+                total_time_limit_seconds=5400,
+            )
+
     def test_max_price_enforced(self) -> None:
         self.quotas.set_quota(tenant_id="tenant_q", max_price_usd_per_hour=1.0)
         self.quotas.check_admission(

@@ -49,6 +49,7 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
     # availability menu when ``sandbox.request`` arrives without an instance type.
     capabilities = BackendCapabilities(
         name="lambda_labs",
+        lifetime_extension_supported=True,
         requires_hardware_selection=True,
         configurable_resources=False,
     )

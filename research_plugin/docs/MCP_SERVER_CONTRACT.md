@@ -368,6 +368,7 @@ sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, ov
 sandbox.get(experiment_id? | sandbox_uid)
 sandbox.list()
 sandbox.release(experiment_id? | sandbox_uid)
+sandbox.extend(experiment_id? | sandbox_uid, seconds?=1800)
 sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_command, last_exit_code / last_command_finished_at / command_running, and command_status_stale.
 sandbox.health()
 ```
@@ -487,6 +488,14 @@ background job died (daemon restart) to `failed` so a poll loop always reaches a
 terminal state. `sandbox.release` also cancels an in-flight provision. The agent
 contract: call `request`, then if `provisioning` poll `get` every
 `poll_after_seconds` until `running`/`failed` — never re-call `request` to poll.
+
+`sandbox.extend` extends a running sandbox's plugin-enforced `expires_at` by at
+most one 30-minute increment per call (`seconds <= 1800`). It is lifecycle-only:
+no files move and no SSH connection is refreshed. Extension is rejected when the
+backend does not support live lifetime extension (Modal may reject because its
+provider timeout is fixed at sandbox creation), when the sandbox is not running,
+when persisted command/heartbeat state shows no real activity, or when the new
+total lifetime would exceed the global 24-hour cap or tenant quota/spend policy.
 
 Visibility: every SSH command and its output are recorded to a per-experiment
 transcript inside the sandbox. `sandbox.terminal` reads it live from the sandbox.

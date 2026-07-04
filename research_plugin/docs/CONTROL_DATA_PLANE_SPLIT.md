@@ -182,6 +182,9 @@ copied explicitly by the agent over SSH or uploaded to durable storage.
 - `sandbox.get` — aggregate control row facts plus local SSH enrichment.
 - `sandbox.pull_outputs` — data-plane SSH/rsync transfer into the local experiment folder.
 - `sandbox.release` — control-plane lifecycle termination after retention confirm.
+- `sandbox.extend` — control-plane lifetime extension of the reaper deadline
+  when the provider supports it and persisted activity is present, subject to
+  tenant quota/spend policy.
 
 ## Cross-cutting concerns to design before this is real
 

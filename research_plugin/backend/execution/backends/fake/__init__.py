@@ -46,6 +46,7 @@ class FakeSandboxBackend(SandboxBackendBase):
         self.capabilities = BackendCapabilities(
             name="fake",
             enforce_expiry=False,
+            lifetime_extension_supported=True,
             requires_hardware_selection=requires_hardware_selection,
             configurable_resources=configurable_resources,
         )

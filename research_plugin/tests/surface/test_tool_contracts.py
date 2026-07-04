@@ -16,6 +16,7 @@ from backend.tools.contracts import (
     MlflowFinalizeRunInput,
     ResourceAssociateBatchInput,
     ResourceValidateInput,
+    SandboxExtendInput,
     SandboxPullOutputsInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
@@ -153,6 +154,13 @@ class ToolContractRegistryTest(unittest.TestCase):
             SandboxPullOutputsInput,
         )
         self.assertEqual(TOOL_CONTRACTS["sandbox.pull_outputs"].plane, "data")
+
+    def test_sandbox_extend_is_control_plane(self) -> None:
+        self.assertIs(
+            TOOL_CONTRACTS["sandbox.extend"].input_model,
+            SandboxExtendInput,
+        )
+        self.assertEqual(TOOL_CONTRACTS["sandbox.extend"].plane, "control")
 
     def test_experiment_materialize_folders_is_data_plane(self) -> None:
         self.assertIs(

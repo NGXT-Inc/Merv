@@ -89,6 +89,9 @@ class BackendCapabilities:
     name: str
     # A provider that forgets this flag gets billing protection by default.
     enforce_expiry: bool = True
+    # True when the plugin's expires_at row is the effective lifetime control.
+    # Modal's provider timeout is fixed at creation, so it stays false there.
+    lifetime_extension_supported: bool = False
     # True when a provider-bundled machine SKU must be selected first.
     requires_hardware_selection: bool = False
     # True when cpu/memory/gpu can be requested independently.

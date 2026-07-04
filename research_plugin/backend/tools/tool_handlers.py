@@ -421,6 +421,7 @@ def build_control_tool_handlers(
         "sandbox.get": sandboxes.get,
         "sandbox.list": sandboxes.list_sandboxes,
         "sandbox.release": sandboxes.release,
+        "sandbox.extend": sandboxes.extend,
         "sandbox.terminal": sandboxes.terminal,
         "sandbox.health": sandboxes.health,
         "feed.register": feed.register,

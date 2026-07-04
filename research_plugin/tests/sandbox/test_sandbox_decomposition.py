@@ -133,6 +133,23 @@ class SandboxDecompositionTest(unittest.TestCase):
                 quotas=object(),
             )
 
+    def test_facade_requires_lifetime_extension_quota_port(self) -> None:
+        class PartialQuota:
+            def check_admission(self, **_kwargs):
+                return None
+
+        with self.assertRaisesRegex(
+            ValidationError, "quotas.check_lifetime_extension is required"
+        ):
+            SandboxService(
+                store=self.app.store,
+                sandbox_backend=self.app.execution_backend,
+                worker=self.app.worker,
+                mgmt_keys=self.app.sandboxes.mgmt_keys,
+                task_channel=self.app.sandboxes.tasks,
+                quotas=PartialQuota(),
+            )
+
     def test_facade_source_keeps_no_extracted_machinery(self) -> None:
         source = FACADE.read_text(encoding="utf-8")
         # Job/daemon threads live in the provisioner and daemons modules.

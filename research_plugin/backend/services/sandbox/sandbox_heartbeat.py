@@ -86,6 +86,84 @@ class SandboxIdlePolicy:
         return _int((sample.get("network") or {}).get("ssh_established"))
 
 
+class SandboxActivityPolicy:
+    """Stricter renewal signal: busy enough to justify more runtime."""
+
+    min_cpu_cores = 0.25
+    min_gpu_util_pct = 10.0
+    min_network_bytes_per_second = 64.0 * 1024.0
+    min_memory_bytes_per_second = 25.0 * 1024.0 * 1024.0
+
+    def is_active(
+        self,
+        *,
+        current: dict[str, Any],
+        previous: dict[str, Any] | None,
+        elapsed_seconds: float,
+        command: dict[str, Any] | None = None,
+    ) -> bool:
+        if command is not None and command.get("status") == "running":
+            return True
+        cpu = _float((current.get("cpu") or {}).get("used_cores"))
+        if cpu is not None and cpu >= self.min_cpu_cores:
+            return True
+        gpus = current.get("gpus") or []
+        if isinstance(gpus, list):
+            for gpu in gpus:
+                util = (
+                    _float((gpu or {}).get("util_pct"))
+                    if isinstance(gpu, dict)
+                    else None
+                )
+                if util is not None and util >= self.min_gpu_util_pct:
+                    return True
+        if previous is None or elapsed_seconds <= 0:
+            return False
+        net_rate = _rate(
+            _network_bytes(current),
+            _network_bytes(previous),
+            elapsed_seconds,
+            absolute=False,
+        )
+        if net_rate is not None and net_rate >= self.min_network_bytes_per_second:
+            return True
+        mem_rate = _rate(
+            _memory_bytes(current),
+            _memory_bytes(previous),
+            elapsed_seconds,
+            absolute=True,
+        )
+        return mem_rate is not None and mem_rate >= self.min_memory_bytes_per_second
+
+    def is_active_snapshot(
+        self,
+        *,
+        snapshot: dict[str, Any] | None,
+        command: dict[str, Any] | None = None,
+    ) -> bool:
+        if command is not None and command.get("status") == "running":
+            return True
+        if not isinstance(snapshot, dict):
+            return False
+        current = snapshot.get("metrics")
+        if not isinstance(current, dict):
+            return False
+        previous = snapshot.get("previous_metrics")
+        previous_at = parse_iso(snapshot.get("previous_sampled_at"))
+        sampled_at = parse_iso(snapshot.get("sampled_at"))
+        elapsed = (
+            (sampled_at - previous_at).total_seconds()
+            if sampled_at is not None and previous_at is not None
+            else 0.0
+        )
+        return self.is_active(
+            current=current,
+            previous=previous if isinstance(previous, dict) else None,
+            elapsed_seconds=elapsed,
+            command=command,
+        )
+
+
 class SandboxHeartbeatMonitor:
     """Samples running sandboxes and delegates reap decisions to the policy."""
 
@@ -161,7 +239,12 @@ class SandboxHeartbeatMonitor:
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             idle_since=format_iso(next_idle_since) if next_idle_since else None,
-            snapshot=self._snapshot(metrics=metrics, now=now),
+            snapshot=self._snapshot(
+                metrics=metrics,
+                now=now,
+                previous_metrics=previous,
+                previous_sampled_at=previous_at,
+            ),
         )
         if not self.policy.should_reap(
             idle_since=next_idle_since,
@@ -191,8 +274,19 @@ class SandboxHeartbeatMonitor:
         metrics = result.get("metrics") if isinstance(result, dict) else None
         return metrics if isinstance(metrics, dict) else None
 
-    def _snapshot(self, *, metrics: dict[str, Any], now: datetime) -> dict[str, Any]:
-        return {"sampled_at": format_iso(now), "metrics": metrics}
+    def _snapshot(
+        self,
+        *,
+        metrics: dict[str, Any],
+        now: datetime,
+        previous_metrics: dict[str, Any] | None = None,
+        previous_sampled_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        snapshot: dict[str, Any] = {"sampled_at": format_iso(now), "metrics": metrics}
+        if previous_metrics is not None and previous_sampled_at is not None:
+            snapshot["previous_metrics"] = previous_metrics
+            snapshot["previous_sampled_at"] = format_iso(previous_sampled_at)
+        return snapshot
 
 
 def _float(value: Any) -> float | None:

@@ -10,8 +10,8 @@ from pathlib import Path
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.mlflow import CentralMlflowService
-from backend.sandbox.sandbox_backend import SandboxRequest
-from backend.utils import NotFoundError, ValidationError
+from backend.sandbox.sandbox_backend import BackendCapabilities, SandboxRequest
+from backend.utils import NotFoundError, ValidationError, parse_iso
 
 
 class SandboxServiceTest(unittest.TestCase):
@@ -37,6 +37,20 @@ class SandboxServiceTest(unittest.TestCase):
 
     def call(self, tool: str, **kwargs):
         return self.app.call_tool(tool, kwargs)
+
+    def _record_running_command(self, *, sandbox_uid: str) -> None:
+        self.app.sandboxes.registry.record_command_snapshot(
+            sandbox_uid=sandbox_uid,
+            snapshot={
+                "command_id": "cmd_running",
+                "command": "python train.py",
+                "started_at": "2026-06-09T12:00:00Z",
+                "status": "running",
+                "exit_code": None,
+                "finished_at": None,
+                "output_tail": "epoch 1",
+            },
+        )
 
     def _experiment(self, *, status: str = "ready_to_run", name: str = "exp-1") -> str:
         exp_id = self.call("experiment.create", name=name, project_id=self.project_id, intent="x")["id"]
@@ -1035,6 +1049,96 @@ class SandboxServiceTest(unittest.TestCase):
         listed = self.call("sandbox.list", project_id=self.project_id)["sandboxes"]
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["experiment_id"], exp_id)
+
+    # ---- lifetime extension ----
+
+    def test_extend_adds_one_default_thirty_minute_increment(self) -> None:
+        exp_id = self._experiment()
+        created = self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            time_limit=1200,
+        )
+        old_expiry = parse_iso(created["expires_at"])
+        self._record_running_command(sandbox_uid=created["sandbox_uid"])
+
+        extended = self.call(
+            "sandbox.extend",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+
+        self.assertTrue(extended["extended"])
+        self.assertEqual(extended["extended_by_seconds"], 1800)
+        self.assertEqual(extended["time_limit"], 3000)
+        self.assertEqual(
+            int((parse_iso(extended["expires_at"]) - old_expiry).total_seconds()),
+            1800,
+        )
+        events = self.app.store.recent_events(project_id=self.project_id)["events"]
+        self.assertTrue(
+            any(event["type"] == "sandbox.lifetime_extended" for event in events)
+        )
+
+    def test_extend_can_target_sandbox_uid_with_smaller_increment(self) -> None:
+        created = self.call("sandbox.request", project_id=self.project_id)
+        self.app.sandboxes.registry.record_heartbeat(
+            experiment_id="",
+            sandbox_uid=created["sandbox_uid"],
+            idle_since=None,
+            snapshot={
+                "sampled_at": "2026-06-09T12:00:30Z",
+                "metrics": {"cpu": {"used_cores": 0.30}},
+            },
+        )
+
+        extended = self.call(
+            "sandbox.extend",
+            project_id=self.project_id,
+            sandbox_uid=created["sandbox_uid"],
+            seconds=600,
+        )
+
+        self.assertEqual(extended["sandbox_uid"], created["sandbox_uid"])
+        self.assertEqual(extended["extended_by_seconds"], 600)
+        self.assertEqual(extended["time_limit"], 4200)
+
+    def test_extend_rejects_idle_sandbox(self) -> None:
+        created = self.call("sandbox.request", project_id=self.project_id)
+
+        with self.assertRaisesRegex(ValidationError, "active heartbeat"):
+            self.call(
+                "sandbox.extend",
+                project_id=self.project_id,
+                sandbox_uid=created["sandbox_uid"],
+            )
+
+    def test_extend_rejects_provider_without_lifetime_extension(self) -> None:
+        exp_id = self._experiment()
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        self.backend.capabilities = BackendCapabilities(name="modal")
+
+        with self.assertRaisesRegex(ValidationError, "do not support"):
+            self.call(
+                "sandbox.extend",
+                project_id=self.project_id,
+                sandbox_uid=created["sandbox_uid"],
+            )
+
+    def test_extend_rejects_past_max_total_lifetime(self) -> None:
+        exp_id = self._experiment()
+        self.call(
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            time_limit=86400,
+        )
+
+        with self.assertRaisesRegex(ValidationError, "max lifetime"):
+            self.call("sandbox.extend", project_id=self.project_id, experiment_id=exp_id)
 
     # ---- validation ----
 

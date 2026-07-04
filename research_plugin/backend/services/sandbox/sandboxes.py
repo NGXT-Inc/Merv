@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from ...state.store import BaseStateStore, Connection, row_to_dict
 from ...utils import (
     NotFoundError,
     ValidationError,
+    format_iso,
+    parse_iso,
 )
 from ...sandbox.sandbox_backend import (
     SandboxBackend,
@@ -24,6 +27,7 @@ from ...ports.quota_admission import QuotaAdmission
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
 from . import sandbox_views
+from .sandbox_heartbeat import SandboxActivityPolicy
 from .sandbox_metrics import SandboxMetrics
 from ..transcript_cache import TranscriptCache
 from .sandbox_daemons import SandboxDaemons
@@ -33,6 +37,7 @@ from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
+    MAX_TIME_LIMIT_SECONDS,
     parse_terminal_markers,
     parse_terminal_snapshot,
     validate_request_inputs,
@@ -68,6 +73,8 @@ class SandboxService:
             raise ValidationError("quotas is required")
         if not callable(getattr(quotas, "check_admission", None)):
             raise ValidationError("quotas.check_admission is required")
+        if not callable(getattr(quotas, "check_lifetime_extension", None)):
+            raise ValidationError("quotas.check_lifetime_extension is required")
         # Cost governance (cloud plan Phase 7): admission gate at the
         # procurement choke point. The 'local' tenant has no quota row ⇒
         # unlimited ⇒ a no-op, so local mode is byte-identical.
@@ -79,6 +86,7 @@ class SandboxService:
         # Conn files and local tunnels route through the data-plane worker.
         self.worker = worker
         self.storage_enabled = bool(storage_enabled)
+        self.activity_policy = SandboxActivityPolicy()
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
             request_wait_seconds,
@@ -455,6 +463,95 @@ class SandboxService:
             public_key_override=public_key,
             include_data_plane_enrichment=False,
         )
+
+    def extend(
+        self,
+        *,
+        experiment_id: str | None = None,
+        project_id: str | None = None,
+        tenant_id: str | None = None,
+        sandbox_uid: str | None = None,
+        seconds: int = 1800,
+    ) -> dict[str, Any]:
+        """Extend a live sandbox's reaper deadline by one bounded increment."""
+        experiment_id = (experiment_id or "").strip()
+        sandbox_uid = (sandbox_uid or "").strip()
+        if not experiment_id and not sandbox_uid:
+            raise ValidationError("sandbox.extend requires experiment_id or sandbox_uid")
+        if not self.backend.capabilities.lifetime_extension_supported:
+            raise ValidationError(
+                f"{self.backend.capabilities.name} sandboxes do not support lifetime extension"
+            )
+        seconds = int(seconds)
+        if seconds <= 0 or seconds > 1800:
+            raise ValidationError("sandbox.extend seconds must be between 1 and 1800")
+        row = self.registry.fetch_scoped(
+            experiment_id=experiment_id,
+            project_id=project_id,
+            tenant_id=tenant_id,
+            sandbox_uid=sandbox_uid,
+        )
+        row = self.provisioner.reconcile(row=row)
+        if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            raise ValidationError("sandbox.extend requires a running sandbox")
+        expires_at = parse_iso(row.get("expires_at"))
+        if expires_at is None:
+            raise ValidationError("sandbox.extend requires an existing expires_at deadline")
+        current_limit = int(row.get("time_limit") or 0)
+        new_limit = current_limit + seconds
+        if new_limit > MAX_TIME_LIMIT_SECONDS:
+            raise ValidationError(
+                f"sandbox.extend would exceed the max lifetime ({MAX_TIME_LIMIT_SECONDS}s)"
+            )
+        resolved_project_id = str(row.get("project_id") or project_id or "")
+        tenant = str(row.get("tenant_id") or self.registry.tenant_for_project(
+            project_id=resolved_project_id
+        ))
+        price = row.get("price_usd_per_hour")
+        self.quotas.check_lifetime_extension(
+            tenant_id=tenant,
+            total_time_limit_seconds=new_limit,
+            price_usd_per_hour=float(price) if price is not None else None,
+        )
+        if not self.activity_policy.is_active_snapshot(
+            snapshot=self.registry.heartbeat_snapshot(row=row),
+            command=self.registry.command_snapshot(row=row),
+        ):
+            raise ValidationError(
+                "sandbox.extend requires a running command or active heartbeat metrics"
+            )
+        old_expires_at = str(row.get("expires_at") or "")
+        new_expires_at = format_iso(expires_at + timedelta(seconds=seconds))
+        updated = self.registry.extend_lifetime(
+            sandbox_uid=str(row.get("sandbox_uid") or ""),
+            expires_at=new_expires_at,
+            time_limit=new_limit,
+        )
+        resolved_experiment_id = experiment_id or str(updated.get("experiment_id") or "")
+        self.registry.emit_event(
+            project_id=resolved_project_id,
+            event_type="sandbox.lifetime_extended",
+            experiment_id=resolved_experiment_id,
+            payload={
+                "sandbox_id": updated.get("sandbox_id", ""),
+                "sandbox_uid": updated.get("sandbox_uid", ""),
+                "old_expires_at": old_expires_at,
+                "expires_at": new_expires_at,
+                "seconds": seconds,
+                "time_limit": new_limit,
+            },
+        )
+        view = self._agent_result(
+            row=updated,
+            reused=None,
+            include_data_plane_enrichment=False,
+            use_sandbox_uid_command=True,
+        )
+        view["extended"] = True
+        view["old_expires_at"] = old_expires_at
+        view["extended_by_seconds"] = seconds
+        view["time_limit"] = new_limit
+        return view
 
     def options(
         self,

@@ -51,6 +51,7 @@ BootstrapRunner = Callable[[list[str], str, int], "subprocess.CompletedProcess[s
 class ThunderComputeSandboxBackend(VmSshSandboxBackend):
     capabilities = BackendCapabilities(
         name="thunder_compute",
+        lifetime_extension_supported=True,
         requires_hardware_selection=True,
         configurable_resources=False,
     )

@@ -12,3 +12,12 @@ class QuotaAdmission(Protocol):
 
     def check_admission(self, *, request: AdmissionRequest) -> None:
         ...
+
+    def check_lifetime_extension(
+        self,
+        *,
+        tenant_id: str,
+        total_time_limit_seconds: int,
+        price_usd_per_hour: float | None = None,
+    ) -> None:
+        ...

@@ -558,6 +558,33 @@ class SandboxRegistry:
                 (now, now, target_uid),
             )
 
+    def extend_lifetime(
+        self,
+        *,
+        sandbox_uid: str,
+        expires_at: str,
+        time_limit: int,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        with self.store.transaction() as conn:
+            target_uid = str(sandbox_uid or "").strip()
+            if not target_uid:
+                raise NotFoundError("sandbox not found")
+            conn.execute(
+                """
+                UPDATE sandboxes
+                SET expires_at = ?, time_limit = ?, updated_at = ?
+                WHERE sandbox_uid = ?
+                """,
+                (expires_at, int(time_limit), now, target_uid),
+            )
+            row = conn.execute(
+                "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (target_uid,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"sandbox not found: {target_uid}")
+            return self._row_dict(row=row, conn=conn)
+
     def heartbeat_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
         try:
             data = json.loads(str(row.get("heartbeat_snapshot_json") or "{}"))

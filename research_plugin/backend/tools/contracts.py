@@ -681,6 +681,26 @@ class SandboxReleaseInput(ProjectScopedInput):
     )
 
 
+class SandboxExtendInput(ProjectScopedInput):
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "Experiment whose running sandbox should be extended. Omit when "
+            "sandbox_uid is supplied."
+        ),
+    )
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to extend; omitted targets the primary sandbox.",
+    )
+    seconds: int = Field(
+        default=1800,
+        ge=1,
+        le=1800,
+        description="Additional lifetime in seconds. Maximum one 30-minute increment per call.",
+    )
+
+
 class SandboxTerminalInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
@@ -1084,6 +1104,15 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "for light files and configured durable storage for heavy ones when "
             "available, then "
             "re-call with confirm_retained=true to actually terminate."
+        ),
+    ),
+    "sandbox.extend": ToolContract(
+        input_model=SandboxExtendInput,
+        description=(
+            "Extend a running sandbox's expiry by at most one 30-minute "
+            "increment, subject to provider support and tenant lifetime/spend "
+            "quotas. Modal may reject this because its provider timeout is "
+            "fixed when the sandbox is created."
         ),
     ),
     "sandbox.terminal": ToolContract(

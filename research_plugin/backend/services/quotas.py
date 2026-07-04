@@ -271,6 +271,53 @@ class QuotaService:
                 },
             )
 
+    def check_lifetime_extension(
+        self,
+        *,
+        tenant_id: str,
+        total_time_limit_seconds: int,
+        price_usd_per_hour: float | None = None,
+    ) -> None:
+        """Admit extra lifetime for an already-running sandbox.
+
+        Concurrent-count is intentionally skipped: the sandbox already exists.
+        Kill switches, budgets, per-sandbox lifetime, and price ceilings still
+        apply.
+        """
+        self._check_kill_switch(scope=GLOBAL_SCOPE, label="platform")
+        self._check_kill_switch(scope=tenant_id, label="tenant")
+        quota = self.get_quota(tenant_id=tenant_id)
+        if quota is None:
+            return
+        self._check_budget(tenant_id=tenant_id, quota=quota)
+        if (
+            quota.max_time_limit_seconds is not None
+            and total_time_limit_seconds > quota.max_time_limit_seconds
+        ):
+            raise PermissionDeniedError(
+                "extended sandbox lifetime exceeds tenant ceiling "
+                f"({quota.max_time_limit_seconds}s)",
+                details={
+                    "limit": quota.max_time_limit_seconds,
+                    "requested": total_time_limit_seconds,
+                    "quota": "max_time_limit_seconds",
+                },
+            )
+        if (
+            quota.max_price_usd_per_hour is not None
+            and price_usd_per_hour is not None
+            and price_usd_per_hour > quota.max_price_usd_per_hour
+        ):
+            raise PermissionDeniedError(
+                "running instance price exceeds tenant ceiling "
+                f"(${quota.max_price_usd_per_hour}/hr)",
+                details={
+                    "limit": quota.max_price_usd_per_hour,
+                    "requested": price_usd_per_hour,
+                    "quota": "max_price_usd_per_hour",
+                },
+            )
+
     def _check_kill_switch(self, *, scope: str, label: str) -> None:
         tripped = self.kill_switch_tripped(scope=scope)
         if tripped is None:
