@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS events (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
-CREATE TABLE IF NOT EXISTS syntheses (
+CREATE TABLE IF NOT EXISTS reflections (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
@@ -324,7 +324,7 @@ CREATE TABLE IF NOT EXISTS synthesis_claim_changes (
   claim_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   PRIMARY KEY(synthesis_id, claim_id),
-  FOREIGN KEY(synthesis_id) REFERENCES syntheses(id),
+  FOREIGN KEY(synthesis_id) REFERENCES reflections(id),
   FOREIGN KEY(claim_id) REFERENCES claims(id)
 );
 
@@ -334,7 +334,7 @@ CREATE TABLE IF NOT EXISTS synthesis_experiments (
   proposal_key TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   PRIMARY KEY(synthesis_id, experiment_id),
-  FOREIGN KEY(synthesis_id) REFERENCES syntheses(id),
+  FOREIGN KEY(synthesis_id) REFERENCES reflections(id),
   FOREIGN KEY(experiment_id) REFERENCES experiments(id)
 );
 
@@ -545,6 +545,9 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # Daemon diet Phase 4b: sandbox.get must report whether the authorized
     # user SSH key came from the caller or the managed fallback.
     (14, "add_sandbox_public_key_source", ""),
+    # Product-name alignment Phase 5: the reflection-wave table was formerly
+    # named syntheses. Row ids and payload keys keep their legacy spelling.
+    (15, "rename_syntheses_to_reflections", ""),
 )
 
 
@@ -682,6 +685,8 @@ class BaseStateStore:
                 self._ensure_review_synopsis(conn=conn)
             elif name == "add_sandbox_public_key_source":
                 self._ensure_sandbox_public_key_source(conn=conn)
+            elif name == "rename_syntheses_to_reflections":
+                self._rename_syntheses_to_reflections(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -711,6 +716,12 @@ class BaseStateStore:
             conn.execute(
                 "ALTER TABLE sandboxes ADD COLUMN public_key_source TEXT NOT NULL DEFAULT 'managed'"
             )
+
+    def _rename_syntheses_to_reflections(self, *, conn: Connection) -> None:
+        if self._has_table(conn=conn, table="reflections"):
+            return
+        if self._has_table(conn=conn, table="syntheses"):
+            conn.execute("ALTER TABLE syntheses RENAME TO reflections")
 
     def _ensure_sandbox_tenant_id(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="sandboxes", column="tenant_id"):
@@ -887,6 +898,25 @@ class BaseStateStore:
         ).fetchone()
         return row is not None
 
+    def _has_table(self, *, conn: Connection, table: str) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            return row is not None
+        except Exception:  # noqa: BLE001 - Postgres has no sqlite_master
+            pass
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = ?
+            """,
+            (table,),
+        ).fetchone()
+        return row is not None
+
     def require_project_id(
         self,
         *,
@@ -1036,6 +1066,7 @@ class StateStore(BaseStateStore):
         self._migrate_capability_hash()
         conn = self.connect()
         try:
+            self._rename_syntheses_to_reflections(conn=conn)
             conn.executescript(SCHEMA)  # IF NOT EXISTS — safe to race
             # The column probes and migration ledger below are check-then-act;
             # hold the write lock across them so two processes booting the same
@@ -1216,7 +1247,7 @@ class StateStore(BaseStateStore):
             "resource_associations",
             "review_requests",
             "reviews",
-            "syntheses",
+            "reflections",
             "sandboxes",
         ):
             added = self._ensure_columns(

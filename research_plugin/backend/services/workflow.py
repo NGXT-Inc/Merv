@@ -13,7 +13,12 @@ from ..artifacts.roles import (
 )
 from ..domain.gates import ReviewRequirement, RoleRequirement
 from ..domain.paths import experiment_folder_rel
-from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
+from ..domain.reflection_policy import (
+    external_reflection_signal,
+    idle_reflection_hint,
+    reflection_create_block_reason,
+)
+from ..domain.reflection_gates import REFLECTION_GATE_TABLE
 from ..domain.workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
     GATE_TABLE,
@@ -52,7 +57,7 @@ class WorkflowService:
         experiments: ExperimentWorkflowReader,
         reviews: ReviewWorkflowReader,
         sandboxes: SandboxWorkflowReader,
-        syntheses: ReflectionWorkflowReader,
+        reflections: ReflectionWorkflowReader,
         storage_enabled: bool = False,
         storage_guidance: dict[str, Any] | None = None,
     ) -> None:
@@ -60,7 +65,7 @@ class WorkflowService:
         self.experiments = experiments
         self.reviews = reviews
         self.sandboxes = sandboxes
-        self.syntheses = syntheses
+        self.reflections = reflections
         self.storage_enabled = bool(storage_enabled)
         # Composition-injected storage guidance block (object_storage prose).
         # The workflow embeds the dict it is handed instead of importing the
@@ -516,10 +521,10 @@ class WorkflowService:
         Before that threshold, whether new developments change the project's
         logic state stays the agent's call.
         """
-        open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
+        open_wave = self.reflections.open_reflection(conn=conn, project_id=project_id)
         if open_wave is not None:
-            signal = self.syntheses.reflection_signal(project_id=project_id, conn=conn)
-            workflow = self._synthesis_workflow_for(conn=conn, synthesis=open_wave)
+            signal = self.reflections.reflection_signal(project_id=project_id, conn=conn)
+            workflow = self._reflection_workflow_for(conn=conn, synthesis=open_wave)
             if signal.get("experiment_create_blocked"):
                 workflow = self._with_experiment_create_block(
                     workflow=workflow, signal=signal
@@ -527,9 +532,9 @@ class WorkflowService:
             return {
                 "reflection": slim_synthesis(open_wave),
                 "workflow": workflow,
-                "signal": self._external_reflection_signal(signal),
+                "signal": external_reflection_signal(signal),
             }
-        signal = self.syntheses.reflection_signal(project_id=project_id, conn=conn)
+        signal = self.reflections.reflection_signal(project_id=project_id, conn=conn)
         has_new_material = (
             signal["new_terminal_since_publish"] >= 1 or signal["contradicted_flip"]
         )
@@ -538,8 +543,8 @@ class WorkflowService:
             return None
         block: dict[str, Any] = {
             "reflection": None,
-            "hint": signal["hint"] or self._idle_reflection_hint(signal=signal),
-            "signal": self._external_reflection_signal(signal),
+            "hint": signal["hint"] or idle_reflection_hint(signal=signal),
+            "signal": external_reflection_signal(signal),
             "experiment_create_blocked": bool(signal.get("experiment_create_blocked")),
         }
         if recommended:
@@ -565,7 +570,7 @@ class WorkflowService:
             return reflection["workflow"]
         signal = reflection.get("signal") or {}
         if signal.get("experiment_create_blocked"):
-            reason = reflection.get("hint") or self._reflection_create_block_reason(
+            reason = reflection.get("hint") or reflection_create_block_reason(
                 signal=signal
             )
             return self._next(
@@ -597,7 +602,7 @@ class WorkflowService:
     def _with_experiment_create_block(
         self, *, workflow: dict[str, Any], signal: dict[str, Any]
     ) -> dict[str, Any]:
-        reason = self._reflection_create_block_reason(signal=signal)
+        reason = reflection_create_block_reason(signal=signal)
         blocked = [
             item
             for item in workflow.get("blocked_actions", [])
@@ -614,65 +619,12 @@ class WorkflowService:
             "blocked_actions": blocked,
         }
 
-    def _reflection_create_block_reason(self, *, signal: dict[str, Any]) -> str:
-        count = signal.get("new_terminal_since_publish", 0)
-        threshold = signal.get("block_new_terminal_threshold", 5)
-        open_id = signal.get("open_synthesis_id") or signal.get("open_reflection_id")
-        if open_id:
-            return (
-                f"{count} experiments have finished since the last published "
-                f"reflection (threshold {threshold}); finish and publish open "
-                f"reflection wave {open_id} before creating another experiment."
-            )
-        if signal.get("last_published_synthesis_id") or signal.get(
-            "last_published_reflection_id"
-        ):
-            since = "since the last published reflection"
-        else:
-            since = "and no project reflection has been published yet"
-        return (
-            f"{count} experiments have finished {since} (threshold {threshold}); "
-            "publish a project reflection wave before creating another experiment."
-        )
-
-    def _external_reflection_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
-        output = dict(signal)
-        if "last_published_synthesis_id" in output:
-            output["last_published_reflection_id"] = output.pop(
-                "last_published_synthesis_id"
-            )
-        if "open_synthesis_id" in output:
-            output["open_reflection_id"] = output.pop("open_synthesis_id")
-        return output
-
-    def _idle_reflection_hint(self, *, signal: dict[str, Any]) -> str:
-        """Hint for the idle 'recommended' tier while the project is still
-        below the staleness threshold (reflection_signal leaves its hint
-        empty there)."""
-        new = signal["new_terminal_since_publish"]
-        finished = f"{new} experiment{'s have' if new != 1 else ' has'} finished"
-        if signal["last_published_synthesis_id"]:
-            drift = f"{finished} since the last published reflection"
-            if signal["claims_changed_since_publish"]:
-                drift += (
-                    f" and {signal['claims_changed_since_publish']} claims "
-                    "have changed"
-                )
-        else:
-            drift = f"{finished} and no project reflection exists yet"
-        return (
-            f"No experiments are active and {drift} — a good moment for a "
-            "project reflection (reflection.create, project-reflection "
-            "skill), or start the next experiment if the logic state is "
-            "current."
-        )
-
-    def _synthesis_workflow_for(self, *, conn, synthesis: dict[str, Any]) -> dict[str, Any]:
-        """Guidance for a reflection wave, derived from SYNTHESIS_GATE_TABLE —
+    def _reflection_workflow_for(self, *, conn, synthesis: dict[str, Any]) -> dict[str, Any]:
+        """Guidance for a reflection wave, derived from REFLECTION_GATE_TABLE —
         the same walk as _workflow_for, with the roster-coverage requirement
         reported per missing lens."""
         status = synthesis["status"]
-        forward = SYNTHESIS_GATE_TABLE.get(status)
+        forward = REFLECTION_GATE_TABLE.get(status)
         if forward is None:
             return self._next(gate="terminal", action="none", allowed=[])
         if forward.review is not None:

@@ -8,7 +8,7 @@ from backend.domain.review_gates import (
     expected_review_gate_role,
     is_review_gate_exempt,
 )
-from backend.domain.synthesis_gates import SYNTHESIS_GATE_TABLE
+from backend.domain.reflection_gates import REFLECTION_GATE_TABLE
 from backend.domain.workflow_gates import GATE_TABLE
 
 
@@ -17,7 +17,7 @@ def _review_roles_from_gate_tables() -> dict[tuple[str, str], str]:
     for status, forward in GATE_TABLE.items():
         if forward.review is not None:
             rows[("experiment", status)] = forward.review.role
-    for status, forward in SYNTHESIS_GATE_TABLE.items():
+    for status, forward in REFLECTION_GATE_TABLE.items():
         if forward.review is not None:
             rows[("synthesis", status)] = forward.review.role
     return rows

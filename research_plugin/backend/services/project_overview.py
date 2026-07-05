@@ -9,7 +9,7 @@ from ..domain.reflection_policy import covered_terminal_ids
 from ..artifacts.roles import PROJECT_GRAPH_ROLES
 from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
 from .projects import ProjectService
-from .syntheses import SynthesisService
+from .reflections import ReflectionService
 from ..state.store import BaseStateStore, rows_to_dicts
 
 
@@ -21,11 +21,11 @@ class ProjectOverviewService:
         *,
         store: BaseStateStore,
         projects: ProjectService,
-        syntheses: SynthesisService,
+        reflections: ReflectionService,
     ) -> None:
         self.store = store
         self.projects = projects
-        self.syntheses = syntheses
+        self.reflections = reflections
 
     def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:
         """Project identity plus the small orientation block every agent sees."""
@@ -44,8 +44,8 @@ class ProjectOverviewService:
     def _project_at_a_glance(self, *, project_id: str) -> dict[str, Any]:
         conn = self.store.connect()
         try:
-            latest = self.syntheses.latest_published(conn=conn, project_id=project_id)
-            open_wave = self.syntheses.open_synthesis(conn=conn, project_id=project_id)
+            latest = self.reflections.latest_published(conn=conn, project_id=project_id)
+            open_wave = self.reflections.open_reflection(conn=conn, project_id=project_id)
             experiments = rows_to_dicts(
                 rows=conn.execute(
                     """

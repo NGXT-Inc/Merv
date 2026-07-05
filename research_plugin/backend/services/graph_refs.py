@@ -63,7 +63,7 @@ GRAPH_REF_TYPES: tuple[GraphRefType, ...] = (
         entity_type="synthesis",
         id_key="synthesis_id",
         query=(
-            "SELECT id, title, status, published_at FROM syntheses"
+            "SELECT id, title, status, published_at FROM reflections"
             " WHERE id = ? AND project_id = ?"
         ),
         fields=("title", "status", "published_at"),

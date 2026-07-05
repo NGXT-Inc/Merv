@@ -182,6 +182,81 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_legacy_syntheses_table_is_renamed_to_reflections(self) -> None:
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE syntheses (
+                  id TEXT PRIMARY KEY,
+                  project_id TEXT NOT NULL,
+                  title TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL,
+                  attempt_index INTEGER NOT NULL DEFAULT 1,
+                  revision_context TEXT NOT NULL DEFAULT '',
+                  roster_json TEXT NOT NULL DEFAULT '[]',
+                  corpus_json TEXT NOT NULL DEFAULT '{}',
+                  published_at TEXT,
+                  published_graph_version_id TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  created_seq INTEGER NOT NULL DEFAULT 0,
+                  FOREIGN KEY(project_id) REFERENCES projects(id)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO syntheses (
+                  id, project_id, title, status, attempt_index, revision_context,
+                  roster_json, corpus_json, created_at, updated_at, created_seq
+                )
+                VALUES (
+                  'syn_legacy', 'proj_old', 'Legacy reflection', 'reflecting',
+                  2, 'needs another pass', '[]', '{"claims": []}',
+                  '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 7
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        StateStore(db_path=self.db)  # converge, then re-boot for idempotence
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            self.assertIn("reflections", tables)
+            self.assertNotIn("syntheses", tables)
+            row = conn.execute(
+                """
+                SELECT id, project_id, title, status, attempt_index,
+                       revision_context, corpus_json, created_seq
+                FROM reflections
+                WHERE id = 'syn_legacy'
+                """
+            ).fetchone()
+            self.assertEqual(row["project_id"], "proj_old")
+            self.assertEqual(row["title"], "Legacy reflection")
+            self.assertEqual(row["status"], "reflecting")
+            self.assertEqual(row["attempt_index"], 2)
+            self.assertEqual(row["revision_context"], "needs another pass")
+            self.assertEqual(row["corpus_json"], '{"claims": []}')
+            self.assertEqual(row["created_seq"], 7)
+            migration = conn.execute(
+                "SELECT name FROM schema_migrations WHERE version = 15"
+            ).fetchone()
+            self.assertEqual(migration["name"], "rename_syntheses_to_reflections")
+        finally:
+            conn.close()
+
     def test_storage_missing_status_migrates_to_expired(self) -> None:
         conn = sqlite3.connect(self.db)
         try:

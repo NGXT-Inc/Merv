@@ -22,15 +22,23 @@ from ..artifacts.roles import (
     external_reflection_target_type,
     internal_synthesis_target_type,
 )
-from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
-from ..domain.review_returns import resolve_review_return
+from ..domain.review_gates import (
+    expected_review_gate_role,
+    is_review_gate_exempt,
+)
+from ..domain.review_handoff import reviewer_handoff_payload
+from ..domain.review_returns import (
+    resolve_review_return,
+    revision_context_for_review_return,
+)
+from ..domain.review_snapshot import snapshot_from_id
 from ..domain.synopsis import validate_synopsis
 from ..domain.vocabulary import LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from .experiments import ExperimentService
 from .review_gate import review_gate_state
-from .syntheses import SynthesisService
+from .reflections import ReflectionService
 
 
 class ReviewService:
@@ -49,13 +57,13 @@ class ReviewService:
         store: BaseStateStore,
         permissions: ReviewPolicy,
         experiments: ExperimentService,
-        syntheses: SynthesisService,
+        reflections: ReflectionService,
         pinned: PinnedStore | None = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
         self.experiments = experiments
-        self.syntheses = syntheses
+        self.reflections = reflections
         self.pinned = pinned
 
     def request(
@@ -78,7 +86,7 @@ class ReviewService:
             if target_type == "experiment":
                 target = self.experiments.get_state(experiment_id=target_id, project_id=project_id, conn=conn)
             else:
-                target = self.syntheses.get_state(synthesis_id=target_id, project_id=project_id, conn=conn)
+                target = self.reflections.get_state(synthesis_id=target_id, project_id=project_id, conn=conn)
             self._validate_role_matches_gate(
                 target_type=target_type, target_status=target["status"], role=role
             )
@@ -253,7 +261,7 @@ class ReviewService:
         """The target's current-attempt gated-role artifacts, with content."""
         if self.pinned is None:
             return []
-        table = {"experiment": "experiments", "synthesis": "syntheses"}.get(target_type)
+        table = {"experiment": "experiments", "synthesis": "reflections"}.get(target_type)
         if table is None:
             return []
         attempt = conn.execute(
@@ -390,7 +398,7 @@ class ReviewService:
                 },
             )
             if verdict in {"needs_changes", "fail"}:
-                revision_context = self._revision_context(
+                revision_context = revision_context_for_review_return(
                     target_type=req["target_type"],
                     role=req["role"],
                     verdict=verdict,
@@ -413,13 +421,13 @@ class ReviewService:
                         )
                 elif req["target_type"] == "synthesis":
                     if return_to == "reflecting":
-                        self.syntheses.send_back_to_reflecting(
+                        self.reflections.send_back_to_reflecting(
                             conn=conn,
                             synthesis_id=req["target_id"],
                             revision_context=revision_context,
                         )
                     else:
-                        self.syntheses.send_back_to_synthesizing(
+                        self.reflections.send_back_to_synthesizing(
                             conn=conn,
                             synthesis_id=req["target_id"],
                             revision_context=revision_context,
@@ -569,7 +577,7 @@ class ReviewService:
 
     def gate_state(self, *, conn, target_type: str, target_id: str, role: str) -> dict[str, Any]:
         """review_gate_state for the target's current pinned snapshot."""
-        table = "experiments" if target_type == "experiment" else "syntheses"
+        table = "experiments" if target_type == "experiment" else "reflections"
         row = conn.execute(
             f"SELECT project_id FROM {table} WHERE id = ?", (target_id,)
         ).fetchone()
@@ -620,66 +628,16 @@ class ReviewService:
         review_request_id: str = "",
         reviewer_capability: str = "",
     ) -> dict[str, Any]:
-        skill = {
-            "design_reviewer": "experiment-design-review",
-            "experiment_reviewer": "experiment-attempt-review",
-            "reflection_reviewer": "project-reflection-review",
-        }.get(role, "")
-        external_type = external_reflection_target_type(target_type)
-        handoff: dict[str, Any] = {
-            "role": role,
-            "skill": skill,
-            "target_type": external_type,
-            "target_id": target_id,
-            "read_only": True,
-            "start_tool": "review.start",
-            "submit_tool": "review.submit",
-        }
-        # A ready-to-paste prompt for the reviewer subagent. The capability is
-        # already in this same one-time response; only the spawned reviewer —
-        # never the requesting session — consumes it via review.start.
-        if review_request_id and reviewer_capability and skill:
-            handoff["spawn_prompt"] = (
-                f"You are the {role} for {external_type} {target_id}. "
-                f"Follow the {skill} skill. Begin by calling review.start with "
-                f"review_request_id={review_request_id}, "
-                f"reviewer_capability={reviewer_capability}, and your own "
-                "session identity as caller_session_id (required; never the "
-                "producer's). You are read-only: your sole permitted mutation "
-                "is review.submit."
-            )
-        return handoff
+        return reviewer_handoff_payload(
+            role=role,
+            target_type=target_type,
+            target_id=target_id,
+            review_request_id=review_request_id,
+            reviewer_capability=reviewer_capability,
+        )
 
     def snapshot_from_id(self, *, snapshot_id: str) -> dict[str, Any]:
-        if "|" not in snapshot_id:
-            target_type, _, target_id = snapshot_id.partition(":")
-            return {"target_type": target_type, "target_id": target_id, "resources": []}
-        parts = snapshot_id.split("|", 4)
-        resources = []
-        for token in (parts[4].split(",") if len(parts) > 4 and parts[4] else []):
-            try:
-                resource_and_version, role, attempt_index = token.rsplit(":", 2)
-                resource_id, version_ref = resource_and_version.split(":", 1)
-            except ValueError:
-                resources.append({"raw": token})
-                continue
-            item: dict[str, Any] = {
-                "resource_id": resource_id,
-                "role": role,
-                "attempt_index": self._int_or_zero(value=attempt_index),
-            }
-            if version_ref.startswith("rver_"):
-                item["version_id"] = version_ref
-            else:
-                item["version_token"] = version_ref
-            resources.append(item)
-        return {
-            "target_type": parts[0] if len(parts) > 0 else "",
-            "target_id": parts[1] if len(parts) > 1 else "",
-            "status": parts[2] if len(parts) > 2 else "",
-            "attempt_index": self._int_or_zero(value=parts[3]) if len(parts) > 3 else 0,
-            "resources": resources,
-        }
+        return snapshot_from_id(snapshot_id=snapshot_id)
 
     def _validate_request_open(self, *, req, capability: str) -> None:
         # Constant-time compare of the presented token's hash against the stored
@@ -728,60 +686,10 @@ class ReviewService:
                 conn=conn, experiment_id=target_id
             )
         if target_type == "synthesis":
-            return self.syntheses.target_snapshot_id(
+            return self.reflections.target_snapshot_id(
                 conn=conn, synthesis_id=target_id
             )
         return f"{target_type}:{target_id}"
-
-    def _revision_context(
-        self,
-        *,
-        target_type: str,
-        role: str,
-        verdict: str,
-        notes: str,
-        findings: list[dict[str, Any]],
-        return_to: str = "",
-    ) -> str:
-        finding_text = "; ".join(str(item.get("issue", "")) for item in findings if item.get("issue"))
-        pieces = [f"{role} returned {verdict}"]
-        if target_type == "experiment" and return_to == "running":
-            pieces.append(
-                "Sent back to running: the approved plan stands; fix execution "
-                "and/or the conclusion, then retain/associate results and resubmit"
-            )
-        if target_type == "synthesis":
-            if return_to == "reflecting":
-                pieces.append(
-                    "Sent back to reflecting: re-launch the reflection fan-out — "
-                    "every roster lens must submit a fresh reflection for the "
-                    "new attempt"
-                )
-            else:
-                pieces.append(
-                    "Sent back to synthesizing: the reflections stand; revise "
-                    "the reflection artifacts (project graph, reflection doc, "
-                    "and/or change spec) and resubmit"
-                )
-        if notes:
-            pieces.append(notes)
-        if finding_text:
-            pieces.append(f"Findings: {finding_text}")
-        # Soft reminders, not directives: what belongs in a graph's story is
-        # the agent's editorial call.
-        if target_type == "synthesis":
-            pieces.append(
-                "Consider revising the project graph, reflection doc, and/or "
-                "change spec where this review changes the project's story; "
-                "the 16-node graph budget still applies"
-            )
-        else:
-            pieces.append(
-                "Consider updating the experiment's logic graph (role 'graph') if "
-                "this review changes the experiment's story; the 16-node budget "
-                "still applies"
-            )
-        return " | ".join(pieces)
 
     def _hydrate_request(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
@@ -828,9 +736,3 @@ class ReviewService:
         data["evidence"] = json.loads(data.pop("evidence_json", "{}"))
         data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
         return data
-
-    def _int_or_zero(self, *, value: str) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0

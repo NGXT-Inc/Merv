@@ -1,4 +1,4 @@
-"""MCP reflection tool adapter over the internal synthesis service."""
+"""MCP reflection tool adapter over the reflection wave service."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from ..domain.reflection_projection import (
     external_reflection_state,
     internal_synthesis_transition,
 )
-from .syntheses import SynthesisService
+from .reflections import ReflectionService
 
 
 class ReflectionToolService:
-    """External reflection tool names backed by internal synthesis records."""
+    """External reflection tool names backed by reflection wave records."""
 
-    def __init__(self, *, syntheses: SynthesisService) -> None:
-        self.syntheses = syntheses
+    def __init__(self, *, reflections: ReflectionService) -> None:
+        self.reflections = reflections
 
     def create(
         self,
@@ -25,7 +25,7 @@ class ReflectionToolService:
         lenses: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return external_reflection_state(
-            self.syntheses.create(
+            self.reflections.create(
                 project_id=project_id,
                 title=title,
                 lenses=lenses or [],
@@ -34,14 +34,14 @@ class ReflectionToolService:
 
     def get(self, *, project_id: str, reflection_id: str) -> dict[str, Any]:
         return external_reflection_state(
-            self.syntheses.get_state(
+            self.reflections.get_state(
                 synthesis_id=reflection_id,
                 project_id=project_id,
             )
         )
 
     def list(self, *, project_id: str) -> dict[str, Any]:
-        state = self.syntheses.list_syntheses(project_id=project_id)
+        state = self.reflections.list_reflections(project_id=project_id)
         return {
             "count": state.get("count", len(state.get("syntheses", []))),
             "reflections": [
@@ -55,7 +55,7 @@ class ReflectionToolService:
     ) -> dict[str, Any]:
         internal_transition = internal_synthesis_transition(transition)
         return external_reflection_state(
-            self.syntheses.transition(
+            self.reflections.transition(
                 project_id=project_id,
                 synthesis_id=reflection_id,
                 transition=internal_transition,

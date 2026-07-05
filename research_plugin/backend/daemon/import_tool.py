@@ -1,7 +1,7 @@
 """Local→cloud onboarding import (cloud plan Phase 8).
 
 Reads a local repo's ``.research_plugin/state.sqlite`` and imports its
-projects / claims / experiments / resources / reviews / syntheses into a
+projects / claims / experiments / resources / reviews / reflections into a
 tenant-scoped cloud store. Rules from the plan:
 
 - Entity ids carry over (prefix+uuid strings are tenant-wide unique).
@@ -46,7 +46,7 @@ _COPY_TABLES = (
     "review_requests",
     "review_sessions",
     "reviews",
-    "syntheses",
+    "reflections",
     "report_figures",
 )
 
@@ -83,7 +83,7 @@ def import_local_to_cloud(
     """Import one local repo's records into a tenant-scoped cloud store.
 
     Returns a summary ``{projects, claims, experiments, resources, reviews,
-    syntheses, events, blobs_backfilled}``. Raises ValidationError on a failed
+    reflections, events, blobs_backfilled}``. Raises ValidationError on a failed
     precondition (open reviews / running sandboxes) or a re-import attempt.
     """
     if not local_db_path.exists():
@@ -184,7 +184,7 @@ def _copy_records(
     summary["experiments"] = summary.get("experiments", 0)
     summary["resources"] = summary.get("resources", 0)
     summary["reviews"] = summary.get("reviews", 0)
-    summary["syntheses"] = summary.get("syntheses", 0)
+    summary["reflections"] = summary.get("reflections", 0)
     return summary
 
 

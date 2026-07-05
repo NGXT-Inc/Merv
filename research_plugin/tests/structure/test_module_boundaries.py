@@ -63,7 +63,7 @@ FILE_MODULES = {
     "secret_tokens.py": KERNEL,
     # object_storage: blob adapters live under storage/ (PACKAGE_MODULES).
     "domain/storage_guidance.py": OBJECT_STORAGE,
-    # research_core: workflow/claims/experiments/reviews/synthesis services.
+    # research_core: workflow/claims/experiments/reviews/reflection services.
     "services/workflow.py": RESEARCH_CORE,
     "services/workflow_views.py": RESEARCH_CORE,
     "services/experiments.py": RESEARCH_CORE,
@@ -71,6 +71,7 @@ FILE_MODULES = {
     "services/claims.py": RESEARCH_CORE,
     "services/reviews.py": RESEARCH_CORE,
     "services/review_gate.py": RESEARCH_CORE,
+    "services/reflections.py": RESEARCH_CORE,
     "services/syntheses.py": RESEARCH_CORE,
     "services/project_overview.py": RESEARCH_CORE,
     "services/projects.py": RESEARCH_CORE,
@@ -126,7 +127,7 @@ GRANDFATHERED: frozenset[tuple[str, str]] = frozenset()
 # research-core tables — attachment ids are opaque labels there. Matches SQL
 # verbs followed by a research-core table name inside any string literal.
 RESEARCH_CORE_TABLE_SQL = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:experiments|claims|reviews|syntheses)\b",
+    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:experiments|claims|reviews|reflections)\b",
     re.IGNORECASE,
 )
 
@@ -261,7 +262,7 @@ class ModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(
             offenders,
             "sandbox-module SQL references research-core tables "
-            "(experiments/claims/reviews/syntheses); move the query behind a "
+            "(experiments/claims/reviews/reflections); move the query behind a "
             "surface-injected check instead: " + ", ".join(sorted(offenders)),
         )
 

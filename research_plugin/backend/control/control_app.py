@@ -70,8 +70,11 @@ class ControlApp:
         self.experiments = self.record_core.experiments
         self.resources = self.record_core.resources
         self.graph_refs = self.record_core.graph_refs
-        self.syntheses = self.record_core.syntheses
-        self.reflections = self.record_core.reflections
+        self.reflection_waves = self.record_core.reflection_waves
+        self.reflection_tools = self.record_core.reflection_tools
+        # phase-6 deletion debt: legacy service/tool aliases.
+        self.syntheses = self.reflection_waves
+        self.reflections = self.reflection_tools
         self.project_overview = self.record_core.project_overview
         self.reviews = self.record_core.reviews
         self.feed = self.record_core.feed
@@ -99,7 +102,7 @@ class ControlApp:
             experiments=self.experiments,
             reviews=self.reviews,
             sandboxes=self.sandboxes,
-            syntheses=self.syntheses,
+            reflections=self.reflection_waves,
             storage_enabled=self.storage is not None,
             storage_guidance=storage_guidance(enabled=self.storage is not None),
         )

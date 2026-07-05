@@ -50,7 +50,7 @@ class SandboxWorkflowReader(Protocol):
 class ReflectionWorkflowReader(Protocol):
     """Reflection-wave read operations required by workflow orientation."""
 
-    def open_synthesis(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
+    def open_reflection(self, *, conn: Any, project_id: str) -> dict[str, Any] | None:
         ...
 
     def reflection_signal(

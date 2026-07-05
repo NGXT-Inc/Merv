@@ -37,6 +37,13 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
 
+    def assert_alias_bytes(self, *, canonical: str, legacy: str) -> None:
+        canonical_response = self.client.get(canonical)
+        legacy_response = self.client.get(legacy)
+        self.assertLess(canonical_response.status_code, 400, canonical_response.text)
+        self.assertLess(legacy_response.status_code, 400, legacy_response.text)
+        self.assertEqual(canonical_response.content, legacy_response.content)
+
     def configure_mlflow(self, service: CentralMlflowService) -> None:
         self.app.mlflow_tracking.mode = service.mode
         self.app.mlflow_tracking.tracking_uri = service.tracking_uri
@@ -1014,10 +1021,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(len(listing["syntheses"]), 1)
         self.assertEqual(listing["open_synthesis"]["id"], syn_id)
         self.assertIn("signal", listing)
+        self.assert_alias_bytes(
+            canonical=f"/api/projects/{pid}/reflections",
+            legacy=f"/api/projects/{pid}/syntheses",
+        )
 
         # No graph yet: the project-graph endpoint degrades, not errors.
         empty = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
         self.assertFalse(empty["available"])
+        self.assert_alias_bytes(
+            canonical=f"/api/projects/{pid}/reflections/current/graph",
+            legacy=f"/api/projects/{pid}/syntheses/current/graph",
+        )
 
         for lens in ("amplify", "avoid", "entropy", "rigor", "cost"):
             path = self.repo / f"syntheses/{syn_id}/reflections/{lens}.md"
@@ -1166,6 +1181,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(detail["status"], "published")
         self.assertTrue(detail["published_graph_version_id"])
         self.assertEqual(len(detail["roster"]), 5)
+        self.assert_alias_bytes(
+            canonical=f"/api/projects/{pid}/reflections/{syn_id}",
+            legacy=f"/api/projects/{pid}/syntheses/{syn_id}",
+        )
 
         # Published wave still serves the living graph as "current".
         payload = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
@@ -1223,6 +1242,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(payload["synthesis"]["id"], syn_id)
         self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
         self.assertEqual(payload["problems"], [])
+        self.assert_alias_bytes(
+            canonical=f"/api/projects/{pid}/reflections/{syn_id}/graph",
+            legacy=f"/api/projects/{pid}/syntheses/{syn_id}/graph",
+        )
 
         # Find the graph association's pinned version_id off the wave detail.
         detail = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}")
@@ -1283,7 +1306,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # fresh wave. Set it before associating so the association row records it.
         with self.app.store.transaction() as conn:
             conn.execute(
-                "UPDATE syntheses SET attempt_index = 5 WHERE id = ?", (wave1_id,)
+                "UPDATE reflections SET attempt_index = 5 WHERE id = ?", (wave1_id,)
             )
 
         (self.repo / "project").mkdir()
@@ -1310,7 +1333,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # status-agnostic, so publishing the full gated path is unnecessary here.
         with self.app.store.transaction() as conn:
             conn.execute(
-                "UPDATE syntheses SET status = 'published' WHERE id = ?", (wave1_id,)
+                "UPDATE reflections SET status = 'published' WHERE id = ?", (wave1_id,)
             )
 
         wave2_id = self.app.call_tool(

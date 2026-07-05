@@ -13,13 +13,17 @@ import json
 import re
 from typing import Any, Callable
 
+from ..artifacts.markdown_images import markdown_image_links
+from ..artifacts.resource_selection import preferred_associated_resource
+from ..artifacts.roles import PROJECT_GRAPH_ROLE, PROJECT_GRAPH_ROLES, REFLECTION_LENS_DOC_ROLES
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
     active_experiment_cap_would_exceed_message,
 )
+from .reflection_gates import CORE_LENSES, CORE_LENS_IDS, ROSTER_SIZE
 from .vocabulary import CLAIM_CONFIDENCES, CLAIM_STATUSES
-from ..utils import ValidationError
+from ..utils import ValidationError, WorkflowError
 
 CHANGE_SPEC_SCHEMA_VERSION = 1
 MAX_SYNTHESIS_DOC_BYTES = 16_000
@@ -31,6 +35,7 @@ REQUIRED_SYNTHESIS_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
 
 _CHANGE_SPEC_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _MD_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+_LENS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 def reflection_doc_problems(text: str) -> list[str]:
@@ -54,12 +59,204 @@ def reflection_doc_problems(text: str) -> list[str]:
     return problems
 
 
+def reflection_doc_review_problems(
+    *, text: str, submitted_images: set[str], path: str
+) -> list[str]:
+    problems = reflection_doc_problems(text)
+    for link in markdown_image_links(text):
+        if link not in submitted_images:
+            problems.append(
+                f"image {link!r} has no submitted content: make sure the "
+                f"file exists next to {path}, then re-associate the "
+                "reflection document to submit it"
+            )
+    return problems
+
+
 def reflection_lens_doc_problems(text: str) -> list[str]:
     # The roster gate rejects empty lens reflections; the byte cap is
     # enforced generically for all gated roles.
     if not text.strip():
         return ["reflection lens document is empty"]
     return []
+
+
+def validate_reflection_roster(*, lenses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Envelope check for a reflection roster."""
+    contract = (
+        "the reflection roster must declare exactly "
+        f"{ROSTER_SIZE} lenses: the {len(CORE_LENS_IDS)} core lenses "
+        f"({', '.join(CORE_LENS_IDS)}) plus "
+        f"{ROSTER_SIZE - len(CORE_LENS_IDS)} lenses you design for this "
+        "project, each with a 'charter' and a 'why_distinct' stating how it "
+        "differs from the core three and from each other"
+    )
+    if len(lenses) != ROSTER_SIZE:
+        raise ValidationError(f"got {len(lenses)} lenses; {contract}")
+    core_by_id = {lens["id"]: lens for lens in CORE_LENSES}
+    roster: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for lens in lenses:
+        lens_id = str(lens.get("id") or "").strip()
+        if not _LENS_ID_RE.match(lens_id):
+            raise ValidationError(
+                f"invalid lens id {lens_id!r}: use a lowercase slug "
+                "(letters, digits, '_', '-') — it doubles as the reflection "
+                "filename (<lens_id>.md)"
+            )
+        if lens_id in seen:
+            raise ValidationError(f"duplicate lens id: {lens_id}")
+        seen.add(lens_id)
+        charter = str(lens.get("charter") or "").strip()
+        why = str(lens.get("why_distinct") or "").strip()
+        core = core_by_id.get(lens_id)
+        if core is not None:
+            roster.append(
+                {
+                    "id": lens_id,
+                    "title": str(lens.get("title") or "").strip() or core["title"],
+                    "charter": charter or core["charter"],
+                    "core": True,
+                    "why_distinct": why,
+                }
+            )
+            continue
+        if not charter:
+            raise ValidationError(
+                f"lens {lens_id!r} needs a charter (what angle it reads the "
+                f"project from); {contract}"
+            )
+        if not why:
+            raise ValidationError(
+                f"lens {lens_id!r} needs why_distinct (how it differs from "
+                f"the core three and the other authored lens); {contract}"
+            )
+        roster.append(
+            {
+                "id": lens_id,
+                "title": str(lens.get("title") or "").strip()
+                or lens_id.replace("_", " ").replace("-", " "),
+                "charter": charter,
+                "core": False,
+                "why_distinct": why,
+            }
+        )
+    missing_core = [cid for cid in CORE_LENS_IDS if cid not in seen]
+    if missing_core:
+        raise ValidationError(
+            f"missing core lens(es): {', '.join(missing_core)}; {contract}"
+        )
+    return roster
+
+
+def reflection_requirement_roles(*, role: str) -> tuple[str, ...]:
+    if role == "reflection_doc":
+        return ("reflection_doc", "synthesis_doc")
+    if role == "reflection_lens_doc":
+        return REFLECTION_LENS_DOC_ROLES
+    if role == PROJECT_GRAPH_ROLE:
+        return PROJECT_GRAPH_ROLES
+    return (role,)
+
+
+def current_reflection_requirement_resource(
+    *, synthesis: dict[str, Any], role: str
+) -> dict[str, Any] | None:
+    return preferred_associated_resource(
+        resources=synthesis.get("current_attempt_resources") or [],
+        attempt=synthesis.get("attempt_index"),
+        roles=reflection_requirement_roles(role=role),
+    )
+
+
+def reflection_coverage_for(*, synthesis: dict[str, Any]) -> dict[str, Any]:
+    stems: dict[str, dict[str, Any]] = {}
+    for res in synthesis.get("current_attempt_resources", []):
+        if (
+            res.get("association_role") not in REFLECTION_LENS_DOC_ROLES
+            or res.get("missing")
+        ):
+            continue
+        path = str(res.get("path") or "")
+        name = path.rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0] if "." in name else name
+        stems.setdefault(
+            stem,
+            {
+                "path": path,
+                "version_id": res.get("association_version_id"),
+                "role": res.get("association_role"),
+            },
+        )
+    lenses = []
+    missing = []
+    for lens in synthesis.get("roster", []):
+        lens_id = str(lens.get("id") or "")
+        entry = stems.get(lens_id)
+        lenses.append(
+            {
+                "lens_id": lens_id,
+                "covered": entry is not None,
+                "path": entry["path"] if entry else None,
+                "version_id": entry.get("version_id") if entry else None,
+                "role": entry.get("role") if entry else None,
+            }
+        )
+        if entry is None:
+            missing.append(lens_id)
+    return {"lenses": lenses, "missing": missing, "complete": not missing}
+
+
+def reflection_lens_checklist_items(
+    *, synthesis: dict[str, Any]
+) -> list[dict[str, Any]]:
+    coverage_by_lens = {
+        str(row.get("lens_id") or ""): row
+        for row in (synthesis.get("reflection_coverage") or {}).get("lenses", [])
+    }
+    items: list[dict[str, Any]] = []
+    for lens in synthesis.get("roster", []):
+        lens_id = str(lens.get("id") or "")
+        coverage = coverage_by_lens.get(lens_id) or {}
+        covered = bool(coverage.get("covered"))
+        title = str(lens.get("title") or lens_id)
+        item: dict[str, Any] = {
+            "id": f"reflection_lens:{lens_id}",
+            "kind": "reflection_lens",
+            "role": "reflection_lens_doc",
+            "lens_id": lens_id,
+            "label": f"{title} reflection submitted",
+            "satisfied": covered,
+            "status": "present" if covered else "missing",
+            "gate": "reflection_roster_incomplete",
+            "action": "fan_out_reflection_subagents",
+        }
+        if covered:
+            item["path"] = coverage.get("path")
+            item["version_id"] = coverage.get("version_id")
+            item["association_role"] = coverage.get("role")
+        else:
+            item["missing"] = (
+                f"reflection doc for lens {lens_id!r} "
+                "(role 'reflection_lens_doc', file <lens_id>.md)"
+            )
+        items.append(item)
+    return items
+
+
+def reflection_gate_resource_label(*, role: str) -> str:
+    labels = {
+        "project_graph": "Project graph present and valid",
+        "reflection_doc": "Reflection document present and valid",
+        "change_spec": "Change spec present and materializable",
+        "reflection_lens_doc": "Per-lens reflections submitted",
+    }
+    return labels.get(role, f"{role} resource present")
+
+
+def reflection_gate_review_label(*, role: str) -> str:
+    labels = {"reflection_reviewer": "Reflection review passed"}
+    return labels.get(role, f"{role} review passed")
 
 
 def claim_change_problems(
@@ -252,3 +449,140 @@ def change_spec_structure_problems(text: str) -> list[str]:
     claim_keys = claim_change_problems(spec, problems=problems)
     decision_problems(spec, problems=problems, claim_keys=claim_keys)
     return problems
+
+
+def parse_change_spec(
+    *,
+    text: str,
+    path: str,
+    claim_exists: Callable[[str], bool] | None = None,
+    experiment_name_taken: Callable[[str], bool] | None = None,
+    non_terminal_experiments: Callable[[], list[str]] | None = None,
+) -> dict[str, Any]:
+    """Validate a reviewed reflection change spec and return its JSON object."""
+    problems: list[str] = []
+    if not text.strip():
+        raise WorkflowError(
+            f"change spec {path!r} is empty — write it and "
+            "re-associate to submit the content"
+        )
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise WorkflowError(
+            f"change spec {path!r} is not valid JSON: {exc}. "
+            "Write the role 'change_spec' artifact from "
+            "skills/project-reflection/reflection-artifacts-template.md and "
+            "re-associate it."
+        ) from exc
+    if not isinstance(spec, dict):
+        raise WorkflowError(f"change spec {path!r} must be a JSON object")
+    if spec.get("version") != CHANGE_SPEC_SCHEMA_VERSION:
+        problems.append(f"version must be {CHANGE_SPEC_SCHEMA_VERSION}")
+
+    claim_keys = claim_change_problems(
+        spec,
+        problems=problems,
+        claim_exists=claim_exists,
+    )
+    decision_problems(
+        spec,
+        problems=problems,
+        claim_keys=claim_keys,
+        claim_exists=claim_exists,
+        experiment_name_taken=experiment_name_taken,
+        non_terminal_experiments=non_terminal_experiments,
+    )
+    if problems:
+        raise WorkflowError(
+            "change spec is not ready for review: "
+            + "; ".join(problems)
+            + ". Fix the file and re-associate it to submit the revision — "
+            "see skills/project-reflection/reflection-artifacts-template.md."
+        )
+    return spec
+
+
+def graph_diff(
+    *, base_graph: dict[str, Any], current_graph: dict[str, Any]
+) -> dict[str, Any]:
+    base_nodes = _graph_node_index(graph=base_graph)
+    current_nodes = _graph_node_index(graph=current_graph)
+    base_edges = _graph_edge_index(graph=base_graph)
+    current_edges = _graph_edge_index(graph=current_graph)
+    return {
+        "nodes": _diff_indexed_items(base=base_nodes, current=current_nodes),
+        "edges": _diff_indexed_items(base=base_edges, current=current_edges),
+    }
+
+
+def graph_diff_summary(*, diff: dict[str, Any]) -> str:
+    nodes = diff.get("nodes") or {}
+    edges = diff.get("edges") or {}
+    return (
+        "Project graph diff: "
+        f"{len(nodes.get('added') or [])} nodes added, "
+        f"{len(nodes.get('removed') or [])} removed, "
+        f"{len(nodes.get('changed') or [])} changed; "
+        f"{len(edges.get('added') or [])} edges added, "
+        f"{len(edges.get('removed') or [])} removed, "
+        f"{len(edges.get('changed') or [])} changed."
+    )
+
+
+def _graph_node_index(*, graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "")
+        if node_id:
+            indexed[node_id] = _sorted_json_object(node)
+    return indexed
+
+
+def _graph_edge_index(*, graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        frm = str(edge.get("from") or "")
+        to = str(edge.get("to") or "")
+        if frm and to:
+            indexed[f"{frm}->{to}"] = _sorted_json_object(edge)
+    return indexed
+
+
+def _sorted_json_object(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: item[key] for key in sorted(item)}
+
+
+def _diff_indexed_items(
+    *, base: dict[str, dict[str, Any]], current: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    base_keys = set(base)
+    current_keys = set(current)
+    changed = []
+    for key in sorted(base_keys & current_keys):
+        before = base[key]
+        after = current[key]
+        if before == after:
+            continue
+        changed.append(
+            {
+                "id": key,
+                "before": before,
+                "after": after,
+                "changed_fields": [
+                    field
+                    for field in sorted(set(before) | set(after))
+                    if before.get(field) != after.get(field)
+                ],
+            }
+        )
+    return {
+        "added": [current[key] for key in sorted(current_keys - base_keys)],
+        "removed": [base[key] for key in sorted(base_keys - current_keys)],
+        "changed": changed,
+        "unchanged_count": len(base_keys & current_keys) - len(changed),
+    }

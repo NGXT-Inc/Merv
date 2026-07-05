@@ -32,7 +32,7 @@ extension, and a surface that composes them.
 | Module         | Backend code                                                                |
 |----------------|-----------------------------------------------------------------------------|
 | kernel         | `state/*` (minus blobs; incl. `tool_call_stats`), `ports/*` (incl. the `AdmissionRequest` contract in `ports/quota_admission`), `utils`, `env`, `version`, `secret_tokens` |
-| research_core  | workflow/experiments/claims/reviews/syntheses/projects services + views, `graph_refs`, `reflection_tools`, `domain/*` (minus overrides) |
+| research_core  | workflow/experiments/claims/reviews/reflections/projects services + views, `graph_refs`, `reflection_tools`, `domain/*` (minus overrides) |
 | artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, roles, markdown_images, figure_view, resource_selection) |
 | object_storage | `storage/*`, `state/{blobs,s3_blobs}`, `domain/storage_guidance`             |
 | sandbox        | `services/sandbox/*`, `sandbox/*` (incl. the `mgmt_keys`/`managed_mgmt_keys` custody adapters), `execution/*`, `services/{transcript_cache,quotas}`, `domain/sandbox_paths`, `ssh_keys` |
@@ -56,7 +56,7 @@ before they can land.
 Two module-content rules ride along with the import law:
 
 - **Sandbox de-domaining:** sandbox-module files must not embed SQL naming
-  research-core tables (`experiments`/`claims`/`reviews`/`syntheses`) —
+  research-core tables (`experiments`/`claims`/`reviews`/`reflections`) —
   enforced by `test_sandbox_module_sql_names_no_research_core_tables`.
   Attachment ids are opaque labels inside the sandbox module; the surface
   injects the experiment existence/scope check

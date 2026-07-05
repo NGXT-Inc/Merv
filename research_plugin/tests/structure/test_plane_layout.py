@@ -51,7 +51,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "projects.py",
     SERVICES_ROOT / "claims.py",
     SERVICES_ROOT / "experiments.py",
-    SERVICES_ROOT / "syntheses.py",
+    SERVICES_ROOT / "reflections.py",
     SERVICES_ROOT / "reviews.py",
     SERVICES_ROOT / "workflow.py",
     SERVICES_ROOT / "workflow_views.py",
@@ -542,20 +542,20 @@ for name in (
         # ControlApp composition gives that port a second implementation.
         imports = _import_segments(SERVICES_ROOT / "project_overview.py")
         self.assertIn("projects", imports)
-        self.assertIn("syntheses", imports)
+        self.assertIn("reflections", imports)
         self.assertNotIn("project_readers", imports)
         source = (SERVICES_ROOT / "project_overview.py").read_text(encoding="utf-8")
         self.assertIn("projects: ProjectService", source)
-        self.assertIn("syntheses: SynthesisService", source)
+        self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ProjectCurrentReader", source)
         self.assertNotIn("class SynthesisOverviewReader", source)
         from backend.services.project_overview import ProjectOverviewService
         from backend.services.projects import ProjectService
-        from backend.services.syntheses import SynthesisService
+        from backend.services.reflections import ReflectionService
 
         hints = get_type_hints(ProjectOverviewService.__init__)
         self.assertIs(hints["projects"], ProjectService)
-        self.assertIs(hints["syntheses"], SynthesisService)
+        self.assertIs(hints["reflections"], ReflectionService)
 
         tree = ast.parse(source)
 
@@ -579,7 +579,7 @@ for name in (
 
         self.assertEqual(collaborator_calls("projects"), {"current"})
         self.assertEqual(
-            collaborator_calls("syntheses"), {"latest_published", "open_synthesis"}
+            collaborator_calls("reflections"), {"latest_published", "open_reflection"}
         )
 
     def test_workflow_service_uses_reader_ports(self) -> None:
@@ -621,17 +621,17 @@ for name in (
         # lean by avoiding a single-impl port, but pin the narrow method surface
         # the adapter is allowed to use.
         imports = _import_segments(SERVICES_ROOT / "reflection_tools.py")
-        self.assertIn("syntheses", imports)
+        self.assertIn("reflections", imports)
         self.assertNotIn("reflection_waves", imports)
         source = (SERVICES_ROOT / "reflection_tools.py").read_text(encoding="utf-8")
-        self.assertIn("syntheses: SynthesisService", source)
+        self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ReflectionWaveStore", source)
         from backend.services.reflection_tools import ReflectionToolService
-        from backend.services.syntheses import SynthesisService
+        from backend.services.reflections import ReflectionService
 
         self.assertIs(
-            get_type_hints(ReflectionToolService.__init__)["syntheses"],
-            SynthesisService,
+            get_type_hints(ReflectionToolService.__init__)["reflections"],
+            ReflectionService,
         )
 
         tree = ast.parse(source)
@@ -658,13 +658,13 @@ for name in (
                 and isinstance(node.args[0], ast.Name)
                 and node.args[0].id == "self"
                 and isinstance(node.args[1], ast.Constant)
-                and node.args[1].value == "syntheses"
+                and node.args[1].value == "reflections"
             ):
-                self.fail("reflection_tools must not dynamically access self.syntheses")
+                self.fail("reflection_tools must not dynamically access self.reflections")
             if not isinstance(node, ast.Attribute):
                 continue
             if isinstance(node.value, ast.Name) and node.value.id == "self":
-                if node.attr == "syntheses":
+                if node.attr == "reflections":
                     parent = parents.get(node)
                     if (
                         isinstance(parent, ast.Assign)
@@ -677,20 +677,20 @@ for name in (
             owner = node.value
             if not (
                 isinstance(owner, ast.Attribute)
-                and owner.attr == "syntheses"
+                and owner.attr == "reflections"
                 and isinstance(owner.value, ast.Name)
                 and owner.value.id == "self"
             ):
                 continue
             self.assertIn(
-                node.attr, {"create", "get_state", "list_syntheses", "transition"}
+                node.attr, {"create", "get_state", "list_reflections", "transition"}
             )
             parent = parents.get(node)
             self.assertIsInstance(parent, ast.Call)
             self.assertIs(getattr(parent, "func", None), node)
             calls.add(node.attr)
         self.assertEqual(
-            calls, {"create", "get_state", "list_syntheses", "transition"}
+            calls, {"create", "get_state", "list_reflections", "transition"}
         )
 
     def test_app_keeps_concrete_local_runtime_wiring_in_one_module(self) -> None:
@@ -725,7 +725,7 @@ for name in (
             "QuotaService(",
             "ResourceService(",
             "ReviewService(",
-            "SynthesisService(",
+            "ReflectionService(",
         ):
             self.assertNotIn(service_ctor, app_source)
             self.assertIn(service_ctor, record_source)

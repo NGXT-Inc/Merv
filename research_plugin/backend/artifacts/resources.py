@@ -669,7 +669,7 @@ class ResourceService:
     ) -> str | None:
         table_by_type = {
             "experiment": "experiments",
-            "synthesis": "syntheses",
+            "synthesis": "reflections",
             "claim": "claims",
             "review": "reviews",
         }
@@ -690,7 +690,7 @@ class ResourceService:
         # Experiments and syntheses both scope associations to their current
         # attempt, so a review rejection that bumps the attempt naturally
         # invalidates stale associations for either target kind.
-        table_by_type = {"experiment": "experiments", "synthesis": "syntheses"}
+        table_by_type = {"experiment": "experiments", "synthesis": "reflections"}
         table = table_by_type.get(target_type)
         if table is None:
             return 0

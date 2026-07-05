@@ -6,7 +6,10 @@ from pathlib import Path
 
 from backend.app import ResearchPluginApp
 from backend.domain.artifacts import plan_sections_missing
-from backend.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
+from backend.domain.experiment_policy import (
+    ACTIVE_EXPERIMENT_CAP,
+    infer_claim_status_from_conclusion,
+)
 from backend.utils import PermissionDeniedError, ValidationError, WorkflowError
 
 # A plan that satisfies the required spine (Summary; Objective & hypothesis;
@@ -720,7 +723,7 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertTrue(review_item["satisfied"])
 
     def test_claim_status_inference_is_negation_safe(self) -> None:
-        infer = self.app.experiments._infer_claim_status_from_conclusion
+        infer = infer_claim_status_from_conclusion
         # Negative phrasings must never read as their positive stems.
         self.assertEqual(infer("The claim is unsupported by the data."), "weakened")
         self.assertEqual(infer("We could not confirm the hypothesis."), "weakened")

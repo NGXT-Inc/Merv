@@ -201,6 +201,7 @@ class PostgresStateStore(BaseStateStore):
                 # the same shape in _ensure_forward_schema). A no-op on a fresh
                 # database — the schema-create then builds the final shape directly.
                 self._migrate_sandbox_uid_identity(conn=conn)
+                self._rename_syntheses_to_reflections(conn=conn)
                 conn.execute(translate_schema_to_postgres(SCHEMA))
                 self._apply_migrations(conn=conn)
             finally:

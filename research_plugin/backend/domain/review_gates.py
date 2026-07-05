@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 REVIEW_GATE_EXEMPT_ROLES = frozenset({"human", "automated_check"})
 
 REVIEW_GATE_ROLES: dict[tuple[str, str], str] = {

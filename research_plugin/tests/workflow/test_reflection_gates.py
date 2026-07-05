@@ -1546,7 +1546,7 @@ class ReflectionSignalTest(unittest.TestCase):
         )
         signal = self._signal()
         self.assertFalse(signal["stale"])
-        self.assertTrue(signal["open_synthesis_id"])
+        self.assertTrue(signal["open_reflection_id"])
 
     def test_open_wave_does_not_bypass_hard_experiment_create_block(self) -> None:
         for i in range(REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD):
@@ -1560,7 +1560,7 @@ class ReflectionSignalTest(unittest.TestCase):
         )
         signal = self._signal()
         self.assertFalse(signal["stale"])
-        self.assertTrue(signal["open_synthesis_id"])
+        self.assertTrue(signal["open_reflection_id"])
         self.assertTrue(signal["experiment_create_blocked"])
 
         with self.assertRaises(WorkflowError) as ctx:

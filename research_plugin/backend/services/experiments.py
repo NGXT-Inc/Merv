@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from ..domain.artifacts import plan_sections_missing, report_problems
 from ..domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
     active_experiment_cap_reached_message,
+    compose_experiment_intent,
+    infer_claim_status_from_conclusion,
+    normalize_claim_ids,
 )
 from ..domain.experiment_names import validate_experiment_name
+from ..domain.gates import RequirementState, ReviewState, decide_gated_transition
 from ..domain.graph_lint import graph_problems
 from ..domain.paths import experiment_folder_rel
 from ..domain.reflection_policy import (
-    REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     covered_terminal_ids,
+    reflection_create_block_message,
 )
 from ..domain.review_snapshot import review_snapshot_id
 from ..domain.workflow_gates import (
@@ -30,55 +33,6 @@ from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
 from ..utils import now_iso
 from .review_gate import review_gate_state
-
-# Claim-status inference markers: (pattern, plain vote, vote when negated in
-# the same clause). A None vote means the direction is unclear — inference
-# bails entirely rather than guessing (see _infer_claim_status_from_conclusion).
-_CLAIM_STATUS_MARKERS: tuple[tuple[re.Pattern[str], str | None, str | None], ...] = (
-    # Refutation stems: "does not contradict" tells us what did NOT happen,
-    # not whether the claim is supported or merely weakened.
-    (re.compile(r"\bcontradict\w*"), "contradicted", None),
-    (re.compile(r"\brefut\w*"), "contradicted", None),
-    (re.compile(r"\bfalsif\w*"), "contradicted", None),
-    (re.compile(r"\bdisprov\w*"), "contradicted", None),
-    # Support stems: negated forms ("could not confirm", "did not improve")
-    # are evidence against, i.e. weakened.
-    (re.compile(r"\bsupport(?:s|ed|ing)?\b"), "supported", "weakened"),
-    (re.compile(r"\bconfirm\w*"), "supported", "weakened"),
-    (re.compile(r"\bbeats?\b"), "supported", "weakened"),
-    (re.compile(r"\bimprov\w*"), "supported", "weakened"),
-    (re.compile(r"\bpositive result\w*"), "supported", "weakened"),
-    (re.compile(r"\b(?:target|criterion|criteria|threshold) met\b"), "supported", "weakened"),
-    # Plain negatives ("beaten by the baseline" is the passive of beat).
-    (re.compile(r"\bunsupported\b"), "weakened", None),
-    (re.compile(r"\bnegative result\w*"), "weakened", None),
-    (re.compile(r"\bweaken\w*"), "weakened", None),
-    (re.compile(r"\binconclusive\b"), "weakened", None),
-    (re.compile(r"\bmixed (?:results?|evidence|findings|signals?)\b"), "weakened", None),
-    (re.compile(r"\bpartial(?:ly)? support\w*"), "weakened", None),
-    (re.compile(r"\bno (?:significant )?effect\b"), "weakened", None),
-    (re.compile(r"\bnot significant\b|\binsignificant\b"), "weakened", None),
-    (re.compile(r"\bbelow (?:the )?baseline\b"), "weakened", None),
-    (re.compile(r"\bbeaten\b"), "weakened", None),
-    (re.compile(r"\bworse than\b"), "weakened", None),
-    (re.compile(r"\bunderperform\w*"), "weakened", None),
-)
-
-_NEGATION_RE = re.compile(
-    r"\b(?:not|no|never|neither|nor|without|cannot|can't|couldn't|didn't|"
-    r"doesn't|wasn't|weren't|fail(?:ed|s)?(?:\s+to)?|unable\s+to|far\s+from)\b"
-)
-# Negation scope ends at a clause boundary.
-_CLAUSE_BOUNDARIES = (". ", "; ", ", ", " but ", " however ", " although ", " yet ")
-
-
-def _negated_in_clause(text: str, match_start: int) -> bool:
-    window = text[max(0, match_start - 40):match_start]
-    for boundary in _CLAUSE_BOUNDARIES:
-        idx = window.rfind(boundary)
-        if idx >= 0:
-            window = window[idx + len(boundary):]
-    return bool(_NEGATION_RE.search(window))
 
 
 class ExperimentService:
@@ -115,7 +69,7 @@ class ExperimentService:
             raise ValidationError(f"unexpected experiment.create fields: {', '.join(sorted(extra))}")
         if status and status != "planned":
             raise ValidationError("experiment.create only supports status='planned'; use experiment.transition for workflow changes")
-        intent = self._compose_intent(
+        intent = compose_experiment_intent(
             intent=intent,
             title=title,
             hypothesis=hypothesis,
@@ -123,7 +77,7 @@ class ExperimentService:
             success_criteria=success_criteria,
             risks=risks,
         )
-        tested_claim_ids = self._normalize_claim_ids(
+        tested_claim_ids = normalize_claim_ids(
             tested_claim_ids=tested_claim_ids,
             claim_id=claim_id,
             claim_ids=claim_ids,
@@ -212,38 +166,21 @@ class ExperimentService:
         debt, published_id = self._terminal_experiments_since_last_reflection(
             conn=conn, project_id=project_id
         )
-        if debt < REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD:
-            return
-
         open_wave = conn.execute(
             """
-            SELECT id, status FROM syntheses
+            SELECT id, status FROM reflections
             WHERE project_id = ? AND status NOT IN ('published', 'abandoned')
             ORDER BY created_seq DESC LIMIT 1
             """,
             (project_id,),
         ).fetchone()
-        threshold = REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD
-        if open_wave is not None:
-            raise WorkflowError(
-                "project reflection is required before creating another experiment: "
-                f"{debt} experiments have finished since the last published "
-                f"reflection (threshold {threshold}), and reflection wave "
-                f"{open_wave['id']} is {open_wave['status']!r}. Finish and publish "
-                "that reflection wave; its approved change spec will create the "
-                "next experiment wave."
-            )
-
-        if published_id:
-            since = "since the last published reflection"
-        else:
-            since = "and no project reflection has been published yet"
-        raise WorkflowError(
-            "project reflection is required before creating another experiment: "
-            f"{debt} experiments have finished {since} (threshold {threshold}). "
-            "Start a reflection wave with reflection.create and publish it before "
-            "creating another experiment."
+        message = reflection_create_block_message(
+            debt=debt,
+            published_id=published_id,
+            open_wave=row_to_dict(row=open_wave),
         )
+        if message:
+            raise WorkflowError(message)
 
     def create_from_synthesis(
         self,
@@ -308,7 +245,7 @@ class ExperimentService:
         }
         published = conn.execute(
             """
-            SELECT id, corpus_json FROM syntheses
+            SELECT id, corpus_json FROM reflections
             WHERE project_id = ? AND status = 'published'
             ORDER BY published_at DESC, created_seq DESC LIMIT 1
             """,
@@ -322,57 +259,6 @@ class ExperimentService:
             corpus = {}
         covered = covered_terminal_ids(corpus)
         return len(current_terminal - covered), str(published["id"])
-
-    def _compose_intent(
-        self,
-        *,
-        intent: str,
-        title: str,
-        hypothesis: str,
-        design: str,
-        success_criteria: str,
-        risks: str,
-    ) -> str:
-        # `intent` is the durable one-line headline (the experiment's title in
-        # the UI). The full design — hypothesis, method, evaluation, risks — now
-        # lives in the plan.md resource, which is the single source of truth and
-        # the face the reviewer evaluates. We no longer fold the structured
-        # fields into intent. For back-compat, if a caller supplied only those
-        # fields, fall back to the first non-empty one so intent is never blank.
-        if intent.strip():
-            return intent.strip()
-        for value in (title, hypothesis, design, success_criteria, risks):
-            if value and value.strip():
-                return value.strip()
-        return ""
-
-    def _normalize_claim_ids(
-        self,
-        *,
-        tested_claim_ids: list[str] | str | None,
-        claim_id: str | None,
-        claim_ids: list[str] | str | None,
-    ) -> list[str]:
-        values: list[str] = []
-        if isinstance(tested_claim_ids, str):
-            values.append(tested_claim_ids)
-        elif tested_claim_ids:
-            values.extend(tested_claim_ids)
-        if claim_id:
-            values.append(claim_id)
-        if isinstance(claim_ids, str):
-            values.append(claim_ids)
-        elif claim_ids:
-            values.extend(claim_ids)
-        result: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            if not isinstance(value, str) or not value.strip():
-                raise ValidationError("claim ids must be non-empty strings")
-            if value not in seen:
-                seen.add(value)
-                result.append(value)
-        return result
 
     def get_state(self, *, experiment_id: str, project_id: str | None = None, conn=None) -> dict[str, Any]:
         owns_conn = conn is None
@@ -558,7 +444,7 @@ class ExperimentService:
         conclusion = str(experiment.get("conclusion") or "").strip()
         if not conclusion:
             return []
-        suggested_status = self._infer_claim_status_from_conclusion(conclusion)
+        suggested_status = infer_claim_status_from_conclusion(conclusion)
         # No inferable direction → no prefilled tool call. A claim.update
         # skeleton with nothing to update is malformed guidance.
         if suggested_status is None:
@@ -598,32 +484,6 @@ class ExperimentService:
                 }
             )
         return suggestions
-
-    def _infer_claim_status_from_conclusion(self, conclusion: str) -> str | None:
-        """Conservative status hint from a free-text conclusion.
-
-        Word-bounded markers vote for a status; a negation cue in the same
-        clause flips the marker to its negated vote, and any ambiguity — an
-        unclear negated marker (e.g. "does not contradict") or votes for more
-        than one status — returns None rather than guessing. A wrong
-        suggestion here can flip a canonical claim the wrong way, so silence
-        beats cleverness.
-        """
-        text = " ".join(conclusion.lower().split())
-        votes: set[str] = set()
-        for pattern, plain_vote, negated_vote in _CLAIM_STATUS_MARKERS:
-            for match in pattern.finditer(text):
-                vote = (
-                    negated_vote
-                    if _negated_in_clause(text, match.start())
-                    else plain_vote
-                )
-                if vote is None:
-                    return None
-                votes.add(vote)
-        if len(votes) != 1:
-            return None
-        return votes.pop()
 
     def _gate_checklist(self, *, conn, experiment: dict[str, Any]) -> dict[str, Any]:
         """Current forward gate as machine-readable checklist data.
@@ -943,50 +803,57 @@ class ExperimentService:
         )
 
     def _next_status(self, *, conn, experiment_id: str, status: str, transition: str) -> str:
-        # Terminal states are final: no transition (not even abandon/mark_failed)
-        # may move an experiment out of complete/failed/abandoned.
-        if status in TERMINAL_STATUSES:
-            raise WorkflowError(
-                f"experiment is {status!r}; no transitions are allowed from a terminal state"
-            )
-        if transition == "abandon":
-            return "abandoned"
-        if transition == "mark_failed":
-            return "failed"
-        if transition == "retry_running":
-            if status == "running":
-                return "running"
-            options = ", ".join(t["transition"] for t in allowed_transitions_for(status))
-            raise WorkflowError(
-                f"transition {transition!r} is not allowed from {status!r}; "
-                f"allowed from here: {options}"
-            )
         forward = GATE_TABLE.get(status)
-        if forward is None or forward.name != transition:
-            options = ", ".join(t["transition"] for t in allowed_transitions_for(status))
-            raise WorkflowError(
-                f"transition {transition!r} is not allowed from {status!r}; "
-                f"allowed from here: {options}"
-            )
-        for requirement in forward.requirements:
-            if not self._has_resource_role(
-                conn=conn,
-                experiment_id=experiment_id,
-                role=requirement.role,
-            ):
-                raise WorkflowError(requirement.error)
-            self._run_validator(
-                conn=conn, experiment_id=experiment_id, name=requirement.validator
-            )
-        if forward.review is not None:
-            gate_state = self._review_gate_state(
-                conn=conn, experiment_id=experiment_id, role=forward.review.role
-            )
-            if not gate_state["satisfied"]:
-                raise WorkflowError(
-                    gate_state.get("blocked_reason") or forward.review.error
+        requirement_states: list[RequirementState] = []
+        review_state: ReviewState | None = None
+        if forward is not None:
+            for requirement in forward.requirements:
+                validation_error = ""
+                present = self._has_resource_role(
+                    conn=conn,
+                    experiment_id=experiment_id,
+                    role=requirement.role,
                 )
-        return forward.to_status
+                if present and requirement.validator:
+                    try:
+                        self._run_validator(
+                            conn=conn,
+                            experiment_id=experiment_id,
+                            name=requirement.validator,
+                        )
+                    except WorkflowError as exc:
+                        validation_error = str(exc)
+                requirement_states.append(
+                    RequirementState(
+                        role=requirement.role,
+                        present=present,
+                        missing_error=requirement.error,
+                        validation_error=validation_error,
+                    )
+                )
+            if forward.review is not None:
+                gate_state = self._review_gate_state(
+                    conn=conn, experiment_id=experiment_id, role=forward.review.role
+                )
+                review_state = ReviewState(
+                    satisfied=bool(gate_state["satisfied"]),
+                    error=forward.review.error,
+                    blocked_reason=str(gate_state.get("blocked_reason") or ""),
+                )
+        direct_transitions = {"abandon": "abandoned", "mark_failed": "failed"}
+        if status == "running":
+            direct_transitions["retry_running"] = "running"
+        return decide_gated_transition(
+            subject="experiment",
+            status=status,
+            transition=transition,
+            terminal_statuses=TERMINAL_STATUSES,
+            direct_transitions=direct_transitions,
+            forward=forward,
+            requirement_states=requirement_states,
+            review_state=review_state,
+            allowed_transitions=allowed_transitions_for(status),
+        )
 
     def _run_validator(self, *, conn, experiment_id: str, name: str) -> None:
         """Dispatch a gate-table validator name to its deep-lint implementation."""

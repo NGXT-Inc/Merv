@@ -811,44 +811,58 @@ class ResearchHttpApi:
             base=base, chosen=chosen, text=text, project_id=project_id
         )
 
-    def syntheses_view(self, *, project_id: str) -> dict[str, Any]:
+    def reflections_view(self, *, project_id: str) -> dict[str, Any]:
         """All reflection waves plus the staleness/coverage signal for the UI."""
-        return self.app.syntheses.overview(project_id=project_id)
+        return self.app.reflection_waves.overview(project_id=project_id)
+
+    def syntheses_view(self, *, project_id: str) -> dict[str, Any]:
+        # phase-6 deletion debt: legacy handler alias.
+        return self.reflections_view(project_id=project_id)
+
+    def reflection_detail(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
+        return self.app.reflection_waves.get_state(
+            synthesis_id=synthesis_id, project_id=project_id
+        )
 
     def synthesis_detail(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
-        return self.app.syntheses.get_state(synthesis_id=synthesis_id, project_id=project_id)
+        # phase-6 deletion debt: legacy handler alias.
+        return self.reflection_detail(project_id=project_id, synthesis_id=synthesis_id)
 
     def project_logic_graph(self, *, project_id: str) -> dict[str, Any]:
-        """The living project logic graph (role 'project_graph' on a synthesis).
+        """The living project logic graph (role 'project_graph' on a reflection).
 
         Chooses the open wave's graph when one exists (so the user can watch
-        the synthesis being written), else the latest published one. The same
+        the reflection being written), else the latest published one. The same
         payload shape as the per-experiment graph endpoint so the UI renders
         both through one component.
         """
-        selection = self.app.syntheses.project_logic_graph_selection(project_id=project_id)
-        return self._graph_payload_for_synthesis(
+        selection = self.app.reflection_waves.project_logic_graph_selection(project_id=project_id)
+        return self._graph_payload_for_reflection(
             project_id=project_id,
             synthesis=selection.get("synthesis"),
             graph_resource=selection.get("graph_resource"),
             extra_base={"signal": selection.get("signal")},
         )
 
-    def synthesis_graph(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
+    def reflection_graph(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
         """The logic graph of one specific reflection wave, rendered from the
         bytes that wave pinned (role 'project_graph'). Lets the UI show a past
         wave's graph faithfully even though project/logic_graph.json is a
         living file the next wave overwrites. Same payload shape as
         project_logic_graph
         (minus the project-wide staleness signal)."""
-        synthesis = self.app.syntheses.get_state(
+        synthesis = self.app.reflection_waves.get_state(
             synthesis_id=synthesis_id, project_id=project_id
         )
-        return self._graph_payload_for_synthesis(
+        return self._graph_payload_for_reflection(
             project_id=project_id, synthesis=synthesis
         )
 
-    def _graph_payload_for_synthesis(
+    def synthesis_graph(self, *, project_id: str, synthesis_id: str) -> dict[str, Any]:
+        # phase-6 deletion debt: legacy handler alias.
+        return self.reflection_graph(project_id=project_id, synthesis_id=synthesis_id)
+
+    def _graph_payload_for_reflection(
         self,
         *,
         project_id: str,
@@ -857,13 +871,13 @@ class ResearchHttpApi:
         extra_base: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Shared graph shaping for the project-current and per-wave endpoints:
-        pick the synthesis's graph association, load its pinned bytes, then
+        pick the reflection's graph association, load its pinned bytes, then
         parse + lint + resolve refs into the common payload the LogicGraph
         component renders. `extra_base` injects endpoint-specific fields (the
         project-current endpoint adds the staleness `signal`)."""
         base: dict[str, Any] = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
         chosen = graph_resource or (
-            self._synthesis_graph_resource(synthesis=synthesis) if synthesis else None
+            self._reflection_graph_resource(synthesis=synthesis) if synthesis else None
         )
         if synthesis is None or chosen is None:
             return {**base, "available": False, "synthesis": None, "graph": None, "problems": []}
@@ -922,10 +936,10 @@ class ResearchHttpApi:
             version_id=resource.get("association_version_id")
         )
 
-    def _synthesis_graph_resource(
+    def _reflection_graph_resource(
         self, *, synthesis: dict[str, Any] | None
     ) -> dict[str, Any] | None:
-        """The synthesis's graph association — current attempt preferred, with
+        """The reflection's graph association — current attempt preferred, with
         the prior-attempt fallback the experiment endpoint also uses."""
         if synthesis is None:
             return None
@@ -1447,31 +1461,39 @@ def create_fastapi_app(
     def transition_experiment(project_id: str, experiment_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
         return api_for_project(project_id).call_tool(name="experiment.transition", arguments={"project_id": project_id, "experiment_id": experiment_id, **(body or {})})
 
+    @http.get("/api/projects/{project_id}/reflections")
+    # phase-6 deletion debt: legacy synthesis path alias.
     @http.get("/api/projects/{project_id}/syntheses")
-    def list_syntheses(project_id: str) -> dict[str, Any]:
+    def list_reflections(project_id: str) -> dict[str, Any]:
         # Reflection waves + staleness/coverage signal for the UI panel.
-        return api_for_project(project_id).syntheses_view(project_id=project_id)
+        return api_for_project(project_id).reflections_view(project_id=project_id)
 
+    @http.get("/api/projects/{project_id}/reflections/current/graph")
+    # phase-6 deletion debt: legacy synthesis path alias.
     @http.get("/api/projects/{project_id}/syntheses/current/graph")
     def project_logic_graph(project_id: str) -> dict[str, Any]:
         # The living project logic graph; same payload shape as the
         # per-experiment graph endpoint. UI-only read, no agent tool.
         return api_for_project(project_id).project_logic_graph(project_id=project_id)
 
+    @http.get("/api/projects/{project_id}/reflections/{synthesis_id}/graph")
+    # phase-6 deletion debt: legacy synthesis path alias.
     @http.get("/api/projects/{project_id}/syntheses/{synthesis_id}/graph")
-    def synthesis_graph(project_id: str, synthesis_id: str) -> dict[str, Any]:
+    def reflection_graph(project_id: str, synthesis_id: str) -> dict[str, Any]:
         # One wave's logic graph, rendered from the bytes that wave pinned, so
         # a past wave shows faithfully even after later waves overwrite the
         # living file. Same payload shape as /syntheses/current/graph (minus
         # signal). Registered after the literal current/graph route so
         # "current" is not captured as a synthesis_id. UI-only read.
-        return api_for_project(project_id).synthesis_graph(
+        return api_for_project(project_id).reflection_graph(
             project_id=project_id, synthesis_id=synthesis_id
         )
 
+    @http.get("/api/projects/{project_id}/reflections/{synthesis_id}")
+    # phase-6 deletion debt: legacy synthesis path alias.
     @http.get("/api/projects/{project_id}/syntheses/{synthesis_id}")
-    def get_synthesis(project_id: str, synthesis_id: str) -> dict[str, Any]:
-        return api_for_project(project_id).synthesis_detail(
+    def get_reflection(project_id: str, synthesis_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).reflection_detail(
             project_id=project_id, synthesis_id=synthesis_id
         )
 

@@ -96,3 +96,53 @@ def resolve_review_return(
     if rule.explicit_required and not value:
         raise ValueError(rule.required_message)
     return value or rule.default
+
+
+def revision_context_for_review_return(
+    *,
+    target_type: str,
+    role: str,
+    verdict: str,
+    notes: str,
+    findings: list[dict[str, object]],
+    return_to: str = "",
+) -> str:
+    finding_text = "; ".join(
+        str(item.get("issue", "")) for item in findings if item.get("issue")
+    )
+    pieces = [f"{role} returned {verdict}"]
+    if target_type == "experiment" and return_to == "running":
+        pieces.append(
+            "Sent back to running: the approved plan stands; fix execution "
+            "and/or the conclusion, then retain/associate results and resubmit"
+        )
+    if target_type == "synthesis":
+        if return_to == "reflecting":
+            pieces.append(
+                "Sent back to reflecting: re-launch the reflection fan-out — "
+                "every roster lens must submit a fresh reflection for the "
+                "new attempt"
+            )
+        else:
+            pieces.append(
+                "Sent back to synthesizing: the reflections stand; revise "
+                "the reflection artifacts (project graph, reflection doc, "
+                "and/or change spec) and resubmit"
+            )
+    if notes:
+        pieces.append(notes)
+    if finding_text:
+        pieces.append(f"Findings: {finding_text}")
+    if target_type == "synthesis":
+        pieces.append(
+            "Consider revising the project graph, reflection doc, and/or "
+            "change spec where this review changes the project's story; "
+            "the 16-node graph budget still applies"
+        )
+    else:
+        pieces.append(
+            "Consider updating the experiment's logic graph (role 'graph') if "
+            "this review changes the experiment's story; the 16-node budget "
+            "still applies"
+        )
+    return " | ".join(pieces)

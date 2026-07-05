@@ -16,7 +16,7 @@ from ..services.projects import ProjectService
 from ..services.quotas import QuotaService
 from ..services.reflection_tools import ReflectionToolService
 from ..services.reviews import ReviewService
-from ..services.syntheses import SynthesisService
+from ..services.reflections import ReflectionService
 from ..state import BaseStateStore
 from ..storage.blobs import BlobStore
 from ..utils import NotFoundError
@@ -31,7 +31,10 @@ class RecordCore:
     experiments: ExperimentService
     resources: ResourceService
     graph_refs: GraphRefResolver
-    syntheses: SynthesisService
+    reflection_waves: ReflectionService
+    reflection_tools: ReflectionToolService
+    # phase-6 deletion debt: legacy synthesis service/tool aliases.
+    syntheses: ReflectionService
     reflections: ReflectionToolService
     project_overview: ProjectOverviewService
     reviews: ReviewService
@@ -50,24 +53,24 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
     experiments = ExperimentService(store=store, pinned=pinned)
     resources = ResourceService(store=store, permissions=permissions, blobs=blobs)
     graph_refs = GraphRefResolver(store=store)
-    syntheses = SynthesisService(
+    reflection_waves = ReflectionService(
         store=store,
         claims=claims,
         experiment_writer=experiments,
         project_writer=projects,
         pinned=pinned,
     )
-    reflections = ReflectionToolService(syntheses=syntheses)
+    reflection_tools = ReflectionToolService(reflections=reflection_waves)
     project_overview = ProjectOverviewService(
         store=store,
         projects=projects,
-        syntheses=syntheses,
+        reflections=reflection_waves,
     )
     reviews = ReviewService(
         store=store,
         permissions=permissions,
         experiments=experiments,
-        syntheses=syntheses,
+        reflections=reflection_waves,
         pinned=pinned,
     )
     feed = FeedService(store=store, blobs=blobs)
@@ -79,8 +82,10 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         experiments=experiments,
         resources=resources,
         graph_refs=graph_refs,
-        syntheses=syntheses,
-        reflections=reflections,
+        reflection_waves=reflection_waves,
+        reflection_tools=reflection_tools,
+        syntheses=reflection_waves,
+        reflections=reflection_tools,
         project_overview=project_overview,
         reviews=reviews,
         feed=feed,
