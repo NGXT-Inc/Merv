@@ -19,12 +19,14 @@ able to re-orient the agent and the user from durable state.
 
 ## Implementation note
 
-The MCP tool surface is owned by the long-running HTTP daemon (`bin/research-plugin-http`).
-What Codex launches via the plugin manifest (`bin/research-plugin-mcp`) is a
-thin stdio proxy that forwards `tools/list` and `tools/call` to the daemon's
-`/mcp/tools` and `/mcp/call` endpoints. The proxy holds no state of its own —
-everything in this contract is enforced inside the daemon. The proxy does add
-the current repo root as hidden context and hides `project_id` from
+The MCP tool surface is owned by the backend service. In local mode that is
+the single in-process server (`bin/research-plugin-http`); in split mode it is
+the hosted control plane plus the proxy-local data plane (file reads, hashing,
+validation, key custody). What Codex launches via the plugin manifest
+(`bin/research-plugin-mcp`) is a thin stdio proxy that forwards `tools/list`
+and `tools/call` to the backend's `/mcp/tools` and `/mcp/call` endpoints —
+everything in this contract is enforced by the backend service. The proxy does
+add the current repo root as hidden context and hides `project_id` from
 project-scoped tool schemas when that context can supply it. HTTP and core
 service calls still carry explicit `project_id`.
 
@@ -393,9 +395,11 @@ SSH key custody (BYO-key is the documented primary path): the sandbox
 authorizes a caller-side public key. The requesting side generates its own
 ed25519 keypair under `.research_plugin/sandboxes/keys/` (gitignored — never
 commit key material) and that public key is what lands in
-`authorized_keys` (data-plane requests carry it as `public_key`); when no key
-is supplied, the plugin's daemon mints and manages a fallback keypair at the
-same path. The `sandbox.request` response's additive `public_key_source` field
+`authorized_keys` (data-plane requests carry it as `public_key`); in local
+mode, when no key is supplied, the local server mints and manages a fallback
+keypair at the same path. Split mode requires the caller-supplied key and
+rejects requests without one (`public_key_required`). The `sandbox.request`
+response's additive `public_key_source` field
 reports which happened: `"caller"` or `"managed"`.
 
 #### Hardware selection (provider-shaped)
@@ -538,7 +542,8 @@ may expose an optional `hardware_catalog()` that powers `sandbox.options` and th
 
 `time_limit` is enforced. Modal sandboxes self-terminate at their server-side
 timeout; for backends without server-side lifetime (Lambda Labs VMs, which
-otherwise bill until manually killed), the daemon runs a background **reaper**
+otherwise bill until manually killed), the backend service — the hosted
+control plane, or the local server in local mode — runs a background **reaper**
 that terminates any running sandbox past its `expires_at`. The reaper polls every
 `RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL` seconds (default 30) and can be
 disabled with `RESEARCH_PLUGIN_SANDBOX_REAPER=0`.

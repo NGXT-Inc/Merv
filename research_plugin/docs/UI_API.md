@@ -336,13 +336,18 @@ living project logic graph (role `project_graph`), a concise reflection document
 `project-reflection` skill).
 
 ```http
-GET /api/projects/{project_id}/syntheses
-GET /api/projects/{project_id}/syntheses/{synthesis_id}
-GET /api/projects/{project_id}/syntheses/current/graph
-GET /api/projects/{project_id}/syntheses/{synthesis_id}/graph
+GET /api/projects/{project_id}/reflections
+GET /api/projects/{project_id}/reflections/{synthesis_id}
+GET /api/projects/{project_id}/reflections/current/graph
+GET /api/projects/{project_id}/reflections/{synthesis_id}/graph
 ```
 
-`GET /syntheses` returns the whole history in one call (each entry is a full
+These `/reflections*` paths are canonical; the matching `/syntheses*` paths
+remain as legacy aliases the current UI still uses. Payloads are identical on
+both — keys are still synthesis-named (`syntheses`, `open_synthesis`,
+`synthesis_id`).
+
+`GET /reflections` returns the whole history in one call (each entry is a full
 wave state, so the UI drives the panel off this alone):
 
 ```json
@@ -355,7 +360,7 @@ wave state, so the UI drives the panel off this alone):
 }
 ```
 
-Each wave state (also returned by `/syntheses/{synthesis_id}`) carries:
+Each wave state (also returned by `/reflections/{synthesis_id}`) carries:
 
 - `id`, `title`, `status` (`reflecting` → `synthesizing` → `synthesis_review` →
   `published`; `abandoned` is terminal), `attempt_index`, `revision_context`
@@ -385,8 +390,8 @@ Each wave state (also returned by `/syntheses/{synthesis_id}`) carries:
   `added`, `removed`, `changed`, and `unchanged_count` groups;
 - `allowed_transitions`.
 
-`GET /syntheses/current/graph` renders the open wave's project graph (else the
-latest published one); `GET /syntheses/{synthesis_id}/graph` renders that
+`GET /reflections/current/graph` renders the open wave's project graph (else the
+latest published one); `GET /reflections/{synthesis_id}/graph` renders that
 specific wave's graph from the bytes it pinned, so a past wave shows faithfully
 even after a later wave overwrites the living `project/logic_graph.json`. Both
 share the per-experiment graph payload shape — `{ available, graph, problems,

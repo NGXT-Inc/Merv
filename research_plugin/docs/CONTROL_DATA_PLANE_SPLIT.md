@@ -150,9 +150,10 @@ daemon-minted private key path is returned.
 ```
 
 There is no background sync or daemon-owned transfer lease. Output handoff is
-explicit: the agent calls `sandbox.pull_outputs` to copy selected light files
-back over SSH before release, and uses durable storage tools for large
-artifacts.
+explicit: in split mode `sandbox.pull_outputs` returns an actionable error
+with client-side rsync guidance — the agent copies selected light files back
+over SSH itself before release, and uses durable storage tools for large
+artifacts. (`sandbox.pull_outputs` performs the transfer only in local mode.)
 
 ### Local command material
 

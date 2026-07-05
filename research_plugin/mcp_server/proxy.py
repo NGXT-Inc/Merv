@@ -403,7 +403,9 @@ class HttpProxyMcpServer:
         if name == "sandbox.health":
             return self._enriched_health()
         # sandbox.get and any legacy aggregate: cloud row facts merged with
-        # proxy-local machine facts. Cloud-down must not block local enrichment.
+        # proxy-local machine facts. The enrichment itself dials the cloud for
+        # row facts; either half may fail without blocking the other, with the
+        # failure surfaced under the control_plane / data_plane error keys.
         cloud: dict[str, Any] = {}
         cloud_err: dict[str, Any] | None = None
         try:

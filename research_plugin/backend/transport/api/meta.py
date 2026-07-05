@@ -53,6 +53,23 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         }
         return payload
 
+    @api_router.api_route(
+        "/api/daemon/{_path:path}",
+        methods=["GET", "POST", "PUT", "DELETE"],
+        status_code=410,
+    )
+    def daemon_retired(_path: str) -> dict[str, Any]:
+        # Tombstone for pre-0.0009 local daemons: their long-poll would spin
+        # on bare 404s forever with nothing telling the operator why.
+        return {
+            "error_code": "daemon_retired",
+            "message": (
+                "The local daemon was removed in plugin 0.0009; the stdio MCP "
+                "proxy now performs local file work itself. Stop this daemon "
+                "and upgrade the research_plugin package."
+            ),
+        }
+
     @api_router.get("/api/activity")
     def activity(
         request: Request,

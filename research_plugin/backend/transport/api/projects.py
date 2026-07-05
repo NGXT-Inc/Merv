@@ -60,6 +60,8 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/projects/{project_id}/home")
     def home(project_id: str, request: Request) -> Response:
+        # ETag debt: body-hash — MLflow health + live sandbox/process
+        # projections change without an event-table signal.
         return conditional_json(request, api_for_project(project_id).home(project_id=project_id))
 
     @api_router.get("/api/projects/{project_id}/status")

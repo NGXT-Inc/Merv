@@ -27,6 +27,8 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/api/projects/{project_id}/sandboxes")
     def list_sandboxes(project_id: str, request: Request) -> Response:
+        # ETag debt: body-hash — sandbox/attachment/heartbeat mutations have
+        # no single monotonic project counter yet.
         return conditional_json(
             request, api_for_project(project_id).sandbox_list_view(project_id=project_id)
         )

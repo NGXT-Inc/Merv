@@ -134,7 +134,7 @@ missing or the lightweight Lambda catalog health check cannot reach the API.
 
 The control plane serves plain HTTP on `:8787`. Put it **behind a
 TLS-terminating load balancer / reverse proxy** (ALB, nginx, Caddy, Traefik) in
-production — the daemon and proxy must dial `https://`. `/health` and `/api/meta`
+production — the MCP proxy must dial `https://`. `/health` and `/api/meta`
 are open for liveness/handshake. All other routes are currently private
 operator/admin routes, not public internet routes.
 

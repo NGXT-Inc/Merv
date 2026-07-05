@@ -83,7 +83,9 @@ runs four sweeps:
 1. **orphan-VM sweep** — reconcile running rows against the provider; terminate
    rows whose VM is gone.
 2. **blob TTL GC** — delete expired blobs across tenants.
-3. **stale-provision sweep** — fail or terminate provisioning rows whose setup
+3. **expired-storage sweep** — expire heavy long-term storage objects through
+   the ledger (refcount-aware GC).
+4. **stale-provision sweep** — fail or terminate provisioning rows whose setup
    never reached a usable VM.
 
 Wire a managed cron / sidecar tick to **`POST /api/admin/cleanup`** on your

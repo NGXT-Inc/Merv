@@ -460,7 +460,10 @@ class ControlAppTest(unittest.TestCase):
             self.assertEqual(projects.status_code, 200, projects.text)
 
             old_daemon_poll = client.get("/api/daemon/tasks?wait=0")
-            self.assertEqual(old_daemon_poll.status_code, 404, old_daemon_poll.text)
+            self.assertEqual(old_daemon_poll.status_code, 410, old_daemon_poll.text)
+            self.assertEqual(
+                old_daemon_poll.json().get("error_code"), "daemon_retired"
+            )
 
             admin_cleanup = client.post("/api/admin/cleanup")
             self.assertEqual(admin_cleanup.status_code, 200, admin_cleanup.text)

@@ -38,14 +38,14 @@ flowchart TD
   Codex --> LocalRepo["Local repo files"]
   Codex --> MCPProxy["research-plugin MCP proxy (stdio, stateless)"]
 
-  Browser["Browser UI"] --> Daemon["research-plugin HTTP daemon"]
-  MCPProxy --> Daemon
+  Browser["Browser UI"] --> Backend["research-plugin backend (local server or hosted control plane)"]
+  MCPProxy --> Backend
 
-  Daemon --> Memory["Research memory (SQLite)"]
-  Daemon --> Policy["Permission and workflow policy"]
-  Daemon --> Jobs["Sandbox registry (Modal/Lambda + SSH)"]
-  Daemon --> ResourceIndex["Repo-file resource index"]
-  Daemon --> ReviewGates["Review gates"]
+  Backend --> Memory["Research memory (SQLite)"]
+  Backend --> Policy["Permission and workflow policy"]
+  Backend --> Jobs["Sandbox registry (Modal/Lambda + SSH)"]
+  Backend --> ResourceIndex["Repo-file resource index"]
+  Backend --> ReviewGates["Review gates"]
 
   Skills --> DesignReviewer["Design reviewer agent"]
   Skills --> ExperimentReviewer["Experiment reviewer agent"]
@@ -56,39 +56,46 @@ flowchart TD
 
 ## Process topology
 
-The plugin is split across two processes per research repo:
+The plugin is split across two pieces:
 
-1. **HTTP daemon** — long-lived. Owns SQLite, the activity log, the sandbox
-   execution backend, and the sandbox registry/reapers. Exposes the full tool
-   surface at `/mcp/*` and a UI-flavored view at `/api/*`.
-2. **MCP stdio proxy** — short-lived, spawned by Codex on demand. Stateless.
-   Discovers the daemon URL via `$REPO/.research_plugin/daemon.json` or
-   `RESEARCH_PLUGIN_DAEMON_URL` and forwards `tools/list` / `tools/call` over
-   HTTP.
+1. **Backend service** — owns SQLite/Postgres state, the activity log, the
+   sandbox execution backend, and the sandbox registry/reaper. Exposes the full
+   tool surface at `/mcp/*` and a UI-flavored view at `/api/*`. In local mode
+   this is a single in-process server (`bin/research-plugin-http`); in split
+   mode it is the hosted control plane.
+2. **MCP stdio proxy** — short-lived, spawned by Codex on demand.
+   Discovers its backend URL via `$REPO/.research_plugin/daemon.json`,
+   `RESEARCH_PLUGIN_DAEMON_URL`, or `RESEARCH_PLUGIN_CONTROL_URL` and forwards
+   `tools/list` / `tools/call` over HTTP. In split mode it also performs local
+   file reads, hashing, and validation itself.
 
-The daemon must be running before Codex makes any tool call. Multiple MCP
-proxies (e.g. parallel Codex sessions or reviewer agents) talk to the same
-daemon, which serializes mutations through its in-process locks.
+In local mode, start the local server before Codex makes any tool call;
+multiple MCP proxies (e.g. parallel Codex sessions or reviewer agents) talk to
+the same server, which serializes mutations through its in-process locks. In
+split mode there is no long-running local process at all — each proxy dials
+the control plane directly.
 
 ### Cloud topology — control / data plane split (IMPLEMENTED)
 
-The same code base runs in three process roles selected by
-`RESEARCH_PLUGIN_MODE` (see `backend/config.py`):
+The same code base runs in two process roles selected by
+`RESEARCH_PLUGIN_MODE` (see `backend/config.py`; anything else refuses to
+start):
 
 - **`local` (default)** — today's single-process topology, both planes in one
   process. Byte-identical to before the migration; tier-1 supported forever.
 - **`control`** — the cloud **control plane**: multi-tenant records, gates,
-  lifecycle, blob store, quotas, auth, and daemon task endpoints. It never
-  touches a user checkout.
-- **`daemon`** — the slim user-machine **data plane**: key custody, file
-  observation, SSH command material, and the machine-local repo-folder to
-  hosted-project link
-  registry. It dials the control plane over HTTP (the cloud never dials in).
+  lifecycle, blob store, quotas, auth. It never touches a user checkout.
+
+In split mode the user-machine **data plane** is not a third server role: the
+stdio MCP proxy itself handles key custody, file observation, SSH command
+material, and the machine-local repo-folder to hosted-project link registry
+(a proxy-owned `project_links.sqlite`). It dials the control plane over HTTP
+(the cloud never dials in).
 
 The split is built end-to-end. The load-bearing rule — *the cloud cannot see a
-user's local filesystem* — is what puts file IO and SSH key material on the daemon and
-everything else (orchestration, records, credentials, authz, cost governance)
-on the control plane. The module-by-module assignment is in
+user's local filesystem* — is what puts file IO and SSH key material on the
+proxy-local data plane and everything else (orchestration, records,
+credentials, authz, cost governance) on the control plane. The module-by-module assignment is in
 **`docs/CONTROL_DATA_PLANE_SPLIT.md`**; operating the control plane (modes, env,
 cleanup jobs, version floor, deploy) is **`docs/CONTROL_PLANE_OPERATIONS.md`**.
 For client VM setup, use **`docs/HOSTED_CLIENT_QUICKSTART.md`**.

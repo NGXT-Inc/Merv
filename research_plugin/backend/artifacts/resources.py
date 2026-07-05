@@ -36,10 +36,16 @@ class ResourceService:
         store: BaseStateStore,
         permissions: ResourceAssociationPolicy,
         blobs: BlobStore | None = None,
+        association_targets: Any = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
         self.blobs = blobs
+        # Research-core-owned target resolution (existence + attempt scoping),
+        # injected at composition — artifacts must not name research-core
+        # tables. Optional only for direct construction in tests; the
+        # composition root always injects it.
+        self.association_targets = association_targets
 
     def record_observation(
         self,
@@ -58,7 +64,7 @@ class ResourceService:
         """Record a file observation supplied by the local data plane.
 
         The control plane stores only repo-relative resource identity,
-        version metadata, and content hashes; the daemon owns local path
+        version metadata, and content hashes; the MCP proxy owns local path
         resolution and file reads.
         """
         rel_path = self._repo_relative_path(path=path)
@@ -220,11 +226,11 @@ class ResourceService:
         content_bytes: bytes | None = None,
         figures: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Associate the current observed version, with daemon-submitted bytes.
+        """Associate the current observed version, with proxy-submitted bytes.
 
         Hosted control cannot read the working tree. For gated roles the
-        daemon submits the artifact bytes it just read locally; control checks
-        them against the pinned version hash before storing blobs.
+        MCP proxy submits the artifact bytes it just read locally; control
+        checks them against the pinned version hash before storing blobs.
         """
         self.permissions.validate_resource_association(target_type=target_type, role=role)
         storage_target_type = self.permissions.storage_resource_target_type(
@@ -667,37 +673,23 @@ class ResourceService:
     def _ensure_target_exists(
         self, *, conn: Connection, target_type: str, target_id: str
     ) -> str | None:
-        table_by_type = {
-            "experiment": "experiments",
-            "synthesis": "reflections",
-            "claim": "claims",
-            "review": "reviews",
-        }
-        table = table_by_type.get(target_type)
-        if target_type == "attempt":
-            # Attempts are implicit in v0.0001.
-            return None
-        if table is None:
-            raise ValidationError(f"unsupported target type: {target_type}")
-        row = conn.execute(f"SELECT id, project_id FROM {table} WHERE id = ?", (target_id,)).fetchone()
-        if row is None:
-            raise NotFoundError(f"{target_type} not found: {target_id}")
-        return str(row["project_id"])
+        return self._targets().project_id_for(
+            conn=conn, target_type=target_type, target_id=target_id
+        )
 
     def _association_attempt_index(
         self, *, conn: Connection, target_type: str, target_id: str
     ) -> int:
-        # Experiments and syntheses both scope associations to their current
-        # attempt, so a review rejection that bumps the attempt naturally
-        # invalidates stale associations for either target kind.
-        table_by_type = {"experiment": "experiments", "synthesis": "reflections"}
-        table = table_by_type.get(target_type)
-        if table is None:
-            return 0
-        row = conn.execute(f"SELECT attempt_index FROM {table} WHERE id = ?", (target_id,)).fetchone()
-        if row is None:
-            raise NotFoundError(f"{target_type} not found: {target_id}")
-        return int(row["attempt_index"])
+        return self._targets().attempt_index_for(
+            conn=conn, target_type=target_type, target_id=target_id
+        )
+
+    def _targets(self) -> Any:
+        if self.association_targets is None:
+            raise RuntimeError(
+                "ResourceService needs association_targets injected at composition"
+            )
+        return self.association_targets
 
     def _capture_submitted_gated_blob(
         self,

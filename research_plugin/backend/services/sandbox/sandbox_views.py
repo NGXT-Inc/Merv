@@ -7,7 +7,7 @@ These functions turn a raw ``sandboxes`` row into the dicts callers consume:
   (cloud plan §3.3): row facts are provider-portable and pure; the ssh
   command, key path, and local folder come from the data-plane worker's
   enrichment and are merged back in. Local mode merges in-process so tool
-  results are unchanged; in split mode the proxy/daemon performs the merge.
+  results are unchanged; in split mode the stdio MCP proxy performs the merge.
 - ``sandbox_row_view`` — the canonical row projection used by the workflow's
   agent-facing status AND the HTTP/UI layer (formerly ``_ui_view``).
 - ``agent_summary`` — the compact per-row shape for ``sandbox.list``.

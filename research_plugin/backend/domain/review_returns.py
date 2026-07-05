@@ -20,7 +20,7 @@ PASS_RETURN_TO_ERROR = (
 )
 
 EXPERIMENT_RETURN_TO_ERROR = "return_to must be 'planned' or 'running'"
-SYNTHESIS_RETURN_TO_ERROR = (
+REFLECTION_RETURN_TO_ERROR = (
     "return_to must be 'reflecting' or 'synthesizing' for reflection reviews"
 )
 
@@ -62,12 +62,12 @@ REVIEW_RETURN_RULES: dict[tuple[str, str], ReviewReturnRule] = {
     ("synthesis", "*"): ReviewReturnRule(
         allowed=("", "reflecting", "synthesizing"),
         default="synthesizing",
-        invalid_message=SYNTHESIS_RETURN_TO_ERROR,
+        invalid_message=REFLECTION_RETURN_TO_ERROR,
     ),
     ("synthesis", "reflection_reviewer"): ReviewReturnRule(
         allowed=("", "reflecting", "synthesizing"),
         default="synthesizing",
-        invalid_message=SYNTHESIS_RETURN_TO_ERROR,
+        invalid_message=REFLECTION_RETURN_TO_ERROR,
         explicit_required=True,
         required_message=REFLECTION_REVIEWER_RETURN_TO_REQUIRED,
     ),

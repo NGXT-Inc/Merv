@@ -5,7 +5,7 @@ in-process: control-plane code (records, gates, lifecycle) never touches the
 local filesystem or local processes directly — it calls a ``DataPlaneWorker``.
 The local-mode implementation wraps today's machinery (conn files, local paths,
 metrics fallback). Phase 4 adds the task channel — control enqueues, data
-executes — which Phase 8 turns into the daemon's long-poll task loop.
+executes; in split mode the local-IO duties live in the stdio MCP proxy instead.
 """
 
 from __future__ import annotations

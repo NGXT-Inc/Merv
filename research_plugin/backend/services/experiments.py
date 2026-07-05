@@ -41,12 +41,16 @@ class ExperimentService:
         *,
         store: BaseStateStore,
         pinned: PinnedStore | None = None,
+        storage_objects_reader: Any = None,
     ) -> None:
         self.store = store
         # Gate lints read submitted (pinned) bytes from here, never the
         # working tree. Optional only for direct construction in tests; the
         # composition root always injects it.
         self.pinned = pinned
+        # Object-storage-owned query, injected at composition — research_core
+        # has no import (or SQL) edge to object_storage.
+        self.storage_objects_reader = storage_objects_reader
 
     def create(
         self,
@@ -299,10 +303,14 @@ class ExperimentService:
             data["current_attempt_resources"] = [
                 res for res in data["resources"] if res.get("association_attempt_index") == data["attempt_index"]
             ]
-            data["storage_objects"] = self._storage_objects_for_experiment(
-                conn=conn,
-                project_id=str(data["project_id"]),
-                experiment_id=experiment_id,
+            data["storage_objects"] = (
+                self.storage_objects_reader(
+                    conn=conn,
+                    project_id=str(data["project_id"]),
+                    experiment_id=experiment_id,
+                )
+                if self.storage_objects_reader is not None
+                else []
             )
             data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
             review_rows = conn.execute(
@@ -628,23 +636,6 @@ class ExperimentService:
             "experiment_reviewer": "Experiment review passed",
         }
         return labels.get(role, f"{role} review passed")
-
-    def _storage_objects_for_experiment(
-        self, *, conn, project_id: str, experiment_id: str
-    ) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            """
-            SELECT id, name, version, kind, content_sha256, size_bytes,
-                   content_type, status, expires_at, producing_run, source_uri,
-                   notes, created_at, updated_at, last_accessed_at
-            FROM storage_objects
-            WHERE project_id = ? AND producing_experiment_id = ?
-              AND status != 'deleted'
-            ORDER BY kind, name, version DESC, created_seq DESC
-            """,
-            (project_id, experiment_id),
-        ).fetchall()
-        return rows_to_dicts(rows=rows)
 
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
         conn = self.store.connect()

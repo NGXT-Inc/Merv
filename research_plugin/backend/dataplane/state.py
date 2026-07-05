@@ -3,7 +3,8 @@
 Machine-local values — the sandbox SSH key path, the local sync dir, and the
 stable per-machine client identity — must never live in cloud-bound rows. They
 live here instead, in a small SQLite file under ``.research_plugin/`` owned by
-the data plane (the daemon-mode successor is ``~/.research_plugin/daemon.sqlite``).
+the data plane (in split mode the stdio MCP proxy owns the machine-local state,
+e.g. the repo-to-project link map in ``project_links.sqlite``).
 """
 
 from __future__ import annotations

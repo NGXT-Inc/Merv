@@ -232,10 +232,3 @@ def allowed_reflection_transitions_for(status: str) -> list[dict[str, Any]]:
             out.append(entry)
     out.append({"transition": "abandon", "leads_to": "abandoned"})
     return out
-
-
-SYNTHESIS_GATE_TABLE = REFLECTION_GATE_TABLE
-SYNTHESIS_TERMINAL_STATUSES = REFLECTION_TERMINAL_STATUSES
-SYNTHESIS_TRANSITION_GRAPH = REFLECTION_TRANSITION_GRAPH
-SYNTHESIS_TRANSITION_REQUIREMENTS = REFLECTION_TRANSITION_REQUIREMENTS
-allowed_synthesis_transitions_for = allowed_reflection_transitions_for

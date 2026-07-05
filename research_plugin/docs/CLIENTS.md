@@ -1,10 +1,11 @@
 # Client Support
 
 The plugin targets five agentic clients from one canonical content tree.
-Everything heavy — SQLite state, gates, capability-based reviews, sandbox
-provisioning — lives in the client-neutral HTTP daemon; the stdio MCP proxy
-is stdlib-only. Each client gets a thin adapter on top of the same `bin/`,
-`skills/`, and `agents/` content:
+Everything heavy — state, gates, capability-based reviews, sandbox
+provisioning — lives in the client-neutral backend service (the local
+`research-plugin-http` server, or the hosted control plane in split mode); the
+stdio MCP proxy is stdlib-only. Each client gets a thin adapter on top of the
+same `bin/`, `skills/`, and `agents/` content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
 |---|---|---|---|---|
@@ -28,12 +29,15 @@ Shared invariants across all clients:
   them. OpenCode needs `mode`/`permission` frontmatter, so it has its own thin
   agent wrappers in `clients/opencode/agents/` that load the matching review
   skill.
-- The HTTP daemon must be started once per machine before any client makes a
-  tool call: `bin/research-plugin-http` (see the README).
+- In local mode, the single local server (`bin/research-plugin-http`) must be
+  started once per machine before any client makes a tool call (see the
+  README). In hosted/split mode there is no local server at all: clients spawn
+  only the stdio proxy, pointed at the control plane via
+  `RESEARCH_PLUGIN_CONTROL_URL`.
 
 ## Reviewer handoff per client
 
-The daemon's `workflow.status_and_next` returns a client-neutral
+The backend's `workflow.status_and_next` returns a client-neutral
 `launch_design_reviewer` / `launch_experiment_reviewer` /
 `launch_reflection_reviewer` action plus a `reviewer_capability`. What differs
 per client is only how the separate read-only reviewer agent is spawned:
@@ -90,6 +94,9 @@ Two Cursor-specific notes:
   }
 }
 ```
+
+(`RESEARCH_PLUGIN_DAEMON_URL` points at the local server and applies in local
+mode; hosted/split setups set `RESEARCH_PLUGIN_CONTROL_URL` instead.)
 
 The plugin exposes ~35 MCP tools; Cursor historically limits the number of
 active tools (~40 community-reported). If you run other MCP servers in the

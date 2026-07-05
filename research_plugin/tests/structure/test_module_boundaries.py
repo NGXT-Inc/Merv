@@ -69,6 +69,7 @@ FILE_MODULES = {
     "services/experiments.py": RESEARCH_CORE,
     "services/experiment_views.py": RESEARCH_CORE,
     "services/claims.py": RESEARCH_CORE,
+    "services/association_targets.py": RESEARCH_CORE,
     "services/reviews.py": RESEARCH_CORE,
     "services/review_gate.py": RESEARCH_CORE,
     "services/reflections.py": RESEARCH_CORE,
@@ -122,12 +123,35 @@ ALLOWED_EDGES = (
 GRANDFATHERED: frozenset[tuple[str, str]] = frozenset()
 
 
-# Sandbox de-domaining (phase 4a): the sandbox module must not read or write
-# research-core tables — attachment ids are opaque labels there. Matches SQL
-# verbs followed by a research-core table name inside any string literal.
-RESEARCH_CORE_TABLE_SQL = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:experiments|claims|reviews|reflections)\b",
-    re.IGNORECASE,
+# SQL follows the import law (conformance scan, post-phase-6): a module's SQL
+# may name its own tables, kernel tables, and tables of modules it is allowed
+# to import. Tables absent here (projects, events, tenants, tool_calls,
+# schema_migrations, *_migrate scratch) are kernel scoping infrastructure.
+TABLE_OWNERS = {
+    "experiments": RESEARCH_CORE,
+    "experiment_claims": RESEARCH_CORE,
+    "claims": RESEARCH_CORE,
+    "reviews": RESEARCH_CORE,
+    "review_requests": RESEARCH_CORE,
+    "review_sessions": RESEARCH_CORE,
+    "reflections": RESEARCH_CORE,
+    "synthesis_claim_changes": RESEARCH_CORE,
+    "synthesis_experiments": RESEARCH_CORE,
+    "resources": ARTIFACTS,
+    "resource_versions": ARTIFACTS,
+    "resource_associations": ARTIFACTS,
+    "report_figures": ARTIFACTS,
+    "storage_objects": OBJECT_STORAGE,
+    "sandboxes": SANDBOX,
+    "sandbox_attachments": SANDBOX,
+    "sandbox_generations": SANDBOX,
+    "tenant_quotas": SANDBOX,
+    "spend_kill_switches": SANDBOX,
+    "posts": FEED,
+    "feed_authors": FEED,
+}
+SQL_TABLE_REF = re.compile(
+    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\b", re.IGNORECASE
 )
 
 
@@ -239,30 +263,38 @@ class ModuleBoundaryTest(unittest.TestCase):
             ),
         )
 
-    def test_sandbox_module_sql_names_no_research_core_tables(self) -> None:
-        """Fitness assertion (phase 4a, no grandfathering): sandbox-module
-        files must not embed SQL that references research-core tables. The
-        sandbox stack persists only its own tables (sandboxes,
-        sandbox_attachments, sandbox_generations, projects scoping via the
-        kernel store); experiment validation is surface-injected."""
+    def test_module_sql_respects_table_ownership(self) -> None:
+        """Fitness assertion (conformance scan, no grandfathering): SQL string
+        literals follow the same edges as imports — a module may only name its
+        own tables, kernel tables, and tables of modules it may import.
+        Supersedes the phase-4a sandbox-only lint. Cross-module reads belong
+        behind composition-injected callables (see control/record_core.py)."""
         offenders: list[str] = []
         for path in _backend_files():
             rel = path.relative_to(BACKEND_ROOT).as_posix()
-            if _classify(rel) != SANDBOX:
+            module = _classify(rel)
+            if module in (None, KERNEL, SURFACE):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                    and RESEARCH_CORE_TABLE_SQL.search(node.value)
+                if not (
+                    isinstance(node, ast.Constant) and isinstance(node.value, str)
                 ):
-                    offenders.append(f"{rel}:{node.lineno}")
+                    continue
+                for match in SQL_TABLE_REF.finditer(node.value):
+                    owner = TABLE_OWNERS.get(match.group(1).lower())
+                    if owner is None or owner == module:
+                        continue
+                    if (module, owner) not in ALLOWED_EDGES:
+                        offenders.append(
+                            f"{rel}:{node.lineno} ({module} SQL names "
+                            f"{owner} table {match.group(1)})"
+                        )
         self.assertFalse(
             offenders,
-            "sandbox-module SQL references research-core tables "
-            "(experiments/claims/reviews/reflections); move the query behind a "
-            "surface-injected check instead: " + ", ".join(sorted(offenders)),
+            "module SQL crosses an unratified boundary; inject the query from "
+            "the owning module at composition instead: "
+            + ", ".join(sorted(set(offenders))),
         )
 
     def test_grandfathered_baseline_only_shrinks(self) -> None:

@@ -238,12 +238,13 @@ An experiment can complete only when:
 - its conclusion is tied to resources and/or sandbox outputs
 - MCP accepts the completion transition
 
-## Project synthesis lifecycle (reflection waves)
+## Project reflection lifecycle (reflection waves)
 
 One level above experiments, the project maintains a **living project logic
 graph** — one JSON file under the same 16-node envelope as experiment graphs,
-holding the project's current logic state — through gated **synthesis**
-records (`syn_…`), one per reflection wave:
+holding the project's current logic state — through gated **reflection**
+records (`syn_…` ids; the wire keeps the legacy synthesis naming), one per
+reflection wave:
 
 ```text
 reflecting -> synthesizing -> reflection_review -> published
@@ -267,7 +268,7 @@ Gates (envelope-only, same philosophy as experiment gates):
    roster lens has a current-attempt role-`reflection_lens_doc` resource whose
    filename is `<lens_id>.md`, non-empty on disk. Each reflection is
    authored and submitted by its own read-only subagent.
-3. Synthesis artifacts gate: `submit_reflection_artifacts` requires the project logic
+3. Reflection artifacts gate: `submit_reflection_artifacts` requires the project logic
    graph (role `project_graph`, the shared `graph_lint` envelope), a concise reflection
    document (role `reflection_doc`, required sections: Summary, Critical
    reading, Decision / future directions, under 16 KB, with any relative image
@@ -276,7 +277,7 @@ Gates (envelope-only, same philosophy as experiment gates):
    change spec is the reviewed belief-state update: claim creations/updates
    plus exactly one decision — `hard_stop` or `create_experiments` with 2-3
    planned experiments.
-4. Synthesis review gate: `publish` requires a passing `reflection_reviewer`
+4. Reflection review gate: `publish` requires a passing `reflection_reviewer`
    review pinned to the wave's snapshot. The reviewer judges substance —
    does the story reconcile with the corpus, were the lenses genuinely
    diverse, is the belief-state update warranted, are the concrete experiments

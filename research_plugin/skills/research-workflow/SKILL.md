@@ -16,7 +16,7 @@ workflow state.
 
 - Claim: what we think.
 - Experiment: what we try.
-- Synthesis: project-level reflection across experiments.
+- Reflection: what the project has learned across experiments.
 - Resource: one regular file in the local repo.
 - Review: read-only design, experiment, human, or automated judgment submitted
   to MCP.
@@ -42,20 +42,20 @@ Review loops:
 Project reflection workflow:
 
 Finished Experiments -> Reflection Wave -> Multiple Lens Reflections ->
-Project Synthesis -> Synthesis Review -> Publish Project Logic + Next Proposals
+Project Reflection -> Reflection Review -> Publish Project Logic + Next Proposals
 
 Review loops:
 
-- Synthesis review can send work back to Project Synthesis.
-- Synthesis review can send work back to Reflection Wave if the reflections
-  need to be redone.
+- Reflection review can send work back to Project Reflection.
+- Reflection review can send work back to Reflection Wave if the lens
+  reflections need to be redone.
 
 ## Project reflection
 
 The project also has a level above experiments: a living project logic graph,
 maintained through reflection waves. When `workflow.status_and_next` includes
 `project_reflection`, treat it as project-level work and use the
-`project-reflection` skill for the synthesis workflow.
+`project-reflection` skill for the reflection workflow.
 
 Reflection drift starts advisory, then becomes a gate. The project is nudged to
 reflect after the advisory threshold, but once the hard threshold is reached

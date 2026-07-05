@@ -27,9 +27,12 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     def events(project_id: str, request: Request, limit: int = Query(100, ge=1)) -> Response:
         target = api_for_project(project_id)
         signal = target.app.store.project_event_signal(project_id=project_id)
+        # Mirror the store's limit clamp so limit=501 and limit=502 share one
+        # ETag (identical bodies must not cache-miss on token identity).
+        effective_limit = max(1, min(int(limit), 500))
         return conditional_json_from_signal(
             request,
-            signal_parts=("events", project_id, limit, signal),
+            signal_parts=("events", project_id, effective_limit, signal),
             payload=lambda: target.events(project_id=project_id, limit=limit),
         )
 

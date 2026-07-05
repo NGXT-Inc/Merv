@@ -4,9 +4,10 @@ Every local-IO duty of the sandbox stack routes through this seam: workspace
 folders, SSH keypairs, and conn files.
 Control-plane code (registry, provisioner, facade verbs) calls the interface;
 ``LocalDataPlaneWorker`` binds it to this machine by wrapping the existing
-machinery. In split mode the same duties become the daemon's task loop
-(Phase 8). Sandbox file movement is not a backend service: the agent uses the
-SSH credentials directly to copy out anything it wants to keep before release.
+machinery. In split mode the same duties are performed by the stdio MCP proxy
+on the user machine. Sandbox file movement is not a backend service: the agent
+uses the SSH credentials directly to copy out anything it wants to keep before
+release.
 
 Since plan Phase 5's management-key switch, ``read_transcript`` and live
 usage sampling are control-plane duties authenticated by the per-sandbox
@@ -143,7 +144,7 @@ class LocalDataPlaneWorker:
 
         Writes/refreshes the conn file for a live row and renders the ssh
         command, raw command, key path, and local folder. The control plane
-        merges this with the row facts; in split mode the daemon supplies it.
+        merges this with the row facts; in split mode the proxy supplies it.
         """
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")

@@ -26,8 +26,8 @@ from .vocabulary import CLAIM_CONFIDENCES, CLAIM_STATUSES
 from ..utils import ValidationError, WorkflowError
 
 CHANGE_SPEC_SCHEMA_VERSION = 1
-MAX_SYNTHESIS_DOC_BYTES = 16_000
-REQUIRED_SYNTHESIS_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
+MAX_REFLECTION_DOC_BYTES = 16_000
+REQUIRED_REFLECTION_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Summary", "summary"),
     ("Critical reading", "critical"),
     ("Decision / future directions", "decision"),
@@ -44,16 +44,16 @@ def reflection_doc_problems(text: str) -> list[str]:
     if not stripped:
         return ["reflection document is empty"]
     size = len(text.encode("utf-8"))
-    if size > MAX_SYNTHESIS_DOC_BYTES:
+    if size > MAX_REFLECTION_DOC_BYTES:
         problems.append(
             f"reflection document is {size} bytes; keep it under "
-            f"{MAX_SYNTHESIS_DOC_BYTES}"
+            f"{MAX_REFLECTION_DOC_BYTES}"
         )
     headings = {
         re.sub(r"[^a-z0-9]+", " ", match.group(1).lower()).strip()
         for match in _MD_HEADING_RE.finditer(text)
     }
-    for canonical, key in REQUIRED_SYNTHESIS_DOC_SECTIONS:
+    for canonical, key in REQUIRED_REFLECTION_DOC_SECTIONS:
         if not any(heading.startswith(key) for heading in headings):
             problems.append(f"missing required section: {canonical}")
     return problems

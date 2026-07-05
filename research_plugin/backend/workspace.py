@@ -63,7 +63,7 @@ def local_experiment_dir(*, repo_root: Path, experiment_id: str, name: str = "")
 def local_sessions_dir(
     *, repo_root: Path, experiment_id: str, sandbox_id: str = ""
 ) -> Path:
-    """Daemon-owned local home for pulled sandbox telemetry, per VM generation.
+    """Machine-local home for pulled sandbox telemetry, per VM generation.
 
     Command transcripts and legacy sandbox-local MLflow state are runtime
     telemetry, not experiment content — they live outside the

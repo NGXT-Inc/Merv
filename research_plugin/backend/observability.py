@@ -21,8 +21,8 @@ only in the control plane:
   events are already tenant-scoped, append-only, and queried by the UI.
 
 Audit-log placement (open decision J): cloud-only, via the existing ``events``
-table scoped by project → tenant. No thin local mirror — the daemon keeps its
-own ``activity.jsonl`` and that is the local record.
+table scoped by project → tenant. No thin local mirror — the local server keeps
+its own ``activity.jsonl`` and that is the local record.
 """
 
 from __future__ import annotations

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..artifacts.pinned import PinnedStore
 from ..artifacts.resources import ResourceService
+from ..services.association_targets import AssociationTargets
 from ..services.claims import ClaimService
 from ..services.experiments import ExperimentService
 from ..services.feed import FeedService
@@ -19,6 +20,7 @@ from ..services.reviews import ReviewService
 from ..services.reflections import ReflectionService
 from ..state import BaseStateStore
 from ..storage.blobs import BlobStore
+from ..storage.service import objects_for_experiment
 from ..utils import NotFoundError
 
 
@@ -48,8 +50,18 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
     # Research-core services read pinned artifact bytes through the
     # artifacts-owned facade; only artifacts/feed touch the blob store.
     pinned = PinnedStore(blobs=blobs)
-    experiments = ExperimentService(store=store, pinned=pinned)
-    resources = ResourceService(store=store, permissions=permissions, blobs=blobs)
+    # Cross-module reads the import law forbids as direct edges are injected
+    # here instead: research_core gets the object-storage ledger query;
+    # artifacts gets research-core target resolution.
+    experiments = ExperimentService(
+        store=store, pinned=pinned, storage_objects_reader=objects_for_experiment
+    )
+    resources = ResourceService(
+        store=store,
+        permissions=permissions,
+        blobs=blobs,
+        association_targets=AssociationTargets(),
+    )
     graph_refs = GraphRefResolver(store=store)
     reflection_waves = ReflectionService(
         store=store,

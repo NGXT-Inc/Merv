@@ -1,6 +1,6 @@
 {
   "name": "research-plugin",
-  "version": "0.0008+codex.20260613",
+  "version": "0.0009+codex.20260613",
   "description": "Lean Codex research-state workflow with project-local MCP context, resources, reviews, and Modal SSH sandboxes.",
   "license": "UNLICENSED",
   "keywords": [
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "Research Plugin",
     "shortDescription": "Project-scoped claims, experiments, resources, reviews, and Modal sandboxes",
-    "longDescription": "A lean research-state plug-in where Codex operates through skills and a project-local MCP proxy. A shared HTTP daemon controls durable memory, permissioned mutations, repo-file resources, workflow state, adversarial review records, and Modal sandbox provisioning. Agents use project.current for folder context and sandbox.sync before associating remote results.",
+    "longDescription": "A lean research-state plug-in where Codex operates through skills and a project-local MCP proxy. The backend service (a single local server in local mode, or a hosted control plane with a proxy-local data plane in split mode) controls durable memory, permissioned mutations, repo-file resources, workflow state, adversarial review records, and Modal sandbox provisioning. Agents use project.current for folder context, copy sandbox outputs back via storage tools or client-side rsync, and use resource.associate for repo artifacts.",
     "developerName": "Papyrus",
     "category": "Productivity",
     "capabilities": [
@@ -25,7 +25,7 @@
     ],
     "defaultPrompt": [
       "Use Research Plugin. Start with project.current, then workflow.status_and_next.",
-      "Use Research Plugin to run this experiment in a sandbox and call sandbox.sync before registering results.",
+      "Use Research Plugin to run this experiment in a sandbox and copy retained outputs back (storage tools or client-side rsync) before registering results.",
       "Use Research Plugin to sync resources, review the experiment, and update claims."
     ],
     "composerIcon": "./assets/icon.svg"

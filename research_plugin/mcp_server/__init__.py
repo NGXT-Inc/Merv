@@ -1,3 +1,3 @@
 """Research Plugin MCP server."""
 
-__version__ = "0.0008"
+__version__ = "0.0009"

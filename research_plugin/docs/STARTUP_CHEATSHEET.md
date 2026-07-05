@@ -233,7 +233,8 @@ review before completing the experiment.
 
 ## What Should Be Running
 
-Minimum for **any** Codex work (the daemon is no longer optional):
+Minimum for local-mode Codex work (this cheatsheet covers local dev; hosted
+users run no local server at all, only the stdio proxy):
 
 - HTTP daemon on `127.0.0.1:8787`
 - Codex session in the research repo with `research-plugin` enabled
