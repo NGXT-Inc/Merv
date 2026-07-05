@@ -342,10 +342,10 @@ GET /api/projects/{project_id}/reflections/current/graph
 GET /api/projects/{project_id}/reflections/{synthesis_id}/graph
 ```
 
-These `/reflections*` paths are canonical; the matching `/syntheses*` paths
-remain as legacy aliases the current UI still uses. Payloads are identical on
-both — keys are still synthesis-named (`syntheses`, `open_synthesis`,
-`synthesis_id`).
+These `/reflections*` paths are canonical. The former `/syntheses*` aliases
+have been removed now that the UI is migrated. The payload keys are still
+synthesis-named (`syntheses`, `open_synthesis`, `synthesis_id`) — a separate
+body rename, not part of this path migration.
 
 `GET /reflections` returns the whole history in one call (each entry is a full
 wave state, so the UI drives the panel off this alone):

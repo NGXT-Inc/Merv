@@ -37,13 +37,6 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
 
-    def assert_alias_bytes(self, *, canonical: str, legacy: str) -> None:
-        canonical_response = self.client.get(canonical)
-        legacy_response = self.client.get(legacy)
-        self.assertLess(canonical_response.status_code, 400, canonical_response.text)
-        self.assertLess(legacy_response.status_code, 400, legacy_response.text)
-        self.assertEqual(canonical_response.content, legacy_response.content)
-
     def configure_mlflow(self, service: CentralMlflowService) -> None:
         self.app.mlflow_tracking.mode = service.mode
         self.app.mlflow_tracking.tracking_uri = service.tracking_uri
@@ -1017,22 +1010,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         syn_id = syn["id"]
 
-        listing = self.request("GET", f"/api/projects/{pid}/syntheses")
+        listing = self.request("GET", f"/api/projects/{pid}/reflections")
         self.assertEqual(len(listing["syntheses"]), 1)
         self.assertEqual(listing["open_synthesis"]["id"], syn_id)
         self.assertIn("signal", listing)
-        self.assert_alias_bytes(
-            canonical=f"/api/projects/{pid}/reflections",
-            legacy=f"/api/projects/{pid}/syntheses",
-        )
 
         # No graph yet: the project-graph endpoint degrades, not errors.
-        empty = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
+        empty = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
         self.assertFalse(empty["available"])
-        self.assert_alias_bytes(
-            canonical=f"/api/projects/{pid}/reflections/current/graph",
-            legacy=f"/api/projects/{pid}/syntheses/current/graph",
-        )
 
         for lens in ("amplify", "avoid", "entropy", "rigor", "cost"):
             path = self.repo / f"syntheses/{syn_id}/reflections/{lens}.md"
@@ -1136,7 +1121,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
 
         # The open wave's graph renders while still under review.
-        payload = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
+        payload = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
         self.assertTrue(payload["available"])
         self.assertEqual(payload["synthesis"]["id"], syn_id)
         self.assertEqual(payload["synthesis"]["status"], "synthesis_review")
@@ -1177,20 +1162,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"project_id": pid, "reflection_id": syn_id, "transition": "publish"},
         )
 
-        detail = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}")
+        detail = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}")
         self.assertEqual(detail["status"], "published")
         self.assertTrue(detail["published_graph_version_id"])
         self.assertEqual(len(detail["roster"]), 5)
-        self.assert_alias_bytes(
-            canonical=f"/api/projects/{pid}/reflections/{syn_id}",
-            legacy=f"/api/projects/{pid}/syntheses/{syn_id}",
-        )
 
         # Published wave still serves the living graph as "current".
-        payload = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
+        payload = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
         self.assertTrue(payload["available"])
         self.assertEqual(payload["synthesis"]["status"], "published")
-        listing = self.request("GET", f"/api/projects/{pid}/syntheses")
+        listing = self.request("GET", f"/api/projects/{pid}/reflections")
         self.assertIsNone(listing["open_synthesis"])
         self.assertEqual(listing["latest_published"]["id"], syn_id)
         self.assertEqual(listing["current"]["id"], syn_id)
@@ -1218,7 +1199,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         syn_id = syn["id"]
 
         # Before any graph is associated, the per-wave endpoint degrades cleanly.
-        empty = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}/graph")
+        empty = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}/graph")
         self.assertFalse(empty["available"])
 
         (self.repo / "project").mkdir()
@@ -1237,18 +1218,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
 
         # The per-wave graph renders the wave's pinned bytes.
-        payload = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}/graph")
+        payload = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}/graph")
         self.assertTrue(payload["available"])
         self.assertEqual(payload["synthesis"]["id"], syn_id)
         self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
         self.assertEqual(payload["problems"], [])
-        self.assert_alias_bytes(
-            canonical=f"/api/projects/{pid}/reflections/{syn_id}/graph",
-            legacy=f"/api/projects/{pid}/syntheses/{syn_id}/graph",
-        )
 
         # Find the graph association's pinned version_id off the wave detail.
-        detail = self.request("GET", f"/api/projects/{pid}/syntheses/{syn_id}")
+        detail = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}")
         graph_row = next(
             r for r in detail["resources"] if r["association_role"] == "project_graph"
         )
@@ -1278,7 +1255,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         # The literal current/graph route still resolves (not captured by the
         # {synthesis_id}/graph param route).
-        current = self.request("GET", f"/api/projects/{pid}/syntheses/current/graph")
+        current = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
         self.assertTrue(current["available"])
         self.assertEqual(current["synthesis"]["id"], syn_id)
 
@@ -1322,7 +1299,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             f"/api/projects/{pid}/resources/{rid}/associate",
             {"target_type": "reflection", "target_id": wave1_id, "role": "reflection_doc"},
         )
-        detail1 = self.request("GET", f"/api/projects/{pid}/syntheses/{wave1_id}")
+        detail1 = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}")
         old_version = next(
             r for r in detail1["resources"] if r["association_role"] == "reflection_doc"
         )["association_version_id"]
@@ -1346,7 +1323,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             f"/api/projects/{pid}/resources/{rid}/associate",
             {"target_type": "reflection", "target_id": wave2_id, "role": "reflection_doc"},
         )
-        detail2 = self.request("GET", f"/api/projects/{pid}/syntheses/{wave2_id}")
+        detail2 = self.request("GET", f"/api/projects/{pid}/reflections/{wave2_id}")
         new_version = next(
             r for r in detail2["resources"] if r["association_role"] == "reflection_doc"
         )["association_version_id"]
