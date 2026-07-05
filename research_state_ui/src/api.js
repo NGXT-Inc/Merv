@@ -20,7 +20,7 @@ const BASE = (
 // The UI build's wire version, stamped on every request as X-RP-Client-Version
 // (the cloud control plane reads it for the compat handshake; local mode
 // ignores it). Kept in lockstep with the research_plugin package version.
-export const CLIENT_VERSION = '0.0008';
+export const CLIENT_VERSION = '0.0009';
 
 // Bearer token for the hosted control plane. Dormant in local mode: with no
 // token configured no Authorization header is sent, and the local backend
@@ -164,23 +164,24 @@ export const api = {
       body: { transition, ...(evidence ? { evidence } : {}) },
     }),
 
-  // Syntheses (project reflection waves)
+  // Reflections (project reflection waves; the `syntheses` payload keys are
+  // the historical wire shape, kept until a separate body-rename migration).
   // List + staleness/coverage signal for the Home panel. Each entry is the
   // full wave state (roster, resources, reviews, reflection_coverage), so the
   // panel drives the whole history off this one call.
   getSyntheses: (pid, signal) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/syntheses`, { signal }),
+    request(`/api/projects/${encodeURIComponent(pid)}/reflections`, { signal }),
   // One wave, fully hydrated (deep-link / single-wave refresh).
   getSynthesis: (pid, synId, signal) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(synId)}`, { signal }),
+    request(`/api/projects/${encodeURIComponent(pid)}/reflections/${encodeURIComponent(synId)}`, { signal }),
   // The living project logic graph (same payload shape as the experiment one).
   getProjectLogicGraph: (pid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/current/graph`),
+    request(`/api/projects/${encodeURIComponent(pid)}/reflections/current/graph`),
   // The logic graph of ONE specific wave, rendered from the bytes that wave
   // pinned — so a past wave shows faithfully even after a later wave overwrote
   // the living file. Same payload shape as getProjectLogicGraph.
   getSynthesisGraph: (pid, synId) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/syntheses/${encodeURIComponent(synId)}/graph`),
+    request(`/api/projects/${encodeURIComponent(pid)}/reflections/${encodeURIComponent(synId)}/graph`),
 
   // Resources
   registerResource: (pid, { path, kind, title }) =>

@@ -22,7 +22,7 @@ import { TERMINAL_WAVE, reflectionsByLens, secondaryDocs, resolveReflectionDoc, 
  * The current wave (open, else latest published) shows by default; panning to a
  * past wave renders it FAITHFULLY from the bytes it pinned (the per-wave /graph
  * endpoint and `?version=` content), not the living files a later wave
- * overwrote. Everything is driven from one polled GET /syntheses call.
+ * overwrote. Everything is driven from one polled GET /reflections call.
  */
 
 function shortDateTime(iso) {
