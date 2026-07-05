@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Routes, Route, Navigate, Link, Outlet, useParams, useSearchParams } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useParams, useSearchParams } from 'react-router-dom';
 import { useProjectStore, projectPath, useProjectHref, selectActiveExperiments, selectSandboxes } from './store/useProjectStore';
 import { usePolling } from './store/usePolling';
 import { useEventStream } from './store/useEventStream';
@@ -34,7 +34,6 @@ import Reviews from './pages/Reviews';
 import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
 import Debug from './pages/Debug';
-import VisualDag from './pages/VisualDag';
 import MlflowDashboard from './pages/MlflowDashboard';
 
 // /debug merged into /activity. Preserve ?tool= (v6 <Navigate> drops search).
@@ -202,7 +201,6 @@ export default function App() {
             <Route path="mlflow" element={<MobileMlflow />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
-            <Route path="visual/dag" element={<MobileDagNotice />} />
           </Route>
           <Route path="/" element={<RootRedirect />} />
           <Route path="*" element={<RootRedirect />} />
@@ -251,7 +249,6 @@ export default function App() {
             <Route path="mlflow" element={<MlflowDashboard />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
-            <Route path="visual/dag" element={<VisualDag />} />
           </Route>
           <Route path="/" element={<RootRedirect />} />
           <Route path="*" element={<RootRedirect />} />
@@ -259,25 +256,6 @@ export default function App() {
         </main>
       </div>
     </>
-  );
-}
-
-// The 1600×820 hover-driven DAG has no touch story; say so instead of
-// rendering an illegible chart (see docs/MOBILE_PLAN.md — deferred until
-// the desktop canvas redesign settles what it absorbs).
-function MobileDagNotice() {
-  const px = useProjectHref();
-  return (
-    <div className="page-stage">
-      <header className="page-header">
-        <div className="page-eyebrow">Logic DAG</div>
-        <h1 className="page-title">Desktop only</h1>
-      </header>
-      <div className="empty-state">
-        <p>The interactive lineage map is hover-driven and sized for a wide canvas. Open it on desktop, or browse the same evidence per experiment.</p>
-        <Link to={px('/experiments')} className="btn" style={{ marginTop: 12 }}>Experiments →</Link>
-      </div>
-    </div>
   );
 }
 

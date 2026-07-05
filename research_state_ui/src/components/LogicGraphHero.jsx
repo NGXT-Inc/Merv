@@ -1,7 +1,7 @@
 /**
  * LogicGraphHero — the first-run backdrop. A ghostly, self-forming version of
  * the product's real logic graph (Claim → Approach → Attempts → Outcome), drawn
- * in the same verdict palette as <VisualDag>. The empty state thus previews what
+ * in the verdict palette from utils/evidence. The empty state thus previews what
  * research_plugin actually builds, instead of showing a bare form in a void.
  *
  * Pure SVG + CSS keyframes (no rAF loop), deterministic layout, decorative only

@@ -138,10 +138,6 @@ export default function Sidebar({ onRefresh, onHide }) {
             MLflow
           </NavLink>
         )}
-        <NavLink to={px('/visual/dag')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-          Logic DAG
-        </NavLink>
-
         {/* The substrate research runs on: files, objects, machines. */}
         <div className="sidebar-section">Operations</div>
 

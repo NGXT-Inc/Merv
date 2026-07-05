@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useProjectStore, useProjectHref } from '../store/useProjectStore';
 import { FrontierChart } from '../components/LedgerCharts';
 import { planLedger, anchorValueOf } from '../utils/metricProfile';
+import { readDirectionOverrides } from '../utils/mlflowPrefs';
 import { statusColor } from '../utils/experiment';
 import { Skeleton } from './Skeleton';
 import { fmtNum } from '../utils/format';
@@ -41,7 +42,14 @@ export default function MobileMlflow() {
     return () => { cancelled = true; clearInterval(t); };
   }, [projectId]);
 
-  const plan = useMemo(() => (data && data.mlflow?.configured ? planLedger(data) : null), [data]);
+  // Same per-project direction override the desktop flip writes — the two
+  // surfaces must agree on which way the frontier points.
+  const plan = useMemo(
+    () => (data && data.mlflow?.configured
+      ? planLedger(data, { directionOverrides: readDirectionOverrides(projectId) })
+      : null),
+    [data, projectId],
+  );
   const hasLedger = !!(plan && plan.runs.length > 0);
 
   // The pivoted metric: chips switch it; everything below follows.

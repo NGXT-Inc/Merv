@@ -142,8 +142,12 @@ export function classifyRunMetrics(run) {
  * The whole read model for the page:
  *   { runs, focus, summary, strips, curves, knobs, diagnostics, invariants, sparse }
  * focus.directionAssumed flags a guessed lower-is-better so the UI can say so.
+ *
+ * Direction precedence: user override (opts.directionOverrides, key → ±1)
+ * beats the run-declared contract beats the name convention beats the
+ * assumed lower-is-better fallback. focus.directionSource names the winner.
  */
-export function planLedger(payload) {
+export function planLedger(payload, opts = {}) {
   const runs = flattenLedger(payload);
   const n = runs.length;
 
@@ -209,10 +213,16 @@ export function planLedger(payload) {
     || (spread(b) - spread(a)));
   const focusFp = candidates.find(fp => fp.key === contract.key) || candidates[0] || null;
   const declaredDir = focusFp && focusFp.key === contract.key ? contract.direction : undefined;
+  const overrideDir = focusFp ? opts.directionOverrides?.[focusFp.key] : undefined;
   const focus = focusFp && {
     key: focusFp.key,
-    direction: declaredDir ?? (focusFp.direction || -1),
-    directionAssumed: declaredDir == null && focusFp.direction === 0,
+    direction: overrideDir ?? declaredDir ?? (focusFp.direction || -1),
+    directionSource:
+      overrideDir != null ? 'override'
+      : declaredDir != null ? 'declared'
+      : focusFp.direction !== 0 ? 'convention'
+      : 'assumed',
+    directionAssumed: overrideDir == null && declaredDir == null && focusFp.direction === 0,
     anchorKey: focusFp.hasAnchor ? `baseline_${focusFp.key}` : null,
   };
 

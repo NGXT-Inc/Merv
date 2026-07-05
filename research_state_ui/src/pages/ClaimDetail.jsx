@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
-import { useProjectStore, selectExperiments, useProjectHref } from '../store/useProjectStore';
+import { useProjectStore, selectExperiments, selectEventsAll, useProjectHref } from '../store/useProjectStore';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
-import { ConfidenceDots, ClaimExperimentList } from '../components/ClaimEvidence';
+import { ConfidenceSignal } from '../components/ClaimEvidence';
+import { classifyExperiment, outcomeColor, outcomeLabel, outcomeGlyph, claimStatusColor } from '../utils/evidence';
+import { expName } from '../utils/experiment';
+import { computeClaimShifts, relDays } from '../utils/claimShifts';
 import { fmtStamp } from '../utils/format';
 
 export default function ClaimDetail() {
@@ -12,6 +15,7 @@ export default function ClaimDetail() {
   const px = useProjectHref();
   const projectId = useProjectStore(s => s.projectId);
   const experiments = useProjectStore(selectExperiments);
+  const events = useProjectStore(selectEventsAll);
   const [claim, setClaim] = useState(null);
   const [error, setError] = useState(null);
 
@@ -27,6 +31,11 @@ export default function ClaimDetail() {
 
   const linkedExperiments = experiments.filter(e =>
     Array.isArray(e.tested_claims) && e.tested_claims.some(c => c.id === claimId),
+  );
+
+  const shifts = useMemo(
+    () => computeClaimShifts(events).filter(s => s.claimId === claimId),
+    [events, claimId],
   );
 
   if (error) {
@@ -50,20 +59,82 @@ export default function ClaimDetail() {
         <h1 className="page-title page-title--statement">{claim.statement}</h1>
         <div className="claim-entry-meta">
           <StatusPill value={claim.status} />
-          <ConfidenceDots level={claim.confidence} />
+          <ConfidenceSignal level={claim.confidence} />
           {claim.scope && <span className="claim-entry-scope">scoped to {claim.scope}</span>}
           {claim.created_at && <span>created {fmtStamp(Date.parse(claim.created_at))}</span>}
         </div>
       </header>
 
       <section className="section" style={{ marginTop: 32 }}>
-        <div className="section-title">Experiments testing this claim</div>
+        <div className="section-title">Evidence</div>
         {linkedExperiments.length === 0 ? (
           <div className="empty">No experiments link to this claim yet.</div>
         ) : (
-          <ClaimExperimentList experiments={linkedExperiments} />
+          <EvidenceHistory experiments={linkedExperiments} />
         )}
       </section>
+
+      {shifts.length > 0 && (
+        <section className="section">
+          <div className="section-title">Belief history</div>
+          <div className="shift-list">
+            {shifts.map((s, i) => (
+              <div className="shift-row" key={`${s.at}-${i}`}>
+                <div className="shift-line">
+                  <span className="shift-change">
+                    {s.status ? (
+                      <>
+                        {s.status.from} → <b style={{ color: claimStatusColor(s.status.to) }}>{s.status.to}</b>
+                      </>
+                    ) : (
+                      <>confidence {s.confidence.from} → {s.confidence.to}</>
+                    )}
+                  </span>
+                  <span className="shift-time">{relDays(s.at)}</span>
+                </div>
+                {s.rationale && <div className="shift-rationale">{s.rationale}</div>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
+  );
+}
+
+// Chronological evidence rows: the tested-by list plus what each test cost
+// (attempts) and concluded — the "why" behind the claim's current status.
+function EvidenceHistory({ experiments }) {
+  const px = useProjectHref();
+  const ordered = experiments
+    .slice()
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  return (
+    <ul className="claim-entry-tests">
+      {ordered.map(e => {
+        const outcome = classifyExperiment(e);
+        const attempts = e.attempt_index || 1;
+        const started = e.created_at
+          ? new Date(e.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })
+          : null;
+        const conclusion = (e.conclusion || '').trim().split('\n')[0];
+        return (
+          <li key={e.id} className="ev-row">
+            <Link to={px(`/experiments/${e.id}`)} className="claim-exp-line">
+              <span className="claim-exp-mark" style={{ color: outcomeColor(outcome) }} aria-hidden="true">
+                {outcomeGlyph(outcome)}
+              </span>
+              <span className="claim-exp-title">{expName(e)}</span>
+              <span className="claim-exp-status">{outcomeLabel(outcome)}</span>
+            </Link>
+            <div className="ev-row-sub">
+              {started && <span>{started}</span>}
+              {attempts > 1 && <span>· {attempts} attempts</span>}
+            </div>
+            {conclusion && <p className="ev-row-why">{conclusion}</p>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

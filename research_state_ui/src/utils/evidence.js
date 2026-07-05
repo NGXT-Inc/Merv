@@ -79,3 +79,20 @@ const CLAIM_STATUS_PALETTE = {
 export function claimStatusColor(status) {
   return CLAIM_STATUS_PALETTE[(status || '').toLowerCase()] || 'var(--steel)'; // draft
 }
+
+/**
+ * Tally a claim's linked experiments into plain-word evidence buckets for
+ * the claims ledger: "2 for · 1 against · 1 running". Abandoned experiments
+ * are effort, not evidence — they show on the detail page only.
+ */
+export function tallyOutcomes(experiments) {
+  const tally = { for: 0, against: 0, unclear: 0, running: 0 };
+  for (const e of experiments || []) {
+    const outcome = classifyExperiment(e);
+    if (outcome === 'supports') tally.for += 1;
+    else if (outcome === 'refutes') tally.against += 1;
+    else if (outcome === 'qualifies') tally.unclear += 1;
+    else if (outcome === 'inflight') tally.running += 1;
+  }
+  return tally;
+}

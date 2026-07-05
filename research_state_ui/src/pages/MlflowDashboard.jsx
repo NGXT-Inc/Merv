@@ -4,6 +4,7 @@ import { useProjectStore, useProjectHref } from '../store/useProjectStore';
 import { api } from '../api';
 import { FrontierChart, DotStrip, KnobScatter } from '../components/LedgerCharts';
 import { planLedger, rankRuns, anchorValueOf } from '../utils/metricProfile';
+import { readDirectionOverrides, writeDirectionOverride } from '../utils/mlflowPrefs';
 import { statusColor } from '../utils/experiment';
 import { fmtNum, fmtStamp } from '../utils/format';
 
@@ -49,7 +50,15 @@ export default function MlflowDashboard() {
   const experiments = Array.isArray(data?.experiments) ? data.experiments : [];
   const dashboardUrl = mlflow?.configured ? (mlflow.dashboard_url || mlflow.tracking_uri) : null;
 
-  const plan = useMemo(() => (data && mlflow?.configured ? planLedger(data) : null), [data, mlflow]);
+  // When neither convention nor contract settles which way the focus metric
+  // is good, the user can flip it — remembered per project.
+  const [dirOverrides, setDirOverrides] = useState(() => readDirectionOverrides(projectId));
+  useEffect(() => { setDirOverrides(readDirectionOverrides(projectId)); }, [projectId]);
+
+  const plan = useMemo(
+    () => (data && mlflow?.configured ? planLedger(data, { directionOverrides: dirOverrides }) : null),
+    [data, mlflow, dirOverrides],
+  );
   const hasLedger = !!(plan && plan.runs.length > 0);
   const ranked = useMemo(() => (hasLedger ? rankRuns(plan) : []), [plan, hasLedger]);
   const bestI = plan?.summary?.best.i;
@@ -149,8 +158,23 @@ export default function MlflowDashboard() {
           {hasLedger && plan.focus && (
             <section className="section">
               <h2 className="section-title">Frontier — {plan.focus.key}</h2>
-              {plan.focus.directionAssumed && (
-                <p className="lgd-note">No direction convention matched — assuming lower is better.</p>
+              {(plan.focus.directionAssumed || plan.focus.directionSource === 'override') && (
+                <p className="lgd-note">
+                  {plan.focus.directionSource === 'override'
+                    ? `Direction set here — ${plan.focus.direction > 0 ? 'higher' : 'lower'} is better.`
+                    : 'No direction convention matched — assuming lower is better.'}
+                  <button
+                    type="button"
+                    className="lgd-note-flip"
+                    onClick={() => setDirOverrides(writeDirectionOverride(
+                      projectId,
+                      plan.focus.key,
+                      plan.focus.direction > 0 ? -1 : 1,
+                    ))}
+                  >
+                    flip: {plan.focus.direction > 0 ? 'lower' : 'higher'} is better
+                  </button>
+                </p>
               )}
               <FrontierChart
                 runs={plan.runs}

@@ -159,7 +159,6 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <div className="msheet-section">Forensics</div>
       <SheetLink to={px('/events')} label="Events" />
       <SheetLink to={px('/activity')} label="Traffic & Tool I/O" />
-      <SheetLink to={px('/visual/dag')} label="Logic DAG" note="desktop recommended" />
 
       {lastSyncError && (
         <div className="error-message" style={{ marginTop: 10, fontSize: 11 }}>{lastSyncError}</div>

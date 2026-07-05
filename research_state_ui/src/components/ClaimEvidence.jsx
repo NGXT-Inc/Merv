@@ -10,6 +10,20 @@ const CONFIDENCE_LEVELS = { low: 1, medium: 2, high: 3 };
  * shared by the desktop and mobile list/detail pages so a claim looks the
  * same everywhere instead of drifting into per-page chrome.
  */
+// Confidence as an ascending signal — three bars, N lit. The word lives in
+// the tooltip/aria-label; the shape carries the reading.
+export function ConfidenceSignal({ level }) {
+  const n = CONFIDENCE_LEVELS[(level || '').toLowerCase()] || 0;
+  const label = level ? `${level} confidence` : 'confidence unset';
+  return (
+    <span className="conf-sig" title={label} aria-label={label} role="img">
+      {[1, 2, 3].map(i => (
+        <span key={i} className={`conf-sig-bar s${i}${i <= n ? ' on' : ''}`} aria-hidden="true" />
+      ))}
+    </span>
+  );
+}
+
 export function ConfidenceDots({ level }) {
   const n = CONFIDENCE_LEVELS[(level || '').toLowerCase()] || 0;
   const label = level ? `${level} confidence` : 'confidence unset';
@@ -23,12 +37,12 @@ export function ConfidenceDots({ level }) {
 }
 
 // Every experiment that tested this claim, marked with the same outcome
-// glyph/color the Logic DAG already trusts (classifyExperiment) — not a
-// re-derived heuristic per page. `dense` (mobile list rows, tight space)
-// collapses the full line down to a wrapping row of glyph+name chips — same
-// data, no separate outcome-label text, and NOT individually navigable:
-// dense only ever renders inside the claim row's own <Link>, and a nested
-// <a> is invalid HTML that breaks the outer row's tap target.
+// glyph/color classifyExperiment already trusts — not a re-derived heuristic
+// per page. `dense` (mobile list rows, tight space) collapses the full line
+// down to a wrapping row of glyph+name chips — same data, no separate
+// outcome-label text, and NOT individually navigable: dense only ever renders
+// inside the claim row's own <Link>, and a nested <a> is invalid HTML that
+// breaks the outer row's tap target.
 export function ClaimExperimentList({ experiments, dense = false }) {
   const px = useProjectHref();
   if (!experiments || experiments.length === 0) return null;
