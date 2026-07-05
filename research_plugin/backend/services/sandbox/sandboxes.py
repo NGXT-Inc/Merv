@@ -21,6 +21,7 @@ from ...utils import (
 from ...sandbox.sandbox_backend import (
     SandboxBackend,
     SandboxRequest,
+    TranscriptTail,
 )
 from ...ports.mgmt_keys import MgmtKeyStore
 from ...ports.quota_admission import QuotaAdmission
@@ -789,9 +790,12 @@ class SandboxService:
         finished and whether it succeeded without re-scanning the tail. They are
         best-effort and null on sandboxes created before the markers landed.
 
-        (Reading the full transcript to compute an accurate cursor is a daemon-
-        side cost; a future backend ``transcript_length`` could avoid it. The
-        agent-facing payload is what ``since`` keeps small.)
+        Cursor semantics: backends return a bounded tail window (~50KB) plus
+        the transcript's TRUE byte size, and ``cursor``/``since`` are raw byte
+        offsets into the full transcript. The cursor therefore keeps advancing
+        after the log outgrows the window, and a ``since`` that has slid out of
+        the window clamps to the window start (older bytes are gone from the
+        tail and cannot be replayed).
         """
         experiment_id = (experiment_id or "").strip()
         if not experiment_id and not (sandbox_uid or "").strip():
@@ -806,10 +810,9 @@ class SandboxService:
         sandbox_uid = str(row.get("sandbox_uid") or "")
         resolved_experiment_id = experiment_id or str(row.get("experiment_id") or "")
         transcript_key = sandbox_uid or resolved_experiment_id
-        full = ""
         unavailable = False
 
-        def _read_for(key: str) -> str:
+        def _read_for(key: str) -> TranscriptTail:
             return self.backend.read_transcript(
                 sandbox_id=sandbox_id,
                 experiment_id=key,
@@ -826,34 +829,51 @@ class SandboxService:
                 key_path=str(self._mgmt_key_path(row=row)),
             )
 
-        def _read() -> str:
-            full_text = _read_for(transcript_key)
-            if full_text or not resolved_experiment_id or resolved_experiment_id == transcript_key:
-                return full_text
+        def _read() -> TranscriptTail:
+            window = _read_for(transcript_key)
+            if (
+                window.data
+                or window.total_bytes
+                or not resolved_experiment_id
+                or resolved_experiment_id == transcript_key
+            ):
+                return window
             return _read_for(resolved_experiment_id)
 
+        window = TranscriptTail(data=b"", total_bytes=0)
         try:
             # Cursor cache (plan Phase 9, risk 14): repeated control-side reads
-            # for the same sandbox within the TTL serve the cached full
-            # transcript instead of re-hitting SSH every 3 s poll. `since=` is
-            # applied to the cached bytes below, so incremental polls stay
-            # correct AND cheap. A terminal sandbox can't produce more output,
-            # so caching its transcript is always safe.
-            full = self.transcript_cache.get_or_read(
+            # for the same sandbox within the TTL serve the cached tail window
+            # instead of re-hitting SSH every 3 s poll. `since=` is applied to
+            # the cached bytes below, so incremental polls stay correct AND
+            # cheap. A terminal sandbox can't produce more output, so caching
+            # its transcript is always safe.
+            window = self.transcript_cache.get_or_read(
                 sandbox_id=sandbox_id, read=_read, since=since
             )
         except Exception as exc:  # noqa: BLE001
             full = f"(terminal unavailable: {exc})"
             unavailable = True
-        cursor = len(full)
         if unavailable:
             transcript = full
-        elif since is not None:
-            transcript = full[min(int(since), cursor):]
-        elif tail is not None and tail >= 0 and cursor > tail:
-            transcript = full[-tail:]
+            cursor = len(full)
         else:
-            transcript = full
+            # The window is the last len(window.data) bytes of a transcript
+            # that is really total_bytes long; cursor math happens in absolute
+            # byte offsets so it stays valid once the log outgrows the window.
+            # Slice the raw bytes BEFORE decoding: errors="replace" can change
+            # byte counts, which would skew the cursor.
+            cursor = window.total_bytes
+            window_start = max(cursor - len(window.data), 0)
+            if since is not None:
+                start = min(max(int(since) - window_start, 0), len(window.data))
+                raw = window.data[start:]
+            elif tail is not None and tail >= 0 and len(window.data) > tail:
+                raw = window.data[-tail:]
+            else:
+                raw = window.data
+            transcript = raw.decode("utf-8", errors="replace")
+            full = window.data.decode("utf-8", errors="replace")
         # Parse exit markers from the FULL transcript (the last one may predate
         # the `since` cursor) and gate "command running" on the sandbox actually
         # being alive — a dead sandbox isn't running a command, even if its log

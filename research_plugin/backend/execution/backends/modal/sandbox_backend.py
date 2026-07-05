@@ -33,6 +33,11 @@ from backend.execution.usage_metrics import (
 )
 from ....sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
+from ...transcript_wire import (
+    TRANSCRIPT_TAIL_DEFAULT,
+    parse_transcript_tail,
+    transcript_tail_command,
+)
 from ....sandbox.sandbox_backend import (
     BackendCapabilities,
     OnCreated,
@@ -40,6 +45,7 @@ from ....sandbox.sandbox_backend import (
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
+    TranscriptTail,
 )
 from .config import COMPUTE_TIERS, DEFAULT_GPU, VALID_GPUS, ModalConfig
 from ._sandbox_ops import ensure_remote_dir, exec_checked, maybe_await, read_stream, wait_process
@@ -49,7 +55,6 @@ ActivityHook = Callable[[str, dict[str, Any]], None]
 
 SESSIONS_DIR_NAME = ".research_plugin_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
-TRANSCRIPT_TAIL_DEFAULT = 50_000
 
 # The usage sampler script + parser live in backend/execution/usage_metrics.py,
 # shared with the Lambda backend (which runs the same probes over plain SSH).
@@ -345,7 +350,7 @@ class ModalSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,  # noqa: ARG002
         ssh_user: str = "",  # noqa: ARG002
         key_path: str = "",  # noqa: ARG002
-    ) -> str:
+    ) -> TranscriptTail:
         limit = int(tail) if tail and tail > 0 else TRANSCRIPT_TAIL_DEFAULT
         live = self._read_transcript_live(
             sandbox_id=sandbox_id,
@@ -446,9 +451,9 @@ class ModalSandboxBackend(SandboxBackendBase):
 
     def _read_transcript_live(
         self, *, sandbox_id: str, experiment_id: str, workdir: str, limit: int
-    ) -> str:
+    ) -> TranscriptTail:
         if not sandbox_id:
-            return ""
+            return TranscriptTail(data=b"", total_bytes=0)
         base = workdir or remote_experiment_dir(
             experiment_id=experiment_id, root=self.config.remote_root
         )
@@ -459,20 +464,15 @@ class ModalSandboxBackend(SandboxBackendBase):
             TRANSCRIPT_FILENAME,
         ).as_posix()
         legacy_path = PurePosixPath(base, _transcript_rel_path(experiment_id)).as_posix()
-        command = (
-            f"if [ -f {shlex.quote(abs_path)} ]; then "
-            f"tail -c {int(limit)} {shlex.quote(abs_path)}; "
-            f"elif [ -f {shlex.quote(legacy_path)} ]; then "
-            f"tail -c {int(limit)} {shlex.quote(legacy_path)}; fi"
-        )
+        command = transcript_tail_command(paths=[abs_path, legacy_path], limit=limit)
         try:
             sandbox = self._sandbox_from_id(sandbox_id)
             process = sandbox.exec("bash", "-c", command, timeout=20)
             if wait_process(process) != 0:
-                return ""
-            return read_stream(getattr(process, "stdout", None))
+                return TranscriptTail(data=b"", total_bytes=0)
+            return parse_transcript_tail(read_stream(getattr(process, "stdout", None)))
         except Exception:  # noqa: BLE001
-            return ""
+            return TranscriptTail(data=b"", total_bytes=0)
 
     # ---------- modal helpers ----------
 

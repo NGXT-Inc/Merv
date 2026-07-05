@@ -57,6 +57,21 @@ OnCreated = Callable[[str, str], None]    # (sandbox_id, sandbox_name)
 
 
 @dataclass(frozen=True)
+class TranscriptTail:
+    """A bounded tail window of a sandbox transcript, plus its true size.
+
+    ``data`` is the last ``len(data)`` bytes of the transcript; ``total_bytes``
+    is the size of the whole transcript file, so callers can keep a cursor in
+    absolute byte offsets even after the log outgrows the window. ``data``
+    stays undecoded: offsets are raw bytes, and decoding (with replacement)
+    before slicing would let multibyte characters skew the cursor math.
+    """
+
+    data: bytes = b""
+    total_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class SandboxRequest:
     """A request to procure one SSH-reachable sandbox."""
 
@@ -140,7 +155,7 @@ class SandboxBackend(Protocol):
         ssh_port: int = 0,
         ssh_user: str = "",
         key_path: str = "",
-    ) -> str: ...
+    ) -> TranscriptTail: ...
 
     def sandbox_environment(self) -> dict: ...
 
@@ -256,4 +271,5 @@ __all__ = [
     "SandboxBackend",
     "SandboxBackendBase",
     "SandboxRequest",
+    "TranscriptTail",
 ]

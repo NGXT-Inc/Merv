@@ -8,9 +8,14 @@ import subprocess
 from pathlib import PurePosixPath
 from typing import Any, Callable, Mapping
 
-from backend.sandbox.sandbox_backend import BackendUnavailableError
+from backend.sandbox.sandbox_backend import BackendUnavailableError, TranscriptTail
 
 from .sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
+from .transcript_wire import (
+    TRANSCRIPT_TAIL_DEFAULT,
+    parse_transcript_tail,
+    transcript_tail_command,
+)
 from .usage_metrics import METRICS_SCRIPT, parse_metrics
 from .vm_bootstrap import (
     MGMT_SSH_USER,
@@ -19,7 +24,6 @@ from .vm_bootstrap import (
 )
 
 
-TRANSCRIPT_TAIL_DEFAULT = 50_000
 TRANSCRIPT_SSH_CONNECT_TIMEOUT = 10
 TRANSCRIPT_READ_TIMEOUT_SECONDS = 30
 
@@ -38,9 +42,9 @@ def read_transcript_via_mgmt_ssh(
     ssh_port: int,
     key_path: str,
     tail: int | None = None,
-) -> str:
+) -> TranscriptTail:
     if not sandbox_id or not ssh_host or not key_path:
-        return ""
+        return TranscriptTail(data=b"", total_bytes=0)
     limit = int(tail) if tail and tail > 0 else TRANSCRIPT_TAIL_DEFAULT
     base = workdir or remote_experiment_dir(experiment_id=experiment_id, root=remote_root)
     log_path = PurePosixPath(
@@ -48,12 +52,7 @@ def read_transcript_via_mgmt_ssh(
         TRANSCRIPT_FILENAME,
     ).as_posix()
     legacy_path = PurePosixPath(base, SESSIONS_DIR_NAME, experiment_id, TRANSCRIPT_FILENAME).as_posix()
-    remote_command = (
-        f"if [ -f {shlex.quote(log_path)} ]; then "
-        f"tail -c {limit} {shlex.quote(log_path)}; "
-        f"elif [ -f {shlex.quote(legacy_path)} ]; then "
-        f"tail -c {limit} {shlex.quote(legacy_path)}; fi"
-    )
+    remote_command = transcript_tail_command(paths=[log_path, legacy_path], limit=limit)
     try:
         result = ssh_runner(
             ssh_command(
@@ -72,7 +71,7 @@ def read_transcript_via_mgmt_ssh(
         raise BackendUnavailableError(
             f"transcript read over SSH failed (exit {result.returncode}): {stderr_detail(result)}"
         )
-    return result.stdout or ""
+    return parse_transcript_tail(result.stdout or "")
 
 
 def sample_metrics_via_mgmt_ssh(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
 import unittest
@@ -7,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
-from backend.sandbox.sandbox_backend import SandboxRequest
+from backend.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
 from backend.execution.backends.modal.config import ModalConfig
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
 from tests.fakes import FakeProcess
@@ -331,25 +332,36 @@ class ModalSandboxBackendTest(unittest.TestCase):
 
     def test_read_transcript_live(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
-        FakeSandbox.registry[provisioned.sandbox_id].transcript = "epoch 1 loss 0.5\n"
-        text = self.backend.read_transcript(
+        # What the in-sandbox tail command prints: the transcript's true byte
+        # size, then the tail window base64-encoded (bytes survive the
+        # text-mode exec stream).
+        text = "epoch 1 loss 0.5\n"
+        FakeSandbox.registry[provisioned.sandbox_id].transcript = (
+            f"{len(text.encode('utf-8'))}\n"
+            + base64.encodebytes(text.encode("utf-8")).decode("ascii")
+        )
+        tail = self.backend.read_transcript(
             sandbox_id=provisioned.sandbox_id,
             experiment_id="exp1",
             volume_name=provisioned.volume_name,
             workdir=provisioned.workdir,
         )
-        self.assertIn("epoch 1 loss 0.5", text)
+        self.assertIn(b"epoch 1 loss 0.5", tail.data)
+        self.assertEqual(tail.total_bytes, len(text.encode("utf-8")))
+        command = FakeSandbox.registry[provisioned.sandbox_id].exec_calls[-1]
+        self.assertIn("wc -c", command)
+        self.assertIn("| base64", command)
 
     def test_read_transcript_without_volume_fallback_returns_empty(self) -> None:
         provisioned = self.backend.acquire(request=self._request())
         FakeSandbox.registry[provisioned.sandbox_id].transcript = ""
-        text = self.backend.read_transcript(
+        tail = self.backend.read_transcript(
             sandbox_id=provisioned.sandbox_id,
             experiment_id="exp1",
             volume_name=provisioned.volume_name,
             workdir=provisioned.workdir,
         )
-        self.assertEqual(text, "")
+        self.assertEqual(tail, TranscriptTail(data=b"", total_bytes=0))
 
     def test_config_rejects_data_dir_colliding_with_experiment_folders(self) -> None:
         # The data dir may live under the remote root (/workspace/data is the

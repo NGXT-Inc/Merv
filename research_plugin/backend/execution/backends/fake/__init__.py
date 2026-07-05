@@ -8,6 +8,7 @@ from ...sync_dirs import (
     DEFAULT_DATA_DIR,
     remote_experiment_dir,
 )
+from ...transcript_wire import TRANSCRIPT_TAIL_DEFAULT
 from ....sandbox.sandbox_backend import (
     BackendCapabilities,
     BackendUnavailableError,
@@ -16,6 +17,7 @@ from ....sandbox.sandbox_backend import (
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
+    TranscriptTail,
 )
 
 
@@ -205,7 +207,7 @@ class FakeSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,
         ssh_user: str = "",
         key_path: str = "",
-    ) -> str:
+    ) -> TranscriptTail:
         self.transcript_reads.append(
             {
                 "sandbox_id": sandbox_id,
@@ -217,10 +219,14 @@ class FakeSandboxBackend(SandboxBackendBase):
                 "key_path": key_path,
             }
         )
-        text = self.transcripts.get(experiment_id, "")
-        if tail and tail > 0 and len(text) > tail:
-            return text[-tail:]
-        return text
+        # Mirror the real backends: a bounded tail window plus the true total,
+        # so service tests can exercise cursor math past the window.
+        data = self.transcripts.get(experiment_id, "").encode("utf-8")
+        total = len(data)
+        limit = int(tail) if tail and tail > 0 else TRANSCRIPT_TAIL_DEFAULT
+        if len(data) > limit:
+            data = data[-limit:]
+        return TranscriptTail(data=data, total_bytes=total)
 
     def sample_metrics(
         self,

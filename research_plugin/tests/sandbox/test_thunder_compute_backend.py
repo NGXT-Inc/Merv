@@ -354,9 +354,11 @@ class ThunderBackendTest(unittest.TestCase):
 
     def test_read_transcript_uses_management_channel(self) -> None:
         transcript = "[t] $ echo hi\nhi\n[t] (exit 0)\n"
-        backend, _, _, ssh = self._backend(ssh_runner=FakeSshRunner(stdout=transcript))
+        data = transcript.encode("utf-8")
+        wire = f"{len(data)}\n" + base64.encodebytes(data).decode("ascii")
+        backend, _, _, ssh = self._backend(ssh_runner=FakeSshRunner(stdout=wire))
 
-        text = backend.read_transcript(
+        tail = backend.read_transcript(
             sandbox_id="7",
             experiment_id="exp1",
             volume_name="",
@@ -367,7 +369,8 @@ class ThunderBackendTest(unittest.TestCase):
             key_path="/keys/mgmt",
         )
 
-        self.assertEqual(text, transcript)
+        self.assertEqual(tail.data, data)
+        self.assertEqual(tail.total_bytes, len(data))
         command = ssh.commands[0]
         self.assertEqual(command[-2], f"{MGMT_SSH_USER}@198.51.100.7")
         self.assertIn("/keys/mgmt", command)

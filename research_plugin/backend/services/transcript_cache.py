@@ -12,6 +12,10 @@ Not a distributed cache (one control process per deployment in v1); a viewer tha
 needs sub-TTL freshness can pass ``fresh=True`` to bypass. SSE/push is the real
 fix and stays backlog (plan §4 Phase 9). The cache stores transcript bytes only
 — no credentials, no keys.
+
+Entries are ``TranscriptTail`` snapshots: the backend's tail window plus the
+transcript's TRUE byte size. Cursor comparisons use that total — not the window
+length — so a log that has outgrown the window still advances the cursor.
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
+
+from ..sandbox.sandbox_backend import TranscriptTail
 
 
 # Default freshness window. Comfortably above the 3 s UI poll so concurrent
@@ -32,7 +38,7 @@ DEFAULT_MAX_ENTRIES = 256
 
 @dataclass
 class _Entry:
-    text: str
+    tail: TranscriptTail
     stored_at: float
 
 
@@ -61,23 +67,24 @@ class TranscriptCache:
         self,
         *,
         sandbox_id: str,
-        read: Callable[[], str],
+        read: Callable[[], TranscriptTail],
         since: int | None = None,
         fresh: bool = False,
-    ) -> str:
-        """Return the cached transcript, or call ``read`` and cache the result.
+    ) -> TranscriptTail:
+        """Return the cached transcript tail, or call ``read`` and cache it.
 
         ``read`` is the (expensive) backend/SSH fetch; it is invoked only on a
         miss, an expired entry, ``fresh=True``, or a cursor-driven refresh.
 
         Cursor awareness (correctness over the TTL): when ``since`` is given and
-        it is at/beyond the cached transcript's end, the caller has already
-        consumed everything cached, so we MUST read fresh to see new output —
-        otherwise a fast-progressing sandbox's new bytes would be hidden until
-        the TTL lapsed. A hit is served only when the caller's cursor still
-        points strictly INTO cached content (the coalescing case: many viewers
-        at the same earlier cursor), or there is no ``since`` (a tail poll) and
-        the entry is within TTL. An empty ``sandbox_id`` always reads.
+        it is at/beyond the cached transcript's TRUE end (``total_bytes``, not
+        the window length), the caller has already consumed everything cached,
+        so we MUST read fresh to see new output — otherwise a fast-progressing
+        sandbox's new bytes would be hidden until the TTL lapsed. A hit is
+        served only when the caller's cursor still points strictly INTO cached
+        content (the coalescing case: many viewers at the same earlier cursor),
+        or there is no ``since`` (a tail poll) and the entry is within TTL. An
+        empty ``sandbox_id`` always reads.
         """
         if not sandbox_id:
             self.misses += 1
@@ -87,7 +94,7 @@ class TranscriptCache:
             entry = self._entries.get(sandbox_id)
             fresh_window = entry is not None and (now - entry.stored_at) < self.ttl_seconds
             cursor_in_cache = (
-                entry is not None and since is not None and int(since) < len(entry.text)
+                entry is not None and since is not None and int(since) < entry.tail.total_bytes
             )
             servable = entry is not None and not fresh and fresh_window and (
                 since is None or cursor_in_cache
@@ -95,18 +102,18 @@ class TranscriptCache:
             if servable:
                 assert entry is not None
                 self.hits += 1
-                return entry.text
+                return entry.tail
             self.misses += 1
-        text = read()
+        tail = read()
         with self._lock:
-            self._store(sandbox_id=sandbox_id, text=text, now=now)
-        return text
+            self._store(sandbox_id=sandbox_id, tail=tail, now=now)
+        return tail
 
     def invalidate(self, *, sandbox_id: str) -> None:
         with self._lock:
             self._entries.pop(sandbox_id, None)
 
-    def _store(self, *, sandbox_id: str, text: str, now: float) -> None:
+    def _store(self, *, sandbox_id: str, tail: TranscriptTail, now: float) -> None:
         if sandbox_id not in self._entries and len(self._entries) >= self.max_entries:
             # Evict the oldest-stored entry (insertion order ≈ store order since
             # a re-store pops-and-reinserts below).
@@ -114,4 +121,4 @@ class TranscriptCache:
             self._entries.pop(oldest, None)
         # Re-insert so dict order tracks recency for the eviction heuristic.
         self._entries.pop(sandbox_id, None)
-        self._entries[sandbox_id] = _Entry(text=text, stored_at=now)
+        self._entries[sandbox_id] = _Entry(tail=tail, stored_at=now)

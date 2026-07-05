@@ -14,6 +14,7 @@ from backend.sandbox.sandbox_backend import (
     ProvisionedSandbox,
     SandboxBackendBase,
     SandboxRequest,
+    TranscriptTail,
 )
 from backend.services.sandbox.sandbox_daemons import SandboxDaemons
 from tests.paths import BACKEND_ROOT, SERVICES_ROOT
@@ -66,8 +67,8 @@ class MinimalBackend(SandboxBackendBase):
         ssh_port: int = 0,
         ssh_user: str = "",
         key_path: str = "",
-    ) -> str:
-        return ""
+    ) -> TranscriptTail:
+        return TranscriptTail(data=b"", total_bytes=0)
 
     def sandbox_environment(self) -> dict:
         return {"available_tokens": [], "notes": []}

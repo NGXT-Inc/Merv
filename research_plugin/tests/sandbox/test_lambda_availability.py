@@ -22,7 +22,7 @@ from backend.execution.backends.lambda_labs.config import LambdaSandboxConfig
 from backend.execution.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
 from backend.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
 from backend.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
-from backend.sandbox.sandbox_backend import SandboxRequest
+from backend.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
 
 
 INSTANCE_TYPES = {
@@ -435,6 +435,13 @@ class FakeSshRunner:
         return subprocess.CompletedProcess(command, self.returncode, self.stdout, self.stderr)
 
 
+def transcript_wire_stdout(text: str, *, total: int | None = None) -> str:
+    """What the remote tail command prints: true byte size, then base64 tail."""
+    data = text.encode("utf-8")
+    size = len(data) if total is None else total
+    return f"{size}\n" + base64.encodebytes(data).decode("ascii")
+
+
 class LambdaTranscriptTest(unittest.TestCase):
     def _backend(self, runner: FakeSshRunner) -> LambdaLabsSandboxBackend:
         config = LambdaSandboxConfig(cloud=LambdaCloudConfig(api_key="test-key"))
@@ -442,7 +449,7 @@ class LambdaTranscriptTest(unittest.TestCase):
             config=config, client=FakeLambdaSandboxClient(), ssh_runner=runner  # type: ignore[arg-type]
         )
 
-    def _read(self, backend: LambdaLabsSandboxBackend, **overrides) -> str:
+    def _read(self, backend: LambdaLabsSandboxBackend, **overrides) -> TranscriptTail:
         kwargs = {
             "sandbox_id": "inst_1",
             "experiment_id": "exp1",
@@ -458,12 +465,13 @@ class LambdaTranscriptTest(unittest.TestCase):
 
     def test_read_transcript_tails_log_over_ssh(self) -> None:
         transcript = "[t] $ echo hi\nhi\n[t] (exit 0)\n"
-        runner = FakeSshRunner(stdout=transcript)
+        runner = FakeSshRunner(stdout=transcript_wire_stdout(transcript))
         backend = self._backend(runner)
 
-        text = self._read(backend)
+        tail = self._read(backend)
 
-        self.assertEqual(text, transcript)
+        self.assertEqual(tail.data, transcript.encode("utf-8"))
+        self.assertEqual(tail.total_bytes, len(transcript.encode("utf-8")))
         command = runner.commands[0]
         self.assertEqual(command[0], "ssh")
         self.assertIn("/keys/exp1", command)
@@ -478,22 +486,40 @@ class LambdaTranscriptTest(unittest.TestCase):
             "/workspace/synced/.research_plugin_sessions/exp1/transcript.log", remote
         )
         self.assertIn(f"tail -c {TRANSCRIPT_TAIL_DEFAULT}", remote)
+        # The command also reports the transcript's true size so the terminal
+        # cursor keeps advancing past the tail window, and base64-encodes the
+        # window so raw bytes survive the text-mode SSH pipe.
+        self.assertIn("wc -c", remote)
+        self.assertIn("| base64", remote)
 
     def test_read_transcript_honors_tail_limit(self) -> None:
-        runner = FakeSshRunner(stdout="x")
+        runner = FakeSshRunner(stdout=transcript_wire_stdout("x"))
         backend = self._backend(runner)
 
         self._read(backend, tail=512)
 
         self.assertIn("tail -c 512", runner.commands[0][-1])
 
+    def test_read_transcript_reports_true_size_beyond_the_window(self) -> None:
+        # A 512-byte window of a 60000-byte log: the window bytes come back
+        # verbatim, and total_bytes carries the real size for cursor math.
+        window = "z" * 512
+        runner = FakeSshRunner(stdout=transcript_wire_stdout(window, total=60_000))
+        backend = self._backend(runner)
+
+        tail = self._read(backend, tail=512)
+
+        self.assertEqual(tail.data, window.encode("utf-8"))
+        self.assertEqual(tail.total_bytes, 60_000)
+
     def test_read_transcript_without_endpoint_or_key_returns_empty(self) -> None:
         runner = FakeSshRunner(stdout="never returned")
         backend = self._backend(runner)
 
-        self.assertEqual(self._read(backend, sandbox_id=""), "")
-        self.assertEqual(self._read(backend, ssh_host=""), "")
-        self.assertEqual(self._read(backend, key_path=""), "")
+        empty = TranscriptTail(data=b"", total_bytes=0)
+        self.assertEqual(self._read(backend, sandbox_id=""), empty)
+        self.assertEqual(self._read(backend, ssh_host=""), empty)
+        self.assertEqual(self._read(backend, key_path=""), empty)
         self.assertEqual(runner.commands, [])
 
     def test_read_transcript_ssh_failure_raises_unavailable(self) -> None:

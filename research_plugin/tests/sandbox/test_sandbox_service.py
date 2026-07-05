@@ -754,6 +754,47 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(delta["new_chars"], len("epoch 2\n"))
         self.assertEqual(delta["cursor"], cursor + len("epoch 2\n"))
 
+    def test_terminal_since_survives_transcripts_beyond_the_tail_window(self) -> None:
+        # Regression: backends only return a ~50KB tail window. The cursor used
+        # to be computed from the window length, so once the log passed 50KB it
+        # pinned there and since= polls returned "" forever. Backends now report
+        # the transcript's TRUE byte size, so the cursor keeps advancing and an
+        # incremental poll at the previous cursor gets exactly the new bytes.
+        window_len = 50_000
+        exp_id = self._experiment()
+        self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        big = ("x" * 99 + "\n") * 600  # 60,000 bytes — beyond the tail window
+        self.backend.append_transcript(experiment_id=exp_id, text=big)
+
+        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        self.assertEqual(first["cursor"], len(big))  # true size, not window size
+        self.assertEqual(len(first["transcript"]), window_len)
+        self.assertTrue(big.endswith(first["transcript"]))
+
+        self.backend.append_transcript(experiment_id=exp_id, text="epoch 2\n")
+        delta = self.call(
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=first["cursor"],
+        )
+        self.assertEqual(delta["transcript"], "epoch 2\n")
+        self.assertEqual(delta["new_chars"], len("epoch 2\n"))
+        self.assertEqual(delta["cursor"], len(big) + len("epoch 2\n"))
+
+        # A cursor that has slid out of the window clamps to the window start:
+        # the poller gets the whole window (newest bytes at the right offsets)
+        # instead of a slice at a meaningless in-window offset.
+        stale = self.call(
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=1_000,
+        )
+        self.assertEqual(len(stale["transcript"]), window_len)
+        self.assertTrue(stale["transcript"].endswith("epoch 2\n"))
+        self.assertEqual(stale["cursor"], len(big) + len("epoch 2\n"))
+
     def test_terminal_running_false_after_release(self) -> None:
         exp_id = self._experiment()
         result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)

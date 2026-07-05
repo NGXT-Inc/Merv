@@ -14,7 +14,7 @@ from ..vm_ssh import (
     sandbox_tokens,
     write_secrets_via_mgmt_ssh,
 )
-from ...sandbox.sandbox_backend import SandboxBackendBase
+from ...sandbox.sandbox_backend import SandboxBackendBase, TranscriptTail
 
 
 class VmSshSandboxBackend(SandboxBackendBase):
@@ -41,8 +41,11 @@ class VmSshSandboxBackend(SandboxBackendBase):
         ssh_port: int = 0,
         ssh_user: str = "",  # noqa: ARG002 — the management channel uses its own principal, not the row data-plane ssh_user
         key_path: str = "",
-    ) -> str:
+    ) -> TranscriptTail:
         """Tail the rec.sh transcript over the management SSH channel.
+
+        Returns the tail window plus the transcript's true byte size, so the
+        service can keep byte-offset cursors valid past the window.
 
         ``key_path`` is the per-sandbox management private key (plan Phase 5,
         fixed decision 4); the read logs in as the dedicated management
