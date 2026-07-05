@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Body, Query, Request
@@ -11,7 +12,7 @@ from ... import __version__
 from ...services.identity import LOCAL_PRINCIPAL
 from ...utils import NotFoundError, ValidationError
 from ...version import meta
-from .shared import JsonBody, conditional_json
+from .shared import JsonBody, conditional_json_from_signal
 
 from .context import ApiRouteContext
 
@@ -60,9 +61,29 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/projects/{project_id}/home")
     def home(project_id: str, request: Request) -> Response:
-        # ETag debt: body-hash — MLflow health + live sandbox/process
-        # projections change without an event-table signal.
-        return conditional_json(request, api_for_project(project_id).home(project_id=project_id))
+        # Composite signal ETag. The home payload is a pure function of three
+        # inputs: the event ledger (claims/experiments/reviews/reflections/
+        # resources all append events), live sandbox rows (heartbeats bump
+        # updated_at but write no event), and the MLflow reachability probe
+        # (external, 5s-cached). A 304 skips the heavy status/experiment render.
+        target = api_for_project(project_id)
+        store = target.app.store
+        return conditional_json_from_signal(
+            request,
+            signal_parts=(
+                "home",
+                project_id,
+                store.project_event_signal(project_id=project_id),
+                store.project_sandbox_signal(project_id=project_id),
+                json.dumps(
+                    target.app.mlflow_tracking.health(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+            ),
+            payload=lambda: target.home(project_id=project_id),
+        )
 
     @api_router.get("/api/projects/{project_id}/status")
     def project_status(project_id: str, experiment_id: str | None = None) -> dict[str, Any]:

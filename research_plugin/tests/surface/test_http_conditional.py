@@ -99,6 +99,40 @@ class EtagTest(ConditionalRequestTestBase):
         self.assertEqual(response.status_code, 304)
         self.assertEqual(response.content, b"")
 
+    def test_sandboxes_signal_etag_short_circuits_without_rendering_body(self) -> None:
+        # The signal reads the sandbox rows directly (project_sandbox_signal);
+        # the row-VIEW render is what a matching ETag must skip.
+        etag = self.get("/sandboxes").headers["etag"]
+        original = self.app.sandboxes.rows
+
+        def fail_rows(*, project_id: str | None = None):
+            self.fail("matching sandbox ETag should not render the list body")
+
+        self.app.sandboxes.rows = fail_rows  # type: ignore[method-assign]
+        try:
+            response = self.get("/sandboxes", etag=etag)
+        finally:
+            self.app.sandboxes.rows = original  # type: ignore[method-assign]
+        self.assertEqual(response.status_code, 304)
+        self.assertEqual(response.content, b"")
+
+    def test_home_signal_etag_short_circuits_without_rendering_body(self) -> None:
+        # The composite signal never calls status_and_next; the heavy home
+        # render (which leads with it) must not run on a matching ETag.
+        etag = self.get("/home").headers["etag"]
+        original = self.app.workflow.status_and_next
+
+        def fail_status(*args, **kwargs):
+            self.fail("matching home ETag should not render the status body")
+
+        self.app.workflow.status_and_next = fail_status  # type: ignore[method-assign]
+        try:
+            response = self.get("/home", etag=etag)
+        finally:
+            self.app.workflow.status_and_next = original  # type: ignore[method-assign]
+        self.assertEqual(response.status_code, 304)
+        self.assertEqual(response.content, b"")
+
 
 class EventStreamTest(ConditionalRequestTestBase):
     def stream_path(self, **params: object) -> str:

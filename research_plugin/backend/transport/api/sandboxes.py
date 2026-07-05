@@ -11,7 +11,7 @@ from ... import __version__
 from ...services.identity import LOCAL_PRINCIPAL
 from ...utils import NotFoundError, ValidationError
 from ...version import meta
-from .shared import JsonBody, conditional_json
+from .shared import JsonBody, conditional_json_from_signal
 
 from .context import ApiRouteContext
 
@@ -27,10 +27,18 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/api/projects/{project_id}/sandboxes")
     def list_sandboxes(project_id: str, request: Request) -> Response:
-        # ETag debt: body-hash — sandbox/attachment/heartbeat mutations have
-        # no single monotonic project counter yet.
-        return conditional_json(
-            request, api_for_project(project_id).sandbox_list_view(project_id=project_id)
+        # Signal ETag: every sandbox mutation (status/heartbeat/command/
+        # terminate) bumps updated_at, so the row digest changes iff this
+        # payload would — a 304 short-circuits before rendering the rows.
+        target = api_for_project(project_id)
+        return conditional_json_from_signal(
+            request,
+            signal_parts=(
+                "sandboxes",
+                project_id,
+                target.app.store.project_sandbox_signal(project_id=project_id),
+            ),
+            payload=lambda: target.sandbox_list_view(project_id=project_id),
         )
 
     @api_router.get("/api/sandboxes/health")

@@ -1011,6 +1011,43 @@ class BaseStateStore:
         finally:
             conn.close()
 
+    def project_sandbox_signal(self, *, project_id: str | None) -> str:
+        """Change signal for a project's sandbox rows (no event-table proxy).
+
+        Sandbox lifecycle mutations — provision, status, heartbeat, command,
+        terminate — every one bumps ``updated_at`` (see sandbox_registry) but,
+        unlike claims/experiments/reviews, do NOT append an event, so the event
+        signal can't stand in for them. Digest each row's identity plus the
+        fields the sandbox_list_view surfaces: it changes iff that payload would.
+        Cheap — a few rows, a handful of columns, no per-row view rendering.
+        """
+        conn = self.connect()
+        try:
+            project_id = self.require_project_id(conn=conn, project_id=project_id)
+            rows = conn.execute(
+                """
+                SELECT sandbox_uid, status, updated_at, last_seen_at,
+                       last_command_snapshot_at, terminated_at
+                FROM sandboxes
+                WHERE project_id = ?
+                ORDER BY sandbox_uid
+                """,
+                (project_id,),
+            ).fetchall()
+            digest = "\n".join(
+                "|".join(
+                    str(row[column] or "")
+                    for column in (
+                        "sandbox_uid", "status", "updated_at",
+                        "last_seen_at", "last_command_snapshot_at", "terminated_at",
+                    )
+                )
+                for row in rows
+            )
+            return f"{len(rows)}:{digest}"
+        finally:
+            conn.close()
+
     def recent_events(self, *, project_id: str | None, limit: int = 100) -> dict[str, Any]:
         conn = self.connect()
         try:
