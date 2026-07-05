@@ -271,9 +271,6 @@ class ReflectionService:
         finally:
             conn.close()
 
-    def list_syntheses(self, *, project_id: str | None = None) -> dict[str, Any]:
-        return self.list_reflections(project_id=project_id)
-
     def overview(self, *, project_id: str | None = None) -> dict[str, Any]:
         """All waves plus the current reflection signal for project UI views."""
         conn = self.store.connect()
@@ -1272,6 +1269,3 @@ class ReflectionService:
         finally:
             if owns_conn:
                 conn.close()
-
-
-SynthesisService = ReflectionService

@@ -84,6 +84,21 @@ class EtagTest(ConditionalRequestTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("project", response.json())
 
+    def test_events_signal_etag_short_circuits_without_rendering_body(self) -> None:
+        etag = self.get("/events?limit=100").headers["etag"]
+        original = self.app.store.recent_events
+
+        def fail_recent_events(*, project_id: str | None, limit: int = 100):
+            self.fail("matching event ETag should not render the events body")
+
+        self.app.store.recent_events = fail_recent_events  # type: ignore[method-assign]
+        try:
+            response = self.get("/events?limit=100", etag=etag)
+        finally:
+            self.app.store.recent_events = original  # type: ignore[method-assign]
+        self.assertEqual(response.status_code, 304)
+        self.assertEqual(response.content, b"")
+
 
 class EventStreamTest(ConditionalRequestTestBase):
     def stream_path(self, **params: object) -> str:

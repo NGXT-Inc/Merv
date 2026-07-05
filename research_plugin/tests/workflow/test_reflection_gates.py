@@ -1350,7 +1350,7 @@ class ReflectionSignalTest(unittest.TestCase):
         return exp["id"]
 
     def _signal(self) -> dict:
-        return self.app.syntheses.reflection_signal(project_id=self.project_id)
+        return self.app.reflection_waves.reflection_signal(project_id=self.project_id)
 
     def _publish_wave(self) -> str:
         syn = self.call(

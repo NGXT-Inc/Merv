@@ -241,7 +241,7 @@ def build_control_tool_handlers(
     mlflow_tracking: Any,
     feed: Any,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
-    """Map control/aggregate tool names to service methods.
+    """Map control-plane tool names to service methods.
 
     This is intentionally a thin registry: composition supplies the services,
     and ToolDispatcher verifies the final name set against TOOL_CONTRACTS.

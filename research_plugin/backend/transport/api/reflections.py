@@ -1,0 +1,65 @@
+"""Reflections HTTP routes."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Body, Query, Request
+from fastapi.responses import Response, StreamingResponse
+
+from ... import __version__
+from ...services.identity import LOCAL_PRINCIPAL
+from ...utils import NotFoundError, ValidationError
+from ...version import meta
+from .shared import JsonBody, conditional_json
+
+from .context import ApiRouteContext
+
+
+def build_router(ctx: ApiRouteContext) -> APIRouter:
+    api_router = APIRouter()
+    api = ctx.api
+    router = ctx.project_router
+    surface = ctx.surface
+    api_for_project = ctx.api_for_project
+    default_api = ctx.default_api
+    route_call_tool = ctx.route_call_tool
+    require_data_plane_for_http = ctx.require_data_plane_for_http
+    @api_router.get("/api/projects/{project_id}/reflections")
+    # UI-migration debt: legacy /syntheses path alias.
+    @api_router.get("/api/projects/{project_id}/syntheses")
+    def list_reflections(project_id: str) -> dict[str, Any]:
+        # Reflection waves + staleness/coverage signal for the UI panel.
+        return api_for_project(project_id).reflections_view(project_id=project_id)
+
+    @api_router.get("/api/projects/{project_id}/reflections/current/graph")
+    # UI-migration debt: legacy /syntheses path alias.
+    @api_router.get("/api/projects/{project_id}/syntheses/current/graph")
+    def project_logic_graph(project_id: str) -> dict[str, Any]:
+        # The living project logic graph; same payload shape as the
+        # per-experiment graph endpoint. UI-only read, no agent tool.
+        return api_for_project(project_id).project_logic_graph(project_id=project_id)
+
+    @api_router.get("/api/projects/{project_id}/reflections/{synthesis_id}/graph")
+    # UI-migration debt: legacy /syntheses path alias.
+    @api_router.get("/api/projects/{project_id}/syntheses/{synthesis_id}/graph")
+    def reflection_graph(project_id: str, synthesis_id: str) -> dict[str, Any]:
+        # One wave's logic graph, rendered from the bytes that wave pinned, so
+        # a past wave shows faithfully even after later waves overwrite the
+        # living file. Same payload shape as /syntheses/current/graph (minus
+        # signal). Registered after the literal current/graph route so
+        # "current" is not captured as a synthesis_id. UI-only read.
+        return api_for_project(project_id).reflection_graph(
+            project_id=project_id, synthesis_id=synthesis_id
+        )
+
+    @api_router.get("/api/projects/{project_id}/reflections/{synthesis_id}")
+    # UI-migration debt: legacy /syntheses path alias.
+    @api_router.get("/api/projects/{project_id}/syntheses/{synthesis_id}")
+    def get_reflection(project_id: str, synthesis_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).reflection_detail(
+            project_id=project_id, synthesis_id=synthesis_id
+        )
+
+
+    return api_router

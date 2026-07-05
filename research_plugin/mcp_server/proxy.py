@@ -10,8 +10,10 @@ Two topologies (cloud plan Phase 8, §3.3), selected by config:
   the local daemon at ``daemon_url`` exactly as before — bit-identical, with the
   same friendly ``127.0.0.1:8787`` fallback and discovery order.
 - **Split mode.** ``control_url`` set: route on the tool's ``plane``:
-  ``control`` → the cloud, ``data`` → proxy-local local IO plus direct control
-  submission, ``aggregate`` → cloud facts merged with proxy-local enrichment.
+  ``control`` → the cloud (with named proxy-local enrichment for sandbox
+  status/health), ``data`` → proxy-local local IO plus direct control
+  submission. Older control planes that still advertise ``aggregate`` are
+  accepted and routed through the same enrichment path.
   The cloud receives an explicit ``project_id`` resolved from the proxy-owned
   ``project_links.sqlite`` file, NEVER ``repo_root``.
 
@@ -55,6 +57,7 @@ DEFAULT_DAEMON_URL = "http://127.0.0.1:8787"
 # agent polls. Kept generous so a fast create still returns SSH inline.
 LONG_VERB_TIMEOUT_SECONDS = 90.0
 LONG_VERBS = frozenset({"sandbox.request"})
+_LOCAL_ENRICHED_CONTROL_TOOLS = frozenset({"sandbox.get", "sandbox.health"})
 
 # The transport taxonomy (plan §3.3): returned as TOOL RESULTS, not protocol
 # errors, so a transient outage of one plane never disables the server. Domain
@@ -310,12 +313,14 @@ class HttpProxyMcpServer:
         if name == "project.current":
             return self._current_project()
         plane = self._plane_for(name=name)
+        if name in _LOCAL_ENRICHED_CONTROL_TOOLS:
+            return self._call_local_enriched_control(name=name, arguments=arguments)
         if plane == "control":
             return self._call_cloud(name=name, arguments=arguments)
         if plane == "data":
             return self._call_local_data(name=name, arguments=arguments)
-        # aggregate: merge both planes' answers (plan §3.3).
-        return self._call_aggregate(name=name, arguments=arguments)
+        # Backward tolerance for older catalogs that still say "aggregate".
+        return self._call_local_enriched_control(name=name, arguments=arguments)
 
     def _call_daemon(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         url = self._require_daemon_url()
@@ -392,10 +397,12 @@ class HttpProxyMcpServer:
                 details=details if isinstance(details, dict) else {},
             ) from exc
 
-    def _call_aggregate(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _call_local_enriched_control(
+        self, *, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         if name == "sandbox.health":
-            return self._aggregate_health()
-        # sandbox.get and any future aggregate: cloud row facts merged with
+            return self._enriched_health()
+        # sandbox.get and any legacy aggregate: cloud row facts merged with
         # proxy-local machine facts. Cloud-down must not block local enrichment.
         cloud: dict[str, Any] = {}
         cloud_err: dict[str, Any] | None = None
@@ -430,7 +437,7 @@ class HttpProxyMcpServer:
             merged["data_plane"] = local_err
         return {key: value for key, value in merged.items() if not key.startswith("_")}
 
-    def _aggregate_health(self) -> dict[str, Any]:
+    def _enriched_health(self) -> dict[str, Any]:
         if self.config.split_mode:
             data_ok, data_detail = True, {"mode": "proxy"}
         else:
@@ -533,7 +540,7 @@ class HttpProxyMcpServer:
 
     def _local_tool_catalog(self) -> list[dict[str, Any]]:
         contracts = importlib.import_module("backend.tools.contracts")
-        allowed = contracts.DATA_PLANE_TOOL_NAMES | contracts.AGGREGATE_TOOL_NAMES
+        allowed = contracts.DATA_PLANE_TOOL_NAMES | _LOCAL_ENRICHED_CONTROL_TOOLS
         return [
             tool
             for tool in contracts.static_tool_catalog()

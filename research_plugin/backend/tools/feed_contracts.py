@@ -104,9 +104,6 @@ FEED_TOOL_CONTRACTS: dict[str, ToolContract] = {
             "a high-value visual where you can. Posts are permanent (no edit or "
             "delete — correct a post by posting again)."
         ),
-        # Reads a local image file, so it lives on the data plane (the byte
-        # capture mirrors resource.associate); the post record is control state.
-        plane="data",
     ),
     "feed.list": ToolContract(
         input_model=FeedListInput,

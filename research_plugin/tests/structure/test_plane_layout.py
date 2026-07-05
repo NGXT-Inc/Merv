@@ -1,7 +1,7 @@
 """Plane-boundary lints for the control/data split.
 
 The split architecture in docs/CONTROL_DATA_PLANE_SPLIT.md requires every tool
-contract carries a plane, the three route sets partition the registry exactly,
+has one catalog plane, the two route sets partition the registry exactly,
 and the modules that must stay cloud-servable do not grow local-process or
 local-path dependencies. Control modules cannot import subprocess, conn
 machinery, or the dataplane package, and the record store does not know where
@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Protocol, get_type_hints
 
 from backend.tools.contracts import (
-    AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
+    TOOL_PLANE_REGISTRY,
 )
 from tests.paths import (
     ARTIFACTS_ROOT,
@@ -282,17 +282,16 @@ def _method_name_literal_branches(
 
 class ToolPlanePartitionTest(unittest.TestCase):
     def test_every_tool_has_a_plane(self) -> None:
-        for name, contract in TOOL_CONTRACTS.items():
-            self.assertIn(contract.plane, {"control", "data", "aggregate"}, name)
+        self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
+        for name, plane in TOOL_PLANE_REGISTRY.items():
+            self.assertIn(plane, {"control", "data"}, name)
 
     def test_planes_partition_the_registry(self) -> None:
-        union = CONTROL_PLANE_TOOL_NAMES | DATA_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES
+        union = CONTROL_PLANE_TOOL_NAMES | DATA_PLANE_TOOL_NAMES
         self.assertEqual(union, set(TOOL_CONTRACTS))
         self.assertFalse(CONTROL_PLANE_TOOL_NAMES & DATA_PLANE_TOOL_NAMES)
-        self.assertFalse(CONTROL_PLANE_TOOL_NAMES & AGGREGATE_TOOL_NAMES)
-        self.assertFalse(DATA_PLANE_TOOL_NAMES & AGGREGATE_TOOL_NAMES)
 
-    def test_data_and_aggregate_assignments_are_pinned(self) -> None:
+    def test_data_assignments_are_pinned(self) -> None:
         # The routing table from docs/CONTROL_DATA_PLANE_SPLIT.md. Changing
         # these is changing where a tool is served in split mode — do it in the
         # phase diff that moves the behavior, not casually.
@@ -315,7 +314,21 @@ class ToolPlanePartitionTest(unittest.TestCase):
                 "feed.post",
             },
         )
-        self.assertEqual(AGGREGATE_TOOL_NAMES, {"sandbox.health", "sandbox.get"})
+        self.assertIn("sandbox.health", CONTROL_PLANE_TOOL_NAMES)
+        self.assertIn("sandbox.get", CONTROL_PLANE_TOOL_NAMES)
+
+    def test_local_repo_file_readers_are_data_plane(self) -> None:
+        self.assertLessEqual(
+            {
+                "resource.register_file",
+                "resource.validate",
+                "resource.associate",
+                "resource.associate_batch",
+                "storage.upload_file",
+                "feed.post",
+            },
+            DATA_PLANE_TOOL_NAMES,
+        )
 
     def test_http_data_plane_features_point_at_data_plane_tools(self) -> None:
         from backend.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
@@ -335,7 +348,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
         source = proxy.read_text(encoding="utf-8")
 
         self.assertIn("DATA_PLANE_TOOL_NAMES", source)
-        self.assertIn("AGGREGATE_TOOL_NAMES", source)
+        self.assertIn("_LOCAL_ENRICHED_CONTROL_TOOLS", source)
         self.assertTrue(
             DATA_PLANE_TOOL_NAMES
             <= _method_name_literal_branches(
@@ -588,7 +601,7 @@ for name in (
         # collaborator protocols inside the workflow service module.
         imports = _import_segments(SERVICES_ROOT / "workflow.py")
         self.assertFalse(
-            {"experiments", "reviews", "sandboxes", "syntheses"} & imports
+            {"experiments", "reviews", "sandboxes", "reflections"} & imports
         )
         self.assertIn("workflow_readers", imports)
         source = (SERVICES_ROOT / "workflow.py").read_text(encoding="utf-8")
@@ -742,10 +755,7 @@ for name in (
         self.assertIn("class ControlApp:", source)
         self.assertIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
-        self.assertIn(
-            "control_tool_names = CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES",
-            source,
-        )
+        self.assertIn("control_tool_names = set(CONTROL_PLANE_TOOL_NAMES)", source)
         self.assertIn("available_tool_names(storage_enabled=", source)
         self.assertIn("tool_names=control_tool_names", source)
         self.assertNotIn("class ControlActivitySink", source)

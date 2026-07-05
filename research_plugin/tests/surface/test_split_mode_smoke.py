@@ -57,7 +57,7 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
             control_tool_call=tool_call or (lambda _name, _args: {}),
         )
 
-    def test_proxy_local_catalog_only_advertises_data_and_aggregate_tools(self) -> None:
+    def test_proxy_local_catalog_advertises_data_and_enriched_control_tools(self) -> None:
         proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,

@@ -23,16 +23,13 @@ class ContractModel(BaseModel):
 # and a local data-plane proxy (docs/CONTROL_DATA_PLANE_SPLIT.md).
 # "control" = record/gate/lifecycle work, cloud-servable. "data" = touches the
 # local filesystem or local processes, must run on the user's machine.
-# "aggregate" = merges both planes' answers. In local mode one process serves
-# all three; the annotation is the machine-checkable routing source of truth.
-ToolPlane = Literal["control", "data", "aggregate"]
+ToolPlane = Literal["control", "data"]
 
 
 @dataclass(frozen=True)
 class ToolContract:
     input_model: type[ContractModel]
     description: str
-    plane: ToolPlane = "control"
     hosted_control_sandbox_lookup: bool = False
 
 
@@ -858,7 +855,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "when planned experiments exist in state but their local folders do "
             "not yet exist."
         ),
-        plane="data",
     ),
     "experiment.transition": ToolContract(
         input_model=ExperimentTransitionInput,
@@ -939,7 +935,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Register or observe repo-relative file(s) as resources. Pass "
             "'path' for one file, or 'paths' for a changed-files batch."
         ),
-        plane="data",
     ),
     "resource.associate": ToolContract(
         input_model=ResourceAssociateInput,
@@ -950,7 +945,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "size-capped at associate time — keep them lean and reference raw "
             "data instead of inlining it."
         ),
-        plane="data",
     ),
     "resource.validate": ToolContract(
         input_model=ResourceValidateInput,
@@ -964,7 +958,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "and pinned-byte staleness — gates lint the bytes captured at "
             "associate, so re-associate after editing the file."
         ),
-        plane="data",
     ),
     "resource.associate_batch": ToolContract(
         input_model=ResourceAssociateBatchInput,
@@ -973,7 +966,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "attempts in one data-plane call. Rows are applied in order through "
             "the same validation and gated-byte capture path as resource.associate."
         ),
-        plane="data",
     ),
     "resource.delete": ToolContract(
         input_model=ResourceDeleteInput,
@@ -1014,7 +1006,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "project repo root; omit name to use the repo-relative path. "
             f"{STORAGE_RULE_OF_THUMB}"
         ),
-        plane="data",
     ),
     "storage.complete_upload": ToolContract(
         input_model=StorageCompleteUploadInput,
@@ -1040,7 +1031,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Resolve a storage object and download it to a local file, verifying "
             "size and sha256 before replacing the destination."
         ),
-        plane="data",
     ),
     "storage.pin": ToolContract(
         input_model=StorageObjectInput,
@@ -1114,7 +1104,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "the key) or 'managed' (fallback keypair); ssh.key_path points at "
             "the private key to use when a local path is available."
         ),
-        plane="data",
     ),
     "sandbox.options": ToolContract(
         input_model=SandboxOptionsInput,
@@ -1133,7 +1122,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "whether the VM authorized a caller-supplied public key or the "
             "plugin-managed fallback key."
         ),
-        plane="aggregate",
         hosted_control_sandbox_lookup=True,
     ),
     "sandbox.attach": ToolContract(
@@ -1143,7 +1131,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "changing the VM, workdir, SSH connection, or lifecycle. A live "
             "sandbox can be associated with multiple active experiments."
         ),
-        plane="data",
     ),
     "sandbox.pull_outputs": ToolContract(
         input_model=SandboxPullOutputsInput,
@@ -1161,7 +1148,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "device nodes are never recreated locally. One failing path is "
             "reported in errors/paths_failed without discarding the rest."
         ),
-        plane="data",
     ),
     "sandbox.list": ToolContract(
         input_model=SandboxListInput,
@@ -1212,7 +1198,6 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "sandbox.health": ToolContract(
         input_model=EmptyInput,
         description="Check the execution backend is reachable.",
-        plane="aggregate",
     ),
 }
 
@@ -1238,6 +1223,70 @@ STORAGE_TOOL_NAMES = {
     "storage.delete",
 }
 
+TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
+    "workflow.status_and_next": "control",
+    "project.create": "control",
+    "project.update": "control",
+    "project.get": "control",
+    "project.current": "control",
+    "project.list": "control",
+    "claim.create": "control",
+    "claim.list": "control",
+    "claim.update": "control",
+    "experiment.create": "control",
+    "experiment.list": "control",
+    "experiment.get_state": "control",
+    "experiment.materialize_folders": "data",
+    "experiment.transition": "control",
+    "mlflow.context": "control",
+    "mlflow.finalize_run": "control",
+    "reflection.create": "control",
+    "reflection.get": "control",
+    "reflection.list": "control",
+    "reflection.transition": "control",
+    "resource.register_file": "data",
+    "resource.associate": "data",
+    "resource.validate": "data",
+    "resource.associate_batch": "data",
+    "resource.delete": "control",
+    "resource.list": "control",
+    "resource.resolve": "control",
+    "storage.put_object": "control",
+    "storage.upload_file": "data",
+    "storage.complete_upload": "control",
+    "storage.list": "control",
+    "storage.resolve": "control",
+    "storage.download_file": "data",
+    "storage.pin": "control",
+    "storage.unpin": "control",
+    "storage.renew": "control",
+    "storage.delete": "control",
+    "review.request": "control",
+    "review.start": "control",
+    "review.submit": "control",
+    "review.status": "control",
+    "sandbox.request": "data",
+    "sandbox.options": "control",
+    "sandbox.get": "control",
+    "sandbox.attach": "data",
+    "sandbox.pull_outputs": "data",
+    "sandbox.list": "control",
+    "sandbox.release": "control",
+    "sandbox.extend": "control",
+    "sandbox.terminal": "control",
+    "sandbox.health": "control",
+    "feed.register": "control",
+    "feed.post": "data",
+    "feed.list": "control",
+}
+
+_PLANE_REGISTRY_MISMATCH = set(TOOL_CONTRACTS) ^ set(TOOL_PLANE_REGISTRY)
+if _PLANE_REGISTRY_MISMATCH:  # pragma: no cover - import-time contract guard
+    raise RuntimeError(
+        "TOOL_PLANE_REGISTRY must classify every tool exactly once: "
+        f"{sorted(_PLANE_REGISTRY_MISMATCH)}"
+    )
+
 
 def available_tool_names(*, storage_enabled: bool | None = None) -> set[str]:
     """Tool names for the active feature set.
@@ -1262,17 +1311,18 @@ PROJECT_SCOPED_TOOL_NAMES = {
     if issubclass(contract.input_model, ProjectScopedInput)
 }
 
-# Plane route sets, derived so the routing table and the registry cannot
-# drift. The proxy's dual-upstream routing (split mode) keys on these.
-CONTROL_PLANE_TOOL_NAMES = {
-    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "control"
-}
-DATA_PLANE_TOOL_NAMES = {
-    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "data"
-}
-AGGREGATE_TOOL_NAMES = {
-    name for name, contract in TOOL_CONTRACTS.items() if contract.plane == "aggregate"
-}
+def tool_plane(name: str) -> ToolPlane:
+    return TOOL_PLANE_REGISTRY[name]
+
+
+# Plane route sets, derived so the routing table and the registry cannot drift.
+# The proxy's dual-upstream routing (split mode) keys on these.
+CONTROL_PLANE_TOOL_NAMES = frozenset(
+    name for name, plane in TOOL_PLANE_REGISTRY.items() if plane == "control"
+)
+DATA_PLANE_TOOL_NAMES = frozenset(
+    name for name, plane in TOOL_PLANE_REGISTRY.items() if plane == "data"
+)
 
 
 def static_tool_catalog(
@@ -1304,8 +1354,8 @@ def static_tool_catalog(
                 # proxy reads this off the served catalog to build its
                 # dual-upstream route map, so the proxy never imports the
                 # pydantic-bound contracts module and the routing cannot drift
-                # from TOOL_CONTRACTS.
-                "plane": contract.plane,
+                # from TOOL_PLANE_REGISTRY.
+                "plane": tool_plane(name),
             }
         )
     return catalog

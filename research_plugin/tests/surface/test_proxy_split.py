@@ -113,7 +113,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertEqual(resource["project_id"], self.project["id"])
         self.assertTrue(resource["current_version"]["content_sha256"])
 
-    def test_aggregate_health_reports_proxy_data_plane_and_cloud(self) -> None:
+    def test_enriched_control_health_reports_proxy_data_plane_and_cloud(self) -> None:
         health = self._call("sandbox.health")
 
         self.assertIn("data_plane", health)
@@ -171,7 +171,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertIn("object storage", result["error"])
 
 
-class AggregateMergeTest(unittest.TestCase):
+class LocalEnrichedControlMergeTest(unittest.TestCase):
     def test_sandbox_get_merges_proxy_local_experiment_dir_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proxy = HttpProxyMcpServer(
@@ -192,7 +192,7 @@ class AggregateMergeTest(unittest.TestCase):
                 "local_dir": f"{tmp}/experiments/sandbox-sbx_12345678",
             }
 
-            merged = proxy._call_aggregate(
+            merged = proxy._call_local_enriched_control(
                 name="sandbox.get", arguments={"experiment_id": "exp_1"}
             )
 

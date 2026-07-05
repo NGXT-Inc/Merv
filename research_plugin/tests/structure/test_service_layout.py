@@ -18,11 +18,30 @@ HTTP_TRANSPORT_MODULES = (
     BACKEND_ROOT / "transport" / "feed_http.py",
     BACKEND_ROOT / "transport" / "http_api.py",
     BACKEND_ROOT / "transport" / "mcp_http.py",
+    *sorted((BACKEND_ROOT / "transport" / "api").glob("*.py")),
 )
+HTTP_API_APP = BACKEND_ROOT / "transport" / "api" / "app.py"
+HTTP_API_VIEWS = BACKEND_ROOT / "transport" / "api" / "views.py"
+HTTP_API_PACKAGE = BACKEND_ROOT / "transport" / "api"
 
 
 def _source(name: str) -> str:
     return (SERVICES / name).read_text(encoding="utf-8")
+
+
+def _api_app_source() -> str:
+    return HTTP_API_APP.read_text(encoding="utf-8")
+
+
+def _api_views_source() -> str:
+    return HTTP_API_VIEWS.read_text(encoding="utf-8")
+
+
+def _api_package_source() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(HTTP_API_PACKAGE.glob("*.py"))
+    )
 
 
 def _artifacts_source(name: str) -> str:
@@ -244,7 +263,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("ACTIVE_PROCESS_STATUSES =", source)
         self.assertNotIn("resources", imports)
         self.assertFalse(
-            {"experiments", "reviews", "sandboxes", "syntheses"} & imports
+            {"experiments", "reviews", "sandboxes", "reflections"} & imports
         )
         self.assertIn("workflow_readers", imports)
         for protocol_name in (
@@ -424,9 +443,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_auto_sync_poller_is_removed(self) -> None:
         local_source = _source("sandbox/sandbox_daemons.py")
-        http_source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(
-            encoding="utf-8"
-        )
+        http_source = _api_package_source()
         api_source = (UI_SRC / "api.js").read_text(encoding="utf-8")
         components = UI_SRC / "components"
 
@@ -798,7 +815,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn("import sqlite3", source)
 
     def test_transport_uses_contract_capabilities_for_sandbox_lifecycle_specials(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         contracts_source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
 
         self.assertNotIn('name == "sandbox.get"', source)
@@ -818,7 +835,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("require_project_id", block)
 
     def test_http_surface_policy_keeps_mode_decisions_named(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
 
         self.assertNotIn("class _HttpSurfacePolicy", source)
@@ -871,7 +888,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("enforce_project_scope", policy_source)
 
     def test_http_transport_does_not_carry_interim_project_scope_gate(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_package_source()
 
         self.assertNotIn(".store.require_project_id(", source)
         self.assertNotIn(".store.transaction(", source)
@@ -880,7 +897,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("project_ids_for_tenant", source)
 
     def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
         from backend.transport.http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
@@ -908,7 +925,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("SELECT project_id FROM review_requests", source)
 
     def test_http_data_plane_capabilities_use_policy_table(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
+        route_source = _api_package_source()
         policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
         from backend.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
 
@@ -921,18 +939,18 @@ class ServiceLayoutTest(unittest.TestCase):
         )
         self.assertIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", policy_source)
         self.assertIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", source)
-        self.assertIn("surface.data_plane_http_capabilities()", source)
+        self.assertIn("surface.data_plane_http_capabilities()", route_source)
         for feature, tool_name in HTTP_DATA_PLANE_FEATURE_TO_TOOL.items():
             with self.subTest(feature=feature):
-                self.assertIn(f'feature="{feature}"', source)
-                self.assertNotIn(f'tool="{tool_name}"', source)
+                self.assertIn(f'feature="{feature}"', route_source)
+                self.assertNotIn(f'tool="{tool_name}"', route_source)
                 self.assertNotIn(
                     f'"{feature}": surface.allow_data_plane_http',
-                    source,
+                    route_source,
                 )
 
     def test_admin_http_routes_are_lifted_out_of_main_factory(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         admin_source = (BACKEND_ROOT / "transport" / "admin_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(
@@ -953,7 +971,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("require_tenant_or_admin", admin_source)
 
     def test_mcp_http_routes_are_shared_by_local_and_control(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(
@@ -973,7 +991,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("context must be an object", mcp_source)
 
     def test_control_data_plane_http_routes_are_lifted_out_of_main_factory(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_app_source()
         data_plane_source = (BACKEND_ROOT / "transport" / "data_plane_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(
@@ -1009,7 +1027,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn(route, source)
 
     def test_transport_delegates_submitted_resource_blob_reads_to_service(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_views_source()
 
         self.assertIn("self.app.resources.pinned_text_for_version", source)
         self.assertIn("self.app.resources.submitted_text_for_version", source)
@@ -1022,9 +1040,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("self.app.blobs.get", source)
 
     def test_transport_delegates_reflection_overview_to_service(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_views_source()
         start = source.index("    def reflections_view(")
-        end = source.index("    def syntheses_view(", start)
+        end = source.index("    def reflection_detail(", start)
         block = source[start:end]
 
         self.assertIn("self.app.reflection_waves.overview", block)
@@ -1106,7 +1124,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertEqual(connect_calls, [])
 
     def test_transport_delegates_graph_ref_resolution_to_service(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_views_source()
         self.assertIn("self.app.graph_refs.resolve_index", source)
         self.assertEqual(
             source.count('"ref_index": self.app.graph_refs.resolve_index('), 1
@@ -1131,7 +1149,7 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn(f'elif ref.startswith("{prefix}")', source)
 
     def test_transport_has_no_visible_project_lookup_gate(self) -> None:
-        source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
+        source = _api_package_source()
         self.assertNotIn("project_ids_for_tenant", source)
         self.assertNotIn("SELECT id FROM projects WHERE tenant_id", source)
 

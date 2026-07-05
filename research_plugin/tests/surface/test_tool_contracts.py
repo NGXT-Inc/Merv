@@ -11,7 +11,6 @@ from pydantic import ValidationError as PydanticValidationError
 from backend.app import ResearchPluginApp
 from backend.config import STORAGE_PROVIDER_ENV_VAR
 from backend.tools.contracts import (
-    AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
     ExperimentMaterializeFoldersInput,
@@ -30,8 +29,10 @@ from backend.tools.contracts import (
     StorageUploadFileInput,
     STORAGE_TOOL_NAMES,
     TOOL_CONTRACTS,
+    TOOL_PLANE_REGISTRY,
     available_tool_names,
     static_tool_catalog,
+    tool_plane,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.daemon.project_router import ProjectRouter
@@ -105,6 +106,10 @@ class ToolContractRegistryTest(unittest.TestCase):
         # app; it must be indistinguishable from a live app's listing.
         self.assertEqual(static_tool_catalog(), self.app.list_tools())
 
+    def test_plane_registry_classifies_every_tool(self) -> None:
+        self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
+        self.assertLessEqual(set(TOOL_PLANE_REGISTRY.values()), {"control", "data"})
+
     def test_sandbox_tool_descriptions_carry_lifecycle_guidance(self) -> None:
         tools = {tool["name"]: tool for tool in self.app.list_tools()}
         self.assertNotIn("MLflow", tools["sandbox.request"]["description"])
@@ -137,7 +142,7 @@ class ToolContractRegistryTest(unittest.TestCase):
         }
         for name, (model, plane) in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
-            self.assertEqual(TOOL_CONTRACTS[name].plane, plane)
+            self.assertEqual(tool_plane(name), plane)
         self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
         self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.upload_file"].description)
 
@@ -146,21 +151,21 @@ class ToolContractRegistryTest(unittest.TestCase):
             TOOL_CONTRACTS["resource.associate_batch"].input_model,
             ResourceAssociateBatchInput,
         )
-        self.assertEqual(TOOL_CONTRACTS["resource.associate_batch"].plane, "data")
+        self.assertEqual(tool_plane("resource.associate_batch"), "data")
 
     def test_resource_validate_is_data_plane(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["resource.validate"].input_model,
             ResourceValidateInput,
         )
-        self.assertEqual(TOOL_CONTRACTS["resource.validate"].plane, "data")
+        self.assertEqual(tool_plane("resource.validate"), "data")
 
     def test_sandbox_pull_outputs_is_data_plane(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["sandbox.pull_outputs"].input_model,
             SandboxPullOutputsInput,
         )
-        self.assertEqual(TOOL_CONTRACTS["sandbox.pull_outputs"].plane, "data")
+        self.assertEqual(tool_plane("sandbox.pull_outputs"), "data")
 
     def test_sandbox_request_accepts_caller_public_key(self) -> None:
         parsed = SandboxRequestInput.model_validate(
@@ -189,7 +194,7 @@ class ToolContractRegistryTest(unittest.TestCase):
             TOOL_CONTRACTS["sandbox.extend"].input_model,
             SandboxExtendInput,
         )
-        self.assertEqual(TOOL_CONTRACTS["sandbox.extend"].plane, "control")
+        self.assertEqual(tool_plane("sandbox.extend"), "control")
 
     def test_experiment_materialize_folders_is_data_plane(self) -> None:
         self.assertIs(
@@ -197,7 +202,7 @@ class ToolContractRegistryTest(unittest.TestCase):
             ExperimentMaterializeFoldersInput,
         )
         self.assertEqual(
-            TOOL_CONTRACTS["experiment.materialize_folders"].plane,
+            tool_plane("experiment.materialize_folders"),
             "data",
         )
 
@@ -212,7 +217,7 @@ class ToolContractRegistryTest(unittest.TestCase):
             TOOL_CONTRACTS["mlflow.finalize_run"].input_model,
             MlflowFinalizeRunInput,
         )
-        self.assertEqual(TOOL_CONTRACTS["mlflow.finalize_run"].plane, "control")
+        self.assertEqual(tool_plane("mlflow.finalize_run"), "control")
 
 
 class StaticCatalogNoSideEffectTest(unittest.TestCase):
@@ -234,7 +239,7 @@ class StaticCatalogNoSideEffectTest(unittest.TestCase):
 
 class ToolDispatcherTest(unittest.TestCase):
     def test_dispatcher_can_expose_a_control_subset(self) -> None:
-        tool_names = CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES
+        tool_names = CONTROL_PLANE_TOOL_NAMES
         handlers = {name: (lambda **_: {}) for name in tool_names}
         dispatcher = ToolDispatcher(
             handlers=handlers,
@@ -265,7 +270,7 @@ class ToolHandlerRegistryTest(unittest.TestCase):
     def test_control_handlers_exclude_data_plane_tools(self) -> None:
         handlers = build_control_tool_handlers(**_handler_targets())
 
-        self.assertEqual(set(handlers), CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES)
+        self.assertEqual(set(handlers), CONTROL_PLANE_TOOL_NAMES)
         self.assertFalse(set(handlers) & DATA_PLANE_TOOL_NAMES)
 
     def test_control_handlers_omit_storage_when_disabled(self) -> None:

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..tools.contracts import (
-    AGGREGATE_TOOL_NAMES,
     CONTROL_PLANE_TOOL_NAMES,
     available_tool_names,
 )
@@ -72,8 +71,6 @@ class ControlApp:
         self.graph_refs = self.record_core.graph_refs
         self.reflection_waves = self.record_core.reflection_waves
         self.reflection_tools = self.record_core.reflection_tools
-        # phase-6 deletion debt: legacy service/tool aliases.
-        self.syntheses = self.reflection_waves
         self.reflections = self.reflection_tools
         self.project_overview = self.record_core.project_overview
         self.reviews = self.record_core.reviews
@@ -106,7 +103,7 @@ class ControlApp:
             storage_enabled=self.storage is not None,
             storage_guidance=storage_guidance(enabled=self.storage is not None),
         )
-        control_tool_names = CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES
+        control_tool_names = set(CONTROL_PLANE_TOOL_NAMES)
         control_tool_names &= available_tool_names(storage_enabled=self.storage is not None)
         self.tools = ToolDispatcher(
             handlers=build_control_tool_handlers(

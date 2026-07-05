@@ -72,7 +72,6 @@ FILE_MODULES = {
     "services/reviews.py": RESEARCH_CORE,
     "services/review_gate.py": RESEARCH_CORE,
     "services/reflections.py": RESEARCH_CORE,
-    "services/syntheses.py": RESEARCH_CORE,
     "services/project_overview.py": RESEARCH_CORE,
     "services/projects.py": RESEARCH_CORE,
     "services/reflection_tools.py": RESEARCH_CORE,
