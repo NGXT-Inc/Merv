@@ -104,7 +104,6 @@ class LocalDataPlane:
         payload = dict(arguments)
         payload["project_id"] = project_id
         self._validate_sandbox_request(payload)
-        payload["sandbox_uid"] = str(payload.get("sandbox_uid") or uuid.uuid4().hex)
         return self._control_api_post("/api/data-plane/sandboxes/request", payload)
 
     def _attach_sandbox(self, *, arguments: dict[str, Any]) -> dict[str, Any]:

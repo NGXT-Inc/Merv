@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
 from backend.transport.http_policy import HttpSurfacePolicy
@@ -22,7 +22,7 @@ from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
 
 
 class _HttpHarness:
-    def __init__(self, *, app: ResearchPluginApp, url: str) -> None:
+    def __init__(self, *, app: TestBrain, url: str) -> None:
         self.url = url
         self.client = TestClient(
             create_fastapi_app(
@@ -30,7 +30,6 @@ class _HttpHarness:
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=False,
                     hosted_control=False,
-                    expose_local_data_plane=False,
                 ),
             )
         )
@@ -54,7 +53,7 @@ class HttpProxyMcpServerUnifiedBrainTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -115,7 +114,7 @@ class HttpProxyMcpServerSplitLinkTest(unittest.TestCase):
         self.repo_b = self.root / "repo-b"
         self.repo_a.mkdir()
         self.repo_b.mkdir()
-        self.control_app = ResearchPluginApp(
+        self.control_app = TestBrain(
             repo_root=self.root / "control",
             db_path=self.root / "control.sqlite",
             execution_backend=FakeSandboxBackend(),

@@ -11,8 +11,6 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 
 from ... import __version__
-from ...app import ResearchPluginApp
-from ...daemon.project_router import ProjectRouter
 from ...services.identity import LOCAL_PRINCIPAL
 from ...state import monotonic_ms
 from ...tools.contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, TOOL_CONTRACTS
@@ -38,48 +36,25 @@ from . import claims, events, experiments, feed, meta, projects, reflections, re
 
 
 def create_fastapi_app(
-    app: ResearchPluginApp | None = None,
+    app: Any | None = None,
     *,
-    router: ProjectRouter | None = None,
     allowed_origins: list[str] | None = None,
     cleanup: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
 ) -> FastAPI:
-    # HTTP surface seam. Local mode exposes data-plane routes and accepts
-    # repo_root context. Hosted control hides local data-plane tool calls and
-    # relies on the local MCP proxy to resolve repo_root -> project_id.
-    if (app is None) == (router is None):
-        raise ValueError("provide exactly one of app or router")
+    # Unified HTTP brain. File, SSH, and rsync work is always submitted by the
+    # local MCP proxy; the server never accepts repo_root context or data-plane
+    # tool calls directly.
+    if app is None:
+        raise ValueError("provide app")
     surface = surface_policy or HttpSurfacePolicy.for_surface(
         restrict_cors=False,
         hosted_control=False,
-        expose_local_data_plane=True,
     )
-    api = (
-        ResearchHttpApi(app=app, expose_local_data_plane=surface.expose_local_data_plane)
-        if app is not None
-        else None
-    )
+    api = ResearchHttpApi(app=app)
 
     def api_for_project(project_id: str) -> ResearchHttpApi:
-        if router is not None:
-            return ResearchHttpApi(
-                app=router.app_for_project(project_id),
-                expose_local_data_plane=surface.expose_local_data_plane,
-            )
-        assert api is not None
         return api
-
-    def default_api() -> ResearchHttpApi | None:
-        if api is not None:
-            return api
-        assert router is not None
-        project_app = router.any_app()
-        return (
-            ResearchHttpApi(app=project_app, expose_local_data_plane=surface.expose_local_data_plane)
-            if project_app is not None
-            else None
-        )
 
     def route_call_tool(
         *,
@@ -103,7 +78,7 @@ def create_fastapi_app(
                     details={"tool": name, "errors": exc.errors()},
                 ) from exc
 
-        if not surface.accept_repo_root_context and context.get("repo_root"):
+        if context.get("repo_root"):
             raise DataPlaneRequiredError(
                 "repo_root context is local data-plane state; hosted control "
                 "requires the local MCP proxy to resolve and send project_id",
@@ -112,7 +87,7 @@ def create_fastapi_app(
                     "reason": "repo_root_hidden_from_cloud",
                 },
             )
-        if not surface.allow_data_plane_tool_calls and name in DATA_PLANE_TOOL_NAMES:
+        if name in DATA_PLANE_TOOL_NAMES:
             raise DataPlaneRequiredError(
                 f"{name} requires the local MCP proxy; hosted control mode "
                 "cannot read local files, hold user SSH keys, or run rsync",
@@ -121,14 +96,6 @@ def create_fastapi_app(
                     "reason": "requires_local_data_plane",
                 },
             )
-        if router is not None:
-            return router.call_tool(
-                name=name,
-                arguments=arguments,
-                context=context,
-                activity_source=activity_source,
-            )
-        assert api is not None
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if surface.use_hosted_tool_policies
@@ -148,14 +115,8 @@ def create_fastapi_app(
                 activity_source=activity_source,
                 **call_kwargs,
             )
-        if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments and (context or {}).get("repo_root"):
-            projects_result = api.app.projects.list_projects()["projects"]
-            if len(projects_result) != 1:
-                raise ValidationError(
-                    "project_id is required when the repo has multiple projects",
-                    details={"projects": [project["id"] for project in projects_result]},
-                )
-            arguments["project_id"] = projects_result[0]["id"]
+        if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments:
+            raise ValidationError("project_id is required", details={"field": "project_id"})
         if (
             surface.hosted_control
             and contract is not None
@@ -250,21 +211,20 @@ def create_fastapi_app(
             return response
         finally:
             duration_ms = monotonic_ms() - started
-            if api is not None:
-                # Intentionally only collect MCP tool-call events in the shared
-                # activity log (HTTP request telemetry was disabled per request).
-                # Structured cloud log line (control mode only; dormant locally).
-                # tenant_id comes from the resolved principal when present.
-                principal = getattr(request.state, "principal", None)
-                api.app.structured_logger.log(
-                    kind="http",
-                    request_id=request_id,
-                    tenant_id=getattr(principal, "tenant_id", "") or "",
-                    path=str(request.url.path),
-                    status=status,
-                    duration_ms=duration_ms,
-                    method=request.method,
-                )
+            # Intentionally only collect MCP tool-call events in the shared
+            # activity log (HTTP request telemetry was disabled per request).
+            # Structured cloud log line (control mode only; dormant locally).
+            # tenant_id comes from the resolved principal when present.
+            principal = getattr(request.state, "principal", None)
+            api.app.structured_logger.log(
+                kind="http",
+                request_id=request_id,
+                tenant_id=getattr(principal, "tenant_id", "") or "",
+                path=str(request.url.path),
+                status=status,
+                duration_ms=duration_ms,
+                method=request.method,
+            )
 
     # CORS is registered LAST so it becomes the OUTERMOST middleware, wrapping
     # the version gate and origin guard above. Starlette applies user middleware
@@ -306,16 +266,14 @@ def create_fastapi_app(
     async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse({"detail": "invalid HTTP request", "errors": exc.errors()}, status_code=400)
 
-    def app_for_data_plane_project(request: Request, project_id: str) -> ResearchPluginApp:
+    def app_for_data_plane_project(request: Request, project_id: str) -> Any:
         return api_for_project(project_id).app
 
     ctx = ApiRouteContext(
         api=api,
-        project_router=router,
         surface=surface,
         cleanup=cleanup,
         api_for_project=api_for_project,
-        default_api=default_api,
         route_call_tool=route_call_tool,
         app_for_data_plane_project=app_for_data_plane_project,
     )
@@ -335,9 +293,6 @@ def create_fastapi_app(
         http.include_router(build(ctx))
 
     def list_mcp_tools() -> list[dict[str, Any]]:
-        if router is not None:
-            return router.list_tools()
-        assert api is not None
         return api.app.list_tools()
 
     def call_mcp_tool(
@@ -358,11 +313,7 @@ def create_fastapi_app(
         http,
         list_tools=list_mcp_tools,
         call_tool=call_mcp_tool,
-        allow_tool=(
-            None
-            if surface.allow_data_plane_tool_calls
-            else lambda tool: tool.get("plane") != "data"
-        ),
+        allow_tool=lambda tool: tool.get("plane") != "data",
     )
 
     register_data_plane_routes(
@@ -373,7 +324,7 @@ def create_fastapi_app(
     # Control-admin routes: optional cleanup trigger plus tenant counters.
     register_admin_routes(
         http,
-        store=api.app.store if api is not None else None,
+        store=api.app.store,
         cleanup=cleanup,
     )
 

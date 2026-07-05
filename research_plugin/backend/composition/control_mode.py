@@ -60,6 +60,7 @@ from ..utils import ValidationError
 CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/research-plugin-control")
 LOCAL_BRAIN_STATE_DIR_ENV_VAR = "RESEARCH_PLUGIN_LOCAL_STATE_DIR"
 LOGGER = logging.getLogger(__name__)
+_UNSET = object()
 
 
 class ControlPlaneServer:
@@ -96,6 +97,12 @@ def build_control_app(
     repo_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
+    store: Any | None = None,
+    blobs: Any | None = None,
+    storage: Any = _UNSET,
+    task_channel: Any | None = None,
+    mgmt_keys: Any | None = None,
+    mlflow_tracking: CentralMlflowService | None = None,
     local_deployment: bool = False,
 ) -> tuple[ControlApp, ControlTaskChannel]:
     """Build the control-plane app and hosted-control task channel.
@@ -110,14 +117,23 @@ def build_control_app(
         repo_root=repo_root, env=env, local_deployment=local_deployment
     )
     db_path = staging / ".research_plugin" / "state.sqlite"
-    store = build_state_store(db_path=db_path, env=env)
-    blobs = build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
-    objects = build_object_store(default_root=staging / ".research_plugin", env=env)
-    storage = StorageLedgerService(store=store, objects=objects) if objects else None
-    task_channel = ControlTaskChannel()
+    store = store if store is not None else build_state_store(db_path=db_path, env=env)
+    blobs = (
+        blobs
+        if blobs is not None
+        else build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
+    )
+    if storage is _UNSET:
+        objects = build_object_store(default_root=staging / ".research_plugin", env=env)
+        storage = StorageLedgerService(store=store, objects=objects) if objects else None
+    task_channel = task_channel if task_channel is not None else ControlTaskChannel()
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
-    mlflow_tracking = CentralMlflowService.from_env(env)
+    mlflow_tracking = (
+        mlflow_tracking
+        if mlflow_tracking is not None
+        else CentralMlflowService.from_env(env)
+    )
     _validate_agent_mlflow_requirement(mlflow_tracking=mlflow_tracking, env=env)
     _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
     app = ControlApp(
@@ -127,9 +143,13 @@ def build_control_app(
         storage=storage,
         task_channel=task_channel,
         execution_backend=execution_backend,
-        mgmt_keys=_build_mgmt_key_store(
-            env=env,
-            local_root=staging if local_deployment else None,
+        mgmt_keys=(
+            mgmt_keys
+            if mgmt_keys is not None
+            else _build_mgmt_key_store(
+                env=env,
+                local_root=staging if local_deployment else None,
+            )
         ),
         mlflow_tracking=mlflow_tracking,
         # Cost governance (cloud plan Phase 7): the hosted control plane holds
@@ -182,12 +202,26 @@ def build_local_server(
     state_dir: Path | None = None,
     env: Mapping[str, str] | None = None,
     allowed_origins: list[str] | None = None,
+    execution_backend: Any | None = None,
+    store: Any | None = None,
+    blobs: Any | None = None,
+    storage: Any = _UNSET,
+    task_channel: Any | None = None,
+    mgmt_keys: Any | None = None,
+    mlflow_tracking: CentralMlflowService | None = None,
 ) -> ControlPlaneServer:
     """Build the localhost brain using the same ControlApp composition."""
     root = _local_brain_root(state_dir=state_dir, env=env)
     app, task_channel = build_control_app(
         repo_root=root,
         env=env,
+        execution_backend=execution_backend,
+        store=store,
+        blobs=blobs,
+        storage=storage,
+        task_channel=task_channel,
+        mgmt_keys=mgmt_keys,
+        mlflow_tracking=mlflow_tracking,
         local_deployment=True,
     )
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
@@ -249,7 +283,6 @@ def _control_http_surface(
     return HttpSurfacePolicy.for_surface(
         restrict_cors=env_bool(CONTROL_RESTRICT_CORS_ENV_VAR, True, env=env),
         hosted_control=True,
-        expose_local_data_plane=False,
     )
 
 
@@ -257,7 +290,6 @@ def _local_http_surface() -> HttpSurfacePolicy:
     return HttpSurfacePolicy.for_surface(
         restrict_cors=False,
         hosted_control=False,
-        expose_local_data_plane=False,
     )
 
 
@@ -323,11 +355,10 @@ def _validate_sandbox_backend_requirement(
 def _resume_active_sandboxes(*, app: ControlApp) -> None:
     """Reconcile rows left running/provisioning after a control restart.
 
-    Mirror of ProjectRouter._resume_active_sandbox_projects for the cloud: the
-    reaper thread is already running (SandboxService.__init__ started it); a
-    one-shot reconcile pass on startup makes the resumed reaper truthful about
-    rows that may have expired while the control plane was down. Best-effort —
-    a reconcile failure must not block startup or the reaper.
+    The reaper thread is already running (SandboxService.__init__ started it);
+    a one-shot reconcile pass on startup makes the resumed reaper truthful
+    about rows that may have expired while the control plane was down.
+    Best-effort — a reconcile failure must not block startup or the reaper.
     """
     try:
         had_running = bool(app.sandboxes.registry.list_running_rows())

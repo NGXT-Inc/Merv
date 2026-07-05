@@ -1335,7 +1335,7 @@ def static_tool_catalog(
 ) -> list[dict[str, Any]]:
     """The MCP tool catalog, derived purely from contracts.
 
-    Same shape as ``ResearchPluginApp.list_tools()`` (top-level ``title``
+    Same shape as the control app's ``list_tools()`` (top-level ``title``
     popped from each schema) so tool listing never needs an app instance —
     and therefore has no filesystem side effects.
     """

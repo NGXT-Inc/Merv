@@ -19,22 +19,11 @@ from .context import ApiRouteContext
 def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_router = APIRouter()
     api = ctx.api
-    router = ctx.project_router
     surface = ctx.surface
-    api_for_project = ctx.api_for_project
-    default_api = ctx.default_api
-    route_call_tool = ctx.route_call_tool
     @api_router.get("/health")
     def health() -> dict[str, Any]:
-        # Surface hygiene (cloud plan Phase 7): /health leaks machine-local
-        # paths (repo_root, store path, registry path). Local mode keeps the
-        # rich shape (loopback, single user). Control mode returns a slim
-        # liveness shape — no host paths cross the cloud edge.
-        if not surface.expose_local_data_plane:
-            return {"ok": True, "version": __version__}
-        if router is not None:
-            return {"ok": True, "version": __version__, **router.health()}
-        assert api is not None
+        # Surface hygiene: /health is liveness only and never exposes host
+        # paths or local data-plane details.
         return api.health()
 
     @api_router.get("/api/meta")
@@ -77,9 +66,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         source: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        if router is not None:
-            return router.activity_recent(limit=limit, source=source, project_id=project_id)
-        assert api is not None
         return api.activity(limit=limit, source=source, project_id=project_id)
 
     # /api/debug/* expose tool-call internals. Hosted control is currently a
@@ -97,18 +83,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         sort: str = "ts",
         order: str = "desc",
     ) -> dict[str, Any]:
-        target = default_api()
-        if target is None:
-            # Mirror ToolCallStore.stats' empty `base` shape so the UI renders
-            # the same whether the store is empty or no app exists yet.
-            return {
-                "calls": [],
-                "by_tool": [],
-                "totals": {"calls": 0, "sent_chars": 0, "received_chars": 0, "error_calls": 0},
-                "coverage": {"calls": 0, "stored": 0, "oldest_ts": None, "newest_ts": None, "capped": False},
-                "filter": {"minutes": minutes, "source": source, "status": status, "tool": tool, "project_id": project_id},
-            }
-        return target.tool_call_stats(
+        return api.tool_call_stats(
             minutes=minutes,
             source=source,
             status=status,
@@ -120,20 +95,14 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/debug/tool-calls/{call_id}")
     def tool_call_detail(call_id: int, request: Request) -> dict[str, Any]:
-        target = default_api()
-        if target is None:
-            raise NotFoundError("no project instantiated yet")
-        return target.tool_call_detail(
+        return api.tool_call_detail(
             call_id=call_id,
             project_ids=None,
         )
 
     @api_router.post("/api/debug/tool-calls/clear")
     def tool_calls_clear(request: Request) -> dict[str, Any]:
-        target = default_api()
-        if target is None:
-            return {"cleared": 0}
-        return target.tool_calls_clear(project_ids=None)
+        return api.tool_calls_clear(project_ids=None)
 
 
     return api_router

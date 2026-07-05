@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.config import STORAGE_PROVIDER_ENV_VAR
 from backend.tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
@@ -35,7 +35,6 @@ from backend.tools.contracts import (
     tool_plane,
 )
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.daemon.project_router import ProjectRouter
 from backend.tools.tool_facade import ToolDispatcher
 from backend.tools.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
 
@@ -79,7 +78,7 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.repo = Path(self.tmp.name)
         self.env_patch = patch.dict(os.environ, {STORAGE_PROVIDER_ENV_VAR: ""})
         self.env_patch.start()
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -221,15 +220,10 @@ class ToolContractRegistryTest(unittest.TestCase):
 
 
 class StaticCatalogNoSideEffectTest(unittest.TestCase):
-    def test_router_tool_listing_creates_no_template_repo(self) -> None:
+    def test_static_tool_listing_creates_no_template_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            registry = Path(tmp) / "registry.sqlite"
             with patch.dict(os.environ, {STORAGE_PROVIDER_ENV_VAR: ""}):
-                router = ProjectRouter(registry_db_path=registry)
-                try:
-                    tools = router.list_tools()
-                finally:
-                    router.shutdown()
+                tools = static_tool_catalog(storage_enabled=False)
             self.assertEqual(
                 {tool["name"] for tool in tools},
                 available_tool_names(storage_enabled=False),

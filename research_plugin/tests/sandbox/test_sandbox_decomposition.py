@@ -5,9 +5,9 @@ Behavior is covered by test_sandbox_service.py; this file guards the
 the facade owns the public verbs and delegates rows to SandboxRegistry,
 job threads to SandboxProvisioner, every destructive decision (liveness
 policy, VM termination, terminal marks + teardown, reconcile, reaping) to
-SandboxLifecycle — the single owner of status transitions — every local-IO
-duty (conn files, local paths, metrics fallback) to the DataPlaneWorker,
-and the background loops to SandboxDaemons.
+SandboxLifecycle — the single owner of status transitions — control-owned task
+signals to the neutral ControlTaskChannel, and the background loops to
+SandboxDaemons.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ import unittest
 from pathlib import Path
 from typing import get_type_hints
 
-from backend.app import ResearchPluginApp
-from backend.dataplane import InProcessTaskChannel, LocalDataPlaneWorker
+from tests.support.brain import TestBrain
+from backend.control.control_runtime import ControlSandboxWorker, ControlTaskChannel
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.sandbox.sandbox_daemons import SandboxDaemons
 from backend.services.sandbox.sandbox_heartbeat import (
@@ -56,7 +56,7 @@ class SandboxDecompositionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=repo,
             db_path=repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -71,7 +71,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIsInstance(service.registry, SandboxRegistry)
         self.assertIsInstance(service.lifecycle, SandboxLifecycle)
         self.assertIsInstance(service.provisioner, SandboxProvisioner)
-        self.assertIsInstance(service.worker, LocalDataPlaneWorker)
+        self.assertIsInstance(service.worker, ControlSandboxWorker)
         self.assertIsInstance(service.metrics, SandboxMetrics)
         self.assertIsInstance(service.daemons, SandboxDaemons)
         self.assertIsInstance(service.daemons.heartbeat, SandboxHeartbeatMonitor)
@@ -84,9 +84,8 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertEqual(
             service.lifecycle.job_probe, service.provisioner.job_is_live
         )
-        # All collaborators share the one registry (single writer of rows),
-        # the one lifecycle (single owner of transitions), and the one worker
-        # (single owner of local IO).
+        # All collaborators share the one registry (single writer of rows) and
+        # the one lifecycle (single owner of transitions).
         self.assertIs(service.lifecycle.registry, service.registry)
         self.assertIs(service.provisioner.registry, service.registry)
         self.assertIs(service.provisioner.lifecycle, service.lifecycle)
@@ -116,11 +115,11 @@ class SandboxDecompositionTest(unittest.TestCase):
             ), module)
 
     def test_facade_wires_the_task_seam(self) -> None:
-        # One channel carries explicit control→data signals: conn refresh and
-        # teardown. It is injected by composition so split mode can swap HTTP in.
+        # One channel carries explicit control signals for endpoint refresh and
+        # teardown. Unified local mode uses the same neutral control channel as
+        # hosted control; conn-file mutation is not in-process anymore.
         service = self.app.sandboxes
-        self.assertIsInstance(service.tasks, InProcessTaskChannel)
-        self.assertIs(service.tasks.worker, service.worker)
+        self.assertIsInstance(service.tasks, ControlTaskChannel)
         self.assertIs(service.quotas, self.app.quotas)
 
     def test_facade_requires_explicit_task_channel(self) -> None:

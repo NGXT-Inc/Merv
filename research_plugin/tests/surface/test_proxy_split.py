@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
 from mcp_server.project_links import ProjectLinks
@@ -24,7 +24,7 @@ from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
 
 
 class _ControlHarness:
-    def __init__(self, *, app: ResearchPluginApp, repo: Path) -> None:
+    def __init__(self, *, app: TestBrain, repo: Path) -> None:
         del repo
         self.url = "http://control.test"
         self.client = TestClient(create_fastapi_app(app=app))
@@ -45,7 +45,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         db_path = self.repo / ".research_plugin" / "state.sqlite"
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=db_path,
             execution_backend=FakeSandboxBackend(),

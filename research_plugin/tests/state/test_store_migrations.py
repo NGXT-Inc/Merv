@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.state.store import MIGRATIONS, StateStore
 
 
@@ -159,7 +159,7 @@ class StoreMigrationTest(unittest.TestCase):
             conn.close()
 
         # After migration, a different project can register the same repo file.
-        app = ResearchPluginApp(repo_root=self.repo, db_path=self.db)
+        app = TestBrain(repo_root=self.repo, db_path=self.db)
         (self.repo / "shared.md").write_text("hello\n")
         new_project = app.call_tool("project.create", {"name": "New"})
         res = app.call_tool(

@@ -7,16 +7,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.utils import ValidationError
+from backend.workspace import local_experiment_dir
 
 
 class ExperimentNamingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -82,8 +83,8 @@ class ExperimentNamingTest(unittest.TestCase):
 
     def test_sandbox_local_experiment_dir_follows_the_name(self) -> None:
         exp = self._create(name="cifar-opt", intent="Optimize CIFAR.")
-        local = self.app.worker.local_experiment_dir(
-            experiment_id=exp["id"], name=exp["name"]
+        local = local_experiment_dir(
+            repo_root=self.repo, experiment_id=exp["id"], name=exp["name"]
         )
         # resolve(): tempdirs on macOS live behind the /var -> /private/var symlink.
         self.assertEqual(

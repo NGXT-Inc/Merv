@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from pathlib import Path
 from typing import Any
 
 from ... import __version__
-from ...app import ResearchPluginApp
 from ...artifacts.figure_view import build_experiment_figure
 from ...artifacts.resource_selection import preferred_associated_resource
 from ...artifacts.roles import GATED_ROLES, PROJECT_GRAPH_ROLES
@@ -55,17 +53,14 @@ def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class ResearchHttpApi:
-    """HTTP view helpers over ResearchPluginApp. Domain logic stays in services."""
+    """HTTP view helpers over ControlApp. Domain logic stays in services."""
 
     _LOCAL_DATA_PLANE_RESPONSE_KEYS = frozenset(
         {"repo_root", "local_sync_dir", "local_experiment_dir"}
     )
 
-    def __init__(
-        self, *, app: ResearchPluginApp, expose_local_data_plane: bool = True
-    ) -> None:
+    def __init__(self, *, app: Any) -> None:
         self.app = app
-        self.expose_local_data_plane = expose_local_data_plane
 
     def call_tool(self, *, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._present(
@@ -73,8 +68,6 @@ class ResearchHttpApi:
         )
 
     def _present(self, value: Any) -> Any:
-        if self.expose_local_data_plane:
-            return value
         return self._strip_local_data_plane(value)
 
     def experiment_state_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
@@ -114,14 +107,7 @@ class ResearchHttpApi:
         return value
 
     def health(self) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "version": __version__,
-            "repo_root": str(self.app.workspace.repo_root),
-            "store": str(self.app.store.db_path),
-            "activity_log": str(self.app.activity.log_path),
-            "mlflow": self.app.mlflow_tracking.health(),
-        }
+        return {"ok": True, "version": __version__}
 
     def activity(
         self,
@@ -168,8 +154,6 @@ class ResearchHttpApi:
                 else result["summary"]
             ),
         }
-        if self.expose_local_data_plane:
-            payload["activity_log"] = str(self.app.activity.log_path)
         return self._present(payload)
 
     def tool_call_stats(
@@ -329,9 +313,9 @@ class ResearchHttpApi:
             return self._resource_content_at_version(
                 project_id=project_id, resource=resource, version_id=version
             )
-        # Gated-role artifacts render their SUBMITTED bytes (the content the
-        # gates lint and reviewers grade); other roles read the live file —
-        # a local-mode convenience the cloud profile will not have.
+        # Gated-role artifacts render their submitted bytes (the content the
+        # gates lint and reviewers grade). Other roles are metadata-only here;
+        # raw file reads live in the local MCP proxy.
         pinned = self._pinned_gated_text(project_id=project_id, resource=resource)
         if pinned is not None:
             text, version_id = pinned
@@ -344,35 +328,18 @@ class ResearchHttpApi:
                 "source": "submitted",
                 "version_id": version_id,
             }
-        # Non-gated roles (e.g. result) read the live file — a local-mode
-        # convenience. In control mode there is no checkout, and result files
-        # stay metadata-only (fixed decision 6): return a clean, documented
-        # degraded shape rather than a 500/404 so the UI can render an explicit
-        # "content unavailable in this mode" state (open decision F).
-        if not self.expose_local_data_plane:
-            return {
-                "resource": resource,
-                "path": resource.get("path"),
-                "content": None,
-                "text": None,
-                "available": False,
-                "source": "unavailable",
-                "reason": "content_unavailable_in_this_mode",
-                "detail": (
-                    "this file's bytes live only on the local data plane; "
-                    "result-role files are metadata-only in the cloud"
-                ),
-            }
-        path = self._resource_path(resource=resource)
-        text = path.read_text(errors="replace")
         return {
             "resource": resource,
-            "path": resource["path"],
-            "content": text,
-            "text": text,
-            "size_bytes": path.stat().st_size,
-            "source": "live",
-            "available": True,
+            "path": resource.get("path"),
+            "content": None,
+            "text": None,
+            "available": False,
+            "source": "unavailable",
+            "reason": "content_unavailable_in_this_mode",
+            "detail": (
+                "this file's bytes live only on the local data plane; "
+                "result-role files are metadata-only in this mode"
+            ),
         }
 
     def _resource_content_at_version(
@@ -477,11 +444,9 @@ class ResearchHttpApi:
     ) -> tuple[bytes, dict[str, str]]:
         resource = self.call_tool(name="resource.resolve", arguments={"project_id": project_id, "resource_id": resource_id})
         if rel:
-            # A file referenced by the resource — e.g. a markdown relative
-            # image link. Submitted figures (captured at associate, keyed by
-            # the resource's pinned version) serve from the blob store; only
-            # un-submitted links fall back to a repo-jailed live read, a
-            # local-mode convenience.
+            # A file referenced by the resource, e.g. a markdown relative image
+            # link. Submitted figures serve from the blob store; uncaptured
+            # links are local data-plane only.
             blob = self._submitted_figure(resource=resource, rel=rel)
             if blob is not None:
                 data, name = blob
@@ -490,33 +455,14 @@ class ResearchHttpApi:
                     "Content-Type": mime,
                     "Content-Disposition": f'inline; filename="{name}"',
                 }
-            # Not a submitted figure: in control mode there is no checkout to
-            # read the live link from. Surface the documented degraded shape.
-            if not self.expose_local_data_plane:
-                raise ContentUnavailableError(
-                    "figure bytes are unavailable in this mode",
-                    details={"rel": rel, "reason": "content_unavailable_in_this_mode"},
-                )
-            path = self._resource_path(resource=resource)
-            path = (path.parent / rel).resolve()
-            try:
-                path.relative_to(self.app.workspace.repo_root)
-            except ValueError as exc:
-                raise ValidationError("relative file path escapes repo root") from exc
-            if not path.is_file():
-                raise NotFoundError(f"file not found next to resource: {rel}")
-        elif not self.expose_local_data_plane:
             raise ContentUnavailableError(
-                "file bytes are unavailable in this mode",
-                details={"reason": "content_unavailable_in_this_mode"},
+                "figure bytes are unavailable in this mode",
+                details={"rel": rel, "reason": "content_unavailable_in_this_mode"},
             )
-        else:
-            path = self._resource_path(resource=resource)
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        return path.read_bytes(), {
-            "Content-Type": mime,
-            "Content-Disposition": f'inline; filename="{path.name}"',
-        }
+        raise ContentUnavailableError(
+            "file bytes are unavailable in this mode",
+            details={"reason": "content_unavailable_in_this_mode"},
+        )
 
     def _submitted_figure(
         self, *, resource: dict[str, Any], rel: str
@@ -583,16 +529,6 @@ class ResearchHttpApi:
         if kind:
             resources = [res for res in resources if res.get("kind") == kind]
         return {"resources": resources}
-
-    def _resource_path(self, *, resource: dict[str, Any]) -> Path:
-        path = (self.app.workspace.repo_root / resource["path"]).resolve()
-        try:
-            path.relative_to(self.app.workspace.repo_root)
-        except ValueError as exc:
-            raise ValidationError("resource path escapes repo root") from exc
-        if not path.exists() or not path.is_file():
-            raise NotFoundError(f"resource file missing: {resource['path']}")
-        return path
 
     # ---- sandbox UI projections ----
     # The domain SandboxService returns raw rows / sampled data; the UI-facing

@@ -6,13 +6,15 @@ the single in-process client; Phase 8 adds ``HttpControlPlaneClient`` as a
 second ``harness_factory`` and runs the same scenarios over the wire with
 identical results (the plane-seam analog of test_sandbox_backend_contract.py).
 
-The harness writes artifact files into a throwaway repo: in split mode that
-repo is the daemon's checkout, so file writes stay a fixture concern, never a
-client-API concern.
+The harness writes artifact files into a throwaway repo: the HTTP harness
+routes data-plane tools through a proxy-side LocalDataPlane against the live
+server (production's routing), so file reads stay a client-side concern —
+the brain never touches the repo.
 """
 
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -20,12 +22,16 @@ import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Protocol
-from urllib.request import urlopen
+from urllib import error as urllib_error
+from urllib.request import Request, urlopen
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from backend.control.control_client import HttpControlPlaneClient
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.tools.contracts import DATA_PLANE_TOOL_NAMES
 from backend.transport.http_server import make_http_server
+from backend.utils import NotFoundError, ValidationError
+from mcp_server.local_data_plane import LocalDataPlane, LocalDataPlaneError
 
 # Artifact bodies that satisfy the gate lints (plan spine, report spine +
 # metrics table, graph envelope), so the loop exercises gates as passes.
@@ -68,15 +74,85 @@ class ControlPlaneClient(Protocol):
 
 
 class InProcessControlPlaneClient:
-    """Local-mode wiring: tool calls go straight to ResearchPluginApp."""
+    """Local-mode wiring: tool calls go straight to TestBrain."""
 
-    def __init__(self, *, app: ResearchPluginApp) -> None:
+    def __init__(self, *, app: TestBrain) -> None:
         self._app = app
 
     def call(
         self, name: str, arguments: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         return self._app.call_tool(name, dict(arguments or {}))
+
+
+class ProxyRoutedHttpClient:
+    """Split-mode wiring exactly as production runs it: control tools go over
+    the wire; data-plane tools execute proxy-side via LocalDataPlane against
+    the same live server — the stdio proxy's routing, minus stdio."""
+
+    def __init__(self, *, base_url: str, repo: Path) -> None:
+        self._control = HttpControlPlaneClient(base_url=base_url)
+        self._base_url = base_url.rstrip("/")
+        self._active_project_id: str | None = None
+        self._data_plane = LocalDataPlane(
+            repo_root=repo,
+            project_id_resolver=self._resolve_project_id,
+            control_api_post=self._api_post,
+            control_tool_call=lambda name, arguments: self._control.call(name, arguments),
+        )
+
+    def call(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        args = dict(arguments or {})
+        if name in DATA_PLANE_TOOL_NAMES:
+            if name == "sandbox.request":
+                args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
+            # The proxy resolves project identity itself (args are never
+            # trusted); scope the resolver like TestBrain does.
+            self._active_project_id = str(args.get("project_id") or "") or None
+            try:
+                return self._data_plane.call_tool(name=name, arguments=args)
+            except LocalDataPlaneError as exc:
+                raise ValidationError(exc.message, details=exc.details) from exc
+            finally:
+                self._active_project_id = None
+        return self._control.call(name, args)
+
+    def _resolve_project_id(self) -> str | None:
+        if self._active_project_id:
+            return self._active_project_id
+        with urlopen(f"{self._base_url}/api/projects", timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        projects = body.get("projects") or []
+        return str(projects[0]["id"]) if len(projects) == 1 else None
+
+    def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        req = Request(
+            f"{self._base_url}{path}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=10) as response:
+                body = json.loads(response.read().decode("utf-8") or "{}")
+                return body if isinstance(body, dict) else {}
+        except urllib_error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", "replace")
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = {"detail": raw}
+            detail = str(body.get("detail") or body.get("message") or raw)
+            details = {
+                key: value
+                for key, value in body.items()
+                if key not in {"detail", "message", "error_code"}
+            }
+            if exc.code == 404:
+                raise NotFoundError(detail, details=details) from exc
+            raise ValidationError(detail, details=details) from exc
 
 
 @dataclass
@@ -95,7 +171,7 @@ class ClientHarness:
 def in_process_harness() -> ClientHarness:
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
-    app = ResearchPluginApp(
+    app = TestBrain(
         repo_root=repo,
         db_path=repo / ".research_plugin" / "state.sqlite",
         execution_backend=FakeSandboxBackend(),
@@ -108,19 +184,17 @@ def in_process_harness() -> ClientHarness:
 
 
 def http_harness() -> ClientHarness:
-    """Split-mode wiring: a real in-process HTTP server fronts the app, and the
-    HttpControlPlaneClient drives the SAME scenarios over the wire (plan Phase
-    8). The server's app uses the throwaway repo as its checkout, so the
-    scenarios' artifact file writes land where the control plane reads them —
-    exactly as the daemon's checkout would in a true split deployment.
+    """Split-mode wiring: a real HTTP server fronts the brain, and the SAME
+    scenarios run through production's routing — control tools over the wire,
+    data-plane tools proxy-side via LocalDataPlane reading the throwaway repo.
 
     This proves the plane seam: identical results to the in-process client,
-    confirming the contract holds across a process/network boundary before any
-    topology change.
+    confirming the contract holds across a process/network boundary with the
+    brain never reading a repo file.
     """
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
-    app = ResearchPluginApp(
+    app = TestBrain(
         repo_root=repo,
         db_path=repo / ".research_plugin" / "state.sqlite",
         execution_backend=FakeSandboxBackend(),
@@ -137,7 +211,7 @@ def http_harness() -> ClientHarness:
         except Exception:
             time.sleep(step)
             elapsed += step
-    client = HttpControlPlaneClient(base_url=f"http://{host}:{port}")
+    client = ProxyRoutedHttpClient(base_url=f"http://{host}:{port}", repo=repo)
 
     def _stop() -> None:
         try:

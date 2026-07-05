@@ -13,12 +13,10 @@ from .control_mode import (
     build_control_server,
     build_local_server,
 )
-from .local_mode import build_local_app
 
 __all__ = [
     "ControlPlaneServer",
     "build_control_app",
     "build_control_server",
-    "build_local_app",
     "build_local_server",
 ]

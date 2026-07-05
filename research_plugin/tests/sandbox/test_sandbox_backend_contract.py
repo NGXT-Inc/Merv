@@ -122,8 +122,13 @@ class SandboxBackendContractTest(unittest.TestCase):
                 self.assertNotIn("hasattr(self.backend", source)
                 self.assertNotIn("getattr(caps", source)
 
-        app_source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertNotIn("getattr(self.execution_backend", app_source)
+        for path in (
+            BACKEND_ROOT / "control" / "control_app.py",
+            BACKEND_ROOT / "composition" / "control_mode.py",
+        ):
+            with self.subTest(path=path.name):
+                source = path.read_text(encoding="utf-8")
+                self.assertNotIn("getattr(self.execution_backend", source)
 
     def test_fake_backend_uses_base_catalog_default_until_selection_enabled(self) -> None:
         plain = FakeSandboxBackend()

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.mlflow import CentralMlflowService
 from backend.sandbox.sandbox_backend import BackendCapabilities, SandboxRequest
 from backend.utils import NotFoundError, ValidationError, parse_iso
+from backend.workspace import local_experiment_dir
 
 
 class SandboxServiceTest(unittest.TestCase):
@@ -19,7 +19,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         self.backend = FakeSandboxBackend()
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
@@ -84,29 +84,14 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertFalse(result["reused"])
         self.assertTrue(result["sandbox_id"])
         uid = result["sandbox_uid"]
-        # Short agent-facing command goes through the repo-local dispatcher.
-        self.assertEqual(result["ssh"]["command"], f".research_plugin/sbx {uid}")
+        # The unified brain returns provider facts only. Local command/key
+        # enrichment belongs to the stdio proxy data plane.
+        self.assertIn("host", result["ssh"])
+        self.assertNotIn("command", result["ssh"])
         self.assertEqual(result["workdir"], f"/workspace/sandbox-{uid[:12]}")
         self.assertEqual(result["experiment_dir"], f"/workspace/sandbox-{uid[:12]}")
         self.assertEqual(result["data_dir"], "/workspace/data")
-        self.assertEqual(
-            Path(result["local_experiment_dir"]).resolve(),
-            (self.repo / "experiments" / f"sandbox-{uid[:12]}").resolve(),
-        )
-        # The agent is told the folder contract at the moment it matters.
-        self.assertIn("work folder", result["hint"])
-        self.assertIn("EPHEMERAL SSH window", result["hint"])
-        self.assertIn("$RP_DATASET_DIR", result["hint"])
-        self.assertIn("sandbox.pull_outputs", result["hint"])
-        self.assertIn("Heavy-file storage is not enabled", result["hint"])
-        self.assertIn("expires at", result["hint"])
-        self.assertNotIn("ready_to_run", result["hint"])
-        # Full ssh line is still available as a cwd-independent fallback.
-        self.assertTrue(result["ssh"]["raw_command"].startswith("ssh -i "))
-        self.assertIn("@sandbox.modal.test", result["ssh"]["raw_command"])
-        self.assertFalse(Path(result["ssh"]["key_path"]).exists())
         self.assertEqual(result["public_key_source"], "caller")
-        self.assertFalse(Path(result["ssh"]["key_path"] + ".pub").exists())
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["status"], "ready_to_run")
 
@@ -116,8 +101,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["experiment_id"], "")
         self.assertTrue(result["sandbox_uid"])
-        self.assertIn(result["sandbox_uid"][:12], result["ssh"]["command"])
-        self.assertFalse(Path(result["ssh"]["key_path"]).exists())
+        self.assertNotIn("command", result["ssh"])
         self.assertEqual(result["public_key_source"], "caller")
         self.assertEqual(self.backend.acquired[-1].experiment_id, result["sandbox_uid"])
 
@@ -158,36 +142,10 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(result["environment"]["available_tokens"], ["HF_TOKEN"])
-        self.assertIn("Hugging Face", result["hint"])
-        self.assertIn("HF_TOKEN", result["hint"])
         self.assertNotIn("hf_", str(result))
 
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(got["environment"]["available_tokens"], ["HF_TOKEN"])
-        self.assertIn("HF_TOKEN", got["hint"])
-
-    def test_request_writes_dispatcher_and_conn(self) -> None:
-        exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        sandbox_uid = result["sandbox_uid"]
-        dispatcher = self.repo / ".research_plugin" / "sbx"
-        conn = self.repo / ".research_plugin" / "sandboxes" / "conn" / sandbox_uid
-        legacy_conn = self.repo / ".research_plugin" / "sandboxes" / "conn" / exp_id
-        self.assertTrue(dispatcher.exists())
-        self.assertTrue(os.access(dispatcher, os.X_OK))
-        self.assertTrue(conn.exists())
-        self.assertFalse(legacy_conn.exists())
-        body = conn.read_text()
-        self.assertIn("RP_SSH_HOST=", body)
-        self.assertIn("RP_SSH_PORT=", body)
-        # Releasing the sandbox drops the conn file so `sbx` fails loudly.
-        self.call(
-            "sandbox.release",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-            confirm_retained=True,
-        )
-        self.assertFalse(conn.exists())
 
     def test_request_reuses_live_sandbox(self) -> None:
         exp_id = self._experiment()
@@ -220,7 +178,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(attached["status"], "running")
         self.assertTrue(attached["reused"])
         self.assertEqual(attached["workdir"], created["workdir"])
-        self.assertEqual(attached["ssh"]["command"], f".research_plugin/sbx {uid}")
+        self.assertNotIn("command", attached["ssh"])
 
         row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=uid)
         self.assertEqual(row["mgmt_key_ref"], uid)
@@ -249,11 +207,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(set(by_experiment), {source, target})
         self.assertIsNone(by_experiment[source])
         self.assertIsNone(by_experiment[target])
-        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
-        self.assertFalse((conn_dir / source).exists())
-        self.assertFalse((conn_dir / target).exists())
-        self.assertTrue((conn_dir / uid).exists())
-
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=target)
         self.assertEqual(self.backend.transcript_reads[-1]["key_path"], str(old_key))
 
@@ -272,7 +225,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(attached["sandbox_uid"], uid)
         self.assertEqual(attached["experiment_id"], target)
         self.assertEqual(attached["active_experiment_ids"], [target])
-        self.assertEqual(attached["ssh"]["command"], f".research_plugin/sbx {uid}")
+        self.assertNotIn("command", attached["ssh"])
         self.assertEqual(
             self.call(
                 "experiment.get_state",
@@ -333,10 +286,7 @@ class SandboxServiceTest(unittest.TestCase):
             ],
             sibling["sandbox_uid"],
         )
-        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
-        self.assertTrue((conn_dir / primary["sandbox_uid"]).exists())
-        self.assertTrue((conn_dir / sibling["sandbox_uid"]).exists())
-        self.assertFalse((conn_dir / source).exists())
+        self.assertNotEqual(primary["sandbox_uid"], sibling["sandbox_uid"])
 
     def test_attach_allows_planned_target_but_rejects_dead_sandbox(self) -> None:
         source = self._experiment(name="exp-1")
@@ -374,18 +324,12 @@ class SandboxServiceTest(unittest.TestCase):
 
         self.assertNotEqual(first["sandbox_uid"], second["sandbox_uid"])
         self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
-        self.assertEqual(first["ssh"]["command"], f".research_plugin/sbx {first['sandbox_uid']}")
-        self.assertEqual(
-            second["ssh"]["command"],
-            f".research_plugin/sbx {second['sandbox_uid']}",
-        )
+        self.assertNotIn("command", first["ssh"])
+        self.assertNotIn("command", second["ssh"])
         self.assertEqual(first["workdir"], f"/workspace/sandbox-{first['sandbox_uid'][:12]}")
         self.assertNotEqual(first["workdir"], second["workdir"])
         self.assertIn(second["sandbox_uid"][:12], second["workdir"])
 
-        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
-        self.assertTrue((conn_dir / first["sandbox_uid"]).exists())
-        self.assertTrue((conn_dir / second["sandbox_uid"]).exists())
         rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
         self.assertEqual({row["sandbox_uid"] for row in rows}, {first["sandbox_uid"], second["sandbox_uid"]})
         listed = self.call("sandbox.list", project_id=self.project_id)["sandboxes"]
@@ -542,12 +486,18 @@ class SandboxServiceTest(unittest.TestCase):
         extra = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
         )
-        self.assertNotEqual(
-            primary["local_experiment_dir"], extra["local_experiment_dir"]
+        primary_dir = local_experiment_dir(
+            repo_root=self.repo,
+            experiment_id=primary["sandbox_uid"],
+            name=f"sandbox-{primary['sandbox_uid'][:12]}",
         )
-        self.assertTrue(
-            extra["local_experiment_dir"].endswith(extra["sandbox_uid"][:12])
+        extra_dir = local_experiment_dir(
+            repo_root=self.repo,
+            experiment_id=extra["sandbox_uid"],
+            name=f"sandbox-{extra['sandbox_uid'][:12]}",
         )
+        self.assertNotEqual(primary_dir, extra_dir)
+        self.assertTrue(str(extra_dir).endswith(extra["sandbox_uid"][:12]))
 
     def test_request_recreates_after_death(self) -> None:
         exp_id = self._experiment()
@@ -573,16 +523,10 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(got["ssh"]["host"], old_host)
         self.assertEqual(got["ssh"]["host"], "r999.modal.host")
         self.assertEqual(got["ssh"]["port"], 55555)
-        # The conn file the dispatcher sources must carry the refreshed endpoint.
-        body = (
-            self.repo
-            / ".research_plugin"
-            / "sandboxes"
-            / "conn"
-            / created["sandbox_uid"]
-        ).read_text()
-        self.assertIn("r999.modal.host", body)
-        self.assertIn("55555", body)
+        task_type, payload = self.app.sandboxes.tasks.history[-1]
+        self.assertEqual(task_type, "conn_refresh")
+        self.assertEqual(payload["row"]["ssh_host"], "r999.modal.host")
+        self.assertEqual(payload["row"]["ssh_port"], 55555)
 
     # ---- sandbox response guidance ----
 
@@ -593,13 +537,7 @@ class SandboxServiceTest(unittest.TestCase):
         )
         self.assertNotIn("dashboards", result)
         self.assertNotIn("mlflow", result)
-        self.assertNotIn("MLFLOW_TRACKING_URI", result["hint"])
-        self.assertNotIn("centralized MLflow", result["hint"])
-        self.assertNotIn("TensorBoard", result["hint"])
-        self.assertNotIn("$RP_TB_LOGDIR", result["hint"])
-        self.assertIn("figures/*.png", result["hint"])
-        self.assertIn("report.md", result["hint"])
-        self.assertIn("pull the files you need off the box with sandbox.pull_outputs", result["hint"])
+        self.assertNotIn("hint", result)
 
     # ---- status / liveness ----
 
@@ -1399,7 +1337,7 @@ class SandboxServiceTest(unittest.TestCase):
         result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(result["status"], "provisioning")
         self.assertEqual(result["poll_after_seconds"], 30)
-        self.assertEqual(result["ssh"]["command"], "")
+        self.assertNotIn("command", result["ssh"])
         # get keeps reporting provisioning while the job is gated.
         polled = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(polled["status"], "provisioning")
@@ -1407,7 +1345,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.backend.gate.set()
         final = self._await_status(exp_id, "running")
         self.assertEqual(final["status"], "running")
-        self.assertEqual(final["ssh"]["command"], f".research_plugin/sbx {final['sandbox_uid']}")
+        self.assertEqual(final["ssh"]["host"], "sandbox.modal.test")
 
     def test_request_during_provisioning_does_not_double_provision(self) -> None:
         # Re-calling request while a provision is in flight reuses the same job

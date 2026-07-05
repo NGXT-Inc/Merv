@@ -850,12 +850,14 @@ class ServiceLayoutTest(unittest.TestCase):
         for decision in (
             "CONTROL_RESTRICT_CORS_ENV_VAR",
             "hosted_control=True",
-            "expose_local_data_plane=False",
         ):
             with self.subTest(decision=decision):
                 self.assertIn(decision, control_source)
         for removed_decision in (
             "CONTROL_REQUIRE_AUTH_ENV_VAR",
+            "expose_local_data_plane",
+            "accept_repo_root_context",
+            "allow_data_plane_tool_calls",
             "require_bearer_auth",
             "require_privileged_bearer_auth",
             "enforce_project_scope",
@@ -875,10 +877,7 @@ class ServiceLayoutTest(unittest.TestCase):
         for field_name in (
             "restrict_cors",
             "hosted_control",
-            "expose_local_data_plane",
-            "accept_repo_root_context",
             "allow_data_plane_http",
-            "allow_data_plane_tool_calls",
             "use_hosted_tool_policies",
         ):
             with self.subTest(field_name=field_name):

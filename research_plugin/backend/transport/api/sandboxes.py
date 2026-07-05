@@ -19,10 +19,7 @@ from .context import ApiRouteContext
 def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_router = APIRouter()
     api = ctx.api
-    router = ctx.project_router
-    surface = ctx.surface
     api_for_project = ctx.api_for_project
-    default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
     @api_router.get("/api/projects/{project_id}/sandboxes")
     def list_sandboxes(project_id: str, request: Request) -> Response:
@@ -42,9 +39,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
-        if router is not None:
-            return {"ok": True, "mode": "multi_project"}
-        assert api is not None
         return api.sandbox_health_view()
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")

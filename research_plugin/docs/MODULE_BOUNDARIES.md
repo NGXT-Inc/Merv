@@ -5,8 +5,8 @@ extension, and a surface that composes them.
 
 ```
                     ┌───────────────────────── SURFACE ─────────────────────────┐
-                    │  tools/ transport/ composition/ control/ daemon/          │
-                    │  dataplane/ app config client_cli  (imports anything)     │
+                    │  tools/ transport/ composition/ control/ dataplane/       │
+                    │  config client_cli  (imports anything)                    │
                     └───────┬──────────┬──────────┬─────────┬─────────┬─────────┘
                             ▼          ▼          ▼         ▼         ▼
    MLFLOW ──────▶ RESEARCH_CORE   ARTIFACTS   OBJECT_   SANDBOX     FEED
@@ -38,7 +38,7 @@ extension, and a surface that composes them.
 | sandbox        | `services/sandbox/*`, `sandbox/*` (incl. the `mgmt_keys`/`managed_mgmt_keys` custody adapters), `execution/*`, `services/{transcript_cache,quotas}`, `domain/sandbox_paths`, `ssh_keys` |
 | feed           | `services/{feed,feed_unfurl}`, `domain/{feed_images,feed_policy}`            |
 | mlflow         | `mlflow/*` (extension, incl. its own env config in `mlflow/config`)          |
-| surface        | `tools/*`, `transport/*`, `composition/*`, `control/*`, `daemon/*`, `dataplane/*`, `app`, `config`, `client_cli`, glue services (`permissions`, `identity`, `cleanup`), `local_runtime`, `workspace`, `observability` |
+| surface        | `tools/*`, `transport/*`, `composition/*`, `control/*`, `dataplane/*`, `config`, `client_cli`, glue services (`permissions`, `identity`, `cleanup`), `workspace`, `observability` |
 
 The authoritative, file-exact table is `FILE_MODULES`/`PACKAGE_MODULES` in
 `tests/structure/test_module_boundaries.py`.

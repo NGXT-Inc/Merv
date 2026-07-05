@@ -18,7 +18,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.sandbox.sandbox_backend import BackendCapabilities
@@ -48,7 +48,7 @@ class _Base(unittest.TestCase):
         os.environ.update(self._ENV)
         self.backend = FakeSandboxBackend()
         self.backend.capabilities = BackendCapabilities(name="fake")
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,

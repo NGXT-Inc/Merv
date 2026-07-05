@@ -14,7 +14,7 @@ from pathlib import Path
 
 from datetime import UTC, datetime
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.ports.quota_admission import AdmissionRequest
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.quotas import GLOBAL_SCOPE, QuotaService
@@ -27,7 +27,7 @@ class QuotaAdmissionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -296,7 +296,7 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
         self.backend = FakeSandboxBackend(
             requires_hardware_selection=True, configurable_resources=False
         )
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,

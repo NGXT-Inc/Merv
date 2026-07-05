@@ -60,7 +60,6 @@ class ControlAppTest(unittest.TestCase):
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
                         hosted_control=True,
-                        expose_local_data_plane=False,
                     ),
                 ),
                 raise_server_exceptions=False,
@@ -128,7 +127,6 @@ class ControlAppTest(unittest.TestCase):
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
                         hosted_control=True,
-                        expose_local_data_plane=False,
                     ),
                 ),
                 raise_server_exceptions=False,
@@ -178,7 +176,6 @@ class ControlAppTest(unittest.TestCase):
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
                         hosted_control=True,
-                        expose_local_data_plane=False,
                     ),
                 ),
                 raise_server_exceptions=False,

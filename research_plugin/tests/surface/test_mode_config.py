@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
@@ -41,7 +41,6 @@ def _hosted_surface() -> HttpSurfacePolicy:
     return HttpSurfacePolicy.for_surface(
         restrict_cors=True,
         hosted_control=True,
-        expose_local_data_plane=False,
     )
 
 
@@ -125,7 +124,7 @@ class LocalModeParityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -135,10 +134,10 @@ class LocalModeParityTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_no_token_needed_and_health_is_rich(self) -> None:
+    def test_no_token_needed_and_health_is_slim(self) -> None:
         health = self.client.get("/health")
         self.assertEqual(health.status_code, 200)
-        self.assertIn("repo_root", health.json())
+        self.assertEqual(set(health.json()), {"ok", "version"})
 
         project = self.client.post("/api/projects", json={"name": "Proj P"})
         self.assertEqual(project.status_code, 201, project.text)
@@ -152,7 +151,7 @@ class LocalModeParityTest(unittest.TestCase):
         self.assertEqual(home.status_code, 200, home.text)
         self.assertEqual(home.json()["project"]["id"], project_id)
 
-    def test_local_mcp_can_scope_by_repo_context(self) -> None:
+    def test_local_mcp_rejects_repo_context_at_the_brain_boundary(self) -> None:
         project = self.client.post("/api/projects", json={"name": "Local MCP"})
         self.assertEqual(project.status_code, 201, project.text)
         claim = self.client.post(
@@ -169,11 +168,8 @@ class LocalModeParityTest(unittest.TestCase):
                 "context": {"repo_root": str(self.repo)},
             },
         )
-        self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(
-            [row["id"] for row in resp.json()["result"]["claims"]],
-            [claim.json()["id"]],
-        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json()["reason"], "repo_root_hidden_from_cloud")
 
 
 class HostedControlSurfaceTest(unittest.TestCase):
@@ -182,7 +178,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -447,7 +443,7 @@ class VersionHandshakeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),

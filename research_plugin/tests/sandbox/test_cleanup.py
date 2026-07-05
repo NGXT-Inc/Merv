@@ -15,7 +15,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.sandbox.sandbox_backend import BackendCapabilities
 from backend.services.cleanup import CleanupService
@@ -36,7 +36,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend = FakeSandboxBackend()
         # enforce_expiry off keeps the reaper inert; the sweeps drive themselves.
         self.backend.capabilities = BackendCapabilities(name="fake")
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,

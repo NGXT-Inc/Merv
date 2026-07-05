@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.sandbox.sandbox_daemons import SandboxDaemons
 from backend.services.sandbox.sandbox_heartbeat import SandboxActivityPolicy, SandboxIdlePolicy
@@ -176,7 +176,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         self._saved = {key: os.environ.get(key) for key in self._ENV}
         os.environ.update(self._ENV)
         self.backend = FakeSandboxBackend()
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,

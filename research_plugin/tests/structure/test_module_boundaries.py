@@ -45,7 +45,6 @@ PACKAGE_MODULES = {
     "transport": SURFACE,
     "composition": SURFACE,
     "control": SURFACE,
-    "daemon": SURFACE,
     "dataplane": SURFACE,
 }
 
@@ -93,10 +92,8 @@ FILE_MODULES = {
     "services/cleanup.py": SURFACE,
     "services/identity.py": SURFACE,
     "services/permissions.py": SURFACE,
-    "app.py": SURFACE,
     "config.py": SURFACE,
     "client_cli.py": SURFACE,
-    "local_runtime.py": SURFACE,
     "observability.py": SURFACE,
     "workspace.py": SURFACE,
 }

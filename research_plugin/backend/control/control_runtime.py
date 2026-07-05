@@ -274,9 +274,8 @@ class ControlSandboxWorker:
 class ControlTaskChannel:
     """Hosted-control task channel after the split daemon removal.
 
-    Local mode still uses InProcessTaskChannel for conn files and teardown.
-    Hosted control updates sandbox rows and reapers through the neutral
-    SandboxBackend protocol; caller-machine conn-file work is gone.
+    Control updates sandbox rows and reapers through the neutral SandboxBackend
+    protocol; caller-machine conn-file work lives in the local MCP proxy.
     """
 
     def __init__(self) -> None:

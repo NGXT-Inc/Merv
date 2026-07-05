@@ -11,15 +11,13 @@ import argparse
 import os
 import socket
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 
-from ..app import ResearchPluginApp
 from ..config import Mode, resolve_mode
-from ..daemon.daemon_marker import clear_marker, write_marker
 from ..env import env_bool
 from .http_api import create_fastapi_app
-from ..daemon.project_router import ProjectRouter
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:
@@ -36,28 +34,23 @@ def _bind_socket(*, host: str, port: int) -> socket.socket:
 class UvicornHttpServer:
     """uvicorn server wrapper used by compatibility tests.
 
-    The production launcher builds the unified brain directly. This wrapper
-    still supports old tests that expect a best-effort marker lifecycle.
+    The production launcher builds the unified brain directly. This wrapper is
+    a small socket/uvicorn harness for tests and programmatic callers.
     """
 
     def __init__(
         self,
         *,
-        app: ResearchPluginApp | None = None,
-        router: ProjectRouter | None = None,
+        app: Any,
         host: str,
         port: int,
     ) -> None:
-        if (app is None) == (router is None):
-            raise ValueError("provide exactly one of app or router")
         self._socket = _bind_socket(host=host, port=port)
         selected_port = int(self._socket.getsockname()[1])
         self.server_address = (host, selected_port)
         self._app = app
-        self._router = router
-        self._marker_written = False
         config = uvicorn.Config(
-            create_fastapi_app(app=app, router=router),
+            create_fastapi_app(app=app),
             host=host,
             port=selected_port,
             log_level="warning",
@@ -67,52 +60,21 @@ class UvicornHttpServer:
         self._server = uvicorn.Server(config)
 
     def serve_forever(self) -> None:
-        # Write the compatibility marker as late as possible so older harnesses
-        # only see it once we're actually listening. Best-effort: failures here
-        # must not block serving.
-        host, port = self.server_address
-        if self._app is not None:
-            try:
-                write_marker(repo_root=self._app.workspace.repo_root, host=host, port=port)
-                self._marker_written = True
-            except Exception:  # noqa: BLE001
-                self._marker_written = False
-        elif self._router is not None:
-            self._router.set_marker_endpoint(host=host, port=port)
-        try:
-            self._server.run(sockets=[self._socket])
-        finally:
-            self._clear_marker()
+        self._server.run(sockets=[self._socket])
 
     def shutdown(self) -> None:
         self._server.should_exit = True
 
     def server_close(self) -> None:
-        self._clear_marker()
         self._socket.close()
-
-    def _clear_marker(self) -> None:
-        if self._router is not None:
-            self._router.clear_markers()
-            return
-        if not self._marker_written or self._app is None:
-            return
-        try:
-            clear_marker(repo_root=self._app.workspace.repo_root)
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            self._marker_written = False
 
 
 def make_http_server(
-    app: ResearchPluginApp | None = None,
+    app: Any,
     host: str = "127.0.0.1",
     port: int = 8787,
-    *,
-    router: ProjectRouter | None = None,
 ) -> UvicornHttpServer:
-    return UvicornHttpServer(app=app, router=router, host=host, port=port)
+    return UvicornHttpServer(app=app, host=host, port=port)
 
 
 def _serve_uvicorn(*, fastapi_app, host: str, port: int) -> tuple[str, int, "uvicorn.Server", socket.socket]:

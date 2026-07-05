@@ -512,7 +512,6 @@ import sys
 import backend.sandbox.sandbox_support
 for name in (
 	    "backend.services.sandbox.sandboxes",
-	    "backend.dataplane.worker",
 	    "backend.workspace",
 ):
     if name in sys.modules:
@@ -523,16 +522,15 @@ for name in (
         subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
     def test_dataplane_package_init_is_import_light(self) -> None:
-        # Importing dataplane.tasks should not pull in the local worker package
-        # barrel. The worker stays available through lazy __getattr__ exports.
+        # Importing the dataplane helper package should not pull in workspace
+        # or service modules.
         imports = _top_level_import_segments(BACKEND_ROOT / "dataplane" / "__init__.py")
         for forbidden in ("worker", "workspace"):
             self.assertNotIn(forbidden, imports)
         code = """
 import sys
-import backend.dataplane.tasks
+import backend.dataplane
 for name in (
-    "backend.dataplane.worker",
     "backend.workspace",
 ):
     if name in sys.modules:
@@ -624,10 +622,12 @@ for name in (
         self.assertNotIn("def register_file(", source)
         self.assertNotIn("class ResourceObserver", source)
         self.assertNotIn("class ResourceAssociationPolicy", source)
-        app_source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn("def register_resource_file(", app_source)
-        self.assertIn("resource_register_file=self.register_resource_file", app_source)
-        self.assertIn("self.resource_observer.observe_file", app_source)
+        proxy_source = (PLUGIN_ROOT / "mcp_server" / "local_data_plane.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('name == "resource.register_file"', proxy_source)
+        self.assertIn("LocalResourceObserver", proxy_source)
+        self.assertIn("observe_file(", proxy_source)
 
     def test_reflection_tools_uses_direct_concrete_collaborator(self) -> None:
         # reflection.* has one adapter and one implementation today. Keep it
@@ -706,24 +706,24 @@ for name in (
             calls, {"create", "get_state", "list_reflections", "transition"}
         )
 
-    def test_app_keeps_concrete_local_runtime_wiring_in_one_module(self) -> None:
-        # This is an incremental local-mode extraction, not a ControlApp split:
-        # ResearchPluginApp may still depend on local_runtime, but concrete
-        # filesystem/worker/default-backend classes stay out of app.py.
-        source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
-        for forbidden in (
-            "LocalWorkspace",
-            "LocalDataPlaneWorker",
-            "LocalDirBlobStore",
-            "ActivityLogger",
-            "ToolCallStore",
-            "LocalMgmtKeyStore",
-            "build_sandbox_backend",
+    def test_legacy_local_app_stack_is_removed(self) -> None:
+        for rel in (
+            "app.py",
+            "local_runtime.py",
+            "composition/local_mode.py",
+            "dataplane/worker.py",
+            "dataplane/tasks.py",
+            "dataplane/state.py",
+            "dataplane/sandbox_conn.py",
+            "daemon/daemon_marker.py",
+            "daemon/project_router.py",
+            "daemon/import_tool.py",
         ):
-            self.assertNotIn(forbidden, source)
+            with self.subTest(rel=rel):
+                self.assertFalse((BACKEND_ROOT / rel).exists())
 
-    def test_app_uses_record_core_builder_for_record_services(self) -> None:
-        app_source = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
+    def test_control_app_uses_record_core_builder_for_record_services(self) -> None:
+        app_source = (BACKEND_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
         record_source = (BACKEND_ROOT / "control" / "record_core.py").read_text(encoding="utf-8")
 
         self.assertIn("self.record_core = build_record_core", app_source)
@@ -762,7 +762,7 @@ for name in (
         self.assertNotIn("class ControlToolCallSink", source)
         self.assertNotIn("class ControlSandboxWorker", source)
         for forbidden in (
-            "ResearchPluginApp",
+            "TestBrain",
             "build_local_runtime",
             "build_local_tool_handlers",
             "LocalDataPlaneWorker",
@@ -780,7 +780,7 @@ for name in (
         imports = _import_segments(path)
         self.assertIn("from ..control.control_app import ControlApp", source)
         self.assertIn("app = ControlApp(", source)
-        self.assertNotIn("ResearchPluginApp", source)
+        self.assertNotIn("TestBrain", source)
         self.assertNotIn("build_local_runtime", source)
         self.assertIn("MountedMgmtKeyStore", source)
         self.assertIn("resolve_mgmt_key_path", source)
@@ -802,7 +802,7 @@ for name in (
         self.assertIn("ssh_keys", imports)
         self.assertNotIn("subprocess", imports)
         self.assertNotIn("services", imports)
-        self.assertIn("mgmt_keys", _import_segments(BACKEND_ROOT / "local_runtime.py"))
+        self.assertIn("LocalMgmtKeyStore", (BACKEND_ROOT / "composition" / "control_mode.py").read_text(encoding="utf-8"))
         self.assertNotIn(
             "subprocess",
             _import_segments(BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py"),
@@ -813,33 +813,19 @@ for name in (
             _imports(BACKEND_ROOT / "ssh_keys.py"),
             {"os", "pathlib", "subprocess", "utils"},
         )
-        for path in (
-            BACKEND_ROOT / "dataplane" / "sandbox_conn.py",
-            BACKEND_ROOT / "sandbox" / "mgmt_keys.py",
-        ):
-            with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
-                self.assertIn("ssh_keys", _import_segments(path))
-                self.assertNotIn("subprocess", _import_segments(path))
-                self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
+        path = BACKEND_ROOT / "sandbox" / "mgmt_keys.py"
+        self.assertIn("ssh_keys", _import_segments(path))
+        self.assertNotIn("subprocess", _import_segments(path))
+        self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
 
-    def test_app_keeps_local_runtime_module_import_lazy(self) -> None:
-        # Importing backend.app should not import backend.local_runtime itself.
-        # Other local/data collaborators still need their own extraction chunks.
-        imports = _top_level_import_segments(BACKEND_ROOT / "app.py")
-        self.assertNotIn("local_runtime", imports)
-
-    def test_app_import_keeps_local_io_modules_unloaded(self) -> None:
-        # Import-time separation is not a full ControlApp, but app import should
-        # not pull in local workspace or data-plane worker machinery.
+    def test_control_app_import_keeps_local_io_modules_unloaded(self) -> None:
+        # Importing the unified brain should not pull in local workspace or
+        # data-plane worker machinery.
         code = """
 import sys
-import backend.app
+import backend.control.control_app
 for name in (
-    "backend.local_runtime",
     "backend.workspace",
-    "backend.dataplane.worker",
-	    "backend.dataplane.sandbox_conn",
-	    "backend.services.sandbox_conn",
     "backend.sandbox.mgmt_keys",
 ):
     if name in sys.modules:

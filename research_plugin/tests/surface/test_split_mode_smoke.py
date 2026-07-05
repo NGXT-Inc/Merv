@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 from pydantic import ValidationError as PydanticValidationError
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.control.control_runtime import ControlTaskChannel
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
@@ -26,7 +26,7 @@ VALID_PUBLIC_KEY = "ssh-ed25519 " + ("A" * 48) + " caller@test"
 
 
 class _ControlHarness:
-    def __init__(self, *, app: ResearchPluginApp) -> None:
+    def __init__(self, *, app: TestBrain) -> None:
         self.url = "http://control.test"
         self.client = TestClient(create_fastapi_app(app=app), raise_server_exceptions=False)
 
@@ -310,7 +310,7 @@ class SplitModeSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),

@@ -17,10 +17,8 @@ from .context import ApiRouteContext
 def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_router = APIRouter()
     api = ctx.api
-    router = ctx.project_router
     surface = ctx.surface
     api_for_project = ctx.api_for_project
-    default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
     @api_router.get("/api/projects/{project_id}/events")
     def events(project_id: str, request: Request, limit: int = Query(100, ge=1)) -> Response:

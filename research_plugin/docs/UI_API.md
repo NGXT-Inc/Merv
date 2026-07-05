@@ -16,15 +16,14 @@ The HTTP launcher uses `.venv/bin/python` automatically when that virtualenv
 exists. Set `RESEARCH_PLUGIN_PYTHON=/path/to/python` to force a different
 interpreter.
 
-Run the shared HTTP API:
+Run the localhost brain:
 
 ```bash
 research_plugin/bin/research-plugin-http --host 127.0.0.1 --port 8787
 ```
 
-In shared mode, `POST /api/projects` supplies the directory for each project and
-the daemon routes project-scoped requests to that directory's isolated
-`.research_plugin/state.sqlite`.
+The HTTP process is a control brain. Local file reads and writes are performed
+by the stdio MCP proxy and submitted through the data-plane endpoints.
 
 For auto-reload while editing backend code:
 
@@ -36,21 +35,20 @@ python3 scripts/dev_http_reload.py \
   --activity-stderr
 ```
 
-The HTTP launcher uses code from the installed plugin and runs the shared
-multi-project backend. Project state is stored in each project directory after
-the UI creates or selects that project.
+The HTTP launcher uses code from the installed plugin and stores brain state
+under the configured local state directory.
 
-Activity is appended as JSONL beside the state DB:
+Activity is stored beside the brain state DB:
 
 ```text
-/path/to/research-repo/.research_plugin/activity.jsonl
+/path/to/state/.research_plugin/activity.jsonl
 ```
 
 The UI can read recent activity through `GET /api/activity?limit=100`. For live
 terminal visibility of MCP tool-call activity, use:
 
 ```bash
-tail -f /path/to/research-repo/.research_plugin/activity.jsonl
+tail -f /path/to/state/.research_plugin/activity.jsonl
 ```
 
 ## Principles
@@ -60,8 +58,9 @@ tail -f /path/to/research-repo/.research_plugin/activity.jsonl
 - Both HTTP and MCP share the same SQLite state and service layer.
 - UI may create claims, experiments, resources, transitions, and reviews, but it
   should not include an agent chat surface in this version.
-- Resources are local repo files. Registering a resource stores a pointer and
-  observed file metadata; it does not upload bytes.
+- Resources are local repo files observed by the MCP proxy. Registering a
+  resource stores a pointer and observed file metadata; it does not upload
+  bytes.
 - Project scope is explicit. The UI must select or create a project and use
   project-routed endpoints; the backend does not infer an active project.
 
@@ -76,10 +75,7 @@ Returns:
 ```json
 {
   "ok": true,
-  "version": "0.0005",
-  "repo_root": "/path/to/repo",
-  "store": "/path/to/.research_plugin/state.sqlite",
-  "activity_log": "/path/to/.research_plugin/activity.jsonl"
+  "version": "0.0010"
 }
 ```
 
@@ -89,11 +85,10 @@ Returns:
 GET /api/activity?limit=100
 ```
 
-Returns recent backend activity events from `.research_plugin/activity.jsonl`.
-Events are MCP tool calls. Tool-call arguments are summarized to IDs and
-workflow fields. Successful tool-call events include a capped, JSON-safe tool
-`result`; sensitive fields such as `reviewer_capability` and `capability` are
-redacted before persistence.
+Returns recent backend activity events. Events are MCP tool calls. Tool-call
+arguments are summarized to IDs and workflow fields. Successful tool-call events
+include a capped, JSON-safe tool `result`; sensitive fields such as
+`reviewer_capability` and `capability` are redacted before persistence.
 
 In hosted control mode, activity reads are scoped to projects owned by the
 authenticated principal. Supplying a foreign `project_id` returns not-found;
@@ -102,7 +97,6 @@ projects.
 
 ```json
 {
-  "activity_log": "/path/to/repo/.research_plugin/activity.jsonl",
   "events": [
     {
       "event": "tool.call",
@@ -202,15 +196,12 @@ Create payload:
 ```json
 {
   "name": "Toy Length Classifier",
-  "summary": "Evaluate a threshold classifier on a toy dataset.",
-  "repo_root": "/absolute/path/to/toy-length-classifier"
+  "summary": "Evaluate a threshold classifier on a toy dataset."
 }
 ```
 
-`repo_root` is required in shared backend mode. It is the local directory that
-owns the project's files and `.research_plugin` state. `GET /api/projects`
-returns `repo_root` for directory-backed projects so the UI can show what each
-project owns.
+Project creation never carries a repo path over HTTP. Folder-to-project links
+are local MCP proxy state.
 
 `/home` is the main bootstrap endpoint. It returns:
 

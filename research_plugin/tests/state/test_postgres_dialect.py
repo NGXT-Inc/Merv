@@ -6,7 +6,7 @@ This module supplies the Postgres half:
 
   (a) the translated SCHEMA + the ordered ledger apply cleanly;
   (b) the control-plane contract scenarios (the full research loop, driven
-      only through the tool surface) pass against a ResearchPluginApp whose
+      only through the tool surface) pass against a TestBrain whose
       store is ``PostgresStateStore`` — services unchanged;
   (c) events identity ordering, resource_versions/associations created_seq
       ordering, ON CONFLICT upsert paths, and the record_event/recent_events
@@ -38,7 +38,7 @@ import time
 import unittest
 from pathlib import Path
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.config import build_state_store, resolve_db_url
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.state.dialects import PostgresStateStore, translate_schema_to_postgres
@@ -147,7 +147,7 @@ def _postgres_harness() -> ClientHarness:
     """The contract harness, rewired onto a fresh Postgres-backed app."""
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
-    app = ResearchPluginApp(
+    app = TestBrain(
         repo_root=repo,
         db_path=repo / ".research_plugin" / "unused.sqlite",
         execution_backend=FakeSandboxBackend(),

@@ -8,10 +8,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.mlflow import CentralMlflowService
 from backend.transport.http_api import ResearchHttpApi, create_fastapi_app
-from backend.daemon.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.utils import ContentUnavailableError
 from mcp_server.time_utils import now_iso
@@ -50,7 +49,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         self.backend = FakeSandboxBackend()
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
@@ -249,8 +248,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(requested["status"], "running")
         sandbox_uid = requested["sandbox_uid"]
-        self.assertEqual(requested["ssh"]["command"], f".research_plugin/sbx {sandbox_uid}")
-        self.assertTrue(requested["ssh"]["raw_command"].startswith("ssh -i "))
+        self.assertIn("host", requested["ssh"])
+        self.assertNotIn("command", requested["ssh"])
+        self.assertNotIn("raw_command", requested["ssh"])
 
         sandbox = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}/sandbox")
         self.assertEqual(sandbox["status"], "running")
@@ -748,7 +748,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_activity_endpoint_reports_recent_tool_calls(self) -> None:
         self.request("GET", "/api/projects")
         activity = self.request("GET", "/api/activity?limit=5")
-        self.assertEqual(activity["activity_log"], str(self.app.activity.log_path))
+        self.assertNotIn("activity_log", activity)
         self.assertTrue(
             any(
                 event.get("event") == "tool.call"
@@ -1380,13 +1380,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
 
 class ResourceRelFileTest(unittest.TestCase):
-    """GET /resources/{id}/file?rel=… serves a file next to the resource (a
-    report's figure), locked inside the repo root."""
+    """GET /resources/{id}/file?rel=... serves submitted figures only."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -1410,14 +1409,13 @@ class ResourceRelFileTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_serves_sibling_figure(self) -> None:
+    def test_live_sibling_figure_is_unavailable_over_http(self) -> None:
         response = self.client.get(
             f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
             params={"rel": "figures/loss.png"},
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["content-type"], "image/png")
-        self.assertTrue(response.content.startswith(b"\x89PNG"))
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json()["error_code"], "content_unavailable")
 
     def test_serves_submitted_plan_figure_without_live_file(self) -> None:
         exp = self.client.post(
@@ -1519,89 +1517,6 @@ class FigureViewTest(unittest.TestCase):
         self.assertEqual(attempt["status"], "active")
 
 
-class RoutedResearchPluginHttpApiTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.router = ProjectRouter(
-            registry_db_path=self.root / "registry.sqlite",
-            execution_backend_factory=lambda _repo: FakeSandboxBackend(),
-        )
-        self.client = TestClient(create_fastapi_app(router=self.router))
-
-    def tearDown(self) -> None:
-        self.router.shutdown()
-        self.tmp.cleanup()
-
-    def request(self, method: str, path: str, body: dict | None = None):
-        mutation = _deleted_resource_mutation(
-            self.router.app_for_project,
-            method,
-            path,
-            body,
-        )
-        if mutation is not _NO_RESOURCE_MUTATION:
-            return mutation
-        response = self.client.request(method, path, json=body)
-        self.assertLess(response.status_code, 400, response.text)
-        return response.json()
-
-    def test_project_create_requires_directory_and_routes_by_project(self) -> None:
-        missing_dir = self.client.request("POST", "/api/projects", json={"name": "No Dir"})
-        self.assertEqual(missing_dir.status_code, 400, missing_dir.text)
-        self.assertIn("repo_root", missing_dir.text)
-
-        repo_a = self.root / "project-a"
-        repo_b = self.root / "project-b"
-        project_a = self.request(
-            "POST",
-            "/api/projects",
-            {"name": "Project A", "summary": "Alpha", "repo_root": str(repo_a)},
-        )
-        project_b = self.request(
-            "POST",
-            "/api/projects",
-            {"name": "Project B", "summary": "Beta", "repo_root": str(repo_b)},
-        )
-        self.assertEqual(project_a["repo_root"], str(repo_a.resolve()))
-        self.assertEqual(project_b["repo_root"], str(repo_b.resolve()))
-        self.assertTrue((repo_a / ".research_plugin" / "state.sqlite").exists())
-        self.assertTrue((repo_b / ".research_plugin" / "state.sqlite").exists())
-
-        projects = self.request("GET", "/api/projects")["projects"]
-        self.assertEqual({p["id"] for p in projects}, {project_a["id"], project_b["id"]})
-        self.assertEqual(
-            {p["repo_root"] for p in projects},
-            {str(repo_a.resolve()), str(repo_b.resolve())},
-        )
-
-        (repo_a / "result.txt").write_text("owned by a\n")
-        resource_a = self.request(
-            "POST",
-            f"/api/projects/{project_a['id']}/resources",
-            {"path": "result.txt", "kind": "result"},
-        )
-        self.assertEqual(resource_a["path"], "result.txt")
-
-        deleted_route = self.client.request(
-            "POST",
-            f"/api/projects/{project_b['id']}/resources",
-            json={"path": "result.txt", "kind": "result"},
-        )
-        self.assertEqual(deleted_route.status_code, 405, deleted_route.text)
-
-    def test_duplicate_directory_is_rejected(self) -> None:
-        repo = self.root / "same-project"
-        self.request("POST", "/api/projects", {"name": "One", "repo_root": str(repo)})
-        duplicate = self.client.request(
-            "POST",
-            "/api/projects",
-            json={"name": "Two", "repo_root": str(repo)},
-        )
-        self.assertEqual(duplicate.status_code, 400, duplicate.text)
-        self.assertIn("already exists", duplicate.text)
-
-
 class DegradedStatesTest(unittest.TestCase):
     """Control-mode content reads return documented degraded shapes, not 500s
     (cloud plan Phase 9, open decision F)."""
@@ -1609,7 +1524,7 @@ class DegradedStatesTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -1637,24 +1552,25 @@ class DegradedStatesTest(unittest.TestCase):
         # ...but a hosted/control HTTP presentation has no local data plane to
         # read it from.
         body = ResearchHttpApi(
-            app=self.app, expose_local_data_plane=False
+            app=self.app
         ).resource_content(project_id=pid, resource_id=rid)
         self.assertFalse(body["available"])
         self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
         self.assertIsNone(body["content"])
 
-    def test_result_content_is_live_in_local_mode(self) -> None:
+    def test_result_content_degrades_in_local_http_mode(self) -> None:
         pid, rid = self._result_resource()
         resp = self.client.get(f"/api/projects/{pid}/resources/{rid}/content")
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertTrue(body["available"])
-        self.assertIn("acc", body["content"])
+        self.assertFalse(body["available"])
+        self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
+        self.assertIsNone(body["content"])
 
     def test_figure_file_degrades_in_control_mode(self) -> None:
         pid, rid = self._result_resource()
         with self.assertRaises(ContentUnavailableError) as ctx:
-            ResearchHttpApi(app=self.app, expose_local_data_plane=False).resource_file(
+            ResearchHttpApi(app=self.app).resource_file(
                 project_id=pid, resource_id=rid, rel="fig.png"
             )
         self.assertEqual(ctx.exception.error_code, "content_unavailable")

@@ -12,8 +12,8 @@ from urllib.request import url2pathname
 from fastapi.testclient import TestClient
 
 from tests.fakes import FakeObjectStore
-from backend.app import ResearchPluginApp
-from backend.composition.local_mode import build_local_app
+from tests.support.brain import TestBrain
+from backend.composition import build_local_server
 from backend.config import STORAGE_PROVIDER_ENV_VAR
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.state.store import StateStore
@@ -28,7 +28,7 @@ class StorageHttpApiTest(unittest.TestCase):
         self.repo = Path(self.tmp.name)
         store = StateStore(db_path=self.repo / ".research_plugin" / "state.sqlite")
         storage = StorageLedgerService(store=store, objects=FakeObjectStore())
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
@@ -224,10 +224,8 @@ class StorageCompositionTest(unittest.TestCase):
                     STORAGE_PROVIDER_ENV_VAR: "",
                 },
             ):
-                app = build_local_app(
-                    repo_root=root,
-                    db_path=root / ".research_plugin" / "state.sqlite",
-                )
+                server = build_local_server(state_dir=root)
+                app = server.app
             try:
                 self.assertIsNone(app.storage)
                 self.assertFalse(
@@ -235,7 +233,7 @@ class StorageCompositionTest(unittest.TestCase):
                     & {"storage.put_object", "storage.list"}
                 )
             finally:
-                app.shutdown()
+                server.shutdown()
 
 
 if __name__ == "__main__":

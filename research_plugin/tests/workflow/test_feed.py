@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pathlib import Path as _P
 
-from backend.app import ResearchPluginApp
+from tests.support.brain import TestBrain
 from backend.domain import feed_policy
 from backend.domain.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from backend.services.feed import POST_TEXT_MAX
@@ -35,7 +35,7 @@ class FeedServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.app = ResearchPluginApp(
+        self.app = TestBrain(
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )

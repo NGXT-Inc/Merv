@@ -8,8 +8,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from backend.mlflow.config import resolve_mlflow_mode
-from backend.daemon.project_router import ProjectRouter
-from backend.execution.backends.fake import FakeSandboxBackend
 from backend.mlflow.local_server import LocalMlflowServer
 from backend.mlflow.tracking import CentralMlflowService
 from backend.utils import ValidationError
@@ -481,73 +479,6 @@ class LocalMlflowServerTest(unittest.TestCase):
         self.assertFalse(health["configured"])
         self.assertEqual(health["mode"], "managed")
         self.assertIn("Managed MLflow failed to start", health["note"])
-
-    def test_local_http_router_shares_one_managed_mlflow_server(self) -> None:
-        service = CentralMlflowService(
-            mode="managed",
-            tracking_uri="http://127.0.0.1:5678",
-            server_uri="http://127.0.0.1:5678",
-            dashboard_url="http://127.0.0.1:5678",
-        )
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            with (
-                patch(
-                    "backend.daemon.project_router.LocalMlflowServer.start",
-                    return_value=service,
-                ) as start,
-                patch("backend.daemon.project_router.LocalMlflowServer.stop") as stop,
-            ):
-                root = Path(tmp)
-                router = ProjectRouter(
-                    registry_db_path=root / "registry.sqlite",
-                    execution_backend_factory=lambda _repo: FakeSandboxBackend(),
-                    manage_local_mlflow=True,
-                )
-                first = router.create_project(repo_root=root / "repo-a", name="Alpha")
-                second = router.create_project(repo_root=root / "repo-b", name="Beta")
-                self.assertNotEqual(first["id"], second["id"])
-                self.assertEqual(
-                    router.app_for_project(first["id"]).mlflow_tracking.tracking_uri,
-                    service.tracking_uri,
-                )
-                self.assertEqual(
-                    router.app_for_project(second["id"]).mlflow_tracking.tracking_uri,
-                    service.tracking_uri,
-                )
-                router.shutdown()
-
-        start.assert_called_once()
-        stop.assert_called_once()
-
-    def test_router_stops_managed_mlflow_when_constructor_fails(self) -> None:
-        service = CentralMlflowService(
-            mode="managed",
-            tracking_uri="http://127.0.0.1:5678",
-            server_uri="http://127.0.0.1:5678",
-            dashboard_url="http://127.0.0.1:5678",
-        )
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            with (
-                patch(
-                    "backend.daemon.project_router.LocalMlflowServer.start",
-                    return_value=service,
-                ) as start,
-                patch("backend.daemon.project_router.LocalMlflowServer.stop") as stop,
-                patch.object(
-                    ProjectRouter,
-                    "_resume_active_sandbox_projects",
-                    side_effect=RuntimeError("resume failed"),
-                ),
-            ):
-                with self.assertRaises(RuntimeError):
-                    ProjectRouter(
-                        registry_db_path=Path(tmp) / "registry.sqlite",
-                        manage_local_mlflow=True,
-                    )
-
-        start.assert_called_once()
-        stop.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()
