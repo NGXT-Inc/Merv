@@ -1,4 +1,9 @@
-"""Background sandbox daemons: expiration plus idle reaping."""
+"""Background sandbox daemons: expiration plus idle reaping.
+
+Pure scheduling: the loops decide *when* to sweep; every terminate/mark
+decision belongs to `SandboxLifecycle` (expiry + idle rows) and the
+provisioner's stale-provision reaper (wedged pre-running rows).
+"""
 
 from __future__ import annotations
 
@@ -10,12 +15,12 @@ from typing import Any, Callable
 from ...sandbox.sandbox_backend import SandboxBackend
 from ...env import env_bool, env_float
 from ...ports.sandbox_lifecycle import ProvisionReaper
+from .sandbox_lifecycle import SandboxLifecycle
 from .sandbox_registry import SandboxRegistry
 from ...sandbox.sandbox_support import (
     DEFAULT_REAPER_INTERVAL_SECONDS,
     DEFAULT_SANDBOX_IDLE_SECONDS,
     DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
-    parse_iso,
 )
 from .sandbox_heartbeat import SandboxHeartbeatMonitor, SandboxIdlePolicy
 
@@ -29,16 +34,18 @@ class SandboxDaemons:
         registry: SandboxRegistry,
         backend: SandboxBackend,
         provisioner: ProvisionReaper,
+        lifecycle: SandboxLifecycle,
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.provisioner = provisioner
+        self.lifecycle = lifecycle
         self.heartbeat = SandboxHeartbeatMonitor(
             registry=registry,
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
-            reap_row=self._reap_row,
+            reap_row=lifecycle.reap_row,
             policy=idle_policy,
         )
         self._reaper_stop = threading.Event()
@@ -92,7 +99,7 @@ class SandboxDaemons:
             expiry_enabled = self._reaper_enabled()
             try:
                 if expiry_enabled:
-                    self.reap_expired()
+                    self.lifecycle.reap_expired()
             except Exception:  # noqa: BLE001 — the reaper must never die
                 pass
             try:
@@ -123,36 +130,6 @@ class SandboxDaemons:
         )
         return threshold if threshold > 0 else 0.0
 
-    def reap_expired(self, *, now: datetime | None = None) -> int:
-        """Terminate every running sandbox whose expires_at deadline has passed.
-
-        Idempotent and safe to call directly (tests do). Returns how many were
-        reaped.
-        """
-        now_dt = now or datetime.now(tz=UTC)
-        reaped = 0
-        for row in self.registry.list_running_rows():
-            expires_at = parse_iso(row.get("expires_at"))
-            if expires_at is None or now_dt < expires_at:
-                continue
-            # Re-read: the sweep snapshot ages while earlier rows terminate
-            # (provider calls take seconds each), and sandbox.extend races
-            # exactly this window — a just-extended row must not be reaped
-            # off the stale copy.
-            fresh = self.registry.get_by_uid(
-                sandbox_uid=str(row.get("sandbox_uid") or "")
-            )
-            fresh_expires = parse_iso(fresh.get("expires_at"))
-            if (
-                fresh.get("status") != "running"
-                or fresh_expires is None
-                or now_dt < fresh_expires
-            ):
-                continue
-            self._reap_row(row=fresh)
-            reaped += 1
-        return reaped
-
     def reap_idle(
         self,
         *,
@@ -168,60 +145,3 @@ class SandboxDaemons:
             ),
         )
 
-    def _reap_row(
-        self,
-        *,
-        row: dict[str, Any],
-        event_type: str = "sandbox.expired",
-        payload_extra: dict[str, Any] | None = None,
-    ) -> None:
-        experiment_id = str(row.get("experiment_id") or "")
-        sandbox_id = str(row.get("sandbox_id") or "")
-        stopped = False
-        if sandbox_id:
-            try:
-                stopped = self.backend.terminate(sandbox_id=sandbox_id)
-            except Exception:  # noqa: BLE001
-                stopped = False
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        if not stopped:
-            self.provisioner.cleanup_orphan(experiment_id=experiment_id, row=row)
-            # Only strand the row as terminated once the provider confirms the
-            # VM is gone — a terminated row over a live VM bills invisibly
-            # forever, and no sweep revisits terminated rows. Left running,
-            # the next sweep retries the terminate.
-            if (
-                sandbox_id
-                and self.provisioner.liveness(sandbox_id=sandbox_id) is not False
-            ):
-                self.registry.emit_event(
-                    project_id=str(row.get("project_id")),
-                    event_type=event_type,
-                    experiment_id=experiment_id,
-                    payload={
-                        "sandbox_id": sandbox_id,
-                        "sandbox_uid": sandbox_uid,
-                        "reaped": False,
-                        "reason": "terminate failed; instance may still be alive",
-                        **(payload_extra or {}),
-                    },
-                )
-                return
-        self.registry.mark_terminated(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid
-        )
-        payload = {
-            "sandbox_id": sandbox_id,
-            "sandbox_uid": sandbox_uid,
-            "reaped": True,
-            "expires_at": row.get("expires_at"),
-            "stopped": stopped,
-        }
-        if payload_extra:
-            payload.update(payload_extra)
-        self.registry.emit_event(
-            project_id=str(row.get("project_id")),
-            event_type=event_type,
-            experiment_id=experiment_id,
-            payload=payload,
-        )

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.app import ResearchPluginApp
@@ -301,6 +302,7 @@ class SandboxHeartbeatEnvTest(unittest.TestCase):
             registry=object(),  # type: ignore[arg-type]
             backend=FakeSandboxBackend(),
             provisioner=object(),  # type: ignore[arg-type]
+            lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
             sample_metrics=lambda **_kwargs: {},
         )
 

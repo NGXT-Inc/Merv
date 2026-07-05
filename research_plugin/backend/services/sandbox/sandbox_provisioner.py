@@ -1,23 +1,24 @@
-"""Background sandbox provisioning: job threads, cancellation, reconcile.
+"""Background sandbox provisioning: job threads and cancellation.
 
-`SandboxProvisioner` owns the acquire lifecycle — uid-keyed jobs, cooperative
-cancellation, orphan cleanup, and the reconcile pass that
-keeps a polled row truthful after crashes or restarts.
-It talks to persistence through `SandboxRegistry` and reaches the facade only
-through ``refresh_row`` (endpoint refresh for a live row).
+`SandboxProvisioner` owns the acquire mechanics — uid-keyed job threads and
+cooperative cancellation. It talks to persistence through `SandboxRegistry`;
+every destructive decision (orphan cleanup, terminal marks + teardown) is the
+`SandboxLifecycle`'s, which this module calls but never re-implements. The
+lifecycle in turn asks back only one thing, through ``job_is_live``: whether a
+provisioning row is still owned by a live job thread in this process.
 
-``connecting``; then a successfully acquired sandbox is recorded as
-``running``. The row status stays ``provisioning`` until that handoff, so the
-existing cancellation and orphan-cleanup paths (reconcile, release-cancel)
-cover every pre-running provider phase.
+A successfully acquired sandbox is recorded as ``running``. The row status
+stays ``provisioning`` until that handoff, so the cancellation and
+orphan-cleanup paths (reconcile, release-cancel) cover every pre-running
+provider phase.
 """
 
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, Callable
+from datetime import datetime
+from typing import Any
 
 from ...sandbox.sandbox_backend import (
     BackendPermissionError,
@@ -28,14 +29,9 @@ from ...sandbox.sandbox_backend import (
 )
 from ...domain.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
 from ...utils import iso_after, now_iso
+from .sandbox_lifecycle import SandboxLifecycle
 from .sandbox_registry import SandboxRegistry
-from ...sandbox.sandbox_support import (
-    ACTIVE_SANDBOX_STATUSES,
-    parse_iso,
-)
-
-
-RefreshRow = Callable[..., dict[str, Any]]
+from ...sandbox.sandbox_support import parse_iso
 
 
 class _Canceled(Exception):
@@ -54,19 +50,19 @@ class _ProvisionJob:
 
 
 class SandboxProvisioner:
-    """Owns in-flight provisioning jobs and row reconciliation."""
+    """Owns in-flight provisioning job threads."""
 
     def __init__(
         self,
         *,
         registry: SandboxRegistry,
         backend: SandboxBackend,
-        refresh_row: RefreshRow,
+        lifecycle: SandboxLifecycle,
         stale_provision_seconds: float,
     ) -> None:
         self.registry = registry
         self.backend = backend
-        self._refresh_row = refresh_row
+        self.lifecycle = lifecycle
         self.stale_provision_seconds = stale_provision_seconds
         self._jobs: dict[str, _ProvisionJob] = {}
         self._jobs_lock = threading.Lock()
@@ -80,91 +76,18 @@ class SandboxProvisioner:
         # Default provisioning jobs predate the row uid; additional jobs use it.
         return self._jobs.get(sandbox_uid) or self._jobs.get(experiment_id)
 
-    # ---------- liveness ----------
+    def job_is_live(self, *, experiment_id: str, sandbox_uid: str = "") -> bool:
+        """Whether a live job thread in this process owns the row.
 
-    def is_alive(self, *, sandbox_id: str) -> bool:
-        return self.liveness(sandbox_id=sandbox_id) is True
-
-    def liveness(self, *, sandbox_id: str) -> bool | None:
-        """Tri-state liveness: True/False when the provider answered
-        authoritatively, None when it couldn't be asked (outage, timeout).
-
-        Callers making destructive decisions (terminate, mark_terminated,
-        re-provision) must treat None as "possibly alive" — collapsing it to
-        False is how a healthy VM ends up killed or stranded behind a
-        terminated row, billing invisibly.
+        The lifecycle's job probe: a live job owns its row at ANY age (Lambda
+        boots legitimately run past the stale deadline), so reconcile and the
+        stale-provision reaper never condemn a row this returns True for.
         """
-        try:
-            return bool(self.backend.is_alive(sandbox_id=sandbox_id))
-        except Exception:  # noqa: BLE001
-            return None
-
-    def reconcile(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Bring a row in line with reality. Read-only-safe (never provisions).
-
-        - running → confirm liveness; mark terminated if the sandbox is gone.
-        - provisioning → if a live job in this process owns it (and it is not
-          stale), leave it for the agent to keep polling; otherwise the job is
-          gone (daemon restart) or wedged, so clean up any orphan and mark
-          failed. This is what guarantees a polling agent always reaches a
-          terminal state.
-        """
-        status = row.get("status")
-        exp = str(row.get("experiment_id") or "")
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        if status in ACTIVE_SANDBOX_STATUSES and row.get("sandbox_id"):
-            alive = self.liveness(sandbox_id=str(row["sandbox_id"]))
-            if alive is None:
-                return row  # provider unreachable — defer judgment to the next poll
-            if alive:
-                self.registry.touch_alive(experiment_id=exp, sandbox_uid=sandbox_uid)
-                return self._refresh_row(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
-            self.registry.mark_terminated(experiment_id=exp, sandbox_uid=sandbox_uid)
-            self.registry.emit_event(
-                project_id=str(row["project_id"]),
-                event_type="sandbox.expired",
-                experiment_id=exp,
-                payload={
-                    "sandbox_id": row.get("sandbox_id", ""),
-                    "sandbox_uid": sandbox_uid,
-                },
+        with self._jobs_lock:
+            job = self._job_for_row(
+                experiment_id=experiment_id, sandbox_uid=sandbox_uid
             )
-            return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-        if status == "provisioning":
-            with self._jobs_lock:
-                job = self._job_for_row(experiment_id=exp, sandbox_uid=sandbox_uid)
-                live_job = bool(job and job.thread.is_alive())
-            # A live job owns the row at ANY age (Lambda boots legitimately run
-            # past the stale deadline; reap_stale_provisions applies the same
-            # rule). The deadline only condemns rows whose job is gone.
-            if live_job:
-                return row  # genuinely in flight — keep polling
-            # The job may have JUST settled; re-read before declaring failure.
-            fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-            if fresh.get("status") != "provisioning":
-                return self.reconcile(row=fresh)
-            self.cleanup_orphan(experiment_id=exp, row=fresh)
-            self.registry.mark_failed(
-                experiment_id=exp,
-                error="provisioning interrupted; call sandbox.request again",
-                sandbox_uid=sandbox_uid,
-            )
-            self.registry.emit_event(
-                project_id=str(row["project_id"]),
-                event_type="sandbox.failed",
-                experiment_id=exp,
-                payload={"error": "provisioning interrupted"},
-            )
-            return self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-        return row
-
-    def provision_too_old(self, *, row: dict[str, Any]) -> bool:
-        started = parse_iso(row.get("provision_started_at"))
-        if started is None:
-            return False
-        return (
-            datetime.now(tz=UTC) - started
-        ).total_seconds() > self.stale_provision_seconds
+            return bool(job and job.thread.is_alive())
 
     # ---------- jobs ----------
 
@@ -194,7 +117,7 @@ class SandboxProvisioner:
         # deterministic provider names cannot collide. Done outside the lock — it
         # may make a network call.
         if not create_new:
-            self.cleanup_orphan(experiment_id=experiment_id, row=existing)
+            self.lifecycle.cleanup_orphan(experiment_id=experiment_id, row=existing)
         with self._jobs_lock:
             job = self._jobs.get(sandbox_uid)
             if job is not None and job.thread.is_alive():
@@ -290,16 +213,15 @@ class SandboxProvisioner:
             # wait (cancel isn't checked there). Honor it now rather than marking
             # a just-terminated sandbox `running`.
             if cancel.is_set():
-                self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
+                self.lifecycle.terminate_quietly(sandbox_id=provisioned.sandbox_id)
                 self._settle_canceled(
                     experiment_id=experiment_id,
                     project_id=project_id,
                     sandbox_uid=sandbox_uid,
                 )
                 return
-            name = self.registry.experiment_name(experiment_id=experiment_id)
             if cancel.is_set():
-                self._terminate_quietly(sandbox_id=provisioned.sandbox_id)
+                self.lifecycle.terminate_quietly(sandbox_id=provisioned.sandbox_id)
                 self._settle_canceled(
                     experiment_id=experiment_id,
                     project_id=project_id,
@@ -492,12 +414,10 @@ class SandboxProvisioner:
         for row in self.registry.list_rows_by_status(status="provisioning"):
             experiment_id = str(row.get("experiment_id") or "")
             sandbox_uid = str(row.get("sandbox_uid") or "")
-            with self._jobs_lock:
-                job = self._job_for_row(
-                    experiment_id=experiment_id, sandbox_uid=sandbox_uid
-                )
-                if job is not None and job.thread.is_alive():
-                    continue  # a live job in this process still owns it
+            if self.job_is_live(
+                experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            ):
+                continue  # a live job in this process still owns it
             started = parse_iso(row.get("provision_started_at"))
             if started is None or (now - started).total_seconds() < deadline_seconds:
                 continue
@@ -507,8 +427,8 @@ class SandboxProvisioner:
             if fresh.get("status") != "provisioning":
                 continue
             try:
-                self.cleanup_orphan(experiment_id=experiment_id, row=fresh)
-                self.registry.mark_failed(
+                self.lifecycle.cleanup_orphan(experiment_id=experiment_id, row=fresh)
+                self.lifecycle.mark_failed(
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
                     error=(
@@ -531,61 +451,12 @@ class SandboxProvisioner:
                 continue
         return reaped
 
-    def cleanup_orphan(self, *, experiment_id: str, row: dict[str, Any] | None) -> None:
-        """Best-effort terminate any sandbox tied to this experiment.
-
-        Covers both a recorded sandbox_id (from a prior/failed row) and the
-        deterministic-named orphan a dead job may have left on the backend.
-        """
-        seen: set[str] = set()
-        sid = (row or {}).get("sandbox_id")
-        if sid:
-            seen.add(str(sid))
-            self._terminate_quietly(sandbox_id=str(sid))
-        if not sid:
-            sandbox_uid = str((row or {}).get("sandbox_uid") or "")
-            active_sibling = bool(
-                experiment_id
-                and sandbox_uid
-                and self.registry.has_active_for_experiment(
-                    experiment_id=experiment_id, exclude_sandbox_uid=sandbox_uid
-                )
-            )
-            lookup_uids: list[str] = []
-            if sandbox_uid:
-                lookup_uids.append(sandbox_uid)
-            # Legacy fallback: old providers may only be findable by the
-            # experiment-derived deterministic name. Skip that broad lookup
-            # while another live sandbox is attached to the same experiment.
-            if not active_sibling:
-                lookup_uids.append("")
-            if not lookup_uids:
-                lookup_uids.append("")
-            orphan = None
-            for lookup_uid in lookup_uids:
-                if orphan:
-                    break
-                try:
-                    orphan = self.backend.find_sandbox_id(
-                        experiment_id=experiment_id, sandbox_uid=lookup_uid
-                    )
-                except Exception:  # noqa: BLE001
-                    orphan = None
-            if orphan and str(orphan) not in seen:
-                self._terminate_quietly(sandbox_id=str(orphan))
-
     # ---------- settle helpers ----------
-
-    def _terminate_quietly(self, *, sandbox_id: str) -> None:
-        try:
-            self.backend.terminate(sandbox_id=sandbox_id)
-        except Exception:  # noqa: BLE001
-            pass
 
     def _settle_canceled(
         self, *, experiment_id: str, project_id: str, sandbox_uid: str = ""
     ) -> None:
-        self.registry.mark_terminated(
+        self.lifecycle.mark_terminated(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
         self.registry.emit_event(
@@ -603,7 +474,7 @@ class SandboxProvisioner:
         error: str,
         sandbox_uid: str = "",
     ) -> None:
-        self.registry.mark_failed(
+        self.lifecycle.mark_failed(
             experiment_id=experiment_id,
             error=error,
             sandbox_uid=sandbox_uid,

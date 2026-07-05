@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from backend.execution.backends.fake import FakeSandboxBackend
@@ -83,6 +84,7 @@ class SandboxBackendContractTest(unittest.TestCase):
             registry=object(),  # type: ignore[arg-type]
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
+            lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
             sample_metrics=lambda **_kwargs: {},
         )
 

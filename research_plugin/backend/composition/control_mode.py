@@ -269,13 +269,9 @@ def _resume_active_sandboxes(*, app: ControlApp) -> None:
     a reconcile failure must not block startup or the reaper.
     """
     try:
-        running = app.sandboxes.registry.list_running_rows()
-        for row in running:
-            try:
-                app.sandboxes.provisioner.reconcile(row=row)
-            except Exception:  # noqa: BLE001 — per-row best-effort
-                pass
-        if running:
+        had_running = bool(app.sandboxes.registry.list_running_rows())
+        app.sandboxes.reconcile_running_rows()
+        if had_running:
             # Kick the resumed reaper once so anything already past its deadline
             # is reaped promptly instead of waiting a full interval. Off-thread:
             # startup must not block on cleanup. The reaper thread the

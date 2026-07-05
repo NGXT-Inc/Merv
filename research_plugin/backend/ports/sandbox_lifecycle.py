@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 
 class ProvisionReaper(Protocol):
+    """The one provisioner duty the daemons' reaper loop schedules."""
+
     def reap_stale_provisions(
         self, *, now: datetime, deadline_seconds: float
     ) -> int:
-        ...
-
-    def cleanup_orphan(
-        self, *, experiment_id: str, row: dict[str, Any] | None
-    ) -> None:
         ...

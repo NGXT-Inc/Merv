@@ -3,34 +3,32 @@
 `SandboxRegistry` owns every read and write of the `sandboxes` table, the
 active sandbox↔experiment attachment table, and the sandbox event stream. It
 knows nothing about backends, threads, tunnels, or rsync — callers hand it row
-dicts and field updates. The one outward edge is ``on_terminal``: a hook the
-facade wires so that marking a row failed or terminated also tears down the
-row's runtime attachments (conn files, management keys) without the registry
-knowing what those are.
+dicts and field updates, and it never calls out. Terminal marks return the
+row facts (sandbox_id/uid) so `SandboxLifecycle` — the sole caller allowed to
+mark — can run teardown.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Callable
+from typing import Any
 
 from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ...state.store import BaseStateStore, next_created_seq, row_to_dict
 from ...utils import NotFoundError, ValidationError, new_id, now_iso
 
 
-# (experiment_id, sandbox_id, sandbox_uid) — sandbox_id is "" when the row never
-# recorded one, and None when the row itself does not exist (the update still ran).
-TerminalHook = Callable[[str, str | None, str | None], None]
-
-
 class SandboxRegistry:
-    """Owns sandbox-row persistence: upserts, scoping, status marks, events."""
+    """Owns sandbox-row persistence: upserts, scoping, status marks, events.
+
+    Persistence only: terminal marks return the row facts (sandbox_id/uid) so
+    the lifecycle layer — the sole caller allowed to mark — can run teardown;
+    the registry itself never calls out.
+    """
 
     def __init__(self, *, store: BaseStateStore) -> None:
         self.store = store
-        self.on_terminal: TerminalHook | None = None
 
     def _row_dict(self, *, row: Any, conn: Any) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
@@ -722,13 +720,17 @@ class SandboxRegistry:
             )
         return {**snapshot, "snapshot_at": now}
 
-    def mark_terminated(self, *, experiment_id: str, sandbox_uid: str) -> None:
-        self._mark_terminal(
+    def mark_terminated(
+        self, *, experiment_id: str, sandbox_uid: str
+    ) -> dict[str, Any]:
+        return self._mark_terminal(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid, status="terminated"
         )
 
-    def mark_failed(self, *, experiment_id: str, error: str, sandbox_uid: str) -> None:
-        self._mark_terminal(
+    def mark_failed(
+        self, *, experiment_id: str, error: str, sandbox_uid: str
+    ) -> dict[str, Any]:
+        return self._mark_terminal(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             status="failed",
@@ -742,7 +744,7 @@ class SandboxRegistry:
         sandbox_uid: str,
         status: str,
         error: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Drive one sandbox row to a terminal status, closing its attachment
         and spend generation. `error` is set only on the failed path."""
         now = now_iso()
@@ -794,9 +796,9 @@ class SandboxRegistry:
             )
         elif not row_uid:
             self.close_generation(experiment_id=experiment_id, now=now)
-        self._fire_terminal(
-            experiment_id=experiment_id, sandbox_id=sandbox_id, sandbox_uid=row_uid
-        )
+        # sandbox_id is "" when the row never recorded one, None when the row
+        # itself does not exist (the update still ran).
+        return {"sandbox_id": sandbox_id, "sandbox_uid": row_uid}
 
     def emit_event(
         self,
@@ -875,16 +877,39 @@ class SandboxRegistry:
             (detached_at, sandbox_uid),
         )
 
-    def _fire_terminal(
-        self,
-        *,
-        experiment_id: str,
-        sandbox_id: str | None,
-        sandbox_uid: str | None,
-    ) -> None:
-        if self.on_terminal is None:
-            return
+    def tenant_for_sandbox(self, *, experiment_id: str, sandbox_uid: str) -> str:
+        """Tenant owning a sandbox, via its experiment or the row itself."""
+        conn = self.store.connect()
         try:
-            self.on_terminal(experiment_id, sandbox_id, sandbox_uid)
-        except Exception:  # noqa: BLE001 — teardown must never block the mark
-            pass
+            if experiment_id:
+                row = conn.execute(
+                    """
+                    SELECT p.tenant_id
+                    FROM experiments e
+                    JOIN projects p ON p.id = e.project_id
+                    WHERE e.id = ?
+                    """,
+                    (experiment_id,),
+                ).fetchone()
+                if row is None:
+                    row = conn.execute(
+                        """
+                        SELECT s.tenant_id
+                        FROM sandboxes s
+                        JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+                        WHERE a.experiment_id = ? AND a.detached_at IS NULL
+                        ORDER BY s.created_seq DESC
+                        LIMIT 1
+                        """,
+                        (experiment_id,),
+                    ).fetchone()
+            elif sandbox_uid:
+                row = conn.execute(
+                    "SELECT tenant_id FROM sandboxes WHERE sandbox_uid = ?",
+                    (sandbox_uid,),
+                ).fetchone()
+            else:
+                row = None
+        finally:
+            conn.close()
+        return str(row["tenant_id"]) if row is not None else "local"

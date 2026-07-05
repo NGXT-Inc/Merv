@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
 from . import sandbox_views
 from .sandbox_heartbeat import SandboxActivityPolicy
+from .sandbox_lifecycle import SandboxLifecycle
 from .sandbox_metrics import SandboxMetrics
 from ..transcript_cache import TranscriptCache
 from .sandbox_daemons import SandboxDaemons
@@ -104,23 +105,34 @@ class SandboxService:
         # Sandboxes whose post-boot secrets were already pushed (in-process;
         # a daemon restart just re-delivers once, which the push tolerates).
         self._secrets_delivered: set[str] = set()
-        # Marking a row failed/terminated also tears down its runtime
-        # attachments; the registry stays persistence-only via this hook.
-        self.registry.on_terminal = self._on_terminal_row
+        # Single owner of status transitions and destructive decisions:
+        # terminal marks (incl. teardown), VM termination, reconcile, reaping.
+        # Registry stays persistence-only; provisioner keeps job threads;
+        # daemons keep scheduling.
+        self.lifecycle = SandboxLifecycle(
+            registry=self.registry,
+            backend=sandbox_backend,
+            mgmt_keys=self.mgmt_keys,
+            tasks=task_channel,
+        )
         self.provisioner = SandboxProvisioner(
             registry=self.registry,
             backend=sandbox_backend,
-            refresh_row=self._refresh_row,
+            lifecycle=self.lifecycle,
             stale_provision_seconds=env_float(
                 "RESEARCH_PLUGIN_SANDBOX_STALE",
                 stale_provision_seconds,
                 DEFAULT_STALE_PROVISION_SECONDS,
             ),
         )
+        # The one inversion left: reconcile asks whether a provisioning row is
+        # still owned by a live job thread in this process.
+        self.lifecycle.job_probe = self.provisioner.job_is_live
         self.daemons = SandboxDaemons(
             registry=self.registry,
             backend=sandbox_backend,
             provisioner=self.provisioner,
+            lifecycle=self.lifecycle,
             sample_metrics=self.metrics.sample_metrics,
         )
         self.daemons.start()
@@ -209,14 +221,14 @@ class SandboxService:
             # Unknown liveness (provider blip) still reuses: a dead SSH target
             # fails loudly and cheaply, whereas falling through to ensure_job
             # would cleanup_orphan — i.e. TERMINATE — a possibly-healthy VM.
-            and self.provisioner.liveness(sandbox_id=str(existing["sandbox_id"]))
+            and self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
             is not False
         ):
             self.registry.touch_alive(
                 experiment_id=experiment_id,
                 sandbox_uid=str(existing.get("sandbox_uid") or ""),
             )
-            row = self._refresh_row(
+            row = self.lifecycle.refresh_endpoint(
                 row=self.registry.get_by_uid(
                     sandbox_uid=str(existing.get("sandbox_uid") or "")
                 )
@@ -383,7 +395,7 @@ class SandboxService:
                 "status": "none",
                 "hint": "No sandbox for this experiment — call sandbox.request to create one.",
             }
-        row = self.provisioner.reconcile(row=row)
+        row = self.lifecycle.reconcile(row=row)
         # First poll that observes "running" delivers the post-boot secrets a
         # slow provision missed in request()'s bounded wait.
         self._deliver_secrets_once(row=row, experiment_id=experiment_id)
@@ -419,10 +431,10 @@ class SandboxService:
             raise NotFoundError(f"sandbox not found: {sandbox_uid}") from exc
         if source_row.get("project_id") != project_id:
             raise NotFoundError(f"sandbox not found in project {project_id}: {sandbox_uid}")
-        source_row = self.provisioner.reconcile(row=source_row)
+        source_row = self.lifecycle.reconcile(row=source_row)
         if source_row.get("status") != "running" or not source_row.get("sandbox_id"):
             raise ValidationError("sandbox.attach requires a running sandbox")
-        if self.provisioner.liveness(sandbox_id=str(source_row["sandbox_id"])) is False:
+        if self.lifecycle.liveness(sandbox_id=str(source_row["sandbox_id"])) is False:
             raise ValidationError("sandbox.attach requires a live sandbox")
         with self.store.transaction() as conn:
             target = conn.execute(
@@ -502,7 +514,7 @@ class SandboxService:
             tenant_id=tenant_id,
             sandbox_uid=sandbox_uid,
         )
-        row = self.provisioner.reconcile(row=row)
+        row = self.lifecycle.reconcile(row=row)
         if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
             raise ValidationError("sandbox.extend requires a running sandbox")
         expires_at = parse_iso(row.get("expires_at"))
@@ -699,47 +711,42 @@ class SandboxService:
         # it created via the cancel path (acquire's cleanup), even if create is
         # still mid-flight when we return.
         self.provisioner.cancel(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
-        stopped = False
         was_active = bool(row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES)
-        if row.get("sandbox_id") and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"}):
-            try:
-                stopped = self.backend.terminate(sandbox_id=str(row["sandbox_id"]))
-            except Exception:  # noqa: BLE001
-                stopped = False
-        # If the direct terminate failed or there was no recorded id, try the
-        # deterministic-name orphan cleanup path.
-        if not stopped:
-            self.provisioner.cleanup_orphan(experiment_id=experiment_id, row=row)
-            # Only strand the row as terminated once the provider confirms the
-            # VM is gone — a terminated row over a live VM bills invisibly
-            # forever. Left running, a retried release or the expiry reaper
-            # finishes the job.
-            if (
+        # Direct terminate applies only to rows the provider may still be
+        # running; anything else goes straight to orphan cleanup + confirm.
+        outcome = self.lifecycle.terminate_vm(
+            row=row,
+            try_direct=bool(
                 row.get("sandbox_id")
-                and self.provisioner.liveness(sandbox_id=str(row["sandbox_id"]))
-                is not False
-            ):
-                self.registry.emit_event(
-                    project_id=str(row["project_id"]),
-                    event_type="sandbox.release_failed",
-                    experiment_id=experiment_id,
-                    payload={
-                        "sandbox_id": row.get("sandbox_id", ""),
-                        "sandbox_uid": sandbox_uid,
-                        "reason": "terminate failed; instance may still be alive",
-                    },
-                )
-                view = self._row_view(
-                    row=self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-                )
-                view["hint"] = (
-                    "Release did NOT complete: the provider terminate call "
-                    "failed and the VM may still be running (and billing). "
-                    "The sandbox stays active; retry sandbox.release, or the "
-                    "expiry reaper will retry at the deadline."
-                )
-                return view
-        self.registry.mark_terminated(
+                and row.get("status") in (ACTIVE_SANDBOX_STATUSES | {"provisioning"})
+            ),
+        )
+        if outcome == "maybe_alive":
+            # Never strand the row as terminated over a possibly-live VM (it
+            # would bill invisibly forever). Left running, a retried release
+            # or the expiry reaper finishes the job.
+            self.registry.emit_event(
+                project_id=str(row["project_id"]),
+                event_type="sandbox.release_failed",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": row.get("sandbox_id", ""),
+                    "sandbox_uid": sandbox_uid,
+                    "reason": "terminate failed; instance may still be alive",
+                },
+            )
+            view = self._row_view(
+                row=self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+            )
+            view["hint"] = (
+                "Release did NOT complete: the provider terminate call "
+                "failed and the VM may still be running (and billing). "
+                "The sandbox stays active; retry sandbox.release, or the "
+                "expiry reaper will retry at the deadline."
+            )
+            return view
+        stopped = outcome == "stopped"
+        self.lifecycle.mark_terminated(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
         self.registry.emit_event(
@@ -963,7 +970,7 @@ class SandboxService:
             )
         except NotFoundError:
             return None
-        return self.provisioner.reconcile(row=row)
+        return self.lifecycle.reconcile(row=row)
 
     def rows(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
         """All sandbox rows for a project (most-recent first)."""
@@ -1027,121 +1034,36 @@ class SandboxService:
         self.provisioner.shutdown()
 
     def reap_expired(self, **kwargs: Any) -> int:
-        """Terminate running sandboxes past expires_at (see SandboxDaemons)."""
-        return self.daemons.reap_expired(**kwargs)
+        """Terminate running sandboxes past expires_at (see SandboxLifecycle)."""
+        return self.lifecycle.reap_expired(**kwargs)
 
     def reap_idle(self, **kwargs: Any) -> int:
         """Terminate running sandboxes idle past the heartbeat threshold."""
         return self.daemons.reap_idle(**kwargs)
 
-    def _on_terminal_row(
-        self,
-        experiment_id: str,
-        sandbox_id: str | None,
-        sandbox_uid: str | None = None,
-    ) -> None:
-        """Registry terminal hook: tear down a row's runtime attachments.
+    def reconcile_running_rows(self) -> int:
+        """Reconcile every running row against the provider (startup/sweeps).
 
-        A ``teardown`` task on the channel (plan Phase 4) — conn files and
-        tunnels are data-plane property, so in split mode the daemon executes
-        it from its task loop. ``sandbox_id`` is None when the row itself was
-        missing — the task skips tunnel teardown but still drops the conn
-        file, matching the pre-split behavior. The management keypair dies
-        with the sandbox (per-sandbox keys, plan Phase 5): control-side
-        custody, so it is dropped here rather than in the data-plane task.
+        The public surface for the cloud recovery paths (CleanupService,
+        control-mode restart) — they must not reach through the facade into
+        the registry/lifecycle. Returns how many rows left ``running``.
+        Best-effort per row.
         """
-        # The management keypair dies with the sandbox (per-sandbox keys); drop
-        # it here on the control side. Removing one box's key never touches a
-        # sibling, so it is unconditional.
-        if sandbox_uid:
+        left_running = 0
+        for row in self.registry.list_running_rows():
             try:
-                self.mgmt_keys.remove(sandbox_uid=str(sandbox_uid))
-            except Exception:  # noqa: BLE001 — key cleanup must never block the mark
-                pass
-        # Teardown is best-effort data-plane cleanup (conn files, tunnels). It
-        # must never block or abort the terminal mark — in split mode the
-        # HttpTaskChannel could time out (daemon long-poll asleep), and the
-        # daemon also drops stale conn state on its next reconnect/get.
-        try:
-            self.tasks.submit(
-                task_type="teardown",
-                payload={
-                    "experiment_id": experiment_id,
-                    "sandbox_id": sandbox_id,
-                    "sandbox_uid": sandbox_uid or "",
-                    "remove_experiment_alias": True,
-                },
-                tenant_id=self._tenant_for_sandbox(
-                    experiment_id=experiment_id, sandbox_uid=sandbox_uid or ""
-                ),
-            )
-        except Exception:  # noqa: BLE001 — best-effort; never block the mark
-            pass
+                fresh = self.lifecycle.reconcile(row=row)
+            except Exception:  # noqa: BLE001 — one bad row never aborts the pass
+                continue
+            if (fresh or {}).get("status") != "running":
+                left_running += 1
+        return left_running
 
-    def _refresh_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Endpoint refresh for a confirmed-live row."""
-        return self._maybe_refresh_endpoint(row=row)
-
-    def _maybe_refresh_endpoint(self, *, row: dict[str, Any]) -> dict[str, Any]:
-        """Re-read a live sandbox's SSH tunnel and persist it if it moved.
-
-        Recovers the "sandbox alive ≠ tunnel endpoint still current" case
-        (e.g. Modal relocates a sandbox): the new host/port is written back so
-        the agent view + conn file hand out a working command.
-
-        Strictly best-effort. A failure here — including a transient *local*
-        resolver outage hitting the Modal control plane, the very thing the
-        sbx dispatcher's retry/keepalive already absorbs — leaves the stored
-        endpoint untouched and never breaks request/get. Only ``running`` rows
-        with a sandbox id are probed.
-        """
-        sandbox_id = str(row.get("sandbox_id") or "")
-        if not sandbox_id or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
-            return row
-        try:
-            endpoint = self.backend.refresh_ssh_endpoint(sandbox_id=sandbox_id)
-        except Exception:  # noqa: BLE001 — refresh must never break the caller
-            endpoint = None
-        if not endpoint:
-            return row
-        host, port = str(endpoint[0] or ""), int(endpoint[1] or 0)
-        if not host or not port:
-            return row
-        if host == str(row.get("ssh_host") or "") and port == int(row.get("ssh_port") or 0):
-            return row  # unchanged — the common case; avoid a needless write
-        experiment_id = str(row.get("experiment_id") or "")
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        if not sandbox_uid:
-            return row
-        self.registry.upsert(
-            experiment_id=experiment_id,
-            sandbox_uid=sandbox_uid,
-            ssh_host=host,
-            ssh_port=port,
+    def reap_stale_provisions(self, *, now: datetime, deadline_seconds: float) -> int:
+        """Reap provisioning rows wedged past the deadline (see provisioner)."""
+        return self.provisioner.reap_stale_provisions(
+            now=now, deadline_seconds=deadline_seconds
         )
-        fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
-        # The agent's conn file must follow the endpoint: a conn_refresh task
-        # re-renders it through the data plane (plan Phase 4). Best-effort,
-        # like the refresh itself — the next agent view re-renders it anyway.
-        try:
-            self.tasks.submit(
-                task_type="conn_refresh",
-                payload={
-                    "row": fresh,
-                    "name": f"sandbox-{sandbox_uid[:12]}",
-                    "use_sandbox_uid_command": True,
-                },
-                tenant_id=self.registry.tenant_for_project(project_id=str(fresh.get("project_id") or "")),
-            )
-        except Exception:  # noqa: BLE001 — refresh must never break the caller
-            pass
-        self.registry.emit_event(
-            project_id=str(row.get("project_id")),
-            event_type="sandbox.endpoint_refreshed",
-            experiment_id=experiment_id,
-            payload={"ssh_host": host, "ssh_port": port},
-        )
-        return fresh
 
     def _deliver_secrets_once(self, *, row: dict[str, Any], experiment_id: str) -> None:
         """Deliver post-boot secrets the first time a running row is observed."""
@@ -1298,49 +1220,6 @@ class SandboxService:
         )
 
     # ---------- backend introspection ----------
-
-    def _tenant_for_experiment(self, *, experiment_id: str) -> str:
-        conn = self.store.connect()
-        try:
-            row = conn.execute(
-                """
-                SELECT p.tenant_id
-                FROM experiments e
-                JOIN projects p ON p.id = e.project_id
-                WHERE e.id = ?
-                """,
-                (experiment_id,),
-            ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    """
-                    SELECT s.tenant_id
-                    FROM sandboxes s
-                    JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
-                    WHERE a.experiment_id = ? AND a.detached_at IS NULL
-                    ORDER BY s.created_seq DESC
-                    LIMIT 1
-                    """,
-                    (experiment_id,),
-                ).fetchone()
-        finally:
-            conn.close()
-        return str(row["tenant_id"]) if row is not None else "local"
-
-    def _tenant_for_sandbox(self, *, experiment_id: str, sandbox_uid: str) -> str:
-        if experiment_id:
-            return self._tenant_for_experiment(experiment_id=experiment_id)
-        if not sandbox_uid:
-            return "local"
-        conn = self.store.connect()
-        try:
-            row = conn.execute(
-                "SELECT tenant_id FROM sandboxes WHERE sandbox_uid = ?",
-                (sandbox_uid,),
-            ).fetchone()
-        finally:
-            conn.close()
-        return str(row["tenant_id"]) if row is not None else "local"
 
     def _price_for_instance(
         self, *, instance_type: str | None, region: str | None

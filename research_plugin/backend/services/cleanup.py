@@ -17,8 +17,9 @@ control plane free of a long-lived scheduler we are not ready to own (the
 reaper thread, which IS owned, stays in SandboxDaemons).
 
 Every sweep is idempotent and best-effort per item: one bad row never aborts the
-pass. The sweeps reuse the existing primitives — ``provisioner.reconcile`` /
-``cleanup_orphan`` for VMs and ``blobs.sweep_expired`` for blobs — rather than
+pass. The sweeps reuse the existing primitives — the sandbox service's
+``reconcile_running_rows`` / ``reap_stale_provisions`` (both backed by
+`SandboxLifecycle`) for VMs and ``blobs.sweep_expired`` for blobs — rather than
 re-deriving termination logic, so the reaper and the sweeps can never disagree
 about what "gone" means.
 
@@ -98,16 +99,7 @@ class CleanupService:
         the next provision and by reconcile marking the row terminated, so a
         ghost row never keeps billing. Best-effort per row.
         """
-        reaped = 0
-        for row in self.sandboxes.registry.list_running_rows():
-            before = row.get("status")
-            try:
-                fresh = self.sandboxes.provisioner.reconcile(row=row)
-            except Exception:  # noqa: BLE001 — one bad row never aborts the pass
-                continue
-            if before == "running" and (fresh or {}).get("status") != "running":
-                reaped += 1
-        return reaped
+        return self.sandboxes.reconcile_running_rows()
 
     def sweep_expired_blobs(self, *, now: datetime | None = None) -> int:
         """Delete blobs past their TTL across all tenants (blob TTL GC)."""
@@ -139,6 +131,6 @@ class CleanupService:
         'wedged' means. Idempotent — a row that already settled is skipped.
         """
         now_dt = now or datetime.now(tz=UTC)
-        return self.sandboxes.provisioner.reap_stale_provisions(
+        return self.sandboxes.reap_stale_provisions(
             now=now_dt, deadline_seconds=self.stale_provision_deadline_seconds
         )

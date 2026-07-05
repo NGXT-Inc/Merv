@@ -3,9 +3,11 @@
 Behavior is covered by test_sandbox_service.py; this file guards the
 *structure* so the machinery doesn't quietly grow back into the facade:
 the facade owns the public verbs and delegates rows to SandboxRegistry,
-jobs/reconcile to SandboxProvisioner, every local-IO duty (conn files,
-local paths, metrics fallback) to the DataPlaneWorker, and the background
-loops to SandboxDaemons.
+job threads to SandboxProvisioner, every destructive decision (liveness
+policy, VM termination, terminal marks + teardown, reconcile, reaping) to
+SandboxLifecycle — the single owner of status transitions — every local-IO
+duty (conn files, local paths, metrics fallback) to the DataPlaneWorker,
+and the background loops to SandboxDaemons.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from backend.services.sandbox.sandbox_heartbeat import (
     SandboxHeartbeatMonitor,
     SandboxIdlePolicy,
 )
+from backend.services.sandbox.sandbox_lifecycle import SandboxLifecycle
 from backend.services.sandbox.sandbox_metrics import SandboxMetrics
 from backend.services.sandbox.sandbox_provisioner import SandboxProvisioner
 from backend.services.sandbox.sandbox_registry import SandboxRegistry
@@ -66,22 +69,51 @@ class SandboxDecompositionTest(unittest.TestCase):
     def test_facade_wires_the_collaborators(self) -> None:
         service = self.app.sandboxes
         self.assertIsInstance(service.registry, SandboxRegistry)
+        self.assertIsInstance(service.lifecycle, SandboxLifecycle)
         self.assertIsInstance(service.provisioner, SandboxProvisioner)
         self.assertIsInstance(service.worker, LocalDataPlaneWorker)
         self.assertIsInstance(service.metrics, SandboxMetrics)
         self.assertIsInstance(service.daemons, SandboxDaemons)
         self.assertIsInstance(service.daemons.heartbeat, SandboxHeartbeatMonitor)
         self.assertIsInstance(service.daemons.heartbeat.policy, SandboxIdlePolicy)
-        # Terminal row marks tear down conn files through the hook,
-        # so the registry itself stays persistence-only.
-        self.assertIsNotNone(service.registry.on_terminal)
-        # All collaborators share the one registry (single writer of rows) and
-        # the one worker (single owner of local IO).
+        # The registry is persistence-only: no outward hook — terminal marks
+        # run teardown through the lifecycle, the single owner of transitions.
+        self.assertFalse(hasattr(service.registry, "on_terminal"))
+        # The one inversion left: the lifecycle's provisioning-job probe.
+        self.assertIsNotNone(service.lifecycle.job_probe)
+        self.assertEqual(
+            service.lifecycle.job_probe, service.provisioner.job_is_live
+        )
+        # All collaborators share the one registry (single writer of rows),
+        # the one lifecycle (single owner of transitions), and the one worker
+        # (single owner of local IO).
+        self.assertIs(service.lifecycle.registry, service.registry)
         self.assertIs(service.provisioner.registry, service.registry)
+        self.assertIs(service.provisioner.lifecycle, service.lifecycle)
         self.assertIs(service.daemons.registry, service.registry)
+        self.assertIs(service.daemons.lifecycle, service.lifecycle)
         self.assertIs(service.daemons.heartbeat.registry, service.registry)
         self.assertIs(service.metrics.registry, service.registry)
         self.assertIs(service.worker, self.app.worker)
+
+    def test_lifecycle_is_the_only_writer_of_terminal_marks(self) -> None:
+        # Every registry.mark_* call outside the lifecycle would skip teardown
+        # (mgmt-key removal + the data-plane teardown task); every direct
+        # backend.terminate outside it would skip the liveness confirmation
+        # that keeps billing VMs from being stranded behind terminated rows.
+        lifecycle_src = (FACADE.parent / "sandbox_lifecycle.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("registry.mark_terminated", lifecycle_src)
+        self.assertIn("registry.mark_failed", lifecycle_src)
+        for module in ("sandboxes.py", "sandbox_provisioner.py", "sandbox_daemons.py"):
+            source = (FACADE.parent / module).read_text(encoding="utf-8")
+            self.assertNotIn("registry.mark_terminated", source, module)
+            self.assertNotIn("registry.mark_failed", source, module)
+            self.assertNotIn("backend.terminate", source, module)
+            self.assertNotIn("cleanup_orphan(", source.replace(
+                "lifecycle.cleanup_orphan(", ""
+            ), module)
 
     def test_facade_wires_the_task_seam(self) -> None:
         # One channel carries explicit control→data signals: conn refresh and
