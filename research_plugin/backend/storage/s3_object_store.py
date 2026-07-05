@@ -8,7 +8,7 @@ import math
 from typing import Any
 
 from ..ports.object_store import ObjectStat
-from ..state.blobs import _validate_keys
+from ..storage.blobs import _validate_keys
 from ..utils import NotFoundError, ValidationError, new_id, now_iso
 
 

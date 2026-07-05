@@ -9,7 +9,7 @@ from typing import Any
 
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from ..ports.resource_records import ResourceAssociationPolicy
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..state.store import (
     BaseStateStore,
     Connection,

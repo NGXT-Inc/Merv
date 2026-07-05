@@ -17,7 +17,7 @@ from ..services.resources import ResourceService
 from ..services.reviews import ReviewService
 from ..services.syntheses import SynthesisService
 from ..state import BaseStateStore
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 
 
 @dataclass(frozen=True)

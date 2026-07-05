@@ -57,7 +57,7 @@ from ..ports.synthesis_writers import (
     SynthesisExperimentWriter,
     SynthesisProjectWriter,
 )
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
 from .pinned import pinned_text_for_version, resubmit_hint

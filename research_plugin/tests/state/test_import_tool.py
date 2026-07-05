@@ -18,7 +18,7 @@ from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.daemon.import_tool import import_local_to_cloud, is_tombstoned
 from backend.state import StateStore
-from backend.state.blobs import LocalDirBlobStore
+from backend.storage.blobs import LocalDirBlobStore
 from backend.utils import ValidationError
 
 VALID_PLAN = (

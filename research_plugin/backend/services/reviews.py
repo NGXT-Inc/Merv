@@ -16,7 +16,7 @@ from ..utils import (
     now_iso,
     parse_iso,
 )
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
 from ..domain.reflection_projection import (
     external_reflection_target_type,

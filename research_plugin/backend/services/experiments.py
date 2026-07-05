@@ -24,7 +24,7 @@ from ..domain.workflow_gates import (
     TERMINAL_STATUSES,
     allowed_transitions_for,
 )
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id

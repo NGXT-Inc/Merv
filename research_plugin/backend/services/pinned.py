@@ -14,7 +14,7 @@ or live content.
 
 from __future__ import annotations
 
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..state.store import Connection
 from ..utils import NotFoundError, WorkflowError
 

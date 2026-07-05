@@ -10,7 +10,7 @@ from .services.sandbox.sandboxes import SandboxService
 from .storage.service import StorageLedgerService
 from .services.workflow import WorkflowService
 from .state import BaseStateStore, StateStore
-from .state.blobs import BlobStore
+from .storage.blobs import BlobStore
 from .observability import StructuredLogger
 from .control.record_core import build_record_core
 from .mlflow import CentralMlflowService

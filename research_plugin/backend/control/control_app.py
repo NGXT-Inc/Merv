@@ -25,7 +25,7 @@ from ..services.sandbox.sandboxes import SandboxService
 from ..storage.service import StorageLedgerService
 from ..services.workflow import WorkflowService
 from ..state import BaseStateStore
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..tools.tool_facade import ToolDispatcher
 from ..tools.tool_handlers import build_control_tool_handlers
 

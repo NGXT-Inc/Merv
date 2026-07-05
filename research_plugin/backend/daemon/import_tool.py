@@ -27,7 +27,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from ..state.blobs import BlobStore
+from ..storage.blobs import BlobStore
 from ..state.store import BaseStateStore
 from ..utils import ValidationError, now_iso
 

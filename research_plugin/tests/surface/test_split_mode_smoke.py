@@ -49,7 +49,7 @@ from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_policy import HttpSurfacePolicy
 from backend.transport.http_server import _bind_socket
 from backend.state import StateStore
-from backend.state.blobs import LocalDirBlobStore
+from backend.storage.blobs import LocalDirBlobStore
 from backend.utils import ValidationError
 from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
 

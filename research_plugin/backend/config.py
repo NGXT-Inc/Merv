@@ -280,10 +280,10 @@ def build_blob_store(
     """
     bucket = resolve_blob_bucket(env)
     if bucket:
-        from .state.s3_blobs import S3BlobStore
+        from .storage.s3_blobs import S3BlobStore
 
         return S3BlobStore(bucket=bucket)
-    from .state.blobs import LocalDirBlobStore
+    from .storage.blobs import LocalDirBlobStore
 
     root = resolve_blob_dir(env)
     return LocalDirBlobStore(root=Path(root) if root else default_root)

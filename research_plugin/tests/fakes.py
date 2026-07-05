@@ -100,7 +100,7 @@ class FakeBlobStore:
         return {"url": path.resolve().as_uri()}
 
     def stat(self, *, namespace: str, sha256: str):
-        from backend.state.blobs import BlobStat
+        from backend.storage.blobs import BlobStat
 
         meta = self.meta.get((namespace, sha256))
         if meta is None:
@@ -216,7 +216,7 @@ class FakeObjectStore:
         import tempfile
         from pathlib import Path as _Path
 
-        from backend.state.blobs import _validate_keys
+        from backend.storage.blobs import _validate_keys
         from backend.utils import new_id, now_iso
 
         _validate_keys(namespace=namespace, sha256=sha256)

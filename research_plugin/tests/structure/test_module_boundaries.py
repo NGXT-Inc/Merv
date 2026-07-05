@@ -59,9 +59,7 @@ FILE_MODULES = {
     # secret_tokens is a pure-stdlib token helper imported by state/store.py
     # (kernel) and services/reviews.py — it must live at the kernel floor.
     "secret_tokens.py": KERNEL,
-    # object_storage: blob persistence adapters carved out of state/.
-    "state/blobs.py": OBJECT_STORAGE,
-    "state/s3_blobs.py": OBJECT_STORAGE,
+    # object_storage: blob adapters live under storage/ (PACKAGE_MODULES).
     "domain/storage_guidance.py": OBJECT_STORAGE,
     # research_core: workflow/claims/experiments/reviews/synthesis services.
     "services/workflow.py": RESEARCH_CORE,
@@ -140,9 +138,9 @@ GRANDFATHERED = frozenset({
     # mlflow -> surface (1)
     ("mlflow/tracking.py", "config.py"),
     # research_core -> object_storage (4)
-    ("services/experiments.py", "state/blobs.py"),
-    ("services/reviews.py", "state/blobs.py"),
-    ("services/syntheses.py", "state/blobs.py"),
+    ("services/experiments.py", "storage/blobs.py"),
+    ("services/reviews.py", "storage/blobs.py"),
+    ("services/syntheses.py", "storage/blobs.py"),
     ("services/workflow.py", "domain/storage_guidance.py"),
     # sandbox -> object_storage (2)
     ("services/sandbox/sandbox_views.py", "domain/storage_guidance.py"),

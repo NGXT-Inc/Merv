@@ -111,7 +111,7 @@ class S3BlobStoreContractTest(BlobStoreContractMixin, unittest.TestCase):
     _bucket_seq = 0
 
     def make_store(self):
-        from backend.state.s3_blobs import S3BlobStore
+        from backend.storage.s3_blobs import S3BlobStore
 
         assert _endpoint is not None
         client = _make_client(_endpoint)

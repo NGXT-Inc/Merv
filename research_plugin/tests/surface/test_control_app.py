@@ -26,7 +26,7 @@ from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
 from backend.transport.http_policy import HttpSurfacePolicy
 from backend.state import StateStore
-from backend.state.blobs import LocalDirBlobStore
+from backend.storage.blobs import LocalDirBlobStore
 from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
 from backend.utils import ValidationError
 from backend.version import CLIENT_VERSION_HEADER
