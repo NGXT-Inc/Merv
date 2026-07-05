@@ -104,8 +104,9 @@ class SandboxServiceTest(unittest.TestCase):
         # Full ssh line is still available as a cwd-independent fallback.
         self.assertTrue(result["ssh"]["raw_command"].startswith("ssh -i "))
         self.assertIn("@sandbox.modal.test", result["ssh"]["raw_command"])
-        self.assertTrue(Path(result["ssh"]["key_path"]).exists())
-        self.assertTrue(Path(result["ssh"]["key_path"] + ".pub").exists())
+        self.assertFalse(Path(result["ssh"]["key_path"]).exists())
+        self.assertEqual(result["public_key_source"], "caller")
+        self.assertFalse(Path(result["ssh"]["key_path"] + ".pub").exists())
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(state["status"], "ready_to_run")
 
@@ -116,7 +117,8 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(result["experiment_id"], "")
         self.assertTrue(result["sandbox_uid"])
         self.assertIn(result["sandbox_uid"][:12], result["ssh"]["command"])
-        self.assertTrue(Path(result["ssh"]["key_path"]).exists())
+        self.assertFalse(Path(result["ssh"]["key_path"]).exists())
+        self.assertEqual(result["public_key_source"], "caller")
         self.assertEqual(self.backend.acquired[-1].experiment_id, result["sandbox_uid"])
 
         got = self.call(

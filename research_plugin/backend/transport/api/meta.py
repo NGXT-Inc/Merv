@@ -24,7 +24,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_for_project = ctx.api_for_project
     default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
-    require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/health")
     def health() -> dict[str, Any]:
         # Surface hygiene (cloud plan Phase 7): /health leaks machine-local
@@ -59,14 +58,15 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         status_code=410,
     )
     def daemon_retired(_path: str) -> dict[str, Any]:
-        # Tombstone for pre-0.0009 local daemons: their long-poll would spin
-        # on bare 404s forever with nothing telling the operator why.
+        # Tombstone for pre-0.0010 local thin-pipe daemons: their long-poll
+        # would spin on bare 404s forever with nothing telling the operator why.
         return {
             "error_code": "daemon_retired",
             "message": (
-                "The local daemon was removed in plugin 0.0009; the stdio MCP "
-                "proxy now performs local file work itself. Stop this daemon "
-                "and upgrade the research_plugin package."
+                "The local thin-pipe daemon path was removed in plugin 0.0010; "
+                "the stdio MCP proxy now performs local file work itself and "
+                "dials RESEARCH_PLUGIN_CONTROL_URL. Stop this daemon and "
+                "upgrade the research_plugin package."
             ),
         }
 

@@ -938,11 +938,12 @@ class ServiceLayoutTest(unittest.TestCase):
             },
         )
         self.assertIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", policy_source)
-        self.assertIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", source)
         self.assertIn("surface.data_plane_http_capabilities()", route_source)
+        self.assertNotIn("require_data_plane_for_http", route_source)
+        self.assertNotIn("require_data_plane_for_http", source)
         for feature, tool_name in HTTP_DATA_PLANE_FEATURE_TO_TOOL.items():
             with self.subTest(feature=feature):
-                self.assertIn(f'feature="{feature}"', route_source)
+                self.assertNotIn(f'feature="{feature}"', route_source)
                 self.assertNotIn(f'tool="{tool_name}"', route_source)
                 self.assertNotIn(
                     f'"{feature}": surface.allow_data_plane_http',

@@ -33,14 +33,14 @@ class HttpSurfacePolicy:
             hosted_control=hosted_control,
             expose_local_data_plane=expose_local_data_plane,
             accept_repo_root_context=expose_local_data_plane,
-            allow_data_plane_http=expose_local_data_plane,
+            allow_data_plane_http=False,
             allow_data_plane_tool_calls=expose_local_data_plane,
             use_hosted_tool_policies=hosted_control,
         )
 
     def data_plane_http_capabilities(self) -> dict[str, bool]:
         return {
-            feature: self.allow_data_plane_http
+            feature: False
             for feature in HTTP_DATA_PLANE_FEATURE_TO_TOOL
         }
 

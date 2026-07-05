@@ -53,10 +53,12 @@ from ..mlflow import CentralMlflowService
 from ..mlflow.config import MLFLOW_TRACKING_URI_ENV_VAR
 from ..storage.service import StorageLedgerService
 from ..sandbox.managed_mgmt_keys import MountedMgmtKeyStore
+from ..sandbox.mgmt_keys import LocalMgmtKeyStore
 from ..utils import ValidationError
 
 
 CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/research-plugin-control")
+LOCAL_BRAIN_STATE_DIR_ENV_VAR = "RESEARCH_PLUGIN_LOCAL_STATE_DIR"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -94,6 +96,7 @@ def build_control_app(
     repo_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
+    local_deployment: bool = False,
 ) -> tuple[ControlApp, ControlTaskChannel]:
     """Build the control-plane app and hosted-control task channel.
 
@@ -103,7 +106,9 @@ def build_control_app(
     a stable sentinel, not a created checkout or temp dir. ``execution_backend``
     lets the crash-recovery test inject a reaper-capable fake backend.
     """
-    staging = _control_repo_root(repo_root=repo_root, env=env)
+    staging = _control_repo_root(
+        repo_root=repo_root, env=env, local_deployment=local_deployment
+    )
     db_path = staging / ".research_plugin" / "state.sqlite"
     store = build_state_store(db_path=db_path, env=env)
     blobs = build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
@@ -122,7 +127,10 @@ def build_control_app(
         storage=storage,
         task_channel=task_channel,
         execution_backend=execution_backend,
-        mgmt_keys=_build_mgmt_key_store(env=env),
+        mgmt_keys=_build_mgmt_key_store(
+            env=env,
+            local_root=staging if local_deployment else None,
+        ),
         mlflow_tracking=mlflow_tracking,
         # Cost governance (cloud plan Phase 7): the hosted control plane holds
         # the provider keys and pays for every VM, so the composition forces
@@ -169,11 +177,44 @@ def build_control_server(
     )
 
 
+def build_local_server(
+    *,
+    state_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    allowed_origins: list[str] | None = None,
+) -> ControlPlaneServer:
+    """Build the localhost brain using the same ControlApp composition."""
+    root = _local_brain_root(state_dir=state_dir, env=env)
+    app, task_channel = build_control_app(
+        repo_root=root,
+        env=env,
+        local_deployment=True,
+    )
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
+    fastapi_app = create_fastapi_app(
+        app=app,
+        allowed_origins=allowed_origins or [],
+        cleanup=cleanup,
+        surface_policy=_local_http_surface(),
+    )
+    return ControlPlaneServer(
+        app=app,
+        task_channel=task_channel,
+        cleanup=cleanup,
+        fastapi_app=fastapi_app,
+    )
+
+
 def _control_repo_root(
-    *, repo_root: Path | None, env: Mapping[str, str] | None = None
+    *,
+    repo_root: Path | None,
+    env: Mapping[str, str] | None = None,
+    local_deployment: bool = False,
 ) -> Path:
     if repo_root is not None:
         return repo_root
+    if local_deployment:
+        return _local_brain_root(state_dir=None, env=env)
     missing = []
     if not resolve_db_url(env):
         missing.append(DB_URL_ENV_VAR)
@@ -190,6 +231,18 @@ def _control_repo_root(
     return CONTROL_COMPAT_REPO_ROOT
 
 
+def _local_brain_root(
+    *, state_dir: Path | None, env: Mapping[str, str] | None = None
+) -> Path:
+    if state_dir is not None:
+        return state_dir.expanduser().resolve()
+    source = env if env is not None else None
+    raw = ((source or {}).get(LOCAL_BRAIN_STATE_DIR_ENV_VAR) or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home().joinpath(".research_plugin", "brain").expanduser().resolve()
+
+
 def _control_http_surface(
     *, env: Mapping[str, str] | None = None
 ) -> HttpSurfacePolicy:
@@ -200,7 +253,21 @@ def _control_http_surface(
     )
 
 
-def _build_mgmt_key_store(*, env: Mapping[str, str] | None = None):
+def _local_http_surface() -> HttpSurfacePolicy:
+    return HttpSurfacePolicy.for_surface(
+        restrict_cors=False,
+        hosted_control=False,
+        expose_local_data_plane=False,
+    )
+
+
+def _build_mgmt_key_store(
+    *,
+    env: Mapping[str, str] | None = None,
+    local_root: Path | None = None,
+):
+    if local_root is not None:
+        return LocalMgmtKeyStore(root=local_root / ".research_plugin" / "mgmt_keys")
     key_path = resolve_mgmt_key_path(env)
     public_key = resolve_mgmt_public_key(env)
     if not key_path:

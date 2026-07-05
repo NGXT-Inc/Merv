@@ -159,9 +159,7 @@ def register_data_plane_routes(
             _required_text(payload, "public_key")
         )
         if not public_key:
-            raise ValidationError(
-                "public_key is required for split-mode sandbox.request"
-            )
+            raise ValidationError("public_key is required for sandbox.request")
         experiment_id = str(payload.get("experiment_id") or "").strip()
         app = app_for_project(request, project_id)
         return app.sandboxes.request_from_data_plane(

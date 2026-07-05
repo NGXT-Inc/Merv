@@ -24,7 +24,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_for_project = ctx.api_for_project
     default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
-    require_data_plane_for_http = ctx.require_data_plane_for_http
     def storage_for_project(project_id: str) -> Any:
         storage = api_for_project(project_id).app.storage
         if storage is None:

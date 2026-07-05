@@ -2,10 +2,12 @@
 
 The plugin targets five agentic clients from one canonical content tree.
 Everything heavy — state, gates, capability-based reviews, sandbox
-provisioning — lives in the client-neutral backend service (the local
-`research-plugin-http` server, or the hosted control plane in split mode); the
-stdio MCP proxy is stdlib-only. Each client gets a thin adapter on top of the
-same `bin/`, `skills/`, and `agents/` content:
+provisioning — lives in the client-neutral brain service (localhost
+`research-plugin-http`, or the hosted brain). The stdio MCP proxy is
+stdlib-only and always does the checkout-local data-plane work: repo reads,
+hashing, validation, output pulls, caller SSH key custody, and folder-to-project
+links. Each client gets a thin adapter on top of the same `bin/`, `skills/`,
+and `agents/` content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
 |---|---|---|---|---|
@@ -29,11 +31,10 @@ Shared invariants across all clients:
   them. OpenCode needs `mode`/`permission` frontmatter, so it has its own thin
   agent wrappers in `clients/opencode/agents/` that load the matching review
   skill.
-- In local mode, the single local server (`bin/research-plugin-http`) must be
-  started once per machine before any client makes a tool call (see the
-  README). In hosted/split mode there is no local server at all: clients spawn
-  only the stdio proxy, pointed at the control plane via
-  `RESEARCH_PLUGIN_CONTROL_URL`.
+- The MCP proxy always dials `RESEARCH_PLUGIN_CONTROL_URL`. Local deployments
+  use the default `http://127.0.0.1:8787` and require
+  `bin/research-plugin-http` to be running. Hosted deployments set the same env
+  var to the hosted brain URL and run no local brain.
 
 ## Reviewer handoff per client
 
@@ -88,15 +89,15 @@ Two Cursor-specific notes:
       "command": "/absolute/path/to/research_plugin/bin/research-plugin-mcp",
       "env": {
         "RESEARCH_PLUGIN_REPO_ROOT": "${workspaceFolder}",
-        "RESEARCH_PLUGIN_DAEMON_URL": "http://127.0.0.1:8787"
+        "RESEARCH_PLUGIN_CONTROL_URL": "http://127.0.0.1:8787"
       }
     }
   }
 }
 ```
 
-(`RESEARCH_PLUGIN_DAEMON_URL` points at the local server and applies in local
-mode; hosted/split setups set `RESEARCH_PLUGIN_CONTROL_URL` instead.)
+(`RESEARCH_PLUGIN_CONTROL_URL` points at the brain. Use the localhost default
+for local deployments, or a hosted HTTPS URL for hosted deployments.)
 
 The plugin exposes ~35 MCP tools; Cursor historically limits the number of
 active tools (~40 community-reported). If you run other MCP servers in the

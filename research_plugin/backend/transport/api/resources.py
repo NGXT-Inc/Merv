@@ -24,15 +24,9 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_for_project = ctx.api_for_project
     default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
-    require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/api/projects/{project_id}/resources")
     def list_resources(project_id: str, kind: str | None = None) -> dict[str, Any]:
         return api_for_project(project_id).filter_resources(project_id=project_id, kind=kind)
-
-    @api_router.post("/api/projects/{project_id}/resources", status_code=201)
-    def register_resource(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        require_data_plane_for_http(feature="resource_registration")
-        return api_for_project(project_id).register_resource(project_id=project_id, body=body or {})
 
     @api_router.get("/api/projects/{project_id}/resources/tree")
     def resources_tree(project_id: str) -> dict[str, Any]:
@@ -49,11 +43,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         return api_for_project(project_id).app.resources.history(
             resource_id=resource_id, project_id=project_id
         )
-
-    @api_router.post("/api/projects/{project_id}/resources/{resource_id}/associate")
-    def associate_resource(project_id: str, resource_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
-        require_data_plane_for_http(feature="resource_association")
-        return api_for_project(project_id).call_tool(name="resource.associate", arguments={"project_id": project_id, "resource_id": resource_id, **(body or {})})
 
     @api_router.delete("/api/projects/{project_id}/resources/{resource_id}")
     def delete_resource(project_id: str, resource_id: str) -> dict[str, Any]:

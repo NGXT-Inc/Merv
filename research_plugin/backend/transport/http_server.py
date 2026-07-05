@@ -1,10 +1,8 @@
-"""HTTP process for the Research Plugin backend.
+"""HTTP process for the Research Plugin brain server.
 
-Owns the running uvicorn server: binds the socket, runs uvicorn against the
-FastAPI app from `http_api`, and manages the `.research_plugin/daemon.json`
-discovery marker over the lifetime of the process.
-
-Also the CLI entry point (`python -m backend.transport.http_server`).
+Owns the running uvicorn server: binds the socket and serves the FastAPI app
+from the unified brain composition. Local deployment is just this server on
+localhost with small-store defaults.
 """
 
 from __future__ import annotations
@@ -36,11 +34,10 @@ def _bind_socket(*, host: str, port: int) -> socket.socket:
 
 
 class UvicornHttpServer:
-    """uvicorn server wrapper that manages the daemon discovery marker.
+    """uvicorn server wrapper used by compatibility tests.
 
-    Tests and the CLI launcher get the same lifecycle: bind a socket,
-    serve the FastAPI app, write the marker once we're listening, and
-    clear it on shutdown.
+    The production launcher builds the unified brain directly. This wrapper
+    still supports old tests that expect a best-effort marker lifecycle.
     """
 
     def __init__(
@@ -70,9 +67,9 @@ class UvicornHttpServer:
         self._server = uvicorn.Server(config)
 
     def serve_forever(self) -> None:
-        # Write the daemon marker as late as possible so other processes only
-        # see it once we're actually listening. Best-effort: failures here must
-        # not block serving.
+        # Write the compatibility marker as late as possible so older harnesses
+        # only see it once we're actually listening. Best-effort: failures here
+        # must not block serving.
         host, port = self.server_address
         if self._app is not None:
             try:
@@ -159,6 +156,28 @@ def _serve_control(*, host: str, port: int) -> int:
     return 0
 
 
+def _serve_local(*, host: str, port: int, state_dir: Path) -> int:
+    """Run the localhost brain preset."""
+    from ..composition import build_local_server
+
+    server = build_local_server(state_dir=state_dir)
+    host, selected_port, uv, server_socket = _serve_uvicorn(
+        fastapi_app=server.fastapi_app, host=host, port=port
+    )
+    print(
+        f"research_plugin brain listening on http://{host}:{selected_port}",
+        flush=True,
+    )
+    try:
+        uv.run(sockets=[server_socket])
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        server_socket.close()
+    return 0
+
+
 def control_main() -> int:
     """Launch the cloud control plane (cloud plan Phase 9, §3.4).
 
@@ -193,31 +212,17 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Fail fast on a wrong/unsupported RESEARCH_PLUGIN_MODE rather than
-    # silently starting in the wrong topology. Local stays the byte-identical
-    # default path below; control routes to its composition root.
     mode = resolve_mode()
     if mode is Mode.CONTROL:
         return _serve_control(host=args.host, port=args.port)
 
     if args.activity_stderr:
         os.environ["RESEARCH_PLUGIN_ACTIVITY_STDERR"] = "1"
-
-    router = ProjectRouter(
-        registry_db_path=Path(args.registry_store),
-        manage_local_mlflow=True,
+    return _serve_local(
+        host=args.host,
+        port=args.port,
+        state_dir=Path(args.registry_store).expanduser().resolve().parent / "brain",
     )
-    server = make_http_server(router=router, host=args.host, port=args.port)
-    host, port = server.server_address
-    print(f"research_plugin HTTP API listening on http://{host}:{port}", flush=True)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        router.shutdown()
-    return 0
 
 
 if __name__ == "__main__":

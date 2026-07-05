@@ -1,14 +1,11 @@
-"""Directory-backed project routing for a shared HTTP daemon.
+"""Directory-backed project routing for legacy shared HTTP harnesses.
 
 Identity mapping (cloud plan Phase 7, §3.2): the ``directory_projects``
-registry is DAEMON-LOCAL state — the ``repo_root ↔ project_id`` mapping that
-lets a local/daemon process resolve "which project is this folder". It is
-conceptually ``project_links`` (the table is left named ``directory_projects``
-to avoid an unmigrated rename; the name is cosmetic). The cloud control plane
-mints ``project_id`` and never sees a filesystem path, so this registry — and
-the ``_canonical_repo`` mkdir side effect — never run in the control plane:
-``create_project`` is a daemon/local-only entry point, and the cloud onboarding
-(Phase 8 import tool) creates projects without a repo_root.
+registry is legacy local state — the ``repo_root ↔ project_id`` mapping that
+let an older routed process resolve "which project is this folder". The current
+MCP proxy uses ``project_links.sqlite`` instead, and the brain composition never
+uses this router in production. The table name is left unchanged to avoid an
+unmigrated rename in compatibility tests.
 """
 
 from __future__ import annotations
@@ -37,7 +34,7 @@ class ProjectRoute:
 
 
 class ProjectRouter:
-    """Routes shared-daemon requests to isolated per-directory app instances."""
+    """Routes legacy shared-server requests to isolated app instances."""
 
     def __init__(
         self,

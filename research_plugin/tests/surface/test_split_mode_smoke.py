@@ -6,6 +6,7 @@ import base64
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -61,7 +62,6 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
         proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
                 control_url="http://control.invalid",
             )
         )
@@ -119,15 +119,32 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
         )
         self.assertTrue((self.repo / "experiments" / "alpha").is_dir())
 
-    def test_split_pull_outputs_returns_rsync_guidance(self) -> None:
-        result = self._plane().call_tool(
-            name="sandbox.pull_outputs",
-            arguments={"sandbox_uid": "sbx_1"},
-        )
+    def test_pull_outputs_runs_rsync_helper_with_caller_key_path(self) -> None:
+        def tool_call(name: str, args: dict) -> dict:
+            self.assertEqual(name, "sandbox.get")
+            return {
+                "experiment_id": "exp_1",
+                "sandbox_uid": args["sandbox_uid"],
+                "status": "running",
+                "experiment_dir": "/remote/exp",
+                "ssh": {"host": "example.test", "port": 22, "user": "root"},
+            }
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "split_mode_pull_outputs_unavailable")
+        with patch(
+            "backend.dataplane.sandbox_outputs.pull_sandbox_outputs",
+            return_value={"ok": True, "copied": []},
+        ) as pull:
+            result = self._plane(tool_call=tool_call).call_tool(
+                name="sandbox.pull_outputs",
+                arguments={"sandbox_uid": "sbx_1", "key_path": "/tmp/rp-test-key"},
+            )
+
+        self.assertTrue(result["ok"])
         self.assertIn("--no-links --no-devices --no-specials", result["rsync"])
+        self.assertEqual(
+            pull.call_args.kwargs["sandbox"]["ssh"]["key_path"],
+            "/tmp/rp-test-key",
+        )
 
     def test_sandbox_request_requires_public_key_before_control_submit(self) -> None:
         plane = self._plane(api_post=lambda _path, _payload: self.fail("unexpected HTTP"))
@@ -268,7 +285,6 @@ class PrivateSplitProxyTest(unittest.TestCase):
             proxy = HttpProxyMcpServer(
                 config=ProxyConfig(
                     repo_root=repo,
-                    daemon_url=None,
                     control_url="http://control.invalid",
                     project_links_path=links_path,
                 )
@@ -308,7 +324,6 @@ class SplitModeSmokeTest(unittest.TestCase):
         self.proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
                 control_url=self.control.url,
                 project_links_path=self.links_path,
             )

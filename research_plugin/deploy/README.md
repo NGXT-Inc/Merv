@@ -1,16 +1,19 @@
-# Research Plugin — control-plane reference deploy
+# Research Plugin — hosted brain reference deploy
 
-This directory is the **reference stack** for running the Research Plugin cloud
-control plane (cloud backend migration, Phase 9). It is for development, testing,
-and as a worked example — **it is not a managed deploy**. TLS, managed Postgres,
-a real secret store, autoscaling, backups, and the cleanup scheduler are the
-operator's responsibility (see "What this stack does NOT do" below).
+This directory is the **reference stack** for running the hosted Research
+Plugin brain. It uses the same brain composition as local
+`research-plugin-http`, with hosted defaults: durable DB/blob services, mounted
+management keys, restricted CORS, and provider credentials in the server
+environment. It is for development, testing, and as a worked example — **it is
+not a managed deploy**. TLS, managed Postgres, a real secret store, autoscaling,
+backups, and the cleanup scheduler are the operator's responsibility (see "What
+this stack does NOT do" below).
 
 ## What's here
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Control-plane image: installs the `control` extra, runs `research-plugin-control` (uvicorn) as a non-root user, with a `HEALTHCHECK` hitting `/api/meta`. |
+| `Dockerfile` | Hosted brain image: installs the `control` extra, runs `research-plugin-control` (uvicorn) as a non-root user, with a `HEALTHCHECK` hitting `/api/meta`. |
 | `Dockerfile.mlflow` | Separate MLflow server image for the reference compose stack. |
 | `docker-compose.yml` | Full local stack: control + MLflow + Postgres (record stores) + MinIO (S3-shape blob/storage/artifact stores), with one-shot bucket/database creators. |
 | `.env.example` | Documents the control-mode environment (§3.4 config matrix). Copy, fill, and keep out of version control. |
@@ -36,8 +39,8 @@ This brings up:
 - **mgmtkey** one-shot — creates a dev-only management SSH key in a named volume
   and mounts it read-only into control. Managed deploys should use a real secret
   manager instead.
-- **control** on `localhost:8787` — private control API, data-plane submission
-  endpoints ON, reaper ON.
+- **control** on `localhost:8787` — private hosted brain API, proxy data-plane
+  submission endpoints ON, browser data-plane mutation routes OFF, reaper ON.
 
 Verify the control plane is up and learn the version floor:
 
@@ -61,15 +64,16 @@ RP_DOCTOR_URL_REWRITE=http://minio:9000=http://127.0.0.1:9000 \
   python3 deploy/doctor.py --control-url http://localhost:8787
 ```
 
-The current operator-run setup is a private control plane. Client VMs run
+The current operator-run setup is a private hosted brain. Client VMs run
 `research-plugin-client configure --control-url ...` without any control-plane
 token. Put the service behind trusted network boundaries until the real auth
 system lands.
 
 ## Modes & environment (§3.4)
 
-The same image runs every mode; the entrypoint forces `control`. Key
-control-mode variables (full list in `.env.example`):
+The same code composition backs local and hosted brains; this reference
+entrypoint forces the hosted `control` preset. Key hosted variables (full list
+in `.env.example`):
 
 | Variable | Required | Meaning |
 |---|---|---|
@@ -86,13 +90,13 @@ control-mode variables (full list in `.env.example`):
 | `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
 | `THUNDER_COMPUTE_API_KEY` / `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
 
-The production control entrypoint runs without a checkout/staging repo. Startup
+The production hosted entrypoint runs without a checkout/staging repo. Startup
 therefore fails fast unless the durable DB, durable blob store, and mounted
 management key variables are present. Passing an explicit `repo_root` is only
 for dev/test compatibility.
 
-For MLflow, `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` alone is enough for the control
-plane to read metrics from an internal service, but it is not enough for agents
+For MLflow, `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` alone is enough for the brain
+to read metrics from an internal service, but it is not enough for agents
 to log runs. Set `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` to the public HTTPS URL
 reachable by every run location — local client machines and remote sandboxes —
 before expecting training code to emit MLflow runs. Agents retrieve that URL
@@ -132,7 +136,7 @@ missing or the lightweight Lambda catalog health check cannot reach the API.
 
 ## TLS termination
 
-The control plane serves plain HTTP on `:8787`. Put it **behind a
+The hosted brain serves plain HTTP on `:8787`. Put it **behind a
 TLS-terminating load balancer / reverse proxy** (ALB, nginx, Caddy, Traefik) in
 production — the MCP proxy must dial `https://`. `/health` and `/api/meta`
 are open for liveness/handshake. All other routes are currently private
@@ -208,7 +212,7 @@ These are intentionally out of the reference stack — production owns them:
   `THUNDER_COMPUTE_API_KEY`/`MODAL_*`/`LAMBDA_*`/`HF_TOKEN` from your platform's
   secret manager. Never bake them into the image.
 - **The cleanup scheduler** — wire a managed cron to `POST /api/admin/cleanup`.
-- **Human login OAuth** — the control plane is currently private/operator-run;
+- **Human login OAuth** — the hosted brain is currently private/operator-run;
   device-flow OAuth is still backlog (open decision C).
 - **The React UI** — served separately (cloud SPA + CORS per origin); this image
   is the API only. The viewer's degraded states (result content / figures

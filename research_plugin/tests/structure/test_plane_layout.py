@@ -784,8 +784,8 @@ for name in (
         self.assertNotIn("build_local_runtime", source)
         self.assertIn("MountedMgmtKeyStore", source)
         self.assertIn("resolve_mgmt_key_path", source)
-        self.assertNotIn("LocalMgmtKeyStore", source)
-        self.assertNotIn("mgmt_keys", imports)
+        self.assertIn("LocalMgmtKeyStore", source)
+        self.assertIn("build_local_server", source)
         self.assertIn("CONTROL_COMPAT_REPO_ROOT", source)
         self.assertNotIn("tempfile", _import_segments(path))
 

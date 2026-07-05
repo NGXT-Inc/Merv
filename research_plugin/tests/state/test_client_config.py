@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.client_cli import (
+    LOCAL_BRAIN_URL,
     configure_client,
     main,
 )
@@ -32,7 +33,6 @@ class ClientConfigTest(unittest.TestCase):
             config = configure_client(
                 config_path=config_path,
                 control_url="https://control.example.test/",
-                daemon_url="http://127.0.0.1:8787",
             )
 
             self.assertEqual(config["control_url"], "https://control.example.test")
@@ -56,7 +56,6 @@ class ClientConfigTest(unittest.TestCase):
             configured = configure_client(
                 config_path=config_path,
                 control_url="https://configured.example.test",
-                daemon_url="http://127.0.0.1:8787",
             )
 
             env = {
@@ -66,16 +65,15 @@ class ClientConfigTest(unittest.TestCase):
             self.assertEqual(resolve_control_url(env), "https://override.example.test")
             self.assertEqual(configured["control_url"], "https://configured.example.test")
 
-    def test_configure_ignores_legacy_daemon_url_argument(self) -> None:
+    def test_configure_defaults_to_local_brain_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "client.json"
             config = configure_client(
                 config_path=config_path,
-                control_url="https://control.example.test",
-                daemon_url="http://127.0.0.1:18787",
+                control_url="",
             )
 
-            self.assertEqual(config["control_url"], "https://control.example.test")
+            self.assertEqual(config["control_url"], LOCAL_BRAIN_URL)
             self.assertNotIn("daemon_url", config)
             self.assertNotIn("daemon_secret_file", config)
 
@@ -132,7 +130,6 @@ class ClientConfigTest(unittest.TestCase):
             configure_client(
                 config_path=config_path,
                 control_url="https://control.example.test",
-                daemon_url="http://127.0.0.1:18787",
             )
             captured = {}
 
@@ -146,14 +143,11 @@ class ClientConfigTest(unittest.TestCase):
             env = {
                 CLIENT_CONFIG_ENV_VAR: str(config_path),
                 "RESEARCH_PLUGIN_CONTROL_URL": "",
-                "RESEARCH_PLUGIN_DAEMON_SECRET_FILE": "",
             }
             argv = [
                 "research-plugin-mcp",
                 "--repo",
                 str(unlinked),
-                "--daemon-url",
-                "http://127.0.0.1:18787",
             ]
             with (
                 patch.dict(os.environ, env, clear=False),
@@ -163,9 +157,7 @@ class ClientConfigTest(unittest.TestCase):
                 self.assertEqual(mcp_entrypoint.main(), 0)
 
             proxy_config = captured["config"]
-            self.assertIsNone(proxy_config.daemon_url)
             self.assertEqual(proxy_config.control_url, "https://control.example.test")
-            self.assertIsNone(proxy_config.daemon_secret)
             self.assertEqual(
                 proxy_config.project_links_path.resolve(),
                 (root / "project_links.sqlite").resolve(),

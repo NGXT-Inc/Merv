@@ -610,12 +610,10 @@ class SandboxRequestInput(ProjectScopedInput):
         default=None,
         description="Max sandbox lifetime in seconds (60..86400). Default 3600.",
     )
-    public_key: str | None = Field(
-        default=None,
+    public_key: str = Field(
         description=(
-            "Optional OpenSSH public key to authorize on the VM. Pass only the "
-            "single-line public key, never private-key material. When omitted, "
-            "local mode uses the plugin-managed fallback keypair."
+            "Required OpenSSH public key to authorize on the VM. Pass only the "
+            "single-line public key, never private-key material."
         ),
     )
     additional: bool = Field(
@@ -685,6 +683,14 @@ class SandboxPullOutputsInput(ProjectScopedInput):
             "Repo-relative paths under the sandbox experiment_dir to pull. Omit "
             "to pull existing common outputs: results/, figures/, report.md, "
             "graph.json, metrics.json, and results.json."
+        ),
+    )
+    key_path: str = Field(
+        default="",
+        description=(
+            "Local private key path for the caller-owned public_key authorized "
+            "on the sandbox. Required when sandbox.get does not include an "
+            "ssh.key_path enrichment."
         ),
     )
     destination_path: str = Field(
@@ -1098,11 +1104,10 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             ".research_plugin/sandboxes/keys/ (keep .research_plugin/ "
             "gitignored; never commit key material) and passes its single-line "
             "OpenSSH PUBLIC key as public_key so it gets authorized on the VM. "
-            "When no key is supplied, local mode uses the plugin-managed "
-            "fallback keypair at that same path. The response's persisted "
-            "public_key_source reports which happened: 'caller' (you supplied "
-            "the key) or 'managed' (fallback keypair); ssh.key_path points at "
-            "the private key to use when a local path is available."
+            "The response's persisted public_key_source is 'caller' for new "
+            "requests; legacy 'managed' rows remain readable/releasable. "
+            "ssh.key_path appears only when a local proxy enrichment knows the "
+            "private key path."
         ),
     ),
     "sandbox.options": ToolContract(
@@ -1119,8 +1124,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "guidance by sandbox_uid or by an experiment's active sandbox "
             "association. Use it to poll provisioning and inspect terminated "
             "or expired sandboxes. Includes public_key_source so callers know "
-            "whether the VM authorized a caller-supplied public key or the "
-            "plugin-managed fallback key."
+            "whether the VM authorized a caller-supplied public key or a "
+            "legacy managed fallback key."
         ),
         hosted_control_sandbox_lookup=True,
     ),
@@ -1137,9 +1142,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Copy selected files or directories from a running sandbox's remote "
             "experiment_dir into the local experiment folder over SSH/rsync. "
-            "This is a LOCAL-mode tool; in split mode, use caller-owned SSH "
-            "credentials with the proxy's rsync guidance for small outputs and "
-            "object storage tools for heavy artifacts. Use this before "
+            "This is a proxy-local data tool: pass key_path for the caller-owned "
+            "private key when sandbox.get does not already include ssh.key_path. "
+            "Use object storage tools for heavy artifacts. Use this before "
             "resource.register_file/resource.associate or sandbox.release; "
             "omit paths to pull common retained outputs. "
             "Existing local files are kept unless overwrite=true — ones that "

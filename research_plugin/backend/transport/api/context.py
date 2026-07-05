@@ -20,5 +20,4 @@ class ApiRouteContext:
     api_for_project: Callable[[str], ResearchHttpApi]
     default_api: Callable[[], ResearchHttpApi | None]
     route_call_tool: Callable[..., dict[str, Any]]
-    require_data_plane_for_http: Callable[..., None]
     app_for_data_plane_project: Callable[..., ResearchPluginApp]

@@ -128,20 +128,49 @@ class LocalDataPlane:
         return {"local_dir": local_dir}
 
     def _pull_sandbox_outputs(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
-        del arguments
-        return {
-            "ok": False,
-            "error_code": "split_mode_pull_outputs_unavailable",
-            "error": (
-                "sandbox.pull_outputs is local-mode only. In split mode the "
-                "stateless MCP proxy does not hold a managed private key or "
-                "persistent conn file. Use caller-owned SSH credentials with "
-                "rsync for small outputs, or upload heavy artifacts from the "
-                "sandbox to object storage and retrieve them with storage tools."
-            ),
-            "rsync": RSYNC_PULL_OUTPUTS_HINT,
-            "storage_guidance": self._storage_guidance(),
+        args = dict(arguments)
+        project_id = self._project_id()
+        sandbox_args = {
+            "project_id": project_id,
+            "experiment_id": args.get("experiment_id"),
+            "sandbox_uid": args.get("sandbox_uid"),
         }
+        sandbox = self._control_tool_call("sandbox.get", sandbox_args)
+        key_path = str(args.get("key_path") or "").strip()
+        if key_path:
+            sandbox = dict(sandbox)
+            ssh = dict(sandbox.get("ssh") or {})
+            ssh["key_path"] = key_path
+            sandbox["ssh"] = ssh
+        if "local_experiment_dir" not in sandbox:
+            sandbox = dict(sandbox)
+            experiment_id = str(sandbox.get("experiment_id") or args.get("experiment_id") or "")
+            sandbox_uid = str(sandbox.get("sandbox_uid") or args.get("sandbox_uid") or "")
+            if experiment_id or sandbox_uid:
+                sandbox["local_experiment_dir"] = str(
+                    self._local_experiment_dir(
+                        experiment_id=experiment_id or sandbox_uid,
+                        name=(
+                            f"sandbox-{sandbox_uid[:12]}"
+                            if sandbox_uid and sandbox_uid != experiment_id
+                            else ""
+                        ),
+                    )
+                )
+        pull_sandbox_outputs = _import_attr(
+            "backend.dataplane.sandbox_outputs",
+            "pull_sandbox_outputs",
+        )
+        result = pull_sandbox_outputs(
+            repo_root=self.repo_root,
+            sandbox=sandbox,
+            paths=args.get("paths") or [],
+            destination_path=str(args.get("destination_path") or ""),
+            overwrite=bool(args.get("overwrite")),
+        )
+        result["storage_guidance"] = self._storage_guidance()
+        result["rsync"] = RSYNC_PULL_OUTPUTS_HINT
+        return result
 
     def _post_feed(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
         payload: dict[str, Any] = {

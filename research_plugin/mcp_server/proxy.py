@@ -1,46 +1,33 @@
-"""Stdio MCP server that proxies tool calls to the backend.
+"""Stdio MCP server that proxies tool calls to one brain plus local data IO.
 
-The MCP server itself owns no state. Codex launches it over stdio; it forwards
-``tools/list`` and ``tools/call`` to the right backend surface and returns the
-response on stdout.
+Codex launches this process over stdio. The proxy always has one HTTP upstream:
+the brain server named by ``control_url``. Local deployment is just a brain on
+localhost; hosted deployment is the same wire shape pointed at a remote URL.
 
-Two topologies (cloud plan Phase 8, §3.3), selected by config:
-
-- **Single upstream (local mode).** ``control_url`` unset: every call goes to
-  the local daemon at ``daemon_url`` exactly as before — bit-identical, with the
-  same friendly ``127.0.0.1:8787`` fallback and discovery order.
-- **Split mode.** ``control_url`` set: route on the tool's ``plane``:
-  ``control`` → the cloud (with named proxy-local enrichment for sandbox
-  status/health), ``data`` → proxy-local local IO plus direct control
-  submission. Older control planes that still advertise ``aggregate`` are
-  accepted and routed through the same enrichment path.
-  The cloud receives an explicit ``project_id`` resolved from the proxy-owned
-  ``project_links.sqlite`` file, NEVER ``repo_root``.
+Routing is the former split-mode path everywhere: ``control`` tools go to the
+brain with an explicit ``project_id`` resolved from proxy-local
+``project_links.sqlite`` state; ``data`` tools run in this process and submit
+validated facts/bytes to the brain. The brain never receives ``repo_root`` and
+never reads the user's checkout.
 
 Error taxonomy is returned as TOOL RESULTS, not ``-32000`` protocol errors, so a
-client never disables the server over a transient outage: ``daemon_not_running``
-in local mode, ``cloud_unreachable`` in split mode. Domain errors stay protocol
-errors. In split mode a missing ``control_url`` is a hard config error (no
-silent loopback fallback); local mode keeps the friendly one.
-
-Discovery order for the daemon URL:
-
-1. ``RESEARCH_PLUGIN_DAEMON_URL`` environment variable.
-2. ``<repo_root>/.research_plugin/daemon.json`` written by the daemon.
-3. ``RESEARCH_PLUGIN_DEFAULT_DAEMON_URL`` or ``http://127.0.0.1:8787``.
+client never disables the server over a transient outage. Loopback brain
+outages get an actionable ``brain_not_running`` hint to start
+``research-plugin-http``; remote outages keep ``cloud_unreachable``. Domain
+errors stay protocol errors.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import os
 import sys
 import traceback
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, TextIO
+from urllib.parse import urlsplit
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
@@ -50,7 +37,7 @@ from .project_links import ProjectLinks
 
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
-DEFAULT_DAEMON_URL = "http://127.0.0.1:8787"
+DEFAULT_CONTROL_URL = "http://127.0.0.1:8787"
 # sandbox.request can take minutes; the proxy returns its handle promptly and
 # the agent polls sandbox.get (plan §3.3). A short bound keeps a long-running
 # verb from blocking the stdio loop — it lands a row in 'provisioning' and the
@@ -64,8 +51,7 @@ _LOCAL_ENRICHED_CONTROL_TOOLS = frozenset({"sandbox.get", "sandbox.health"})
 # errors the upstream reports (validation_error, …) stay protocol errors.
 _TRANSPORT_ERROR_CODES = frozenset(
     {
-        "daemon_not_running",
-        "local_daemon_not_running",
+        "brain_not_running",
         "cloud_unreachable",
         "daemon_bad_response",
     }
@@ -75,29 +61,17 @@ _TRANSPORT_ERROR_CODES = frozenset(
 @dataclass(frozen=True)
 class ProxyConfig:
     repo_root: Path
-    daemon_url: str | None
-    # Split mode (Phase 8): the cloud control-plane URL. None ⇒
-    # single-upstream local mode (byte-identical to before this phase).
-    control_url: str | None = None
-    # The daemon's loopback auth secret (risk 11): sent to the local daemon so
-    # the credential-holding loopback surface accepts the proxy's calls.
-    daemon_secret: str | None = None
+    control_url: str | None
     project_links_path: Path | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     def with_url(self, url: str) -> "ProxyConfig":
         return ProxyConfig(
             repo_root=self.repo_root,
-            daemon_url=url,
-            control_url=self.control_url,
-            daemon_secret=self.daemon_secret,
+            control_url=url,
             project_links_path=self.project_links_path,
             timeout_seconds=self.timeout_seconds,
         )
-
-    @property
-    def split_mode(self) -> bool:
-        return bool(self.control_url)
 
 
 @dataclass(frozen=True)
@@ -109,17 +83,15 @@ class _ToolMeta:
 class _UpstreamError(Exception):
     """An upstream was unreachable or returned a non-2xx.
 
-    Carries the proxy's error taxonomy code (plan §3.3): ``daemon_not_running``
-    / ``local_daemon_not_running`` (data plane), ``cloud_unreachable`` (control
-    plane). Surfaced as a TOOL RESULT, not a protocol error, so the client never
-    disables the server.
+    Carries the proxy's error taxonomy code. Transport failures are surfaced as
+    TOOL RESULTS, not protocol errors, so the client never disables the server.
     """
 
     def __init__(
         self,
         message: str,
         *,
-        error_code: str = "daemon_unreachable",
+        error_code: str = "cloud_unreachable",
         details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
@@ -128,15 +100,22 @@ class _UpstreamError(Exception):
         self.details = details or {}
 
 
-def _daemon_not_running_message(*, repo_root: Path) -> str:
+def _brain_not_running_message(*, control_url: str | None) -> str:
     return (
-        "research_plugin HTTP daemon is not running for repo "
-        f"{repo_root}. Start it with:\n"
+        "research_plugin brain server is not running"
+        + (f" at {control_url}" if control_url else "")
+        + ". Start it with:\n"
         "    research-plugin-http\n"
-        "The MCP proxy also tries http://127.0.0.1:8787 by default. "
-        "If the daemon is on another port, set RESEARCH_PLUGIN_DAEMON_URL "
-        "to the shared daemon's URL."
+        "If it is on another port, set RESEARCH_PLUGIN_CONTROL_URL "
+        "to the brain URL."
     )
+
+
+def _is_loopback_url(url: str | None) -> bool:
+    if not url:
+        return False
+    host = (urlsplit(url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 class HttpProxyMcpServer:
@@ -238,12 +217,6 @@ class HttpProxyMcpServer:
     # ---- tools/list ------------------------------------------------------
 
     def _list_tools(self) -> list[dict[str, Any]]:
-        if not self.config.split_mode:
-            # Single upstream (local): bit-identical to before this phase.
-            return self._catalog_from(url=self._require_daemon_url(), is_cloud=False)
-        # Split mode: merge the cloud catalog with the proxy-local data-plane
-        # catalog. project_id stripping and project.list hiding apply uniformly
-        # to the merged set.
         merged: dict[str, dict[str, Any]] = {}
         catalog, _complete = self._catalog_tools()
         for is_cloud, tool in catalog:
@@ -253,63 +226,31 @@ class HttpProxyMcpServer:
             merged[shaped["name"]] = shaped
         return list(merged.values())
 
-    def _catalog_from(self, *, url: str, is_cloud: bool) -> list[dict[str, Any]]:
-        body = self._http_get(url=f"{url}/mcp/tools", is_cloud=is_cloud)
-        tools = body.get("tools") or []
-        if not isinstance(tools, list):
-            raise _UpstreamError(
-                "upstream returned an invalid /mcp/tools payload",
-                error_code="daemon_bad_response",
-                details={"payload": body},
-            )
-        return [
-            self._with_hidden_project_scope(tool=tool)
-            for tool in tools
-            if tool.get("name") != "project.list"
-        ]
-
     def _catalog_tools(self) -> tuple[list[tuple[bool, dict[str, Any]]], bool]:
-        """Collect (is_cloud, raw_tool) from every configured upstream's /mcp/tools.
+        """Collect (is_cloud, raw_tool) from the brain and proxy-local catalog.
 
         Raw = pre-strip, so callers can read 'plane' and project_id schema.
-        In split mode the local half is in-process and always present; the
-        cloud half may be down and is skipped. ``complete`` reports whether all
-        configured HTTP upstreams answered.
+        The local half is in-process and always present; the brain half may be
+        down and is skipped. ``complete`` reports whether the brain answered.
         """
         tools: list[tuple[bool, dict[str, Any]]] = []
         complete = True
-        if self.config.split_mode:
-            if self.config.control_url:
-                try:
-                    body = self._http_get(
-                        url=f"{self.config.control_url}/mcp/tools", is_cloud=True
-                    )
-                except _UpstreamError:
-                    complete = False
-                else:
-                    for tool in body.get("tools") or []:
-                        if isinstance(tool, dict):
-                            tools.append((True, tool))
-            tools.extend((False, tool) for tool in self._local_tool_catalog())
-            return tools, complete
-        url = self._daemon_url_or_none()
-        if not url:
-            return tools, False
         try:
-            body = self._http_get(url=f"{url}/mcp/tools", is_cloud=False)
+            body = self._http_get(
+                url=f"{self._require_control_url()}/mcp/tools", is_cloud=True
+            )
         except _UpstreamError:
-            return tools, False
-        for tool in body.get("tools") or []:
-            if isinstance(tool, dict):
-                tools.append((False, tool))
+            complete = False
+        else:
+            for tool in body.get("tools") or []:
+                if isinstance(tool, dict):
+                    tools.append((True, tool))
+        tools.extend((False, tool) for tool in self._local_tool_catalog())
         return tools, complete
 
     # ---- tools/call ------------------------------------------------------
 
     def _call_tool(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if not self.config.split_mode:
-            # Single upstream (local): everything to the daemon with repo_root.
-            return self._call_daemon(name=name, arguments=arguments)
         if name == "project.current":
             return self._current_project()
         plane = self._plane_for(name=name)
@@ -322,31 +263,7 @@ class HttpProxyMcpServer:
         # Backward tolerance for older catalogs that still say "aggregate".
         return self._call_local_enriched_control(name=name, arguments=arguments)
 
-    def _call_daemon(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        url = self._require_daemon_url()
-        args = self._call_arguments(arguments=arguments)
-        body = self._http_post(
-            url=f"{url}/mcp/call",
-            payload={
-                "name": name,
-                "arguments": args,
-                # Data-plane calls carry repo_root to the LOCAL daemon only.
-                "context": {"repo_root": str(self.config.repo_root)},
-            },
-            is_cloud=False,
-            timeout=self._timeout_for(name=name),
-        )
-        return self._result_dict(body=body)
-
     def _call_cloud(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if not self.config.control_url:
-            # Split mode without a control URL is a hard config error — no
-            # silent loopback fallback for control-plane tools (plan §3.3).
-            raise _UpstreamError(
-                "control plane URL is not configured (RESEARCH_PLUGIN_CONTROL_URL); "
-                "set it to the cloud control plane or unset split mode",
-                error_code="cloud_unreachable",
-            )
         args = self._call_arguments(arguments=arguments)
         # Identity on the wire (§3.2): the cloud gets an explicit project_id and
         # NEVER repo_root. Resolve it via the proxy-local link map — but ONLY
@@ -355,7 +272,7 @@ class HttpProxyMcpServer:
         if self._tool_meta(name=name).project_scoped:
             args["project_id"] = self._resolve_project_id_required()
         body = self._http_post(
-            url=f"{self.config.control_url}/mcp/call",
+            url=f"{self._require_control_url()}/mcp/call",
             payload={"name": name, "arguments": args},
             is_cloud=True,
             timeout=self._timeout_for(name=name),
@@ -363,14 +280,8 @@ class HttpProxyMcpServer:
         return self._result_dict(body=body)
 
     def _call_control_api(self, *, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if not self.config.control_url:
-            raise _UpstreamError(
-                "control plane URL is not configured (RESEARCH_PLUGIN_CONTROL_URL); "
-                "set it to the cloud control plane or unset split mode",
-                error_code="cloud_unreachable",
-            )
         return self._http_post(
-            url=f"{self.config.control_url}{path}",
+            url=f"{self._require_control_url()}{path}",
             payload=payload,
             is_cloud=True,
             timeout=self.config.timeout_seconds,
@@ -440,19 +351,14 @@ class HttpProxyMcpServer:
         return {key: value for key, value in merged.items() if not key.startswith("_")}
 
     def _enriched_health(self) -> dict[str, Any]:
-        if self.config.split_mode:
-            data_ok, data_detail = True, {"mode": "proxy"}
-        else:
-            data_ok, data_detail = self._probe(is_cloud=False)
-        cloud_ok, cloud_detail = (True, {})
-        if self.config.split_mode:
-            cloud_ok, cloud_detail = self._probe(is_cloud=True)
+        data_ok, data_detail = True, {"mode": "proxy"}
+        cloud_ok, cloud_detail = self._probe(is_cloud=True)
         return {
-            "ok": bool(data_ok and (cloud_ok or not self.config.split_mode)),
+            "ok": bool(data_ok and cloud_ok),
             "data_plane": {"reachable": data_ok, **data_detail},
             "control_plane": {
                 "reachable": cloud_ok,
-                "configured": self.config.split_mode,
+                "configured": bool(self.config.control_url),
                 **cloud_detail,
             },
         }
@@ -482,7 +388,7 @@ class HttpProxyMcpServer:
         }
 
     def _probe(self, *, is_cloud: bool) -> tuple[bool, dict[str, Any]]:
-        url = self.config.control_url if is_cloud else self._daemon_url_or_none()
+        url = self.config.control_url
         if not url:
             return False, {"error_code": "not_configured"}
         try:
@@ -494,8 +400,6 @@ class HttpProxyMcpServer:
     # ---- identity resolution (split mode) --------------------------------
 
     def _resolve_project_id(self) -> str | None:
-        if not self.config.split_mode:
-            return None
         return self._links().project_for_repo(repo_root=str(self.config.repo_root))
 
     def _resolve_project_id_required(self) -> str:
@@ -531,9 +435,8 @@ class HttpProxyMcpServer:
                         project_scoped=isinstance(props, dict) and "project_id" in props,
                     ),
                 )
-            # Pin the cache only when every upstream answered: a partial
-            # catalog (e.g. daemon still starting) would misroute its tools to
-            # the other plane for the rest of the process lifetime.
+            # Pin the cache only when the brain answered: a partial catalog
+            # would misroute tools for the rest of the process lifetime.
             if not complete:
                 return metadata.get(name, _ToolMeta())
             self._tool_cache = metadata
@@ -573,8 +476,7 @@ class HttpProxyMcpServer:
 
     def _call_arguments(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
         args = dict(arguments)
-        if self.config.split_mode:
-            args.pop("project_id", None)
+        args.pop("project_id", None)
         return args
 
     def _result_dict(self, *, body: dict[str, Any]) -> dict[str, Any]:
@@ -590,24 +492,14 @@ class HttpProxyMcpServer:
     def _timeout_for(self, *, name: str) -> float:
         return LONG_VERB_TIMEOUT_SECONDS if name in LONG_VERBS else self.config.timeout_seconds
 
-    def _daemon_url_or_none(self) -> str | None:
-        if self.config.split_mode:
-            return None
-        url = self.config.daemon_url
-        if not url and not self.config.split_mode:
-            # Local mode keeps the friendly fallback.
-            url = os.environ.get("RESEARCH_PLUGIN_DEFAULT_DAEMON_URL") or DEFAULT_DAEMON_URL
-        return url.rstrip("/") if url else None
-
-    def _require_daemon_url(self) -> str:
-        url = self._daemon_url_or_none()
+    def _require_control_url(self) -> str:
+        url = (self.config.control_url or "").strip().rstrip("/")
         if not url:
             raise _UpstreamError(
-                _daemon_not_running_message(repo_root=self.config.repo_root),
-                error_code=(
-                    "local_daemon_not_running" if self.config.split_mode else "daemon_not_running"
-                ),
-                details={"repo_root": str(self.config.repo_root)},
+                "control_url is required; set RESEARCH_PLUGIN_CONTROL_URL "
+                "to http://127.0.0.1:8787 for a local brain or to the hosted "
+                "control-plane URL",
+                error_code="cloud_unreachable",
             )
         return url
 
@@ -642,6 +534,7 @@ class HttpProxyMcpServer:
         return self._send(req=req, is_cloud=is_cloud, timeout=timeout or self.config.timeout_seconds)
 
     def _headers(self, *, is_cloud: bool) -> dict[str, str]:
+        _ = is_cloud
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         # Version/compat handshake (cloud plan Phase 9): stamp the proxy's
         # version so the control plane can reject below-floor clients with an
@@ -649,8 +542,6 @@ class HttpProxyMcpServer:
         # (not imported from backend) so the proxy stays stdlib-only; it matches
         # backend.version.CLIENT_VERSION_HEADER, pinned by a surface test.
         headers["X-RP-Client-Version"] = __version__
-        if not is_cloud and self.config.daemon_secret:
-            headers["Authorization"] = f"Bearer {self.config.daemon_secret}"
         return headers
 
     def _send(self, *, req: Request, is_cloud: bool, timeout: float) -> dict[str, Any]:
@@ -660,19 +551,15 @@ class HttpProxyMcpServer:
         except urllib_error.HTTPError as exc:
             raise self._error_from_http(exc=exc, is_cloud=is_cloud) from exc
         except urllib_error.URLError as exc:
-            if is_cloud:
+            if _is_loopback_url(self.config.control_url):
                 raise _UpstreamError(
-                    f"control plane unreachable: {exc.reason}",
-                    error_code="cloud_unreachable",
+                    _brain_not_running_message(control_url=self.config.control_url),
+                    error_code="brain_not_running",
                     details={"reason": str(exc.reason)},
                 ) from exc
             raise _UpstreamError(
-                _daemon_not_running_message(repo_root=self.config.repo_root),
-                error_code=(
-                    "local_daemon_not_running"
-                    if self.config.split_mode
-                    else "daemon_not_running"
-                ),
+                f"control plane unreachable: {exc.reason}",
+                error_code="cloud_unreachable",
                 details={"reason": str(exc.reason)},
             ) from exc
         try:

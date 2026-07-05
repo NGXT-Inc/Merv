@@ -17,6 +17,34 @@ from backend.utils import ContentUnavailableError
 from mcp_server.time_utils import now_iso
 
 
+_NO_RESOURCE_MUTATION = object()
+
+
+def _deleted_resource_mutation(app_for_project, method: str, path: str, body: dict | None):
+    if method != "POST":
+        return _NO_RESOURCE_MUTATION
+    parts = path.strip("/").split("/")
+    if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "resources":
+        project_id = parts[2]
+        return app_for_project(project_id).call_tool(
+            "resource.register_file",
+            {"project_id": project_id, **(body or {})},
+        )
+    if (
+        len(parts) == 6
+        and parts[:2] == ["api", "projects"]
+        and parts[3] == "resources"
+        and parts[5] == "associate"
+    ):
+        project_id = parts[2]
+        resource_id = parts[4]
+        return app_for_project(project_id).call_tool(
+            "resource.associate",
+            {"project_id": project_id, "resource_id": resource_id, **(body or {})},
+        )
+    return _NO_RESOURCE_MUTATION
+
+
 class ResearchPluginHttpApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -33,6 +61,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, method: str, path: str, body: dict | None = None):
+        mutation = _deleted_resource_mutation(lambda _pid: self.app, method, path, body)
+        if mutation is not _NO_RESOURCE_MUTATION:
+            return mutation
         response = self.client.request(method, path, json=body)
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
@@ -1367,10 +1398,14 @@ class ResourceRelFileTest(unittest.TestCase):
         (self.repo / "exp" / "report.md").write_text("![loss](figures/loss.png)\n")
         (self.repo / "exp" / "figures").mkdir()
         (self.repo / "exp" / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        self.resource_id = self.client.post(
-            f"/api/projects/{self.project_id}/resources",
-            json={"path": "exp/report.md", "kind": "report"},
-        ).json()["id"]
+        self.resource_id = self.app.call_tool(
+            "resource.register_file",
+            {
+                "project_id": self.project_id,
+                "path": "exp/report.md",
+                "kind": "report",
+            },
+        )["id"]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -1398,15 +1433,24 @@ class ResourceRelFileTest(unittest.TestCase):
             "## Objective & hypothesis\nTest plan image serving.\n\n"
             "## Evaluation\nSuccess means the backend serves submitted bytes.\n"
         )
-        resource = self.client.post(
-            f"/api/projects/{self.project_id}/resources",
-            json={"path": "plans/plan.md", "kind": "plan"},
-        ).json()
-        assoc = self.client.post(
-            f"/api/projects/{self.project_id}/resources/{resource['id']}/associate",
-            json={"target_type": "experiment", "target_id": exp["id"], "role": "plan"},
+        resource = self.app.call_tool(
+            "resource.register_file",
+            {
+                "project_id": self.project_id,
+                "path": "plans/plan.md",
+                "kind": "plan",
+            },
         )
-        self.assertLess(assoc.status_code, 400, assoc.text)
+        self.app.call_tool(
+            "resource.associate",
+            {
+                "project_id": self.project_id,
+                "resource_id": resource["id"],
+                "target_type": "experiment",
+                "target_id": exp["id"],
+                "role": "plan",
+            },
+        )
 
         figure_path.unlink()
         response = self.client.get(
@@ -1490,6 +1534,14 @@ class RoutedResearchPluginHttpApiTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, method: str, path: str, body: dict | None = None):
+        mutation = _deleted_resource_mutation(
+            self.router.app_for_project,
+            method,
+            path,
+            body,
+        )
+        if mutation is not _NO_RESOURCE_MUTATION:
+            return mutation
         response = self.client.request(method, path, json=body)
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
@@ -1531,12 +1583,12 @@ class RoutedResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(resource_a["path"], "result.txt")
 
-        wrong_project = self.client.request(
+        deleted_route = self.client.request(
             "POST",
             f"/api/projects/{project_b['id']}/resources",
             json={"path": "result.txt", "kind": "result"},
         )
-        self.assertEqual(wrong_project.status_code, 404, wrong_project.text)
+        self.assertEqual(deleted_route.status_code, 405, deleted_route.text)
 
     def test_duplicate_directory_is_rejected(self) -> None:
         repo = self.root / "same-project"
@@ -1574,10 +1626,10 @@ class DegradedStatesTest(unittest.TestCase):
         pid = project["id"]
         # A result-role file exists on disk locally so registration succeeds...
         (self.repo / "results.json").write_text('{"acc": 0.9}', encoding="utf-8")
-        res = self.client.post(
-            f"/api/projects/{pid}/resources",
-            json={"path": "results.json", "kind": "result"},
-        ).json()
+        res = self.app.call_tool(
+            "resource.register_file",
+            {"project_id": pid, "path": "results.json", "kind": "result"},
+        )
         return pid, res["id"]
 
     def test_result_content_degrades_in_control_mode(self) -> None:

@@ -28,7 +28,6 @@ from ..admin_http import register_admin_routes
 from ..data_plane_http import register_data_plane_routes
 from ..http_policy import (
     HOSTED_CONTROL_TOOL_POLICIES,
-    HTTP_DATA_PLANE_FEATURE_TO_TOOL,
     HttpSurfacePolicy,
 )
 from ..mcp_http import register_mcp_routes
@@ -175,19 +174,6 @@ def create_fastapi_app(
             return result
         return api.app.call_tool(name=name, arguments=arguments, activity_source=activity_source)
 
-    def require_data_plane_for_http(*, feature: str) -> None:
-        tool = HTTP_DATA_PLANE_FEATURE_TO_TOOL[feature]
-        if surface.allow_data_plane_http:
-            return
-        raise DataPlaneRequiredError(
-            f"{tool} requires local-mode HTTP; hosted control mode "
-            "serves this API as an observer/admin surface",
-            details={
-                "tool": tool,
-                "reason": "requires_local_data_plane",
-            },
-        )
-
     http = FastAPI(title="Research Plugin API", version=__version__)
 
     @http.middleware("http")
@@ -331,7 +317,6 @@ def create_fastapi_app(
         api_for_project=api_for_project,
         default_api=default_api,
         route_call_tool=route_call_tool,
-        require_data_plane_for_http=require_data_plane_for_http,
         app_for_data_plane_project=app_for_data_plane_project,
     )
     for build in (

@@ -57,7 +57,6 @@ class ClientLinkingTest(unittest.TestCase):
             proxy = HttpProxyMcpServer(
                 config=ProxyConfig(
                     repo_root=repo,
-                    daemon_url=None,
                     control_url="http://control.invalid",
                     project_links_path=root / "project_links.sqlite",
                 )

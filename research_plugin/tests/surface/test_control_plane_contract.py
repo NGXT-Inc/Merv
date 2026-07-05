@@ -20,12 +20,12 @@ import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Protocol
+from urllib.request import urlopen
 
 from backend.app import ResearchPluginApp
 from backend.control.control_client import HttpControlPlaneClient
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_server import make_http_server
-from mcp_server.daemon_marker import marker_path
 
 # Artifact bodies that satisfy the gate lints (plan spine, report spine +
 # metrics table, graph envelope), so the loop exercises gates as passes.
@@ -130,9 +130,13 @@ def http_harness() -> ClientHarness:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     deadline, step, elapsed = 5.0, 0.05, 0.0
-    while elapsed < deadline and not marker_path(repo_root=repo).exists():
-        time.sleep(step)
-        elapsed += step
+    while elapsed < deadline:
+        try:
+            with urlopen(f"http://{host}:{port}/health", timeout=1):
+                break
+        except Exception:
+            time.sleep(step)
+            elapsed += step
     client = HttpControlPlaneClient(base_url=f"http://{host}:{port}")
 
     def _stop() -> None:

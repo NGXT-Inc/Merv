@@ -19,6 +19,9 @@ from research_plugin_shared.client_config import (
 )
 
 
+LOCAL_BRAIN_URL = "http://127.0.0.1:8787"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -93,8 +96,12 @@ def _parser() -> argparse.ArgumentParser:
 def _add_control_args(parser: argparse.ArgumentParser, *, required: bool = True) -> None:
     parser.add_argument(
         "--control-url",
-        required=required,
-        help="Hosted control-plane URL, e.g. https://experiments.rapidreview.io.",
+        required=False,
+        default=None,
+        help=(
+            "Brain/control-plane URL. Defaults to http://127.0.0.1:8787 "
+            "for local deployments."
+        ),
     )
 
 
@@ -103,7 +110,7 @@ def _cmd_configure(args: argparse.Namespace) -> int:
     existing = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
     config = configure_client(
         config_path=config_path,
-        control_url=args.control_url,
+        control_url=args.control_url or LOCAL_BRAIN_URL,
     )
     _print_configured(config_path=config_path, config=config)
     return 0
@@ -116,10 +123,11 @@ def _cmd_connect(args: argparse.Namespace) -> int:
         control_url = args.control_url or existing.get("control_url", "")
         config = configure_client(
             config_path=config_path,
-            control_url=control_url,
+            control_url=control_url or LOCAL_BRAIN_URL,
         )
         _print_configured(config_path=config_path, config=config)
     if args.project_id:
+        _ensure_local_default_config(config_path)
         repo = _repo(args.repo)
         link_repo(
             config_path=config_path,
@@ -133,6 +141,7 @@ def _cmd_connect(args: argparse.Namespace) -> int:
 def _cmd_link(args: argparse.Namespace) -> int:
     config_path = _config_path(args)
     del args.no_start
+    _ensure_local_default_config(config_path)
     repo = _repo(args.repo)
     link_repo(config_path=config_path, repo_root=repo, project_id=args.project_id)
     print(f"linked {repo} -> {args.project_id}")
@@ -159,7 +168,7 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_mcp_env(args: argparse.Namespace) -> int:
     config_path = _config_path(args)
-    config = _require_config(config_path)
+    config = _ensure_local_default_config(config_path)
     repo = _repo(args.repo)
     env = {
         "RESEARCH_PLUGIN_REPO_ROOT": str(repo),
@@ -176,11 +185,8 @@ def configure_client(
     *,
     config_path: Path,
     control_url: str,
-    daemon_url: str | None = None,  # kept for caller compatibility; ignored.
 ) -> dict[str, str]:
-    del daemon_url
-    if not control_url:
-        raise ClientError("--control-url is required until this machine is configured")
+    control_url = (control_url or LOCAL_BRAIN_URL).strip()
     existing = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
     config_path.parent.mkdir(parents=True, exist_ok=True)
     daemon_state_dir = Path(
@@ -278,6 +284,15 @@ def _require_config(config_path: Path) -> dict[str, str]:
     state_dir = str(_state_dir(config_path=config_path, config=config))
     config.setdefault("daemon_state_dir", state_dir)
     return config
+
+
+def _ensure_local_default_config(config_path: Path) -> dict[str, str]:
+    config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
+    if config.get("control_url"):
+        state_dir = str(_state_dir(config_path=config_path, config=config))
+        config.setdefault("daemon_state_dir", state_dir)
+        return config
+    return configure_client(config_path=config_path, control_url=LOCAL_BRAIN_URL)
 
 
 def _state_dir(*, config_path: Path, config: Mapping[str, str]) -> Path:

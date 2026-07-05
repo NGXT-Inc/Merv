@@ -54,13 +54,13 @@ class LocalShippingTest(unittest.TestCase):
         return env
 
     def test_mcp_launcher_uses_current_repo_for_state_and_resources(self) -> None:
-        # New architecture: the daemon is shared and repo-agnostic. The MCP
-        # proxy stays project-local and forwards hidden repo context.
+        # New architecture: the brain is repo-agnostic. The MCP proxy stays
+        # project-local and forwards hidden repo context.
         daemon = self._start_http_daemon()
         self.addCleanup(self._stop_process, daemon)
-        daemon_url = self._wait_for_daemon_ready(daemon, expect_marker=False)
+        brain_url = self._wait_for_daemon_ready(daemon)
 
-        proc = self._start_mcp_from_config({"RESEARCH_PLUGIN_DAEMON_URL": daemon_url})
+        proc = self._start_mcp_from_config({"RESEARCH_PLUGIN_CONTROL_URL": brain_url})
         self.addCleanup(self._stop_process, proc)
 
         self._rpc(proc, "initialize")
@@ -69,7 +69,7 @@ class LocalShippingTest(unittest.TestCase):
         self.assertNotIn("project_id", status_schema.get("required", []))
 
         project = self._tool(proc, "project.create", name="Shipping Smoke", summary="Run from arbitrary repo.")
-        self.assertTrue((self.research_repo / ".research_plugin" / "daemon.json").exists())
+        self._link_repo(project["id"])
         claim = self._tool(
             proc,
             "claim.create",
@@ -180,7 +180,8 @@ class LocalShippingTest(unittest.TestCase):
         )
 
         self.assertEqual(completed["status"], "complete")
-        self.assertTrue((self.research_repo / ".research_plugin" / "state.sqlite").exists())
+        self.assertTrue((self.root / "brain" / ".research_plugin" / "state.sqlite").exists())
+        self.assertTrue((self.root / "project_links.sqlite").exists())
         self.assertFalse((self.install_dir / ".research_plugin").exists())
 
     def _start_mcp_from_config(self, extra_env: dict[str, str] | None = None):
@@ -202,7 +203,7 @@ class LocalShippingTest(unittest.TestCase):
         )
 
     def _start_http_daemon(self):
-        """Spin up the shared HTTP daemon on a free port."""
+        """Spin up the localhost brain on a free port."""
         return subprocess.Popen(
             [
                 str(self.install_dir / "bin" / "research-plugin-http"),
@@ -220,21 +221,16 @@ class LocalShippingTest(unittest.TestCase):
             text=True,
         )
 
-    def _wait_for_daemon_ready(self, daemon, *, expect_marker: bool = True) -> str:
-        """Wait for the daemon to print its bound URL and write the marker."""
+    def _wait_for_daemon_ready(self, daemon) -> str:
+        """Wait for the brain launcher to print its bound URL and answer health."""
         line = daemon.stdout.readline()
         match = re.search(r"http://[^ ]+", line)
         if match is None:
             stderr = daemon.stderr.read()
-            self.fail(f"HTTP daemon did not announce its URL. stdout: {line!r}\nstderr:\n{stderr}")
+            self.fail(f"HTTP brain did not announce its URL. stdout: {line!r}\nstderr:\n{stderr}")
         base = match.group(0).strip()
-        # /health succeeds only after the FastAPI app is fully up; that's also
-        # when serve_forever has written the daemon marker, so this doubles as
-        # a marker-readiness wait.
+        # /health succeeds only after the FastAPI app is fully up.
         self._fetch_json(base + "/health")
-        marker = self.research_repo / ".research_plugin" / "daemon.json"
-        if expect_marker:
-            self.assertTrue(marker.exists(), "daemon marker was not written")
         return base
 
     def test_plugin_manifest_paths_resolve_for_local_install(self) -> None:
@@ -253,7 +249,7 @@ class LocalShippingTest(unittest.TestCase):
         self.assertTrue(command_path.exists())
         self.assertTrue(os.access(command_path, os.X_OK))
         env = mcp_config["mcpServers"]["research-plugin"].get("env", {})
-        self.assertEqual(env["RESEARCH_PLUGIN_DAEMON_URL"], "http://127.0.0.1:8787")
+        self.assertEqual(env["RESEARCH_PLUGIN_CONTROL_URL"], "http://127.0.0.1:8787")
 
     def test_http_launcher_rejects_explicit_repo(self) -> None:
         proc = subprocess.run(
@@ -308,6 +304,15 @@ class LocalShippingTest(unittest.TestCase):
             verdict=verdict,
             notes=notes,
             synopsis=synopsis,
+        )
+
+    def _link_repo(self, project_id: str) -> None:
+        from backend.client_cli import link_repo
+
+        link_repo(
+            config_path=self.root / "isolated-client.json",
+            repo_root=self.research_repo,
+            project_id=project_id,
         )
 
     def _tool(self, proc, tool_name: str, **arguments):

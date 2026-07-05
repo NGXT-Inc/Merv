@@ -30,11 +30,9 @@ CLIENT_VERSION_HEADER = "X-RP-Client-Version"
 # The current server version (single source: backend.__version__).
 SERVER_VERSION = __version__
 
-# Minimum MCP proxy version the control plane will serve. 0.0009 fences off
-# pre-daemon-removal proxies: they would route data-plane tools to the deleted
-# local daemon and advise starting research-plugin-http, silently diverging
-# local state from cloud records. The 426 upgrade error is the safe outcome.
-MIN_PROXY_VERSION = "0.0009"
+# Minimum MCP proxy version the control plane will serve. 0.0010 fences old
+# local-mode thin-pipe proxies that routed every tool call to a repo daemon.
+MIN_PROXY_VERSION = "0.0010"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:

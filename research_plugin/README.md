@@ -5,7 +5,7 @@ agentic coding clients a shared state machine for machine learning research:
 claims, experiments, repo-file resources, review gates, reflection waves, and
 sandboxed execution.
 
-Current version: `0.0008`.
+Current version: `0.0010`.
 
 The plugin is client-neutral. Claude Code, Codex, Cursor, Gemini CLI, OpenCode,
 and other MCP-capable clients use thin adapters over the same backend, MCP
@@ -20,25 +20,25 @@ Agent client
         v
 research-plugin-mcp      sibling frontend UI
   stdio MCP proxy              |
+  local data plane             |
         |                      v
         +------------> research-plugin-http
-                         local HTTP backend
+                         brain service
                             |
               +-------------+-------------+
               |                           |
         project state              sandbox backends
-  <repo>/.research_plugin/     Thunder / Lambda Labs / Modal / fake
+ SQLite/Postgres + blobs      Thunder / Lambda Labs / Modal / fake
 ```
 
-The stdio MCP proxy is intentionally thin and stateless. In local mode,
-`research-plugin-http` owns
-durable state, workflow transitions, review permissions, resource metadata,
-sandbox orchestration, activity logs, and the HTTP API used by the frontend.
-
-Local mode runs the control and data planes together in `research-plugin-http`.
-Split/cloud mode runs a hosted `research-plugin-control`; the user-machine
-stdio MCP proxy reads repo files, owns caller SSH keys, and uses a local link
-file to map checkout folders to hosted projects.
+There is one topology. The brain service owns durable state, workflow
+transitions, review permissions, sandbox orchestration, activity logs, and the
+HTTP API used by the frontend. It never reads a checkout. The stdio MCP proxy is
+the local data plane in every deployment: it reads repo files, hashes and
+validates artifacts, pulls retained sandbox outputs, owns caller SSH key
+custody, and uses a local link file to map checkout folders to projects.
+Local deployment is the same brain on `http://127.0.0.1:8787` with SQLite,
+local-dir blobs, no auth, and localhost CORS.
 
 ## Workflows
 
@@ -99,10 +99,12 @@ start with:
 Use Research Plugin. Start with project.current, then workflow.status_and_next.
 ```
 
-The active research repo gets its own state and activity under:
+The local brain keeps state in its configured state directory. The active
+research repo keeps local activity and retained experiment artifacts under:
 
 ```text
 <research-repo>/.research_plugin/
+<research-repo>/experiments/
 ```
 
 ## Quick Start: Hosted Control + Local Agents
@@ -137,9 +139,10 @@ research repo. See [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKST
 
 ## Credentials
 
-In hosted-control mode, provider credentials belong to the control plane, not
-the MCP proxy and not the research repo. In local mode, provider credentials
-belong to the local HTTP backend process. Prefer a per-user env file:
+Provider credentials belong to the brain process, not the MCP proxy and not the
+research repo. In hosted deployment they are mounted into the hosted brain; in
+local deployment they belong to the local `research-plugin-http` process. Prefer
+a per-user env file:
 
 ```bash
 mkdir -p ~/.config/research-plugin

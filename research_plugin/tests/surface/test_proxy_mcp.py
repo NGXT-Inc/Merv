@@ -1,18 +1,14 @@
 """JSON-RPC boundary tests for the stdio MCP proxy.
 
-The proxy no longer depends on a split-mode local daemon. Local mode still
-forwards to the local HTTP backend, while split mode uses hosted control plus a
-proxy-local link file and data plane.
+The proxy always talks to one brain URL and executes data-plane tools locally.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -20,51 +16,24 @@ from fastapi.testclient import TestClient
 from backend.app import ResearchPluginApp
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.transport.http_api import create_fastapi_app
-from mcp_server.daemon_marker import (
-    discover_daemon_url,
-    marker_path,
-    read_marker,
-    write_marker,
-)
+from backend.transport.http_policy import HttpSurfacePolicy
 from mcp_server.project_links import ProjectLinks
 from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
-
-
-class LocalHttpMarkerTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.repo = Path(self.tmp.name)
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
-
-    def test_write_then_read_round_trips(self) -> None:
-        path = write_marker(repo_root=self.repo, host="127.0.0.1", port=8787)
-        self.assertEqual(path, marker_path(repo_root=self.repo))
-        info = read_marker(repo_root=self.repo)
-        self.assertIsNotNone(info)
-        assert info is not None
-        self.assertEqual(info.host, "127.0.0.1")
-        self.assertEqual(info.port, 8787)
-        self.assertEqual(info.url, "http://127.0.0.1:8787")
-
-    def test_read_returns_none_when_missing_or_corrupt(self) -> None:
-        self.assertIsNone(read_marker(repo_root=self.repo))
-        path = marker_path(repo_root=self.repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("not valid json {")
-        self.assertIsNone(read_marker(repo_root=self.repo))
-
-    def test_env_var_overrides_marker(self) -> None:
-        write_marker(repo_root=self.repo, host="127.0.0.1", port=8787)
-        with mock.patch.dict(os.environ, {"RESEARCH_PLUGIN_DAEMON_URL": "http://1.2.3.4:9999"}):
-            self.assertEqual(discover_daemon_url(repo_root=self.repo), "http://1.2.3.4:9999")
 
 
 class _HttpHarness:
     def __init__(self, *, app: ResearchPluginApp, url: str) -> None:
         self.url = url
-        self.client = TestClient(create_fastapi_app(app=app))
+        self.client = TestClient(
+            create_fastapi_app(
+                app=app,
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=False,
+                    hosted_control=False,
+                    expose_local_data_plane=False,
+                ),
+            )
+        )
 
     def bind(self, proxy: HttpProxyMcpServer) -> None:
         proxy._http_get = self.http_get  # type: ignore[method-assign]
@@ -81,7 +50,7 @@ class _HttpHarness:
         return response.json()
 
 
-class HttpProxyMcpServerLocalModeTest(unittest.TestCase):
+class HttpProxyMcpServerUnifiedBrainTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
@@ -92,7 +61,7 @@ class HttpProxyMcpServerLocalModeTest(unittest.TestCase):
         )
         self.harness = _HttpHarness(app=self.app, url="http://local.test")
         self.proxy = HttpProxyMcpServer(
-            config=ProxyConfig(repo_root=self.repo, daemon_url=self.harness.url),
+            config=ProxyConfig(repo_root=self.repo, control_url=self.harness.url),
         )
         self.harness.bind(self.proxy)
 
@@ -102,7 +71,7 @@ class HttpProxyMcpServerLocalModeTest(unittest.TestCase):
 
     def test_initialize_does_not_require_http_backend(self) -> None:
         offline = HttpProxyMcpServer(
-            config=ProxyConfig(repo_root=self.repo, daemon_url="http://127.0.0.1:1"),
+            config=ProxyConfig(repo_root=self.repo, control_url="http://127.0.0.1:1"),
         )
         init = offline.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         self.assertEqual(init["result"]["serverInfo"]["name"], "research-plugin")
@@ -162,7 +131,6 @@ class HttpProxyMcpServerSplitLinkTest(unittest.TestCase):
         proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=repo,
-                daemon_url=None,
                 control_url=self.control.url,
                 project_links_path=self.links_path,
             )
@@ -273,26 +241,22 @@ class HttpProxyMcpServerOfflineTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_tools_call_returns_actionable_error_when_local_backend_missing(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {"RESEARCH_PLUGIN_DEFAULT_DAEMON_URL": "http://127.0.0.1:1"},
-            clear=False,
-        ):
-            os.environ.pop("RESEARCH_PLUGIN_DAEMON_URL", None)
-            proxy = HttpProxyMcpServer(config=ProxyConfig(repo_root=self.repo, daemon_url=None))
-            response = proxy.handle(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": "project.current", "arguments": {}},
-                }
-            )
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(repo_root=self.repo, control_url="http://127.0.0.1:1")
+        )
+        response = proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "project.create", "arguments": {"name": "Offline"}},
+            }
+        )
         self.assertNotIn("error", response)
         result = response["result"]
         self.assertTrue(result.get("isError"))
         structured = result["structuredContent"]
-        self.assertEqual(structured["error_code"], "daemon_not_running")
+        self.assertEqual(structured["error_code"], "brain_not_running")
         self.assertIn("research-plugin-http", structured["error"])
 
 

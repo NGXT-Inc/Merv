@@ -19,18 +19,18 @@ able to re-orient the agent and the user from durable state.
 
 ## Implementation note
 
-The MCP tool surface is owned by the backend service. In local mode that is
-the single in-process server (`bin/research-plugin-http`); in split mode it is
-the hosted control plane plus the proxy-local data plane (file reads, hashing,
-validation, key custody). What Codex launches via the plugin manifest
-(`bin/research-plugin-mcp`) is a thin stdio proxy that forwards `tools/list`
-and `tools/call` to the backend's `/mcp/tools` and `/mcp/call` endpoints —
-everything in this contract is enforced by the backend service. The proxy does
-add the current repo root as hidden context and hides `project_id` from
-project-scoped tool schemas when that context can supply it. HTTP and core
-service calls still carry explicit `project_id`.
+The MCP tool surface is split by responsibility, not deployment mode. The brain
+service owns control tools and the `/mcp/tools` catalog; it may run on localhost
+(`bin/research-plugin-http`) or at a hosted URL. What Codex launches via the
+plugin manifest (`bin/research-plugin-mcp`) is a stdio proxy that dials
+`RESEARCH_PLUGIN_CONTROL_URL` and always runs the checkout-local data tools
+itself: repo reads, hashing, validation, experiment folder materialization,
+light sandbox output pulls, caller SSH key custody, and the project link
+database. The proxy also adds the current repo root as hidden context and hides
+`project_id` from project-scoped tool schemas when that context can supply it.
+HTTP and core service calls still carry explicit `project_id`.
 
-In shared-daemon mode, `project.current` through MCP is folder-scoped and
+In project-local MCP, `project.current` through MCP is folder-scoped and
 returns the project registered for the folder where the MCP proxy was started,
 or `exists: false` if that folder does not have a project yet. It never lists
 projects from other folders and does not create a project as a side effect. When
@@ -365,8 +365,8 @@ per-resource version history, use `resource.resolve(include_history=true)`.
 
 ```text
 sandbox.options(gpu?, region?)
-sandbox.request(experiment_id?, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
-sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, overwrite?)
+sandbox.request(experiment_id?, public_key, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
+sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, overwrite?, key_path?)
 sandbox.get(experiment_id? | sandbox_uid)
 sandbox.list()
 sandbox.release(experiment_id? | sandbox_uid)
@@ -382,25 +382,18 @@ runs shell commands on the sandbox itself. Lightweight work still runs locally.
 `sandbox.request` is the procurement call. Sandboxes are project-scoped machines:
 experiment attachment is optional, one sandbox can be attached to multiple
 active experiments, and one experiment can have multiple live sandboxes. The
-response carries `ssh` (host, port, user, key_path, command,
-raw_command), `workdir`, `experiment_dir`, `local_experiment_dir`, `data_dir`,
-`files_pushed` (how many files the initial folder push delivered; null while
-unknown), `status`, `expires_at`, `reused`, and — when set — the reserved
-hardware (`gpu`, `cpu`, `memory`, `instance_type`, `region`).
-`ssh.command` is the short dispatcher form
-`.research_plugin/sbx <sandbox_uid>` (run from the repo root); `ssh.raw_command`
-is the full `ssh -i … user@host` line for use from any directory.
+response carries `ssh` (host, port, user, and command material when the caller
+supplies enough local key context), `workdir`, `experiment_dir`,
+`local_experiment_dir`, `data_dir`, `status`, `expires_at`, `reused`, and —
+when set — the reserved hardware (`gpu`, `cpu`, `memory`, `instance_type`,
+`region`).
 
-SSH key custody (BYO-key is the documented primary path): the sandbox
-authorizes a caller-side public key. The requesting side generates its own
-ed25519 keypair under `.research_plugin/sandboxes/keys/` (gitignored — never
-commit key material) and that public key is what lands in
-`authorized_keys` (data-plane requests carry it as `public_key`); in local
-mode, when no key is supplied, the local server mints and manages a fallback
-keypair at the same path. Split mode requires the caller-supplied key and
-rejects requests without one (`public_key_required`). The `sandbox.request`
-response's additive `public_key_source` field
-reports which happened: `"caller"` or `"managed"`.
+SSH key custody is BYO everywhere: the sandbox authorizes a caller-side
+OpenSSH public key supplied as `public_key`. The corresponding private key
+stays on the user's machine and is never sent to the brain. New
+`sandbox.request` rows record `public_key_source: "caller"`. Legacy
+`public_key_source: "managed"` rows remain readable/releasable/reattachable,
+but the request path no longer mints managed user keypairs.
 
 #### Hardware selection (provider-shaped)
 
@@ -452,19 +445,21 @@ datasets used, source
 identifiers, split/filter choices, important columns, row counts, caveats, and
 where large ephemeral files were placed outside the folder.
 
-`sandbox.pull_outputs` is the explicit retained-output helper for light files
-created under the remote `experiment_dir`. It copies selected repo-relative
-files or directories into the local experiment folder over SSH/rsync; with no
-`paths`, it first checks for common outputs (`results/`, `figures/`,
-`report.md`, `graph.json`, `metrics.json`, `results.json`) and
-pulls the ones that exist. Existing local files are kept unless
-`overwrite: true` is supplied; kept files that differ from the sandbox are
-named in `files_kept_stale` (check it before registering results from a
+`sandbox.pull_outputs` is a proxy-local retained-output helper for light files
+created under the remote `experiment_dir`. It asks the brain for the sandbox
+record, then copies selected repo-relative files or directories into the local
+experiment folder over SSH/rsync using the caller's private key path. If the
+sandbox record does not include local key material, pass `key_path` from the
+client/proxy side. With no `paths`, it first checks for common outputs
+(`results/`, `figures/`, `report.md`, `graph.json`, `metrics.json`,
+`results.json`) and pulls the ones that exist. Existing local files are kept
+unless `overwrite: true` is supplied; kept files that differ from the sandbox
+are named in `files_kept_stale` (check it before registering results from a
 re-run), and `files_transferred` counts what actually landed. Remote symlinks
 and device nodes are never recreated locally. A failing path is reported in
 `errors` / `paths_failed` without discarding the paths that succeeded. After
-pulling files locally, use `resource.register_file` / `resource.associate`
-for retained artifacts.
+pulling files locally, use `resource.register_file` / `resource.associate` for
+retained artifacts. Heavy artifacts should go through durable storage tools.
 
 When the backend has `HF_TOKEN` in its env file or process environment,
 `sandbox.request` / `sandbox.get` include an `environment.available_tokens`
@@ -494,11 +489,11 @@ a background thread and waits up to a budget (default 45s,
   `poll_after_seconds`, and no `ssh.command` yet.
 
 `sandbox.get` is the **poll**: read-only, never provisions, and returns the
-current row — `provisioning` (keep polling), `running` (use `ssh.command`),
-`failed` (read `error`, then `sandbox.request` to retry), `terminated`, or
-`none` (never requested; not an error). It reconciles a `provisioning` row whose
-background job died (daemon restart) to `failed` so a poll loop always reaches a
-terminal state. `sandbox.release` also cancels an in-flight provision. The agent
+current row — `provisioning` (keep polling), `running` (use the returned SSH
+facts), `failed` (read `error`, then `sandbox.request` to retry), `terminated`,
+or `none` (never requested; not an error). It reconciles a `provisioning` row
+whose background job died (brain restart) to `failed` so a poll loop always
+reaches a terminal state. `sandbox.release` also cancels an in-flight provision. The agent
 contract: call `request`, then if `provisioning` poll `get` every
 `poll_after_seconds` until `running`/`failed` — never re-call `request` to poll.
 
@@ -530,8 +525,8 @@ normal SSH endpoint and needs `LAMBDA_LABS_API_KEY` (or
 `RESEARCH_PLUGIN_LAMBDA_REGION` / `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`
 fallbacks). Thunder Compute remains available with `RESEARCH_PLUGIN_THUNDER_API_KEY`
 (or `THUNDER_COMPUTE_API_KEY`). Modal exposes SSH over an unencrypted Modal tunnel
-(`unencrypted_ports=[22]`). The registry generates a per-sandbox SSH keypair
-and authorizes its public key in the sandbox/VM. Output retention is explicit:
+(`unencrypted_ports=[22]`). The caller supplies a public key for sandbox
+authorization and keeps the private key local. Output retention is explicit:
 the agent pulls selected light files back over SSH with `sandbox.pull_outputs`,
 while heavy files should go through durable storage tools. The execution
 contract (`SandboxBackend`) stays narrow so additional providers can live inside
@@ -542,8 +537,7 @@ may expose an optional `hardware_catalog()` that powers `sandbox.options` and th
 
 `time_limit` is enforced. Modal sandboxes self-terminate at their server-side
 timeout; for backends without server-side lifetime (Lambda Labs VMs, which
-otherwise bill until manually killed), the backend service — the hosted
-control plane, or the local server in local mode — runs a background **reaper**
+otherwise bill until manually killed), the brain runs a background **reaper**
 that terminates any running sandbox past its `expires_at`. The reaper polls every
 `RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL` seconds (default 30) and can be
 disabled with `RESEARCH_PLUGIN_SANDBOX_REAPER=0`.

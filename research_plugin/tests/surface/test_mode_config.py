@@ -290,7 +290,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
         # The two uids must not collapse to the same sandbox (the hosted bug).
         self.assertNotEqual(primary["sandbox_id"], extra["sandbox_id"])
 
-    def test_data_plane_http_mutation_is_rejected_in_control_mode(self) -> None:
+    def test_data_plane_http_mutation_route_is_deleted(self) -> None:
         project = self.client.post("/api/projects", json={"name": "Hosted Project"})
         self.assertEqual(project.status_code, 201, project.text)
         project_id = project.json()["id"]
@@ -299,8 +299,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
             f"/api/projects/{project_id}/resources",
             json={"path": "local-result.json", "kind": "result"},
         )
-        self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["error_code"], "data_plane_required")
+        self.assertEqual(resp.status_code, 405, resp.text)
 
     def test_hosted_resource_content_does_not_read_local_checkout(self) -> None:
         project = self.client.post("/api/projects", json={"name": "Hosted Content"})
@@ -483,7 +482,7 @@ class VersionHandshakeTest(unittest.TestCase):
         local = self.local_client.get("/api/meta")
         self.assertEqual(local.status_code, 200, local.text)
         self.assertEqual(local.json()["mode"], "local")
-        self.assertTrue(local.json()["capabilities"]["local_data_plane_http"])
+        self.assertFalse(local.json()["capabilities"]["local_data_plane_http"])
 
     def test_in_range_client_passes_and_below_floor_is_rejected(self) -> None:
         from backend.version import SERVER_VERSION

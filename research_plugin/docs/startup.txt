@@ -1,4 +1,4 @@
-# Local-mode quick start
+# Local brain quick start
 
 export RESEARCH_SUITE=/path/to/research-suite
 export RESEARCH_PLUGIN="$RESEARCH_SUITE/research_plugin"
@@ -9,7 +9,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 
-# Start the shared local daemon for all local research repos.
+# Start the localhost brain. The MCP proxy still performs repo-local data work.
 cd "$RESEARCH_PLUGIN"
 python3 scripts/dev_http_reload.py --host 127.0.0.1 --port 8787 --activity-stderr
 
@@ -17,8 +17,8 @@ python3 scripts/dev_http_reload.py --host 127.0.0.1 --port 8787 --activity-stder
 curl -s http://127.0.0.1:8787/health
 curl -s http://127.0.0.1:8787/api/projects
 
-# Open the agent from any research repo. The shared daemon can route many
-# project directories.
+# Open the agent from any research repo. The proxy links the checkout to a
+# project and dials RESEARCH_PLUGIN_CONTROL_URL (localhost by default).
 cd /path/to/research/repo
 codex
 

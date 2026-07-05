@@ -24,7 +24,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_for_project = ctx.api_for_project
     default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
-    require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/api/projects/{project_id}/experiments")
     def list_experiments(project_id: str, status: str | None = None) -> dict[str, Any]:
         return api_for_project(project_id).filter_experiments(project_id=project_id, status=status)

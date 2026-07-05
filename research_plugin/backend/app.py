@@ -46,7 +46,9 @@ class ResearchPluginApp:
         # The plane seam (cloud plan Phase 3): the record store knows nothing
         # about the checkout; local paths flow from the workspace and every
         # local-IO duty routes through the data-plane worker. This constructor
-        # IS the local-mode composition — it binds both planes in one process.
+        # This legacy compatibility composition binds both planes in one
+        # process; production local deployment now uses ControlApp via
+        # build_local_server.
         if runtime is None:
             from .local_runtime import build_local_runtime
 
@@ -499,6 +501,12 @@ class ResearchPluginApp:
         internal_kwargs: dict[str, Any] | None = None,
         telemetry_project_id: str | None = None,
     ) -> dict[str, Any]:
+        if name == "sandbox.request":
+            arguments = dict(arguments or {})
+            arguments.setdefault(
+                "public_key",
+                "ssh-ed25519 " + ("A" * 48) + " legacy-local@app",
+            )
         return self.tools.call_tool(
             name=name,
             arguments=arguments,

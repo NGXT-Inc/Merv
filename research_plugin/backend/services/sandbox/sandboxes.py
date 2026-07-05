@@ -219,14 +219,13 @@ class SandboxService:
             if public_key_override is not None
             else str(public_key or "").strip()
         )
-        if supplied_public_key:
-            public_key = supplied_public_key
-        else:
-            public_key, _key_path = self._ensure_keypair(local_key=sandbox_uid)
-        # BYO-key custody fact (additive response field): "caller" when the
-        # requester supplied its own public key, "managed" when the worker
-        # minted the fallback keypair on the caller's behalf.
-        public_key_source = "caller" if supplied_public_key else "managed"
+        if not supplied_public_key:
+            raise ValidationError(
+                "sandbox.request requires public_key; generate a caller-owned "
+                "OpenSSH keypair and pass the single-line .pub contents"
+            )
+        public_key = supplied_public_key
+        public_key_source = "caller"
         # Mint the management keypair before any provision so key injection
         # always precedes the management read paths (plan Phase 5 sequencing).
         management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
@@ -243,14 +242,6 @@ class SandboxService:
             and self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
             is not False
         ):
-            if public_key_source == "caller" and (
-                str(existing.get("public_key_source") or "managed") != "caller"
-            ):
-                raise ValidationError(
-                    "existing sandbox was provisioned with a managed user SSH key; "
-                    "release it first or request an additional sandbox so the caller "
-                    "public_key can be authorized on a new VM"
-                )
             self.registry.touch_alive(
                 experiment_id=experiment_id,
                 sandbox_uid=str(existing.get("sandbox_uid") or ""),
@@ -1133,12 +1124,7 @@ class SandboxService:
         except Exception:  # noqa: BLE001 — secret delivery must never fail a request
             pass
 
-    # ---------- paths / conn-file plumbing (delegated to the worker) ----------
-
-    def _ensure_keypair(
-        self, *, experiment_id: str = "", local_key: str | None = None
-    ) -> tuple[str, Path]:
-        return self.worker.ensure_keypair(experiment_id=local_key or experiment_id)
+    # ---------- paths / management-key plumbing ----------
 
     def _mgmt_key_path(self, *, row: dict[str, Any]) -> Path:
         return self.mgmt_keys.key_path(sandbox_uid=str(row.get("sandbox_uid") or ""))

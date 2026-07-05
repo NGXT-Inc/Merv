@@ -3,10 +3,11 @@
 This extension connects you to the Research Plugin MCP server: a research
 kernel that owns durable state (claims, experiments, resources, reviews,
 syntheses), the gated experiment workflow, and cloud sandbox provisioning.
-The MCP server is a thin stdio proxy: in local mode it forwards to the local
-`research-plugin-http` server (start it first — see the extension README's
-"Use with Gemini CLI" section); in hosted mode it dials the control plane
-directly and no local server runs.
+The MCP server is a stdio proxy that always dials
+`RESEARCH_PLUGIN_CONTROL_URL`. For local deployments that URL is the localhost
+brain (`research-plugin-http`, start it first); for hosted deployments it is the
+hosted brain. The proxy always performs checkout-local data-plane work itself:
+repo reads, hashing, validation, output pulls, and caller SSH key custody.
 
 Operating rules:
 

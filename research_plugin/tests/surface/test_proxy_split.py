@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -58,7 +59,6 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
                 control_url=self.cloud.url,
                 project_links_path=self.links_path,
             )
@@ -127,7 +127,6 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         broken = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
                 control_url="http://127.0.0.1:1",
                 project_links_path=self.links_path,
             )
@@ -158,17 +157,37 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         )
         self.assertNotIn("error", down)
         result = down["result"]["structuredContent"]
-        self.assertEqual(result["error_code"], "cloud_unreachable")
+        self.assertEqual(result["error_code"], "brain_not_running")
         self.assertTrue(down["result"].get("isError"))
 
-    def test_split_pull_outputs_is_demoted_with_rsync_guidance(self) -> None:
-        result = self._call("sandbox.pull_outputs", {"sandbox_uid": "sbx_1"})
+    def test_pull_outputs_runs_proxy_local_rsync_helper(self) -> None:
+        def fake_cloud(*, name: str, arguments: dict) -> dict:
+            self.assertEqual(name, "sandbox.get")
+            return {
+                "experiment_id": "exp_1",
+                "sandbox_uid": arguments["sandbox_uid"],
+                "status": "running",
+                "experiment_dir": "/remote/exp",
+                "ssh": {"host": "example.test", "port": 22, "user": "root"},
+            }
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "split_mode_pull_outputs_unavailable")
+        with (
+            patch.object(self.proxy, "_call_cloud", side_effect=fake_cloud),
+            patch(
+                "backend.dataplane.sandbox_outputs.pull_sandbox_outputs",
+                return_value={"ok": True, "copied": []},
+            ) as pull,
+        ):
+            result = self._call(
+                "sandbox.pull_outputs",
+                {"sandbox_uid": "sbx_1", "key_path": "/tmp/rp-test-key"},
+            )
+
+        self.assertTrue(result["ok"])
         self.assertIn("rsync -az --itemize-changes", result["rsync"])
-        self.assertIn("--no-links --no-devices --no-specials", result["rsync"])
-        self.assertIn("object storage", result["error"])
+        self.assertIn("Use storage", result["storage_guidance"])
+        sandbox = pull.call_args.kwargs["sandbox"]
+        self.assertEqual(sandbox["ssh"]["key_path"], "/tmp/rp-test-key")
 
 
 class LocalEnrichedControlMergeTest(unittest.TestCase):
@@ -177,7 +196,6 @@ class LocalEnrichedControlMergeTest(unittest.TestCase):
             proxy = HttpProxyMcpServer(
                 config=ProxyConfig(
                     repo_root=Path(tmp),
-                    daemon_url=None,
                     control_url="http://control.invalid",
                 )
             )
@@ -217,7 +235,6 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
         return HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=None,
                 control_url="http://control.invalid",
                 project_links_path=self.links_path,
             )

@@ -3,17 +3,17 @@
 This is the local development startup path for using `research-plugin` with a
 research repo.
 
-## Process topology (daemon-first)
+## Process topology (one brain, thick proxy)
 
-The plugin now runs as **one long-lived backend daemon** plus a thin stdio MCP
-proxy that Codex spawns on demand:
+The plugin runs as one brain service plus a thick stdio MCP proxy that Codex
+spawns on demand. Local deployment is the same topology as hosted deployment;
+only the brain URL and storage/auth defaults change.
 
 ```text
                    ┌───────────────────────────────────────────┐
-                   │  research_plugin HTTP daemon              │
+                   │  research_plugin localhost brain          │
                    │  (research-plugin-http)                   │
                    │                                           │
-                   │  - Project directory router               │
                    │  - SQLite state, activity logs            │
                    │  - SandboxService + Modal/Lambda SSH      │
                    │  - sandbox registry, keys, reapers        │
@@ -25,6 +25,8 @@ proxy that Codex spawns on demand:
                           │ Browser UI│  │ MCP stdio proxy       │
                           │ (Vite)    │  │ (research-plugin-mcp) │
                           └───────────┘  └────────▲──────────────┘
+                                                  │ repo reads, hashes,
+                                                  │ validation, rsync pulls
                                                   │ stdio MCP
                                                   │
                                             ┌─────┴──────┐
@@ -32,11 +34,11 @@ proxy that Codex spawns on demand:
                                             └────────────┘
 ```
 
-The daemon must be running before Codex makes any tool call. The MCP proxy tries
-`RESEARCH_PLUGIN_DAEMON_URL`, then `$REPO/.research_plugin/daemon.json`, then
-the default shared URL `http://127.0.0.1:8787`. A fresh folder can therefore
-call `project.current` before it has a marker, as long as the shared daemon is
-running on the default port.
+The localhost brain must be running before Codex makes any local tool call. The
+MCP proxy dials `RESEARCH_PLUGIN_CONTROL_URL`; client configs default that to
+`http://127.0.0.1:8787` for local deployments. A hosted deployment sets the same
+variable to the hosted HTTPS brain URL and still uses the local stdio proxy for
+repo file work.
 
 Replace this path with the research repo you want to work inside:
 
@@ -72,9 +74,10 @@ Install or enable `research-plugin` from the configured local marketplace.
 ## Terminal 1: Execution Backend (Lambda Labs credentials)
 
 Lambda Labs is the default execution backend behind the `sandbox.*` tools. Codex
-talks to the MCP proxy, the proxy talks to the daemon, and the daemon talks to
-Lambda Cloud. Only the daemon process needs provider credentials (the MCP proxy
-does not).
+talks to the MCP proxy, the proxy talks to the brain, and the brain talks to
+Lambda Cloud. Only the brain process needs provider credentials (the MCP proxy
+does not). Caller SSH private keys stay with the proxy/client side; sandbox
+requests send a caller public key.
 
 Put `LAMBDA_LABS_API_KEY` / `RESEARCH_PLUGIN_LAMBDA_API_KEY` in a git-ignored
 env file, or point at a file elsewhere / export it:
@@ -93,12 +96,12 @@ For tests without provider credentials, use the in-memory fake backend:
 export RESEARCH_PLUGIN_EXECUTION_BACKEND=fake
 ```
 
-## Terminal 2: Backend Daemon (required for Codex *and* UI)
+## Terminal 2: Localhost Brain (required for local Codex *and* UI)
 
-The HTTP daemon owns SQLite state, the activity log, the sandbox execution
+The localhost brain owns SQLite state, the activity log, the sandbox execution
 backend, and sandbox lifecycle bookkeeping. Both the UI and the stdio MCP proxy
-forward through it. **Start this before opening Codex.** The MCP proxy writes
-a clear "daemon not running" error to Codex if you forget.
+talk to it. **Start this before opening Codex for local work.** The MCP proxy
+writes a clear "brain not running" error to Codex if you forget.
 
 Install core backend dependencies once in a plugin-local virtualenv:
 
@@ -113,8 +116,8 @@ The `bin/research-plugin-mcp`, `bin/research-plugin-http`, and reload helper
 use `$RESEARCH_PLUGIN/.venv/bin/python` automatically when it exists.
 Set `RESEARCH_PLUGIN_PYTHON=/path/to/python` to force a different interpreter.
 
-Development mode with auto-reload and live activity printing runs the shared
-multi-project backend:
+Development mode with auto-reload and live activity printing runs the localhost
+brain:
 
 ```bash
 cd "$RESEARCH_PLUGIN"
@@ -175,9 +178,10 @@ Recent activity through HTTP:
 curl -s 'http://127.0.0.1:8787/api/activity?limit=50'
 ```
 
-All work — UI requests and Codex MCP tool calls — runs through the same daemon
-process now, so terminal-2 stderr and `/api/activity` both see everything.
-The JSONL file still works as a cross-tool tail.
+All control work — UI requests and Codex MCP control-tool calls — runs through
+the same brain process, so terminal-2 stderr and `/api/activity` both see it.
+Repo file reads, validation, folder materialization, and light output pulls run
+inside the stdio proxy. The JSONL file still works as a cross-tool tail.
 
 ## Terminal 4: Optional Frontend
 
@@ -233,33 +237,33 @@ review before completing the experiment.
 
 ## What Should Be Running
 
-Minimum for local-mode Codex work (this cheatsheet covers local dev; hosted
-users run no local server at all, only the stdio proxy):
+Minimum for local Codex work (this cheatsheet covers local dev; hosted users run
+no localhost brain, only the stdio proxy):
 
-- HTTP daemon on `127.0.0.1:8787`
+- localhost brain on `127.0.0.1:8787`
 - Codex session in the research repo with `research-plugin` enabled
 
 The MCP proxy is started by Codex itself. The marketplace MCP config points it
-at `http://127.0.0.1:8787` by default. Use `RESEARCH_PLUGIN_DAEMON_URL` only
-when the shared daemon is on another host or port. After registration the daemon
-also writes `$RESEARCH_REPO/.research_plugin/daemon.json` for discovery.
+at `http://127.0.0.1:8787` through `RESEARCH_PLUGIN_CONTROL_URL` by default.
+Set `RESEARCH_PLUGIN_CONTROL_URL` to a different loopback URL for a non-default
+local port, or to a hosted HTTPS URL for hosted deployments.
 
 Additional, for the UI:
 
 - Browser UI pointed at `http://127.0.0.1:8787`
 
-Additional, for the default Lambda Labs backend (daemon env only):
+Additional, for the default Lambda Labs backend (brain env only):
 
 - `LAMBDA_LABS_API_KEY` (or `RESEARCH_PLUGIN_LAMBDA_API_KEY`)
 - `RESEARCH_PLUGIN_LAMBDA_REGION`, for example `us-east-1`
 - `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`, for example `gpu_1x_a10`
 
-Additional, for the Thunder Compute backend (daemon env only):
+Additional, for the Thunder Compute backend (brain env only):
 
 - `RESEARCH_PLUGIN_EXECUTION_BACKEND=thunder_compute`
 - `THUNDER_COMPUTE_API_KEY` (or `RESEARCH_PLUGIN_THUNDER_API_KEY`)
 
-Additional, for the Modal backend (daemon env only):
+Additional, for the Modal backend (brain env only):
 
 - `RESEARCH_PLUGIN_EXECUTION_BACKEND=modal`
 - `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` available directly or through
@@ -275,15 +279,17 @@ Recommended while debugging:
 
 ## State Files
 
-Research state lives in each project directory, not in the plugin source:
+In local deployment, brain state is under the local brain state directory
+(default `~/.research_plugin/brain`, or the configured registry-derived state
+directory in dev/test). Repo-local activity and retained artifacts still live in
+the research checkout:
 
 ```text
-$RESEARCH_REPO/.research_plugin/state.sqlite
 $RESEARCH_REPO/.research_plugin/activity.jsonl
+$RESEARCH_REPO/experiments/<name>/
 ```
 
-The shared daemon also keeps a small global registry mapping project ids to
-directories (`RESEARCH_PLUGIN_REGISTRY_STORE`, default
-`~/.research_plugin/registry.sqlite`). If the UI does not show the same project
-as Codex, check `/health`, `RESEARCH_PLUGIN_DAEMON_URL`, and the project's
-`repo_root` in `GET /api/projects`.
+The proxy keeps the checkout-to-project link database under the machine config
+directory (`~/.research_plugin/project_links.sqlite` by default). If Codex does
+not resolve the expected project, check `/health`, `RESEARCH_PLUGIN_CONTROL_URL`,
+and the link with `research-plugin-client link --project-id ...`.

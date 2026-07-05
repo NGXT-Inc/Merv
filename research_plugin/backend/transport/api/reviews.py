@@ -24,7 +24,6 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_for_project = ctx.api_for_project
     default_api = ctx.default_api
     route_call_tool = ctx.route_call_tool
-    require_data_plane_for_http = ctx.require_data_plane_for_http
     @api_router.get("/api/projects/{project_id}/reviews")
     def reviews(project_id: str, target_type: str = "experiment", target_id: str | None = None) -> dict[str, Any]:
         if not target_id:
