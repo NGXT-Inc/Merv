@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from backend.control.control_runtime import ControlToolCallSink
-from backend.domain.tool_call_stats import percentile
+from backend.state.tool_call_stats import percentile
 from backend.state.tool_calls import ToolCallStore
 
 
@@ -231,7 +231,7 @@ class ToolCallStatsParityTest(unittest.TestCase):
                 self.assertNotIn("def _by_tool", source)
                 self.assertNotIn("def _accumulate", source)
                 self.assertNotIn("def _finalize_bucket", source)
-                self.assertIn("domain.tool_call_stats", source)
+                self.assertIn("tool_call_stats import", source)
 
     @staticmethod
     def _without_last_ts(rows: list[dict]) -> list[dict]:

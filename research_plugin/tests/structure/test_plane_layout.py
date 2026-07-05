@@ -60,7 +60,7 @@ CONTROL_MODULES = (
     BACKEND_ROOT / "control" / "control_client.py",
     BACKEND_ROOT / "state" / "store.py",
     BACKEND_ROOT / "state" / "dialects.py",
-    BACKEND_ROOT / "state" / "managed_mgmt_keys.py",
+    BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py",
 )
 
 # Module names (any dotted segment) control modules may never import.
@@ -231,13 +231,13 @@ def _imports_management_key_adapter(path: Path) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.endswith("state.mgmt_keys"):
+                if alias.name.endswith("sandbox.mgmt_keys"):
                     return True
         elif isinstance(node, ast.ImportFrom) and node.module:
             module = node.module
-            if module.endswith("state.mgmt_keys"):
+            if module.endswith("sandbox.mgmt_keys"):
                 return True
-            if module.endswith("state") and any(
+            if module.endswith("sandbox") and any(
                 alias.name == "mgmt_keys" for alias in node.names
             ):
                 return True
@@ -370,9 +370,9 @@ load("subprocess")
 
     def test_management_key_adapter_lint_catches_import_forms(self) -> None:
         cases = (
-            "import backend.state.mgmt_keys\n",
-            "from backend.state import mgmt_keys\n",
-            "from ..state.mgmt_keys import LocalMgmtKeyStore\n",
+            "import backend.sandbox.mgmt_keys\n",
+            "from backend.sandbox import mgmt_keys\n",
+            "from ..sandbox.mgmt_keys import LocalMgmtKeyStore\n",
         )
         with tempfile.TemporaryDirectory() as tmp:
             for index, source in enumerate(cases):
@@ -784,14 +784,14 @@ for name in (
             with self.subTest(module=path.name):
                 self.assertFalse(_imports_management_key_adapter(path))
                 self.assertNotIn("LocalMgmtKeyStore", path.read_text(encoding="utf-8"))
-        imports = _import_segments(BACKEND_ROOT / "state" / "mgmt_keys.py")
+        imports = _import_segments(BACKEND_ROOT / "sandbox" / "mgmt_keys.py")
         self.assertIn("ssh_keys", imports)
         self.assertNotIn("subprocess", imports)
         self.assertNotIn("services", imports)
         self.assertIn("mgmt_keys", _import_segments(BACKEND_ROOT / "local_runtime.py"))
         self.assertNotIn(
             "subprocess",
-            _import_segments(BACKEND_ROOT / "state" / "managed_mgmt_keys.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py"),
         )
 
     def test_local_ssh_keygen_is_single_sourced(self) -> None:
@@ -801,7 +801,7 @@ for name in (
         )
         for path in (
             BACKEND_ROOT / "dataplane" / "sandbox_conn.py",
-            BACKEND_ROOT / "state" / "mgmt_keys.py",
+            BACKEND_ROOT / "sandbox" / "mgmt_keys.py",
         ):
             with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
                 self.assertIn("ssh_keys", _import_segments(path))
@@ -826,7 +826,7 @@ for name in (
     "backend.dataplane.worker",
 	    "backend.dataplane.sandbox_conn",
 	    "backend.services.sandbox_conn",
-    "backend.state.mgmt_keys",
+    "backend.sandbox.mgmt_keys",
 ):
     if name in sys.modules:
         raise SystemExit(f"{name} loaded")

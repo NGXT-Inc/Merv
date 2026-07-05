@@ -120,19 +120,9 @@ while :; do
   sleep 0.2
 done"""
 
-
-MODAL_APT_PACKAGES: tuple[str, ...] = (
-    "openssh-server",
-    "ca-certificates",
-    *BASELINE_APT_PACKAGES,
-)
-
-
-LAMBDA_APT_PACKAGES: tuple[str, ...] = (
-    "openssh-server",
-    "ca-certificates",
-    *BASELINE_APT_PACKAGES,
-)
+# Provider-specific package tuples live inside each adapter (e.g.
+# execution/backends/<provider>/sandbox_backend.py) — this module carries only
+# the provider-neutral baseline they compose from.
 
 
 ML_PYTHON_PACKAGES: tuple[str, ...] = (

@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from ...domain.sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
-from ...domain.storage_guidance import STORAGE_RULE_OF_THUMB
 from ...sandbox.sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     POLL_AFTER_SECONDS,
@@ -34,14 +33,20 @@ def _folder_contract_note(
     local_dir: str,
     attached_to_experiment: bool,
     storage_enabled: bool,
+    storage_hint: str = "",
 ) -> str:
-    """The sandbox file durability rule, told at the moment it matters."""
+    """The sandbox file durability rule, told at the moment it matters.
+
+    ``storage_hint`` is composition-injected guidance prose (the storage rule
+    of thumb); this module embeds the string it is handed rather than
+    importing storage guidance.
+    """
     _ = attached_to_experiment
     folder_label = "work folder"
     local_label = "local sandbox folder"
     if storage_enabled:
         heavy_note = (
-            f"{STORAGE_RULE_OF_THUMB} Upload those durable files with "
+            f"{storage_hint} Upload those durable files with "
             "storage.put_object or storage.upload_file instead of rsyncing them "
             "into the repo. "
         )
@@ -162,13 +167,14 @@ def agent_row_facts(
 
 
 def merge_agent_view(
-    *, facts: dict[str, Any], enrichment: dict[str, Any]
+    *, facts: dict[str, Any], enrichment: dict[str, Any], storage_hint: str = ""
 ) -> dict[str, Any]:
     """Compose the agent view from row facts + data-plane enrichment.
 
     ``enrichment`` carries ``command``/``raw_command``/``key_path``/
     ``local_dir`` from the worker (the conn file is already written for live
     rows). The hint prose is built here because it quotes both halves.
+    ``storage_hint`` is the composition-injected storage rule of thumb.
     """
     view = dict(facts)
     status = str(view.get("status") or "none")
@@ -249,6 +255,7 @@ def merge_agent_view(
                 local_dir=local_dir,
                 attached_to_experiment=attached_to_experiment,
                 storage_enabled=bool(view.get("storage_enabled")),
+                storage_hint=storage_hint,
             )
             + "Before registering result resources, pull the files you need off "
             "the box with sandbox.pull_outputs (see the folder note) into the local "

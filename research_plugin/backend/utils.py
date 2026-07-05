@@ -106,3 +106,13 @@ def parse_iso(value: object) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def safe_experiment_dirname(experiment_id: str) -> str:
+    """Filesystem-safe directory name for an experiment.
+
+    Kernel-floor path primitive shared by the research-core folder layout
+    (domain/paths.py) and the sandbox module's remote workdir naming
+    (domain/sandbox_paths.py) without a cross-module edge.
+    """
+    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in experiment_id) or "experiment"

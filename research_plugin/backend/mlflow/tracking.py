@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .metrics import snapshot_mlflow
-from ..config import (
+from .config import (
     resolve_mlflow_dashboard_url,
     resolve_mlflow_mode,
     resolve_mlflow_server_uri,

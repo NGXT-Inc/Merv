@@ -12,6 +12,7 @@ baseline: new violations fail immediately, fixed ones must be deleted.
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -79,7 +80,6 @@ FILE_MODULES = {
     "services/transcript_cache.py": SANDBOX,
     "services/quotas.py": SANDBOX,  # TODO tenancy concern — may move later
     "domain/sandbox_paths.py": SANDBOX,
-    "domain/quota_contract.py": SANDBOX,
     # ssh_keys generates sandbox ssh keypairs (sandbox_conn + mgmt keys).
     "ssh_keys.py": SANDBOX,
     # feed: services plus feed's own domain policy files.
@@ -115,28 +115,20 @@ ALLOWED_EDGES = (
     }
 )
 
-# Frozen baseline of today's violating (importer_file, imported_file) pairs.
+# Frozen baseline of violating (importer_file, imported_file) pairs.
 # This list may only shrink: a fixed edge must be deleted here, and no new
-# edge may be added. Move the code, not the line.
-GRANDFATHERED = frozenset({
-    # kernel -> research_core (1)
-    ("state/tool_calls.py", "domain/tool_call_stats.py"),
-    # kernel -> sandbox (3)
-    ("ports/quota_admission.py", "domain/quota_contract.py"),
-    ("state/mgmt_keys.py", "sandbox/sandbox_support.py"),
-    ("state/mgmt_keys.py", "ssh_keys.py"),
-    # mlflow -> surface (1)
-    ("mlflow/tracking.py", "config.py"),
-    # research_core -> object_storage (1)
-    ("services/workflow.py", "domain/storage_guidance.py"),
-    # sandbox -> object_storage (2)
-    ("services/sandbox/sandbox_views.py", "domain/storage_guidance.py"),
-    ("services/sandbox/sandboxes.py", "domain/storage_guidance.py"),
-    # sandbox -> research_core (1)
-    ("domain/sandbox_paths.py", "domain/paths.py"),
-    # sandbox -> surface (1)
-    ("services/sandbox/sandbox_daemons.py", "config.py"),
-})
+# edge may be added. Move the code, not the line. Phase 4a drove it to ZERO —
+# every import now follows the law above; keep it that way.
+GRANDFATHERED: frozenset[tuple[str, str]] = frozenset()
+
+
+# Sandbox de-domaining (phase 4a): the sandbox module must not read or write
+# research-core tables — attachment ids are opaque labels there. Matches SQL
+# verbs followed by a research-core table name inside any string literal.
+RESEARCH_CORE_TABLE_SQL = re.compile(
+    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:experiments|claims|reviews|syntheses)\b",
+    re.IGNORECASE,
+)
 
 
 def _backend_files() -> list[Path]:
@@ -245,6 +237,32 @@ class ModuleBoundaryTest(unittest.TestCase):
                 f"{importer} -> {target} [{_classify(importer)} -> {_classify(target)}]"
                 for importer, target in new
             ),
+        )
+
+    def test_sandbox_module_sql_names_no_research_core_tables(self) -> None:
+        """Fitness assertion (phase 4a, no grandfathering): sandbox-module
+        files must not embed SQL that references research-core tables. The
+        sandbox stack persists only its own tables (sandboxes,
+        sandbox_attachments, sandbox_generations, projects scoping via the
+        kernel store); experiment validation is surface-injected."""
+        offenders: list[str] = []
+        for path in _backend_files():
+            rel = path.relative_to(BACKEND_ROOT).as_posix()
+            if _classify(rel) != SANDBOX:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and RESEARCH_CORE_TABLE_SQL.search(node.value)
+                ):
+                    offenders.append(f"{rel}:{node.lineno}")
+        self.assertFalse(
+            offenders,
+            "sandbox-module SQL references research-core tables "
+            "(experiments/claims/reviews/syntheses); move the query behind a "
+            "surface-injected check instead: " + ", ".join(sorted(offenders)),
         )
 
     def test_grandfathered_baseline_only_shrinks(self) -> None:

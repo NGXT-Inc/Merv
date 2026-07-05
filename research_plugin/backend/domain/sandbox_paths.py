@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 
-from .paths import safe_experiment_dirname
+from ..utils import safe_experiment_dirname
 
 DEFAULT_REMOTE_ROOT = "/workspace"
 DEFAULT_DATA_DIR = "/workspace/data"

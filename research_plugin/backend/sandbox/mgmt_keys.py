@@ -3,14 +3,16 @@
 The service layer consumes the neutral ``MgmtKeyStore`` port; this module is
 the local filesystem implementation used by local-mode composition. Keys live
 under ``.research_plugin/mgmt_keys/<sandbox_uid>/`` in local mode. A cloud
-control plane can provide a different implementation behind the same port.
+control plane can provide a different implementation behind the same port
+(see ``managed_mgmt_keys``). Custody adapters are sandbox machinery, so they
+live in the sandbox module beside the backend port's other collaborators.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..sandbox.sandbox_support import _safe_name
+from .sandbox_support import _safe_name
 from ..ssh_keys import ensure_ed25519_keypair
 
 

@@ -16,9 +16,10 @@ from .control_runtime import (
     ControlSandboxWorker,
     ControlToolCallSink,
 )
+from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 from ..observability import StructuredLogger
 from ..ports.mgmt_keys import MgmtKeyStore
-from .record_core import build_record_core
+from .record_core import build_experiment_attachment_check, build_record_core
 from ..sandbox.sandbox_backend import SandboxBackend
 from ..mlflow import CentralMlflowService
 from ..services.sandbox.sandboxes import SandboxService
@@ -44,6 +45,7 @@ class ControlApp:
         task_channel: Any,
         mgmt_keys: MgmtKeyStore,
         mlflow_tracking: CentralMlflowService | None = None,
+        force_expiry_reaper: bool = False,
     ) -> None:
         self.workspace = SimpleNamespace(repo_root=repo_root)
         self.store = store
@@ -83,6 +85,14 @@ class ControlApp:
             quotas=self.quotas,
             task_channel=task_channel,
             storage_enabled=self.storage is not None,
+            # Guidance prose + the experiment-label check are surface-owned;
+            # the sandbox module embeds/calls what it is handed (phase 4a).
+            storage_hint=STORAGE_RULE_OF_THUMB,
+            attachment_check=build_experiment_attachment_check(store=self.store),
+            # Hosted control pays the provider bill; the composition root
+            # (composition/control_mode.py) passes True so the env off-switch
+            # cannot leave billing VMs unreaped.
+            force_expiry_reaper=force_expiry_reaper,
         )
         self.workflow = WorkflowService(
             store=self.store,
@@ -91,6 +101,7 @@ class ControlApp:
             sandboxes=self.sandboxes,
             syntheses=self.syntheses,
             storage_enabled=self.storage is not None,
+            storage_guidance=storage_guidance(enabled=self.storage is not None),
         )
         control_tool_names = CONTROL_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES
         control_tool_names &= available_tool_names(storage_enabled=self.storage is not None)

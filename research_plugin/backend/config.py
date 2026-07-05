@@ -59,10 +59,9 @@ MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "RESEARCH_PLUGIN_ALLOWED_ORIGINS"
 CONTROL_RESTRICT_CORS_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_RESTRICT_CORS"
-MLFLOW_MODE_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_MODE"
-MLFLOW_TRACKING_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI"
-MLFLOW_SERVER_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_SERVER_URI"
-MLFLOW_DASHBOARD_URL_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL"
+# MLflow-extension env config (MLFLOW_MODE/TRACKING_URI/SERVER_URI/DASHBOARD)
+# lives in backend/mlflow/config.py — the extension owns its own knobs.
+# The enforcement knob below is composition policy, so it stays here.
 REQUIRE_AGENT_MLFLOW_ENV_VAR = "RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW"
 REQUIRE_SANDBOX_BACKEND_ENV_VAR = "RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND"
 
@@ -231,39 +230,6 @@ def resolve_allowed_origins(env: Mapping[str, str] | None = None) -> list[str]:
             )
         origins.append(origin)
     return origins
-
-
-def resolve_mlflow_mode(env: Mapping[str, str] | None = None) -> str:
-    """Centralized MLflow mode, or '' when MLflow is not configured yet."""
-    source = env if env is not None else os.environ
-    raw = (source.get(MLFLOW_MODE_ENV_VAR) or "").strip().lower()
-    if not raw:
-        return ""
-    if raw not in {"managed", "external"}:
-        raise ValidationError(
-            f"unknown {MLFLOW_MODE_ENV_VAR}: {raw!r} "
-            "(expected 'managed' or 'external')",
-            details={"mode": raw},
-        )
-    return raw
-
-
-def resolve_mlflow_tracking_uri(env: Mapping[str, str] | None = None) -> str:
-    """The backend-owned MLflow tracking URI exposed to agents."""
-    source = env if env is not None else os.environ
-    return (source.get(MLFLOW_TRACKING_URI_ENV_VAR) or "").strip().rstrip("/")
-
-
-def resolve_mlflow_server_uri(env: Mapping[str, str] | None = None) -> str:
-    """Optional backend-internal MLflow URI for control-plane reads."""
-    source = env if env is not None else os.environ
-    return (source.get(MLFLOW_SERVER_URI_ENV_VAR) or "").strip().rstrip("/")
-
-
-def resolve_mlflow_dashboard_url(env: Mapping[str, str] | None = None) -> str:
-    """Optional human-facing MLflow dashboard URL; defaults to tracking URI."""
-    source = env if env is not None else os.environ
-    return (source.get(MLFLOW_DASHBOARD_URL_ENV_VAR) or "").strip().rstrip("/")
 
 
 def build_blob_store(

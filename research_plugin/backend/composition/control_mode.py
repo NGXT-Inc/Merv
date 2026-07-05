@@ -37,7 +37,6 @@ from ..config import (
     build_blob_store,
     build_object_store,
     build_state_store,
-    MLFLOW_TRACKING_URI_ENV_VAR,
     REQUIRE_AGENT_MLFLOW_ENV_VAR,
     REQUIRE_SANDBOX_BACKEND_ENV_VAR,
     resolve_blob_bucket,
@@ -54,8 +53,9 @@ from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
 from ..services.cleanup import CleanupService
 from ..mlflow import CentralMlflowService
+from ..mlflow.config import MLFLOW_TRACKING_URI_ENV_VAR
 from ..storage.service import StorageLedgerService
-from ..state.managed_mgmt_keys import MountedMgmtKeyStore
+from ..sandbox.managed_mgmt_keys import MountedMgmtKeyStore
 from ..utils import ValidationError
 
 
@@ -134,6 +134,11 @@ def build_control_app(
         execution_backend=execution_backend,
         mgmt_keys=_build_mgmt_key_store(env=env),
         mlflow_tracking=mlflow_tracking,
+        # Cost governance (cloud plan Phase 7): the hosted control plane holds
+        # the provider keys and pays for every VM, so the composition forces
+        # the expiry reaper on — the RESEARCH_PLUGIN_SANDBOX_REAPER off-switch
+        # is ignored here (local/daemon compositions keep it).
+        force_expiry_reaper=True,
     )
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
     # live VMs must re-acquire reaping. SandboxService already started the

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from ..domain.quota_contract import AdmissionRequest
+from ..ports.quota_admission import AdmissionRequest
 from ..state.store import BaseStateStore, row_to_dict
 from ..utils import PermissionDeniedError, now_iso, parse_iso
 

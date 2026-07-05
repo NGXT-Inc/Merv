@@ -1,4 +1,8 @@
-"""Pure rollups for filtered tool-call rows."""
+"""Pure rollups for filtered tool-call rows (telemetry aggregation).
+
+Lives beside ToolCallStore in the kernel state layer: these helpers roll up
+rows that store produces, and nothing research-core about them exists.
+"""
 
 from __future__ import annotations
 

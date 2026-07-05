@@ -85,7 +85,9 @@ class InProcessTaskChannel:
         payload = task.payload
         if task.type == "conn_refresh":
             # Re-render the agent's conn file (and ssh command) for a row
-            # whose tunnel endpoint moved.
+            # whose SSH endpoint moved. Provider-neutral by construction: the
+            # new endpoint was discovered upstream via the backend protocol's
+            # refresh_ssh_endpoint; this task only rewrites local files.
             return self.worker.sandbox_enrichment(
                 row=payload["row"],
                 name=str(payload.get("name") or ""),

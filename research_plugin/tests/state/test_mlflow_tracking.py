@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from backend.config import resolve_mlflow_mode
+from backend.mlflow.config import resolve_mlflow_mode
 from backend.daemon.project_router import ProjectRouter
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.mlflow.local_server import LocalMlflowServer

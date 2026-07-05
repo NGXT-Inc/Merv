@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..domain.tool_call_stats import by_tool, tool_call_totals
+from .tool_call_stats import by_tool, tool_call_totals
 from ..utils import format_iso, now_iso, parse_iso
 from .activity import SENSITIVE_KEYS, jsonable, payload_chars
 

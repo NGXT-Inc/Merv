@@ -19,6 +19,7 @@ from ..services.reviews import ReviewService
 from ..services.syntheses import SynthesisService
 from ..state import BaseStateStore
 from ..storage.blobs import BlobStore
+from ..utils import NotFoundError
 
 
 @dataclass(frozen=True)
@@ -84,3 +85,28 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         reviews=reviews,
         feed=feed,
     )
+
+
+def build_experiment_attachment_check(*, store: BaseStateStore):
+    """Surface-owned validator handed to ``SandboxService``.
+
+    The sandbox module treats attachment labels as opaque strings; only the
+    surface knows a label happens to be an experiment id, so the composition
+    injects the existence/scope check (docs/MODULE_BOUNDARIES.md, sandbox
+    de-domaining). Raises the same NotFoundError the sandbox service used to.
+    """
+
+    def check(*, attachment_id: str, project_id: str) -> None:
+        conn = store.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id FROM experiments WHERE id = ?", (attachment_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None or row["project_id"] != project_id:
+            raise NotFoundError(
+                f"experiment not found in project {project_id}: {attachment_id}"
+            )
+
+    return check

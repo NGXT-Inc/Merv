@@ -39,6 +39,7 @@ from ..dataplane.resource_observer import LocalResourceObserver
 from ..dataplane.resource_validation import validate_local_resource_artifact
 from ..dataplane.sandbox_outputs import pull_sandbox_outputs
 from ..dataplane.experiment_folders import materialize_experiment_folders
+from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB
 from ..secret_tokens import mint_secret
 from ..services.sandbox import sandbox_views
 from ..storage.file_transfer import (
@@ -442,7 +443,11 @@ class DaemonServer:
             name=name,
             use_sandbox_uid_command=use_sandbox_uid_command,
         )
-        return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
+        # Surface-owned guidance injection: the views module embeds the hint
+        # string it is handed instead of importing storage guidance itself.
+        return sandbox_views.merge_agent_view(
+            facts=facts, enrichment=enrichment, storage_hint=STORAGE_RULE_OF_THUMB
+        )
 
     def _sandbox_enrichment(
         self,

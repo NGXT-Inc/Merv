@@ -14,7 +14,7 @@ from .execution import build_sandbox_backend
 from .sandbox.sandbox_backend import SandboxBackend
 from .state import ActivityLogger, ToolCallStore
 from .storage.blobs import BlobStore, LocalDirBlobStore
-from .state.mgmt_keys import LocalMgmtKeyStore
+from .sandbox.mgmt_keys import LocalMgmtKeyStore
 from .workspace import LocalWorkspace
 
 

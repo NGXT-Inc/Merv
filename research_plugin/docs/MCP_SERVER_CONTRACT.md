@@ -389,6 +389,15 @@ hardware (`gpu`, `cpu`, `memory`, `instance_type`, `region`).
 `.research_plugin/sbx <sandbox_uid>` (run from the repo root); `ssh.raw_command`
 is the full `ssh -i … user@host` line for use from any directory.
 
+SSH key custody (BYO-key is the documented primary path): the sandbox
+authorizes a caller-side public key. The requesting side generates its own
+ed25519 keypair under `.research_plugin/sandboxes/keys/` (gitignored — never
+commit key material) and that public key is what lands in
+`authorized_keys` (data-plane requests carry it as `public_key`); when no key
+is supplied, the plugin's daemon mints and manages a fallback keypair at the
+same path. The `sandbox.request` response's additive `public_key_source` field
+reports which happened: `"caller"` or `"managed"`.
+
 #### Hardware selection (provider-shaped)
 
 Procurement differs by backend, and the **default backend is Lambda Labs**:

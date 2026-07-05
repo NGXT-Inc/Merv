@@ -79,13 +79,16 @@ class MinimalBackend(SandboxBackendBase):
 
 
 class SandboxBackendContractTest(unittest.TestCase):
-    def _daemons_for_backend(self, backend: SandboxBackendBase) -> SandboxDaemons:
+    def _daemons_for_backend(
+        self, backend: SandboxBackendBase, *, force_expiry_reaper: bool = False
+    ) -> SandboxDaemons:
         return SandboxDaemons(
             registry=object(),  # type: ignore[arg-type]
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
             lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
             sample_metrics=lambda **_kwargs: {},
+            force_expiry_reaper=force_expiry_reaper,
         )
 
     def test_backend_classes_expose_full_contract_surface(self) -> None:
@@ -159,16 +162,27 @@ class SandboxBackendContractTest(unittest.TestCase):
     def test_control_mode_ignores_reaper_off_switch(self) -> None:
         # Cost governance (cloud plan Phase 7): the cloud pays for every VM, so
         # an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 is IGNORED in control
-        # mode — the reaper stays on (still gated by the backend's enforce_expiry).
-        daemons = self._daemons_for_backend(MinimalBackend())
+        # mode. The flag is composition-injected: the control composition root
+        # passes force_expiry_reaper=True instead of the daemons reading the
+        # process mode from config (module-boundary fix, phase 4a).
+        daemons = self._daemons_for_backend(MinimalBackend(), force_expiry_reaper=True)
         with mock.patch.dict(
             os.environ,
-            {
-                "RESEARCH_PLUGIN_MODE": "control",
-                "RESEARCH_PLUGIN_SANDBOX_REAPER": "0",
-            },
+            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "0"},
         ):
             self.assertTrue(daemons._reaper_enabled())
+
+    def test_control_composition_forces_the_expiry_reaper(self) -> None:
+        # The control composition (not the sandbox module) must compute the
+        # force flag — the daemons no longer import backend.config.
+        control_source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("force_expiry_reaper=True", control_source)
+        daemons_source = (
+            BACKEND_ROOT / "services" / "sandbox" / "sandbox_daemons.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("resolve_mode", daemons_source)
 
     def test_services_do_not_dispatch_on_provider_name_literals(self) -> None:
         provider_names = {"modal", "lambda_labs", "thunder_compute"}

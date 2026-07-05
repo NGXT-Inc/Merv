@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 
 from backend.app import ResearchPluginApp
-from backend.domain.quota_contract import AdmissionRequest
+from backend.ports.quota_admission import AdmissionRequest
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.quotas import GLOBAL_SCOPE, QuotaService
 from backend.utils import PermissionDeniedError

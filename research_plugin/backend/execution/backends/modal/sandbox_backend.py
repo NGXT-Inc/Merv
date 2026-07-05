@@ -22,8 +22,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from backend.execution.bootstrap_tools import (
+    BASELINE_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
-    MODAL_APT_PACKAGES,
     REC_EXEC_CORE,
 )
 from backend.execution.usage_metrics import (
@@ -37,6 +37,13 @@ from ...transcript_wire import (
     TRANSCRIPT_TAIL_DEFAULT,
     parse_transcript_tail,
     transcript_tail_command,
+)
+
+
+MODAL_APT_PACKAGES: tuple[str, ...] = (
+    "openssh-server",
+    "ca-certificates",
+    *BASELINE_APT_PACKAGES,
 )
 from ....sandbox.sandbox_backend import (
     BackendCapabilities,

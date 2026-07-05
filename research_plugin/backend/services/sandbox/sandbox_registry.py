@@ -258,17 +258,6 @@ class SandboxRegistry:
         finally:
             conn.close()
 
-    def experiment_name(self, *, experiment_id: str) -> str:
-        """The experiment's short folder name; '' on rows that predate it."""
-        conn = self.store.connect()
-        try:
-            row = conn.execute(
-                "SELECT name FROM experiments WHERE id = ?", (experiment_id,)
-            ).fetchone()
-        finally:
-            conn.close()
-        return str(row["name"]) if row is not None and row["name"] else ""
-
     def _primary_uid(self, *, conn: Any, experiment_id: str) -> str | None:
         """Most recent running sandbox attached to the experiment."""
         statuses = tuple(ACTIVE_SANDBOX_STATUSES)
@@ -878,38 +867,34 @@ class SandboxRegistry:
         )
 
     def tenant_for_sandbox(self, *, experiment_id: str, sandbox_uid: str) -> str:
-        """Tenant owning a sandbox, via its experiment or the row itself."""
+        """Tenant owning a sandbox, from the row itself or its attachments.
+
+        Sandbox rows record their tenant at upsert/attach time, so the answer
+        lives entirely inside the sandbox module's own tables — the attachment
+        id stays an opaque label (no research-core joins).
+        """
         conn = self.store.connect()
         try:
-            if experiment_id:
-                row = conn.execute(
-                    """
-                    SELECT p.tenant_id
-                    FROM experiments e
-                    JOIN projects p ON p.id = e.project_id
-                    WHERE e.id = ?
-                    """,
-                    (experiment_id,),
-                ).fetchone()
-                if row is None:
-                    row = conn.execute(
-                        """
-                        SELECT s.tenant_id
-                        FROM sandboxes s
-                        JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
-                        WHERE a.experiment_id = ? AND a.detached_at IS NULL
-                        ORDER BY s.created_seq DESC
-                        LIMIT 1
-                        """,
-                        (experiment_id,),
-                    ).fetchone()
-            elif sandbox_uid:
+            tenant = None
+            if sandbox_uid:
                 row = conn.execute(
                     "SELECT tenant_id FROM sandboxes WHERE sandbox_uid = ?",
                     (sandbox_uid,),
                 ).fetchone()
-            else:
-                row = None
+                tenant = row["tenant_id"] if row is not None else None
+            if not tenant and experiment_id:
+                row = conn.execute(
+                    """
+                    SELECT s.tenant_id
+                    FROM sandboxes s
+                    JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
+                    WHERE a.experiment_id = ? AND a.detached_at IS NULL
+                    ORDER BY s.created_seq DESC
+                    LIMIT 1
+                    """,
+                    (experiment_id,),
+                ).fetchone()
+                tenant = row["tenant_id"] if row is not None else None
         finally:
             conn.close()
-        return str(row["tenant_id"]) if row is not None else "local"
+        return str(tenant) if tenant else "local"

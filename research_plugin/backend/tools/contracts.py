@@ -1052,7 +1052,18 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "an experiment, and return SSH details plus runtime guidance for the "
             "remote work folder, expiry, copy-out, and durable storage. "
             "On Thunder Compute or Lambda Labs, omit instance_type to "
-            "receive a live menu of available machines to pick from."
+            "receive a live menu of available machines to pick from. "
+            "SSH key custody: the sandbox authorizes a caller-side public key. "
+            "The primary path is bring-your-own-key — the requesting side "
+            "generates its own ed25519 keypair (ssh-keygen) under "
+            ".research_plugin/sandboxes/keys/ (keep .research_plugin/ "
+            "gitignored; never commit key material) and its PUBLIC key is what "
+            "gets authorized on the VM (data-plane requests carry it as "
+            "public_key). When no key is supplied, the plugin's daemon mints "
+            "and manages a fallback keypair at that same path. The response's "
+            "public_key_source reports which happened: 'caller' (you supplied "
+            "the key) or 'managed' (daemon-minted fallback); ssh.key_path "
+            "points at the private key to use either way."
         ),
         plane="data",
     ),

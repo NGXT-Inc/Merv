@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .domain.paths import safe_experiment_dirname
+from .utils import safe_experiment_dirname
 
 
 class LocalWorkspace:

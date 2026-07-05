@@ -37,11 +37,18 @@ class SandboxDaemons:
         lifecycle: SandboxLifecycle,
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
+        force_expiry_reaper: bool = False,
     ) -> None:
         self.registry = registry
         self.backend = backend
         self.provisioner = provisioner
         self.lifecycle = lifecycle
+        # Cost governance (cloud plan Phase 7): the hosted control composition
+        # passes True — the cloud holds the provider keys and pays for every
+        # VM, so an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 must not be
+        # able to leave billing VMs unreaped. Local/daemon compositions pass
+        # False and keep the env off-switch (the user owns their own bill).
+        self.force_expiry_reaper = bool(force_expiry_reaper)
         self.heartbeat = SandboxHeartbeatMonitor(
             registry=registry,
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
@@ -71,15 +78,10 @@ class SandboxDaemons:
         return self._reaper_enabled() or self._idle_reap_threshold() > 0
 
     def _reaper_enabled(self) -> bool:
-        # Cost governance (cloud plan Phase 7): in CONTROL mode the env
-        # off-switch is IGNORED — the cloud holds the provider keys and pays for
-        # every VM, so an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 must not
-        # be able to leave billing VMs unreaped. Local/daemon mode keeps the
-        # switch (the user owns their own bill). enforce_expiry still gates by
+        # With force_expiry_reaper (hosted control) the env off-switch is
+        # IGNORED; otherwise it is honored. enforce_expiry still gates by
         # backend (the in-memory fake opts out).
-        from ...config import Mode, resolve_mode
-
-        if resolve_mode() is not Mode.CONTROL:
+        if not self.force_expiry_reaper:
             if not env_bool("RESEARCH_PLUGIN_SANDBOX_REAPER", default=True):
                 return False
         return self.backend.capabilities.enforce_expiry

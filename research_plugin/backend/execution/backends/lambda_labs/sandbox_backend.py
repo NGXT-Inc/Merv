@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from backend.execution.bootstrap_tools import (
-    LAMBDA_APT_PACKAGES,
+    BASELINE_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
 )
 from backend.execution.vm_bootstrap import build_bootstrap_core
@@ -41,6 +41,12 @@ TRANSCRIPT_READ_PREFIX = "rp-transcript-read:"
 ACTIVE_INSTANCE_STATUSES = frozenset({"active"})
 LIVE_INSTANCE_STATUSES = frozenset({"booting", "active", "unhealthy"})
 
+
+LAMBDA_APT_PACKAGES: tuple[str, ...] = (
+    "openssh-server",
+    "ca-certificates",
+    *BASELINE_APT_PACKAGES,
+)
 
 class LambdaLabsSandboxBackend(VmSshSandboxBackend):
     # Lambda Labs sells fixed machine SKUs (GPU + vCPU + RAM bundled), so the

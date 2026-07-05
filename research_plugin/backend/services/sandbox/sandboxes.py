@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from ...domain.quota_contract import AdmissionRequest
 from ...domain.sandbox_paths import remote_experiment_dir
-from ...domain.storage_guidance import STORAGE_RULE_OF_THUMB
 
 from ...state.activity import ActivityLogger
 from ...state.store import BaseStateStore, Connection, row_to_dict
@@ -24,7 +22,7 @@ from ...sandbox.sandbox_backend import (
     TranscriptTail,
 )
 from ...ports.mgmt_keys import MgmtKeyStore
-from ...ports.quota_admission import QuotaAdmission
+from ...ports.quota_admission import AdmissionRequest, QuotaAdmission
 from ...ports.sandbox_worker import SandboxWorker
 from ...ports.task_channel import TaskChannel
 from . import sandbox_views
@@ -63,6 +61,9 @@ class SandboxService:
         quotas: QuotaAdmission | None = None,
         task_channel: TaskChannel | None = None,
         storage_enabled: bool = False,
+        storage_hint: str = "",
+        attachment_check: Callable[..., None] | None = None,
+        force_expiry_reaper: bool = False,
     ) -> None:
         self.store = store
         self.backend = sandbox_backend
@@ -88,6 +89,15 @@ class SandboxService:
         # Conn files and local tunnels route through the data-plane worker.
         self.worker = worker
         self.storage_enabled = bool(storage_enabled)
+        # Guidance prose for durable heavy-file storage. Injected by the
+        # composition root (it owns the storage feature); the sandbox module
+        # embeds the string it is handed and never imports storage guidance.
+        self.storage_hint = str(storage_hint or "")
+        # Optional surface-owned validator for attachment labels. The sandbox
+        # module treats attachment ids as opaque strings; only the surface
+        # knows a label happens to be an experiment id, so the composition
+        # injects the existence/scope check. None ⇒ ids arrive pre-validated.
+        self.attachment_check = attachment_check
         self.activity_policy = SandboxActivityPolicy()
         self.request_wait_seconds = env_float(
             "RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT",
@@ -134,6 +144,7 @@ class SandboxService:
             provisioner=self.provisioner,
             lifecycle=self.lifecycle,
             sample_metrics=self.metrics.sample_metrics,
+            force_expiry_reaper=force_expiry_reaper,
         )
         self.daemons.start()
         # Control-side transcript cursor cache (plan Phase 9, risk 14): coalesces
@@ -173,16 +184,14 @@ class SandboxService:
 
         # Resolve scope. Experiment attachment is optional and is represented
         # only by sandbox_attachments; it never controls sandbox eligibility.
+        # The label's existence/scope check is surface-injected: the sandbox
+        # module treats the attachment id as opaque.
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            if experiment_id:
-                experiment = conn.execute(
-                    "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
-                ).fetchone()
-                if experiment is None or experiment["project_id"] != project_id:
-                    raise NotFoundError(
-                        f"experiment not found in project {project_id}: {experiment_id}"
-                    )
+        if experiment_id and self.attachment_check is not None:
+            self.attachment_check(
+                attachment_id=experiment_id, project_id=project_id
+            )
         if experiment_id:
             try:
                 existing = self.registry.load_row(experiment_id=experiment_id)
@@ -208,6 +217,10 @@ class SandboxService:
             public_key = public_key_override
         else:
             public_key, _key_path = self._ensure_keypair(local_key=sandbox_uid)
+        # BYO-key custody fact (additive response field): "caller" when the
+        # requester supplied its own public key, "managed" when the worker
+        # minted the fallback keypair on the caller's behalf.
+        public_key_source = "caller" if public_key_override else "managed"
         # Mint the management keypair before any provision so key injection
         # always precedes the management read paths (plan Phase 5 sequencing).
         management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
@@ -245,12 +258,14 @@ class SandboxService:
                     ),
                 },
             )
-            return self._agent_result(
+            result = self._agent_result(
                 row=row,
                 reused=True,
                 include_data_plane_enrichment=include_data_plane_enrichment,
                 use_sandbox_uid_command=True,
             )
+            result["public_key_source"] = public_key_source
+            return result
 
         # 2) Hardware-selection gate. A provider that bundles GPU + CPU + RAM into
         #    fixed machine types (Lambda Labs) has nothing sensible to default to,
@@ -325,12 +340,14 @@ class SandboxService:
         # request. Slow provisions (any real GPU boot outlives the wait above)
         # deliver from the agent's next sandbox.get poll instead.
         self._deliver_secrets_once(row=row, experiment_id=experiment_id)
-        return self._agent_result(
+        result = self._agent_result(
             row=row,
             reused=reused,
             include_data_plane_enrichment=include_data_plane_enrichment,
             use_sandbox_uid_command=True,
         )
+        result["public_key_source"] = public_key_source
+        return result
 
     def request_from_data_plane(
         self,
@@ -436,14 +453,10 @@ class SandboxService:
             raise ValidationError("sandbox.attach requires a running sandbox")
         if self.lifecycle.liveness(sandbox_id=str(source_row["sandbox_id"])) is False:
             raise ValidationError("sandbox.attach requires a live sandbox")
-        with self.store.transaction() as conn:
-            target = conn.execute(
-                "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
-            ).fetchone()
-            if target is None or target["project_id"] != project_id:
-                raise NotFoundError(
-                    f"experiment not found in project {project_id}: {experiment_id}"
-                )
+        if self.attachment_check is not None:
+            self.attachment_check(
+                attachment_id=experiment_id, project_id=project_id
+            )
         row = self.registry.attach(
             sandbox_uid=sandbox_uid,
             experiment_id=experiment_id,
@@ -694,7 +707,7 @@ class SandboxService:
                 "yourself over SSH into the local work folder"
                 + (
                     f", and storage.put_object/storage.upload_file for durable "
-                    f"heavy artifacts. {STORAGE_RULE_OF_THUMB}"
+                    f"heavy artifacts. {self.storage_hint}"
                     if self.storage_enabled
                     else "; heavy-file storage is not enabled on this backend"
                 )
@@ -1167,7 +1180,9 @@ class SandboxService:
             name=view_name,
             use_sandbox_uid_command=use_sandbox_uid_command,
         )
-        return sandbox_views.merge_agent_view(facts=facts, enrichment=enrichment)
+        return sandbox_views.merge_agent_view(
+            facts=facts, enrichment=enrichment, storage_hint=self.storage_hint
+        )
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
         return sandbox_views.agent_summary(row=self._with_active_experiment_ids(row=row))

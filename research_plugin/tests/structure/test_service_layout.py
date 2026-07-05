@@ -298,7 +298,7 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_ports_are_neutral_and_outside_services(self) -> None:
         expected_imports = {
             "mgmt_keys.py": {"pathlib", "typing"},
-            "quota_admission.py": {"domain.quota_contract", "typing"},
+            "quota_admission.py": {"dataclasses", "typing"},
             "review_policy.py": {"typing"},
             "resource_records.py": {"typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},

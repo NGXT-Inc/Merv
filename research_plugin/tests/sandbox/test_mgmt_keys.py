@@ -20,8 +20,8 @@ from backend.execution.backends.lambda_labs.sandbox_backend import (
 )
 from backend.execution.vm_bootstrap import MGMT_EXEC_SCRIPT, MGMT_SSH_USER
 from backend.execution.backends.modal.sandbox_backend import BOOT_SCRIPT
-from backend.state.managed_mgmt_keys import MountedMgmtKeyStore
-from backend.state.mgmt_keys import LocalMgmtKeyStore
+from backend.sandbox.managed_mgmt_keys import MountedMgmtKeyStore
+from backend.sandbox.mgmt_keys import LocalMgmtKeyStore
 from backend.utils import ValidationError
 
 

@@ -13,7 +13,6 @@ from ..artifacts.roles import (
 )
 from ..domain.gates import ReviewRequirement, RoleRequirement
 from ..domain.paths import experiment_folder_rel
-from ..domain.storage_guidance import storage_guidance
 from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
 from ..domain.workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
@@ -55,6 +54,7 @@ class WorkflowService:
         sandboxes: SandboxWorkflowReader,
         syntheses: ReflectionWorkflowReader,
         storage_enabled: bool = False,
+        storage_guidance: dict[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.experiments = experiments
@@ -62,6 +62,10 @@ class WorkflowService:
         self.sandboxes = sandboxes
         self.syntheses = syntheses
         self.storage_enabled = bool(storage_enabled)
+        # Composition-injected storage guidance block (object_storage prose).
+        # The workflow embeds the dict it is handed instead of importing the
+        # storage module; compositions pass storage_guidance(enabled=...).
+        self.storage_guidance = dict(storage_guidance or {"enabled": self.storage_enabled})
 
     def status_and_next(
         self, *, project_id: str | None = None, experiment_id: str | None = None
@@ -852,7 +856,7 @@ class WorkflowService:
                 "scratch. Before registering or associating result resources, "
                 + heavy_retention
             ),
-            "storage_guidance": storage_guidance(enabled=self.storage_enabled),
+            "storage_guidance": dict(self.storage_guidance),
             "report_guidance": (
                 "A results report (role 'report') is also required before "
                 "submit_results — write it in the same pass as your result files. "

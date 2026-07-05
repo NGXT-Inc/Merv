@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .config import build_object_store
+from .domain.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 from .services.sandbox.sandboxes import SandboxService
 from .storage.service import StorageLedgerService
 from .services.workflow import WorkflowService
 from .state import BaseStateStore, StateStore
 from .storage.blobs import BlobStore
 from .observability import StructuredLogger
-from .control.record_core import build_record_core
+from .control.record_core import build_experiment_attachment_check, build_record_core
 from .mlflow import CentralMlflowService
 from .tools.tool_facade import ToolDispatcher
 from .tools.contracts import available_tool_names
@@ -133,6 +134,10 @@ class ResearchPluginApp:
                 task_channel if task_channel is not None else runtime.task_channel
             ),
             storage_enabled=self.storage is not None,
+            # Guidance prose + the experiment-label check are surface-owned;
+            # the sandbox module embeds/calls what it is handed (phase 4a).
+            storage_hint=STORAGE_RULE_OF_THUMB,
+            attachment_check=build_experiment_attachment_check(store=self.store),
         )
         self.workflow = WorkflowService(
             store=self.store,
@@ -141,6 +146,7 @@ class ResearchPluginApp:
             sandboxes=self.sandboxes,
             syntheses=self.syntheses,
             storage_enabled=self.storage is not None,
+            storage_guidance=storage_guidance(enabled=self.storage is not None),
         )
         self.tools = ToolDispatcher(
             handlers=build_local_tool_handlers(
