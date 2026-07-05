@@ -257,6 +257,45 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_legacy_sandboxes_gain_last_command_columns(self) -> None:
+        # Migration 16: the last_command_* family reached the fresh SCHEMA
+        # without a migration; migrated deployments 500ed on the sandbox
+        # signal ETag. Seed the pre-command-snapshot shape and converge.
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, status, created_at, updated_at
+                )
+                VALUES ('exp_old', 'proj_old', 'running',
+                        '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        StateStore(db_path=self.db)  # converge, then re-boot for idempotence
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+            }
+            self.assertTrue(
+                set(StateStore.SANDBOX_LAST_COMMAND_COLUMNS) <= columns,
+                sorted(set(StateStore.SANDBOX_LAST_COMMAND_COLUMNS) - columns),
+            )
+        finally:
+            conn.close()
+        # The query that exposed the drift must run against the migrated shape.
+        signal = store.project_sandbox_signal(project_id="proj_old")
+        self.assertIsInstance(signal, str)
+
     def test_storage_missing_status_migrates_to_expired(self) -> None:
         conn = sqlite3.connect(self.db)
         try:

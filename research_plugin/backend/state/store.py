@@ -548,6 +548,10 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # Product-name alignment Phase 5: the reflection-wave table was formerly
     # named syntheses. Row ids and payload keys keep their legacy spelling.
     (15, "rename_syntheses_to_reflections", ""),
+    # The whole last_command_* snapshot family reached the fresh-create SCHEMA
+    # without a migration, so migrated deployments lacked all eight columns
+    # (found when the sandbox signal ETag 500ed on production Postgres).
+    (16, "add_sandbox_last_command_columns", ""),
 )
 
 
@@ -687,6 +691,8 @@ class BaseStateStore:
                 self._ensure_sandbox_public_key_source(conn=conn)
             elif name == "rename_syntheses_to_reflections":
                 self._rename_syntheses_to_reflections(conn=conn)
+            elif name == "add_sandbox_last_command_columns":
+                self._ensure_sandbox_last_command_columns(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -716,6 +722,24 @@ class BaseStateStore:
             conn.execute(
                 "ALTER TABLE sandboxes ADD COLUMN public_key_source TEXT NOT NULL DEFAULT 'managed'"
             )
+
+    # Mirrors the SCHEMA block exactly; adding a ninth last_command_* column
+    # there means extending this map too.
+    SANDBOX_LAST_COMMAND_COLUMNS = {
+        "last_command_id": "TEXT NOT NULL DEFAULT ''",
+        "last_command_text": "TEXT NOT NULL DEFAULT ''",
+        "last_command_started_at": "TEXT",
+        "last_command_status": "TEXT NOT NULL DEFAULT ''",
+        "last_command_exit_code": "INTEGER",
+        "last_command_finished_at": "TEXT",
+        "last_command_output_tail": "TEXT NOT NULL DEFAULT ''",
+        "last_command_snapshot_at": "TEXT",
+    }
+
+    def _ensure_sandbox_last_command_columns(self, *, conn: Connection) -> None:
+        for column, ddl in self.SANDBOX_LAST_COMMAND_COLUMNS.items():
+            if not self._has_column(conn=conn, table="sandboxes", column=column):
+                conn.execute(f"ALTER TABLE sandboxes ADD COLUMN {column} {ddl}")
 
     def _rename_syntheses_to_reflections(self, *, conn: Connection) -> None:
         if self._has_table(conn=conn, table="reflections"):
