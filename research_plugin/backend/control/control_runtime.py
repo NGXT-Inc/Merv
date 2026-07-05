@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -247,7 +248,12 @@ class ControlToolCallSink:
 
 
 class ControlSandboxWorker:
-    """Control-side adapter for data-plane duties executed by daemon tasks."""
+    """Control-side adapter for machine-local sandbox enrichment.
+
+    Hosted control never owns caller-side keys or conn files, so the worker
+    exposes neutral empty enrichment while provider endpoint refresh remains a
+    control-plane operation.
+    """
 
     def repo_relative(self, path: str | Path) -> str:
         return str(path)
@@ -257,11 +263,40 @@ class ControlSandboxWorker:
 
     def ensure_keypair(self, **_: Any) -> tuple[str, Path]:
         raise ValidationError(
-            "control mode cannot mint data-plane user SSH keys; use daemon request"
+            "control mode cannot mint data-plane user SSH keys; pass public_key "
+            "through the local MCP proxy"
         )
 
     def sandbox_enrichment(self, **_: Any) -> dict[str, Any]:
         return {}
+
+
+class ControlTaskChannel:
+    """Hosted-control task channel after the split daemon removal.
+
+    Local mode still uses InProcessTaskChannel for conn files and teardown.
+    Hosted control updates sandbox rows and reapers through the neutral
+    SandboxBackend protocol; caller-machine conn-file work is gone.
+    """
+
+    def __init__(self) -> None:
+        self.history: list[tuple[str, dict[str, Any]]] = []
+
+    def submit(
+        self,
+        *,
+        task_type: str,
+        payload: dict[str, Any],
+        deadline: str | None = None,
+        tenant_id: str | None = None,
+    ) -> Any:
+        del deadline, tenant_id
+        self.history.append((task_type, deepcopy(payload)))
+        if task_type == "conn_refresh":
+            return {}
+        if task_type == "teardown":
+            return None
+        raise ValidationError(f"unknown task type: {task_type}")
 
 
 def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

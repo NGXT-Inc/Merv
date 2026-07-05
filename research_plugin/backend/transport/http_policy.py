@@ -54,7 +54,7 @@ HOSTED_CONTROL_TOOL_POLICIES = {
 
 
 # Browser-visible /api/meta capability keys for local data-plane HTTP routes.
-# Daemon-only data-plane endpoints use daemon auth instead of this UI handshake.
+# Proxy submission endpoints are not browser UI capabilities.
 HTTP_DATA_PLANE_FEATURE_TO_TOOL = {
     "resource_registration": "resource.register_file",
     "resource_association": "resource.associate",

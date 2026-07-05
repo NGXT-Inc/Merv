@@ -1,12 +1,10 @@
 """Central mode/config resolution for the backend.
 
-The cloud split (docs/CONTROL_DATA_PLANE_SPLIT.md) gives the backend three
-process roles selected by ``RESEARCH_PLUGIN_MODE``:
+The backend has two process roles selected by ``RESEARCH_PLUGIN_MODE``:
 
 - ``local``  — today's topology: one process binds the control plane and the
   data plane in-process (default, and the only mode implemented so far).
 - ``control`` — cloud control plane (multi-tenant records, gates, lifecycle).
-- ``daemon`` — slim local data-plane daemon (keys, file observation, SSH command material).
 
 Mode resolution is fail-fast: an unknown value refuses to start rather than
 silently running in the wrong topology. All later config (DB URLs, blob
@@ -44,9 +42,9 @@ MODE_ENV_VAR = "RESEARCH_PLUGIN_MODE"
 # the Postgres dialect — used by tests and the control profile.
 DB_URL_ENV_VAR = "RESEARCH_PLUGIN_DB_URL"
 
-# Split-transport config (cloud plan Phase 8, §3.4). The daemon dials the cloud
-# at CONTROL_URL. The cloud never dials in. The blob bucket/dir selects the
-# BlobStore impl per mode.
+# Split-transport config. The MCP proxy sends local data-plane submissions to
+# CONTROL_URL. The cloud never dials a user machine. The blob bucket/dir
+# selects the BlobStore impl per mode.
 BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
 STORAGE_PROVIDER_ENV_VAR = "RESEARCH_PLUGIN_STORAGE_PROVIDER"
@@ -73,16 +71,14 @@ class Mode(str, Enum):
 
     LOCAL = "local"
     CONTROL = "control"
-    DAEMON = "daemon"
 
 
 def resolve_mode(env: Mapping[str, str] | None = None) -> Mode:
     """Resolve the process mode from the environment, failing fast.
 
-    All three modes are runnable as of Phase 8; an unknown value still refuses
-    to start rather than silently running the wrong topology. Mode-specific
-    fail-fast validation (a daemon without a control URL, a control plane's DB)
-    lives in the composition roots, not here, so this stays a pure parse.
+    Unknown values refuse to start rather than silently running the wrong
+    topology. Mode-specific fail-fast validation lives in the composition
+    roots, not here, so this stays a pure parse.
     """
     source = env if env is not None else os.environ
     raw = (source.get(MODE_ENV_VAR) or "").strip().lower() or Mode.LOCAL.value
@@ -91,7 +87,7 @@ def resolve_mode(env: Mapping[str, str] | None = None) -> Mode:
     except ValueError as exc:
         raise ValidationError(
             f"unknown RESEARCH_PLUGIN_MODE: {raw!r} "
-            "(expected 'local', 'control', or 'daemon')",
+            "(expected 'local' or 'control')",
             details={"mode": raw},
         ) from exc
 
@@ -103,11 +99,10 @@ def resolve_db_url(env: Mapping[str, str] | None = None) -> str | None:
 
 
 def resolve_daemon_state_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Machine-local daemon state root.
+    """Backward-compatible machine-local client state root.
 
-    This is not a research repo. It stores the daemon registry, loopback secret,
-    pid/log files, sandbox keys, and other machine-local data-plane state. One
-    daemon state root can hold many repo→project links.
+    This is not a research repo. The name is retained because existing client
+    configs store repo→project links under ``daemon_state_dir``.
     """
     source = env if env is not None else os.environ
     raw = (source.get(DAEMON_STATE_DIR_ENV_VAR) or "").strip()
@@ -121,7 +116,7 @@ def resolve_daemon_state_dir(env: Mapping[str, str] | None = None) -> Path:
 
 
 def resolve_control_url(env: Mapping[str, str] | None = None) -> str | None:
-    """The cloud control-plane URL the daemon dials, or None (plan §3.4)."""
+    """The hosted control-plane URL, or None."""
     source = env if env is not None else os.environ
     raw = (source.get(CONTROL_URL_ENV_VAR) or "").strip()
     if not raw:

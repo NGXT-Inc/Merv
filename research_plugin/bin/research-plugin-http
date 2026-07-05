@@ -14,7 +14,7 @@ done
 
 BIN_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 PLUGIN_DIR="$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd)"
-# Python resolution. The daemon needs the full requirements.txt deps
+# Python resolution. The HTTP backend needs the full requirements.txt deps
 # (fastapi, modal, pydantic, httpx, uvicorn), so we fail loud if no venv is
 # found instead of silently falling through to a system python that may not
 # have them. The user has to set this up once per machine.
@@ -26,7 +26,7 @@ elif [[ -x "$PLUGIN_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$PLUGIN_DIR/.venv/bin/python"
 else
   cat >&2 <<EOF
-research-plugin-http: no Python interpreter with the daemon's dependencies found.
+research-plugin-http: no Python interpreter with the backend dependencies found.
 
 Looked for, in order:
   \$RESEARCH_PLUGIN_PYTHON              (unset)

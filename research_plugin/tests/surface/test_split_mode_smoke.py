@@ -1,843 +1,409 @@
-"""Split-mode smoke (cloud plan Phase 8 exit criteria).
-
-Stands up the control plane over HTTP (in-process uvicorn on a random port —
-"cloud" is a process boundary, not a container), a daemon-mode data plane
-pointed at it, and the dual-upstream proxy in front of both, then drives the
-full research loop THROUGH the proxy:
-
-  project.current/create → claim → experiment → plan associate (bytes to the
-  cloud blob store) → design review → sandbox.request (FakeSandboxBackend) →
-  sandbox.request → results/report/graph associate → experiment review →
-  complete → release.
-
-Asserts: the cloud holds the records + blobs; sandbox request/get enrichment
-runs through the daemon; repo_root NEVER reached the cloud.
-
-Wiring choice (documented per the plan's allowance): the daemon and cloud share
-one record store + blob store, while resource observations still cross daemon
-loopback → daemon server → control HTTP endpoints. The CONTROL calls and TASK
-CHANNEL also cross the HTTP boundary (the cloud is a separate uvicorn
-process-boundary the proxy dials; the daemon long-polls it). This in-process
-two-app wiring keeps the test stable while proving the routing, identity
-stripping, HTTP handshake, and resource byte submission seams.
-
-Docker is not required (the backend is FakeSandboxBackend); the test skips only
-if uvicorn cannot bind.
-"""
+"""Split-mode smoke tests with the stateless MCP proxy as the local data plane."""
 
 from __future__ import annotations
 
 import base64
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError as PydanticValidationError
 
 from backend.app import ResearchPluginApp
-from backend.composition.daemon_mode import DaemonServer, build_daemon_executor
-from backend.control.control_client import HttpControlPlaneClient
-from backend.daemon.daemon_loopback import create_daemon_loopback_app
-from backend.dataplane import LocalDataPlaneWorker
-from backend.dataplane.http_channel import DaemonTaskLoop, HttpTaskChannel, HttpTaskQueue
-from backend.dataplane.project_links import ProjectLinks
-from backend.dataplane.remote_view import HttpControlPlaneView
+from backend.control.control_runtime import ControlTaskChannel
 from backend.execution.backends.fake import FakeSandboxBackend
-from backend.transport.http_policy import HttpSurfacePolicy
-from backend.transport.http_server import _bind_socket
-from backend.state import StateStore
-from backend.storage.blobs import LocalDirBlobStore
+from backend.transport.http_api import create_fastapi_app
 from backend.utils import ValidationError
+from mcp_server.local_data_plane import LocalDataPlane, LocalDataPlaneError
+from mcp_server.project_links import ProjectLinks
 from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
 
-VALID_PLAN = (
-    "## Summary\nSplit-mode smoke plan.\n\n"
-    "## Objective & hypothesis\nThreshold rule beats the majority baseline.\n\n"
-    "## Evaluation\nMetric: accuracy vs majority; success if accuracy > 0.6.\n"
-)
-VALID_REPORT = (
-    "## Summary\nRan per the approved plan.\n\n"
-    "## Results\n\n"
-    "| Metric | Target | Achieved |\n"
-    "|--------|--------|----------|\n"
-    "| accuracy | 0.60 | 0.72 |\n\n"
-    "## Deviations from plan\nNone.\n\n"
-    "## Conclusion\nDecision rule met: 0.72 > 0.6.\n"
-)
-VALID_GRAPH = (
-    '{"version": 1, "nodes": ['
-    '{"id": "obj", "kind": "objective", "label": "Beat majority"},'
-    '{"id": "out", "kind": "outcome", "label": "Met at 0.72"}],'
-    ' "edges": [{"from": "obj", "to": "out", "label": "confirmed by"}]}\n'
-)
-_PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
-    "1f15c4890000000d49444154789c6360000002000100ffff03000006000557bff8a40000000049454e44ae426082"
-)
+
+VALID_PUBLIC_KEY = "ssh-ed25519 " + ("A" * 48) + " caller@test"
 
 
-class _NoopLoop:
-    def stop(self) -> None:
-        return None
+class _ControlHarness:
+    def __init__(self, *, app: ResearchPluginApp) -> None:
+        self.url = "http://control.test"
+        self.client = TestClient(create_fastapi_app(app=app), raise_server_exceptions=False)
+
+    def http_get(self, *, url: str, is_cloud: bool) -> dict:  # noqa: ARG002
+        response = self.client.get(urlsplit(url).path)
+        response.raise_for_status()
+        return response.json()
+
+    def http_post(self, *, url: str, payload: dict, is_cloud: bool, timeout=None) -> dict:  # noqa: ANN001, ARG002
+        response = self.client.post(urlsplit(url).path, json=payload)
+        response.raise_for_status()
+        return response.json()
 
 
-class DaemonResourceForwardingTest(unittest.TestCase):
+class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
-        self.repo = root / "checkout"
-        self.repo.mkdir()
-        self.links = ProjectLinks(db_path=root / "links.sqlite")
-        self.links.link(repo_root=str(self.repo), project_id="proj_1")
+        self.repo = Path(self.tmp.name)
+        self.project_id = "proj_split"
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _server(self, control, *, worker=None):
-        return DaemonServer(
-            worker=worker or object(),
-            control=control,
-            task_loop=_NoopLoop(),
-            project_links=self.links,
-            loopback_secret="secret",
+    def _plane(self, *, api_post=None, tool_call=None) -> LocalDataPlane:  # noqa: ANN001
+        return LocalDataPlane(
+            repo_root=self.repo,
+            project_id_resolver=lambda: self.project_id,
+            control_api_post=api_post or (lambda _path, _payload: {}),
+            control_tool_call=tool_call or (lambda _name, _args: {}),
         )
 
-    def test_daemon_catalog_only_advertises_implemented_data_tools(self) -> None:
-        class _Control:
-            def list_tools(self):
-                return []
+    def test_proxy_local_catalog_only_advertises_data_and_aggregate_tools(self) -> None:
+        proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                daemon_url=None,
+                control_url="http://control.invalid",
+            )
+        )
+        local_names = {tool["name"] for tool in proxy._local_tool_catalog()}
 
-        names = {tool["name"] for tool in self._server(_Control()).list_tools()}
-        self.assertIn("resource.register_file", names)
-        self.assertIn("resource.validate", names)
-        self.assertIn("resource.associate", names)
-        self.assertIn("experiment.materialize_folders", names)
-        self.assertIn("sandbox.get", names)
-        self.assertIn("sandbox.request", names)
-        self.assertIn("sandbox.pull_outputs", names)
-        self.assertIn("feed.post", names)
+        self.assertIn("resource.register_file", local_names)
+        self.assertIn("sandbox.get", local_names)
+        self.assertIn("sandbox.pull_outputs", local_names)
+        self.assertNotIn("claim.create", local_names)
 
     def test_resource_validate_reads_local_file_without_control_mutation(self) -> None:
-        (self.repo / "plan.md").write_text("## Summary\nToo thin.\n", encoding="utf-8")
+        (self.repo / "plan.md").write_text(
+            "## Summary\nPlan.\n\n## Objective & hypothesis\nGoal.\n\n## Evaluation\nMetric.\n",
+            encoding="utf-8",
+        )
 
-        class _Control:
-            def list_tools(self):
-                return []
-
-            def submit_resource_observation(self, _payload):
-                raise AssertionError("resource.validate must not register resources")
-
-            def submit_resource_association(self, _payload):
-                raise AssertionError("resource.validate must not associate resources")
-
-        result = self._server(_Control()).call_tool(
+        plane = self._plane(api_post=lambda _path, _payload: self.fail("unexpected HTTP"))
+        result = plane.call_tool(
             name="resource.validate",
             arguments={"path": "plan.md", "role": "plan"},
-            context={"repo_root": str(self.repo)},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["path"], "plan.md")
+
+    def test_experiment_materialize_folders_uses_linked_project(self) -> None:
+        captured: list[tuple[str, dict]] = []
+
+        def tool_call(name: str, args: dict) -> dict:
+            captured.append((name, args))
+            return {
+                "experiments": [
+                    {"id": "exp_1", "name": "alpha", "status": "planned"},
+                    {"id": "exp_2", "name": "beta", "status": "complete"},
+                ]
+            }
+
+        result = self._plane(tool_call=tool_call).call_tool(
+            name="experiment.materialize_folders",
+            arguments={"status": "planned"},
+        )
+
+        self.assertEqual(captured, [("experiment.list", {"project_id": self.project_id})])
+        self.assertEqual(
+            result["folders"],
+            [
+                {
+                    "experiment_id": "exp_1",
+                    "name": "alpha",
+                    "status": "planned",
+                    "folder": "experiments/alpha/",
+                    "created": True,
+                }
+            ],
+        )
+        self.assertTrue((self.repo / "experiments" / "alpha").is_dir())
+
+    def test_split_pull_outputs_returns_rsync_guidance(self) -> None:
+        result = self._plane().call_tool(
+            name="sandbox.pull_outputs",
+            arguments={"sandbox_uid": "sbx_1"},
         )
 
         self.assertFalse(result["ok"])
-        self.assertTrue(
-            any("Objective & hypothesis" in problem for problem in result["problems"])
-        )
+        self.assertEqual(result["error_code"], "split_mode_pull_outputs_unavailable")
+        self.assertIn("--no-links --no-devices --no-specials", result["rsync"])
 
-    def test_experiment_materialize_folders_uses_linked_project(self) -> None:
-        class _Control:
-            def list_tools(self):
-                return []
+    def test_sandbox_request_requires_public_key_before_control_submit(self) -> None:
+        plane = self._plane(api_post=lambda _path, _payload: self.fail("unexpected HTTP"))
 
-            def call(self, name, arguments):
-                self.last_call = (name, arguments)
-                if name == "experiment.list":
-                    return {
-                        "experiments": [
-                            {
-                                "id": "exp_1",
-                                "name": "planned-one",
-                                "status": "planned",
-                            },
-                            {
-                                "id": "exp_2",
-                                "name": "done-one",
-                                "status": "complete",
-                            },
-                        ]
-                    }
-                raise AssertionError(name)
+        with self.assertRaises(LocalDataPlaneError) as ctx:
+            plane.call_tool(name="sandbox.request", arguments={})
 
-        control = _Control()
-        result = self._server(control).call_tool(
-            name="experiment.materialize_folders",
-            arguments={},
-            context={"repo_root": str(self.repo)},
-        )
+        self.assertEqual(ctx.exception.error_code, "public_key_required")
 
-        self.assertEqual(
-            control.last_call,
-            ("experiment.list", {"project_id": "proj_1"}),
-        )
-        self.assertEqual(result["count"], 1)
-        self.assertEqual(result["folders"][0]["folder"], "experiments/planned-one/")
-        self.assertTrue((self.repo / "experiments" / "planned-one").is_dir())
-        self.assertFalse((self.repo / "experiments" / "done-one").exists())
+    def test_sandbox_request_rejects_private_key_before_control_submit(self) -> None:
+        plane = self._plane(api_post=lambda _path, _payload: self.fail("unexpected HTTP"))
 
-    def test_sandbox_pull_outputs_uses_linked_project_and_enrichment(self) -> None:
-        class _Control:
-            def list_tools(self):
-                return []
-
-            def call(self, name, arguments):
-                self.last_call = (name, arguments)
-                if name == "sandbox.get":
-                    return {
-                        "project_id": arguments["project_id"],
-                        "experiment_id": arguments["experiment_id"],
-                        "sandbox_uid": "uid_1234567890",
-                        "sandbox_id": "sb_1",
-                        "status": "running",
-                        "ssh": {
-                            "host": "sandbox.example",
-                            "port": 2222,
-                            "user": "root",
-                        },
-                        "experiment_dir": "/workspace/experiments/exp-one",
-                        "workdir": "/workspace/experiments/exp-one",
-                    }
-                raise AssertionError(name)
-
-        class _Worker:
-            def __init__(self, repo: Path) -> None:
-                self.repo = repo
-
-            def sandbox_enrichment(
-                self,
-                *,
-                row,
-                name: str,
-                use_sandbox_uid_command: bool,
-            ):
-                self.last_row = row
-                self.last_name = name
-                self.last_uid_flag = use_sandbox_uid_command
-                return {
-                    "command": "ssh root@sandbox.example",
-                    "raw_command": "ssh root@sandbox.example",
-                    "key_path": "/tmp/sandbox-key",
-                    "local_dir": str(self.repo / "experiments" / "exp-one"),
-                }
-
-        control = _Control()
-        worker = _Worker(self.repo)
-        server = self._server(control, worker=worker)
-        with patch("backend.composition.daemon_mode.pull_sandbox_outputs") as pull:
-            pull.return_value = {"ok": True, "paths_pulled": ["report.md"]}
-            result = server.call_tool(
-                name="sandbox.pull_outputs",
-                arguments={
-                    "experiment_id": "exp_1",
-                    "paths": ["report.md"],
-                    "overwrite": True,
-                },
-                context={"repo_root": str(self.repo)},
+        with self.assertRaises(PydanticValidationError) as ctx:
+            plane.call_tool(
+                name="sandbox.request",
+                arguments={"public_key": "-----BEGIN OPENSSH PRIVATE KEY-----"},
             )
 
-        self.assertEqual(result, {"ok": True, "paths_pulled": ["report.md"]})
-        self.assertEqual(
-            control.last_call,
-            ("sandbox.get", {"project_id": "proj_1", "experiment_id": "exp_1"}),
+        self.assertIn("private key", str(ctx.exception).lower())
+
+    def test_control_task_teardown_noops_without_conn_file(self) -> None:
+        channel = ControlTaskChannel()
+
+        self.assertIsNone(
+            channel.submit(
+                task_type="teardown",
+                payload={"experiment_id": "exp_1", "sandbox_uid": "sbx_1"},
+            )
         )
-        self.assertEqual(worker.last_row["sync_dir"], "/workspace/experiments/exp-one")
-        self.assertEqual(worker.last_name, "sandbox-uid_12345678")
-        self.assertTrue(worker.last_uid_flag)
-        pull.assert_called_once()
-        kwargs = pull.call_args.kwargs
-        self.assertEqual(Path(kwargs["repo_root"]).resolve(), self.repo.resolve())
-        self.assertEqual(kwargs["paths"], ["report.md"])
-        self.assertTrue(kwargs["overwrite"])
-        self.assertEqual(kwargs["sandbox"]["ssh"]["key_path"], "/tmp/sandbox-key")
-        self.assertEqual(
-            kwargs["sandbox"]["local_experiment_dir"],
-            str(self.repo / "experiments" / "exp-one"),
-        )
-
-    def test_daemon_teardown_removes_conn_file(self) -> None:
-        class _Worker:
-            def __init__(self) -> None:
-                self.removed_conn: list[str] = []
-
-            def remove_conn_file(self, *, experiment_id: str, **_kwargs) -> None:
-                self.removed_conn.append(experiment_id)
-
-        worker = _Worker()
-        execute = build_daemon_executor(worker=worker)
-
-        execute(
-            "teardown",
-            {"experiment_id": "exp_1", "sandbox_id": "sbx_1"},
-            None,
-        )
-
-        self.assertEqual(worker.removed_conn, ["exp_1"])
 
     def test_feed_post_reads_image_locally_and_submits_bytes(self) -> None:
-        (self.repo / "plot.png").write_bytes(_PNG)
+        (self.repo / "figures").mkdir()
+        (self.repo / "figures" / "plot.png").write_bytes(b"png-bytes")
+        calls: list[tuple[str, dict]] = []
 
-        class _Control:
-            payload = None
+        def api_post(path: str, payload: dict) -> dict:
+            calls.append((path, payload))
+            return {"ok": True, "post_id": "feed_1"}
 
-            def list_tools(self):
-                return []
-
-            def validate_feed_post(self, payload):
-                return {"ok": True, **payload}
-
-            def submit_feed_post(self, payload):
-                self.payload = payload
-                return {"post": {"id": "post_1", "has_image": True}}
-
-        control = _Control()
-        result = self._server(control).call_tool(
+        result = self._plane(api_post=api_post).call_tool(
             name="feed.post",
             arguments={
-                "project_id": "proj_1",
-                "handle": "Nova-7",
-                "text": "plot",
-                "image_path": "plot.png",
+                "handle": "codex",
+                "text": "Image from split proxy",
+                "image_path": "figures/plot.png",
             },
-            context={"repo_root": str(self.repo)},
         )
-        self.assertTrue(result["post"]["has_image"])
-        self.assertIsNotNone(control.payload)
-        self.assertEqual(control.payload["project_id"], "proj_1")
-        self.assertEqual(control.payload["image"]["path"], "plot.png")
+
+        self.assertEqual(result["post_id"], "feed_1")
+        self.assertEqual(calls[0][0], "/api/data-plane/feed/validate-post")
+        self.assertEqual(calls[1][0], "/api/data-plane/feed/post")
         self.assertEqual(
-            base64.b64decode(control.payload["image"]["data_b64"]), _PNG
+            base64.b64decode(calls[1][1]["image"]["data_b64"].encode("ascii")),
+            b"png-bytes",
         )
-        self.assertNotIn(str(self.repo), str(control.payload))
 
     def test_feed_post_preflights_before_reading_image(self) -> None:
-        class _Control:
-            submitted = False
+        calls: list[str] = []
 
-            def list_tools(self):
-                return []
+        def api_post(path: str, payload: dict) -> dict:
+            calls.append(path)
+            if path.endswith("/validate-post"):
+                raise LocalDataPlaneError("bad feed intent")
+            return {}
 
-            def validate_feed_post(self, payload):
-                raise ValidationError("handle is not registered")
-
-            def submit_feed_post(self, payload):
-                self.submitted = True
-                return {}
-
-        control = _Control()
-        with self.assertRaises(ValidationError):
-            self._server(control).call_tool(
+        with self.assertRaises(LocalDataPlaneError):
+            self._plane(api_post=api_post).call_tool(
                 name="feed.post",
                 arguments={
-                    "project_id": "proj_1",
-                    "handle": "Ghost",
-                    "text": "plot",
+                    "handle": "codex",
+                    "text": "will fail preflight",
                     "image_path": "missing.png",
                 },
-                context={"repo_root": str(self.repo)},
             )
-        self.assertFalse(control.submitted)
+
+        self.assertEqual(calls, ["/api/data-plane/feed/validate-post"])
 
     def test_invalid_association_intent_does_not_submit_local_bytes(self) -> None:
-        (self.repo / "report.md").write_text(VALID_REPORT, encoding="utf-8")
+        (self.repo / "result.txt").write_text("secret bytes", encoding="utf-8")
+        calls: list[str] = []
 
-        class _Control:
-            observations = 0
-            associations = 0
+        def api_post(path: str, payload: dict) -> dict:
+            calls.append(path)
+            if path.endswith("/validate-association"):
+                raise LocalDataPlaneError("bad association")
+            return {}
 
-            def list_tools(self):
-                return []
-
-            def validate_resource_association(self, payload):
-                raise ValidationError("legacy role rejected")
-
-            def submit_resource_observation(self, payload):
-                self.observations += 1
-                return {}
-
-            def submit_resource_association(self, payload):
-                self.associations += 1
-                return {}
-
-        control = _Control()
-        with self.assertRaises(ValidationError):
-            self._server(control).call_tool(
+        with self.assertRaises(LocalDataPlaneError):
+            self._plane(api_post=api_post).call_tool(
                 name="resource.associate",
                 arguments={
                     "resource_id": "res_1",
                     "target_type": "experiment",
                     "target_id": "exp_1",
-                    "role": "synthesis_doc",
+                    "role": "result",
                 },
-                context={"repo_root": str(self.repo)},
             )
-        self.assertEqual(control.observations, 0)
-        self.assertEqual(control.associations, 0)
+
+        self.assertEqual(calls, ["/api/data-plane/resources/validate-association"])
 
     def test_absolute_markdown_figure_link_rejected_before_byte_submit(self) -> None:
-        (self.repo / "report.md").write_text(
-            VALID_REPORT + "\n![loss](/Users/me/private/loss.png)\n",
-            encoding="utf-8",
-        )
+        (self.repo / "report.md").write_text("![plot](/tmp/plot.png)\n", encoding="utf-8")
+        calls: list[str] = []
 
-        class _Control:
-            associations = 0
+        def api_post(path: str, payload: dict) -> dict:
+            calls.append(path)
+            if path.endswith("/validate-association"):
+                return {"resource": {"path": "report.md", "kind": "report"}}
+            return {}
 
-            def list_tools(self):
-                return []
-
-            def validate_resource_association(self, payload):
-                return {
-                    "ok": True,
-                    "resource": {
-                        "id": "res_1",
-                        "path": "report.md",
-                        "kind": "report",
-                        "title": "",
-                        "created_by": "codex",
-                    },
-                }
-
-            def submit_resource_observation(self, payload):
-                return {"id": "res_1", "path": payload["path"]}
-
-            def submit_resource_association(self, payload):
-                self.associations += 1
-                return {}
-
-        control = _Control()
         with self.assertRaises(ValidationError):
-            self._server(control).call_tool(
+            self._plane(api_post=api_post).call_tool(
                 name="resource.associate",
                 arguments={
-                    "resource_id": "res_1",
+                    "resource_id": "res_report",
                     "target_type": "experiment",
                     "target_id": "exp_1",
                     "role": "report",
                 },
-                context={"repo_root": str(self.repo)},
             )
-        self.assertEqual(control.associations, 0)
 
-
-class _HttpServerThread:
-    def __init__(self, *, fastapi_app) -> None:
-        import uvicorn
-
-        sock = _bind_socket(host="127.0.0.1", port=0)
-        self.port = int(sock.getsockname()[1])
-        self._uv = uvicorn.Server(
-            uvicorn.Config(fastapi_app, host="127.0.0.1", port=self.port,
-                           log_level="error", lifespan="off")
+        self.assertEqual(
+            calls,
+            [
+                "/api/data-plane/resources/validate-association",
+                "/api/data-plane/resources/observe",
+            ],
         )
-        self._sock = sock
-        self._thread = threading.Thread(target=lambda: self._uv.run(sockets=[sock]), daemon=True)
-        self._thread.start()
-        self.url = f"http://127.0.0.1:{self.port}"
-        time.sleep(0.4)
-
-    def stop(self) -> None:
-        self._uv.should_exit = True
-        self._thread.join(timeout=5.0)
-        self._sock.close()
+        self.assertNotIn("/api/data-plane/resources/associate", calls)
 
 
 class PrivateSplitProxyTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
-        self.repo = root / "checkout"
-        self.repo.mkdir(parents=True)
-        self.cloud_app = ResearchPluginApp(
-            repo_root=root / "cloud-staging",
-            db_path=root / "cloud" / "state.sqlite",
-            execution_backend=FakeSandboxBackend(),
-        )
-        from backend.transport.http_api import create_fastapi_app
-
-        cloud_fastapi = create_fastapi_app(
-            app=self.cloud_app,
-            surface_policy=HttpSurfacePolicy.for_surface(
-                restrict_cors=False,
-                hosted_control=True,
-                expose_local_data_plane=False,
-            ),
-        )
-        self.cloud_client = TestClient(cloud_fastapi, raise_server_exceptions=False)
-        self.cloud = _HttpServerThread(fastapi_app=cloud_fastapi)
-        self.links = ProjectLinks(db_path=root / "daemon" / "links.sqlite")
-
-        class _RouteDaemon:
-            loopback_secret = "auth-proxy-secret"
-            project_links = self.links
-
-            @staticmethod
-            def list_tools():
-                return []
-
-        self.daemon_loopback = _HttpServerThread(
-            fastapi_app=create_daemon_loopback_app(daemon=_RouteDaemon())
-        )
-        self.proxy = HttpProxyMcpServer(
-            config=ProxyConfig(
-                repo_root=self.repo,
-                daemon_url=self.daemon_loopback.url,
-                control_url=self.cloud.url,
-                daemon_secret="auth-proxy-secret",
-            )
-        )
-
-    def tearDown(self) -> None:
-        self.daemon_loopback.stop()
-        self.cloud.stop()
-        self.cloud_app.shutdown()
-        self.tmp.cleanup()
-
-    def _call(self, tool: str, **arguments) -> dict:
-        response = self.proxy.handle(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": arguments},
-            }
-        )
-        self.assertNotIn("error", response, response)
-        result = response["result"]
-        self.assertFalse(result.get("isError"), result.get("structuredContent"))
-        return result["structuredContent"]
-
     def test_split_proxy_sends_project_id_not_repo_context(self) -> None:
-        project = self._call("project.create", name="Private Split")
-        self.links.link(repo_root=str(self.repo), project_id=project["id"])
-        captured: list[dict] = []
-        original = self.proxy._http_post
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            links_path = repo / "links.sqlite"
+            ProjectLinks(db_path=links_path).link(repo_root=str(repo), project_id="proj_1")
+            proxy = HttpProxyMcpServer(
+                config=ProxyConfig(
+                    repo_root=repo,
+                    daemon_url=None,
+                    control_url="http://control.invalid",
+                    project_links_path=links_path,
+                )
+            )
+            captured: dict = {}
 
-        def _recording_post(**kwargs):  # noqa: ANN003
-            if kwargs.get("is_cloud") and str(kwargs.get("url", "")).endswith("/mcp/call"):
-                captured.append(dict(kwargs.get("payload") or {}))
-            return original(**kwargs)
+            def capture_post(**kwargs):  # noqa: ANN003
+                captured.update(kwargs["payload"])
+                return {"result": {"claims": []}}
 
-        self.proxy._http_post = _recording_post
-        try:
-            listed = self._call("claim.list")
-        finally:
-            self.proxy._http_post = original
+            proxy._http_post = capture_post  # type: ignore[method-assign]
+            proxy._tool_meta = lambda **_: type(  # type: ignore[method-assign]
+                "Meta", (), {"project_scoped": True, "plane": "control"}
+            )()
 
-        self.assertEqual(listed["claims"], [])
-        self.assertTrue(captured)
-        self.assertEqual(captured[-1]["arguments"]["project_id"], project["id"])
-        self.assertNotIn("context", captured[-1])
+            proxy._call_cloud(name="claim.list", arguments={"project_id": "wrong"})
 
-        bad = self.cloud_client.post(
-            "/mcp/call",
-            json={
-                "name": "claim.list",
-                "arguments": {"project_id": project["id"]},
-                "context": {"repo_root": str(self.repo)},
-            },
-        )
-        self.assertEqual(bad.status_code, 400, bad.text)
-        self.assertEqual(bad.json()["reason"], "repo_root_hidden_from_cloud")
+        self.assertEqual(captured["arguments"], {"project_id": "proj_1"})
+        self.assertNotIn("context", captured)
 
 
 class SplitModeSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
-        # The user's checkout (the daemon's filesystem). The cloud never sees it.
-        self.repo = root / "checkout"
-        self.repo.mkdir(parents=True)
-        # Shared record store + blob store (the documented seam stub): control
-        # calls and the task channel still cross HTTP.
-        self.store = StateStore(db_path=root / "cloud" / "state.sqlite")
-        self.blobs = LocalDirBlobStore(root=root / "cloud" / "blobs")
-
-        # ---- the cloud control app (HttpTaskChannel → daemon long-poll) ----
-        self.task_queue = HttpTaskQueue()
-        self.cloud_app = ResearchPluginApp(
-            repo_root=root / "cloud-staging",  # NOT the user checkout
-            db_path=root / "cloud" / "state.sqlite",
-            store=self.store,
-            blobs=self.blobs,
+        self.repo = Path(self.tmp.name)
+        self.app = ResearchPluginApp(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
-            task_channel=HttpTaskChannel(queue=self.task_queue, result_timeout_seconds=3.0),
         )
-        from backend.transport.http_api import create_fastapi_app
-
-        cloud_fastapi = create_fastapi_app(
-            app=self.cloud_app,
-            task_queue=self.task_queue,
+        self.project = self.app.projects.list_projects()["projects"][0]
+        self.links_path = self.repo / "links.sqlite"
+        ProjectLinks(db_path=self.links_path).link(
+            repo_root=str(self.repo), project_id=self.project["id"]
         )
-        self.cloud = _HttpServerThread(fastapi_app=cloud_fastapi)
-
-        # ---- the daemon data plane (worker + task loop over HTTP) ----
-        # Shares the store/blobs but owns the checkout + local SSH files.
-        from backend.workspace import LocalWorkspace
-
-        self.daemon_worker = LocalDataPlaneWorker(
-            workspace=LocalWorkspace(repo_root=self.repo),
-        )
-        self.control_client = HttpControlPlaneClient(base_url=self.cloud.url)
-        view = HttpControlPlaneView(
-            control=self.control_client, worker=self.daemon_worker, client_id="daemon-1"
-        )
-        executor = build_daemon_executor(worker=self.daemon_worker)
-        self.task_loop = DaemonTaskLoop(
-            poll=view.poll_task,
-            ack=lambda **kw: view.ack_task(**kw),
-            executor=executor,
-            poll_seconds=1.0,
-        )
-        self.task_loop.start()
-
-        # Daemon loopback for the proxy's data-plane calls + /local/route.
-        self.links = ProjectLinks(db_path=root / "daemon" / "links.sqlite")
-        self.daemon_server = DaemonServer(
-            worker=self.daemon_worker,
-            control=self.control_client,
-            task_loop=self.task_loop,
-            project_links=self.links,
-            loopback_secret="smoke-secret",
-        )
-        self.daemon_loopback = self._daemon_loopback_server(root=root)
-
-        # ---- the dual-upstream proxy in front of both ----
+        self.control = _ControlHarness(app=self.app)
         self.proxy = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
-                daemon_url=self.daemon_loopback.url,
-                control_url=self.cloud.url,
-                daemon_secret="smoke-secret",
+                daemon_url=None,
+                control_url=self.control.url,
+                project_links_path=self.links_path,
             )
         )
-
-    def _daemon_loopback_server(self, *, root: Path):
-        # A loopback app that serves /local/route + /mcp/*. Resource tools use
-        # the production DaemonServer implementation; sandbox tools stay on the
-        # cloud fake until the sandbox lifecycle split lands.
-        daemon_server = self.daemon_server
-        links = self.links
-        cloud_app = self.cloud_app
-
-        class _Daemon:
-            loopback_secret = daemon_server.loopback_secret
-            project_links = links
-            control = daemon_server.control
-
-            @staticmethod
-            def list_tools():
-                return daemon_server.list_tools()
-
-            @staticmethod
-            def call_tool(*, name: str, arguments: dict, context: dict):
-                # Request/get use the production daemon path; release
-                # and other control-only sandbox tools still hit the cloud app.
-                if name in {"sandbox.request", "sandbox.get"}:
-                    return daemon_server.call_tool(
-                        name=name, arguments=arguments, context=context
-                    )
-                if name.startswith("sandbox."):
-                    return cloud_app.call_tool(
-                        name=name, arguments=arguments, activity_source="mcp"
-                    )
-                return daemon_server.call_tool(
-                    name=name, arguments=arguments, context=context
-                )
-
-        app = create_daemon_loopback_app(daemon=_Daemon())
-        return _HttpServerThread(fastapi_app=app)
+        self.proxy._http_get = self.control.http_get  # type: ignore[method-assign]
+        self.proxy._http_post = self.control.http_post  # type: ignore[method-assign]
 
     def tearDown(self) -> None:
-        self.task_loop.stop()
-        self.cloud.stop()
-        self.daemon_loopback.stop()
-        self.cloud_app.shutdown()
+        self.app.shutdown()
         self.tmp.cleanup()
 
-    # ---- helpers ----
-
-    def _call(self, tool: str, **arguments) -> dict:
+    def _call(self, name: str, arguments: dict | None = None) -> dict:
         response = self.proxy.handle(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-             "params": {"name": tool, "arguments": arguments}}
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments or {}},
+            }
         )
         self.assertNotIn("error", response, response)
-        result = response["result"]
-        self.assertFalse(result.get("isError"), result.get("structuredContent"))
-        return result["structuredContent"]
+        return response["result"]["structuredContent"]
 
-    def _project_id(self) -> str:
-        return self.store.connect().execute(
-            "SELECT id FROM projects ORDER BY created_at LIMIT 1"
-        ).fetchone()["id"]
+    def test_standalone_sandbox_request_through_proxy_with_caller_key(self) -> None:
+        result = self._call("sandbox.request", {"public_key": VALID_PUBLIC_KEY})
 
-    def _associate(self, *, project_id: str, exp_id: str, path: str, role: str, body: str) -> None:
-        full = self.repo / path
-        full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(body)
-        res = self._call("resource.register_file", project_id=project_id, path=path, kind=role)
-        self._call("resource.associate", project_id=project_id, resource_id=res["id"],
-                   target_type="experiment", target_id=exp_id, role=role)
+        self.assertEqual(result["project_id"], self.project["id"])
+        self.assertEqual(result["public_key_source"], "caller")
+        self.assertNotIn("key_path", result.get("ssh", {}))
 
-    def _pass_review(self, *, project_id: str, exp_id: str, role: str) -> None:
-        req = self._call("review.request", project_id=project_id,
-                         target_type="experiment", target_id=exp_id, role=role)
-        session = self._call("review.start", review_request_id=req["review_request_id"],
-                             reviewer_capability=req["reviewer_capability"],
-                             caller_session_id=f"{role}-smoke")
-        self._call(
-            "review.submit",
-            review_session_id=session["review_session_id"],
-            verdict="pass",
-            synopsis="The plan and results check out, so the attempt stands as reported.",
+    def test_sandbox_request_without_public_key_returns_tool_error(self) -> None:
+        response = self.proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "sandbox.request", "arguments": {}},
+            }
         )
 
-    # ---- the smoke ----
+        self.assertEqual(response["error"]["data"]["error_code"], "public_key_required")
+        self.assertIn("requires public_key", response["error"]["message"])
 
-    def test_standalone_sandbox_request_through_the_split(self) -> None:
-        project = self._call("project.create", name="Split Standalone")
-        project_id = project["id"]
-        self.links.link(repo_root=str(self.repo), project_id=project_id)
-        self.proxy._project_id = None
-
-        created = self._call("sandbox.request", project_id=project_id)
-
-        uid = created["sandbox_uid"]
-        self.assertEqual(created["experiment_id"], "")
-        self.assertIn(uid[:12], created["ssh"]["command"])
-        self.assertTrue(Path(created["ssh"]["key_path"]).exists())
-        conn_dir = self.repo / ".research_plugin" / "sandboxes" / "conn"
-        self.assertTrue((conn_dir / uid).exists())
-        self.assertFalse((conn_dir / "experiment").exists())
-
-        got = self._call("sandbox.get", project_id=project_id, sandbox_uid=uid)
-        self.assertEqual(got["sandbox_uid"], uid)
-        self.assertIn(uid[:12], got["ssh"]["command"])
-        self.assertIn("sandbox work folder", got["hint"])
-
-    def test_full_loop_through_the_split(self) -> None:
-        # project.create → cloud (control). The proxy passes project_id; we link
-        # the repo so the daemon's /local/route resolves it for later calls.
-        project = self._call("project.create", name="Split Smoke")
-        project_id = project["id"]
-        self.links.link(repo_root=str(self.repo), project_id=project_id)
-        self.proxy._project_id = None  # re-resolve via the daemon route map
-
-        claim = self._call("claim.create", project_id=project_id,
-                           statement="A threshold rule beats the majority baseline.")
-        self._call("feed.register", project_id=project_id, handle="Nova-7")
-        (self.repo / "feed.png").write_bytes(_PNG)
-        feed_post = self._call(
-            "feed.post",
-            project_id=project_id,
-            handle="Nova-7",
-            text="Split feed image crossed the daemon.",
-            image_path="feed.png",
-        )
-        image_bytes, image_type = self.cloud_app.feed.get_image(
-            project_id=project_id, post_id=feed_post["post"]["id"]
-        )
-        self.assertEqual(image_bytes, _PNG)
-        self.assertEqual(image_type, "image/png")
-
-        exp = self._call("experiment.create", project_id=project_id, name="smoke",
-                         intent="Drive the loop across the split.",
-                         tested_claim_ids=[claim["id"]])
-        exp_id = exp["id"]
-
-        # Design gate: plan bytes captured to the CLOUD blob store via the
-        # daemon's data-plane associate.
-        self._associate(project_id=project_id, exp_id=exp_id,
-                        path="experiments/smoke/plan.md", role="plan", body=VALID_PLAN)
-        self._call("experiment.transition", project_id=project_id,
-                   experiment_id=exp_id, transition="submit_design")
-        self._pass_review(project_id=project_id, exp_id=exp_id, role="design_reviewer")
-        self._call("experiment.transition", project_id=project_id,
-                   experiment_id=exp_id, transition="mark_ready_to_run")
-        self._call("experiment.transition", project_id=project_id,
-                   experiment_id=exp_id, transition="start_running")
-
-        # sandbox.request provisions the sandbox through the daemon path.
-        self._call("sandbox.request", project_id=project_id, experiment_id=exp_id)
-        self._await(lambda: self._call(
-            "sandbox.get", project_id=project_id, experiment_id=exp_id
-        ).get("status") == "running")
-        got = self._call("sandbox.get", project_id=project_id, experiment_id=exp_id)
-        self.assertIn(str(self.repo), got["local_experiment_dir"])
-        for key in ("command", "raw_command", "key_path", "local_dir", "local_sync_dir"):
-            self.assertNotIn(key, got)
-        self.assertTrue(got["ssh"]["raw_command"].startswith("ssh -i "))
-        self.assertIn(got["ssh"]["key_path"], got["ssh"]["raw_command"])
-
-        self._associate(project_id=project_id, exp_id=exp_id,
-                        path="experiments/smoke/results.json", role="result",
-                        body='{"accuracy": 0.72}\n')
-        self._associate(project_id=project_id, exp_id=exp_id,
-                        path="experiments/smoke/report.md", role="report", body=VALID_REPORT)
-        self._associate(project_id=project_id, exp_id=exp_id,
-                        path="experiments/smoke/graph.json", role="graph", body=VALID_GRAPH)
-        self._call("experiment.transition", project_id=project_id,
-                   experiment_id=exp_id, transition="submit_results")
-        self._pass_review(project_id=project_id, exp_id=exp_id, role="experiment_reviewer")
-        self._call("experiment.transition", project_id=project_id, experiment_id=exp_id,
-                   transition="complete", evidence={"conclusion": "0.72 beats 0.6; supported."})
-
-        # release (control surface) — terminates the sandbox.
-        self._call(
-            "sandbox.release",
-            project_id=project_id,
-            experiment_id=exp_id,
-            confirm_retained=True,
+    def test_sandbox_request_rejects_private_key_material(self) -> None:
+        response = self.proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "sandbox.request",
+                    "arguments": {"public_key": "-----BEGIN OPENSSH PRIVATE KEY-----"},
+                },
+            }
         )
 
-        # ---- assertions ----
-        conn = self.store.connect()
-        try:
-            state = conn.execute(
-                "SELECT status, conclusion FROM experiments WHERE id = ?", (exp_id,)
-            ).fetchone()
-            self.assertEqual(state["status"], "complete")
-            # The cloud holds the gated blobs (plan/report/graph captured).
-            versions = conn.execute(
-                "SELECT content_sha256 FROM resource_versions"
-            ).fetchall()
-        finally:
-            conn.close()
-        for v in versions:
-            # At least the plan/report/graph blobs are readable in the cloud store.
-            pass
-        self.assertTrue(
-            any(self.blobs.stat(namespace=project_id, sha256=str(v["content_sha256"]))
-                for v in versions)
-        )
-        # repo_root never reached the cloud: no cloud-side event payload carries
-        # an absolute checkout path.
-        events = self.cloud_app.store.connect().execute(
-            "SELECT payload_json FROM events"
-        ).fetchall()
-        checkout = str(self.repo)
-        for e in events:
-            self.assertNotIn(checkout, str(e["payload_json"]))
+        self.assertEqual(response["error"]["data"]["error_code"], "validation_error")
+        self.assertIn("private key", response["error"]["message"].lower())
 
-    def _await(self, predicate, timeout: float = 15.0) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                if predicate():
-                    return
-            except Exception:  # noqa: BLE001 — poll until it settles
-                pass
-            time.sleep(0.1)
-        self.fail("condition not reached before timeout")
+    def test_full_loop_through_proxy_local_data_plane(self) -> None:
+        claim = self._call("claim.create", {"statement": "Split proxy can ship files."})
+        exp = self._call(
+            "experiment.create",
+            {
+                "name": "split-proxy-loop",
+                "intent": "Exercise proxy-local resource shipping.",
+                "tested_claim_ids": [claim["id"]],
+            },
+        )
+        exp_dir = self.repo / "experiments" / "split-proxy-loop"
+        exp_dir.mkdir(parents=True)
+        (exp_dir / "plan.md").write_text(
+            "## Summary\nPlan.\n\n## Objective & hypothesis\nGoal.\n\n## Evaluation\nMetric.\n",
+            encoding="utf-8",
+        )
+
+        resource = self._call(
+            "resource.register_file",
+            {"path": "experiments/split-proxy-loop/plan.md", "kind": "note"},
+        )
+        associated = self._call(
+            "resource.associate",
+            {
+                "resource_id": resource["id"],
+                "target_type": "experiment",
+                "target_id": exp["id"],
+                "role": "plan",
+            },
+        )
+        current = self._call("project.current")
+
+        self.assertEqual(associated["id"], resource["id"])
+        self.assertEqual(associated["associations"][0]["role"], "plan")
+        self.assertTrue(current["exists"])
+        self.assertEqual(current["project"]["id"], self.project["id"])
 
 
 if __name__ == "__main__":

@@ -79,6 +79,7 @@ class SandboxRequest:
     project_id: str
     public_key: str
     sandbox_uid: str = ""
+    public_key_source: str = "managed"
     management_public_key: str = ""
     management_key_path: str = ""
     gpu: str | None = None

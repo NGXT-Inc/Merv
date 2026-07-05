@@ -369,6 +369,9 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   -- non-empty when a control-plane management key was minted for this
   -- sandbox. A key-store reference (the sandbox_uid) — never key material.
   mgmt_key_ref TEXT NOT NULL DEFAULT '',
+  -- User SSH key custody source: caller supplied an OpenSSH public key, or the
+  -- local data plane used the managed fallback keypair.
+  public_key_source TEXT NOT NULL DEFAULT 'managed',
   volume_name TEXT NOT NULL DEFAULT '',
   sandbox_name TEXT NOT NULL DEFAULT '',
   phase TEXT NOT NULL DEFAULT '',
@@ -539,6 +542,9 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # Researcher synopsis (July 2026): fresh schemas have the column; this
     # backfills hosted Postgres stores that predate the requirement.
     (13, "add_review_synopsis", ""),
+    # Daemon diet Phase 4b: sandbox.get must report whether the authorized
+    # user SSH key came from the caller or the managed fallback.
+    (14, "add_sandbox_public_key_source", ""),
 )
 
 
@@ -674,6 +680,8 @@ class BaseStateStore:
                 self._ensure_experiment_mlflow_columns(conn=conn)
             elif name == "add_review_synopsis":
                 self._ensure_review_synopsis(conn=conn)
+            elif name == "add_sandbox_public_key_source":
+                self._ensure_sandbox_public_key_source(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -696,6 +704,12 @@ class BaseStateStore:
         if not self._has_column(conn=conn, table="reviews", column="synopsis"):
             conn.execute(
                 "ALTER TABLE reviews ADD COLUMN synopsis TEXT NOT NULL DEFAULT ''"
+            )
+
+    def _ensure_sandbox_public_key_source(self, *, conn: Connection) -> None:
+        if not self._has_column(conn=conn, table="sandboxes", column="public_key_source"):
+            conn.execute(
+                "ALTER TABLE sandboxes ADD COLUMN public_key_source TEXT NOT NULL DEFAULT 'managed'"
             )
 
     def _ensure_sandbox_tenant_id(self, *, conn: Connection) -> None:
@@ -1138,6 +1152,7 @@ class StateStore(BaseStateStore):
                 # — non-empty when a control-plane management key exists for
                 # this sandbox. Never key material.
                 "mgmt_key_ref": "TEXT NOT NULL DEFAULT ''",
+                "public_key_source": "TEXT NOT NULL DEFAULT 'managed'",
                 # Command status snapshot (July 2026): populated by
                 # sandbox.terminal from rec.sh transcript markers so agents
                 # keep the last known command state even if a later transcript

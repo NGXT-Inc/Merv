@@ -87,7 +87,7 @@ class WorkflowService:
                 ).fetchone()
             )
             claim_rows = conn.execute(
-                "SELECT id, statement, status, confidence FROM claims WHERE project_id = ? ORDER BY created_at, id",
+                "SELECT id, statement, scope, status, confidence, created_at FROM claims WHERE project_id = ? ORDER BY created_at, id",
                 (project_id,),
             ).fetchall()
             exp_rows = conn.execute(

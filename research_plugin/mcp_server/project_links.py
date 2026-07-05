@@ -1,22 +1,15 @@
-"""Daemon-local repo_root ↔ project_id mapping (cloud plan §3.2, Phase 8).
+"""Proxy-local repo_root ↔ project_id links.
 
-Project identity decouples from the filesystem: the cloud mints ``project_id``
-and never accepts a path. The daemon keeps the ``repo_root ↔ project_id``
-mapping locally (the successor of ``directory_projects``, here named
-``project_links`` per the plan). The proxy resolves identity via the daemon
-(GET /local/route?repo_root=) and sends explicit ``project_id`` on cloud
-calls, so ``repo_root`` never crosses the machine boundary.
-
-A small SQLite file under the daemon's ~/.research_plugin so the mapping
-survives restarts.
+This keeps the old daemon file format (`project_links.sqlite`, table
+`project_links`) so existing linked repositories keep working when split mode
+stops launching a local daemon.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-
-from ..utils import now_iso
 
 
 _SCHEMA = """
@@ -28,16 +21,26 @@ CREATE TABLE IF NOT EXISTS project_links (
 """
 
 
-class ProjectLinks:
-    """The daemon's repo_root → project_id registry."""
+def default_project_links_path(
+    *, client_config: dict[str, str] | None = None, config_path: Path | None = None
+) -> Path:
+    config = client_config or {}
+    raw = str(config.get("daemon_state_dir") or "").strip()
+    if raw:
+        return Path(raw).expanduser() / "project_links.sqlite"
+    if config_path is not None:
+        return Path(config_path).expanduser().parent / "project_links.sqlite"
+    return Path.home() / ".research_plugin" / "project_links.sqlite"
 
+
+class ProjectLinks:
     def __init__(self, *, db_path: Path) -> None:
         self.db_path = db_path
         self._initialized = False
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 10000")
         if not self._initialized:
@@ -55,7 +58,7 @@ class ProjectLinks:
                     "INSERT INTO project_links (repo_root, project_id, created_at) "
                     "VALUES (?, ?, ?) ON CONFLICT(repo_root) DO UPDATE SET "
                     "project_id = excluded.project_id",
-                    (canonical, project_id, now_iso()),
+                    (canonical, project_id, _now_iso()),
                 )
         finally:
             conn.close()
@@ -100,3 +103,7 @@ class ProjectLinks:
         finally:
             conn.close()
         return bool(cur.rowcount)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

@@ -150,6 +150,7 @@ def agent_row_facts(
         "memory": row.get("memory"),
         "instance_type": row.get("instance_type") or None,
         "region": row.get("region") or None,
+        "public_key_source": row.get("public_key_source") or "managed",
         "expires_at": row.get("expires_at"),
         "storage_enabled": bool(storage_enabled),
     }
@@ -329,6 +330,7 @@ def sandbox_row_view(
         "memory": row.get("memory"),
         "instance_type": row.get("instance_type") or "",
         "region": row.get("region") or "",
+        "public_key_source": row.get("public_key_source") or "managed",
         "time_limit": row.get("time_limit"),
         "ssh_host": row.get("ssh_host"),
         "ssh_port": row.get("ssh_port"),

@@ -53,14 +53,17 @@ class ModeConfigTest(unittest.TestCase):
         self.assertIs(resolve_mode(env={"RESEARCH_PLUGIN_MODE": "local"}), Mode.LOCAL)
         self.assertIs(resolve_mode(env={"RESEARCH_PLUGIN_MODE": " Local "}), Mode.LOCAL)
 
-    def test_control_and_daemon_modes_are_runnable(self) -> None:
+    def test_control_mode_is_runnable(self) -> None:
         self.assertIs(resolve_mode(env={"RESEARCH_PLUGIN_MODE": "control"}), Mode.CONTROL)
-        self.assertIs(resolve_mode(env={"RESEARCH_PLUGIN_MODE": " Daemon "}), Mode.DAEMON)
 
     def test_unknown_mode_fails(self) -> None:
         with self.assertRaises(ValidationError) as ctx:
             resolve_mode(env={"RESEARCH_PLUGIN_MODE": "cloud"})
         self.assertIn("unknown", ctx.exception.message)
+
+    def test_daemon_mode_is_removed(self) -> None:
+        with self.assertRaises(ValidationError):
+            resolve_mode(env={"RESEARCH_PLUGIN_MODE": " Daemon "})
 
 
 class StorageConfigTest(unittest.TestCase):
@@ -348,23 +351,29 @@ class HostedControlSurfaceTest(unittest.TestCase):
         self.assertEqual(ok.json()["cleaned"], {"ok": True})
         self.assertEqual(cleanup.calls, 1)
 
-    def test_daemon_task_endpoint_is_private_but_not_token_gated(self) -> None:
-        from backend.dataplane.http_channel import HttpTaskQueue
-
-        queue = HttpTaskQueue()
-        queue.enqueue(task_type="conn_refresh", payload={"row": {"experiment_id": "exp_a"}})
+    def test_data_plane_submission_endpoint_is_private_but_not_token_gated(self) -> None:
         client = TestClient(
             create_fastapi_app(
                 self.app,
                 surface_policy=_hosted_surface(),
-                task_queue=queue,
             ),
             raise_server_exceptions=False,
         )
 
-        polled = client.get("/api/daemon/tasks?wait=0")
-        self.assertEqual(polled.status_code, 200, polled.text)
-        self.assertEqual(polled.json()["task"]["type"], "conn_refresh")
+        project = self.app.projects.list_projects()["projects"][0]
+        observed = client.post(
+            "/api/data-plane/resources/observe",
+            json={
+                "project_id": project["id"],
+                "path": "results.txt",
+                "content_sha256": "0" * 64,
+                "mtime_ns": 1,
+                "ctime_ns": 1,
+                "size_bytes": 1,
+            },
+        )
+        self.assertEqual(observed.status_code, 200, observed.text)
+        self.assertEqual(observed.json()["path"], "results.txt")
 
 
 class SecretStoreCredentialsTest(unittest.TestCase):
@@ -457,7 +466,6 @@ class VersionHandshakeTest(unittest.TestCase):
 
     def test_meta_returns_server_version_floors_and_capabilities(self) -> None:
         from backend.version import (
-            MIN_DAEMON_VERSION,
             MIN_PROXY_VERSION,
             SERVER_VERSION,
         )
@@ -466,7 +474,7 @@ class VersionHandshakeTest(unittest.TestCase):
         self.assertEqual(control.status_code, 200, control.text)
         body = control.json()
         self.assertEqual(body["server_version"], SERVER_VERSION)
-        self.assertEqual(body["min_daemon_version"], MIN_DAEMON_VERSION)
+        self.assertNotIn("min_daemon_version", body)
         self.assertEqual(body["min_proxy_version"], MIN_PROXY_VERSION)
         self.assertEqual(body["mode"], "control")
         self.assertTrue(body["capabilities"]["hosted_control"])
@@ -518,7 +526,7 @@ class ModeCompositionTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_control_server_builds_private_surface_and_daemon_endpoints(self) -> None:
+    def test_control_server_builds_private_surface_and_data_plane_submission(self) -> None:
         from backend.composition import build_control_server
 
         server = build_control_server(
@@ -527,49 +535,16 @@ class ModeCompositionTest(unittest.TestCase):
         )
         self.addCleanup(server.shutdown)
         paths = {getattr(r, "path", "") for r in server.fastapi_app.routes}
-        self.assertIn("/api/daemon/tasks", paths)
+        self.assertIn("/api/data-plane/resources/observe", paths)
+        self.assertNotIn("/api/daemon/tasks", paths)
         self.assertIn("/mcp/call", paths)
         client = TestClient(server.fastapi_app, raise_server_exceptions=False)
         self.assertEqual(client.get("/api/projects").status_code, 200)
 
-    def test_daemon_refuses_to_start_without_control_url(self) -> None:
-        from backend.composition import build_daemon_server
+    def test_daemon_builder_is_removed(self) -> None:
+        import backend.composition as composition
 
-        with self.assertRaises(ValidationError) as ctx:
-            build_daemon_server(control_url=None)
-        self.assertIn("RESEARCH_PLUGIN_CONTROL_URL", ctx.exception.message)
-
-    def test_daemon_loopback_keeps_local_secret(self) -> None:
-        from backend.daemon.daemon_loopback import create_daemon_loopback_app
-
-        class _StubLinks:
-            @staticmethod
-            def project_for_repo(*, repo_root: str) -> str:
-                return "proj_1"
-
-            @staticmethod
-            def link(*, repo_root: str, project_id: str) -> None:
-                return None
-
-        class _StubDaemon:
-            loopback_secret = "secret"
-            project_links = _StubLinks()
-
-            class control:
-                @staticmethod
-                def list_tools():
-                    return []
-
-        client = TestClient(
-            create_daemon_loopback_app(daemon=_StubDaemon()),
-            raise_server_exceptions=False,
-        )
-
-        unauth = client.get("/mcp/tools")
-        self.assertEqual(unauth.status_code, 401, unauth.text)
-
-        tools = client.get("/mcp/tools", headers={"Authorization": "Bearer secret"})
-        self.assertEqual(tools.status_code, 200, tools.text)
+        self.assertFalse(hasattr(composition, "build_daemon_server"))
 
 
 if __name__ == "__main__":

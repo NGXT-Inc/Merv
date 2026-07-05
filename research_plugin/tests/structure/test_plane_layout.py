@@ -25,7 +25,14 @@ from backend.tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
 )
-from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, PORTS_ROOT, SERVICES_ROOT
+from tests.paths import (
+    ARTIFACTS_ROOT,
+    BACKEND_ROOT,
+    DOMAIN_ROOT,
+    PLUGIN_ROOT,
+    PORTS_ROOT,
+    SERVICES_ROOT,
+)
 
 
 # Record halves that must be servable from a cloud control plane: no local
@@ -322,22 +329,19 @@ class ToolPlanePartitionTest(unittest.TestCase):
         )
         self.assertLessEqual(set(HTTP_DATA_PLANE_FEATURE_TO_TOOL.values()), DATA_PLANE_TOOL_NAMES)
 
-    def test_daemon_tool_catalogs_use_contract_plane_sets(self) -> None:
-        daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
-        for path in (daemon_mode, BACKEND_ROOT / "daemon" / "daemon_loopback.py"):
-            with self.subTest(module=path.name):
-                source = path.read_text(encoding="utf-8")
-                self.assertIn("DATA_PLANE_TOOL_NAMES", source)
-                self.assertIn(
-                    "allowed = DATA_PLANE_TOOL_NAMES | AGGREGATE_TOOL_NAMES",
-                    source,
-                )
-                self.assertNotIn("IMPLEMENTED_DATA_TOOL_NAMES", source)
-                self.assertNotIn("IMPLEMENTED_LOOPBACK_DATA_TOOL_NAMES", source)
+    def test_proxy_local_data_plane_dispatches_contract_plane_sets(self) -> None:
+        proxy = PLUGIN_ROOT / "mcp_server" / "proxy.py"
+        local_data_plane = PLUGIN_ROOT / "mcp_server" / "local_data_plane.py"
+        source = proxy.read_text(encoding="utf-8")
+
+        self.assertIn("DATA_PLANE_TOOL_NAMES", source)
+        self.assertIn("AGGREGATE_TOOL_NAMES", source)
         self.assertTrue(
             DATA_PLANE_TOOL_NAMES
             <= _method_name_literal_branches(
-                daemon_mode, class_name="DaemonServer", method_name="call_tool"
+                local_data_plane,
+                class_name="LocalDataPlane",
+                method_name="call_tool",
             )
         )
 

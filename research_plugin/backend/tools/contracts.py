@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..config import storage_feature_enabled
 from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB
@@ -20,7 +20,7 @@ class ContractModel(BaseModel):
 
 
 # Which plane serves a tool once the backend splits into a cloud control plane
-# and a local data-plane daemon (docs/CONTROL_DATA_PLANE_SPLIT.md).
+# and a local data-plane proxy (docs/CONTROL_DATA_PLANE_SPLIT.md).
 # "control" = record/gate/lifecycle work, cloud-servable. "data" = touches the
 # local filesystem or local processes, must run on the user's machine.
 # "aggregate" = merges both planes' answers. In local mode one process serves
@@ -526,6 +526,42 @@ class ReviewStatusInput(ProjectScopedInput):
     target_id: str
 
 
+_PUBLIC_KEY_PREFIXES = (
+    "ssh-ed25519 ",
+    "ssh-rsa ",
+    "ecdsa-sha2-nistp256 ",
+    "ecdsa-sha2-nistp384 ",
+    "ecdsa-sha2-nistp521 ",
+    "sk-ssh-ed25519@openssh.com ",
+    "sk-ecdsa-sha2-nistp256@openssh.com ",
+)
+
+
+def _validate_openssh_public_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    key = value.strip()
+    if not key:
+        return None
+    lowered = key.lower()
+    if "private key" in lowered or key.startswith("-----BEGIN "):
+        raise ValueError(
+            "public_key must be an OpenSSH public key, not private-key material"
+        )
+    if "\n" in key or "\r" in key:
+        raise ValueError("public_key must be a single line")
+    if len(key) < 40 or len(key) > 8192:
+        raise ValueError("public_key length is outside the accepted OpenSSH range")
+    if not key.startswith(_PUBLIC_KEY_PREFIXES):
+        raise ValueError(
+            "public_key must start with a supported OpenSSH public key type"
+        )
+    parts = key.split()
+    if len(parts) < 2:
+        raise ValueError("public_key must include key type and base64 payload")
+    return key
+
+
 class SandboxRequestInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
@@ -577,6 +613,14 @@ class SandboxRequestInput(ProjectScopedInput):
         default=None,
         description="Max sandbox lifetime in seconds (60..86400). Default 3600.",
     )
+    public_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional OpenSSH public key to authorize on the VM. Pass only the "
+            "single-line public key, never private-key material. When omitted, "
+            "local mode uses the plugin-managed fallback keypair."
+        ),
+    )
     additional: bool = Field(
         default=False,
         description=(
@@ -585,6 +629,11 @@ class SandboxRequestInput(ProjectScopedInput):
             "already attached live sandbox."
         ),
     )
+
+    @field_validator("public_key")
+    @classmethod
+    def _public_key_shape(cls, value: str | None) -> str | None:
+        return _validate_openssh_public_key(value)
 
 
 class SandboxOptionsInput(ProjectScopedInput):
@@ -1057,13 +1106,13 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "The primary path is bring-your-own-key — the requesting side "
             "generates its own ed25519 keypair (ssh-keygen) under "
             ".research_plugin/sandboxes/keys/ (keep .research_plugin/ "
-            "gitignored; never commit key material) and its PUBLIC key is what "
-            "gets authorized on the VM (data-plane requests carry it as "
-            "public_key). When no key is supplied, the plugin's daemon mints "
-            "and manages a fallback keypair at that same path. The response's "
+            "gitignored; never commit key material) and passes its single-line "
+            "OpenSSH PUBLIC key as public_key so it gets authorized on the VM. "
+            "When no key is supplied, local mode uses the plugin-managed "
+            "fallback keypair at that same path. The response's persisted "
             "public_key_source reports which happened: 'caller' (you supplied "
-            "the key) or 'managed' (daemon-minted fallback); ssh.key_path "
-            "points at the private key to use either way."
+            "the key) or 'managed' (fallback keypair); ssh.key_path points at "
+            "the private key to use when a local path is available."
         ),
         plane="data",
     ),
@@ -1080,7 +1129,9 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "Get sandbox status, SSH details, expiry, and polling/runtime "
             "guidance by sandbox_uid or by an experiment's active sandbox "
             "association. Use it to poll provisioning and inspect terminated "
-            "or expired sandboxes."
+            "or expired sandboxes. Includes public_key_source so callers know "
+            "whether the VM authorized a caller-supplied public key or the "
+            "plugin-managed fallback key."
         ),
         plane="aggregate",
         hosted_control_sandbox_lookup=True,
@@ -1099,8 +1150,11 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         description=(
             "Copy selected files or directories from a running sandbox's remote "
             "experiment_dir into the local experiment folder over SSH/rsync. "
-            "Use this before resource.register_file/resource.associate or "
-            "sandbox.release; omit paths to pull common retained outputs. "
+            "This is a LOCAL-mode tool; in split mode, use caller-owned SSH "
+            "credentials with the proxy's rsync guidance for small outputs and "
+            "object storage tools for heavy artifacts. Use this before "
+            "resource.register_file/resource.associate or sandbox.release; "
+            "omit paths to pull common retained outputs. "
             "Existing local files are kept unless overwrite=true — ones that "
             "differ from the sandbox are reported in files_kept_stale, so check "
             "it before registering results from a re-run. Remote symlinks and "

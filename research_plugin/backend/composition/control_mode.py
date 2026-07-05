@@ -5,14 +5,11 @@ sandbox lifecycle/provisioner/reaper + blob store + quotas.
 Store from build_state_store (Postgres in hosted/no-repo-root control; SQLite
 only when an explicit dev/test repo_root is supplied). Blob store from
 build_blob_store. NO DataPlaneWorker file IO runs here — the cloud never touches
-a user checkout; data-plane tool calls are
-routed to the daemon by the proxy. The control plane enqueues data-plane work to
-the daemon via the HttpTaskQueue and serves the daemon's task long-poll over
-HTTP.
+a user checkout; data-plane tool calls are executed by the stateless MCP proxy
+on the user's machine and submitted as explicit facts/bytes.
 
 Provider creds resolve here (platform-owned keys, fixed decision 3). The cloud
-NEVER dials a user machine: every cloud→daemon signal is a daemon-initiated
-long-poll task.
+NEVER dials a user machine.
 
 Cloud reaper crash recovery (pulled into Phase 8 by the plan, risk 6): on
 startup the control app scans tenant sandbox rows for running/provisioning and
@@ -46,8 +43,8 @@ from ..config import (
     resolve_mgmt_public_key,
 )
 from ..control.control_app import ControlApp
-from ..dataplane.http_channel import HttpTaskChannel, HttpTaskQueue
-from ..env import env_bool, env_float
+from ..control.control_runtime import ControlTaskChannel
+from ..env import env_bool
 from ..execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
@@ -64,23 +61,23 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ControlPlaneServer:
-    """A running control-plane app plus its daemon task queue and FastAPI app.
+    """A running control-plane app plus its FastAPI app.
 
-    Holds the app (record services), the HttpTaskQueue (the cloud→daemon task
-    channel), and the FastAPI app that serves /mcp/* + /api/* + the daemon
-    task endpoints. ``fastapi_app`` is what uvicorn serves.
+    Holds the app (record services), the no-op hosted-control task channel,
+    cleanup service, and the FastAPI app that serves /mcp/* + /api/*.
+    ``fastapi_app`` is what uvicorn serves.
     """
 
     def __init__(
         self,
         *,
         app: ControlApp,
-        task_queue: HttpTaskQueue,
+        task_channel: ControlTaskChannel,
         cleanup: CleanupService,
         fastapi_app: FastAPI,
     ) -> None:
         self.app = app
-        self.task_queue = task_queue
+        self.task_channel = task_channel
         # The cloud cleanup sweeps (plan Phase 9). Built but NOT scheduled here —
         # scheduling is a documented seam (a managed cron / sidecar tick calls
         # ``cleanup.run_all(now=...)``). The reaper thread that IS owned lives in
@@ -97,8 +94,8 @@ def build_control_app(
     repo_root: Path | None = None,
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
-) -> tuple[ControlApp, HttpTaskQueue]:
-    """Build the control-plane app and its daemon task queue.
+) -> tuple[ControlApp, ControlTaskChannel]:
+    """Build the control-plane app and hosted-control task channel.
 
     ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
     production omits it and must provide DB_URL + BLOB_BUCKET + a mounted
@@ -112,14 +109,7 @@ def build_control_app(
     blobs = build_blob_store(default_root=staging / ".research_plugin" / "blobs", env=env)
     objects = build_object_store(default_root=staging / ".research_plugin", env=env)
     storage = StorageLedgerService(store=store, objects=objects) if objects else None
-    # The cloud→daemon task channel: control enqueues, the daemon long-polls.
-    # A bounded result wait keeps control lifecycle calls from blocking on a
-    # missing daemon.
-    result_timeout = env_float(
-        "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT", None, 30.0, env=env, strict=True
-    )
-    task_queue = HttpTaskQueue()
-    task_channel = HttpTaskChannel(queue=task_queue, result_timeout_seconds=result_timeout)
+    task_channel = ControlTaskChannel()
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
     mlflow_tracking = CentralMlflowService.from_env(env)
@@ -137,14 +127,14 @@ def build_control_app(
         # Cost governance (cloud plan Phase 7): the hosted control plane holds
         # the provider keys and pays for every VM, so the composition forces
         # the expiry reaper on — the RESEARCH_PLUGIN_SANDBOX_REAPER off-switch
-        # is ignored here (local/daemon compositions keep it).
+        # is ignored here (local composition keeps it).
         force_expiry_reaper=True,
     )
     # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
     # live VMs must re-acquire reaping. SandboxService already started the
     # reaper thread; this resumes any reconcile/reap work for rows left running.
     _resume_active_sandboxes(app=app)
-    return app, task_queue
+    return app, task_channel
 
 
 def build_control_server(
@@ -153,8 +143,8 @@ def build_control_server(
     env: Mapping[str, str] | None = None,
     allowed_origins: list[str] | None = None,
 ) -> ControlPlaneServer:
-    """Build the control-plane FastAPI server (daemon endpoints on)."""
-    app, task_queue = build_control_app(repo_root=repo_root, env=env)
+    """Build the control-plane FastAPI server."""
+    app, task_channel = build_control_app(repo_root=repo_root, env=env)
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
     )
@@ -168,13 +158,12 @@ def build_control_server(
     fastapi_app = create_fastapi_app(
         app=app,
         allowed_origins=origins,
-        task_queue=task_queue,
         cleanup=cleanup,
         surface_policy=surface,
     )
     return ControlPlaneServer(
         app=app,
-        task_queue=task_queue,
+        task_channel=task_channel,
         cleanup=cleanup,
         fastapi_app=fastapi_app,
     )

@@ -1,25 +1,24 @@
 """Stdio MCP server that proxies tool calls to the backend.
 
 The MCP server itself owns no state. Codex launches it over stdio; it forwards
-``tools/list`` and ``tools/call`` to the HTTP backend and returns the response
-on stdout.
+``tools/list`` and ``tools/call`` to the right backend surface and returns the
+response on stdout.
 
 Two topologies (cloud plan Phase 8, §3.3), selected by config:
 
 - **Single upstream (local mode).** ``control_url`` unset: every call goes to
   the local daemon at ``daemon_url`` exactly as before — bit-identical, with the
   same friendly ``127.0.0.1:8787`` fallback and discovery order.
-- **Dual upstream (split mode).** ``control_url`` set: route on the tool's
-  ``plane`` (read off the served catalog, so it can never drift from
-  ``contracts``): ``control`` → the cloud, ``data`` → the local daemon,
-  ``aggregate`` → both, merged. The cloud receives an explicit ``project_id``
-  (resolved via the daemon's ``/local/route``), NEVER ``repo_root``; data calls
-  carry ``repo_root`` to the local daemon only.
+- **Split mode.** ``control_url`` set: route on the tool's ``plane``:
+  ``control`` → the cloud, ``data`` → proxy-local local IO plus direct control
+  submission, ``aggregate`` → cloud facts merged with proxy-local enrichment.
+  The cloud receives an explicit ``project_id`` resolved from the proxy-owned
+  ``project_links.sqlite`` file, NEVER ``repo_root``.
 
 Error taxonomy is returned as TOOL RESULTS, not ``-32000`` protocol errors, so a
-client never disables the server over a transient outage: ``local_daemon_not_
-running``, ``cloud_unreachable``. A cloud outage never blocks data tools and
-vice versa. In split mode a missing ``control_url`` is a hard config error (no
+client never disables the server over a transient outage: ``daemon_not_running``
+in local mode, ``cloud_unreachable`` in split mode. Domain errors stay protocol
+errors. In split mode a missing ``control_url`` is a hard config error (no
 silent loopback fallback); local mode keeps the friendly one.
 
 Discovery order for the daemon URL:
@@ -31,6 +30,7 @@ Discovery order for the daemon URL:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -43,7 +43,8 @@ from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
 from . import __version__
-from .daemon_marker import discover_daemon_url
+from .local_data_plane import LocalDataPlane, LocalDataPlaneError
+from .project_links import ProjectLinks
 
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -78,6 +79,7 @@ class ProxyConfig:
     # The daemon's loopback auth secret (risk 11): sent to the local daemon so
     # the credential-holding loopback surface accepts the proxy's calls.
     daemon_secret: str | None = None
+    project_links_path: Path | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
     def with_url(self, url: str) -> "ProxyConfig":
@@ -86,6 +88,7 @@ class ProxyConfig:
             daemon_url=url,
             control_url=self.control_url,
             daemon_secret=self.daemon_secret,
+            project_links_path=self.project_links_path,
             timeout_seconds=self.timeout_seconds,
         )
 
@@ -139,6 +142,8 @@ class HttpProxyMcpServer:
     def __init__(self, *, config: ProxyConfig) -> None:
         self.config = config
         self._tool_cache: dict[str, _ToolMeta] | None = None
+        self._project_links: ProjectLinks | None = None
+        self._local_data_plane: LocalDataPlane | None = None
 
     # ---- stdio loop ------------------------------------------------------
 
@@ -233,14 +238,10 @@ class HttpProxyMcpServer:
         if not self.config.split_mode:
             # Single upstream (local): bit-identical to before this phase.
             return self._catalog_from(url=self._require_daemon_url(), is_cloud=False)
-        # Dual upstream: merge both catalogs. A tool's home upstream is its
-        # plane (data → daemon, control → cloud, aggregate → either; aggregate
-        # tools live on both, so dedup by name preferring the daemon's schema
-        # which carries the data-side enrichment shape). project_id stripping
-        # and project.list hiding apply uniformly to the merged set.
+        # Split mode: merge the cloud catalog with the proxy-local data-plane
+        # catalog. project_id stripping and project.list hiding apply uniformly
+        # to the merged set.
         merged: dict[str, dict[str, Any]] = {}
-        # Cloud first, daemon second so daemon (data/aggregate) schemas win on
-        # overlap — but in practice planes are disjoint except aggregate.
         catalog, _complete = self._catalog_tools()
         for is_cloud, tool in catalog:
             if tool.get("name") == "project.list":
@@ -267,26 +268,37 @@ class HttpProxyMcpServer:
     def _catalog_tools(self) -> tuple[list[tuple[bool, dict[str, Any]]], bool]:
         """Collect (is_cloud, raw_tool) from every configured upstream's /mcp/tools.
 
-        Raw = pre-strip, so callers can read 'plane' and project_id schema. A
-        down upstream is skipped, never fatal; ``complete`` reports whether all
-        configured upstreams answered.
+        Raw = pre-strip, so callers can read 'plane' and project_id schema.
+        In split mode the local half is in-process and always present; the
+        cloud half may be down and is skipped. ``complete`` reports whether all
+        configured HTTP upstreams answered.
         """
         tools: list[tuple[bool, dict[str, Any]]] = []
         complete = True
-        for is_cloud, url in (
-            (True, self.config.control_url),
-            (False, self._daemon_url_or_none()),
-        ):
-            if not url:
-                continue
-            try:
-                body = self._http_get(url=f"{url}/mcp/tools", is_cloud=is_cloud)
-            except _UpstreamError:
-                complete = False
-                continue
-            for tool in body.get("tools") or []:
-                if isinstance(tool, dict):
-                    tools.append((is_cloud, tool))
+        if self.config.split_mode:
+            if self.config.control_url:
+                try:
+                    body = self._http_get(
+                        url=f"{self.config.control_url}/mcp/tools", is_cloud=True
+                    )
+                except _UpstreamError:
+                    complete = False
+                else:
+                    for tool in body.get("tools") or []:
+                        if isinstance(tool, dict):
+                            tools.append((True, tool))
+            tools.extend((False, tool) for tool in self._local_tool_catalog())
+            return tools, complete
+        url = self._daemon_url_or_none()
+        if not url:
+            return tools, False
+        try:
+            body = self._http_get(url=f"{url}/mcp/tools", is_cloud=False)
+        except _UpstreamError:
+            return tools, False
+        for tool in body.get("tools") or []:
+            if isinstance(tool, dict):
+                tools.append((False, tool))
         return tools, complete
 
     # ---- tools/call ------------------------------------------------------
@@ -301,7 +313,7 @@ class HttpProxyMcpServer:
         if plane == "control":
             return self._call_cloud(name=name, arguments=arguments)
         if plane == "data":
-            return self._call_daemon(name=name, arguments=arguments)
+            return self._call_local_data(name=name, arguments=arguments)
         # aggregate: merge both planes' answers (plan §3.3).
         return self._call_aggregate(name=name, arguments=arguments)
 
@@ -332,7 +344,7 @@ class HttpProxyMcpServer:
             )
         args = self._call_arguments(arguments=arguments)
         # Identity on the wire (§3.2): the cloud gets an explicit project_id and
-        # NEVER repo_root. Resolve it via the local daemon's route map — but ONLY
+        # NEVER repo_root. Resolve it via the proxy-local link map — but ONLY
         # for tools that actually take project_id (e.g. review.start/submit are
         # capability-scoped, not project-scoped, and reject the extra field).
         if self._tool_meta(name=name).project_scoped:
@@ -345,48 +357,84 @@ class HttpProxyMcpServer:
         )
         return self._result_dict(body=body)
 
+    def _call_control_api(self, *, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.config.control_url:
+            raise _UpstreamError(
+                "control plane URL is not configured (RESEARCH_PLUGIN_CONTROL_URL); "
+                "set it to the cloud control plane or unset split mode",
+                error_code="cloud_unreachable",
+            )
+        return self._http_post(
+            url=f"{self.config.control_url}{path}",
+            payload=payload,
+            is_cloud=True,
+            timeout=self.config.timeout_seconds,
+        )
+
+    def _call_local_data(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._local_executor().call_tool(
+                name=name,
+                arguments=self._call_arguments(arguments=arguments),
+            )
+        except LocalDataPlaneError as exc:
+            raise _UpstreamError(
+                exc.message,
+                error_code=exc.error_code,
+                details=exc.details,
+            ) from exc
+        except Exception as exc:
+            error_code = str(getattr(exc, "error_code", "") or "validation_error")
+            details = getattr(exc, "details", {})
+            raise _UpstreamError(
+                str(exc),
+                error_code=error_code,
+                details=details if isinstance(details, dict) else {},
+            ) from exc
+
     def _call_aggregate(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "sandbox.health":
             return self._aggregate_health()
-        # sandbox.get and any future aggregate: cloud row facts merged with the
-        # daemon's machine-local enrichment (ssh command, local_dir, conn
-        # state). Cloud-down must not block; daemon-down must not block.
+        # sandbox.get and any future aggregate: cloud row facts merged with
+        # proxy-local machine facts. Cloud-down must not block local enrichment.
         cloud: dict[str, Any] = {}
         cloud_err: dict[str, Any] | None = None
         try:
             cloud = self._call_cloud(name=name, arguments=arguments)
         except _UpstreamError as exc:
             cloud_err = {"error": exc.message, "error_code": exc.error_code}
-        daemon: dict[str, Any] = {}
-        daemon_err: dict[str, Any] | None = None
+        local: dict[str, Any] = {}
+        local_err: dict[str, Any] | None = None
         try:
-            daemon = self._call_daemon(name=name, arguments=arguments)
+            local = self._call_local_data(name=name, arguments=arguments)
         except _UpstreamError as exc:
-            daemon_err = {"error": exc.message, "error_code": exc.error_code}
-        # Cloud row facts are the base view. The daemon contributes only
+            local_err = {"error": exc.message, "error_code": exc.error_code}
+        # Cloud row facts are the base view. The proxy contributes only
         # machine-local enrichment, matching backend.services.sandbox.sandbox_views'
         # agent view shape without importing backend code into the stdlib proxy.
         merged = dict(cloud)
-        if any(daemon.get(key) for key in ("command", "raw_command", "key_path")):
+        if any(local.get(key) for key in ("command", "raw_command", "key_path")):
             ssh = dict(merged.get("ssh") or {})
-            if daemon.get("command"):
-                ssh["command"] = daemon["command"]
-            if daemon.get("raw_command"):
-                ssh["raw_command"] = daemon["raw_command"]
-            if daemon.get("key_path"):
-                ssh["key_path"] = daemon["key_path"]
+            if local.get("command"):
+                ssh["command"] = local["command"]
+            if local.get("raw_command"):
+                ssh["raw_command"] = local["raw_command"]
+            if local.get("key_path"):
+                ssh["key_path"] = local["key_path"]
             merged["ssh"] = ssh
-        if daemon.get("local_dir"):
-            merged["local_experiment_dir"] = daemon["local_dir"]
+        if local.get("local_dir"):
+            merged["local_experiment_dir"] = local["local_dir"]
         if cloud_err:
             merged["control_plane"] = cloud_err
-        if daemon_err:
-            merged["data_plane"] = daemon_err
+        if local_err:
+            merged["data_plane"] = local_err
         return {key: value for key, value in merged.items() if not key.startswith("_")}
 
     def _aggregate_health(self) -> dict[str, Any]:
-        # daemon self-check + cloud reachability (plan §3.3).
-        data_ok, data_detail = self._probe(is_cloud=False)
+        if self.config.split_mode:
+            data_ok, data_detail = True, {"mode": "proxy"}
+        else:
+            data_ok, data_detail = self._probe(is_cloud=False)
         cloud_ok, cloud_detail = (True, {})
         if self.config.split_mode:
             cloud_ok, cloud_detail = self._probe(is_cloud=True)
@@ -437,22 +485,9 @@ class HttpProxyMcpServer:
     # ---- identity resolution (split mode) --------------------------------
 
     def _resolve_project_id(self) -> str | None:
-        url = self._daemon_url_or_none()
-        if not url:
+        if not self.config.split_mode:
             return None
-        try:
-            from urllib.parse import quote
-
-            body = self._http_get(
-                url=f"{url}/local/route?repo_root={quote(str(self.config.repo_root))}",
-                is_cloud=False,
-            )
-        except _UpstreamError:
-            return None
-        project_id = body.get("project_id")
-        if isinstance(project_id, str) and project_id:
-            return project_id
-        return None
+        return self._links().project_for_repo(repo_root=str(self.config.repo_root))
 
     def _resolve_project_id_required(self) -> str:
         project_id = self._resolve_project_id()
@@ -460,7 +495,7 @@ class HttpProxyMcpServer:
             raise _UpstreamError(
                 "no hosted project link found for repo; run "
                 "research-plugin-client link --project-id <project_id>",
-                error_code="local_daemon_not_running",
+                error_code="project_not_linked",
                 details={"repo_root": str(self.config.repo_root)},
             )
         return project_id
@@ -496,6 +531,37 @@ class HttpProxyMcpServer:
         # Unknown tool ⇒ control; the cloud will reject a truly unknown tool clearly.
         return self._tool_cache.get(name, _ToolMeta())
 
+    def _local_tool_catalog(self) -> list[dict[str, Any]]:
+        contracts = importlib.import_module("backend.tools.contracts")
+        allowed = contracts.DATA_PLANE_TOOL_NAMES | contracts.AGGREGATE_TOOL_NAMES
+        return [
+            tool
+            for tool in contracts.static_tool_catalog()
+            if tool.get("name") in allowed
+        ]
+
+    def _local_executor(self) -> LocalDataPlane:
+        if self._local_data_plane is None:
+            self._local_data_plane = LocalDataPlane(
+                repo_root=self.config.repo_root,
+                project_id_resolver=self._resolve_project_id,
+                control_api_post=lambda path, payload: self._call_control_api(
+                    path=path, payload=payload
+                ),
+                control_tool_call=lambda tool, args: self._call_cloud(
+                    name=tool, arguments=args
+                ),
+            )
+        return self._local_data_plane
+
+    def _links(self) -> ProjectLinks:
+        if self._project_links is None:
+            db_path = self.config.project_links_path or (
+                Path.home() / ".research_plugin" / "project_links.sqlite"
+            )
+            self._project_links = ProjectLinks(db_path=db_path)
+        return self._project_links
+
     def _call_arguments(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
         args = dict(arguments)
         if self.config.split_mode:
@@ -516,10 +582,9 @@ class HttpProxyMcpServer:
         return LONG_VERB_TIMEOUT_SECONDS if name in LONG_VERBS else self.config.timeout_seconds
 
     def _daemon_url_or_none(self) -> str | None:
-        url = (
-            discover_daemon_url(repo_root=self.config.repo_root)
-            or self.config.daemon_url
-        )
+        if self.config.split_mode:
+            return None
+        url = self.config.daemon_url
         if not url and not self.config.split_mode:
             # Local mode keeps the friendly fallback.
             url = os.environ.get("RESEARCH_PLUGIN_DEFAULT_DAEMON_URL") or DEFAULT_DAEMON_URL
@@ -623,7 +688,7 @@ class HttpProxyMcpServer:
         except (json.JSONDecodeError, UnicodeDecodeError):
             body = {}
         message = body.get("detail") or exc.reason or "upstream returned HTTP error"
-        error_code = body.get("error_code") or "daemon_http_error"
+        error_code = body.get("error_code") or "upstream_http_error"
         details = {k: v for k, v in body.items() if k not in {"detail", "error_code"}}
         details.setdefault("status", exc.code)
         return _UpstreamError(str(message), error_code=str(error_code), details=details)

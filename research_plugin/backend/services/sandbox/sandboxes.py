@@ -165,6 +165,7 @@ class SandboxService:
         time_limit: int | None = None,
         instance_type: str | None = None,
         region: str | None = None,
+        public_key: str | None = None,
         public_key_override: str | None = None,
         include_data_plane_enrichment: bool = True,
         additional: bool = False,
@@ -213,14 +214,19 @@ class SandboxService:
                 )
             )
         )
-        if public_key_override:
-            public_key = public_key_override
+        supplied_public_key = (
+            str(public_key_override).strip()
+            if public_key_override is not None
+            else str(public_key or "").strip()
+        )
+        if supplied_public_key:
+            public_key = supplied_public_key
         else:
             public_key, _key_path = self._ensure_keypair(local_key=sandbox_uid)
         # BYO-key custody fact (additive response field): "caller" when the
         # requester supplied its own public key, "managed" when the worker
         # minted the fallback keypair on the caller's behalf.
-        public_key_source = "caller" if public_key_override else "managed"
+        public_key_source = "caller" if supplied_public_key else "managed"
         # Mint the management keypair before any provision so key injection
         # always precedes the management read paths (plan Phase 5 sequencing).
         management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
@@ -237,6 +243,14 @@ class SandboxService:
             and self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
             is not False
         ):
+            if public_key_source == "caller" and (
+                str(existing.get("public_key_source") or "managed") != "caller"
+            ):
+                raise ValidationError(
+                    "existing sandbox was provisioned with a managed user SSH key; "
+                    "release it first or request an additional sandbox so the caller "
+                    "public_key can be authorized on a new VM"
+                )
             self.registry.touch_alive(
                 experiment_id=experiment_id,
                 sandbox_uid=str(existing.get("sandbox_uid") or ""),
@@ -322,6 +336,7 @@ class SandboxService:
             # A sandbox is a machine first: its workdir is sandbox-owned. Any
             # experiment relationship lives only in sandbox_attachments.
             remote_workdir=remote_dir,
+            public_key_source=public_key_source,
         )
         job = self.provisioner.ensure_job(
             experiment_id=experiment_id,

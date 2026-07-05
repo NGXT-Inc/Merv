@@ -15,10 +15,10 @@ mode is unaffected by everything here — it is the byte-identical default.
 |---|---|---|---|---|
 | `local` (default) | both planes in one process | on | off | `research-plugin-http` |
 | `control` | cloud control plane | on | off | `research-plugin-control` |
-| `daemon` | user-machine data plane | off | off | `research-plugin-daemon` |
 
-Mode validation is fail-fast: a daemon without `RESEARCH_PLUGIN_CONTROL_URL`, or
-an unknown mode value, refuses to start.
+Mode validation is fail-fast: an unknown mode value refuses to start. In split
+mode, the user-machine data plane is the stateless MCP proxy launched by the
+agent client, not a long-running `RESEARCH_PLUGIN_MODE` process.
 
 ## Environment (control mode, §3.4)
 
@@ -53,10 +53,10 @@ store, and mounted management key config above.
 ## Version / compatibility floor
 
 - `GET /api/meta` →
-  `{server_version, min_daemon_version, min_proxy_version, mode, capabilities}`.
+  `{server_version, min_proxy_version, mode, capabilities}`.
   Open, so a client can discover the floor and hide local data-plane actions
   when connected to hosted control.
-- Clients (daemon + stdio proxy) stamp `X-RP-Client-Version` on every request.
+- The stdio proxy stamps `X-RP-Client-Version` on every control-plane request.
 - A **below-floor** client gets `426 Upgrade Required` with an actionable
   message (`error_code: client_too_old`). A missing header is tolerated
   (pre-Phase-9 clients). Floors are constants in `backend/version.py`; the
@@ -99,18 +99,16 @@ interval; the sweeps are the broader periodic housekeeping.
 - The response carries `X-RP-Request-Id` for correlation.
 - **Per-tenant counters**: `GET /api/admin/tenants/{tenant_id}/counters` (tool
   calls, sandbox generations, sandbox-hours). The audit trail reuses the
-  append-only `events` table scoped by project → tenant (open decision J:
-  cloud-only, no thin local mirror; the daemon keeps its own `activity.jsonl`,
-  never synced).
+  append-only `events` table scoped by project → tenant.
 
 ## Degraded UI states (server side)
 
 Result-role `/content` and figure `/file?rel=` return a documented
-`content_unavailable` shape in control mode (the bytes live only on an offline
-daemon, or are metadata-only — fixed decision 6) rather than a 500. Hosted
-browser/MCP `sandbox.release` is intentionally destructive: it terminates the VM
-after the caller confirms retained outputs. Anything left on the sandbox is lost.
-The React SPA renders these states — that repoint is separate from the backend.
+`content_unavailable` shape in control mode (the bytes live only on the caller's
+machine, or are metadata-only) rather than a 500. Hosted browser/MCP
+`sandbox.release` is intentionally destructive: it terminates the VM after the
+caller confirms retained outputs. Anything left on the sandbox is lost. The
+React SPA renders these states — that repoint is separate from the backend.
 
 ## Poll amplification
 

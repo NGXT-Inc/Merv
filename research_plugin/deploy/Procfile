@@ -1,13 +1,7 @@
-# Process declarations for the Research Plugin split topology (plan Phase 9).
-# A reference for a Procfile-driven host (Foreman/Honcho/Heroku-style). The
-# control plane and the user-machine daemon are SEPARATE deployments — they
-# never run in the same Procfile in production — but both entrypoints are shown
-# here so the console-script wiring is documented in one place.
+# Process declaration for the hosted Research Plugin control plane.
+# The user-machine side is the stateless MCP proxy launched by the agent client,
+# not a Procfile-managed daemon.
 
-# Cloud control plane (reaper on, daemon endpoints on). Keep private behind a
-# TLS-terminating load balancer. Needs RESEARCH_PLUGIN_DB_URL + _BLOB_BUCKET.
+# Cloud control plane. Keep private behind a TLS-terminating load balancer.
+# Needs RESEARCH_PLUGIN_DB_URL + RESEARCH_PLUGIN_BLOB_BUCKET.
 control: research-plugin-control
-
-# User-machine data-plane daemon (rsync on, reaper off). Needs
-# RESEARCH_PLUGIN_CONTROL_URL.
-daemon: research-plugin-daemon

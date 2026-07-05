@@ -14,8 +14,7 @@ SERVICES = SERVICES_ROOT
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
     BACKEND_ROOT / "transport" / "admin_http.py",
-    BACKEND_ROOT / "transport" / "daemon_http.py",
-    BACKEND_ROOT / "daemon" / "daemon_loopback.py",
+    BACKEND_ROOT / "transport" / "data_plane_http.py",
     BACKEND_ROOT / "transport" / "feed_http.py",
     BACKEND_ROOT / "transport" / "http_api.py",
     BACKEND_ROOT / "transport" / "mcp_http.py",
@@ -424,8 +423,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("sandbox_provisioner", daemon_imports)
 
     def test_auto_sync_poller_is_removed(self) -> None:
-        daemon_mode = BACKEND_ROOT / "composition" / "daemon_mode.py"
-        daemon_source = daemon_mode.read_text(encoding="utf-8")
         local_source = _source("sandbox/sandbox_daemons.py")
         http_source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(
             encoding="utf-8"
@@ -436,12 +433,11 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse((BACKEND_ROOT / "sandbox" / "sandbox_autosync.py").exists())
         self.assertFalse((components / "ExperimentSyncIndicator.jsx").exists())
         self.assertFalse((components / "ExperimentSyncDetailsModal.jsx").exists())
-        for source in (daemon_source, local_source):
-            self.assertNotIn("run_auto_sync_target", source)
-            self.assertNotIn("_auto_sync_loop", source)
-            self.assertNotIn("auto_sync_thread", source)
-            self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", source)
-            self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL", source)
+        self.assertNotIn("run_auto_sync_target", local_source)
+        self.assertNotIn("_auto_sync_loop", local_source)
+        self.assertNotIn("auto_sync_thread", local_source)
+        self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", local_source)
+        self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_RSYNC_INTERVAL", local_source)
         for source in (http_source, api_source):
             self.assertNotIn("/sandbox/sync", source)
             self.assertNotIn("syncSandbox", source)
@@ -956,34 +952,32 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("require_admin", admin_source)
         self.assertNotIn("require_tenant_or_admin", admin_source)
 
-    def test_mcp_http_routes_are_shared_by_control_and_daemon(self) -> None:
+    def test_mcp_http_routes_are_shared_by_local_and_control(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
-        daemon_source = (BACKEND_ROOT / "daemon" / "daemon_loopback.py").read_text(encoding="utf-8")
         mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "mcp_http.py"),
             {"collections.abc", "json", "typing", "fastapi", "fastapi.concurrency", "utils"},
         )
-        for owner_source in (source, daemon_source):
-            self.assertIn("register_mcp_routes(", owner_source)
-            self.assertNotIn('@http.get("/mcp/tools")', owner_source)
-            self.assertNotIn('@http.post("/mcp/call")', owner_source)
-            self.assertNotIn("tool name is required", owner_source)
-            self.assertNotIn("arguments must be an object", owner_source)
-            self.assertNotIn("context must be an object", owner_source)
+        self.assertIn("register_mcp_routes(", source)
+        self.assertNotIn('@http.get("/mcp/tools")', source)
+        self.assertNotIn('@http.post("/mcp/call")', source)
+        self.assertNotIn("tool name is required", source)
+        self.assertNotIn("arguments must be an object", source)
+        self.assertNotIn("context must be an object", source)
         self.assertIn('"/mcp/tools"', mcp_source)
         self.assertIn('"/mcp/call"', mcp_source)
         self.assertIn("tool name is required", mcp_source)
         self.assertIn("arguments must be an object", mcp_source)
         self.assertIn("context must be an object", mcp_source)
 
-    def test_control_daemon_http_routes_are_lifted_out_of_main_factory(self) -> None:
+    def test_control_data_plane_http_routes_are_lifted_out_of_main_factory(self) -> None:
         source = (BACKEND_ROOT / "transport" / "http_api.py").read_text(encoding="utf-8")
-        daemon_source = (BACKEND_ROOT / "transport" / "daemon_http.py").read_text(encoding="utf-8")
+        data_plane_source = (BACKEND_ROOT / "transport" / "data_plane_http.py").read_text(encoding="utf-8")
 
         self.assertEqual(
-            _import_module_names(BACKEND_ROOT / "transport" / "daemon_http.py"),
+            _import_module_names(BACKEND_ROOT / "transport" / "data_plane_http.py"),
             {
                 "base64",
                 "binascii",
@@ -991,28 +985,27 @@ class ServiceLayoutTest(unittest.TestCase):
                 "typing",
                 "fastapi",
                 "services.feed",
+                "tools.contracts",
                 "utils",
             },
         )
-        self.assertIn("register_daemon_routes(", source)
-        self.assertIn("app_for_daemon_project", source)
-        self.assertIn("task_queue=task_queue", source)
+        self.assertIn("register_data_plane_routes(", source)
+        self.assertIn("app_for_data_plane_project", source)
+        self.assertNotIn("task_queue=", source)
         self.assertNotIn("def _required_text", source)
         self.assertNotIn("def _decode_b64_field", source)
         self.assertNotIn("base64", source)
         for route in (
-            '"/api/daemon/tasks"',
-            '"/api/daemon/tasks/{task_id}/ack"',
-            '"/api/daemon/resources/validate-association"',
-            '"/api/daemon/resources/observe"',
-            '"/api/daemon/resources/associate"',
-            '"/api/daemon/feed/validate-post"',
-            '"/api/daemon/feed/post"',
-            '"/api/daemon/sandboxes/request"',
-            '"/api/daemon/sandboxes/attach"',
+            '"/api/data-plane/resources/validate-association"',
+            '"/api/data-plane/resources/observe"',
+            '"/api/data-plane/resources/associate"',
+            '"/api/data-plane/feed/validate-post"',
+            '"/api/data-plane/feed/post"',
+            '"/api/data-plane/sandboxes/request"',
+            '"/api/data-plane/sandboxes/attach"',
         ):
             with self.subTest(route=route):
-                self.assertIn(route, daemon_source)
+                self.assertIn(route, data_plane_source)
                 self.assertNotIn(route, source)
 
     def test_transport_delegates_submitted_resource_blob_reads_to_service(self) -> None:
@@ -1233,7 +1226,6 @@ class ServiceLayoutTest(unittest.TestCase):
             {"hashlib", "hmac", "secrets"},
         )
         sensitive_paths = (
-            BACKEND_ROOT / "composition" / "daemon_mode.py",
             BACKEND_ROOT / "services" / "reviews.py",
             BACKEND_ROOT / "state" / "store.py",
         )

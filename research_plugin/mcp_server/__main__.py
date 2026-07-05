@@ -1,15 +1,14 @@
 """Entrypoint for the Research Plugin MCP stdio proxy.
 
-The MCP process is a thin adapter — it owns no state and starts no jobs.
-It forwards Codex tool calls plus hidden repo context to the long-running HTTP
-daemon. See ``docs/STARTUP_CHEATSHEET.md`` for the startup order.
+The MCP process is a thin adapter. In local mode it forwards every call to the
+local HTTP backend; in split mode it performs local data-plane file reads itself
+and forwards only explicit project-scoped facts/bytes to the control plane.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from research_plugin_shared.client_config import (
 )
 
 from .daemon_marker import discover_daemon_url
+from .project_links import ProjectLinks, default_project_links_path
 from .proxy import DEFAULT_DAEMON_URL, HttpProxyMcpServer, ProxyConfig
 
 
@@ -50,30 +50,41 @@ def main() -> int:
     repo_root = Path(args.repo).resolve()
     client_config_path = resolve_client_config_path()
     client_config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(client_config_path)})
+    project_links_path = default_project_links_path(
+        client_config=client_config,
+        config_path=client_config_path,
+    )
     linked_client_config = (
-        client_config if _repo_is_linked(config=client_config, repo_root=repo_root) else {}
+        client_config
+        if _repo_is_linked(db_path=project_links_path, repo_root=repo_root)
+        else {}
     )
     control_url = (
         args.control_url
         or linked_client_config.get("control_url", "")
         or client_config.get("control_url", "")
     ).rstrip("/") or None
-    daemon_url = (
-        args.daemon_url
-        or discover_daemon_url(repo_root=repo_root)
-        or linked_client_config.get("daemon_url", "")
-        or client_config.get("daemon_url", "")
-    )
-    # The daemon loopback secret protects the local daemon API and is read from
-    # a file so it never sits in a process arg that gets logged.
-    daemon_secret_file = (
-        os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
-        or linked_client_config.get("daemon_secret_file")
-        or client_config.get("daemon_secret_file")
-    )
-    if (daemon_url or control_url) and not daemon_secret_file:
-        daemon_secret_file = str(Path.home() / ".research_plugin" / DAEMON_SECRET_FILE_NAME)
-    daemon_secret = read_secret_file(daemon_secret_file, keys=("token", "secret"))
+    daemon_url = None
+    daemon_secret = None
+    if not control_url:
+        daemon_url = (
+            args.daemon_url
+            or discover_daemon_url(repo_root=repo_root)
+            or linked_client_config.get("daemon_url", "")
+            or client_config.get("daemon_url", "")
+        )
+        # The daemon loopback secret protects the local daemon API and is read
+        # from a file so it never sits in a process arg that gets logged.
+        daemon_secret_file = (
+            os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
+            or linked_client_config.get("daemon_secret_file")
+            or client_config.get("daemon_secret_file")
+        )
+        if daemon_url and not daemon_secret_file:
+            daemon_secret_file = str(
+                Path.home() / ".research_plugin" / DAEMON_SECRET_FILE_NAME
+            )
+        daemon_secret = read_secret_file(daemon_secret_file, keys=("token", "secret"))
 
     if not daemon_url and not control_url:
         # Don't hard-exit: Codex will call initialize before anything else, and
@@ -90,30 +101,17 @@ def main() -> int:
         daemon_url=daemon_url,
         control_url=control_url,
         daemon_secret=daemon_secret,
+        project_links_path=project_links_path,
     )
     HttpProxyMcpServer(config=config).serve()
     return 0
 
 
-def _repo_is_linked(*, config: dict[str, str], repo_root: Path) -> bool:
-    raw = config.get("daemon_state_dir") or ""
-    if not raw:
-        return False
-    db_path = Path(raw).expanduser() / "project_links.sqlite"
-    if not db_path.exists():
-        return False
+def _repo_is_linked(*, db_path: Path, repo_root: Path) -> bool:
     try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM project_links WHERE repo_root = ? LIMIT 1",
-                (str(repo_root.expanduser().resolve()),),
-            ).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
+        return bool(ProjectLinks(db_path=db_path).project_for_repo(repo_root=str(repo_root)))
+    except Exception:  # noqa: BLE001 - corrupt link DB should not kill initialize.
         return False
-    return row is not None
 
 
 if __name__ == "__main__":

@@ -49,9 +49,6 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         # Keep the reaper inert between ticks so the test drives reaping itself.
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
         "RESEARCH_PLUGIN_MODE": "control",
-        # Short task-result wait so a queued daemon task that briefly outruns
-        # the drain thread falls through quickly instead of holding the test 30s.
-        "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "3",
     }
 
     def _await(self, predicate, timeout: float = 8.0) -> None:
@@ -72,10 +69,6 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         self._apps: list = []
 
     def tearDown(self) -> None:
-        if getattr(self, "_stop_drain", None) is not None:
-            self._stop_drain.set()
-        for t in getattr(self, "_drain_threads", []):
-            t.join(timeout=2.0)
         for app in self._apps:
             app.shutdown()
         for k, v in self._saved.items():
@@ -86,32 +79,13 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _build(self, *, alive_ids: tuple[str, ...] = ()):
-        app, queue = build_control_app(
+        app, channel = build_control_app(
             repo_root=self.staging,
             env=_mounted_mgmt_key_env(self.staging),
             execution_backend=_reaper_capable_backend(alive_ids=alive_ids),
         )
         self._apps.append(app)
-        # Drain the cloud→daemon task queue immediately in a stub daemon loop so
-        # teardown side work completes fast when a present daemon can answer.
-        self._drain_queue(queue)
-        return app, queue
-
-    def _drain_queue(self, queue) -> None:
-        import threading
-
-        def loop():
-            while not self._stop_drain.is_set():
-                task = queue.poll(wait_seconds=0.2)
-                if task is None:
-                    continue
-                queue.ack(task_id=task["id"], ok=True, result={})
-
-        self._stop_drain = getattr(self, "_stop_drain", None) or threading.Event()
-        t = threading.Thread(target=loop, daemon=True)
-        t.start()
-        self._drain_threads = getattr(self, "_drain_threads", [])
-        self._drain_threads.append(t)
+        return app, channel
 
     def _seed_expired_running_sandbox(self, app) -> tuple[str, str, str]:
         # Seed a running, already-expired sandbox row directly (the provision
@@ -142,7 +116,6 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         return project_id, exp_id, sandbox_uid
 
     def test_control_restart_resumes_reaping_of_running_rows(self) -> None:
-        self._stop_drain = None  # reset per test
         first, _q = self._build()
         project_id, _exp_id, sandbox_uid = self._seed_expired_running_sandbox(first)
         first.shutdown()
@@ -150,8 +123,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
 
         # Restart the control app over the SAME store: build_control_app runs
         # the crash-recovery scan, which reconciles the still-up VM and resumes
-        # the reaper, kicking one reap off-thread. The drain thread acts as a
-        # present daemon for any queued side work. The VM is still up
+        # the reaper, kicking one reap off-thread. The VM is still up
         # (alive_ids), so reconcile keeps the row running and the resumed reaper
         # reaps it on its expiry deadline.
         restarted, _q2 = self._build(alive_ids=("sb-recovery",))

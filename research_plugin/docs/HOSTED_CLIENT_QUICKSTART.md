@@ -6,9 +6,10 @@ running agents against local checkouts.
 ## Shape
 
 One hosted control plane serves project records and gates. Each client machine
-runs one loopback-only data-plane daemon, and each local checkout is linked to
-the hosted project it should work on. The machine config does not contain one
-repo path or one project id; folder links live in the daemon-local registry.
+uses the stdio MCP proxy as its local data plane, and each local checkout is
+linked to the hosted project it should work on. The machine config does not
+contain one repo path or one project id; folder links live in a machine-local
+SQLite link file under `~/.research_plugin/`.
 
 ## Install on the client VM
 
@@ -17,10 +18,10 @@ git clone <research-suite-repo-url> ~/research-suite
 cd ~/research-suite/research_plugin
 
 python3 -m venv .venv
-.venv/bin/pip install -e '.[daemon]'
+.venv/bin/pip install -e .
 ```
 
-## Fast path: configure, start, and link
+## Fast path: configure and link
 
 ```bash
 cd ~/research-suite/research_plugin
@@ -28,32 +29,18 @@ cd ~/research-suite/research_plugin
 bin/research-plugin-client configure \
   --control-url https://your-control-plane.example.com
 
-bin/research-plugin-client start
-
 cd ~/work/project-a
 ~/research-suite/research_plugin/bin/research-plugin-client link --project-id proj_123
 ```
 
-That configures the machine, starts the machine daemon, and links one local
-checkout to one hosted project. The current operator-run setup uses a private
-control plane, so the client does not need a control-plane token.
+That configures the machine and links one local checkout to one hosted project.
+The current operator-run setup uses a private control plane, so the client does
+not need a control-plane token.
 
 ## What gets saved
 
-Machine-local config, daemon logs, pid files, the daemon loopback secret, and
-folder links are written under `~/.research_plugin/`; they are not part of any
-research repo.
-
-## Manage the daemon
-
-```bash
-cd ~/research-suite/research_plugin
-bin/research-plugin-client start
-bin/research-plugin-client health
-```
-
-The daemon is loopback-only. `start` and `health` fail if the hosted control
-plane cannot be reached.
+Machine-local config and folder links are written under `~/.research_plugin/`;
+they are not part of any research repo.
 
 ## Link more local folders
 

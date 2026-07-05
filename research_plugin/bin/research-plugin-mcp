@@ -38,8 +38,8 @@ else
   esac
 fi
 
-# No state-path export: the stdio proxy never opens SQLite.
+# No backend state-path export: the stdio proxy never opens the project state DB.
 # No Modal env here either: the proxy only forwards tool calls to the HTTP
-# daemon over HTTP. Credentials are a daemon-only concern.
+# backend/proxy data-plane path. Provider credentials are backend-only.
 
 exec "$PYTHON_BIN" -m mcp_server "$@"

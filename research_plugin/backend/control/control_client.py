@@ -2,14 +2,13 @@
 
 ``HttpControlPlaneClient`` is the wire-side sibling of the in-process control
 plane: it implements the same ``ControlPlaneClient.call(name, arguments)``
-contract by POSTing to a running control-plane (or daemon) ``/mcp/call``
-endpoint. The split-mode daemon uses it as its upstream to the cloud, and the
+contract by POSTing to a running control-plane ``/mcp/call`` endpoint. The
 dual-wiring contract suite (``test_control_plane_contract.py``) runs the exact
 same scenario corpus through it over a real in-process HTTP server — the
 plane-seam analog of ``test_sandbox_backend_contract.py``.
 
-Stdlib-only on purpose (urllib + json): the daemon profile drops the provider
-SDKs and this client must work there, and the proxy reuses the same plumbing.
+Stdlib-only on purpose (urllib + json): proxy-local split-mode code reuses the
+same plumbing without importing provider SDKs.
 
 Error translation: the control plane returns its ``ResearchPluginError`` as a
 JSON body ``{detail, error_code, ...}`` (see ``http_api.research_error_handler``).
@@ -73,8 +72,8 @@ class HttpControlPlaneClient:
         extra_context: dict[str, Any] | None = None,
     ) -> None:
         # The cloud edge NEVER receives repo_root (plan §3.2): extra_context is
-        # for explicit project_id / client_id only; the daemon resolves the
-        # repo→project mapping locally and the proxy attaches project_id here.
+        # for explicit project_id / client_id only; the proxy resolves the
+        # repo→project mapping locally and attaches project_id here.
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.extra_context = dict(extra_context or {})
@@ -108,25 +107,25 @@ class HttpControlPlaneClient:
         return tools
 
     def submit_resource_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/resources/observe", payload=payload)
+        return self._post(path="/api/data-plane/resources/observe", payload=payload)
 
     def validate_resource_association(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/resources/validate-association", payload=payload)
+        return self._post(path="/api/data-plane/resources/validate-association", payload=payload)
 
     def submit_resource_association(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/resources/associate", payload=payload)
+        return self._post(path="/api/data-plane/resources/associate", payload=payload)
 
     def validate_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/feed/validate-post", payload=payload)
+        return self._post(path="/api/data-plane/feed/validate-post", payload=payload)
 
     def request_sandbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/sandboxes/request", payload=payload)
+        return self._post(path="/api/data-plane/sandboxes/request", payload=payload)
 
     def attach_sandbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/sandboxes/attach", payload=payload)
+        return self._post(path="/api/data-plane/sandboxes/attach", payload=payload)
 
     def submit_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/daemon/feed/post", payload=payload)
+        return self._post(path="/api/data-plane/feed/post", payload=payload)
 
     # ---- transport (stdlib only) ----
 

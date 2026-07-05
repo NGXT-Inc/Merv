@@ -22,7 +22,7 @@ research-plugin-mcp      sibling frontend UI
   stdio MCP proxy              |
         |                      v
         +------------> research-plugin-http
-                         HTTP daemon
+                         local HTTP backend
                             |
               +-------------+-------------+
               |                           |
@@ -30,15 +30,15 @@ research-plugin-mcp      sibling frontend UI
   <repo>/.research_plugin/     Thunder / Lambda Labs / Modal / fake
 ```
 
-The stdio MCP proxy is intentionally thin and stateless. The HTTP daemon owns
+The stdio MCP proxy is intentionally thin and stateless. In local mode,
+`research-plugin-http` owns
 durable state, workflow transitions, review permissions, resource metadata,
 sandbox orchestration, activity logs, and the HTTP API used by the frontend.
 
 Local mode runs the control and data planes together in `research-plugin-http`.
-Split/cloud mode runs a hosted `research-plugin-control` plus a local
-`research-plugin-daemon` that keeps repo files, private keys, and machine-local
-operations on the user's machine. One local daemon can link many checkout
-folders to many hosted projects.
+Split/cloud mode runs a hosted `research-plugin-control`; the user-machine
+stdio MCP proxy reads repo files, owns caller SSH keys, and uses a local link
+file to map checkout folders to hosted projects.
 
 ## Workflows
 
@@ -74,7 +74,7 @@ python3 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-Start the daemon before opening an agent client:
+Start the local HTTP backend before opening an agent client:
 
 ```bash
 ./bin/research-plugin-http \
@@ -113,10 +113,10 @@ Install the slim client on the agent machine/VM:
 git clone <research-suite-repo-url> ~/research-suite
 cd ~/research-suite/research_plugin
 python3 -m venv .venv
-.venv/bin/pip install -e '.[daemon]'
+.venv/bin/pip install -e .
 ```
 
-Configure the machine, start one daemon, and link a checkout:
+Configure the machine and link a checkout:
 
 ```bash
 bin/research-plugin-client connect \
@@ -137,8 +137,9 @@ research repo. See [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKST
 
 ## Credentials
 
-Provider credentials belong to the daemon process, not the MCP proxy and not the
-research repo. Prefer a per-user env file:
+In hosted-control mode, provider credentials belong to the control plane, not
+the MCP proxy and not the research repo. In local mode, provider credentials
+belong to the local HTTP backend process. Prefer a per-user env file:
 
 ```bash
 mkdir -p ~/.config/research-plugin
@@ -164,8 +165,8 @@ test backend are also supported through `RESEARCH_PLUGIN_EXECUTION_BACKEND`.
 
 This directory ships one canonical plugin content tree:
 
-- `bin/` - launchers for the MCP proxy, local daemon, split daemon, and control plane
-- `backend/` - HTTP daemon, services, state stores, workflow gates, and execution backends
+- `bin/` - launchers for the MCP proxy, local HTTP backend, hosted control plane, and client CLI
+- `backend/` - HTTP API, services, state stores, workflow gates, and execution backends
 - `mcp_server/` - stdio MCP proxy package
 - `skills/` - workflow and review skills
 - `agents/` - read-only reviewer agents

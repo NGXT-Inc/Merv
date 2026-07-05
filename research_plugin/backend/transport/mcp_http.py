@@ -1,4 +1,4 @@
-"""MCP-shaped HTTP routes shared by control and daemon loopback surfaces."""
+"""MCP-shaped HTTP routes shared by local and control HTTP surfaces."""
 
 from __future__ import annotations
 

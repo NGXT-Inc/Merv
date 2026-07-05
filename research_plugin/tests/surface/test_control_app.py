@@ -195,7 +195,7 @@ class ControlAppTest(unittest.TestCase):
                 )
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_reads_task_result_timeout_from_injected_env(self) -> None:
+    def test_control_app_ignores_legacy_task_result_timeout_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app, _queue = build_control_app(
@@ -207,19 +207,19 @@ class ControlAppTest(unittest.TestCase):
                 execution_backend=FakeSandboxBackend(),
             )
             self.addCleanup(app.shutdown)
-            self.assertEqual(app.sandboxes.tasks.result_timeout_seconds, 2.5)
+            self.assertEqual(app.sandboxes.tasks.history, [])
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaises(ValueError):
-                build_control_app(
-                    repo_root=root,
-                    env={
-                        **_mounted_mgmt_key_env(root),
-                        "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "bad",
-                    },
-                    execution_backend=FakeSandboxBackend(),
-                )
+            app, _queue = build_control_app(
+                repo_root=root,
+                env={
+                    **_mounted_mgmt_key_env(root),
+                    "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "bad",
+                },
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
 
     def test_control_app_reads_mlflow_from_injected_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -459,8 +459,8 @@ class ControlAppTest(unittest.TestCase):
             projects = client.get("/api/projects")
             self.assertEqual(projects.status_code, 200, projects.text)
 
-            daemon_poll = client.get("/api/daemon/tasks?wait=0")
-            self.assertEqual(daemon_poll.status_code, 200, daemon_poll.text)
+            old_daemon_poll = client.get("/api/daemon/tasks?wait=0")
+            self.assertEqual(old_daemon_poll.status_code, 404, old_daemon_poll.text)
 
             admin_cleanup = client.post("/api/admin/cleanup")
             self.assertEqual(admin_cleanup.status_code, 200, admin_cleanup.text)
@@ -468,17 +468,17 @@ class ControlAppTest(unittest.TestCase):
             counters = client.get("/api/admin/tenants/local/counters")
             self.assertEqual(counters.status_code, 200, counters.text)
 
-            old_daemon = client.get(
-                "/api/daemon/tasks?wait=0",
+            old_proxy = client.get(
+                "/api/projects",
                 headers={CLIENT_VERSION_HEADER: "0.0001"},
             )
-            self.assertEqual(old_daemon.status_code, 426, old_daemon.text)
+            self.assertEqual(old_proxy.status_code, 426, old_proxy.text)
 
             acme_project = server.app.projects.create(
                 name="Acme Hosted", tenant_id="acme"
             )
-            daemon_write = client.post(
-                "/api/daemon/resources/observe",
+            data_plane_write = client.post(
+                "/api/data-plane/resources/observe",
                 json={
                     "project_id": acme_project["id"],
                     "path": "results.txt",
@@ -488,7 +488,7 @@ class ControlAppTest(unittest.TestCase):
                     "size_bytes": 1,
                 },
             )
-            self.assertEqual(daemon_write.status_code, 200, daemon_write.text)
+            self.assertEqual(data_plane_write.status_code, 200, data_plane_write.text)
 
             meta = client.get("/api/meta")
             self.assertEqual(meta.status_code, 200, meta.text)

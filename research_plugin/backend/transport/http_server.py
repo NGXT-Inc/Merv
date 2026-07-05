@@ -1,4 +1,4 @@
-"""HTTP daemon process for the Research Plugin backend.
+"""HTTP process for the Research Plugin backend.
 
 Owns the running uvicorn server: binds the socket, runs uvicorn against the
 FastAPI app from `http_api`, and manages the `.research_plugin/daemon.json`
@@ -17,12 +17,7 @@ from pathlib import Path
 import uvicorn
 
 from ..app import ResearchPluginApp
-from ..config import (
-    Mode,
-    resolve_control_url,
-    resolve_daemon_state_dir,
-    resolve_mode,
-)
+from ..config import Mode, resolve_mode
 from ..daemon.daemon_marker import clear_marker, write_marker
 from ..env import env_bool
 from .http_api import create_fastapi_app
@@ -164,62 +159,13 @@ def _serve_control(*, host: str, port: int) -> int:
     return 0
 
 
-def _serve_daemon(*, host: str, port: int) -> int:
-    """Run the slim local data-plane daemon (cloud plan Phase 8, §3.4).
-
-    Fail-fast: refuses to start without RESEARCH_PLUGIN_CONTROL_URL (no silent
-    127.0.0.1 fallback). Starts the task long-poll loop and serves a loopback
-    surface for the proxy (GET /local/route + the data-plane tools).
-    """
-    from ..composition import build_daemon_server
-    from ..daemon.daemon_loopback import create_daemon_loopback_app
-
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise SystemExit(f"daemon mode refuses non-loopback host: {host}")
-    control_url = resolve_control_url()
-    daemon = build_daemon_server(
-        control_url=control_url,
-        workspace_root=resolve_daemon_state_dir(),
-    )
-    daemon.start()
-    loopback = create_daemon_loopback_app(daemon=daemon)
-    host, selected_port, uv, server_socket = _serve_uvicorn(
-        fastapi_app=loopback, host=host, port=port
-    )
-    print(
-        f"research_plugin DAEMON (data plane) listening on "
-        f"http://{host}:{selected_port}; upstream {control_url}",
-        flush=True,
-    )
-    try:
-        uv.run(sockets=[server_socket])
-    except KeyboardInterrupt:
-        pass
-    finally:
-        daemon.stop()
-        server_socket.close()
-    return 0
-
-
-def daemon_main() -> int:
-    """Launch the slim data-plane daemon (cloud plan Phase 8, §3.4).
-
-    The console-script entry for the ``daemon`` extra: forces daemon mode
-    (RESEARCH_PLUGIN_MODE=daemon) so it never accidentally binds the control or
-    local topology, and does NOT import any provider SDK at startup. Fail-fast
-    on a missing control URL lives in the composition root.
-    """
-    os.environ["RESEARCH_PLUGIN_MODE"] = "daemon"
-    return main()
-
-
 def control_main() -> int:
     """Launch the cloud control plane (cloud plan Phase 9, §3.4).
 
     The console-script entry for the ``control`` extra and the deploy Dockerfile:
     forces control mode (RESEARCH_PLUGIN_MODE=control) so the image entrypoint
-    never accidentally binds the local or daemon topology. Auth is ON, the
-    daemon task endpoints are served, and the reaper runs. Cleanup
+    never accidentally binds the local topology. Auth is ON, and the reaper
+    runs. Cleanup
     sweeps are BUILT (ControlPlaneServer.cleanup) but scheduling them is a
     documented seam — a managed cron / sidecar POSTs /api/admin/cleanup.
     """
@@ -248,14 +194,11 @@ def main() -> int:
     args = parser.parse_args()
 
     # Fail fast on a wrong/unsupported RESEARCH_PLUGIN_MODE rather than
-    # silently starting in the wrong topology. Mode dispatch (cloud plan
-    # Phase 8): local stays the byte-identical default path below; control and
-    # daemon route to their composition roots.
+    # silently starting in the wrong topology. Local stays the byte-identical
+    # default path below; control routes to its composition root.
     mode = resolve_mode()
     if mode is Mode.CONTROL:
         return _serve_control(host=args.host, port=args.port)
-    if mode is Mode.DAEMON:
-        return _serve_daemon(host=args.host, port=args.port)
 
     if args.activity_stderr:
         os.environ["RESEARCH_PLUGIN_ACTIVITY_STDERR"] = "1"

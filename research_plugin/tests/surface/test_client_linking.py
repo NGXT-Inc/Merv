@@ -4,85 +4,66 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
-from backend.daemon.daemon_loopback import create_daemon_loopback_app
-from backend.dataplane.project_links import ProjectLinks
-
-
-def _client(links: ProjectLinks) -> TestClient:
-    class _Control:
-        @staticmethod
-        def list_tools():
-            return []
-
-    class _Daemon:
-        loopback_secret = "local-secret"
-        project_links = links
-        control = _Control()
-
-    return TestClient(create_daemon_loopback_app(daemon=_Daemon()))
+from backend.client_cli import link_repo, list_links, route_repo, unlink_repo
+from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
 
 
 class ClientLinkingTest(unittest.TestCase):
-    def test_daemon_links_many_folders_to_many_projects(self) -> None:
+    def test_client_links_many_folders_to_many_projects_in_proxy_link_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            config_path = root / "client.json"
             repo_a = root / "repo-a"
             repo_b = root / "repo-b"
             repo_a.mkdir()
             repo_b.mkdir()
-            links = ProjectLinks(db_path=root / "links.sqlite")
-            client = _client(links)
-            headers = {"Authorization": "Bearer local-secret"}
 
             for repo, project_id in ((repo_a, "proj_a"), (repo_b, "proj_b")):
-                response = client.post(
-                    "/local/link",
-                    headers=headers,
-                    json={"repo_root": str(repo), "project_id": project_id},
+                linked = link_repo(
+                    config_path=config_path,
+                    repo_root=repo,
+                    project_id=project_id,
                 )
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertTrue(response.json()["linked"])
+                self.assertTrue(linked["linked"])
 
-            route_a = client.get(
-                "/local/route", headers=headers, params={"repo_root": str(repo_a)}
-            )
-            route_b = client.get(
-                "/local/route", headers=headers, params={"repo_root": str(repo_b)}
-            )
-            self.assertEqual(route_a.json()["project_id"], "proj_a")
-            self.assertEqual(route_b.json()["project_id"], "proj_b")
+            route_a = route_repo(config_path=config_path, repo_root=repo_a)
+            route_b = route_repo(config_path=config_path, repo_root=repo_b)
+            self.assertEqual(route_a["project_id"], "proj_a")
+            self.assertEqual(route_b["project_id"], "proj_b")
 
-            listed = client.get("/local/links", headers=headers)
-            self.assertEqual(listed.status_code, 200, listed.text)
+            listed = list_links(config_path=config_path)
             got = {
                 row["repo_root"]: row["project_id"]
-                for row in listed.json()["links"]
+                for row in listed["links"]
             }
             self.assertEqual(got[str(repo_a.resolve())], "proj_a")
             self.assertEqual(got[str(repo_b.resolve())], "proj_b")
 
-            removed = client.delete(
-                "/local/link", headers=headers, params={"repo_root": str(repo_a)}
-            )
-            self.assertEqual(removed.status_code, 200, removed.text)
-            self.assertTrue(removed.json()["unlinked"])
-            route_a_after = client.get(
-                "/local/route", headers=headers, params={"repo_root": str(repo_a)}
-            )
-            route_b_after = client.get(
-                "/local/route", headers=headers, params={"repo_root": str(repo_b)}
-            )
-            self.assertFalse(route_a_after.json()["exists"])
-            self.assertEqual(route_b_after.json()["project_id"], "proj_b")
+            removed = unlink_repo(config_path=config_path, repo_root=repo_a)
+            self.assertTrue(removed["unlinked"])
+            route_a_after = route_repo(config_path=config_path, repo_root=repo_a)
+            route_b_after = route_repo(config_path=config_path, repo_root=repo_b)
+            self.assertFalse(route_a_after["exists"])
+            self.assertEqual(route_b_after["project_id"], "proj_b")
 
-    def test_loopback_linking_requires_local_secret(self) -> None:
+    def test_proxy_resolves_links_written_by_client_cli(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            links = ProjectLinks(db_path=Path(tmp) / "links.sqlite")
-            client = _client(links)
-            response = client.get("/local/links")
-            self.assertEqual(response.status_code, 401)
+            root = Path(tmp)
+            config_path = root / "client.json"
+            repo = root / "repo"
+            repo.mkdir()
+            link_repo(config_path=config_path, repo_root=repo, project_id="proj_cli")
+
+            proxy = HttpProxyMcpServer(
+                config=ProxyConfig(
+                    repo_root=repo,
+                    daemon_url=None,
+                    control_url="http://control.invalid",
+                    project_links_path=root / "project_links.sqlite",
+                )
+            )
+
+            self.assertEqual(proxy._resolve_project_id(), "proj_cli")
 
 
 if __name__ == "__main__":

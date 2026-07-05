@@ -24,7 +24,7 @@ from pydantic import ValidationError as PydanticValidationError
 from .. import __version__
 from .admin_http import register_admin_routes
 from ..app import ResearchPluginApp
-from .daemon_http import register_daemon_routes
+from .data_plane_http import register_data_plane_routes
 from ..version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor, meta
 from ..tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
@@ -417,7 +417,7 @@ class ResearchHttpApi:
                 "source": "unavailable",
                 "reason": "content_unavailable_in_this_mode",
                 "detail": (
-                    "this file's bytes live only on the offline data-plane daemon; "
+                    "this file's bytes live only on the local data plane; "
                     "result-role files are metadata-only in the cloud"
                 ),
             }
@@ -972,13 +972,12 @@ def create_fastapi_app(
     *,
     router: ProjectRouter | None = None,
     allowed_origins: list[str] | None = None,
-    task_queue: Any | None = None,
     cleanup: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
 ) -> FastAPI:
     # HTTP surface seam. Local mode exposes data-plane routes and accepts
-    # repo_root context. Hosted control hides local data-plane routes and relies
-    # on the local daemon/proxy to resolve repo_root -> project_id.
+    # repo_root context. Hosted control hides local data-plane tool calls and
+    # relies on the local MCP proxy to resolve repo_root -> project_id.
     if (app is None) == (router is None):
         raise ValueError("provide exactly one of app or router")
     surface = surface_policy or HttpSurfacePolicy.for_surface(
@@ -1037,7 +1036,7 @@ def create_fastapi_app(
         if not surface.accept_repo_root_context and context.get("repo_root"):
             raise DataPlaneRequiredError(
                 "repo_root context is local data-plane state; hosted control "
-                "requires the proxy or daemon to resolve and send project_id",
+                "requires the local MCP proxy to resolve and send project_id",
                 details={
                     "field": "context.repo_root",
                     "reason": "repo_root_hidden_from_cloud",
@@ -1045,8 +1044,8 @@ def create_fastapi_app(
             )
         if not surface.allow_data_plane_tool_calls and name in DATA_PLANE_TOOL_NAMES:
             raise DataPlaneRequiredError(
-                f"{name} requires the local data-plane daemon; hosted control "
-                "mode cannot read local files, hold user SSH keys, or run rsync",
+                f"{name} requires the local MCP proxy; hosted control mode "
+                "cannot read local files, hold user SSH keys, or run rsync",
                 details={
                     "tool": name,
                     "reason": "requires_local_data_plane",
@@ -1110,7 +1109,7 @@ def create_fastapi_app(
         if surface.allow_data_plane_http:
             return
         raise DataPlaneRequiredError(
-            f"{tool} requires the local data-plane daemon; hosted control mode "
+            f"{tool} requires local-mode HTTP; hosted control mode "
             "serves this API as an observer/admin surface",
             details={
                 "tool": tool,
@@ -1146,8 +1145,8 @@ def create_fastapi_app(
 
     @http.middleware("http")
     async def reject_foreign_origins(request: Request, call_next):
-        # Loopback CSRF guard (local surface only): the daemon binds loopback,
-        # but any web page the user visits can still fire cross-origin
+        # Loopback CSRF guard (local surface only): the HTTP server binds
+        # loopback, but any web page the user visits can still fire cross-origin
         # requests at 127.0.0.1 — and the wide-open CORS above would even let
         # it read the responses. Browsers always attach Origin cross-origin;
         # curl/proxy traffic is origin-less and the local UI is a localhost
@@ -1163,7 +1162,7 @@ def create_fastapi_app(
         ):
             return JSONResponse(
                 {
-                    "detail": "cross-origin requests to the local daemon are not allowed",
+                    "detail": "cross-origin requests to the local HTTP server are not allowed",
                     "error_code": "forbidden_origin",
                 },
                 status_code=403,
@@ -1238,7 +1237,7 @@ def create_fastapi_app(
     @http.exception_handler(ResearchPluginError)
     async def research_error_handler(_request: Request, exc: ResearchPluginError) -> JSONResponse:
         # 404 for missing records AND for content-unavailable (the bytes live on
-        # an offline daemon / are metadata-only): the error_code lets the UI
+        # a local data plane / are metadata-only): the error_code lets the UI
         # render an explicit degraded state rather than a generic error.
         status = 404 if isinstance(exc, (NotFoundError, ContentUnavailableError)) else 400
         return JSONResponse({"detail": exc.message, "error_code": exc.error_code, **exc.details}, status_code=status)
@@ -1263,7 +1262,7 @@ def create_fastapi_app(
     @http.get("/api/meta")
     def server_meta() -> dict[str, Any]:
         # Version/compat handshake (cloud plan Phase 9): the server version plus
-        # the minimum daemon/proxy versions it will serve. Floors are code
+        # the minimum MCP proxy versions it will serve. Floors are code
         # constants; mode/capabilities tell browser clients which local
         # data-plane actions to hide before requests start getting rejected.
         payload = meta()
@@ -1846,13 +1845,12 @@ def create_fastapi_app(
         ),
     )
 
-    def app_for_daemon_project(request: Request, project_id: str) -> ResearchPluginApp:
+    def app_for_data_plane_project(request: Request, project_id: str) -> ResearchPluginApp:
         return api_for_project(project_id).app
 
-    register_daemon_routes(
+    register_data_plane_routes(
         http,
-        task_queue=task_queue,
-        app_for_project=app_for_daemon_project,
+        app_for_project=app_for_data_plane_project,
     )
 
     # Control-admin routes: optional cleanup trigger plus tenant counters.

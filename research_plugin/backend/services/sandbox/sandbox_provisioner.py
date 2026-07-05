@@ -351,6 +351,7 @@ class SandboxProvisioner:
             # Control knows a management keypair exists for this sandbox (plan
             # Phase 5): a store reference only — never key material.
             mgmt_key_ref=(str(req.sandbox_uid or sandbox_uid) if req.management_public_key else ""),
+            public_key_source=req.public_key_source,
             gpu=req.gpu or "",
             cpu=req.cpu,
             memory=req.memory,

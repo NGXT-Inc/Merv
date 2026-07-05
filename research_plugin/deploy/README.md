@@ -36,14 +36,14 @@ This brings up:
 - **mgmtkey** one-shot — creates a dev-only management SSH key in a named volume
   and mounts it read-only into control. Managed deploys should use a real secret
   manager instead.
-- **control** on `localhost:8787` — private control API, daemon
-  task/sync-target endpoints ON, reaper ON.
+- **control** on `localhost:8787` — private control API, data-plane submission
+  endpoints ON, reaper ON.
 
 Verify the control plane is up and learn the version floor:
 
 ```sh
 curl -s http://localhost:8787/api/meta
-# {"server_version":"...","min_daemon_version":"...","min_proxy_version":"..."}
+# {"server_version":"...","min_proxy_version":"...","mode":"control",...}
 ```
 
 Run the one-shot readiness sweep after startup/restart:

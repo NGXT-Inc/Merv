@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from pydantic import ValidationError as PydanticValidationError
+
 from backend.app import ResearchPluginApp
 from backend.config import STORAGE_PROVIDER_ENV_VAR
 from backend.tools.contracts import (
@@ -18,6 +20,7 @@ from backend.tools.contracts import (
     ResourceValidateInput,
     SandboxExtendInput,
     SandboxPullOutputsInput,
+    SandboxRequestInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
     StorageListInput,
@@ -107,12 +110,16 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertNotIn("MLflow", tools["sandbox.request"]["description"])
         self.assertNotIn("TensorBoard", tools["sandbox.request"]["description"])
         self.assertIn("durable storage", tools["sandbox.request"]["description"])
+        self.assertIn("public_key", tools["sandbox.request"]["description"])
+        self.assertIn("public_key_source", tools["sandbox.request"]["description"])
         self.assertIn("expiry", tools["sandbox.get"]["description"])
         self.assertIn("poll provisioning", tools["sandbox.get"]["description"])
+        self.assertIn("public_key_source", tools["sandbox.get"]["description"])
         self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
         self.assertIn("retention checklist", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
         self.assertIn("local experiment folder", tools["sandbox.pull_outputs"]["description"])
+        self.assertIn("object storage", tools["sandbox.pull_outputs"]["description"])
         self.assertIn("sandbox.release", tools["sandbox.pull_outputs"]["description"])
 
     def test_storage_tools_registered_with_expected_input_models(self) -> None:
@@ -154,6 +161,28 @@ class ToolContractRegistryTest(unittest.TestCase):
             SandboxPullOutputsInput,
         )
         self.assertEqual(TOOL_CONTRACTS["sandbox.pull_outputs"].plane, "data")
+
+    def test_sandbox_request_accepts_caller_public_key(self) -> None:
+        parsed = SandboxRequestInput.model_validate(
+            {
+                "project_id": "proj_1",
+                "public_key": "ssh-ed25519 " + ("A" * 48) + " caller@test",
+            }
+        )
+
+        self.assertTrue(parsed.public_key.startswith("ssh-ed25519 "))
+
+    def test_sandbox_request_rejects_private_or_multiline_key_material(self) -> None:
+        for public_key in (
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "ssh-ed25519 " + ("A" * 48) + "\ncomment",
+            "not-a-key " + ("A" * 48),
+        ):
+            with self.subTest(public_key=public_key):
+                with self.assertRaises(PydanticValidationError):
+                    SandboxRequestInput.model_validate(
+                        {"project_id": "proj_1", "public_key": public_key}
+                    )
 
     def test_sandbox_extend_is_control_plane(self) -> None:
         self.assertIs(
