@@ -211,6 +211,27 @@ under the experiment folder, especially `results/*.json`, `results/*.csv`, and
 `figures/*.png`, so `report.md` can cite files that can be registered and
 reviewed.
 
+### The metrics exhibit — the system writes the numbers, you write the meaning
+
+At `submit_results` the system generates a **metrics exhibit** and pins it as
+a system-authored resource (`experiments/<name>/metrics_exhibit.json`). It is
+built from observation, not from your account: every MLflow run in this
+attempt's window under `rp/<project>/<experiment>` — all of them, five seeds
+with one good one show as five rows — plus pulled result files (`metrics.json`,
+`results/*.json` associated with role `result`), each entry with provenance.
+Runs logged after `submit_results` do not exist for the attempt.
+
+Consequences:
+- Whatever you log IS the record. Log every run to the MLflow env you were
+  handed, tag `project_id`/`experiment_id`, and pull result files into the
+  experiment folder before submitting — an empty or thin exhibit under a
+  quantitative plan is a loud signal to the reviewer.
+- Call `experiment.exhibit` BEFORE writing `report.md` and write the report
+  around it: do not hand-copy numbers into a table; reference
+  `metrics_exhibit.json` and interpret it (the gate requires the reference for
+  quantitative attempts). Qualitative experiments with no runs get no exhibit
+  and no extra machinery.
+
 ## Execution environment
 
 Expensive or GPU work runs in a **cloud sandbox** that you drive directly over
@@ -229,7 +250,23 @@ poll `sandbox.get` after `poll_after_seconds`; do not use repeated
 
 When `status` is `running`, run commands with the returned `ssh.command`
 dispatcher from the repo root, or `ssh.raw_command` if you cannot run from the
-repo root. Use `sandbox.terminal(experiment_id)` to inspect transcript output
+repo root.
+
+**Anything expected to run longer than ~5 minutes goes through `rp_run`** —
+never babysit a long command over a foreground SSH channel or poll the
+transcript for it. Launch it as
+`ssh ... 'rp_run <label> -- <command>'` (e.g. `rp_run seed0 -- python train.py
+--seed 0`): the run detaches, survives disconnects, logs to
+`.runs/<label>/log.txt`, and writes an `exit_code` sentinel when it finishes.
+Then either long-poll `sandbox.runs(wait_seconds=...)` within the session (one
+slow call instead of N transcript polls; keep `wait_seconds<=45` unless your
+client's tool timeout allows more), or simply end the turn and call
+`sandbox.runs` when next attending the experiment. Every sandbox.* response
+carries a compact `runs` line while runs exist. Labels are one-shot — pick a
+new label per launch. Finished-run receipts survive box death, but logs and
+outputs do not: pull what you need before release/expiry.
+
+Use `sandbox.terminal(experiment_id)` to inspect transcript output
 and the structured `last_command` status before re-running anything long. If
 `command_status_stale` is true, the transcript read failed and `last_command` is
 the last successful snapshot, which is still useful for recovery decisions.
@@ -349,9 +386,11 @@ has BOTH a `result` resource and a `report` resource whose SUBMITTED content
 
 - **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
   with real content.
-- **Results must contain a markdown table** of metrics: target/paper value vs
-  achieved, per task/seed where relevant — the exact metrics the plan's
-  Evaluation section named.
+- **Quantitative attempts: Results must reference the metrics exhibit**
+  (`metrics_exhibit.json`) and interpret it — every run it shows, the exact
+  metrics the plan's Evaluation section named. Do not hand-copy numbers into
+  your own table as the record; the exhibit is the record (see The metrics
+  exhibit above). Preview it with `experiment.exhibit` before writing.
 - **Under 16 KB.** The report is the executive layer: link raw metrics files
   (`results.json`, logs) as separate result resources instead of inlining.
 - **Every relative image link has submitted figure content.** Save figures

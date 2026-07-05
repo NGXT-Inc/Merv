@@ -16,6 +16,7 @@ from .transcript_wire import (
     parse_transcript_tail,
     transcript_tail_command,
 )
+from .run_receipts import parse_runs_listing, runs_listing_command
 from .usage_metrics import METRICS_SCRIPT, parse_metrics
 from .vm_bootstrap import (
     MGMT_SSH_USER,
@@ -99,6 +100,39 @@ def sample_metrics_via_mgmt_ssh(
     if result.returncode != 0:
         return None
     return parse_metrics(result.stdout or "")
+
+
+def read_runs_via_mgmt_ssh(
+    *,
+    ssh_runner: SshRunner,
+    sandbox_id: str,
+    workdir: str,
+    ssh_host: str,
+    ssh_port: int,
+    key_path: str,
+) -> list[dict[str, Any]] | None:
+    """List rp_run receipts under workdir/.runs over the management channel.
+
+    [] means "no runs"; None means unreachable/failed ("no news") so the
+    observer never mistakes a dead channel for an empty runs dir.
+    """
+    if not sandbox_id or not ssh_host or not key_path or not workdir:
+        return None
+    try:
+        result = ssh_runner(
+            ssh_command(
+                host=ssh_host,
+                port=int(ssh_port) or 22,
+                user=MGMT_SSH_USER,
+                key_path=key_path,
+                remote_command=runs_listing_command(experiment_dir=workdir),
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_runs_listing(result.stdout or "")
 
 
 def write_secrets_via_mgmt_ssh(

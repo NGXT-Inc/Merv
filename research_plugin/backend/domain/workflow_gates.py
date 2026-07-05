@@ -82,9 +82,11 @@ GATE_TABLE: dict[str, ForwardTransition] = {
         requires_prose=(
             "a 'result' resource, a results report (role 'report'), AND a logic "
             "graph (role 'graph') must be registered and associated to this experiment; "
-            "the report needs the required section headers, a metrics table, and "
-            "resolvable figure links; the graph must be valid JSON forming a DAG "
-            "of at most 16 nodes"
+            "the report needs the required section headers, resolvable figure links, "
+            "and — when the system pinned a metrics exhibit for this attempt — a "
+            "reference to it (the exhibit, not an agent-written table, is the "
+            "record of the attempt's runs); the graph must be valid JSON forming "
+            "a DAG of at most 16 nodes"
         ),
         requirements=(
             RoleRequirement(
@@ -110,8 +112,9 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 role="report",
                 error=(
                     "a results report must be retained before experiment_review: write a "
-                    "short markdown report (sections Summary; Results with a metrics "
-                    "table; Deviations from plan; Conclusion applying the plan's "
+                    "short markdown report (sections Summary; Results interpreting the "
+                    "system metrics exhibit — preview it with experiment.exhibit; "
+                    "Deviations from plan; Conclusion applying the plan's "
                     "decision rule), copy it out if produced on the sandbox, and "
                     "associate it with role 'report' — "
                     "see skills/research-workflow/report-template.md"

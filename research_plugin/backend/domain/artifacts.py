@@ -28,9 +28,11 @@ REQUIRED_PLAN_SECTIONS: tuple[tuple[str, str], ...] = (
 # --- Results report schema ---------------------------------------------------
 # report.md is the face of the *executed* experiment: the artifact the
 # experiment reviewer grades and the UI spotlights once results exist. Same
-# philosophy as the plan spine — the lint enforces shape (sections present, a
-# real metrics table, short, figures resolve), and the experiment reviewer
-# judges substance. See skills/research-workflow/report-template.md.
+# philosophy as the plan spine — the lint enforces shape (sections present,
+# short, figures resolve, the system metrics exhibit referenced when one is
+# pinned), and the experiment reviewer judges substance. Metric numbers are
+# NOT linted: the system-authored metrics exhibit is the record, and the
+# report interprets it. See skills/research-workflow/report-template.md.
 REQUIRED_REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Summary", "summary"),
     ("Results", "results"),
@@ -92,18 +94,6 @@ def report_sections_missing(report_text: str) -> list[str]:
     return _sections_missing(report_text, REQUIRED_REPORT_SECTIONS)
 
 
-def _has_markdown_table(text: str) -> bool:
-    """A GFM table = a header row with pipes followed by a |/-/: separator."""
-    lines = text.splitlines()
-    for i in range(1, len(lines)):
-        sep = lines[i].strip()
-        if "|" not in lines[i - 1]:
-            continue
-        if sep and "---" in sep and set(sep) <= set("|-: \t"):
-            return True
-    return False
-
-
 def report_figure_links(report_text: str) -> list[str]:
     """Compatibility wrapper for callers/tests that still use report wording."""
     return markdown_image_links(report_text)
@@ -113,26 +103,33 @@ def report_problems(
     report_text: str,
     *,
     figure_problem: Callable[[str], str | None] | None = None,
+    exhibit_path: str | None = None,
 ) -> list[str]:
     """Everything wrong with a results report, in one pass, so the agent can
     fix all of it in a single revision instead of peeling errors one by one.
 
-    Checks: required spine sections; the Results section's mandatory metrics
-    table; the brevity ceiling; and — via the ``figure_problem`` callback —
-    that every relative image link has submitted figure content (a report
-    whose figures weren't submitted renders broken in the UI and is
-    unreviewable). The callback returns a problem string for a bad link or
-    None when the figure is fine; the lint itself stays pure text."""
+    Checks: required spine sections; the brevity ceiling; via the
+    ``figure_problem`` callback, that every relative image link has submitted
+    figure content (a report whose figures weren't submitted renders broken in
+    the UI and is unreviewable); and — when ``exhibit_path`` names a pinned
+    system metrics exhibit — that the report references it. The server does
+    not police the shape of agent-written numbers: the exhibit is the record,
+    and the report is graded on how it answers around it."""
     problems: list[str] = []
     missing = report_sections_missing(report_text)
     if missing:
         problems.append("missing required sections: " + ", ".join(missing))
-    stripped = _HTML_COMMENT_RE.sub("", report_text)
-    if not _has_markdown_table(stripped):
-        problems.append(
-            "the Results section must contain a markdown table of metrics "
-            "(target/paper value vs achieved)"
-        )
+    if exhibit_path:
+        # Strip HTML comments first so template guidance naming the exhibit
+        # does not satisfy the reference check.
+        basename = exhibit_path.rsplit("/", 1)[-1]
+        if basename not in _HTML_COMMENT_RE.sub("", report_text):
+            problems.append(
+                f"the report must reference the system metrics exhibit "
+                f"({exhibit_path}): it is the authoritative record of this "
+                "attempt's runs and result files — write the Results section "
+                "around it and cite it by name"
+            )
     size = len(report_text.encode("utf-8"))
     if size > MAX_REPORT_BYTES:
         problems.append(

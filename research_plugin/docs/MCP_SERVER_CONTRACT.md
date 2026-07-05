@@ -372,12 +372,26 @@ sandbox.list()
 sandbox.release(experiment_id? | sandbox_uid)
 sandbox.extend(experiment_id? | sandbox_uid, seconds?=1800)
 sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_command, last_exit_code / last_command_finished_at / command_running, and command_status_stale.
+sandbox.runs(experiment_id? | sandbox_uid, wait_seconds?=0)     # rp_run receipts: label, status (running/finished/lost), exit_code, started/finished, log path. wait_seconds long-polls (cap 300; keep <=45 at the common ~60s client tool timeout) and returns early on any finish.
 sandbox.health()
 ```
 
 There is no job abstraction. Codex requests a sandbox, gets back SSH connection
 details (including a short, ready-to-run `ssh.command`), and
 runs shell commands on the sandbox itself. Lightweight work still runs locally.
+
+The one long-run affordance is the `rp_run` launch convention, pre-installed
+on every sandbox: `rp_run <label> -- <command>` detaches the command (it
+survives SSH disconnect), logs to `$RP_EXPERIMENT_DIR/.runs/<label>/log.txt`,
+and the wrapper writes `finished_at` + `exit_code` receipt files when the
+command exits. The brain's daemon sweep mirrors those receipts (only live
+sandboxes are listed; a missing `.runs` dir is a cheap no-op) and emits a
+`run.finished` event exactly once per run. `sandbox.runs` serves the mirror —
+it stays answerable after the box was released or died (unfinished runs on a
+dead box report `lost`) — and reconciles live boxes on read, so `wait_seconds`
+long-polling observes a finish within a few seconds. While a sandbox has runs,
+every sandbox.* response for it carries a one-line `runs` summary pointing at
+`sandbox.runs`; the line is absent when no runs exist.
 
 `sandbox.request` is the procurement call. Sandboxes are project-scoped machines:
 experiment attachment is optional, one sandbox can be attached to multiple

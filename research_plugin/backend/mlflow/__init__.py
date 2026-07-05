@@ -5,6 +5,12 @@ agent-facing tracking context, backend metric snapshots, and the local managed
 server wrapper.
 """
 
+from .exhibit import (
+    METRICS_EXHIBIT_FILENAME,
+    METRICS_EXHIBIT_KIND,
+    build_metrics_exhibit,
+    exhibit_bytes,
+)
 from .local_server import LocalMlflowServer
 from .tracking import (
     MLFLOW_TERMINAL_RUN_STATUSES,
@@ -14,9 +20,13 @@ from .tracking import (
 )
 
 __all__ = [
+    "METRICS_EXHIBIT_FILENAME",
+    "METRICS_EXHIBIT_KIND",
     "MLFLOW_TERMINAL_RUN_STATUSES",
     "CentralMlflowService",
     "LocalMlflowServer",
+    "build_metrics_exhibit",
+    "exhibit_bytes",
     "mlflow_experiment_name",
     "mlflow_visible_for_status",
 ]

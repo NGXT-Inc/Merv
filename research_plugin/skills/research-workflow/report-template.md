@@ -11,7 +11,8 @@
   each of these has real content (the lint strips these HTML comments, so a
   section left as just guidance counts as empty):
     - Summary
-    - Results          (MUST contain a markdown table of metrics)
+    - Results          (for quantitative attempts: MUST reference the system
+                        metrics exhibit and interpret it — see Results below)
     - Deviations from plan
     - Conclusion
 
@@ -38,13 +39,18 @@
 
 ## Results
 <!--
-  The table is mandatory. One row per metric × task (× seed or aggregated):
+  The numbers live in the system-generated metrics exhibit — every MLflow run
+  in this attempt's window plus pulled result files, pinned at submit_results
+  as this folder's metrics exhibit JSON. Preview it with `experiment.exhibit`
+  BEFORE writing this section, then write the interpretation around it:
 
-  | Metric | Task | Target (paper) | Achieved | Δ |
-  |--------|------|----------------|----------|---|
-
-  Use the exact metrics named in the plan's Evaluation section. Link raw
-  result files for everything that doesn't fit, e.g. [full metrics](results.json).
+  - Reference the exhibit by name (required for quantitative attempts), e.g.
+    "All runs: [metrics exhibit](<exhibit json>)" — spell out its filename.
+  - Read out the decisive comparisons in prose or a small summary view,
+    citing run names/ids from the exhibit — never numbers that aren't in it.
+  - Address ALL runs the exhibit shows, not just the good ones: failed seeds
+    and aborted runs need a sentence each.
+  - Use the exact metrics named in the plan's Evaluation section.
 -->
 
 ## Figures

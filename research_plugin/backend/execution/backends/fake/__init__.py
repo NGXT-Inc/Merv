@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+from ...run_receipts import parse_runs_listing
 from ...sync_dirs import (
     DEFAULT_DATA_DIR,
     remote_experiment_dir,
@@ -86,6 +87,10 @@ class FakeSandboxBackend(SandboxBackendBase):
         self.fail_immediately = False
         # metrics knob: per-sandbox-id sample dict (None => unavailable).
         self.metrics: dict[str, dict | None] = {}
+        # rp_run receipts knob: per-sandbox-id RAW listing text, exactly as the
+        # on-box listing command would emit it — read_runs parses it with the
+        # real wire parser so tests cover the whole observation path.
+        self.run_listings: dict[str, str] = {}
 
     def acquire(
         self,
@@ -240,6 +245,20 @@ class FakeSandboxBackend(SandboxBackendBase):
         if not self.alive.get(sandbox_id):
             return None
         return self.metrics.get(sandbox_id)
+
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str = "",  # noqa: ARG002
+        ssh_host: str = "",  # noqa: ARG002
+        ssh_port: int = 0,  # noqa: ARG002
+        ssh_user: str = "",  # noqa: ARG002
+        key_path: str = "",  # noqa: ARG002
+    ) -> list[dict] | None:
+        if not self.alive.get(sandbox_id):
+            return None
+        return parse_runs_listing(self.run_listings.get(sandbox_id, ""))
 
     def sandbox_environment(self) -> dict:
         return {"available_tokens": [], "notes": []}

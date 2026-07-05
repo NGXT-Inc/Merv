@@ -10,7 +10,8 @@ supports research memory:
 One file maps to one resource. The backend does not maintain artifact refs or
 generated manifests. It keeps append-only resource version rows with file
 metadata (size, mtime, content sha256, mimetype) — but it does not store the
-file contents themselves. Historical content lives in the user's own repo
+file contents themselves, apart from the narrow pinned-bytes exceptions
+described below. Historical content lives in the user's own repo
 (working tree or their git history).
 
 ## Mental model
@@ -88,8 +89,28 @@ SQLite is the workflow/index store:
 - resource version metadata (sha256, size, mtime, mimetype)
 - which version was associated to which attempt/role
 
-There is no content store — historical file content is the user's
-responsibility (live working tree or their own git history).
+There is no general content store — historical file content is the user's
+responsibility (live working tree or their own git history) — apart from the
+narrow pinned-bytes exceptions below.
+
+## Pinned bytes (the exceptions)
+
+Three narrow cases capture bytes into the blob store at association time so
+gates and reviewers judge immutable submitted content, not the live tree:
+
+- **Gated roles** (`plan`, `report`, `graph`, reflection docs, `change_spec`,
+  `project_graph`): size-capped byte capture — lints and reviews read the
+  snapshot pinned at `resource.associate`.
+- **Small metric result files** on role `result` (`metrics.json`,
+  `results.json`, or any `results/*.json`, ≤16 KB): captured opportunistically
+  so the metrics exhibit can ingest the numbers. Over-cap or non-matching
+  result files associate as metadata-only, exactly as before.
+- **The metrics exhibit itself**: a system-authored resource (role `exhibit`,
+  `created_by: system`) generated and pinned by the backend at
+  `submit_results`. The role is deliberately absent from `RESOURCE_ROLES`, so
+  agents cannot associate, replace, or delete it.
+
+Everything else stays metadata-only.
 
 ## About using edit time
 

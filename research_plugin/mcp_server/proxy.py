@@ -275,7 +275,7 @@ class HttpProxyMcpServer:
             url=f"{self._require_control_url()}/mcp/call",
             payload={"name": name, "arguments": args},
             is_cloud=True,
-            timeout=self._timeout_for(name=name),
+            timeout=self._timeout_for(name=name, arguments=args),
         )
         return self._result_dict(body=body)
 
@@ -489,7 +489,18 @@ class HttpProxyMcpServer:
             )
         return result
 
-    def _timeout_for(self, *, name: str) -> float:
+    def _timeout_for(
+        self, *, name: str, arguments: dict[str, Any] | None = None
+    ) -> float:
+        # sandbox.runs long-polls server-side for wait_seconds; the proxy's
+        # HTTP timeout must outlast the requested wait or it would cut the
+        # slow call it exists to enable.
+        if name == "sandbox.runs":
+            try:
+                wait = float((arguments or {}).get("wait_seconds") or 0)
+            except (TypeError, ValueError):
+                wait = 0.0
+            return max(self.config.timeout_seconds, wait + 30.0)
         return LONG_VERB_TIMEOUT_SECONDS if name in LONG_VERBS else self.config.timeout_seconds
 
     def _require_control_url(self) -> str:

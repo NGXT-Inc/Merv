@@ -142,6 +142,7 @@ TABLE_OWNERS = {
     "sandboxes": SANDBOX,
     "sandbox_attachments": SANDBOX,
     "sandbox_generations": SANDBOX,
+    "sandbox_runs": SANDBOX,
     "tenant_quotas": SANDBOX,
     "spend_kill_switches": SANDBOX,
     "posts": FEED,

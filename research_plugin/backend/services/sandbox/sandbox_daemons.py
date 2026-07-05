@@ -36,6 +36,7 @@ class SandboxDaemons:
         provisioner: ProvisionReaper,
         lifecycle: SandboxLifecycle,
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
+        reconcile_runs: Callable[[], int] | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
         force_expiry_reaper: bool = False,
     ) -> None:
@@ -43,6 +44,9 @@ class SandboxDaemons:
         self.backend = backend
         self.provisioner = provisioner
         self.lifecycle = lifecycle
+        # rp_run observation piggybacks the existing sweep cadence: each pass
+        # mirrors .runs receipts for live sandboxes and emits run.finished.
+        self.reconcile_runs = reconcile_runs
         # Cost governance (cloud plan Phase 7): the hosted control composition
         # passes True — the cloud holds the provider keys and pays for every
         # VM, so an operator-set RESEARCH_PLUGIN_SANDBOX_REAPER=0 must not be
@@ -106,6 +110,11 @@ class SandboxDaemons:
                 pass
             try:
                 self.reap_idle(threshold_seconds=self._idle_reap_threshold())
+            except Exception:  # noqa: BLE001 — the reaper must never die
+                pass
+            try:
+                if self.reconcile_runs is not None:
+                    self.reconcile_runs()
             except Exception:  # noqa: BLE001 — the reaper must never die
                 pass
             # The reaper handles `running` rows by expires_at; a provision that

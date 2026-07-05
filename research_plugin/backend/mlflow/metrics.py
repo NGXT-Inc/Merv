@@ -126,6 +126,15 @@ def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[st
         for param in (data.get("params") or [])
         if isinstance(param, dict) and param.get("key")
     }
+    # User tags only: mlflow.* system tags carry no identity the exhibit or
+    # readers need, and they double the record size.
+    tags = {
+        str(tag.get("key")): str(tag.get("value") or "")
+        for tag in (data.get("tags") or [])
+        if isinstance(tag, dict)
+        and tag.get("key")
+        and not str(tag["key"]).startswith("mlflow.")
+    }
     metrics: dict[str, dict[str, Any]] = {}
     history: dict[str, list[list[Any]]] = {}
     for metric in (data.get("metrics") or [])[:MAX_METRIC_KEYS]:
@@ -151,6 +160,7 @@ def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[st
         "start_time": info.get("start_time"),
         "end_time": info.get("end_time"),
         "params": params,
+        "tags": tags,
         "metrics": metrics,
         "history": history,
     }

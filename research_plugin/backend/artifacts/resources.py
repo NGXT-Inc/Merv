@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,12 @@ from .markdown_images import (
     markdown_image_links,
 )
 from .pinned import pinned_text_for_version as load_pinned_text_for_version
-from .roles import GATED_ROLE_BYTE_CAPS, external_reflection_target_type
+from .roles import (
+    GATED_ROLE_BYTE_CAPS,
+    SYSTEM_CREATED_BY,
+    external_reflection_target_type,
+    metric_result_capture_cap,
+)
 
 
 class ResourceService:
@@ -84,6 +90,11 @@ class ResourceService:
                 "SELECT * FROM resources WHERE project_id = ? AND path = ?",
                 (project_id, rel_path),
             ).fetchone()
+            if existing and str(existing["created_by"]) == SYSTEM_CREATED_BY:
+                raise ValidationError(
+                    f"{rel_path} is a system-generated artifact; it cannot be "
+                    "re-registered or replaced"
+                )
             if existing:
                 resource_id = existing["id"]
                 conn.execute(
@@ -161,6 +172,11 @@ class ResourceService:
             ).fetchone()
             if resource is None:
                 raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+            if str(resource["created_by"]) == SYSTEM_CREATED_BY:
+                raise ValidationError(
+                    f"{resource['path']} is a system-generated artifact; it "
+                    "cannot be deleted"
+                )
             if int(resource["deleted"] or 0):
                 return {"deleted": False, "resource": self._hydrate_resource(row=resource, conn=conn)}
             deleted_at = now_iso()
@@ -703,7 +719,17 @@ class ResourceService:
         figures: list[dict[str, Any]],
     ) -> None:
         cap = GATED_ROLE_BYTE_CAPS.get(role)
-        if cap is None or self.blobs is None:
+        if self.blobs is None:
+            return
+        if cap is None:
+            self._capture_metric_result_bytes(
+                conn=conn,
+                resource=resource,
+                role=role,
+                version_id=version_id,
+                project_id=project_id,
+                content_bytes=content_bytes,
+            )
             return
         if content_bytes is None:
             raise ValidationError(
@@ -742,6 +768,203 @@ class ResourceService:
                 project_id=project_id,
                 markdown_text=content_bytes.decode("utf-8", errors="replace"),
                 figures=figures,
+            )
+
+    def _capture_metric_result_bytes(
+        self,
+        *,
+        conn: Connection,
+        resource: Row,
+        role: str,
+        version_id: str,
+        project_id: str,
+        content_bytes: bytes | None,
+    ) -> None:
+        """Pin small JSON metric files at role-'result' associate so the
+        metrics exhibit can ingest their numbers. Opportunistic by contract:
+        no bytes (older proxy, over-cap file) associates exactly as before."""
+        cap = metric_result_capture_cap(role=role, path=str(resource["path"]))
+        if cap is None or content_bytes is None or len(content_bytes) > cap:
+            return
+        version = conn.execute(
+            "SELECT content_sha256, content_type FROM resource_versions WHERE id = ?",
+            (version_id,),
+        ).fetchone()
+        if version is None:
+            raise NotFoundError(f"resource version not found: {version_id}")
+        if hashlib.sha256(content_bytes).hexdigest() != str(version["content_sha256"]):
+            raise ValidationError(
+                f"{resource['path']} changed while associating — retry the call",
+                details={"path": resource["path"], "role": role},
+            )
+        self.blobs.put(
+            namespace=project_id,
+            data=content_bytes,
+            content_type=str(version["content_type"]),
+        )
+
+    def metric_file_sources(
+        self,
+        *,
+        target_id: str,
+        attempt_index: int,
+        target_type: str = "experiment",
+    ) -> list[dict[str, Any]]:
+        """Metric-file sources for one attempt's metrics exhibit: role-'result'
+        associations matching the metric-file rule whose bytes were pinned at
+        associate. Entries carry provenance (path, version, sha, observed_at)
+        and the parsed JSON payload."""
+        if self.blobs is None:
+            return []
+        conn = self.store.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT r.path, a.version_id, v.content_sha256, v.observed_at, v.project_id
+                FROM resource_associations a
+                JOIN resources r ON r.id = a.resource_id
+                JOIN resource_versions v ON v.id = a.version_id
+                WHERE a.target_type = ? AND a.target_id = ? AND a.role = 'result'
+                  AND a.attempt_index = ? AND r.deleted = 0
+                ORDER BY r.path
+                """,
+                (target_type, target_id, int(attempt_index)),
+            ).fetchall()
+        finally:
+            conn.close()
+        sources: list[dict[str, Any]] = []
+        for row in rows:
+            path = str(row["path"])
+            if metric_result_capture_cap(role="result", path=path) is None:
+                continue
+            try:
+                data = self.blobs.get(
+                    namespace=str(row["project_id"]), sha256=str(row["content_sha256"])
+                )
+            except NotFoundError:
+                continue  # associated without pinned bytes — nothing to ingest
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            sources.append(
+                {
+                    "path": path,
+                    "version_id": str(row["version_id"]),
+                    "sha256": str(row["content_sha256"]),
+                    "observed_at": str(row["observed_at"]),
+                    "data": parsed,
+                }
+            )
+        return sources
+
+    def pin_system_artifact(
+        self,
+        *,
+        path: str,
+        target_type: str,
+        target_id: str,
+        role: str,
+        content_bytes: bytes,
+        content_type: str = "application/json",
+        title: str = "",
+        kind: str = "result",
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create/refresh a SYSTEM-authored resource from in-memory bytes and
+        pin it to the target's current attempt.
+
+        Deliberately bypasses the agent role vocabulary: the roles the system
+        pins (e.g. 'exhibit') are exactly the ones agents must not be able to
+        author, replace, or delete — record_observation and delete refuse
+        system-owned resources, and PermissionService rejects the role."""
+        if self.blobs is None:
+            raise WorkflowError("system artifacts require a configured blob store")
+        rel_path = self._repo_relative_path(path=path)
+        sha = hashlib.sha256(content_bytes).hexdigest()
+        observed_at = now_iso()
+        with self.store.transaction() as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            existing = conn.execute(
+                "SELECT * FROM resources WHERE project_id = ? AND path = ?",
+                (project_id, rel_path),
+            ).fetchone()
+            token = f"{rel_path}:system:{sha}"
+            if existing:
+                resource_id = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE resources
+                    SET kind = ?, title = COALESCE(NULLIF(?, ''), title),
+                        version_token = ?, mtime_ns = 0, size_bytes = ?,
+                        observed_at = ?, missing = 0, deleted = 0,
+                        created_by = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        kind,
+                        title,
+                        token,
+                        len(content_bytes),
+                        observed_at,
+                        SYSTEM_CREATED_BY,
+                        observed_at,
+                        resource_id,
+                    ),
+                )
+            else:
+                resource_id = new_id(prefix="res")
+                conn.execute(
+                    """
+                    INSERT INTO resources (
+                      id, project_id, path, kind, title, version_token, mtime_ns,
+                      size_bytes, observed_at, git_commit, missing, created_by,
+                      created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, 0, ?, ?, ?)
+                    """,
+                    (
+                        resource_id,
+                        project_id,
+                        rel_path,
+                        kind,
+                        title,
+                        token,
+                        len(content_bytes),
+                        observed_at,
+                        SYSTEM_CREATED_BY,
+                        observed_at,
+                        observed_at,
+                    ),
+                )
+            version = self._snapshot_version_record(
+                conn=conn,
+                resource_id=resource_id,
+                project_id=project_id,
+                rel_path=rel_path,
+                content_sha256=sha,
+                size_bytes=len(content_bytes),
+                mtime_ns=0,
+                content_type=content_type,
+                observed_at=observed_at,
+                created_by=SYSTEM_CREATED_BY,
+            )
+            conn.execute(
+                "UPDATE resources SET current_version_id = ? WHERE id = ?",
+                (version["id"], resource_id),
+            )
+            self.blobs.put(
+                namespace=project_id, data=content_bytes, content_type=content_type
+            )
+            return self._associate_version(
+                conn=conn,
+                project_id=project_id,
+                resource_id=resource_id,
+                version_id=str(version["id"]),
+                storage_target_type=target_type,
+                public_target_type=target_type,
+                target_id=target_id,
+                role=role,
             )
 
     def _capture_submitted_markdown_figures(

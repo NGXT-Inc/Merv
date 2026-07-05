@@ -6,12 +6,18 @@ from collections.abc import Callable
 from typing import Any
 
 from ..mlflow import (
+    METRICS_EXHIBIT_FILENAME,
     MLFLOW_TERMINAL_RUN_STATUSES,
     mlflow_experiment_name,
     mlflow_visible_for_status,
 )
 from ..services.experiment_views import slim_experiment_state
 from ..utils import ValidationError
+from .exhibits import (
+    exhibit_rel_path,
+    finalize_metrics_exhibit,
+    preview_metrics_exhibit,
+)
 
 
 def _experiment_get_state_agent(
@@ -226,6 +232,31 @@ def _ensure_mlflow_run_for_retry(
     )
 
 
+def _exhibit_expectation(*, experiment_id: str, state: dict[str, Any]) -> dict[str, Any]:
+    """Expectation-setting handed to the agent the moment execution starts:
+    whatever it logs IS the record, so proper logging is the only way its
+    numbers make it into the review."""
+    path = exhibit_rel_path(
+        experiment_id=experiment_id, name=str(state.get("name") or "")
+    )
+    return {
+        "final_path": path,
+        "preview_tool": "experiment.exhibit",
+        "notice": (
+            "At submit_results the system generates a metrics exhibit from "
+            "your MLflow runs (every run in this attempt's window — no "
+            "curation) and pulled result files (metrics.json, results/*.json "
+            "associated with role 'result'), and pins it at "
+            f"{path}. Your report must reference {METRICS_EXHIBIT_FILENAME} "
+            "and answer around it — track accordingly: log every run to the "
+            "MLflow env you were handed, tag project_id/experiment_id, and "
+            "pull result files before submitting. Preview anytime with "
+            "experiment.exhibit; runs logged after submit_results do not "
+            "exist for this attempt."
+        ),
+    }
+
+
 def build_control_tool_handlers(
     *,
     workflow: Any,
@@ -268,6 +299,22 @@ def build_control_tool_handlers(
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
+        exhibit = None
+        if transition == "submit_results":
+            # Finalize the system metrics exhibit BEFORE the gate runs: the
+            # report validator requires a reference to the pinned exhibit, and
+            # pinning at this moment closes the late-write window — runs
+            # logged after submit_results do not exist for this attempt.
+            state = experiments.get_state(
+                experiment_id=experiment_id, project_id=project_id
+            )
+            if str(state.get("status")) == "running":
+                exhibit = finalize_metrics_exhibit(
+                    experiments=experiments,
+                    resources=resources,
+                    mlflow_tracking=mlflow_tracking,
+                    state=state,
+                )
         result = experiments.transition(
             experiment_id=experiment_id,
             transition=transition,
@@ -302,7 +349,30 @@ def build_control_tool_handlers(
                 project_id=resolved_project_id,
                 experiment_id=experiment_id,
             )
+        if transition in ("start_running", "retry_running"):
+            slim["metrics_exhibit"] = _exhibit_expectation(
+                experiment_id=experiment_id, state=slim
+            )
+        elif transition == "submit_results" and exhibit is not None:
+            slim["metrics_exhibit"] = {
+                "pinned": True,
+                "path": exhibit_rel_path(
+                    experiment_id=experiment_id, name=str(slim.get("name") or "")
+                ),
+                "verdict": exhibit["verdict"],
+            }
         return slim
+
+    def experiment_exhibit_agent(
+        *, experiment_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
+        return preview_metrics_exhibit(
+            experiments=experiments,
+            resources=resources,
+            mlflow_tracking=mlflow_tracking,
+            experiment_id=experiment_id,
+            project_id=project_id,
+        )
 
     def mlflow_context_agent(
         *, project_id: str, experiment_id: str | None = None
@@ -404,6 +474,7 @@ def build_control_tool_handlers(
         "experiment.list": experiment_list_agent,
         "experiment.get_state": experiment_get_state_agent,
         "experiment.transition": experiment_transition_agent,
+        "experiment.exhibit": experiment_exhibit_agent,
         "mlflow.context": mlflow_context_agent,
         "mlflow.finalize_run": mlflow_finalize_run_agent,
         "reflection.create": reflections.create,
@@ -423,6 +494,7 @@ def build_control_tool_handlers(
         "sandbox.release": sandboxes.release,
         "sandbox.extend": sandboxes.extend,
         "sandbox.terminal": sandboxes.terminal,
+        "sandbox.runs": sandboxes.runs,
         "sandbox.health": sandboxes.health,
         "feed.register": feed.register,
         "feed.list": feed.list_posts,

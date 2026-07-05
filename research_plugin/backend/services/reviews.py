@@ -18,6 +18,7 @@ from ..utils import (
 )
 from ..artifacts.pinned import PinnedStore
 from ..artifacts.roles import (
+    EXHIBIT_ROLE,
     GATED_ROLES,
     external_reflection_target_type,
     internal_synthesis_target_type,
@@ -285,7 +286,10 @@ class ReviewService:
         seen: set[tuple[str, str]] = set()
         for row in reversed(rows):  # newest association per (role, path) wins
             role = str(row["role"])
-            if role not in GATED_ROLES:
+            # Gated agent artifacts plus the system metrics exhibit: the
+            # exhibit exists only as pinned bytes (no working-tree file), so
+            # hydration is the reviewer's one way to read it.
+            if role not in GATED_ROLES and role != EXHIBIT_ROLE:
                 continue
             key = (role, str(row["path"]))
             if key in seen:

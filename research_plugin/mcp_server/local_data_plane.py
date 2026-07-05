@@ -169,6 +169,10 @@ class LocalDataPlane:
         )
         result["storage_guidance"] = self._storage_guidance()
         result["rsync"] = RSYNC_PULL_OUTPUTS_HINT
+        # Live-runs nudge rides along from the control sandbox.get lookup, so
+        # pulling outputs from a box with a run still going is never silent.
+        if sandbox.get("runs"):
+            result["runs"] = sandbox["runs"]
         return result
 
     def _post_feed(self, *, arguments: dict[str, Any]) -> dict[str, Any]:

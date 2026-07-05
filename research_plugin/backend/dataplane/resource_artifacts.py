@@ -13,7 +13,7 @@ from ..artifacts.markdown_images import (
     markdown_image_links,
     markdown_image_targets,
 )
-from ..artifacts.roles import GATED_ROLE_BYTE_CAPS
+from ..artifacts.roles import GATED_ROLE_BYTE_CAPS, metric_result_capture_cap
 from ..utils import NotFoundError, ValidationError
 from .repo_paths import resolve_repo_path
 
@@ -27,7 +27,7 @@ class LocalResourceArtifactReader:
     def read_for_association(self, *, path: str, role: str) -> dict[str, Any]:
         cap = GATED_ROLE_BYTE_CAPS.get(role)
         if cap is None:
-            return {"content_bytes": None, "figures": []}
+            return self._read_metric_result(path=path, role=role)
         rel_path, file_path = self._resolve_file(path=path)
         size = file_path.stat().st_size
         if size > cap:
@@ -58,6 +58,28 @@ class LocalResourceArtifactReader:
             "content_type": mimetypes.guess_type(rel_path)[0]
             or "application/octet-stream",
             "figures": figures,
+        }
+
+    def _read_metric_result(self, *, path: str, role: str) -> dict[str, Any]:
+        """Bytes for a metric-file result association (metrics exhibit source).
+
+        Opportunistic, unlike the gated read: an over-cap or unreadable file
+        associates without pinned bytes instead of erroring — result files may
+        legitimately be large, and the exhibit simply won't ingest them."""
+        empty = {"content_bytes": None, "figures": []}
+        cap = metric_result_capture_cap(role=role, path=path)
+        if cap is None:
+            return empty
+        try:
+            rel_path, file_path = self._resolve_file(path=path)
+        except (NotFoundError, ValidationError):
+            return empty
+        if file_path.stat().st_size > cap:
+            return empty
+        return {
+            "content_bytes": file_path.read_bytes(),
+            "content_type": mimetypes.guess_type(rel_path)[0] or "application/json",
+            "figures": [],
         }
 
     def read_for_backfill(self, *, path: str, role: str) -> dict[str, Any] | None:

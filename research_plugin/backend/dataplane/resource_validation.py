@@ -99,6 +99,8 @@ def validate_local_resource_artifact(
         if missing:
             problems.append("missing required sections: " + ", ".join(missing))
     elif role == "report":
+        # exhibit_path is deliberately absent here: at associate time no
+        # exhibit exists yet — only the submit_results gate supplies it.
         problems.extend(
             report_problems(
                 text,

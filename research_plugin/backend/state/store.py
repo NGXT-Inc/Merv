@@ -407,6 +407,27 @@ CREATE TABLE IF NOT EXISTS sandbox_attachments (
   FOREIGN KEY(sandbox_uid) REFERENCES sandboxes(sandbox_uid)
 );
 
+-- rp_run receipts observed on the box (July 2026). The sandbox filesystem is
+-- the registry — .runs/<label>/ sentinel files written by the rp_run wrapper —
+-- and this table is the brain's reconciled mirror of it, so run status
+-- outlives both the agent session and the sandbox. finished_event_emitted
+-- makes the run.finished event exactly-once across daemon restarts (flag and
+-- event flip in one transaction).
+CREATE TABLE IF NOT EXISTS sandbox_runs (
+  sandbox_uid TEXT NOT NULL,
+  label TEXT NOT NULL,
+  command TEXT NOT NULL DEFAULT '',
+  pid INTEGER,
+  exit_code INTEGER,
+  started_at TEXT NOT NULL DEFAULT '',
+  finished_at TEXT NOT NULL DEFAULT '',
+  first_seen_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  finished_event_emitted INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (sandbox_uid, label),
+  FOREIGN KEY(sandbox_uid) REFERENCES sandboxes(sandbox_uid)
+);
+
 -- Figures submitted alongside a markdown gated artifact (cloud plan Phase 2):
 -- when a plan, report, or reflection_doc (legacy synthesis_doc) is associated, each resolvable relative image
 -- link's bytes are captured to the blob store and recorded here, keyed by the

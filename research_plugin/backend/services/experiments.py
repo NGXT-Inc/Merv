@@ -28,6 +28,7 @@ from ..domain.workflow_gates import (
     allowed_transitions_for,
 )
 from ..artifacts.pinned import PinnedStore
+from ..artifacts.roles import EXHIBIT_ROLE
 from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
@@ -929,7 +930,10 @@ class ExperimentService:
     def _validate_results_report(self, *, conn, experiment_id: str) -> None:
         """Block submit_results unless the current attempt's SUBMITTED report
         passes the report lint — including every relative figure link having
-        submitted figure content (captured when the report was associated)."""
+        submitted figure content (captured when the report was associated),
+        and a reference to the system metrics exhibit when one is pinned for
+        this attempt (quantitative attempts; the tool layer generates and pins
+        it before the transition gate runs)."""
         report_text, version_id, path = self._pinned_text(
             conn=conn,
             experiment_id=experiment_id,
@@ -953,7 +957,12 @@ class ExperimentService:
                 "on the sandbox), then re-associate the report to submit it"
             )
 
-        problems = report_problems(report_text, figure_problem=figure_problem)
+        exhibit = self.exhibit_association(conn=conn, experiment_id=experiment_id)
+        problems = report_problems(
+            report_text,
+            figure_problem=figure_problem,
+            exhibit_path=exhibit["path"] if exhibit else None,
+        )
         if problems:
             raise WorkflowError(
                 "results report is not ready for experiment review: "
@@ -980,6 +989,77 @@ class ExperimentService:
                 + "; ".join(problems)
                 + ". Fix the file and re-associate it to submit the revision — "
                 "see skills/research-workflow/graph-template.md."
+            )
+
+    def exhibit_association(
+        self, *, conn, experiment_id: str
+    ) -> dict[str, Any] | None:
+        """The current attempt's pinned system metrics exhibit, if any:
+        {path, version_id, resource_id}. The exhibit is system-authored (the
+        tool layer pins it at submit_results), so its presence — not any
+        agent claim — is what the report gate keys on."""
+        row = conn.execute(
+            """
+            SELECT r.path, a.version_id, a.resource_id
+            FROM resource_associations a
+            JOIN resources r ON r.id = a.resource_id
+            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = ?
+              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
+              AND r.deleted = 0
+            ORDER BY a.created_seq DESC
+            LIMIT 1
+            """,
+            (experiment_id, EXHIBIT_ROLE, experiment_id),
+        ).fetchone()
+        return row_to_dict(row=row)
+
+    def attempt_started_running_at(self, *, experiment_id: str) -> str | None:
+        """When the current attempt entered running — the metrics-exhibit
+        window start. Derived from the transition event stream: each attempt
+        passes through start_running exactly once (retry_running and
+        send_back_to_running keep the experiment running), so the latest
+        start_running event belongs to the current attempt."""
+        conn = self.store.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT payload_json, created_at FROM events
+                WHERE target_type = 'experiment' AND target_id = ?
+                  AND type = 'experiment.transitioned'
+                ORDER BY id DESC
+                """,
+                (experiment_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if payload.get("transition") == "start_running":
+                return str(row["created_at"])
+        return None
+
+    def record_exhibit_verdict(
+        self,
+        *,
+        experiment_id: str,
+        verdict: dict[str, Any],
+        project_id: str | None = None,
+    ) -> None:
+        """Persist the exhibit generation verdict to the event stream — the
+        claim-validity instrumentation row (runs found, result files, pinned)
+        for the gates-vs-no-gates benchmark."""
+        with self.store.transaction() as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            self.store.record_event(
+                conn=conn,
+                project_id=project_id,
+                event_type="experiment.exhibit_generated",
+                target_type="experiment",
+                target_id=experiment_id,
+                payload=verdict,
             )
 
     def _review_gate_state(self, *, conn, experiment_id: str, role: str) -> dict[str, Any]:

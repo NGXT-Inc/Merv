@@ -54,6 +54,31 @@ RESOURCE_ROLES = frozenset(
     }
 )
 
+# System-authored role: the metrics exhibit is generated and pinned by the
+# backend at submit_results. It is deliberately NOT in RESOURCE_ROLES — agents
+# cannot associate (and so cannot replace) it; only the system pin path may.
+EXHIBIT_ROLE = "exhibit"
+SYSTEM_CREATED_BY = "system"
+
+# Result-file metric sources: associating a small JSON result file with role
+# 'result' pins its bytes so the metrics exhibit can ingest the numbers.
+# Opportunistic — larger or non-JSON result files associate exactly as before.
+METRIC_RESULT_MAX_BYTES = 16_000
+
+
+def metric_result_capture_cap(*, role: str, path: str) -> int | None:
+    """Byte cap when a role-'result' association pins metric-file bytes."""
+    if role != "result":
+        return None
+    normalized = str(path).replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    if not name.endswith(".json"):
+        return None
+    if name in {"metrics.json", "results.json"} or "/results/" in f"/{normalized}":
+        return METRIC_RESULT_MAX_BYTES
+    return None
+
+
 # Gated roles: the artifacts workflow gates lint. Associating one of these
 # captures the file's bytes into the blob store (size-capped), pinning the
 # association to immutable content.

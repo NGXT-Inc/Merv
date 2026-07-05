@@ -126,6 +126,10 @@ class ExperimentGetStateInput(ProjectScopedInput):
     experiment_id: str
 
 
+class ExperimentExhibitInput(ProjectScopedInput):
+    experiment_id: str
+
+
 class ExperimentMaterializeFoldersInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
@@ -761,6 +765,31 @@ class SandboxExtendInput(ProjectScopedInput):
     )
 
 
+class SandboxRunsInput(ProjectScopedInput):
+    experiment_id: str | None = Field(
+        default=None,
+        description=(
+            "Experiment whose sandbox runs to list (spans every sandbox the "
+            "experiment used, including released ones). Omit with sandbox_uid."
+        ),
+    )
+    sandbox_uid: str | None = Field(
+        default=None,
+        description="Optional sandbox_uid to read; omitted targets the experiment's sandboxes.",
+    )
+    wait_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=300,
+        description=(
+            "Long-poll: block up to this many seconds, returning early when "
+            "any run finishes (or nothing is running). 0 answers immediately. "
+            "Keep <=45 unless your MCP client's tool timeout is known to allow "
+            "more (many clients cut tool calls at ~60s)."
+        ),
+    )
+
+
 class SandboxTerminalInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
@@ -872,7 +901,25 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "connection block for quantitative logging and, when the backend "
             "MLflow write URI is configured, a plugin-created run id to resume."
             " Use retry_running only for infrastructure/interruption reruns "
-            "where the experiment should stay running on the same attempt."
+            "where the experiment should stay running on the same attempt. "
+            "At submit_results the system generates the attempt's metrics "
+            "exhibit (all attempt-window MLflow runs + pulled result files, "
+            "each entry with provenance) and pins it as a system-authored "
+            "resource; report.md must reference it, and runs logged after "
+            "submit_results do not exist for the attempt."
+        ),
+    ),
+    "experiment.exhibit": ToolContract(
+        input_model=ExperimentExhibitInput,
+        description=(
+            "Read-only preview of the system-generated metrics exhibit for a "
+            "running experiment: every MLflow run in the current attempt "
+            "window (no curation), plus "
+            "pulled result-file sources (metrics.json, results/*.json "
+            "associated with role 'result'). Call it before writing report.md "
+            "— at submit_results the system regenerates and pins this exhibit "
+            "as the authoritative record, and the report must reference and "
+            "interpret it rather than hand-copy numbers."
         ),
     ),
     "mlflow.context": ToolContract(
@@ -1181,6 +1228,20 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "fixed when the sandbox is created."
         ),
     ),
+    "sandbox.runs": ToolContract(
+        input_model=SandboxRunsInput,
+        description=(
+            "List rp_run launches for a sandbox or experiment: label, status "
+            "(running/finished/lost), exit_code, started/finished timestamps, "
+            "and log path — one compact call instead of transcript polling. "
+            "Launch long work on the sandbox with `rp_run <label> -- <command>` "
+            "(detaches, survives SSH disconnect, writes an exit_code sentinel); "
+            "then either long-poll here with wait_seconds, or end the session "
+            "and call this when next attending the experiment. Receipts "
+            "outlive the sandbox: finished runs stay queryable after release "
+            "or expiry (logs/outputs do not — pull those before the box dies)."
+        ),
+    ),
     "sandbox.terminal": ToolContract(
         input_model=SandboxTerminalInput,
         description=(
@@ -1243,6 +1304,7 @@ TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
     "experiment.get_state": "control",
     "experiment.materialize_folders": "data",
     "experiment.transition": "control",
+    "experiment.exhibit": "control",
     "mlflow.context": "control",
     "mlflow.finalize_run": "control",
     "reflection.create": "control",
@@ -1279,6 +1341,7 @@ TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
     "sandbox.release": "control",
     "sandbox.extend": "control",
     "sandbox.terminal": "control",
+    "sandbox.runs": "control",
     "sandbox.health": "control",
     "feed.register": "control",
     "feed.post": "data",

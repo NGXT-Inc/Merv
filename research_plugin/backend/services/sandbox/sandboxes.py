@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -29,6 +30,7 @@ from . import sandbox_views
 from .sandbox_heartbeat import SandboxActivityPolicy
 from .sandbox_lifecycle import SandboxLifecycle
 from .sandbox_metrics import SandboxMetrics
+from .sandbox_runs import SandboxRunLedger, run_records_view
 from ..transcript_cache import TranscriptCache
 from .sandbox_daemons import SandboxDaemons
 from .sandbox_provisioner import SandboxProvisioner
@@ -38,6 +40,8 @@ from ...sandbox.sandbox_support import (
     DEFAULT_REQUEST_WAIT_SECONDS,
     DEFAULT_STALE_PROVISION_SECONDS,
     MAX_TIME_LIMIT_SECONDS,
+    RUNS_WAIT_CAP_SECONDS,
+    RUNS_WAIT_POLL_SECONDS,
     parse_terminal_markers,
     parse_terminal_snapshot,
     validate_request_inputs,
@@ -110,6 +114,15 @@ class SandboxService:
             backend=sandbox_backend,
             mgmt_keys=self.mgmt_keys,
         )
+        # rp_run receipts mirror: reconciled by the daemon sweep and on
+        # sandbox.runs reads; source of the live-runs nudge line.
+        self.runs_ledger = SandboxRunLedger(
+            store=store,
+            registry=self.registry,
+            backend=sandbox_backend,
+            mgmt_keys=self.mgmt_keys,
+        )
+        self.runs_wait_poll_seconds = RUNS_WAIT_POLL_SECONDS
         # The task channel is only for cross-plane conn refresh and teardown.
         self.tasks = task_channel
         # Sandboxes whose post-boot secrets were already pushed (in-process;
@@ -144,6 +157,7 @@ class SandboxService:
             provisioner=self.provisioner,
             lifecycle=self.lifecycle,
             sample_metrics=self.metrics.sample_metrics,
+            reconcile_runs=self.runs_ledger.reconcile_live,
             force_expiry_reaper=force_expiry_reaper,
         )
         self.daemons.start()
@@ -667,10 +681,15 @@ class SandboxService:
         # confirms nothing was lost before we destroy the VM. Re-call with
         # confirm_retained=true to actually terminate.
         if not confirm_retained:
-            return self._release_confirmation(
-                experiment_id=experiment_id,
-                project_id=str(row.get("project_id") or ""),
-                targets=targets,
+            # The live-runs line matters most right here: releasing a box with
+            # a live run kills the run.
+            return self._with_runs_nudge(
+                view=self._release_confirmation(
+                    experiment_id=experiment_id,
+                    project_id=str(row.get("project_id") or ""),
+                    targets=targets,
+                ),
+                sandbox_uid=str(row.get("sandbox_uid") or ""),
             )
         views = [self._release_row(row=target) for target in targets]
         if len(views) == 1:
@@ -942,21 +961,108 @@ class SandboxService:
             )
             last_exit_code, last_command_finished_at, in_flight = parse_terminal_markers(full)
             command_running = in_flight and status in ACTIVE_SANDBOX_STATUSES
-        return {
-            "experiment_id": resolved_experiment_id,
-            "sandbox_uid": sandbox_uid,
-            "sandbox_id": row.get("sandbox_id", ""),
-            "status": status,
-            "running": status in ACTIVE_SANDBOX_STATUSES,
-            "transcript": transcript,
-            "cursor": cursor,
-            "new_chars": len(transcript) if since is not None else None,
-            "last_exit_code": last_exit_code,
-            "last_command_finished_at": last_command_finished_at,
-            "command_running": command_running,
-            "last_command": last_command,
-            "command_status_stale": command_status_stale,
-        }
+        return self._with_runs_nudge(
+            view={
+                "experiment_id": resolved_experiment_id,
+                "sandbox_uid": sandbox_uid,
+                "sandbox_id": row.get("sandbox_id", ""),
+                "status": status,
+                "running": status in ACTIVE_SANDBOX_STATUSES,
+                "transcript": transcript,
+                "cursor": cursor,
+                "new_chars": len(transcript) if since is not None else None,
+                "last_exit_code": last_exit_code,
+                "last_command_finished_at": last_command_finished_at,
+                "command_running": command_running,
+                "last_command": last_command,
+                "command_status_stale": command_status_stale,
+            },
+            sandbox_uid=sandbox_uid,
+        )
+
+    def runs(
+        self,
+        *,
+        experiment_id: str | None = None,
+        project_id: str | None = None,
+        tenant_id: str | None = None,
+        sandbox_uid: str | None = None,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        """rp_run receipts for a sandbox or an experiment's sandboxes.
+
+        Reconciles live boxes on the spot, so the answer is fresh even between
+        daemon sweeps, and still answers from the mirror after the box died or
+        was released. ``wait_seconds`` long-polls: the server re-lists every
+        few seconds and returns early when any run reaches a terminal state
+        (or there is nothing left running) — one slow call instead of N
+        transcript polls.
+        """
+        experiment_id = (experiment_id or "").strip()
+        sandbox_uid = (sandbox_uid or "").strip()
+        if not experiment_id and not sandbox_uid:
+            raise ValidationError("sandbox.runs requires experiment_id or sandbox_uid")
+        # Scope check up front (project/tenant mismatch must raise); a missing
+        # LIVE sandbox is fine — receipts outlive the box, so serve the mirror.
+        try:
+            self.registry.fetch_scoped(
+                experiment_id=experiment_id,
+                project_id=project_id,
+                tenant_id=tenant_id,
+                sandbox_uid=sandbox_uid or None,
+            )
+        except NotFoundError:
+            if sandbox_uid:
+                raise
+        wait = min(max(float(wait_seconds or 0), 0.0), RUNS_WAIT_CAP_SECONDS)
+        deadline = time.monotonic() + wait
+        baseline_finished: set[tuple[str, str]] | None = None
+        while True:
+            self._reconcile_runs_targets(
+                experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            )
+            records = (
+                self.runs_ledger.records_for_sandbox(sandbox_uid=sandbox_uid)
+                if sandbox_uid
+                else self.runs_ledger.records_for_experiment(
+                    experiment_id=experiment_id
+                )
+            )
+            finished_now = {
+                (str(r.get("sandbox_uid") or ""), str(r.get("label") or ""))
+                for r in records
+                if r.get("exit_code") is not None
+            }
+            if baseline_finished is None:
+                baseline_finished = finished_now
+            still_running = any(r.get("exit_code") is None for r in records)
+            if (
+                finished_now - baseline_finished
+                or not still_running
+                or time.monotonic() >= deadline
+            ):
+                return run_records_view(
+                    records=records,
+                    experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
+                )
+            time.sleep(
+                min(self.runs_wait_poll_seconds, max(deadline - time.monotonic(), 0.1))
+            )
+
+    def _reconcile_runs_targets(
+        self, *, experiment_id: str, sandbox_uid: str
+    ) -> None:
+        """Fresh receipts for every live sandbox in scope; dead ones keep the mirror."""
+        if sandbox_uid:
+            try:
+                rows = [self.registry.get_by_uid(sandbox_uid=sandbox_uid)]
+            except NotFoundError:
+                rows = []
+        else:
+            rows = self.registry.list_by_experiment(experiment_id=experiment_id)
+        for row in rows:
+            self.runs_ledger.reconcile_row(row=row)
 
     def health(self) -> dict[str, Any]:
         health = self.backend.health()
@@ -1139,13 +1245,34 @@ class SandboxService:
         include_data_plane_enrichment: bool,
         use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
-        if include_data_plane_enrichment:
-            return self._agent_view(
+        view = (
+            self._agent_view(
                 row=row,
                 reused=reused,
                 use_sandbox_uid_command=use_sandbox_uid_command,
             )
-        return self._agent_facts(row=row, reused=reused)
+            if include_data_plane_enrichment
+            else self._agent_facts(row=row, reused=reused)
+        )
+        return self._with_runs_nudge(
+            view=view, sandbox_uid=str(row.get("sandbox_uid") or "")
+        )
+
+    def _with_runs_nudge(
+        self, *, view: dict[str, Any], sandbox_uid: str
+    ) -> dict[str, Any]:
+        """Live-runs discovery: one compact receipts line on sandbox-scoped
+        responses whenever runs exist, absent otherwise. Mirror-only read —
+        never adds a remote round-trip to an unrelated tool call."""
+        if not sandbox_uid:
+            return view
+        try:
+            nudge = self.runs_ledger.nudge_line(sandbox_uid=sandbox_uid)
+        except Exception:  # noqa: BLE001 — the nudge must never break a tool
+            return view
+        if nudge:
+            view["runs"] = nudge
+        return view
 
     def _agent_facts(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
         row = self._with_active_experiment_ids(row=row)

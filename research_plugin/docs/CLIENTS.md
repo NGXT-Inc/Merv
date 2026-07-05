@@ -36,6 +36,30 @@ Shared invariants across all clients:
   `bin/research-plugin-http` to be running. Hosted deployments set the same env
   var to the hosted brain URL and run no local brain.
 
+## Long runs (rp_run) per client
+
+Long sandbox work is client-neutral in core: launch with
+`rp_run <label> -- <command>` over SSH, then check `sandbox.runs` — either a
+`wait_seconds` long-poll inside the session or a plain call when next attending
+the experiment. The long-poll cap is 300s server-side, but most MCP clients cut
+tool calls around ~60s; unless you know your client's tool timeout is higher,
+pass `wait_seconds<=45` (the same bound `sandbox.request` uses) and call again.
+
+Optional per-client babysitting recipes — documentation only, nothing in core
+depends on them:
+
+- **Claude Code**: instead of blocking on a long-poll, start a background
+  shell task that watches the sentinel and let the client's native
+  background-task notification fire when it exits:
+  `ssh <host> 'until [ -f $RP_EXPERIMENT_DIR/.runs/<label>/exit_code ]; do sleep 60; done'`
+  (run in the background). The turn ends immediately; the notification brings
+  the agent back, and one `sandbox.runs` call fetches the receipts.
+- **Other clients** (Codex, Cursor, Gemini CLI, OpenCode): no background-task
+  notification channel — end the turn after launching via rp_run and call
+  `sandbox.runs` when next attending the experiment. Every sandbox.* response
+  carries a one-line `runs` summary while runs exist, so a routine
+  `sandbox.get` also surfaces finished work.
+
 ## Reviewer handoff per client
 
 The backend's `workflow.status_and_next` returns a client-neutral

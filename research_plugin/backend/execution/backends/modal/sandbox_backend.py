@@ -26,6 +26,12 @@ from backend.execution.bootstrap_tools import (
     ML_PYTHON_PACKAGES,
     REC_EXEC_CORE,
 )
+from backend.execution.run_receipts import (
+    RP_RUN_PATH,
+    RP_RUN_SCRIPT,
+    parse_runs_listing,
+    runs_listing_command,
+)
 from backend.execution.usage_metrics import (
     METRICS_EXEC_TIMEOUT,
     METRICS_SCRIPT,
@@ -395,6 +401,39 @@ class ModalSandboxBackend(SandboxBackendBase):
             return None
         return parse_metrics(output)
 
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str,
+        # SSH connection details are unused: Modal lists via control-plane exec.
+        ssh_host: str = "",  # noqa: ARG002
+        ssh_port: int = 0,  # noqa: ARG002
+        ssh_user: str = "",  # noqa: ARG002
+        key_path: str = "",  # noqa: ARG002
+    ) -> list[dict[str, Any]] | None:
+        """List rp_run receipts under the workdir's .runs/ via a read-only exec.
+
+        Returns parsed run records ([] when .runs is absent), or None when the
+        sandbox is unreachable — the observer treats None as "no news".
+        """
+        if not sandbox_id or not workdir:
+            return None
+        try:
+            sandbox = self._sandbox_from_id(sandbox_id)
+            process = sandbox.exec(
+                "bash",
+                "-c",
+                runs_listing_command(experiment_dir=workdir),
+                timeout=METRICS_EXEC_TIMEOUT,
+            )
+            if wait_process(process) != 0:
+                return None
+            output = read_stream(getattr(process, "stdout", None))
+        except Exception:  # noqa: BLE001
+            return None
+        return parse_runs_listing(output)
+
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any]:
@@ -611,7 +650,9 @@ class ModalSandboxBackend(SandboxBackendBase):
             "mkdir -p /opt/rp",
             _write_file_layer(BOOT_SCRIPT, "/opt/rp/boot.sh"),
             _write_file_layer(REC_SCRIPT, "/opt/rp/rec.sh"),
-            "chmod +x /opt/rp/boot.sh /opt/rp/rec.sh",
+            _write_file_layer(RP_RUN_SCRIPT, RP_RUN_PATH),
+            f"chmod +x /opt/rp/boot.sh /opt/rp/rec.sh {RP_RUN_PATH}",
+            f"ln -sf {RP_RUN_PATH} /usr/local/bin/rp_run",
         )
 
     def _modal_module(self) -> Any:

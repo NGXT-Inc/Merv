@@ -473,7 +473,9 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_submit_results_lints_report_content(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        # Sections present but no metrics table, and Conclusion left empty.
+        # Sections present but Conclusion left empty. No metrics-table lint:
+        # the system metrics exhibit, not an agent-written table, is the
+        # record of quantitative attempts.
         bad_report = (
             "## Summary\nRan it.\n\n"
             "## Results\nIt went well.\n\n"
@@ -486,7 +488,7 @@ class WorkflowGateTest(unittest.TestCase):
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         msg = str(ctx.exception)
         self.assertIn("Conclusion", msg)  # empty section reported
-        self.assertIn("markdown table", msg)  # missing table reported in the same pass
+        self.assertNotIn("markdown table", msg)  # table shape is not policed
         # Editing the live file alone changes nothing — the lint reads the
         # submitted bytes; re-associating the fix unblocks.
         (self.repo / "report.md").write_text(VALID_REPORT)

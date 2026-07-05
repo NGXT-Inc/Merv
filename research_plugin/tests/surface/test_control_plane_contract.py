@@ -33,8 +33,8 @@ from backend.transport.http_server import make_http_server
 from backend.utils import NotFoundError, ValidationError
 from mcp_server.local_data_plane import LocalDataPlane, LocalDataPlaneError
 
-# Artifact bodies that satisfy the gate lints (plan spine, report spine +
-# metrics table, graph envelope), so the loop exercises gates as passes.
+# Artifact bodies that satisfy the gate lints (plan spine, report spine,
+# graph envelope), so the loop exercises gates as passes.
 VALID_PLAN = (
     "## Summary\n"
     "A toy experiment used by the contract suite.\n\n"

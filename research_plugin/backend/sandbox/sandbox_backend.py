@@ -174,6 +174,23 @@ class SandboxBackend(Protocol):
         """Optionally sample live sandbox usage. Unsupported backends return None."""
         ...
 
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """Optionally list rp_run receipts under workdir/.runs.
+
+        Returns parsed run records ([] when no runs exist); None means
+        unsupported or unreachable — "no news", never "no runs".
+        """
+        ...
+
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
         """Optionally refresh a live SSH endpoint. Unsupported backends return None."""
         ...
@@ -222,6 +239,19 @@ class SandboxBackendBase:
         key_path: str = "",
     ) -> dict[str, Any] | None:
         """Unsupported default: no live usage sample is available."""
+        return None
+
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """Unsupported default: no run receipts are observable."""
         return None
 
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:

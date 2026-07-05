@@ -7,6 +7,7 @@ import shlex
 from typing import Mapping
 
 from .bootstrap_tools import REC_EXEC_CORE
+from .run_receipts import RP_RUN_SCRIPT, rp_run_install_lines
 
 
 SESSIONS_DIR_NAME = ".research_plugin_sessions"
@@ -75,6 +76,7 @@ def build_bootstrap_core(
     """Phase 1 VM bootstrap: workspace, SSH keys, and rec.sh."""
     public_key_b64 = base64.b64encode(public_key.encode("utf-8")).decode("ascii")
     rec_script_b64 = base64.b64encode(REC_SCRIPT.encode("utf-8")).decode("ascii")
+    rp_run_b64 = base64.b64encode(RP_RUN_SCRIPT.encode("utf-8")).decode("ascii")
     env_lines = build_runtime_env(
         experiment_id=experiment_id,
         workdir=workdir,
@@ -123,7 +125,7 @@ cat > /opt/rp/env <<'RP_ENV'
 RP_ENV
 printf '%s' {shlex.quote(rec_script_b64)} | base64 -d > /opt/rp/rec.sh
 chmod +x /opt/rp/rec.sh
-{mgmt_block}cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
+{rp_run_install_lines(script_b64=rp_run_b64)}{mgmt_block}cat > /etc/ssh/sshd_config.d/99-research-plugin.conf <<'RP_SSHD'
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PasswordAuthentication no

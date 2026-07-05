@@ -41,10 +41,14 @@ MVP gates:
 3. Result retention gate: after execution, Codex must retain the selected
    outputs locally and register/associate them as resources.
 4. Results report gate: before `submit_results`, the current attempt must carry
-   a short markdown report (role `report`) with Summary, Results (containing a
-   metrics table: target vs achieved), Deviations from plan, and Conclusion
-   applying the plan's pre-registered decision rule; under 16 KB; every
-   relative figure link must resolve to a submitted figure file. See
+   a short markdown report (role `report`) with Summary, Results, Deviations
+   from plan, and Conclusion applying the plan's pre-registered decision rule;
+   under 16 KB; every relative figure link must resolve to a submitted figure
+   file. For quantitative attempts the system generates and pins a **metrics
+   exhibit** (every attempt-window MLflow run plus pulled result files, each
+   entry with provenance) at `submit_results`, and the
+   report must reference it — the server no longer polices agent-written
+   metric tables; the exhibit is the record and the report interprets it. See
    `skills/research-workflow/report-template.md`.
 5. Logic graph gate: before `submit_results`, the current attempt must also
    carry the experiment's logic graph (role `graph`) — a qualitative story
@@ -204,9 +208,12 @@ result resources exist but no report exists, the gate becomes
 `results_report_required` with report-specific guidance; once a report exists
 but no logic graph does, the gate becomes
 `logic_graph_required`.
-The `submit_results` transition lints the report file (sections, metrics table,
-size, figure links) and the logic graph's envelope (valid JSON, node budget,
-DAG) before the experiment enters review.
+The `submit_results` transition first finalizes the system metrics exhibit
+when the attempt has MLflow runs in its window (preview it earlier with
+`experiment.exhibit`), then lints the report file (sections, the exhibit
+reference when one is pinned, size, figure links) and the logic graph's
+envelope (valid JSON, node budget, DAG) before the experiment enters review.
+Runs logged after `submit_results` do not exist for the attempt.
 
 If infrastructure fails while the experiment is already `running` and the
 approved plan still stands, call

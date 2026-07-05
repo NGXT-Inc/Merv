@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from ..vm_ssh import (
     SshInputRunner,
     SshRunner,
+    read_runs_via_mgmt_ssh,
     read_transcript_via_mgmt_ssh,
     run_ssh,
     run_ssh_input,
@@ -86,6 +87,30 @@ class VmSshSandboxBackend(SandboxBackendBase):
         return sample_metrics_via_mgmt_ssh(
             ssh_runner=self._ssh_runner,
             sandbox_id=sandbox_id,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            key_path=key_path,
+        )
+
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",  # noqa: ARG002 — the management channel uses its own principal, not the row data-plane ssh_user
+        key_path: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """List rp_run receipts under workdir/.runs over the management channel.
+
+        Same principal and never-raises contract as sample_metrics: [] means
+        the box answered with no runs, None means the box did not answer.
+        """
+        return read_runs_via_mgmt_ssh(
+            ssh_runner=self._ssh_runner,
+            sandbox_id=sandbox_id,
+            workdir=workdir,
             ssh_host=ssh_host,
             ssh_port=ssh_port,
             key_path=key_path,
