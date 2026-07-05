@@ -33,7 +33,7 @@ extension, and a surface that composes them.
 |----------------|-----------------------------------------------------------------------------|
 | kernel         | `state/*` (minus blobs), `ports/*`, `utils`, `env`, `version`, `secret_tokens` |
 | research_core  | workflow/experiments/claims/reviews/syntheses/projects services + views, `graph_refs`, `reflection_tools`, `domain/*` (minus overrides) |
-| artifacts      | `services/{resources,pinned,figure_view}`, `domain/resource_selection`       |
+| artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, roles, markdown_images, figure_view, resource_selection) |
 | object_storage | `storage/*`, `state/{blobs,s3_blobs}`, `domain/storage_guidance`             |
 | sandbox        | `services/sandbox/*`, `sandbox/*`, `execution/*`, `services/{transcript_cache,quotas}`, `domain/{sandbox_paths,quota_contract}`, `ssh_keys` |
 | feed           | `services/{feed,feed_unfurl}`, `domain/{feed_images,feed_policy}`            |

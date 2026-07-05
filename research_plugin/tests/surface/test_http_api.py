@@ -1435,7 +1435,7 @@ class ResourceRelFileTest(unittest.TestCase):
 
 class FigureViewTest(unittest.TestCase):
     def test_resource_fanout_rolls_up_past_cap(self) -> None:
-        from backend.services.figure_view import RESOURCE_FANOUT_CAP, build_experiment_figure
+        from backend.artifacts.figure_view import RESOURCE_FANOUT_CAP, build_experiment_figure
 
         experiment = {
             "id": "exp_x",

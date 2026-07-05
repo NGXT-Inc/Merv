@@ -6,7 +6,8 @@ import json
 from typing import Any
 
 from ..domain.reflection_policy import covered_terminal_ids
-from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES, PROJECT_GRAPH_ROLES
+from ..artifacts.roles import PROJECT_GRAPH_ROLES
+from ..domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
 from .projects import ProjectService
 from .syntheses import SynthesisService
 from ..state.store import BaseStateStore, rows_to_dicts

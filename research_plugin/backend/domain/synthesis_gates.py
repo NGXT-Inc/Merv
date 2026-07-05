@@ -34,11 +34,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..artifacts.roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_ROLE
 from .gates import ForwardTransition, ReviewRequirement, RoleRequirement
-from .vocabulary import (
-    PROJECT_GRAPH_ROLE,
-    REFLECTION_LENS_DOC_ROLE,
-)
 
 
 SYNTHESIS_TERMINAL_STATUSES = frozenset({"published", "abandoned"})

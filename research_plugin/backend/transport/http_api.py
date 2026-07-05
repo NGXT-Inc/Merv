@@ -33,16 +33,17 @@ from ..tools.contracts import (
 )
 from .feed_http import register_feed_routes
 from ..daemon.project_router import ProjectRouter
+from ..artifacts.figure_view import build_experiment_figure
+from ..artifacts.resource_selection import preferred_associated_resource
+from ..artifacts.roles import GATED_ROLES, PROJECT_GRAPH_ROLES
 from ..domain.graph_lint import MAX_GRAPH_NODES, graph_problems
-from ..domain.resource_selection import preferred_associated_resource
-from ..domain.vocabulary import GATED_ROLES, PROJECT_GRAPH_ROLES
 from .http_policy import (
     HOSTED_CONTROL_TOOL_POLICIES,
     HTTP_DATA_PLANE_FEATURE_TO_TOOL,
     HttpSurfacePolicy,
 )
 from .mcp_http import register_mcp_routes
-from ..services.figure_view import build_experiment_figure
+from ..sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ..services.identity import LOCAL_PRINCIPAL
 from ..mlflow import mlflow_experiment_name, mlflow_visible_for_status
 from ..utils import (
@@ -763,6 +764,11 @@ class ResearchHttpApi:
                     project_id=project_id, experiment_id=experiment_id
                 ),
                 sandbox=sandbox,
+                # Liveness verdict stays with the sandbox module's vocabulary.
+                sandbox_active=bool(
+                    sandbox
+                    and str(sandbox.get("status") or "") in ACTIVE_SANDBOX_STATUSES
+                ),
             ),
         )
 

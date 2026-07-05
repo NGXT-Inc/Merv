@@ -24,12 +24,11 @@ from ..domain.workflow_gates import (
     TERMINAL_STATUSES,
     allowed_transitions_for,
 )
-from ..storage.blobs import BlobStore
+from ..artifacts.pinned import PinnedStore
 from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError
 from ..utils import new_id
 from ..utils import now_iso
-from .pinned import pinned_artifact_text
 from .review_gate import review_gate_state
 
 # Claim-status inference markers: (pattern, plain vote, vote when negated in
@@ -87,13 +86,13 @@ class ExperimentService:
         self,
         *,
         store: BaseStateStore,
-        blobs: BlobStore | None = None,
+        pinned: PinnedStore | None = None,
     ) -> None:
         self.store = store
         # Gate lints read submitted (pinned) bytes from here, never the
         # working tree. Optional only for direct construction in tests; the
         # composition root always injects it.
-        self.blobs = blobs
+        self.pinned = pinned
 
     def create(
         self,
@@ -1031,7 +1030,7 @@ class ExperimentService:
         Gates lint the bytes pinned at resource.associate — never the working
         tree — so fixing an artifact means fix the file AND re-associate it.
         """
-        if self.blobs is None:
+        if self.pinned is None:
             raise WorkflowError(
                 f"{what}: no blob store is configured; gated artifacts cannot be linted"
             )
@@ -1040,9 +1039,8 @@ class ExperimentService:
         ).fetchone()
         if attempt is None:
             raise NotFoundError(f"experiment not found: {experiment_id}")
-        return pinned_artifact_text(
+        return self.pinned.artifact_text(
             conn=conn,
-            blobs=self.blobs,
             target_type="experiment",
             target_id=experiment_id,
             role=role,

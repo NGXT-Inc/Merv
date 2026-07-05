@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..artifacts.pinned import PinnedStore
+from ..artifacts.resources import ResourceService
 from ..services.claims import ClaimService
 from ..services.experiments import ExperimentService
 from ..services.feed import FeedService
@@ -13,7 +15,6 @@ from ..services.project_overview import ProjectOverviewService
 from ..services.projects import ProjectService
 from ..services.quotas import QuotaService
 from ..services.reflection_tools import ReflectionToolService
-from ..services.resources import ResourceService
 from ..services.reviews import ReviewService
 from ..services.syntheses import SynthesisService
 from ..state import BaseStateStore
@@ -42,7 +43,10 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
     quotas = QuotaService(store=store)
     projects = ProjectService(store=store)
     claims = ClaimService(store=store)
-    experiments = ExperimentService(store=store, blobs=blobs)
+    # Research-core services read pinned artifact bytes through the
+    # artifacts-owned facade; only artifacts/feed touch the blob store.
+    pinned = PinnedStore(blobs=blobs)
+    experiments = ExperimentService(store=store, pinned=pinned)
     resources = ResourceService(store=store, permissions=permissions, blobs=blobs)
     graph_refs = GraphRefResolver(store=store)
     syntheses = SynthesisService(
@@ -50,7 +54,7 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         claims=claims,
         experiment_writer=experiments,
         project_writer=projects,
-        blobs=blobs,
+        pinned=pinned,
     )
     reflections = ReflectionToolService(syntheses=syntheses)
     project_overview = ProjectOverviewService(
@@ -63,7 +67,7 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         permissions=permissions,
         experiments=experiments,
         syntheses=syntheses,
-        blobs=blobs,
+        pinned=pinned,
     )
     feed = FeedService(store=store, blobs=blobs)
     return RecordCore(

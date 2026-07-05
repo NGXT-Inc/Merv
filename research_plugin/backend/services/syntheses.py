@@ -22,7 +22,7 @@ from ..domain.experiment_policy import (
     active_experiment_cap_would_exceed_message,
 )
 from ..domain.graph_lint import graph_problems
-from ..domain.markdown_images import markdown_image_links
+from ..artifacts.markdown_images import markdown_image_links
 from ..domain.reflection_artifacts import (
     CHANGE_SPEC_SCHEMA_VERSION,
     claim_change_problems,
@@ -35,7 +35,7 @@ from ..domain.reflection_policy import (
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
     covered_terminal_ids,
 )
-from ..domain.resource_selection import preferred_associated_resource
+from ..artifacts.resource_selection import preferred_associated_resource
 from ..domain.review_snapshot import review_snapshot_id
 from ..domain.synthesis_gates import (
     CORE_LENSES,
@@ -45,22 +45,20 @@ from ..domain.synthesis_gates import (
     SYNTHESIS_TERMINAL_STATUSES,
     allowed_synthesis_transitions_for,
 )
+from ..artifacts.roles import PROJECT_GRAPH_ROLES, REFLECTION_LENS_DOC_ROLES
 from ..domain.vocabulary import (
     CLAIM_CONFIDENCES,
     CLAIM_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
-    PROJECT_GRAPH_ROLES,
-    REFLECTION_LENS_DOC_ROLES,
 )
 from ..ports.synthesis_writers import (
     SynthesisClaimWriter,
     SynthesisExperimentWriter,
     SynthesisProjectWriter,
 )
-from ..storage.blobs import BlobStore
+from ..artifacts.pinned import PinnedStore, resubmit_hint
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
 from ..utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
-from .pinned import pinned_text_for_version, resubmit_hint
 from .review_gate import review_gate_state
 
 
@@ -74,15 +72,15 @@ class SynthesisService:
         claims: SynthesisClaimWriter,
         experiment_writer: SynthesisExperimentWriter,
         project_writer: SynthesisProjectWriter,
-        blobs: BlobStore | None = None,
+        pinned: PinnedStore | None = None,
     ) -> None:
         self.store = store
         self.claims = claims
         self.experiment_writer = experiment_writer
         self.project_writer = project_writer
         # Gate lints read submitted (pinned) bytes from here, never the
-        # working tree (see services/pinned.py).
-        self.blobs = blobs
+        # working tree (see artifacts/pinned.py).
+        self.pinned = pinned
 
     # ---- create ----
 
@@ -580,12 +578,11 @@ class SynthesisService:
     def _load_graph_for_diff(
         self, *, conn, version_id: str, role: str, what: str
     ) -> tuple[dict[str, Any] | None, list[str]]:
-        if self.blobs is None:
+        if self.pinned is None:
             return None, [f"{what}: no blob store is configured"]
         try:
-            text = pinned_text_for_version(
+            text = self.pinned.text_for_version(
                 conn=conn,
-                blobs=self.blobs,
                 version_id=version_id,
                 what=what,
                 role=role,
@@ -1473,7 +1470,7 @@ class SynthesisService:
         self, *, conn, version_id: Any, path: str, role: str, what: str
     ) -> str:
         """The submitted bytes of a pinned association, never the working tree."""
-        if self.blobs is None:
+        if self.pinned is None:
             raise WorkflowError(
                 f"{what}: no blob store is configured; gated artifacts cannot be linted"
             )
@@ -1482,9 +1479,8 @@ class SynthesisService:
                 f"{what} ({path}) has no pinned version — "
                 + resubmit_hint(role=role, path=path)
             )
-        return pinned_text_for_version(
+        return self.pinned.text_for_version(
             conn=conn,
-            blobs=self.blobs,
             version_id=str(version_id),
             what=what,
             role=role,

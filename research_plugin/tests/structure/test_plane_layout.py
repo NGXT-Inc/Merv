@@ -25,15 +25,17 @@ from backend.tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
 )
-from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PORTS_ROOT, SERVICES_ROOT
+from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, PORTS_ROOT, SERVICES_ROOT
 
 
 # Record halves that must be servable from a cloud control plane: no local
 # processes, no conn machinery, no dataplane worker.
+ARTIFACTS_MODULES = tuple(sorted(ARTIFACTS_ROOT.glob("*.py")))
 DOMAIN_MODULES = tuple(sorted(DOMAIN_ROOT.glob("*.py")))
 PORT_MODULES = tuple(sorted(PORTS_ROOT.glob("*.py")))
 
 CONTROL_MODULES = (
+    *ARTIFACTS_MODULES,
     *DOMAIN_MODULES,
     *PORT_MODULES,
     BACKEND_ROOT / "sandbox" / "sandbox_backend.py",
@@ -50,8 +52,6 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "permissions.py",
     SERVICES_ROOT / "project_overview.py",
     SERVICES_ROOT / "reflection_tools.py",
-    SERVICES_ROOT / "pinned.py",
-    SERVICES_ROOT / "resources.py",
     SERVICES_ROOT / "feed.py",
     SERVICES_ROOT / "sandbox" / "sandbox_metrics.py",
     BACKEND_ROOT / "control" / "record_core.py",
@@ -597,10 +597,10 @@ for name in (
     def test_resource_service_uses_record_ports(self) -> None:
         # ResourceService is the control-safe record half. Local observation
         # belongs to the local composition edge, not to the record service.
-        imports = _import_segments(SERVICES_ROOT / "resources.py")
+        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
         self.assertIn("resource_records", imports)
         self.assertNotIn("permissions", imports)
-        source = (SERVICES_ROOT / "resources.py").read_text(encoding="utf-8")
+        source = (ARTIFACTS_ROOT / "resources.py").read_text(encoding="utf-8")
         self.assertIn("permissions: ResourceAssociationPolicy", source)
         self.assertNotIn("observer: ResourceObserver", source)
         self.assertNotIn("self.observer", source)

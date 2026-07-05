@@ -9,11 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import storage_feature_enabled
 from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB
-from ..domain.vocabulary import (
-    RESOURCE_ROLES,
-    RESOURCE_TARGET_TYPES,
-    REVIEW_VERDICT_VALUES,
-)
+from ..artifacts.roles import RESOURCE_ROLES, RESOURCE_TARGET_TYPES
+from ..domain.vocabulary import REVIEW_VERDICT_VALUES
 
 
 class ContractModel(BaseModel):

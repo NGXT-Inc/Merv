@@ -22,8 +22,6 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
-from ..sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
-
 FIGURE_SCHEMA_VERSION = 1
 
 # Resource roles that feed an attempt vs. ones an attempt produces.
@@ -73,12 +71,14 @@ def build_experiment_figure(
     review_attempts: dict[str, int],
     open_review_requests: list[dict[str, Any]],
     sandbox: dict[str, Any] | None,
+    sandbox_active: bool = False,
 ) -> dict[str, Any]:
     """Project one experiment's state into a figure graph.
 
     `review_attempts` maps review id -> attempt_index (resolved from review
     snapshots by the caller; 0 means unknown). `sandbox` is a sandbox row view
-    or None when the experiment never had one.
+    or None when the experiment never had one; `sandbox_active` is the
+    caller's liveness verdict (the sandbox module owns status vocabulary).
     """
     current_attempt = max(1, int(experiment.get("attempt_index") or 1))
     status = str(experiment.get("status") or "planned")
@@ -243,7 +243,7 @@ def build_experiment_figure(
                 "type": "sandbox",
                 "label": "Sandbox",
                 "sublabel": str(sandbox.get("gpu") or sandbox.get("instance_type") or sandbox_status),
-                "status": "active" if sandbox_status in ACTIVE_SANDBOX_STATUSES else "done",
+                "status": "active" if sandbox_active else "done",
                 "group": f"attempt:{current_attempt}",
                 "ref": {"kind": "sandbox", "id": experiment.get("id")},
                 "meta": {"sandbox_status": sandbox_status},

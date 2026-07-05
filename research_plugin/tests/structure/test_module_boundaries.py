@@ -34,6 +34,7 @@ PACKAGE_MODULES = {
     "state": KERNEL,
     "ports": KERNEL,
     "domain": RESEARCH_CORE,
+    "artifacts": ARTIFACTS,
     "storage": OBJECT_STORAGE,
     "services/sandbox": SANDBOX,
     "sandbox": SANDBOX,
@@ -74,11 +75,6 @@ FILE_MODULES = {
     "services/projects.py": RESEARCH_CORE,
     "services/reflection_tools.py": RESEARCH_CORE,
     "services/graph_refs.py": RESEARCH_CORE,
-    # artifacts: resource records, pinned bytes, figure projections.
-    "services/resources.py": ARTIFACTS,
-    "services/pinned.py": ARTIFACTS,
-    "services/figure_view.py": ARTIFACTS,
-    "domain/resource_selection.py": ARTIFACTS,
     # sandbox: lifecycle services + local strays of the sandbox stack.
     "services/transcript_cache.py": SANDBOX,
     "services/quotas.py": SANDBOX,  # TODO tenancy concern — may move later
@@ -123,12 +119,6 @@ ALLOWED_EDGES = (
 # This list may only shrink: a fixed edge must be deleted here, and no new
 # edge may be added. Move the code, not the line.
 GRANDFATHERED = frozenset({
-    # artifacts -> research_core (3)
-    ("services/resources.py", "domain/markdown_images.py"),
-    ("services/resources.py", "domain/reflection_projection.py"),
-    ("services/resources.py", "domain/vocabulary.py"),
-    # artifacts -> sandbox (1)
-    ("services/figure_view.py", "sandbox/sandbox_support.py"),
     # kernel -> research_core (1)
     ("state/tool_calls.py", "domain/tool_call_stats.py"),
     # kernel -> sandbox (3)
@@ -137,10 +127,7 @@ GRANDFATHERED = frozenset({
     ("state/mgmt_keys.py", "ssh_keys.py"),
     # mlflow -> surface (1)
     ("mlflow/tracking.py", "config.py"),
-    # research_core -> object_storage (4)
-    ("services/experiments.py", "storage/blobs.py"),
-    ("services/reviews.py", "storage/blobs.py"),
-    ("services/syntheses.py", "storage/blobs.py"),
+    # research_core -> object_storage (1)
     ("services/workflow.py", "domain/storage_guidance.py"),
     # sandbox -> object_storage (2)
     ("services/sandbox/sandbox_views.py", "domain/storage_guidance.py"),

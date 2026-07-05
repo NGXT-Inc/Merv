@@ -107,3 +107,54 @@ def pinned_text_for_version(
         raise WorkflowError(
             f"{what} ({path}) is not valid UTF-8 text"
         ) from exc
+
+
+class PinnedStore:
+    """Artifacts-owned facade over the blob store for submitted pinned bytes.
+
+    Research-core services (experiments, reviews, syntheses) judge pinned
+    artifact bytes through this facade — the ratified research_core→artifacts
+    edge — instead of holding a BlobStore themselves. It exposes exactly the
+    reads those gates and reviewer hydration need.
+    """
+
+    def __init__(self, *, blobs: BlobStore) -> None:
+        self._blobs = blobs
+
+    def artifact_text(
+        self,
+        *,
+        conn: Connection,
+        target_type: str,
+        target_id: str,
+        role: str,
+        attempt_index: int,
+        what: str,
+    ) -> tuple[str, str, str]:
+        """(text, version_id, path) of the newest current-attempt association."""
+        return pinned_artifact_text(
+            conn=conn,
+            blobs=self._blobs,
+            target_type=target_type,
+            target_id=target_id,
+            role=role,
+            attempt_index=attempt_index,
+            what=what,
+        )
+
+    def text_for_version(
+        self, *, conn: Connection, version_id: str, what: str, role: str
+    ) -> str:
+        """The submitted text of one pinned resource version."""
+        return pinned_text_for_version(
+            conn=conn,
+            blobs=self._blobs,
+            version_id=version_id,
+            what=what,
+            role=role,
+        )
+
+    def submitted_text(self, *, project_id: str, sha256: str) -> str:
+        """Submitted bytes decoded for reviewer display; raises when absent."""
+        data = self._blobs.get(namespace=project_id, sha256=sha256)
+        return data.decode("utf-8", errors="replace")

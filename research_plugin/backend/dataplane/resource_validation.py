@@ -7,22 +7,22 @@ from typing import Any
 
 from ..domain.artifacts import plan_sections_missing, report_problems
 from ..domain.graph_lint import graph_problems
-from ..domain.markdown_images import (
+from ..artifacts.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
 )
-from ..domain.reflection_artifacts import (
-    change_spec_structure_problems,
-    reflection_doc_problems,
-    reflection_lens_doc_problems,
-)
-from ..domain.vocabulary import (
+from ..artifacts.roles import (
     GATED_ROLE_BYTE_CAPS,
     LEGACY_REFLECTION_DOC_ROLE,
     PROJECT_GRAPH_ROLE,
     REFLECTION_LENS_DOC_ROLES,
     RESOURCE_ROLES,
+)
+from ..domain.reflection_artifacts import (
+    change_spec_structure_problems,
+    reflection_doc_problems,
+    reflection_lens_doc_problems,
 )
 from ..utils import NotFoundError, ValidationError
 from .repo_paths import resolve_repo_path

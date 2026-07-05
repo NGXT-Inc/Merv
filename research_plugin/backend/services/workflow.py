@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.gates import ReviewRequirement, RoleRequirement
-from ..domain.paths import experiment_folder_rel
-from ..domain.reflection_projection import external_reflection_target_type
-from ..domain.storage_guidance import storage_guidance
-from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
-from ..domain.vocabulary import (
+from ..artifacts.roles import (
     PROJECT_GRAPH_ROLE,
     PROJECT_GRAPH_ROLES,
     REFLECTION_LENS_DOC_ROLE,
     RESOURCE_ROLES,
+    external_reflection_target_type,
 )
+from ..domain.gates import ReviewRequirement, RoleRequirement
+from ..domain.paths import experiment_folder_rel
+from ..domain.storage_guidance import storage_guidance
+from ..domain.synthesis_gates import SYNTHESIS_GATE_TABLE
 from ..domain.workflow_gates import (
     ACTIVE_PROCESS_STATUSES,
     GATE_TABLE,

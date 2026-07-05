@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 
 from backend.dataplane.resource_artifacts import LocalResourceArtifactReader
-from backend.domain.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
-from backend.domain.vocabulary import GATED_ROLE_BYTE_CAPS
+from backend.artifacts.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
+from backend.artifacts.roles import GATED_ROLE_BYTE_CAPS
 from backend.utils import NotFoundError, ValidationError
 
 

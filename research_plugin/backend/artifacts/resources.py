@@ -18,14 +18,13 @@ from ..state.store import (
     row_to_dict,
     rows_to_dicts,
 )
-from ..domain.markdown_images import (
+from .markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
 )
-from ..domain.reflection_projection import external_reflection_target_type
-from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
 from .pinned import pinned_text_for_version as load_pinned_text_for_version
+from .roles import GATED_ROLE_BYTE_CAPS, external_reflection_target_type
 
 
 class ResourceService:

@@ -7,7 +7,7 @@ from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
 from typing import Any, Protocol, get_type_hints, is_typeddict
 
-from tests.paths import BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERVICES_ROOT
+from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERVICES_ROOT
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
@@ -24,6 +24,10 @@ HTTP_TRANSPORT_MODULES = (
 
 def _source(name: str) -> str:
     return (SERVICES / name).read_text(encoding="utf-8")
+
+
+def _artifacts_source(name: str) -> str:
+    return (ARTIFACTS_ROOT / name).read_text(encoding="utf-8")
 
 
 def _import_modules(name: str) -> set[str]:
@@ -277,12 +281,12 @@ class ServiceLayoutTest(unittest.TestCase):
         # caller's business (submission capture).
         self.assertEqual(
             _import_module_names(DOMAIN_ROOT / "artifacts.py"),
-            {"re", "collections.abc", "markdown_images"},
+            {"re", "collections.abc", "artifacts.markdown_images"},
         )
 
-    def test_resource_selection_is_domain_leaf_module(self) -> None:
+    def test_resource_selection_is_artifacts_leaf_module(self) -> None:
         self.assertEqual(
-            _import_module_names(DOMAIN_ROOT / "resource_selection.py"),
+            _import_module_names(ARTIFACTS_ROOT / "resource_selection.py"),
             {"typing"},
         )
 
@@ -449,8 +453,8 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn("initial_rsynchronized", source)
 
     def test_resource_service_records_observations_without_local_observer(self) -> None:
-        source = _source("resources.py")
-        imports = _import_segments(SERVICES / "resources.py")
+        source = _artifacts_source("resources.py")
+        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
 
         self.assertIn("resource_records", imports)
         self.assertIn("def record_observation(", source)
@@ -464,7 +468,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("file_path.stat(", source)
 
     def test_resource_association_uses_submitted_artifact_bytes(self) -> None:
-        source = _source("resources.py")
+        source = _artifacts_source("resources.py")
         start = source.index("    def associate(")
         end = source.index("    def associate_observed(")
         associate_slice = source[start:end]
@@ -475,7 +479,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("_capture_gated_blob", source)
 
     def test_resource_service_has_no_local_file_reads(self) -> None:
-        source = _source("resources.py")
+        source = _artifacts_source("resources.py")
 
         self.assertNotIn(".read_bytes(", source)
         self.assertNotIn("repo_root", source)
@@ -483,15 +487,15 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("backfill_gated_blobs", source)
 
     def test_resource_service_uses_permission_port(self) -> None:
-        source = _source("resources.py")
-        imports = _import_segments(SERVICES / "resources.py")
+        source = _artifacts_source("resources.py")
+        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
 
         self.assertNotIn("permissions", imports)
         self.assertIn("resource_records", imports)
         self.assertIn("permissions: ResourceAssociationPolicy", source)
         self.assertNotIn("class ResourceAssociationPolicy", source)
 
-        from backend.services.resources import ResourceService
+        from backend.artifacts.resources import ResourceService
 
         get_type_hints(ResourceService.__init__)
 
@@ -786,9 +790,13 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertIn(Protocol, protocol.__mro__)
 
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
-        for name in ("pinned.py", "resources.py", "sandbox/sandboxes.py"):
-            with self.subTest(module=name):
-                source = _source(name)
+        for path in (
+            ARTIFACTS_ROOT / "pinned.py",
+            ARTIFACTS_ROOT / "resources.py",
+            SERVICES / "sandbox" / "sandboxes.py",
+        ):
+            with self.subTest(module=path.name):
+                source = path.read_text(encoding="utf-8")
                 self.assertNotIn("sqlite3.Connection", source)
                 self.assertNotIn("sqlite3.Row", source)
                 self.assertNotIn("import sqlite3", source)
@@ -1148,7 +1156,7 @@ class ServiceLayoutTest(unittest.TestCase):
                     leaked = VOCABULARY_NAMES & {alias.name for alias in node.names}
                     self.assertFalse(
                         leaked,
-                        f"import vocabulary from backend.domain.vocabulary, not permissions: {sorted(leaked)}",
+                        f"import vocabulary from domain.vocabulary/artifacts.roles, not permissions: {sorted(leaked)}",
                     )
 
     def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
@@ -1167,13 +1175,15 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_gate_tables_are_domain_policy_only(self) -> None:
         # Workflow state machines are domain policy: they may share neutral
-        # gate dataclasses and pure vocabulary, but must not depend on services.
-        for name in ("workflow_gates.py", "synthesis_gates.py"):
+        # gate dataclasses and pure vocabulary (status vocabulary from domain,
+        # role vocabulary from its artifacts owner), but never services.
+        expected = {
+            "workflow_gates.py": {"gates", "vocabulary", "typing"},
+            "synthesis_gates.py": {"gates", "artifacts.roles", "typing"},
+        }
+        for name, imports in expected.items():
             with self.subTest(module=name):
-                self.assertEqual(
-                    _import_module_names(DOMAIN_ROOT / name),
-                    {"gates", "vocabulary", "typing"},
-                )
+                self.assertEqual(_import_module_names(DOMAIN_ROOT / name), imports)
 
     def test_synthesis_service_uses_experiment_name_leaf(self) -> None:
         self.assertNotIn("experiments", _import_segments(SERVICES / "syntheses.py"))

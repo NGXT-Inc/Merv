@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..domain.markdown_images import (
+from ..artifacts.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
     markdown_image_targets,
 )
-from ..domain.vocabulary import GATED_ROLE_BYTE_CAPS
+from ..artifacts.roles import GATED_ROLE_BYTE_CAPS
 from ..utils import NotFoundError, ValidationError
 from .repo_paths import resolve_repo_path
 

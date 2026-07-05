@@ -72,20 +72,6 @@ def external_reflection_state(state: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-_INTERNAL_SYNTHESIS = "synthesis"
-_EXTERNAL_REFLECTION = "reflection"
-
-
-def external_reflection_target_type(target_type: Any) -> Any:
-    """Internal 'synthesis' -> external 'reflection'; pass through all else."""
-    return _EXTERNAL_REFLECTION if target_type == _INTERNAL_SYNTHESIS else target_type
-
-
-def internal_synthesis_target_type(target_type: Any) -> Any:
-    """External 'reflection' -> internal 'synthesis'; pass through all else."""
-    return _INTERNAL_SYNTHESIS if target_type == _EXTERNAL_REFLECTION else target_type
-
-
 def internal_synthesis_transition(transition: Any) -> Any:
     """External 'submit_reflection_artifacts' tool name -> internal 'submit_synthesis'; pass through all else."""
     return (

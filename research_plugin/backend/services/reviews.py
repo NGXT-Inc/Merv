@@ -16,15 +16,16 @@ from ..utils import (
     now_iso,
     parse_iso,
 )
-from ..storage.blobs import BlobStore
-from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
-from ..domain.reflection_projection import (
+from ..artifacts.pinned import PinnedStore
+from ..artifacts.roles import (
+    GATED_ROLES,
     external_reflection_target_type,
     internal_synthesis_target_type,
 )
+from ..domain.review_gates import expected_review_gate_role, is_review_gate_exempt
 from ..domain.review_returns import resolve_review_return
 from ..domain.synopsis import validate_synopsis
-from ..domain.vocabulary import GATED_ROLES, LOCAL_TENANT_ID
+from ..domain.vocabulary import LOCAL_TENANT_ID
 from ..ports.review_policy import ReviewPolicy
 from ..state.store import BaseStateStore, next_created_seq, row_to_dict
 from .experiments import ExperimentService
@@ -49,13 +50,13 @@ class ReviewService:
         permissions: ReviewPolicy,
         experiments: ExperimentService,
         syntheses: SynthesisService,
-        blobs: BlobStore | None = None,
+        pinned: PinnedStore | None = None,
     ) -> None:
         self.store = store
         self.permissions = permissions
         self.experiments = experiments
         self.syntheses = syntheses
-        self.blobs = blobs
+        self.pinned = pinned
 
     def request(
         self,
@@ -250,7 +251,7 @@ class ReviewService:
         self, *, conn, target_type: str, target_id: str
     ) -> list[dict[str, Any]]:
         """The target's current-attempt gated-role artifacts, with content."""
-        if self.blobs is None:
+        if self.pinned is None:
             return []
         table = {"experiment": "experiments", "synthesis": "syntheses"}.get(target_type)
         if table is None:
@@ -288,11 +289,10 @@ class ReviewService:
                 "version_id": str(row["version_id"]) if row["version_id"] else None,
             }
             try:
-                data = self.blobs.get(
-                    namespace=str(row["project_id"]),
+                entry["content"] = self.pinned.submitted_text(
+                    project_id=str(row["project_id"]),
                     sha256=str(row["content_sha256"]),
                 )
-                entry["content"] = data.decode("utf-8", errors="replace")
             except Exception:  # noqa: BLE001 — hydration is best-effort
                 entry["content"] = None
                 entry["note"] = "submitted content unavailable; ask the producer to re-associate"

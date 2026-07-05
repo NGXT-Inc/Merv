@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..domain.vocabulary import (
+from ..artifacts.roles import (
     LEGACY_PROJECT_GRAPH_ROLE,
     LEGACY_PROPOSALS_ROLE,
     LEGACY_REFLECTION_DOC_ROLE,
@@ -12,9 +12,8 @@ from ..domain.vocabulary import (
     REFLECTION_LENS_DOC_ROLE,
     RESOURCE_ROLES,
     RESOURCE_TARGET_TYPES,
-    REVIEW_ROLES,
-    REVIEW_VERDICTS,
 )
+from ..domain.vocabulary import REVIEW_ROLES, REVIEW_VERDICTS
 from ..utils import PermissionDeniedError, ValidationError
 
 

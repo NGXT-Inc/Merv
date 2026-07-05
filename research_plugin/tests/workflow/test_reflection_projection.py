@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import unittest
 
+from backend.artifacts.roles import (
+    external_reflection_target_type,
+    internal_synthesis_target_type,
+)
 from backend.domain.reflection_projection import (
     external_reflection_state,
-    external_reflection_target_type,
     external_reflection_transition,
-    internal_synthesis_target_type,
     internal_synthesis_transition,
 )
 
