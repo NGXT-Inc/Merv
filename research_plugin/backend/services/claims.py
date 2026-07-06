@@ -42,7 +42,14 @@ class ClaimService:
                 event_type="claim.created",
                 target_type="claim",
                 target_id=claim_id,
-                payload={"statement": statement},
+                # Full post-state: claim events double as the claim's version
+                # history (there is no claim_versions table).
+                payload={
+                    "statement": statement.strip(),
+                    "scope": scope.strip(),
+                    "status": "active",
+                    "confidence": confidence,
+                },
             )
             row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
             return dict(row)
@@ -51,12 +58,17 @@ class ClaimService:
         self,
         *,
         claim_id: str,
-        statement: str | None = None,
-        scope: str | None = None,
         status: str | None = None,
         confidence: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
+        # statement/scope are deliberately not updatable here: the statement is
+        # the claim's identity — experiments and reviews reference the claim id
+        # assuming stable meaning. Text revisions go through the reviewed
+        # reflection change spec (update_from_synthesis), or the claim is
+        # abandoned and a corrected one created.
+        if status is None and confidence is None:
+            raise ValidationError("nothing to update: provide status and/or confidence")
         if status is not None and status not in CLAIM_STATUSES:
             raise ValidationError(
                 f"unknown claim status: {status}. Allowed: {', '.join(sorted(CLAIM_STATUSES))}"
@@ -73,19 +85,15 @@ class ClaimService:
                 raise NotFoundError(f"claim not found: {claim_id}")
             if row["project_id"] != project_id:
                 raise NotFoundError(f"claim not found in project {project_id}: {claim_id}")
-            next_statement = row["statement"] if statement is None else statement.strip()
-            if not next_statement:
-                raise ValidationError("statement is required")
-            next_scope = row["scope"] if scope is None else scope.strip()
             next_status = row["status"] if status is None else status
             next_confidence = row["confidence"] if confidence is None else confidence
             conn.execute(
                 """
                 UPDATE claims
-                SET statement = ?, scope = ?, status = ?, confidence = ?
+                SET status = ?, confidence = ?
                 WHERE id = ?
                 """,
-                (next_statement, next_scope, next_status, next_confidence, claim_id),
+                (next_status, next_confidence, claim_id),
             )
             self.store.record_event(
                 conn=conn,
@@ -93,9 +101,11 @@ class ClaimService:
                 event_type="claim.updated",
                 target_type="claim",
                 target_id=claim_id,
+                # Full post-state, including the unchanged statement/scope, so
+                # the events table stays a lossless claim history.
                 payload={
-                    "statement": next_statement,
-                    "scope": next_scope,
+                    "statement": row["statement"],
+                    "scope": row["scope"],
                     "status": next_status,
                     "confidence": next_confidence,
                 },
@@ -140,6 +150,9 @@ class ClaimService:
             target_id=claim_id,
             payload={
                 "statement": statement,
+                "scope": scope.strip(),
+                "status": status,
+                "confidence": confidence,
                 "source_synthesis_id": synthesis_id,
                 "rationale": rationale.strip(),
             },

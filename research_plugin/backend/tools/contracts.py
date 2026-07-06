@@ -96,8 +96,6 @@ class ClaimListInput(ProjectScopedInput):
 
 class ClaimUpdateInput(ProjectScopedInput):
     claim_id: str
-    statement: str | None = None
-    scope: str | None = None
     status: Literal[
         "draft", "active", "supported", "weakened", "contradicted", "abandoned"
     ] | None = None
@@ -858,7 +856,13 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     ),
     "claim.update": ToolContract(
         input_model=ClaimUpdateInput,
-        description="Update a claim's statement, scope, status, or confidence.",
+        description=(
+            "Update a claim's status or confidence. The statement and scope "
+            "are immutable — experiments and reviews reference the claim by "
+            "id assuming stable meaning. To revise the text, propose a claim "
+            "change in a reflection change spec (reviewed), or abandon this "
+            "claim and create a corrected one."
+        ),
     ),
     "experiment.create": ToolContract(
         input_model=ExperimentCreateInput,

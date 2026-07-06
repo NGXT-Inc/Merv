@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -1136,6 +1137,76 @@ class WorkflowGateTest(unittest.TestCase):
 
         with self.assertRaises(NotFoundError):
             self.call("claim.update", project_id=other["id"], claim_id=claim["id"], status="supported")
+
+    def test_claim_update_rejects_statement_and_scope_rewrites(self) -> None:
+        # The statement is the claim's identity: experiments and reviews
+        # reference the claim id assuming stable meaning. Text revisions go
+        # through a reviewed reflection change spec or abandon-and-recreate.
+        claim = self.call("claim.create", project_id=self.project_id, statement="Claim.")
+        with self.assertRaises(ValidationError):
+            self.call(
+                "claim.update",
+                project_id=self.project_id,
+                claim_id=claim["id"],
+                statement="Rewritten.",
+            )
+        with self.assertRaises(ValidationError):
+            self.call(
+                "claim.update",
+                project_id=self.project_id,
+                claim_id=claim["id"],
+                scope="widened",
+            )
+
+    def test_claim_update_requires_status_or_confidence(self) -> None:
+        claim = self.call("claim.create", project_id=self.project_id, statement="Claim.")
+        with self.assertRaises(ValidationError):
+            self.call("claim.update", project_id=self.project_id, claim_id=claim["id"])
+
+    def test_claim_events_carry_full_post_state(self) -> None:
+        # Claim events double as the claim's version history (there is no
+        # claim_versions table): created and every update must record the
+        # complete post-state.
+        claim = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="Bigger batch helps.",
+            scope="toy runs only",
+        )
+        self.call(
+            "claim.update",
+            project_id=self.project_id,
+            claim_id=claim["id"],
+            status="supported",
+        )
+        conn = self.app.store.connect()
+        try:
+            rows = conn.execute(
+                "SELECT type, payload_json FROM events"
+                " WHERE target_type = 'claim' AND target_id = ? ORDER BY id",
+                (claim["id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+        payloads = {row["type"]: json.loads(row["payload_json"]) for row in rows}
+        self.assertEqual(
+            payloads["claim.created"],
+            {
+                "statement": "Bigger batch helps.",
+                "scope": "toy runs only",
+                "status": "active",
+                "confidence": "medium",
+            },
+        )
+        self.assertEqual(
+            payloads["claim.updated"],
+            {
+                "statement": "Bigger batch helps.",
+                "scope": "toy runs only",
+                "status": "supported",
+                "confidence": "medium",
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ project.update(project_id, name?, summary?)
 project.get(project_id)
 claim.list(project_id)
 claim.create(project_id, statement, scope?)
-claim.propose_update(project_id, claim_id, patch, rationale)
+claim.update(project_id, claim_id, status?, confidence?)  # statement/scope are immutable; revise text via a reviewed reflection change spec or abandon-and-recreate
 experiment.list(project_id)
 experiment.create(project_id, name, intent, tested_claim_ids?)
 experiment.get(project_id, experiment_id)
