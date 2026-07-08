@@ -93,6 +93,38 @@ class ProjectGetInput(ProjectScopedInput):
     pass
 
 
+class ProjectConnectInput(ContractModel):
+    # Deliberately NOT ProjectScopedInput: this is the one tool where
+    # project_id is the caller's explicit choice of which hosted project to
+    # link, not hidden repo context resolved by the proxy.
+    project_id: str = Field(
+        default="",
+        description=(
+            "Existing hosted project id to link this folder to. Leave empty "
+            "when creating a new project via name."
+        ),
+    )
+    name: str = Field(
+        default="",
+        description=(
+            "User-confirmed name for a new project (min 3 chars) when "
+            "project_id is empty. Do not infer a placeholder from the folder "
+            "name unless the user explicitly asked for that."
+        ),
+    )
+    summary: str = Field(
+        default="",
+        description="Short user-confirmed purpose for a new project.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "Must be true to re-link a folder that is already linked to a "
+            "different project."
+        ),
+    )
+
+
 class ClaimCreateInput(ProjectScopedInput):
     statement: str
     scope: str = ""
@@ -828,9 +860,10 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "project.create": ToolContract(
         input_model=ProjectCreateInput,
         description=(
-            "Create a project for this folder using a user-confirmed name and summary. "
-            "If project.current returned exists:false and the user has not already "
-            "provided the project name/purpose, ask before calling this tool."
+            "Create a project WITHOUT linking the current folder to it. To "
+            "onboard the current folder (create or validate a project, then "
+            "link), call project.connect instead. Use a user-confirmed name "
+            "and summary; if the user has not provided them, ask first."
         ),
     ),
     "project.update": ToolContract(
@@ -849,6 +882,18 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "reflection age summary, recent experiments/claims, latest "
             "reflection/project graph resource ids, ids changed since "
             "reflection, and open reflection id."
+        ),
+    ),
+    "project.connect": ToolContract(
+        input_model=ProjectConnectInput,
+        description=(
+            "Link the current folder to a hosted project so every later tool "
+            "call resolves to it. Pass project_id to link an existing "
+            "project, or a user-confirmed name (+ summary) to create a new "
+            "project and link it in one step. Ask the user which project "
+            "before calling — never guess an id. The folder-to-project link "
+            "is stored on this machine only; the brain never sees the folder "
+            "path. Re-linking a linked folder requires overwrite=true."
         ),
     ),
     "project.list": ToolContract(
@@ -1310,6 +1355,9 @@ TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
     "project.update": "control",
     "project.get": "control",
     "project.current": "control",
+    # Writes the proxy-local link store; served by the proxy itself (it owns
+    # project_links.sqlite), never by the brain.
+    "project.connect": "data",
     "project.list": "control",
     "claim.create": "control",
     "claim.list": "control",
@@ -1370,6 +1418,24 @@ if _PLANE_REGISTRY_MISMATCH:  # pragma: no cover - import-time contract guard
         f"{sorted(_PLANE_REGISTRY_MISMATCH)}"
     )
 
+# Implemented and dispatchable (REST/UI reads, proxy-internal calls) but not
+# advertised to agents. Hidden tools STAY in the served catalog carrying a
+# ``hidden`` flag — the stdio proxy needs their plane/schema to route internal
+# calls (e.g. project.current dials project.get upstream) — and the proxy
+# drops them from the client-facing tools/list.
+MCP_HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "project.get",
+        "project.update",
+    }
+)
+
+_HIDDEN_UNKNOWN = MCP_HIDDEN_TOOL_NAMES - set(TOOL_CONTRACTS)
+if _HIDDEN_UNKNOWN:  # pragma: no cover - import-time contract guard
+    raise RuntimeError(
+        f"MCP_HIDDEN_TOOL_NAMES references unknown tools: {sorted(_HIDDEN_UNKNOWN)}"
+    )
+
 
 def available_tool_names(*, storage_enabled: bool | None = None) -> set[str]:
     """Tool names for the active feature set.
@@ -1428,17 +1494,18 @@ def static_tool_catalog(
             continue
         schema = contract.input_model.model_json_schema()
         schema.pop("title", None)
-        catalog.append(
-            {
-                "name": name,
-                "description": contract.description,
-                "inputSchema": schema,
-                # The routing source of truth (cloud plan §3.3): the stdlib-only
-                # proxy reads this off the served catalog to build its
-                # dual-upstream route map, so the proxy never imports the
-                # pydantic-bound contracts module and the routing cannot drift
-                # from TOOL_PLANE_REGISTRY.
-                "plane": tool_plane(name),
-            }
-        )
+        tool: dict[str, Any] = {
+            "name": name,
+            "description": contract.description,
+            "inputSchema": schema,
+            # The routing source of truth (cloud plan §3.3): the stdlib-only
+            # proxy reads this off the served catalog to build its
+            # dual-upstream route map, so the proxy never imports the
+            # pydantic-bound contracts module and the routing cannot drift
+            # from TOOL_PLANE_REGISTRY.
+            "plane": tool_plane(name),
+        }
+        if name in MCP_HIDDEN_TOOL_NAMES:
+            tool["hidden"] = True
+        catalog.append(tool)
     return catalog

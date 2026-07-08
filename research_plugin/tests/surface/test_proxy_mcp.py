@@ -86,6 +86,10 @@ class HttpProxyMcpServerUnifiedBrainTest(unittest.TestCase):
         self.assertIn("project.create", tools)
         self.assertIn("sandbox.request", tools)
         self.assertNotIn("project.list", tools)
+        # UI-facing tools stay dispatchable but are hidden from the agent list.
+        self.assertNotIn("project.get", tools)
+        self.assertNotIn("project.update", tools)
+        self.assertFalse(any("hidden" in tool for tool in tools.values()))
         workflow_schema = tools["workflow.status_and_next"]["inputSchema"]
         self.assertNotIn("project_id", workflow_schema.get("properties", {}))
         self.assertNotIn("project_id", workflow_schema.get("required", []))
@@ -154,8 +158,7 @@ class HttpProxyMcpServerSplitLinkTest(unittest.TestCase):
 
         self.assertFalse(current["exists"])
         self.assertIsNone(current["project"])
-        self.assertIn("project.create", current["hint"])
-        self.assertIn("link --project-id", current["hint"])
+        self.assertIn("project.connect", current["hint"])
         self.assertEqual(ProjectLinks(db_path=self.links_path).list_links(), [])
 
     def test_project_create_returns_cloud_project_without_implicit_link(self) -> None:
@@ -204,7 +207,7 @@ class HttpProxyMcpServerSplitLinkTest(unittest.TestCase):
         )
 
         self.assertEqual(response["error"]["data"]["error_code"], "project_not_linked")
-        self.assertIn("link --project-id", response["error"]["message"])
+        self.assertIn("project.connect", response["error"]["message"])
 
     def test_project_scoped_tool_uses_hidden_project_link(self) -> None:
         project = self.control_app.projects.list_projects()["projects"][0]

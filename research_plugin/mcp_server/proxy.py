@@ -222,7 +222,10 @@ class HttpProxyMcpServer:
         merged: dict[str, dict[str, Any]] = {}
         catalog, _complete = self._catalog_tools()
         for is_cloud, tool in catalog:
-            if tool.get("name") == "project.list":
+            # Hidden tools stay in the served catalog (their plane/schema still
+            # routes proxy-internal calls) but are not advertised to the agent.
+            # project.list predates the flag; the literal covers older brains.
+            if tool.get("hidden") or tool.get("name") == "project.list":
                 continue
             shaped = self._with_hidden_project_scope(tool=tool)
             merged[shaped["name"]] = shaped
@@ -255,6 +258,8 @@ class HttpProxyMcpServer:
     def _call_tool(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "project.current":
             return self._current_project()
+        if name == "project.connect":
+            return self._connect_project(arguments=arguments)
         plane = self._plane_for(name=name)
         if name in _LOCAL_ENRICHED_CONTROL_TOOLS:
             return self._call_local_enriched_control(name=name, arguments=arguments)
@@ -273,11 +278,15 @@ class HttpProxyMcpServer:
         # capability-scoped, not project-scoped, and reject the extra field).
         if self._tool_meta(name=name).project_scoped:
             args["project_id"] = self._resolve_project_id_required()
+        return self._call_cloud_raw(name=name, arguments=args)
+
+    def _call_cloud_raw(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Forward arguments verbatim — no link-derived project_id rewriting."""
         body = self._http_post(
             url=f"{self._require_control_url()}/mcp/call",
-            payload={"name": name, "arguments": args},
+            payload={"name": name, "arguments": arguments},
             is_cloud=True,
-            timeout=self._timeout_for(name=name, arguments=args),
+            timeout=self._timeout_for(name=name, arguments=arguments),
         )
         return self._result_dict(body=body)
 
@@ -375,10 +384,10 @@ class HttpProxyMcpServer:
                 "repo_root": str(self.config.repo_root),
                 "hint": (
                     "No hosted Research Plugin project is linked for this folder. "
-                    "Ask the user which existing project_id to link, then run "
-                    "research-plugin-client link --project-id <project_id>; or ask "
-                    "for a project name and short summary, call project.create, "
-                    "then link the returned project_id."
+                    "Ask the user which existing project_id to link and call "
+                    "project.connect with it; or ask for a project name and "
+                    "short summary and call project.connect with name/summary "
+                    "to create and link in one step."
                 ),
             }
         project = dict(self._call_cloud(name="project.get", arguments={"project_id": project_id}))
@@ -408,12 +417,69 @@ class HttpProxyMcpServer:
         project_id = self._resolve_project_id()
         if not project_id:
             raise _UpstreamError(
-                "no hosted project link found for repo; run "
-                "research-plugin-client link --project-id <project_id>",
+                "no hosted project link found for repo; call project.connect "
+                "to link this folder to a project",
                 error_code="project_not_linked",
                 details={"repo_root": str(self.config.repo_root)},
             )
         return project_id
+
+    def _connect_project(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Establish the folder→project link; repo_root never leaves the machine.
+
+        The one call where project_id is caller-authoritative: it validates the
+        id against the brain (or creates the project), then writes the link to
+        the proxy-local store every other tool resolves identity from.
+        """
+        project_id = str(arguments.get("project_id") or "").strip()
+        name = str(arguments.get("name") or "").strip()
+        summary = str(arguments.get("summary") or "").strip()
+        overwrite = bool(arguments.get("overwrite") or False)
+        if bool(project_id) == bool(name):
+            raise _UpstreamError(
+                "pass exactly one of project_id (link an existing project) or "
+                "name (create a new project and link it)",
+                error_code="validation_error",
+            )
+        existing = self._resolve_project_id()
+        # Guard before any cloud call so a refused re-link never creates an
+        # orphan project on the brain.
+        if existing and existing != project_id and not overwrite:
+            raise _UpstreamError(
+                f"this folder is already linked to {existing}; pass "
+                "overwrite=true to re-link it",
+                error_code="already_linked",
+                details={"project_id": existing},
+            )
+        created = False
+        if project_id:
+            project = dict(
+                self._call_cloud_raw(
+                    name="project.get", arguments={"project_id": project_id}
+                )
+            )
+        else:
+            project = dict(
+                self._call_cloud_raw(
+                    name="project.create",
+                    arguments={"name": name, "summary": summary},
+                )
+            )
+            created = True
+            project_id = str(project.get("id") or "")
+            if not project_id:
+                raise _UpstreamError(
+                    "project.create returned no project id",
+                    error_code="daemon_bad_response",
+                    details={"project": project},
+                )
+        self._links().link(repo_root=str(self.config.repo_root), project_id=project_id)
+        return {
+            "linked": True,
+            "created": created,
+            "project": project,
+            "repo_root": str(self.config.repo_root),
+        }
 
     # ---- helpers ---------------------------------------------------------
 
@@ -522,6 +588,10 @@ class HttpProxyMcpServer:
         # The plane field is an internal routing hint, not part of the MCP tool
         # schema — strip it from what the client sees.
         scoped.pop("plane", None)
+        # project.connect keeps project_id visible: there it is the caller's
+        # explicit choice of which project to link, not hidden repo context.
+        if scoped.get("name") == "project.connect":
+            return scoped
         schema = scoped.get("inputSchema")
         if not isinstance(schema, dict):
             return scoped

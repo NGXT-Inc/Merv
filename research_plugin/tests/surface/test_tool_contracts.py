@@ -13,6 +13,7 @@ from backend.config import STORAGE_PROVIDER_ENV_VAR
 from backend.tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
+    MCP_HIDDEN_TOOL_NAMES,
     ExperimentMaterializeFoldersInput,
     MlflowFinalizeRunInput,
     ResourceAssociateBatchInput,
@@ -108,6 +109,20 @@ class ToolContractRegistryTest(unittest.TestCase):
     def test_plane_registry_classifies_every_tool(self) -> None:
         self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
         self.assertLessEqual(set(TOOL_PLANE_REGISTRY.values()), {"control", "data"})
+
+    def test_hidden_tools_stay_in_catalog_with_hidden_flag(self) -> None:
+        # UI/proxy-internal tools remain dispatchable and keep their catalog
+        # entry (the proxy routes off plane/schema) but carry hidden=True so
+        # the proxy's tools/list drops them from the agent surface.
+        self.assertLessEqual(MCP_HIDDEN_TOOL_NAMES, set(TOOL_CONTRACTS))
+        self.assertIn("project.get", MCP_HIDDEN_TOOL_NAMES)
+        self.assertIn("project.update", MCP_HIDDEN_TOOL_NAMES)
+        catalog = {tool["name"]: tool for tool in static_tool_catalog()}
+        for name in MCP_HIDDEN_TOOL_NAMES:
+            self.assertTrue(catalog[name].get("hidden"), name)
+        for name, tool in catalog.items():
+            if name not in MCP_HIDDEN_TOOL_NAMES:
+                self.assertNotIn("hidden", tool, name)
 
     def test_sandbox_tool_descriptions_carry_lifecycle_guidance(self) -> None:
         tools = {tool["name"]: tool for tool in self.app.list_tools()}
