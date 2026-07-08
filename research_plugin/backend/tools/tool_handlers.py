@@ -588,16 +588,61 @@ def build_control_tool_handlers(
         "feed.list": feed.list_posts,
     }
     if storage is not None:
+        def storage_find(
+            *,
+            project_id: str | None = None,
+            object_id: str | None = None,
+            name: str | None = None,
+            version: int | None = None,
+            include_download: bool = True,
+            kind: str | None = None,
+            status: str | None = None,
+            include_expired: bool = False,
+            limit: int | None = None,
+            offset: int = 0,
+            compact: bool = False,
+        ) -> dict[str, Any]:
+            # object_id or name selects a single object (former storage.resolve);
+            # otherwise list the ledger (former storage.list).
+            if object_id or name:
+                return storage.resolve(
+                    project_id=project_id,
+                    object_id=object_id,
+                    name=name,
+                    version=version,
+                    include_download=include_download,
+                )
+            return storage.list_objects(
+                project_id=project_id,
+                kind=kind,
+                status=status,
+                include_expired=include_expired,
+                limit=limit,
+                offset=offset,
+                compact=compact,
+            )
+
+        storage_actions: dict[str, Callable[..., dict[str, Any]]] = {
+            "pin": storage.pin,
+            "unpin": storage.unpin,
+            "renew": storage.renew,
+            "delete": storage.delete,
+        }
+
+        def storage_object(
+            *, object_id: str, action: str, project_id: str | None = None
+        ) -> dict[str, Any]:
+            act = storage_actions.get(action)
+            if act is None:
+                raise ValidationError(f"unknown storage object action: {action}")
+            return act(project_id=project_id, object_id=object_id)
+
         handlers.update(
             {
                 "storage.put_object": storage.put_object,
                 "storage.complete_upload": storage.complete_upload,
-                "storage.list": storage.list_objects,
-                "storage.resolve": storage.resolve,
-                "storage.pin": storage.pin,
-                "storage.unpin": storage.unpin,
-                "storage.renew": storage.renew,
-                "storage.delete": storage.delete,
+                "storage.find": storage_find,
+                "storage.object": storage_object,
             }
         )
     return handlers

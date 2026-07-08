@@ -444,7 +444,7 @@ class LocalDataPlane:
                 f"download target already exists; pass overwrite=true to replace: {target}"
             )
         resolved = self._control_tool_call(
-            "storage.resolve",
+            "storage.find",
             {
                 "project_id": project_id,
                 "object_id": arguments.get("object_id"),

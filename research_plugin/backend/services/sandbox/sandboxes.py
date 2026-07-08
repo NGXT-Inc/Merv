@@ -731,7 +731,7 @@ class SandboxService:
                 "everything you need: rsync the light files you want off the box "
                 "yourself over SSH into the local work folder"
                 + (
-                    f", and storage.put_object/storage.upload_file for durable "
+                    f", and storage.upload_file for durable "
                     f"heavy artifacts. {self.storage_hint}"
                     if self.storage_enabled
                     else "; heavy-file storage is not enabled on this backend"

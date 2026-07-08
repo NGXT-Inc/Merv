@@ -306,7 +306,7 @@ sandbox responses are not the source of truth for tracking configuration. Save
 compact evidence under `$RP_EXPERIMENT_DIR`.
 
 Before registering or associating result resources, call `sandbox.pull_outputs`
-for light retained files, or upload heavy artifacts with `storage.put_object`.
+for light retained files, or upload heavy artifacts with `storage.upload_file`.
 Resource tools only see local repo files, so remote sandbox paths are not valid
 resources until you have pulled the files back locally. Do this before
 `sandbox.release`; release and expiry destroy the VM and anything you did not

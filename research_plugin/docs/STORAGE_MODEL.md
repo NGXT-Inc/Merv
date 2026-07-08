@@ -39,7 +39,7 @@ dataset — computes the file's `sha256` and streams the bytes directly to the
 bucket through a presigned URL. The user's machine is never in the byte path.
 
 Nothing is automatic. An object lands in storage only because the agent decided a
-file is worth keeping and called `storage.put_object`; a sandbox only receives an
+file is worth keeping and called `storage.upload_file`; a sandbox only receives an
 object when the agent explicitly fetches it. See "Saving" in
 [future_features/heavy_file_storage.md](../../dev_docs/future_features/heavy_file_storage.md).
 
@@ -88,8 +88,8 @@ is idempotent and does not bump it.
 ## TTL / lifecycle
 
 - New / just-completed objects get `expires_at = now + 60 days`.
-- **Access auto-extends:** `storage.resolve` (the download path) resets the clock
-  to `now + 60d`, extend-only — it never shortens.
+- **Access auto-extends:** `storage.find` in resolve mode (the download path)
+  resets the clock to `now + 60d`, extend-only — it never shortens.
 - **Pin** clears `expires_at` (kept forever); **unpin/renew** restore a 60-day
   deadline.
 - **Sweep:** `CleanupService` calls `sweep_expired`, which marks due rows
@@ -98,29 +98,45 @@ is idempotent and does not bump it.
 
 ## Operations (`storage.*` MCP tools)
 
-Project-scoped; the server rejects a missing `project_id`.
+Project-scoped; the server rejects a missing `project_id`. Agents see four
+tools — `storage.upload_file`, `storage.download_file`, `storage.find`, and
+`storage.object`. Two lower-level primitives (`storage.put_object`,
+`storage.complete_upload`) stay dispatchable for the manual presign path but are
+hidden from the agent-facing `tools/list` (`MCP_HIDDEN_TOOL_NAMES`);
+`storage.upload_file`'s data plane composes them by tool name.
 
-- `storage.put_object(project_id, name, kind, sha256, size_bytes, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
-  — register intent. Returns `{deduped, object}` when the bytes already exist
-  (no upload), `{object, idempotent}` for an identical re-register, else
-  `{object, upload}` with a presigned (multipart) upload target.
+Agent-facing:
+
 - `storage.upload_file(project_id, path, kind, name?, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
   — data-plane convenience helper for local agents. Computes sha256 + size,
   registers the intent, streams the file to the presigned target, and completes
   the upload. `path` must stay inside the project repo (`..` and absolute paths
   are rejected); omitted `name` defaults to the repo-relative path.
-- `storage.complete_upload(project_id, upload_id, parts?)` — finalize after the
-  producer streamed bytes: verifies size + sha256, lands the object, sets
-  `available` + a 60-day TTL.
-- `storage.list(project_id, kind?, name?, status?, include_expired?, limit?, offset?, compact?)` — browse the ledger.
-- `storage.resolve(project_id, object_id? | name?, version?, include_download?)` — resolve to a presigned **download** URL; bumps the TTL.
 - `storage.download_file(project_id, path, object_id? | name?, version?, overwrite?)`
   — data-plane convenience helper. Resolves the object, downloads to a temp
   file, verifies sha256 + size, then atomically replaces `path` (which must
   stay inside the project repo).
-- `storage.pin / storage.unpin / storage.renew (project_id, object_id)`.
-- `storage.delete(project_id, object_id)` — drop the alias (kept for audit);
-  reclaim the physical bytes when no alias references them.
+- `storage.find(project_id, object_id? | name?, version?, include_download?, kind?, status?, include_expired?, limit?, offset?, compact?)`
+  — **resolve mode** (pass `object_id` or `name`): resolve one object to its
+  ledger row and, with `include_download=true`, a presigned **download** URL that
+  bumps the TTL. **List mode** (omit both): browse the ledger, filtered by
+  `kind` / `status`, paginated with `limit` / `offset`, `compact=true` for a lean
+  projection.
+- `storage.object(project_id, object_id, action)` — apply a lifecycle
+  `action` to one object: `pin` (expiry cleanup keeps it), `unpin` (restore its
+  default expiry), `renew` (renew its default expiry window), or `delete` (drop
+  the alias, kept for audit; reclaim the physical bytes when no alias references
+  them).
+
+Hidden primitives (manual presign path):
+
+- `storage.put_object(project_id, name, kind, sha256, size_bytes, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
+  — register intent. Returns `{deduped, object}` when the bytes already exist
+  (no upload), `{object, idempotent}` for an identical re-register, else
+  `{object, upload}` with a presigned (multipart) upload target.
+- `storage.complete_upload(project_id, upload_id, parts?)` — finalize after the
+  producer streamed bytes: verifies size + sha256, lands the object, sets
+  `available` + a 60-day TTL.
 
 ## HTTP surface (read + lifecycle, for the UI)
 
@@ -171,4 +187,4 @@ existence).
 - Deleting an alias keeps its ledger row (audit) and reclaims bytes only when
   unreferenced.
 - A reaped sandbox does NOT auto-save its outputs — saving is always an explicit
-  `storage.put_object`. Storage is decoupled from sandbox provisioning.
+  `storage.upload_file`. Storage is decoupled from sandbox provisioning.
