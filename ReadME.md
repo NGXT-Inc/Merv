@@ -28,12 +28,10 @@ After a set of experiments is complete, the plugin drives a project-wide reflect
 
 ## How the system fits together
 
-```
-Agent platform -> Research plugin backend -> Project state
-                         ^
-                         |
-                    Frontend UI
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/system-architecture-dark.svg">
+  <img alt="System architecture: on your machine, agent platforms talk to an MCP proxy that reads the research repo; the proxy sends the hosted control plane project ids, never file paths. The brain owns all research state, the frontend UI reads it, and GPU sandboxes are provisioned by the brain and reached over SSH." src="assets/system-architecture-light.svg">
+</picture>
 
 Research Suite has three main pieces:
 
@@ -41,4 +39,4 @@ Research Suite has three main pieces:
 - **Backend** owns the research state: projects, claims, experiments, resources, review gates, reflections, and sandbox orchestration.
 - **Frontend** gives humans a visual way to inspect the project: experiments, reviews, artifacts, logic graphs, timelines, and current progress.
 
-It can run locally, or in a split setup where a hosted control plane coordinates the workflow while a local daemon keeps repo files, credentials, and machine-local operations on the user's machine.
+By default the plugin connects to the hosted control plane; it can also run fully locally. Either way, repo files, SSH keys, and folder-to-project links stay on the user's machine — the control plane sees project ids, never file paths.

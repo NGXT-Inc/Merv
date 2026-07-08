@@ -143,7 +143,8 @@ def project(p):
     parts.append(f'<text x="300" y="52" text-anchor="middle" font-size="11" '
                  f'fill="{p["label"]}">3 core lenses + 2 designed for this project</text>')
     pill_ys = [59, 93, 127, 161, 195]
-    for (text, core), y in zip(LENSES, pill_ys):
+    fan_in_ys = [124, 132, 140, 148, 156]     # spread over Synthesis's left edge
+    for (text, core), y, fy in zip(LENSES, pill_ys, fan_in_ys):
         dash = "" if core else ' stroke-dasharray="5 4"'
         tcol, weight = (p["title"], 600) if core else (p["sub"], 400)
         parts.append(
@@ -154,17 +155,23 @@ def project(p):
         cy = y + 13
         parts.append(f'<line x1="186" y1="{mid}" x2="214" y2="{cy}" '
                      f'stroke="{p["arrow"]}" stroke-width="1.2" marker-end="url(#fwd)"/>')
-        parts.append(f'<line x1="382" y1="{cy}" x2="412" y2="{mid}" '
+        parts.append(f'<line x1="382" y1="{cy}" x2="412" y2="{fy}" '
                      f'stroke="{p["arrow"]}" stroke-width="1.2" marker-end="url(#fwd)"/>')
     for i in (2, 3):
         parts.append(fwd_arrow(p, XS[i] + NODE_W, XS[i + 1], mid))
-    parts.append(ret_arc(p, 680, 496, 172, 226, "revise synthesis", 588, 240))
-    parts.append(ret_arc(p, 704, 300, 172, 268, "lenses fall short", 502, 262))
+    parts.append(ret_arc(p, 680, 496, 172, 226, "revise synthesis", 588, 236))
+    # Deep return to the lens cluster: ends under the bottom pill, not the node row.
+    parts.append(
+        f'<path d="M 704 172 C 704 288, 300 288, 300 229" fill="none" '
+        f'stroke="{p["ret"]}" stroke-width="1.5" stroke-dasharray="5 4" '
+        f'marker-end="url(#ret)"/>'
+        f'<text x="502" y="284" text-anchor="middle" font-size="11" '
+        f'fill="{p["label"]}">lenses fall short</text>')
     return svg(p, "".join(parts),
                "Project workflow: a completed wave of experiments fans out to five "
                "reflection lenses (Amplify what works, Avoid what failed, Entropy and "
                "weird bets, plus two agent-chosen), then synthesis, adversarial review, "
-               "and publish; rejected reviews send work back to synthesis or the lenses", 280)
+               "and publish; rejected reviews send work back to synthesis or the lenses", 296)
 
 
 def system(p):
@@ -182,12 +189,12 @@ def system(p):
             "humans watch strategy down to execution", fill=bf),
         box(p, 396, 340, 200, 64, "GPU sandboxes", "Lambda · Thunder · Modal", "entry"),
         link(p, "M 320 140 L 320 192", "MCP", 330, 170, "start"),
-        link(p, "M 240 228 L 212 228", "reads", 224, 220),
+        link(p, "M 240 228 L 212 228", "", 0, 0),
         link(p, "M 400 228 L 588 228", "project ids, never file paths", 496, 220),
         link(p, "M 768 140 L 768 192", "reads", 778, 170, "start"),
         link(p, "M 320 260 C 320 372, 336 372, 390 372", "SSH", 334, 330, "start"),
-        link(p, "M 768 260 C 768 372, 706 372, 602 372", "provisions", 726, 330, "start"),
-        f'<text x="768" y="286" text-anchor="middle" font-size="11" fill="{p["label"]}">'
+        link(p, "M 868 260 C 868 372, 740 372, 602 372", "provisions", 846, 340, "start"),
+        f'<text x="592" y="286" font-size="11" fill="{p["label"]}">'
         f'hosted by default — or run the brain locally</text>',
     ]
     return svg(p, "".join(parts),
