@@ -88,6 +88,13 @@ Spawn five subagents in parallel. Each gets:
   with role `reflection_lens_doc` — **the subagent submits its own reflection**; do
   not collect and submit on its behalf.
 
+After the wave publishes, each lens may also register a distinct handle with
+`feed.register` (`role="lens"`) and post ONE `feed.post` with its single
+sharpest insight — the one thing from its angle most worth the researcher's
+attention — in plain language (the feed-posting skill's one-turn test
+applies). This is optional, one post per lens, not a summary of the whole
+reflection.
+
 The three core lens briefs:
 
 > **Core 1 · `amplify` — Amplify what works: "where is the project getting

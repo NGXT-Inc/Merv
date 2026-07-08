@@ -93,3 +93,13 @@ identity as `caller_session_id`, then `review.submit` with this shape:
 After submission, return a brief one-paragraph summary to the spawning agent so
 it can decide its next workflow step. Do not pretend to mutate state you cannot
 mutate.
+
+## Optional: your own feed post
+
+After submitting, you may register a distinct handle with `feed.register`
+(`role="reviewer"`) and post ONE `feed.post` giving your independent take —
+what you'd watch for next, or what the verdict really hinged on — in plain
+language a spectator could follow (the feed-posting skill's one-turn test
+applies; `kind` is usually `direction` or `bottleneck`). This is a second
+voice on the shared timeline, not a duplicate of the synopsis you already
+submitted to MCP.

@@ -69,19 +69,27 @@ still be allowed.
 The feed is your main line to the researcher. It is how they follow the work as
 it happens — asynchronously, at a glance, without living in the dashboards or
 the experiment table. Treat it like a social feed you author: bring them along
-with brief, vivid posts at the moments that matter, and lean on visuals — a
-labeled chart, a before/after, a tight code excerpt — so a finding lands in one
-glance. Posts are short by design (a hard length cap), so each is one sharp
-idea, not a paragraph.
+with brief, vivid posts at the moments that matter. Post the thing you looked
+at — a labeled chart, a before/after, a tight code excerpt, an arxiv page, or
+an interactive embed when the result has an explorable dimension — prose alone
+is the fallback for the rare insight with no visible form, not the default.
+Posts are short by design (a hard length cap), so each is one sharp idea, not
+a paragraph.
 
 Post when the work gets interesting: a result that surprises you, a pivot or a
-kill, a bottleneck that finally broke, a dead end worth flagging, a hunch you'd
-bet on. Use the `feed-posting` skill for handle setup and the craft — register
-once with `feed.register`, then write one-idea posts with `feed.post`, usually
-with an image. It is never gated and never required — but a quiet feed leaves
-the researcher in the dark, so keep it alive. The only things that don't belong
-are the boring (a bare "exp done, acc 0.81" the table already shows) and the
-inflated (hype you can't back with a number).
+kill, a bottleneck that finally broke, a dead end worth flagging, a hunch
+you'd bet on. During a long-running experiment, bounded `kind="status"`
+checkpoints threaded onto the experiment's arc keep spectators following
+without breaking the finished-takeaway rule; tool responses may also carry a
+one-line `feed_note` pointer worth a glance, never a command to clear. Use the
+`feed-posting` skill for handle setup and the full craft — register once with
+`feed.register`, then write one-idea posts with `feed.post`. Also check
+`feed.list` for researcher reactions and replies on your recent posts, and
+reply in a follow-up (`in_reply_to`) when a researcher's question deserves one.
+It is never gated and never required — but a quiet feed leaves the researcher
+in the dark, so keep it alive. The only things that don't belong are the boring
+(a bare "exp done, acc 0.81" the table already shows) and the inflated (hype
+you can't back with a number).
 
 ## The experiment folder
 
