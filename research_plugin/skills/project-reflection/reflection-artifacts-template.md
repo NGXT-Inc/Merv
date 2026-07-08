@@ -16,9 +16,9 @@ examined (with ids/paths), what it found, what surprised it, and what it
 could not verify. The `avoid` lens should center its ledger table:
 
 ```markdown
-| direction tested | setting | what happened | why it failed |
-|---|---|---|---|
-| longer warmup    | exp_a, attempt 2 | no effect beyond noise | LR floor dominated |
+| direction tested | setting | what happened | why it failed | what would have to change |
+|---|---|---|---|---|
+| longer warmup    | exp_a, attempt 2 | no effect beyond noise | LR floor dominated | retry only with a lower LR floor |
 ```
 
 ## 2. The project logic graph — e.g. `project/logic_graph.json` (role `project_graph`)

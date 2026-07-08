@@ -13,10 +13,10 @@ description: >-
 
 # Research Reflection
 
-The goal of a reflection wave is to zoom out and reflect on the work done so far, across the whole project and think critically about what worked, what didn't, and what to do next.
-A reflection wave reads the whole project — every experiment, claim, review,
-and per-experiment logic graph — and produces three reviewed reflection
-artifacts:
+A reflection wave zooms out and thinks critically across the whole project:
+what worked, what didn't, and what to do next. It reads everything — every
+experiment, claim, review, and per-experiment logic graph — and produces
+three reviewed reflection artifacts:
 
 - the **project logic graph** (role `project_graph`): one living JSON file, the
   current *logic state* of the whole project — what is established, what was
@@ -60,9 +60,8 @@ the wave's gate guidance under `project_reflection` while it is open.
 ## Step 1 — declare the roster
 
 Call `reflection.create` with exactly five lenses: the three **core** lenses
-below (pass just their ids — charters are filled in) plus **two you design
-for this specific project**. The core lenses are `amplify`, `avoid`, and
-`entropy`; pass just those ids and the server fills in their charters. For
+— `amplify`, `avoid`, and `entropy`, passed by id alone; the server fills in
+their charters — plus **two you design for this specific project**. For
 each authored lens give a `charter` (what angle it reads the project from)
 and `why_distinct` (how it differs from the core three and from the other
 authored lens). Pick authored lenses where this project's blind spots
@@ -186,9 +185,11 @@ Then `reflection.transition(submit_reflection_artifacts)`.
 
 Request the review with
 `review.request(target_type='reflection', target_id=<syn_id>,
-role='reflection_reviewer', producer_session_id=<your session>)` and hand the
-capability to a **separate** read-only `project-reflection-review` agent (the producer
-session cannot start it). The reviewer sees the corpus, the previous graph,
+role='reflection_reviewer', producer_session_id=<your session>)`. The
+response's `reviewer_handoff.spawn_prompt` is a ready-made prompt for
+spawning the **separate** read-only `project-reflection-review` agent — use
+it rather than assembling the handoff yourself (the producer session cannot
+start the review). The reviewer sees the corpus, the previous graph,
 all five reflections, and your reflection artifacts — and verdicts route:
 
 - `pass` → call `reflection.transition(publish)`. The wave pins the graph
