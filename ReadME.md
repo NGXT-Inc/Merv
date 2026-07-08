@@ -8,19 +8,6 @@ It is designed to work with Claude Code, Codex, Cursor, Gemini CLI, OpenCode, an
 
 The goal is to give research agents enough structure to plan experiments, execute them, review results, and reflect on the project direction to handle open-ended research problems.
 
-## Quickstart (Claude Code)
-
-Prerequisites: [Claude Code](https://claude.com/claude-code) and `python3` 3.11+ on your `PATH`. That's all — no `pip` install and no local backend; the plugin talks to the hosted control plane by default.
-
-```bash
-claude plugin marketplace add NGXT-Inc/Research-Suite
-claude plugin install research-plugin@research-suite
-```
-
-Restart Claude Code. Then open a session in the repo you want to do research in and ask the agent to run `workflow.status_and_next` — it will orient itself and link the folder to a project.
-
-Setting up a different client (Cursor, Codex, Gemini CLI, OpenCode)? See [research_plugin/docs/CLIENTS.md](research_plugin/docs/CLIENTS.md).
-
 ## Experiment-level workflow
 
 <picture>
@@ -53,3 +40,32 @@ Research Suite has three main pieces:
 - **Frontend** gives humans a visual way to inspect the project: experiments, reviews, artifacts, logic graphs, timelines, and current progress.
 
 By default the plugin connects to the hosted control plane; it can also run fully locally. Either way, repo files, SSH keys, and folder-to-project links stay on the user's machine — the control plane sees project ids, never file paths.
+
+## Install
+
+Prerequisite for either client: `python3` 3.11+ on your `PATH`. That's all — no `pip` install and no local backend; the plugin talks to the hosted control plane by default. For Codex, Gemini CLI, and OpenCode, see [research_plugin/docs/CLIENTS.md](research_plugin/docs/CLIENTS.md).
+
+### Claude Code
+
+```bash
+claude plugin marketplace add NGXT-Inc/Research-Suite
+claude plugin install research-plugin@research-suite
+```
+
+Restart Claude Code.
+
+### Cursor
+
+Cursor loads local plugins from a directory, so clone the repo and link the plugin bundle into `~/.cursor/plugins/local`:
+
+```bash
+git clone https://github.com/NGXT-Inc/Research-Suite.git ~/Research-Suite
+mkdir -p ~/.cursor/plugins/local
+ln -sfn ~/Research-Suite/research_plugin ~/.cursor/plugins/local/research-plugin
+```
+
+Then enable **research-plugin** on Cursor's Customize page and restart Cursor. (To update later: `git -C ~/Research-Suite pull` and restart.)
+
+### First run
+
+Open the repo you want to do research in as the workspace, then ask the agent to run `workflow.status_and_next` — it will orient itself and link the folder to a project.
