@@ -31,10 +31,24 @@ terminal setup. Details and the CLI fallback:
 
 ## How work moves
 
-```text
-Experiments:  planned -> design_review -> ready_to_run -> running
-              -> experiment_review -> complete
-Reflections:  reflecting -> synthesizing -> reflection_review -> published
+Experiments move forward through two review gates; a rejected review sends the
+work back (dashed):
+
+```mermaid
+flowchart LR
+    planned --> design_review --> ready_to_run --> running --> experiment_review --> complete
+    design_review -. revise plan .-> planned
+    experiment_review -. plan flawed .-> planned
+    experiment_review -. keep working .-> running
+```
+
+Reflections distill what the project has learned, behind one gate of their own:
+
+```mermaid
+flowchart LR
+    reflecting --> synthesizing --> reflection_review --> published
+    reflection_review -. revise lenses .-> reflecting
+    reflection_review -. revise synthesis .-> synthesizing
 ```
 
 Artifacts are regular files in your repo; the backend records repo-relative
