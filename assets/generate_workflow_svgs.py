@@ -11,9 +11,6 @@ LIGHT = dict(
     green_fill="#e9f7ef", green_stroke="#8fd6ac", green_title="#1a7f4b", green_sub="#549f77",
     entry_fill="#f6f8fa", entry_stroke="#d0d7de", entry_title="#59636e", entry_sub="#818b95",
     arrow="#6e7781", ret="#8b949e", label="#59636e", legend="#59636e",
-    zone_fill="#f6f8fa", zone_stroke="#d0d7de", zone_label="#59636e",
-    zone2_fill="#f0f6fe", zone2_stroke="#bcd3f0", zone2_label="#3b6bab",
-    box_fill="#ffffff",
 )
 DARK = dict(
     node_fill="#161b22", node_stroke="#3d444d", title="#e6edf3", sub="#9198a1",
@@ -21,9 +18,28 @@ DARK = dict(
     green_fill="#122b1d", green_stroke="#2ea043", green_title="#72dd9d", green_sub="#5aa878",
     entry_fill="#0d1117", entry_stroke="#3d444d", entry_title="#9198a1", entry_sub="#6e7781",
     arrow="#8b949e", ret="#8b949e", label="#9198a1", legend="#9198a1",
-    zone_fill="#12161d", zone_stroke="#3d444d", zone_label="#9198a1",
-    zone2_fill="#0f1a2b", zone2_stroke="#2d4468", zone2_label="#79a5dd",
-    box_fill="#1b2129",
+)
+
+# System-architecture palettes: solid fills, (fill, stroke, title, sub) per box.
+SYS_LIGHT = dict(
+    zone1=("#eceff3", "#b9c2cc", "#4b5563"),
+    zone2=("#dbe9fb", "#90b8e8", "#1e5aa8"),
+    plain=("#ffffff", "#9aa7b4", "#1f2328", "#4b5563"),
+    hub=("#334155", "#1e293b", "#ffffff", "#cbd5e1"),
+    brain=("#2563eb", "#1d4ed8", "#ffffff", "#dbeafe"),
+    frontend=("#ffffff", "#90b8e8", "#1e5aa8", "#5583b8"),
+    infra=("#b45309", "#8f4408", "#ffffff", "#fde3c0"),
+    arrow="#55606c", ret="#55606c", label="#4b5563", legend="#4b5563",
+)
+SYS_DARK = dict(
+    zone1=("#161c23", "#3d444d", "#9198a1"),
+    zone2=("#0e2038", "#2b5590", "#7db0ea"),
+    plain=("#1f242b", "#4a545f", "#e6edf3", "#9198a1"),
+    hub=("#3c4c60", "#8298ad", "#ffffff", "#c2cedb"),
+    brain=("#1a56c4", "#3f74d8", "#ffffff", "#c3d8f8"),
+    frontend=("#132c4a", "#2b5590", "#7db0ea", "#5d86b8"),
+    infra=("#6b4210", "#9c6a1d", "#f0d3a0", "#c7a15f"),
+    arrow="#8b949e", ret="#8b949e", label="#9198a1", legend="#9198a1",
 )
 
 W = 992
@@ -35,17 +51,42 @@ LEGEND = "solid arrow = forward · dashed = review sends work back · purple = a
 PLAIN_KEYS = {"fill": "node_fill", "stroke": "node_stroke", "title": "title", "sub": "sub"}
 
 
-def box(p, x, y, w, h, title, sub, kind="plain", fill=None):
+def box(p, x, y, w, h, title, sub, kind="plain"):
     key = lambda part: p[PLAIN_KEYS[part] if kind == "plain" else f"{kind}_{part}"]
     dash = ' stroke-dasharray="5 4"' if kind == "entry" else ""
     cx = x + w // 2
     return (
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" '
-        f'fill="{fill or key("fill")}" stroke="{key("stroke")}" stroke-width="1.5"{dash}/>'
+        f'fill="{key("fill")}" stroke="{key("stroke")}" stroke-width="1.5"{dash}/>'
         f'<text x="{cx}" y="{y + 28}" text-anchor="middle" font-size="14" '
         f'font-weight="600" fill="{key("title")}">{title}</text>'
         f'<text x="{cx}" y="{y + 47}" text-anchor="middle" font-size="11" '
         f'fill="{key("sub")}">{sub}</text>'
+    )
+
+
+def sbox(colors, x, y, w, h, title, sub):
+    fill, stroke, tcol, scol = colors
+    cx = x + w // 2
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" '
+        f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
+        f'<text x="{cx}" y="{y + 28}" text-anchor="middle" font-size="14" '
+        f'font-weight="600" fill="{tcol}">{title}</text>'
+        f'<text x="{cx}" y="{y + 47}" text-anchor="middle" font-size="11" '
+        f'fill="{scol}">{sub}</text>'
+    )
+
+
+def szone(colors, x, y, w, h, label, note=""):
+    fill, stroke, lcol = colors
+    extra = (f'<text x="{x + w - 24}" y="{y + 27}" text-anchor="end" '
+             f'font-size="11" fill="{lcol}">{note}</text>') if note else ""
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" '
+        f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
+        f'<text x="{x + 20}" y="{y + 27}" font-size="11" font-weight="600" '
+        f'letter-spacing="1.5" fill="{lcol}">{label}</text>{extra}'
     )
 
 
@@ -75,16 +116,6 @@ def link(p, path, label, label_x, label_y, anchor="middle"):
         f'marker-end="url(#fwd)"/>'
         f'<text x="{label_x}" y="{label_y}" text-anchor="{anchor}" font-size="11" '
         f'fill="{p["label"]}">{label}</text>'
-    )
-
-
-def zone(p, x, y, w, h, label, alt=False):
-    k = "zone2" if alt else "zone"
-    return (
-        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="14" '
-        f'fill="{p[f"{k}_fill"]}" stroke="{p[f"{k}_stroke"]}" stroke-width="1.5"/>'
-        f'<text x="{x + 20}" y="{y + 27}" font-size="11" font-weight="600" '
-        f'letter-spacing="1.5" fill="{p[f"{k}_label"]}">{label}</text>'
     )
 
 
@@ -174,39 +205,37 @@ def project(p):
                "and publish; rejected reviews send work back to synthesis or the lenses", 296)
 
 
-def system(p):
-    bf = p["box_fill"]
+def system(s):
     parts = [
-        zone(p, 24, 40, 400, 260, "YOUR MACHINE"),
-        zone(p, 568, 40, 400, 260, "HOSTED CONTROL PLANE", alt=True),
-        box(p, 48, 84, 352, 56, "Agent platform",
-            "Claude Code · Codex · Cursor · Gemini CLI · OpenCode", fill=bf),
-        box(p, 48, 196, 160, 64, "Research repo", "files stay local", fill=bf),
-        box(p, 240, 196, 160, 64, "MCP proxy", "repo files · SSH keys", fill=bf),
-        box(p, 592, 196, 352, 64, "Brain — owns all research state",
-            "projects · experiments · reviews · reflections", fill=bf),
-        box(p, 592, 84, 352, 56, "Frontend UI",
-            "humans watch strategy down to execution", fill=bf),
-        box(p, 396, 340, 200, 64, "GPU sandboxes", "Lambda · Thunder · Modal", "entry"),
-        link(p, "M 320 140 L 320 192", "MCP", 330, 170, "start"),
-        link(p, "M 240 228 L 212 228", "", 0, 0),
-        link(p, "M 400 228 L 588 228", "project ids, never file paths", 496, 220),
-        link(p, "M 768 140 L 768 192", "reads", 778, 170, "start"),
-        link(p, "M 320 260 C 320 372, 336 372, 390 372", "SSH", 334, 330, "start"),
-        link(p, "M 868 260 C 868 372, 740 372, 602 372", "provisions", 846, 340, "start"),
-        f'<text x="592" y="286" font-size="11" fill="{p["label"]}">'
-        f'hosted by default — or run the brain locally</text>',
+        szone(s["zone1"], 24, 40, 520, 260, "YOUR MACHINE"),
+        szone(s["zone2"], 584, 40, 384, 260, "HOSTED CONTROL PLANE",
+              note="also runs locally"),
+        sbox(s["plain"], 48, 84, 472, 56, "Agent platform",
+             "Claude Code · Codex · Cursor · Gemini CLI · OpenCode"),
+        sbox(s["plain"], 48, 196, 160, 64, "Research repo", "files stay local"),
+        sbox(s["hub"], 360, 196, 160, 64, "MCP proxy", "repo files · SSH keys"),
+        sbox(s["frontend"], 608, 84, 336, 56, "Frontend UI", "read-only · for humans"),
+        sbox(s["brain"], 608, 196, 336, 64, "Brain", "owns all research state"),
+        sbox(s["infra"], 608, 340, 200, 56, "GPU sandboxes", "Lambda · Thunder · Modal"),
+        sbox(s["infra"], 838, 340, 130, 56, "Storage", "artifacts"),
+        link(s, "M 440 140 L 440 192", "", 0, 0),
+        link(s, "M 356 228 L 214 228", "", 0, 0),
+        link(s, "M 524 228 L 602 228", "", 0, 0),
+        link(s, "M 776 196 L 776 146", "", 0, 0),
+        link(s, "M 440 260 C 440 368, 500 368, 600 368", "SSH", 428, 322, "end"),
+        link(s, "M 700 260 L 700 334", "provisions", 710, 320, "start"),
+        link(s, "M 903 260 L 903 334", "", 0, 0),
     ]
-    return svg(p, "".join(parts),
+    return svg(s, "".join(parts),
                "System architecture: on your machine, agent platforms talk to the MCP "
-               "proxy, which reads the research repo and sends the hosted brain project "
-               "ids, never file paths; the brain owns all research state, the frontend "
-               "UI reads it, and GPU sandboxes are provisioned by the brain and reached "
-               "over SSH", 432, legend=False)
+               "proxy, which reads the research repo; the proxy talks to the hosted "
+               "brain, which owns all research state. The frontend UI is read-only, "
+               "for humans. The brain provisions GPU sandboxes and storage; the proxy "
+               "reaches sandboxes over SSH", 420, legend=False)
 
 
-for name, palette in (("light", LIGHT), ("dark", DARK)):
+for name, palette, sys_palette in (("light", LIGHT, SYS_LIGHT), ("dark", DARK, SYS_DARK)):
     (OUT / f"experiment-workflow-{name}.svg").write_text(experiment(palette))
     (OUT / f"project-workflow-{name}.svg").write_text(project(palette))
-    (OUT / f"system-architecture-{name}.svg").write_text(system(palette))
+    (OUT / f"system-architecture-{name}.svg").write_text(system(sys_palette))
 print("wrote", *sorted(f.name for f in OUT.glob("*.svg")))
