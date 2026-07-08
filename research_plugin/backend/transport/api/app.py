@@ -32,7 +32,7 @@ from ..mcp_http import register_mcp_routes
 from .context import ApiRouteContext
 from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, is_local_origin
 from .views import ResearchHttpApi
-from . import claims, events, experiments, feed, meta, projects, reflections, resources, reviews, sandboxes, storage
+from . import claims, events, experiments, feed, meta, projects, reflections, research_map, resources, reviews, sandboxes, storage
 
 
 def create_fastapi_app(
@@ -289,6 +289,7 @@ def create_fastapi_app(
         sandboxes.build_router,
         events.build_router,
         feed.build_router,
+        research_map.build_router,
     ):
         http.include_router(build(ctx))
 

@@ -148,6 +148,7 @@ function MoreSheet({ open, onClose, onRefresh }) {
       <ProjectSwitcher />
 
       <div className="msheet-section">Browse</div>
+      <SheetLink to={px('/map')} label="Map" />
       <SheetLink to={px('/claims')} label="Claims" count={stats.claims ?? home?.claims?.length ?? 0} />
       <SheetLink to={px('/reviews')} label="Reviews" count={stats.open_reviews ?? stats.reviews ?? 0} />
       <SheetLink to={px('/synthesis')} label="Synthesis" />

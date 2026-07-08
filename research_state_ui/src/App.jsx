@@ -22,6 +22,7 @@ import MobileSynthesisScreen from './mobile/MobileSynthesisScreen';
 import MobileMlflow from './mobile/MobileMlflow';
 import Home from './pages/Home';
 import Feed from './feed/Feed';
+import MapPage from './map/MapPage';
 import CreateProject from './pages/CreateProject';
 import Projects from './pages/Projects';
 import Claims from './pages/Claims';
@@ -186,6 +187,7 @@ export default function App() {
           <Route path="/p/:projectId" element={<ProjectScope />}>
             <Route index element={<HomeScreen />} />
             <Route path="feed" element={<Feed />} />
+            <Route path="map" element={<MapPage />} />
             <Route path="claims" element={<MobileClaims />} />
             <Route path="claims/:claimId" element={<MobileClaimDetail />} />
             <Route path="experiments" element={<ExperimentCardList />} />
@@ -235,6 +237,7 @@ export default function App() {
           <Route path="/p/:projectId" element={<ProjectScope />}>
             <Route index element={<Home />} />
             <Route path="feed" element={<Feed />} />
+            <Route path="map" element={<MapPage />} />
             <Route path="claims" element={<Claims />} />
             <Route path="claims/:claimId" element={<ClaimDetail />} />
             <Route path="experiments" element={<Experiments />} />

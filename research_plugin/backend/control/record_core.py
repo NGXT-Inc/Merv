@@ -11,6 +11,7 @@ from ..services.claims import ClaimService
 from ..services.experiments import ExperimentService
 from ..services.feed import FeedService
 from ..services.graph_refs import GraphRefResolver
+from ..services.map import MapService
 from ..services.permissions import PermissionService
 from ..services.project_overview import ProjectOverviewService
 from ..services.projects import ProjectService
@@ -39,6 +40,7 @@ class RecordCore:
     project_overview: ProjectOverviewService
     reviews: ReviewService
     feed: FeedService
+    research_map: MapService
 
 
 def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
@@ -84,6 +86,15 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         pinned=pinned,
     )
     feed = FeedService(store=store, blobs=blobs)
+    research_map = MapService(
+        store=store,
+        experiments=experiments,
+        claims=claims,
+        reflections=reflection_waves,
+        resources=resources,
+        reviews=reviews,
+        last_touched_reader=build_map_last_touched_reader(store=store),
+    )
     return RecordCore(
         permissions=permissions,
         quotas=quotas,
@@ -98,7 +109,35 @@ def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
         project_overview=project_overview,
         reviews=reviews,
         feed=feed,
+        research_map=research_map,
     )
+
+
+def build_map_last_touched_reader(*, store: BaseStateStore):
+    """Freshness reader handed to ``MapService``.
+
+    The map's boundary rule is SQL-against-own-table only, so the grouped
+    last-event-per-entity read over the kernel ``events`` table is built here
+    at the composition seam (same pattern as the attachment check below).
+    """
+
+    def last_touched(*, project_id: str) -> dict[str, str]:
+        conn = store.connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT target_id, MAX(created_at) AS last_at
+                FROM events
+                WHERE project_id = ? AND target_id != ''
+                GROUP BY target_id
+                """,
+                (project_id,),
+            ).fetchall()
+            return {str(row["target_id"]): str(row["last_at"]) for row in rows}
+        finally:
+            conn.close()
+
+    return last_touched
 
 
 def build_experiment_attachment_check(*, store: BaseStateStore):

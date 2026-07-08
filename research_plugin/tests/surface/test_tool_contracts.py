@@ -69,6 +69,7 @@ def _handler_targets() -> dict[str, _HandlerTarget]:
         "sandboxes": target,
         "mlflow_tracking": target,
         "feed": target,
+        "research_map": target,
     }
 
 

@@ -75,6 +75,7 @@ class ControlApp:
         self.project_overview = self.record_core.project_overview
         self.reviews = self.record_core.reviews
         self.feed = self.record_core.feed
+        self.research_map = self.record_core.research_map
 
         self.sandboxes = SandboxService(
             store=self.store,
@@ -119,6 +120,7 @@ class ControlApp:
                 sandboxes=self.sandboxes,
                 mlflow_tracking=self.mlflow_tracking,
                 feed=self.feed,
+                research_map=self.research_map,
             ),
             permissions=self.permissions,
             activity=self.activity,

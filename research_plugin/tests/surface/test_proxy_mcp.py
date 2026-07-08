@@ -231,6 +231,67 @@ class HttpProxyMcpServerSplitLinkTest(unittest.TestCase):
         self.assertNotEqual(project_a["id"], project_b["id"])
 
 
+class HttpProxyMcpServerImageResultTest(unittest.TestCase):
+    """Map snapshots return through the proxy as MCP image content blocks,
+    with a content-addressed PNG fallback under .research_plugin/map_snapshots
+    (RESEARCH_MAP_V1.md image return path)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.control_app = TestBrain(
+            repo_root=self.root / "control",
+            db_path=self.root / "control.sqlite",
+            execution_backend=FakeSandboxBackend(),
+        )
+        self.control = _HttpHarness(app=self.control_app, url="http://control.test")
+        self.links_path = self.root / "project_links.sqlite"
+        self.proxy = HttpProxyMcpServer(
+            config=ProxyConfig(
+                repo_root=self.repo,
+                control_url=self.control.url,
+                project_links_path=self.links_path,
+            )
+        )
+        self.control.bind(self.proxy)
+
+    def tearDown(self) -> None:
+        self.control_app.shutdown()
+        self.tmp.cleanup()
+
+    def test_map_overview_returns_image_block_and_file_fallback(self) -> None:
+        project = self.control_app.call_tool("project.create", {"name": "Image Proxy"})
+        ProjectLinks(db_path=self.links_path).link(
+            repo_root=str(self.repo), project_id=project["id"]
+        )
+        response = self.proxy.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "map.overview", "arguments": {"w": 640, "h": 480}},
+            }
+        )
+        self.assertNotIn("error", response, response)
+        result = response["result"]
+        image_block, text_block = result["content"]
+        self.assertEqual(image_block["type"], "image")
+        self.assertEqual(image_block["mimeType"], "image/png")
+        import base64
+
+        self.assertTrue(base64.b64decode(image_block["data"]).startswith(b"\x89PNG"))
+        # base64 stays out of the text/structured halves; the file is the
+        # fallback path for clients that drop image blocks.
+        structured = result["structuredContent"]
+        self.assertNotIn("image_png_base64", structured)
+        self.assertNotIn("image_png_base64", text_block["text"])
+        snapshot_path = Path(structured["snapshot_path"])
+        self.assertEqual(snapshot_path.parent, self.repo / ".research_plugin" / "map_snapshots")
+        self.assertTrue(snapshot_path.read_bytes().startswith(b"\x89PNG"))
+
+
 class HttpProxyMcpServerOfflineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

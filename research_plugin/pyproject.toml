@@ -17,6 +17,7 @@ keywords = ["research", "ml", "mcp", "experiments"]
 dependencies = [
     "fastapi>=0.115,<1",
     "httpx>=0.27,<1",
+    "pillow>=10,<12",
     "pydantic>=2.8,<3",
     "uvicorn>=0.30,<1",
 ]
@@ -43,3 +44,8 @@ research-plugin-client = "backend.client_cli:main"
 # because they run from a copytree, not the wheel. ``find`` keeps the wheel and
 # the checkout in sync. research_state_ui has no __init__ and is excluded anyway.
 include = ["backend*", "mcp_server*", "research_plugin_shared*"]
+
+[tool.setuptools.package-data]
+# The map renderer's pinned font (determinism: identical text metrics on every
+# deployment) plus its redistribution license.
+"backend.domain" = ["fonts/DejaVuSans.ttf", "fonts/LICENSE_DEJAVU"]

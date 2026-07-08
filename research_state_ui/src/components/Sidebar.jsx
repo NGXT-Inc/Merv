@@ -121,6 +121,9 @@ export default function Sidebar({ onRefresh, onHide }) {
 
         {/* The epistemic core: what we know and the evidence behind it. */}
         <div className="sidebar-section">Research</div>
+        <NavLink to={px('/map')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
+          Map
+        </NavLink>
         <NavLink to={px('/claims')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           <span>Claims</span>
           <span className="sidebar-link-count">{stats.claims ?? home?.claims?.length ?? 0}</span>

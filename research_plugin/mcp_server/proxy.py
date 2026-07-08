@@ -46,6 +46,11 @@ LONG_VERB_TIMEOUT_SECONDS = 90.0
 LONG_VERBS = frozenset({"sandbox.request"})
 _LOCAL_ENRICHED_CONTROL_TOOLS = frozenset({"sandbox.get", "sandbox.health"})
 
+# Reserved key an image-bearing tool result (map.* snapshots) carries its PNG
+# under; duplicated as a literal from backend.tools so the proxy stays
+# stdlib-only. The proxy lifts it into an MCP image content block.
+_IMAGE_RESULT_KEY = "image_png_base64"
+
 # The transport taxonomy (plan §3.3): returned as TOOL RESULTS, not protocol
 # errors, so a transient outage of one plane never disables the server. Domain
 # errors the upstream reports (validation_error, …) stay protocol errors.
@@ -605,13 +610,46 @@ class HttpProxyMcpServer:
     def _tool_result(
         self, *, result: dict[str, Any], is_error: bool = False
     ) -> dict[str, Any]:
+        content: list[dict[str, Any]] = []
+        image_b64 = result.get(_IMAGE_RESULT_KEY)
+        if isinstance(image_b64, str) and image_b64:
+            # Image-bearing tool results (map.* snapshots): emit a real MCP
+            # image content block so the client renders the pixels, keep the
+            # base64 out of the text/structured halves (token cost), and write
+            # a file fallback the agent can Read if its client drops images.
+            result = {k: v for k, v in result.items() if k != _IMAGE_RESULT_KEY}
+            path = self._persist_snapshot(image_b64=image_b64)
+            if path:
+                result["snapshot_path"] = path
+            content.append({
+                "type": "image",
+                "data": image_b64,
+                "mimeType": str(result.get("media_type") or "image/png"),
+            })
+        content.append({"type": "text", "text": json.dumps(result, sort_keys=True)})
         payload: dict[str, Any] = {
-            "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
+            "content": content,
             "structuredContent": result,
         }
         if is_error:
             payload["isError"] = True
         return payload
+
+    def _persist_snapshot(self, *, image_b64: str) -> str | None:
+        """Best-effort content-addressed PNG under the repo's plugin state dir."""
+        try:
+            import base64
+            import hashlib
+
+            data = base64.b64decode(image_b64)
+            directory = self.config.repo_root / ".research_plugin" / "map_snapshots"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"map_{hashlib.sha1(data).hexdigest()[:12]}.png"
+            if not path.exists():
+                path.write_bytes(data)
+            return str(path)
+        except Exception:  # noqa: BLE001 - the image block already carries the pixels
+            return None
 
     def _result(self, *, request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": request_id, "result": result}

@@ -1289,6 +1289,12 @@ from .feed_contracts import FEED_TOOL_CONTRACTS  # noqa: E402
 
 TOOL_CONTRACTS.update(FEED_TOOL_CONTRACTS)
 
+# Research Map (RESEARCH_MAP_V1.md) tools register from their own module the
+# same way; perceive-only snapshots, so all three are control-plane.
+from .map_contracts import MAP_TOOL_CONTRACTS  # noqa: E402
+
+TOOL_CONTRACTS.update(MAP_TOOL_CONTRACTS)
+
 STORAGE_TOOL_NAMES = {
     "storage.put_object",
     "storage.upload_file",
@@ -1359,6 +1365,9 @@ TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
     "feed.register": "control",
     "feed.post": "data",
     "feed.list": "control",
+    "map.overview": "control",
+    "map.snapshot": "control",
+    "map.locate": "control",
 }
 
 _PLANE_REGISTRY_MISMATCH = set(TOOL_CONTRACTS) ^ set(TOOL_PLANE_REGISTRY)
