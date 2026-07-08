@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..config import storage_feature_enabled
 from ..domain.storage_guidance import STORAGE_RULE_OF_THUMB
@@ -445,9 +445,23 @@ class StorageCompleteUploadInput(ProjectScopedInput):
     parts: list[dict[str, Any]] | None = None
 
 
-class StorageListInput(ProjectScopedInput):
-    kind: Literal["dataset", "model", "other"] | None = None
+class StorageFindInput(ProjectScopedInput):
+    """List the storage ledger, or resolve a single object.
+
+    A union of the former ``storage.list`` and ``storage.resolve`` inputs.
+    Passing ``object_id`` or ``name`` (with optional ``version`` /
+    ``include_download``) selects resolve mode; omitting both lists the ledger
+    with the ``kind`` / ``status`` filters and ``limit`` / ``offset`` / ``compact``
+    pagination.
+    """
+
+    # Resolve-mode selectors (former storage.resolve).
+    object_id: str | None = None
     name: str | None = None
+    version: int | None = Field(default=None, ge=1)
+    include_download: bool = True
+    # List-mode filters (former storage.list).
+    kind: Literal["dataset", "model", "other"] | None = None
     status: (
         Literal["uploading", "completing", "available", "expired", "deleted"]
         | None
@@ -457,12 +471,15 @@ class StorageListInput(ProjectScopedInput):
     offset: int = Field(default=0, ge=0)
     compact: bool = False
 
-
-class StorageResolveInput(ProjectScopedInput):
-    object_id: str | None = None
-    name: str | None = None
-    version: int | None = Field(default=None, ge=1)
-    include_download: bool = True
+    @model_validator(mode="after")
+    def _check_mode(self) -> "StorageFindInput":
+        if self.object_id and self.name:
+            raise ValueError("provide at most one of object_id or name")
+        if self.version is not None and not (self.object_id or self.name):
+            raise ValueError(
+                "version selects a resolve target; pass object_id or name"
+            )
+        return self
 
 
 class StorageDownloadFileInput(ProjectScopedInput):
@@ -483,6 +500,7 @@ class StorageDownloadFileInput(ProjectScopedInput):
 
 class StorageObjectInput(ProjectScopedInput):
     object_id: str
+    action: Literal["pin", "unpin", "renew", "delete"]
 
 
 class ReviewRequestInput(ProjectScopedInput):
@@ -1124,18 +1142,15 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=StorageCompleteUploadInput,
         description="Complete a storage upload and mark the ledger object available.",
     ),
-    "storage.list": ToolContract(
-        input_model=StorageListInput,
+    "storage.find": ToolContract(
+        input_model=StorageFindInput,
         description=(
-            "List project storage objects. Filter by kind/name/status, paginate "
-            "with limit/offset, and pass compact=true for a lean projection."
-        ),
-    ),
-    "storage.resolve": ToolContract(
-        input_model=StorageResolveInput,
-        description=(
-            "Resolve one storage object by id or name/version. With "
-            "include_download=true, returns a presigned download URL and renews TTL."
+            "Find project storage objects. Pass object_id or name (with optional "
+            "version, include_download) to resolve ONE object to its ledger row "
+            "and, with include_download=true, a presigned download URL that renews "
+            "TTL. Omit both to list the ledger: filter by kind/status, include "
+            "expired rows with include_expired, paginate with limit/offset, and "
+            "pass compact=true for a lean projection."
         ),
     ),
     "storage.download_file": ToolContract(
@@ -1145,21 +1160,14 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "size and sha256 before replacing the destination."
         ),
     ),
-    "storage.pin": ToolContract(
+    "storage.object": ToolContract(
         input_model=StorageObjectInput,
-        description="Pin a storage object so expiry cleanup keeps it.",
-    ),
-    "storage.unpin": ToolContract(
-        input_model=StorageObjectInput,
-        description="Unpin a storage object and restore its default expiry.",
-    ),
-    "storage.renew": ToolContract(
-        input_model=StorageObjectInput,
-        description="Renew a storage object's default expiry window.",
-    ),
-    "storage.delete": ToolContract(
-        input_model=StorageObjectInput,
-        description="Delete a storage ledger alias and reclaim bytes when unreferenced.",
+        description=(
+            "Apply a lifecycle action to one storage object by object_id: pin "
+            "(expiry cleanup keeps it), unpin (restore its default expiry), renew "
+            "(renew its default expiry window), or delete (drop the ledger alias, "
+            "keeping history, and reclaim bytes when unreferenced)."
+        ),
     ),
     "review.request": ToolContract(
         input_model=ReviewRequestInput,
@@ -1340,13 +1348,9 @@ STORAGE_TOOL_NAMES = {
     "storage.put_object",
     "storage.upload_file",
     "storage.complete_upload",
-    "storage.list",
-    "storage.resolve",
     "storage.download_file",
-    "storage.pin",
-    "storage.unpin",
-    "storage.renew",
-    "storage.delete",
+    "storage.find",
+    "storage.object",
 }
 
 TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
@@ -1384,13 +1388,9 @@ TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
     "storage.put_object": "control",
     "storage.upload_file": "data",
     "storage.complete_upload": "control",
-    "storage.list": "control",
-    "storage.resolve": "control",
     "storage.download_file": "data",
-    "storage.pin": "control",
-    "storage.unpin": "control",
-    "storage.renew": "control",
-    "storage.delete": "control",
+    "storage.find": "control",
+    "storage.object": "control",
     "review.request": "control",
     "review.start": "control",
     "review.submit": "control",
@@ -1427,6 +1427,11 @@ MCP_HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "project.get",
         "project.update",
+        # Manual presign path: storage.upload_file's data plane composes these
+        # by tool name (control_tool_call), so they stay dispatchable but are
+        # dropped from the agent-facing tools/list.
+        "storage.put_object",
+        "storage.complete_upload",
     }
 )
 

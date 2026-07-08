@@ -23,10 +23,9 @@ from backend.tools.contracts import (
     SandboxRequestInput,
     StorageCompleteUploadInput,
     StorageDownloadFileInput,
-    StorageListInput,
+    StorageFindInput,
     StorageObjectInput,
     StoragePutObjectInput,
-    StorageResolveInput,
     StorageUploadFileInput,
     STORAGE_TOOL_NAMES,
     TOOL_CONTRACTS,
@@ -117,7 +116,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertLessEqual(MCP_HIDDEN_TOOL_NAMES, set(TOOL_CONTRACTS))
         self.assertIn("project.get", MCP_HIDDEN_TOOL_NAMES)
         self.assertIn("project.update", MCP_HIDDEN_TOOL_NAMES)
-        catalog = {tool["name"]: tool for tool in static_tool_catalog()}
+        # storage_enabled=True so the hidden storage primitives appear in the
+        # catalog (setUp clears the storage provider env var).
+        catalog = {tool["name"]: tool for tool in static_tool_catalog(storage_enabled=True)}
         for name in MCP_HIDDEN_TOOL_NAMES:
             self.assertTrue(catalog[name].get("hidden"), name)
         for name, tool in catalog.items():
@@ -146,19 +147,66 @@ class ToolContractRegistryTest(unittest.TestCase):
             "storage.put_object": (StoragePutObjectInput, "control"),
             "storage.upload_file": (StorageUploadFileInput, "data"),
             "storage.complete_upload": (StorageCompleteUploadInput, "control"),
-            "storage.list": (StorageListInput, "control"),
-            "storage.resolve": (StorageResolveInput, "control"),
             "storage.download_file": (StorageDownloadFileInput, "data"),
-            "storage.pin": (StorageObjectInput, "control"),
-            "storage.unpin": (StorageObjectInput, "control"),
-            "storage.renew": (StorageObjectInput, "control"),
-            "storage.delete": (StorageObjectInput, "control"),
+            "storage.find": (StorageFindInput, "control"),
+            "storage.object": (StorageObjectInput, "control"),
         }
+        self.assertEqual(
+            STORAGE_TOOL_NAMES, set(expected), "storage surface must be exactly these 6 tools"
+        )
         for name, (model, plane) in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
             self.assertEqual(tool_plane(name), plane)
+        # The removed tools must be gone from the registry entirely.
+        for removed in (
+            "storage.list",
+            "storage.resolve",
+            "storage.pin",
+            "storage.unpin",
+            "storage.renew",
+            "storage.delete",
+        ):
+            self.assertNotIn(removed, TOOL_CONTRACTS)
         self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
         self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.upload_file"].description)
+
+    def test_storage_find_enforces_resolve_vs_list_mode(self) -> None:
+        # List mode: neither selector.
+        StorageFindInput.model_validate({"project_id": "p", "kind": "model"})
+        # Resolve mode: exactly one selector.
+        StorageFindInput.model_validate({"project_id": "p", "object_id": "so_1"})
+        StorageFindInput.model_validate({"project_id": "p", "name": "datasets/x"})
+        # Both selectors is ambiguous.
+        with self.assertRaises(PydanticValidationError):
+            StorageFindInput.model_validate(
+                {"project_id": "p", "object_id": "so_1", "name": "datasets/x"}
+            )
+        # version without a resolve target is meaningless.
+        with self.assertRaises(PydanticValidationError):
+            StorageFindInput.model_validate({"project_id": "p", "version": 2})
+
+    def test_storage_object_action_is_required_and_enumerated(self) -> None:
+        StorageObjectInput.model_validate(
+            {"project_id": "p", "object_id": "so_1", "action": "pin"}
+        )
+        with self.assertRaises(PydanticValidationError):
+            StorageObjectInput.model_validate({"project_id": "p", "object_id": "so_1"})
+        with self.assertRaises(PydanticValidationError):
+            StorageObjectInput.model_validate(
+                {"project_id": "p", "object_id": "so_1", "action": "purge"}
+            )
+
+    def test_hidden_storage_primitives_stay_dispatchable_but_unadvertised(self) -> None:
+        for name in ("storage.put_object", "storage.complete_upload"):
+            self.assertIn(name, MCP_HIDDEN_TOOL_NAMES, name)
+            self.assertIn(name, STORAGE_TOOL_NAMES, name)
+            self.assertIn(name, TOOL_CONTRACTS, name)
+        catalog = {tool["name"]: tool for tool in static_tool_catalog(storage_enabled=True)}
+        self.assertTrue(catalog["storage.put_object"].get("hidden"))
+        self.assertTrue(catalog["storage.complete_upload"].get("hidden"))
+        # The merged tools stay visible.
+        self.assertNotIn("hidden", catalog["storage.find"])
+        self.assertNotIn("hidden", catalog["storage.object"])
 
     def test_resource_batch_association_is_data_plane(self) -> None:
         self.assertIs(

@@ -815,7 +815,7 @@ class WorkflowService:
     def _result_resource_guidance(self) -> dict[str, Any]:
         heavy_retention = (
             "copy light files out over SSH into the local experiment folder "
-            "or upload heavy files with storage.put_object, then register "
+            "or upload heavy files with storage.upload_file, then register "
             "those retained files."
             if self.storage_enabled
             else (

@@ -249,7 +249,7 @@ class Doctor:
         if not object_id:
             raise DoctorError("storage smoke did not return an object id")
         resolved = self._mcp(
-            "storage.resolve",
+            "storage.find",
             {"project_id": project_id, "object_id": object_id, "include_download": True},
         )
         download = resolved.get("download") or {}
@@ -259,7 +259,10 @@ class Doctor:
         data = self._raw_request("GET", download_url)
         if data != payload:
             raise DoctorError("storage smoke downloaded bytes did not match upload")
-        self._mcp("storage.delete", {"project_id": project_id, "object_id": object_id})
+        self._mcp(
+            "storage.object",
+            {"project_id": project_id, "object_id": object_id, "action": "delete"},
+        )
         self._ok("storage", f"object_id={object_id}")
 
     def _mcp(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

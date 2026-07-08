@@ -47,7 +47,7 @@ def _folder_contract_note(
     if storage_enabled:
         heavy_note = (
             f"{storage_hint} Upload those durable files with "
-            "storage.put_object or storage.upload_file instead of rsyncing them "
+            "storage.upload_file instead of rsyncing them "
             "into the repo. "
         )
     else:
@@ -81,7 +81,7 @@ def _expiry_note(
     local_label = "local sandbox folder"
     retry_note = "you can request a new sandbox"
     heavy_note = (
-        "storage.put_object for heavy ones"
+        "storage.upload_file for heavy ones"
         if storage_enabled
         else "no configured heavy-file storage is available"
     )

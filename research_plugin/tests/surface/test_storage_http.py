@@ -182,14 +182,92 @@ class StorageHttpApiTest(unittest.TestCase):
         self.assertNotIn("namespace", objects[0])
 
         self.app.call_tool(
-            "storage.delete",
-            {"project_id": self.project_id, "object_id": uploaded["object"]["id"]},
+            "storage.object",
+            {
+                "project_id": self.project_id,
+                "object_id": uploaded["object"]["id"],
+                "action": "delete",
+            },
         )
         state = self.app.call_tool(
             "experiment.get_state",
             {"project_id": self.project_id, "experiment_id": exp["id"]},
         )
         self.assertEqual(state["storage_objects"], [])
+
+    def test_storage_find_lists_and_resolves_like_the_old_tools(self) -> None:
+        a = self._put_and_complete(name="datasets/a.tar", kind="dataset", data=b"aa")
+        b = self._put_and_complete(name="models/b.bin", kind="model", data=b"bbbb")
+
+        # List mode (omit selectors) mirrors the former storage.list.
+        listed = self.app.call_tool("storage.find", {"project_id": self.project_id})
+        self.assertEqual(listed["count"], 2)
+        self.assertEqual({o["id"] for o in listed["objects"]}, {a["id"], b["id"]})
+
+        # List mode honours the old filters.
+        models = self.app.call_tool(
+            "storage.find", {"project_id": self.project_id, "kind": "model"}
+        )
+        self.assertEqual([o["id"] for o in models["objects"]], [b["id"]])
+
+        # Resolve mode by object_id mirrors the former storage.resolve, with a
+        # presigned download and a bumped TTL.
+        resolved = self.app.call_tool(
+            "storage.find", {"project_id": self.project_id, "object_id": a["id"]}
+        )
+        self.assertEqual(resolved["object"]["id"], a["id"])
+        self.assertIn("url", resolved["download"])
+
+        # Resolve mode by name works too, and include_download=false omits it.
+        by_name = self.app.call_tool(
+            "storage.find",
+            {
+                "project_id": self.project_id,
+                "name": "models/b.bin",
+                "include_download": False,
+            },
+        )
+        self.assertEqual(by_name["object"]["id"], b["id"])
+        self.assertNotIn("download", by_name)
+
+    def test_storage_object_dispatches_each_lifecycle_action(self) -> None:
+        obj = self._put_and_complete(name="datasets/train.tar", kind="dataset", data=b"data")
+        oid = obj["id"]
+
+        # pin/unpin/renew return the bare hydrated object (mirrors the old
+        # single-purpose tools).
+        pinned = self.app.call_tool(
+            "storage.object",
+            {"project_id": self.project_id, "object_id": oid, "action": "pin"},
+        )
+        self.assertIsNone(pinned["expires_at"])
+
+        unpinned = self.app.call_tool(
+            "storage.object",
+            {"project_id": self.project_id, "object_id": oid, "action": "unpin"},
+        )
+        self.assertIsNotNone(unpinned["expires_at"])
+
+        renewed = self.app.call_tool(
+            "storage.object",
+            {"project_id": self.project_id, "object_id": oid, "action": "renew"},
+        )
+        self.assertIsNotNone(renewed["expires_at"])
+
+        deleted = self.app.call_tool(
+            "storage.object",
+            {"project_id": self.project_id, "object_id": oid, "action": "delete"},
+        )
+        self.assertTrue(deleted["deleted"])
+        self.assertTrue(deleted["reclaimed"])
+
+    def test_storage_object_rejects_unknown_action(self) -> None:
+        obj = self._put_and_complete(name="datasets/x.tar", kind="dataset", data=b"x")
+        with self.assertRaises(ValidationError):
+            self.app.call_tool(
+                "storage.object",
+                {"project_id": self.project_id, "object_id": obj["id"], "action": "purge"},
+            )
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         response = self.client.request(method, path, json=body)
@@ -230,7 +308,7 @@ class StorageCompositionTest(unittest.TestCase):
                 self.assertIsNone(app.storage)
                 self.assertFalse(
                     {tool["name"] for tool in app.list_tools()}
-                    & {"storage.put_object", "storage.list"}
+                    & {"storage.put_object", "storage.find", "storage.object"}
                 )
             finally:
                 server.shutdown()
