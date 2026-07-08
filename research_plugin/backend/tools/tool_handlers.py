@@ -518,12 +518,12 @@ def build_control_tool_handlers(
         *, target_type: str, target_id: str, project_id: str | None = None
     ) -> dict[str, Any]:
         """Wraps reviews.status so the PRODUCER side — not the reviewer, who
-        already saw the verdict at review.submit — gets the feed_note. This
-        is the tool workflow.status_and_next's review_gate tells the agent to
-        poll (``allowed: ["review.status"]``) while a review is pending, so
-        it is the one main-agent-visible read naturally keyed to "the
-        experiment under review". Only fires once a verdict actually exists
-        (a bare pending-request check has nothing story-worthy to say yet)."""
+        already saw the verdict at review.submit — gets the feed_note. review.status
+        is hidden from the agent tools/list (agents poll workflow.status_and_next,
+        whose review_gate re-reports the verdict), so this feed_note now rides the
+        REST/UI review reads keyed to "the experiment under review". Only fires once
+        a verdict actually exists (a bare pending-request check has nothing
+        story-worthy to say yet)."""
         result = reviews.status(
             target_type=target_type, target_id=target_id, project_id=project_id
         )

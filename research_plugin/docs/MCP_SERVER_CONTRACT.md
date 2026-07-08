@@ -65,7 +65,7 @@ experiment.list(project_id)
 experiment.create(project_id, name, intent, tested_claim_ids?)
 experiment.get_state(project_id, experiment_id)   # see "get_state shape" below
 resource.list(project_id, kind?, experiment_id?, missing?, compact?, limit?, offset?)
-review.status(project_id, target_type, target_id)
+review.status(project_id, target_type, target_id) # REST/UI + internal dispatch only; not in the agent tools/list (agents poll workflow.status_and_next)
 ```
 
 Activity events are not an MCP tool: the UI reads them over HTTP
@@ -308,7 +308,8 @@ all-attempts `resources` list, per-resource version bookkeeping (`version_token`
 `mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review
 prose/`evidence`/`target_snapshot_id`, and the project-wide claim/experiment
 detail. For those, call the scoped tools (`experiment.get_state`,
-`resource.list`, `review.status`). Called **without** `experiment_id` (only at
+`resource.list`) — `experiment.get_state` carries the full review
+`findings`/`notes`/`evidence`/`verdict`. Called **without** `experiment_id` (only at
 project setup, before any experiment exists), it returns
 `{ "scope": "project", "workflow", "project": { id, name, summary, claims[] } }`.
 
@@ -587,7 +588,7 @@ create, then call `project.connect`.
 review.request(project_id, target_type, target_id, role, reason?)
 review.start(review_request_id, reviewer_capability, caller_session_id, declared_agent?)
 review.submit(review_session_id, verdict, synopsis, return_to?, notes?, findings?, evidence?)
-review.status(project_id, target_type, target_id)
+review.status(project_id, target_type, target_id) # REST/UI + internal dispatch only; not advertised to agents — the review gate in workflow.status_and_next re-reports review state on every poll
 ```
 
 `synopsis` is required: 1-3 plain sentences (40-420 chars), the researcher's

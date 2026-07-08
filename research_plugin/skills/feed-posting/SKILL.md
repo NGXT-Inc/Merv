@@ -441,8 +441,7 @@ hours** have passed since your last post. Before your very first post the
 ## The feed_note pointer
 
 Some workflow tool responses — an experiment transition into a terminal
-state, run finalization, `review.status` on the producer side — may carry an
-optional one-line `feed_note`, e.g.
+state, run finalization — may carry an optional one-line `feed_note`, e.g.
 "exp_12 just completed and the feed has never mentioned it — if there's a
 takeaway worth sharing, consider a post."
 

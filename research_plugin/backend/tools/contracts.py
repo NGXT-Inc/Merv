@@ -1427,6 +1427,10 @@ MCP_HIDDEN_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "project.get",
         "project.update",
+        # workflow.status_and_next already re-reports review state on every
+        # poll, so the agent never needs a standalone review poll. Keep the
+        # tool for REST/UI reads and internal dispatch; hide it from agents.
+        "review.status",
     }
 )
 

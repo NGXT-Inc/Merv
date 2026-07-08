@@ -744,8 +744,9 @@ class WorkflowGateTest(unittest.TestCase):
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["review_gate"]["status"], "requested")
-        self.assertIn("review.status", workflow["allowed_actions"])
+        self.assertIn("workflow.status_and_next", workflow["allowed_actions"])
         self.assertIn("review.request", workflow["allowed_actions"])
+        self.assertNotIn("review.status", workflow["allowed_actions"])
         self._pass_review(exp_id=exp["id"], role="design_reviewer")
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])
         review_item = state["gate_checklist"]["items"][0]

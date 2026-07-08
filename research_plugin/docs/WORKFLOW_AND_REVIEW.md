@@ -154,7 +154,7 @@ it let the requesting session submit against its own gate.
 
 - `none`: no request exists; call `review.request`.
 - `requested`: request exists, but no reviewer has started; launch the reviewer.
-- `started`: reviewer is active; wait and poll `review.status`.
+- `started`: reviewer is active; wait and poll `workflow.status_and_next`.
 
 This is a practical local independence check, not cryptographic proof. For
 high-risk work, MCP can require human review.

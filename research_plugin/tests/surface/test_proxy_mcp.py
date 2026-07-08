@@ -89,6 +89,12 @@ class HttpProxyMcpServerUnifiedBrainTest(unittest.TestCase):
         # UI-facing tools stay dispatchable but are hidden from the agent list.
         self.assertNotIn("project.get", tools)
         self.assertNotIn("project.update", tools)
+        # review.status is a REST/UI + internal read; agents poll
+        # workflow.status_and_next instead, so it is dropped from tools/list
+        # while the rest of the review surface stays agent-facing.
+        self.assertNotIn("review.status", tools)
+        self.assertIn("review.request", tools)
+        self.assertIn("review.submit", tools)
         self.assertFalse(any("hidden" in tool for tool in tools.values()))
         workflow_schema = tools["workflow.status_and_next"]["inputSchema"]
         self.assertNotIn("project_id", workflow_schema.get("properties", {}))

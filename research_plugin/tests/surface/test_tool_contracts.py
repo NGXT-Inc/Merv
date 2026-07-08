@@ -117,6 +117,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertLessEqual(MCP_HIDDEN_TOOL_NAMES, set(TOOL_CONTRACTS))
         self.assertIn("project.get", MCP_HIDDEN_TOOL_NAMES)
         self.assertIn("project.update", MCP_HIDDEN_TOOL_NAMES)
+        # review.status is served for REST/UI reads and internal dispatch, but
+        # agents poll workflow.status_and_next (its review_gate re-reports state).
+        self.assertIn("review.status", MCP_HIDDEN_TOOL_NAMES)
         catalog = {tool["name"]: tool for tool in static_tool_catalog()}
         for name in MCP_HIDDEN_TOOL_NAMES:
             self.assertTrue(catalog[name].get("hidden"), name)
