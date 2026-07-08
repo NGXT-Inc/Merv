@@ -1,209 +1,79 @@
 # Research Plugin
 
-Research Plugin is the MCP/backend package behind Research Suite. It gives
-agentic coding clients a shared state machine for machine learning research:
+Research Plugin gives agentic coding clients (Claude Code, Codex, Cursor,
+Gemini CLI, OpenCode) a shared state machine for machine learning research:
 claims, experiments, repo-file resources, review gates, reflection waves, and
-sandboxed execution.
+sandboxed execution. A hosted brain owns all durable state; a small stdio MCP
+proxy runs on your machine and does the repo-local file work — the brain never
+sees your checkout.
 
-Current version: `0.0010`.
-
-The plugin is client-neutral. Claude Code, Codex, Cursor, Gemini CLI, OpenCode,
-and other MCP-capable clients use thin adapters over the same backend, MCP
-proxy, skills, and reviewer agents.
-
-## System Shape
-
-```text
-Agent client
-  Claude Code / Codex / Cursor / Gemini CLI / OpenCode
-        |
-        v
-research-plugin-mcp      sibling frontend UI
-  stdio MCP proxy              |
-  local data plane             |
-        |                      v
-        +------------> research-plugin-http
-                         brain service
-                            |
-              +-------------+-------------+
-              |                           |
-        project state              sandbox backends
- SQLite/Postgres + blobs      Thunder / Lambda Labs / Modal / fake
-```
-
-There is one topology. The brain service owns durable state, workflow
-transitions, review permissions, sandbox orchestration, activity logs, and the
-HTTP API used by the frontend. It never reads a checkout. The stdio MCP proxy is
-the local data plane in every deployment: it reads repo files, hashes and
-validates artifacts, pulls retained sandbox outputs, owns caller SSH key
-custody, and uses a local link file to map checkout folders to projects.
-Unconfigured installs dial the hosted brain at
-`https://experiments.rapidreview.io`; local deployment is the same brain on
-`http://127.0.0.1:8787` (configure it with `research-plugin-client configure
---control-url http://127.0.0.1:8787`) with SQLite, local-dir blobs, no auth,
-and localhost CORS.
-
-## Workflows
-
-Experiments move through enforced gates:
-
-```text
-planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
-              |                                      |
-              +-> back to planned                    +-> back to running or planned
-```
-
-Project reflections periodically update project-level memory and direction:
-
-```text
-reflecting -> synthesizing -> reflection_review -> published
-     ^              ^                |
-     +--------------+----------------+
-       back to fan-out or synthesis
-```
-
-Artifacts are regular files in the research repo. The backend records
-repo-relative paths and pinned file versions; review gates check the submitted
-snapshot, not whatever happens to be on disk later.
-
-## Quick Start: Local Development
-
-Install backend dependencies once:
-
-```bash
-cd /path/to/research_plugin
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-```
-
-Start the local HTTP backend before opening an agent client:
-
-```bash
-./bin/research-plugin-http \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --activity-stderr
-```
-
-For backend development with auto-reload:
-
-```bash
-python3 scripts/dev_http_reload.py \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --activity-stderr
-```
-
-Then open your agent client in the target research repo, enable the plugin, and
-start with:
-
-```text
-Use Research Plugin. Start with project.current, then workflow.status_and_next.
-```
-
-The local brain keeps state in its configured state directory. The active
-research repo keeps local activity and retained experiment artifacts under:
-
-```text
-<research-repo>/.research_plugin/
-<research-repo>/experiments/
-```
-
-## Quick Start: Hosted Control + Local Agents
-
-Install the slim client on the agent machine/VM:
+## Get started
 
 ```bash
 git clone <research-suite-repo-url> ~/research-suite
 ```
 
-That is the whole client install — the stdio proxy runs on bare `python3`
-(3.11+) with no pip installs. The venv + `pip install -e .` step is only for
-machines that run a local brain (`research-plugin-http`).
+That is the whole install — the proxy runs on bare `python3` (3.11+), no pip
+installs. Then:
 
-Linking a checkout to its hosted project happens in-session: when
-`project.current` reports no link, the agent asks which project to use and
-calls `project.connect` (existing `project_id`, or `name`/`summary` to create
-and link in one step). The CLI covers the same ground from a terminal:
-
-```bash
-bin/research-plugin-client connect \
-  --control-url https://your-control-plane.example.com \
-  --project-id proj_123 \
-  --repo ~/work/project-a
-```
-
-Machine config and folder links live under `~/.research_plugin/`, outside every
-research repo. See [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md).
-
-## Credentials
-
-Provider credentials belong to the brain process, not the MCP proxy and not the
-research repo. In hosted deployment they are mounted into the hosted brain; in
-local deployment they belong to the local `research-plugin-http` process. Prefer
-a per-user env file:
-
-```bash
-mkdir -p ~/.config/research-plugin
-cp .env.example ~/.config/research-plugin/.env
-chmod 700 ~/.config/research-plugin
-chmod 600 ~/.config/research-plugin/.env
-```
-
-Common variables include:
+1. Register the plugin in your client — per-client steps in
+   [docs/CLIENTS.md](docs/CLIENTS.md).
+2. Open your research repo and start a session:
 
 ```text
-RESEARCH_PLUGIN_THUNDER_API_KEY=...
-RESEARCH_PLUGIN_LAMBDA_API_KEY=...
-MODAL_TOKEN_ID=...
-MODAL_TOKEN_SECRET=...
-HF_TOKEN=...
+Use Research Plugin. Start with project.current, then workflow.status_and_next.
 ```
 
-Lambda Labs is the default sandbox backend. Thunder Compute, Modal, and the fake
-test backend are also supported through `RESEARCH_PLUGIN_EXECUTION_BACKEND`.
+The proxy dials the hosted brain by default. On first use the agent asks which
+project this folder belongs to and links it with `project.connect` — no
+terminal setup. Details and the CLI fallback:
+[docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md).
 
-## Client Adapters
+## How work moves
 
-This directory ships one canonical plugin content tree:
+```text
+Experiments:  planned -> design_review -> ready_to_run -> running
+              -> experiment_review -> complete
+Reflections:  reflecting -> synthesizing -> reflection_review -> published
+```
 
-- `bin/` - launchers for the MCP proxy, local HTTP backend, hosted control plane, and client CLI
-- `backend/` - HTTP API, services, state stores, workflow gates, and execution backends
-- `mcp_server/` - stdio MCP proxy package
-- `skills/` - workflow and review skills
-- `agents/` - read-only reviewer agents
-- `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `gemini-extension.json` - client adapters
-- `clients/opencode/` - OpenCode installer and wrappers
+Artifacts are regular files in your repo; the backend records repo-relative
+paths and pinned versions, and review gates check the submitted snapshot.
 
-See [docs/CLIENTS.md](docs/CLIENTS.md) for client-specific install details and
-reviewer handoff behavior.
+## Running a local brain (optional)
+
+For development, or to keep all state on your machine:
+
+```bash
+cd /path/to/research_plugin
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+./bin/research-plugin-http --host 127.0.0.1 --port 8787 --activity-stderr
+bin/research-plugin-client configure --control-url http://127.0.0.1:8787
+```
+
+Sandbox provider credentials (Lambda Labs by default; Thunder, Modal, and a
+fake test backend via `RESEARCH_PLUGIN_EXECUTION_BACKEND`) belong to the brain
+process only — see `.env.example`. Startup details:
+[docs/STARTUP_CHEATSHEET.md](docs/STARTUP_CHEATSHEET.md).
 
 ## Tests
 
-From the plugin root:
-
 ```bash
-PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
 ```
 
-Use the fake sandbox backend for tests or local workflows that should not touch
-a cloud provider:
-
-```bash
-export RESEARCH_PLUGIN_EXECUTION_BACKEND=fake
-```
+Set `RESEARCH_PLUGIN_EXECUTION_BACKEND=fake` to keep tests and local workflows
+off cloud providers.
 
 ## Documentation
 
-- [docs/startup.txt](docs/startup.txt) - terse local-mode command sequence
+- [docs/CLIENTS.md](docs/CLIENTS.md) - per-client install and reviewer handoff
+- [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md) - hosted setup
 - [docs/STARTUP_CHEATSHEET.md](docs/STARTUP_CHEATSHEET.md) - local startup flow
-- [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md) - hosted control plus local-agent VM flow
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - backend and mode architecture
-- [docs/CENTRALIZED_MLFLOW.md](docs/CENTRALIZED_MLFLOW.md) - backend-owned centralized MLflow tracking
-- [docs/CLIENTS.md](docs/CLIENTS.md) - Claude Code, Codex, Cursor, Gemini CLI, OpenCode
 - [docs/MCP_SERVER_CONTRACT.md](docs/MCP_SERVER_CONTRACT.md) - MCP tools and contracts
 - [docs/WORKFLOW_AND_REVIEW.md](docs/WORKFLOW_AND_REVIEW.md) - workflow gates and reviews
 - [docs/RESOURCE_MODEL.md](docs/RESOURCE_MODEL.md) - repo-file resource model
+- [docs/CENTRALIZED_MLFLOW.md](docs/CENTRALIZED_MLFLOW.md) - centralized MLflow tracking
 - [docs/UI_API.md](docs/UI_API.md) - frontend HTTP API
 - [deploy/README.md](deploy/README.md) - reference control-plane deploy

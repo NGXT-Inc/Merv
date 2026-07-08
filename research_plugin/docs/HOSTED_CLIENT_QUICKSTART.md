@@ -1,96 +1,46 @@
 # Hosted client quickstart
 
-Use this when the control plane is already hosted and this machine/VM is only
-running agents against local checkouts.
+Setup for a machine that runs agents against the hosted brain.
 
-## Shape
-
-One hosted control plane serves project records and gates. Each client machine
-uses the stdio MCP proxy as its local data plane, and each local checkout is
-linked to the hosted project it should work on. The machine config does not
-contain one repo path or one project id; folder links live in a machine-local
-SQLite link file under `~/.research_plugin/`.
-
-## Install on the client VM
+## Install
 
 ```bash
 git clone <research-suite-repo-url> ~/research-suite
 ```
 
-That is the whole install: the stdio proxy runs on bare `python3` (3.11+) with
-no pip installs — the tool catalog ships as a checked-in JSON so no
-third-party package is ever imported on a client machine. A venv
-(`python3 -m venv .venv && .venv/bin/pip install -e .` inside
-`research_plugin/`) is only needed on machines that run a **local brain**
-(`research-plugin-http`).
+Nothing else: the proxy runs on bare `python3` (3.11+), no pip installs and no
+token. (A venv with `pip install -e .` is only needed to run a local brain.)
 
-## Fast path: register the MCP and let the agent link
+## Set up
 
-With the plugin registered in your client (see [CLIENTS.md](CLIENTS.md)), no
-terminal setup is required: the proxy dials the hosted brain
-(`https://experiments.rapidreview.io`) by default, and the agent links each
-checkout from inside the session. When `project.current` reports
-`exists: false`, the agent asks which project to use and calls
-`project.connect` — with a `project_id` to link an existing hosted project,
-or with a user-confirmed `name`/`summary` to create one and link it in one
-step. The folder→project link is written machine-locally; the brain never
-sees the folder path.
+1. Register the plugin in your client — per-client steps in
+   [CLIENTS.md](CLIENTS.md).
+2. Open a research repo and start a session. The proxy dials the hosted brain
+   by default; when `project.current` reports the folder is unlinked, the
+   agent asks which project to use and calls `project.connect` — an existing
+   `project_id`, or a `name`/`summary` to create one and link it in one step.
 
-For a different control plane, configure it once per machine:
+Repeat step 2 in each additional checkout. Links and machine config live under
+`~/.research_plugin/`, never inside a research repo, and the brain never sees
+folder paths — only project ids.
+
+To point the machine at a different brain:
 
 ```bash
 ~/research-suite/research_plugin/bin/research-plugin-client configure \
   --control-url https://your-control-plane.example.com
 ```
 
-The current operator-run setup uses a private control plane, so the client does
-not need a control-plane token.
+## CLI fallback
 
-## CLI fallback: link from the terminal
-
-The same links can be managed without an agent session:
+Everything the agent does with `project.connect` can be done from a terminal
+(run from the checkout, or pass `--repo`):
 
 ```bash
-cd ~/work/project-a
-~/research-suite/research_plugin/bin/research-plugin-client link --project-id proj_123
+CLI=~/research-suite/research_plugin/bin/research-plugin-client
+$CLI link --project-id proj_123   # link this folder
+$CLI links                        # list all links on this machine
+$CLI route                        # show this folder's project
+$CLI unlink                       # remove this folder's link
+$CLI mcp-env                      # print env vars for a manual MCP config
 ```
-
-## What gets saved
-
-Machine-local config and folder links are written under `~/.research_plugin/`;
-they are not part of any research repo.
-
-## Link more local folders
-
-Each additional checkout links the same way: the agent calls
-`project.connect` from a session opened in that folder, or from the terminal:
-
-```bash
-cd ~/work/project-b
-~/research-suite/research_plugin/bin/research-plugin-client link --project-id proj_456
-```
-
-Inspect links:
-
-```bash
-~/research-suite/research_plugin/bin/research-plugin-client links
-~/research-suite/research_plugin/bin/research-plugin-client route --repo ~/work/project-a
-```
-
-Remove a link:
-
-```bash
-~/research-suite/research_plugin/bin/research-plugin-client unlink --repo ~/work/project-a
-```
-
-## Agent/MCP environment
-
-The packaged MCP proxy auto-discovers `~/.research_plugin/client.json`. For a
-manual MCP config, print the exact values:
-
-```bash
-~/research-suite/research_plugin/bin/research-plugin-client mcp-env --repo "$PWD"
-```
-
-The repo folder is temporary local context. The hosted project remains the
-source of truth for project records, gates, reviews, and sandbox lifecycle.
