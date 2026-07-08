@@ -120,19 +120,19 @@ class LocalResourceArtifactReader:
         markdown_dir = (self.repo_root / markdown_rel_path).parent
         figures: list[dict[str, Any]] = []
         for link in markdown_image_links(markdown_text):
-            resolved = (markdown_dir / link).resolve()
-            try:
-                resolved.relative_to(self.repo_root)
-            except ValueError as exc:
+            problem = figure_link_problem(
+                repo_root=self.repo_root,
+                markdown_rel_path=markdown_rel_path,
+                link=link,
+            )
+            if problem is not None:
                 raise ValidationError(
-                    f"markdown image link escapes the repo: {link}",
+                    f"{problem} — save the figure next to {markdown_rel_path} "
+                    "(copy it off the sandbox first if it was produced there) "
+                    "or drop the link, then associate again",
                     details={"link": link, "resource": markdown_rel_path},
-                ) from exc
-            if not resolved.is_file():
-                continue
-            size = resolved.stat().st_size
-            if size > MARKDOWN_FIGURE_MAX_BYTES:
-                continue
+                )
+            resolved = (markdown_dir / link).resolve()
             data = resolved.read_bytes()
             figures.append(
                 {
@@ -140,10 +140,34 @@ class LocalResourceArtifactReader:
                     "data": data,
                     "content_type": mimetypes.guess_type(link)[0]
                     or "application/octet-stream",
-                    "size_bytes": size,
+                    "size_bytes": len(data),
                 }
             )
         return figures
+
+
+def figure_link_problem(
+    *, repo_root: Path, markdown_rel_path: str, link: str
+) -> str | None:
+    """Per-link acceptance rule — exists, is a file, within the figure size
+    cap — shared by the validate preflight and the associate-time capture so
+    the preflight can never pass a link the capture would reject."""
+    resolved = ((repo_root / markdown_rel_path).parent / link).resolve()
+    try:
+        resolved.relative_to(repo_root)
+    except ValueError:
+        return f"figure {link!r} escapes the repo"
+    if not resolved.exists():
+        return f"figure {link!r} has no submitted content: file does not exist"
+    if not resolved.is_file():
+        return f"figure {link!r} has no submitted content: target is not a file"
+    size = resolved.stat().st_size
+    if size > MARKDOWN_FIGURE_MAX_BYTES:
+        return (
+            f"figure {link!r} is {size} bytes; the maximum figure size is "
+            f"{MARKDOWN_FIGURE_MAX_BYTES} bytes"
+        )
+    return None
 
 
 def reject_absolute_markdown_image_targets(

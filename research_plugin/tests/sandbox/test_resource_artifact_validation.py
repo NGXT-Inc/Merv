@@ -61,6 +61,25 @@ class ResourceArtifactValidationTest(unittest.TestCase):
         self.assertIn("Objective & hypothesis", result["problems"][0])
         self.assertIn("Evaluation", result["problems"][0])
 
+    def test_plan_reports_missing_figure_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "plan.md").write_text(
+                VALID_PLAN + "\n![arch](figures/diagram.png)\n", encoding="utf-8"
+            )
+
+            result = validate_local_resource_artifact(
+                repo_root=repo,
+                path="plan.md",
+                role="plan",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "figure 'figures/diagram.png' has no submitted content: file does not exist",
+            result["problems"],
+        )
+
     def test_report_reports_missing_figure_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

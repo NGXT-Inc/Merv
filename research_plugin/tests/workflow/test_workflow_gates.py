@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -204,6 +205,31 @@ class WorkflowGateTest(unittest.TestCase):
         self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
+
+    def test_submit_design_blocks_plan_figures_missing_from_submission(self) -> None:
+        # Defense in depth: a non-compliant data plane could submit plan bytes
+        # without the figures the markdown links; the gate must still block.
+        exp = self.call("experiment.create", name="plan-fig", project_id=self.project_id, intent="Plan figure gate.")
+        plan = VALID_PLAN + "\n![arch](figures/diagram.png)\n"
+        (self.repo / "plan.md").write_text(plan)
+        res = self.call("resource.register_file", project_id=self.project_id, path="plan.md", kind="plan")
+        self.app._control_api_post(
+            "/api/data-plane/resources/associate",
+            {
+                "project_id": self.project_id,
+                "resource_id": res["id"],
+                "target_type": "experiment",
+                "target_id": exp["id"],
+                "role": "plan",
+                "blob": {
+                    "data_b64": base64.b64encode(plan.encode()).decode("ascii"),
+                    "content_type": "text/markdown",
+                },
+            },
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
+        self.assertIn("figures/diagram.png", str(ctx.exception))
 
     def test_plan_sections_missing_detects_empty_and_absent(self) -> None:
         self.assertEqual(plan_sections_missing(VALID_PLAN), [])
@@ -502,16 +528,17 @@ class WorkflowGateTest(unittest.TestCase):
     def test_report_image_links_must_resolve(self) -> None:
         exp_id = self._drive_to_running_with_result()
         report = VALID_REPORT + "\n## Figures\n\n![loss curve](figures/loss.png)\n"
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
-        with self.assertRaises(WorkflowError) as ctx:
-            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
+        # A dangling figure link is rejected at associate time, before any
+        # bytes are pinned.
+        with self.assertRaises(ValidationError) as ctx:
+            self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
         self.assertIn("figures/loss.png", str(ctx.exception))
-        # Once the figure exists on disk, re-associating the report
-        # submits it alongside, and the gate opens.
+        # Once the figure exists on disk, associating the report submits it
+        # alongside, and the gate opens.
         (self.repo / "figures").mkdir()
         (self.repo / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
+        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 

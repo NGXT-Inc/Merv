@@ -191,9 +191,10 @@ own repo / git history.
 
 `resource.validate` reads the current local file without registering or
 associating it. For gated roles such as `plan`, `report`, and `graph`, it
-preflights the same byte caps, required sections, report figure availability,
-and graph envelope checks that would otherwise fail at association or
-transition time.
+preflights the same byte caps, required sections, figure availability (every
+relative image link in a markdown plan/report/reflection doc must resolve to
+a local file under 5 MB), and graph envelope checks that would otherwise fail
+at association or transition time.
 
 When a resource is associated with an experiment, MCP stores the experiment's
 current `attempt_index` and current `version_id` on that association. Workflow

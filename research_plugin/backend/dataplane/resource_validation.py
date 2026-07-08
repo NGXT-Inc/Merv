@@ -8,7 +8,6 @@ from typing import Any
 from ..domain.artifacts import plan_sections_missing, report_problems
 from ..domain.graph_lint import graph_problems
 from ..artifacts.markdown_images import (
-    MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
 )
@@ -26,7 +25,10 @@ from ..domain.reflection_artifacts import (
 )
 from ..utils import NotFoundError, ValidationError
 from .repo_paths import resolve_repo_path
-from .resource_artifacts import reject_absolute_markdown_image_targets
+from .resource_artifacts import (
+    figure_link_problem,
+    reject_absolute_markdown_image_targets,
+)
 
 
 def validate_local_resource_artifact(
@@ -98,14 +100,20 @@ def validate_local_resource_artifact(
         missing = plan_sections_missing(text)
         if missing:
             problems.append("missing required sections: " + ", ".join(missing))
+        for link in markdown_image_links(text):
+            problem = figure_link_problem(
+                repo_root=repo_root, markdown_rel_path=rel_path, link=link
+            )
+            if problem:
+                problems.append(problem)
     elif role == "report":
         # exhibit_path is deliberately absent here: at associate time no
         # exhibit exists yet — only the submit_results gate supplies it.
         problems.extend(
             report_problems(
                 text,
-                figure_problem=lambda link: _figure_problem(
-                    repo_root=repo_root, rel_path=rel_path, link=link
+                figure_problem=lambda link: figure_link_problem(
+                    repo_root=repo_root, markdown_rel_path=rel_path, link=link
                 ),
             )
         )
@@ -114,8 +122,8 @@ def validate_local_resource_artifact(
     elif role in {"reflection_doc", LEGACY_REFLECTION_DOC_ROLE}:
         problems.extend(reflection_doc_problems(text))
         for link in markdown_image_links(text):
-            problem = _figure_problem(
-                repo_root=repo_root, rel_path=rel_path, link=link
+            problem = figure_link_problem(
+                repo_root=repo_root, markdown_rel_path=rel_path, link=link
             )
             if problem:
                 problems.append(problem)
@@ -133,28 +141,6 @@ def validate_local_resource_artifact(
         max_bytes=max_bytes,
         problems=problems,
     )
-
-
-def _figure_problem(*, repo_root: Path, rel_path: str, link: str) -> str | None:
-    # Per-link on-disk check — the same acceptance rule association's figure
-    # capture applies (exists, is a file, within the size cap). Checking each
-    # link independently means one bad link can't fail its siblings.
-    resolved = ((repo_root / rel_path).parent / link).resolve()
-    try:
-        resolved.relative_to(repo_root)
-    except ValueError:
-        return f"figure {link!r} escapes the repo"
-    if not resolved.exists():
-        return f"figure {link!r} has no submitted content: file does not exist"
-    if not resolved.is_file():
-        return f"figure {link!r} has no submitted content: target is not a file"
-    size = resolved.stat().st_size
-    if size > MARKDOWN_FIGURE_MAX_BYTES:
-        return (
-            f"figure {link!r} is {size} bytes; the maximum figure size is "
-            f"{MARKDOWN_FIGURE_MAX_BYTES} bytes"
-        )
-    return None
 
 
 def _result(

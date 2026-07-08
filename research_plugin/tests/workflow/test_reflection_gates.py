@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import unittest
@@ -681,14 +682,48 @@ class SynthesisGateTest(unittest.TestCase):
             "## Critical reading\nThe visual is needed for this reading.\n\n"
             "## Decision / future directions\nCreate the approved wave.\n"
         )
+        # A dangling figure link is rejected at associate time, before any
+        # bytes are pinned.
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate_file(
+                syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
+            )
+        self.assertIn("figures/project_graph.png", str(ctx.exception))
+
+    def test_gate_blocks_reflection_doc_with_unsubmitted_images(self) -> None:
+        # Defense in depth: a non-compliant data plane could submit the doc
+        # bytes without the figures the markdown links; the gate must block.
+        syn_id = self._drive_to_synthesizing()
+        doc = (
+            "# Synthesis\n\n"
+            "## Summary\nShort summary.\n\n"
+            "![project graph](figures/project_graph.png)\n\n"
+            "## Critical reading\nThe visual is needed for this reading.\n\n"
+            "## Decision / future directions\nCreate the approved wave.\n"
+        )
         self._associate_file(
             syn_id=syn_id, path="project/logic_graph.json", role="project_graph", body=VALID_PROJECT_GRAPH
         )
         self._associate_file(
-            syn_id=syn_id, path="project/reflection.md", role="reflection_doc", body=doc
-        )
-        self._associate_file(
             syn_id=syn_id, path="project/change_spec.json", role="change_spec", body=VALID_CHANGE_SPEC
+        )
+        full = self.repo / "project" / "reflection.md"
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(doc)
+        res = self.call("resource.register_file", project_id=self.project_id, path="project/reflection.md")
+        self.app._control_api_post(
+            "/api/data-plane/resources/associate",
+            {
+                "project_id": self.project_id,
+                "resource_id": res["id"],
+                "target_type": "reflection",
+                "target_id": syn_id,
+                "role": "reflection_doc",
+                "blob": {
+                    "data_b64": base64.b64encode(doc.encode()).decode("ascii"),
+                    "content_type": "text/markdown",
+                },
+            },
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call(

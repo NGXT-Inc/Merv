@@ -27,6 +27,7 @@ from ..domain.workflow_gates import (
     TERMINAL_STATUSES,
     allowed_transitions_for,
 )
+from ..artifacts.markdown_images import markdown_image_links
 from ..artifacts.pinned import PinnedStore
 from ..artifacts.roles import EXHIBIT_ROLE
 from ..state.store import BaseStateStore, row_to_dict, rows_to_dicts
@@ -909,9 +910,10 @@ class ExperimentService:
 
     def _validate_plan_sections(self, *, conn, experiment_id: str) -> None:
         """Block submit_design unless the current attempt's SUBMITTED plan fills
-        in the required spine. Lints the bytes pinned at associate; editing the
+        in the required spine and every relative figure link has submitted
+        figure content. Lints the bytes pinned at associate; editing the
         live file changes nothing until it is re-associated."""
-        plan_text, _, _ = self._pinned_text(
+        plan_text, version_id, path = self._pinned_text(
             conn=conn,
             experiment_id=experiment_id,
             role="plan",
@@ -925,6 +927,25 @@ class ExperimentService:
                 + ". Fill in the plan template's required spine — Summary; "
                 "Objective & hypothesis; Evaluation — then re-associate the plan "
                 "to submit the fix; see skills/research-workflow/plan-template.md."
+            )
+        figures = {
+            str(row["link_path"])
+            for row in conn.execute(
+                "SELECT link_path FROM report_figures WHERE report_version_id = ?",
+                (version_id,),
+            ).fetchall()
+        }
+        problems = [
+            f"figure {link!r} has no submitted content: make sure the file "
+            f"exists next to {path} (copy it out first if it was produced "
+            "on the sandbox), then re-associate the plan to submit it"
+            for link in markdown_image_links(plan_text)
+            if link not in figures
+        ]
+        if problems:
+            raise WorkflowError(
+                "experiment plan is not ready for design review: "
+                + "; ".join(problems)
             )
 
     def _validate_results_report(self, *, conn, experiment_id: str) -> None:

@@ -50,11 +50,8 @@ class LocalResourceArtifactReaderTest(unittest.TestCase):
             repo = Path(tmp)
             (repo / "reports").mkdir()
             (repo / "reports" / "fig.png").write_bytes(b"png")
-            (repo / "reports" / "big.png").write_bytes(
-                b"x" * (MARKDOWN_FIGURE_MAX_BYTES + 1)
-            )
             (repo / "reports" / "report.md").write_text(
-                "![small](fig.png)\n![big](big.png)\n![external](https://example.com/x.png)\n"
+                "![small](fig.png)\n![external](https://example.com/x.png)\n"
             )
 
             observed = LocalResourceArtifactReader(repo_root=repo).read_for_association(
@@ -66,6 +63,29 @@ class LocalResourceArtifactReaderTest(unittest.TestCase):
             [(figure["link_path"], figure["data"]) for figure in observed["figures"]],
             [("fig.png", b"png")],
         )
+
+    def test_rejects_missing_markdown_figure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "report.md").write_text("![gone](figures/missing.png)\n")
+
+            with self.assertRaisesRegex(ValidationError, "has no submitted content"):
+                LocalResourceArtifactReader(repo_root=repo).read_for_association(
+                    path="report.md",
+                    role="report",
+                )
+
+    def test_rejects_oversized_markdown_figure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "big.png").write_bytes(b"x" * (MARKDOWN_FIGURE_MAX_BYTES + 1))
+            (repo / "report.md").write_text("![big](big.png)\n")
+
+            with self.assertRaisesRegex(ValidationError, "maximum figure size"):
+                LocalResourceArtifactReader(repo_root=repo).read_for_association(
+                    path="report.md",
+                    role="report",
+                )
 
     def test_collects_plan_markdown_figures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
