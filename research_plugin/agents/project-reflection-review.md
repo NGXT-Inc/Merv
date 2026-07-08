@@ -36,7 +36,9 @@ through any other tool.
    claims and statuses, experiments and outcomes, per-experiment logic
    graphs, reports, review history. `reflection.get(reflection_id)` shows the
    corpus snapshot the wave covers, the roster, and the current attempt's
-   artifacts.
+   artifacts; the snapshot's `new_terminal_experiments` names the experiments
+   that finished since the last published wave — the new signal this
+   reflection exists to absorb.
 2. **The previous state of the project graph**, if any — earlier published
    reflection waves pin the graph version they shipped.
 3. **The five lens reflection docs** (role `reflection_lens_doc`, one file per lens).
@@ -49,6 +51,10 @@ The reflection is the project's distilled memory; keep it honest. The
 reflections are unverified inputs — verify what matters against the actual
 records, not against each other.
 
+- Did the wave engage the new signal? The corpus's `new_terminal_experiments`
+  are why this reflection ran; a wave whose artifacts could have been written
+  before those experiments finished did not do its job — a finding even when
+  everything it does say is accurate.
 - Does the graph's story reconcile with the corpus? Claims cited beyond
   their status, a dead end retold as a near-win, eliminated avenues silently
   dropped while wins stay — each is a finding. Verify load-bearing nodes

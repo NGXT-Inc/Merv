@@ -67,6 +67,7 @@
 <!-- RECOMMENDED. What could bias the result or break the run. -->
 
 ## Attempt log
-<!-- System-maintained: revision context from review feedback is appended here
-     on each return to `planned`. You may add a note per attempt, but do not
-     rely on hand-editing — the workflow carries prior-attempt context forward. -->
+<!-- OPTIONAL, yours to keep: a short note per attempt if you find it useful.
+     The workflow itself carries prior-attempt context forward in the
+     experiment record (`revision_context` from review feedback) — it never
+     writes to this file, so nothing here is required. -->

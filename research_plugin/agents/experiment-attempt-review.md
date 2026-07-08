@@ -74,6 +74,14 @@ numbers; the report is the attempt's interpretation of it.
 - `needs_changes`: the attempt needs rerun, repair, or narrower conclusion.
 - `fail`: the attempt is invalid or cannot support the conclusion.
 
+On `needs_changes` or `fail` you MUST also pass `return_to` — it routes the
+experiment: `"planned"` when the **plan itself** is flawed (wrong method,
+metric, or baseline; the attempt counter advances and a revised plan needs a
+fresh design review), `"running"` when the **plan stands** but execution or
+the conclusion is flawed (fix, re-run, resubmit on the same attempt). Choose
+`planned` only when the plan is the problem — do not send a sound plan back
+to design review for an execution mistake.
+
 ## Synopsis — the researcher's TLDR
 
 `review.submit` requires a `synopsis`: 1-3 plain sentences for the human

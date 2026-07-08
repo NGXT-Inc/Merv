@@ -18,8 +18,8 @@ workflow state.
 - Experiment: what we try.
 - Reflection: what the project has learned across experiments.
 - Resource: one regular file in the local repo.
-- Review: read-only design, experiment, human, or automated judgment submitted
-  to MCP.
+- Review: read-only design, experiment, reflection, human, or automated
+  judgment submitted to MCP.
 
 You may freely work on local repo files. Do not treat those edits as
 research-state mutations. A file becomes a research resource only after MCP
@@ -42,7 +42,8 @@ Review loops:
 Project reflection workflow:
 
 Finished Experiments -> Reflection Wave -> Multiple Lens Reflections ->
-Project Reflection -> Reflection Review -> Publish Project Logic + Next Proposals
+Project Reflection -> Reflection Review -> Publish Project Logic + Next
+Experiment Wave
 
 Review loops:
 
@@ -111,8 +112,8 @@ Heavy artifacts should go to durable object storage instead of into the repo.
    request already provided that information, then call `project.create`. If
    `exists` is true, read `at_a_glance`: it links the latest reflection
    document and project graph, shows whether newer experiments or claim changes
-   happened since that reflection, and gives the recommended `resource.resolve`
-   / `reflection.get` calls for more context.
+   happened since that reflection, and gives recommended `resource.resolve`
+   reads (plus the reflection id for `reflection.get`) for more context.
 2. Ask MCP for `workflow.status_and_next(experiment_id?)` before acting.
 3. Identify the claim or experiment being worked on.
 4. Follow MCP's `next_action`, allowed actions, blocked actions, and gate state.
@@ -332,9 +333,11 @@ report, graph) lives there, and that folder is what syncs to sandboxes. Names
 are unique within a project: if the name is already taken, creation is
 rejected and you must pick a new one.
 
-The create response confirms the folder: it includes `folder` (e.g.
-`experiments/lora-rank-sweep/`), already created on disk. Work inside it from
-that moment on — starting with `plan.md`.
+The create response announces the folder: it includes `folder` (e.g.
+`experiments/lora-rank-sweep/`). Data-plane actions create the directory on
+demand — call `experiment.materialize_folders` if you want it on disk before
+the first file write. Work inside it from that moment on — starting with
+`plan.md`.
 
 Pick the name for **navigation**: the project supplies the shared context, so
 the name should carry only the contrast — lead with what distinguishes this
@@ -347,8 +350,9 @@ replication project, `released_adapters` / `scratch_training` /
 UI. The full design (hypothesis, method, evaluation, risks) does **not** go in
 `intent`; it lives in the `plan.md` resource (see Experiment plan below). The
 MCP server still accepts the older aliases `claim_id`, `claim_ids`, `title`,
-`hypothesis`, `design`, `success_criteria`, and `risks`, but they are deprecated
-and no longer folded into `intent` — put that content in the plan instead.
+`hypothesis`, `design`, `success_criteria`, and `risks`, but they are
+deprecated: `title` and friends only backfill an empty `intent` (they are not
+concatenated into it) — put that content in the plan instead.
 Create always starts at `planned`. Use `experiment.transition` for workflow
 state changes.
 
@@ -372,6 +376,11 @@ is blocked until each of these headings has real content:
 The recommended sections (**Method**, **Outputs**, **Risks & confounders**) are
 not lint-enforced, but the design reviewer can return `needs_changes` if they
 are missing or too thin for this experiment. Scale their depth to the work.
+
+Plans may include figures: every relative image link must resolve to a local
+file under 5 MB when you associate the plan — a dangling or oversized link is
+rejected at `resource.associate`, and `submit_design` re-checks that each
+linked figure was submitted alongside the plan.
 
 If `submit_design` is rejected for missing sections, fill them in and
 **re-associate the plan** (`resource.associate` with role `plan`) before
@@ -483,8 +492,9 @@ When the agent creates or changes files during an experiment:
 
 When `workflow.status_and_next` says to launch or wait for a reviewer, follow
 `workflow.review_gate`. If no request exists, call `review.request` and launch
-a separate reviewer with the returned `reviewer_handoff` and
-`reviewer_capability`. If a request is pending but you no longer have its
+a separate reviewer with the returned `reviewer_handoff` — its `spawn_prompt`
+is a ready-made prompt for the reviewer subagent — and `reviewer_capability`.
+If a request is pending but you no longer have its
 one-time capability, call `review.request` again and use the fresh response.
 
 Reviewer agents must be separate and read-only. They start and submit through

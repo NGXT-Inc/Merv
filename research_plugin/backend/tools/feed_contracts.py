@@ -77,7 +77,8 @@ class FeedPostInput(ProjectScopedInput):
     ref: str | None = Field(
         default=None,
         description=(
-            "Optional id of the entity this post is about (exp_/claim_/res_/syn_). "
+            "Optional id of the entity this post is about "
+            "(exp_/claim_/res_/rver_/syn_/rev_). "
             "Leave empty for an un-anchored thought."
         ),
     )

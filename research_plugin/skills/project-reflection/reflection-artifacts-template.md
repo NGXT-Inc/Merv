@@ -131,8 +131,7 @@ experiment in the same change spec.
       "claim_id": "claim_existing",
       "status": "supported",
       "confidence": "high",
-      "rationale": "Reviewed experiments exp_a and exp_b agree within the registered decision rules.",
-      "evidence": ["exp_a", "rev_b", "syn_this"]
+      "rationale": "Reviewed experiments exp_a and exp_b agree within the registered decision rules."
     },
     {
       "op": "create",
@@ -140,8 +139,7 @@ experiment in the same change spec.
       "statement": "The LR schedule effect transfers at 10x scale.",
       "scope": "Same model family and dataset family as the current project.",
       "confidence": "medium",
-      "rationale": "The project graph now identifies scale transfer as the live uncertainty.",
-      "evidence": ["syntheses/syn_this/reflections/entropy.md"]
+      "rationale": "The project graph now identifies scale transfer as the live uncertainty."
     }
   ],
   "decision": {

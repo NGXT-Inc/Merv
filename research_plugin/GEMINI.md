@@ -2,7 +2,7 @@
 
 This extension connects you to the Research Plugin MCP server: a research
 kernel that owns durable state (claims, experiments, resources, reviews,
-syntheses), the gated experiment workflow, and cloud sandbox provisioning.
+reflections), the gated experiment workflow, and cloud sandbox provisioning.
 The MCP server is a stdio proxy that always dials
 `RESEARCH_PLUGIN_CONTROL_URL`. For local deployments that URL is the localhost
 brain (`research-plugin-http`, start it first); for hosted deployments it is the
@@ -19,7 +19,7 @@ Operating rules:
   resource after `resource.register_file` + `resource.associate`.
 - For the full operating procedure, load the `research-workflow` skill. For
   project-level reflection waves, load the `project-reflection` skill.
-- When `workflow.status_and_next` asks for a design, experiment, or synthesis
+- When `workflow.status_and_next` asks for a design, experiment, or reflection
   review, delegate to the matching bundled subagent (`experiment-design-review`,
   `experiment-attempt-review`, or `project-reflection-review`), passing the target id,
   `review_request_id`, and `reviewer_capability` in the prompt. Reviewers are

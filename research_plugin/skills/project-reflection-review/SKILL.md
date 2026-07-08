@@ -17,7 +17,9 @@ document (role `reflection_doc`), and a change spec (role
 `change_spec`).
 
 Do not mutate project state. Use only read-only context and the review
-capability provided by MCP. Submit the review directly to MCP.
+capability provided by MCP. Submit the review directly to MCP: `review.start`
+requires your own session identity as `caller_session_id` (never the
+producer session's), then `review.submit`.
 
 ## Your four inputs
 
@@ -25,7 +27,9 @@ capability provided by MCP. Submit the review directly to MCP.
    claims and their statuses, experiments and their outcomes, the
    per-experiment logic graphs, reports, and review history. The reflection
    wave's corpus snapshot (on `reflection.get`) lists the finished
-   experiments the wave claims to cover.
+   experiments the wave claims to cover, and its `new_terminal_experiments`
+   names the ones that finished since the last published wave — the new
+   signal this reflection exists to absorb.
 2. **The previous state of the project graph**, if any — earlier published
    reflection waves pin the graph version they shipped, so you can see what this
    wave changed, pruned, or retold.
@@ -41,6 +45,11 @@ The reflection wave is the project's *distilled memory*; your job is to keep it
 honest. The reflections are unverified inputs — check what matters against
 the actual records, not against each other.
 
+- **Did the wave engage the new signal?** The corpus's
+  `new_terminal_experiments` are why this reflection ran. A wave whose graph,
+  reflection document, and change spec could have been written before those
+  experiments finished — nothing absorbed, nothing re-weighted — did not do
+  its job; that is a finding even when everything it does say is accurate.
 - **Does the graph's story reconcile with the corpus?** Claims cited beyond
   their recorded status, a contested result presented as established, a
   dead end retold as a near-win, wins kept while eliminated avenues and
