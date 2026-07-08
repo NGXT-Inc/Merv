@@ -76,7 +76,6 @@ FILE_MODULES = {
     "services/projects.py": RESEARCH_CORE,
     "services/reflection_tools.py": RESEARCH_CORE,
     "services/graph_refs.py": RESEARCH_CORE,
-    "services/map.py": RESEARCH_CORE,
     # sandbox: lifecycle services + local strays of the sandbox stack.
     "services/transcript_cache.py": SANDBOX,
     "services/quotas.py": SANDBOX,  # TODO tenancy concern — may move later
@@ -136,7 +135,6 @@ TABLE_OWNERS = {
     "reflections": RESEARCH_CORE,
     "synthesis_claim_changes": RESEARCH_CORE,
     "synthesis_experiments": RESEARCH_CORE,
-    "map_layout": RESEARCH_CORE,
     "resources": ARTIFACTS,
     "resource_versions": ARTIFACTS,
     "resource_associations": ARTIFACTS,

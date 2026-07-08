@@ -169,7 +169,6 @@ def _target(**overrides: Any) -> dict[str, Any]:
         "sandboxes": _Unused(),
         "mlflow_tracking": _Unused(),
         "feed": _Unused(),
-        "research_map": _Unused(),
     }
     base.update(overrides)
     return base
