@@ -68,10 +68,10 @@ project(action="create", name, summary?)          # create WITHOUT linking (rare
 workflow.status_and_next(project_id, experiment_id?)
 project.update(project_id, name?, summary?)
 project.get(project_id)
-claim.list(project_id)                            # REST/UI + internal dispatch only; agents get active claims from workflow.status_and_next
+claim.list(project_id)                            # REST/UI + internal dispatch only; agents read all claims via project(action="overview")
 claim.create(project_id, statement, scope?)
 claim.update(project_id, claim_id, status?, confidence?)  # statement/scope are immutable; revise text via a reviewed reflection change spec or abandon-and-recreate
-experiment.list(project_id)                       # REST/UI + internal dispatch only; agents get active experiments from workflow.status_and_next
+experiment.list(project_id)                       # REST/UI + internal dispatch only; agents read all experiments via project(action="overview")
 experiment.create(project_id, name, intent, tested_claim_ids?)
 experiment.get_state(project_id, experiment_id)   # see "get_state shape" below
 resource.find(project_id, resource_id?, include_history?, kind?, experiment_id?, missing?, compact?, limit?, offset?)  # resource_id → resolve one; else list

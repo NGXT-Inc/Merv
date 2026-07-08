@@ -139,40 +139,21 @@ Three Cursor-specific notes:
 Set it explicitly only to force one workspace onto a different brain, e.g.
 `http://127.0.0.1:8787` for a local deployment.)
 
-3. **Tool ceiling.** The plugin exposes 57 MCP tools (47 with storage
-   disabled); Cursor has a hard cap of ~40 active tools across all MCP
-   servers (staff-confirmed) — tools beyond the cap are **silently invisible
-   to the agent**, with only a settings warning. Disable unused MCP servers
-   and allowlist this 34-tool set, which drives the full workflow with
-   headroom to spare:
-
-   - Orientation: `project.current`, `project.connect`,
-     `workflow.status_and_next`
-   - Claims: `claim.create`, `claim.list`, `claim.update`
-   - Experiments: `experiment.create`, `experiment.list`,
-     `experiment.get_state`, `experiment.transition`,
-     `experiment.materialize_folders`, `experiment.exhibit`
-   - Resources: `resource.register_file`, `resource.associate`,
-     `resource.validate`
-   - Reviews: `review.request`, `review.start`, `review.submit`,
-     `review.status`
-   - Sandboxes: `sandbox.request`, `sandbox.get`, `sandbox.terminal`,
-     `sandbox.runs`, `sandbox.pull_outputs`, `sandbox.release`
-   - MLflow: `mlflow.context`, `mlflow.finalize_run`
-   - Reflection waves: `reflection.create`, `reflection.get`,
-     `reflection.list`, `reflection.transition`
-   - Feed: `feed.register`, `feed.post`, `feed.list`
-
-   The rest (`project.create`/`update`/`list`, `resource.list`/`resolve`/
-   `delete`/`associate_batch`, `sandbox.attach`/`extend`/`health`/`list`/
-   `options`, and the `storage.*` family) are conveniences to swap in when a
-   project needs them — `project.connect` already covers create-and-link
-   onboarding.
+3. **Tool ceiling.** Cursor has a hard cap of ~40 active tools across all
+   MCP servers (staff-confirmed) — tools beyond the cap are **silently
+   invisible to the agent**, with only a settings warning. The plugin's
+   agent-facing catalog fits under the cap in every configuration: **31
+   tools with storage disabled, 35 with storage enabled** (UI/internal
+   tools like `project.list` or `review.status` are served hidden and never
+   reach the client). No allowlist is needed for this plugin alone; if you
+   run other MCP servers alongside it, keep the combined active-tool total
+   under ~40 by disabling servers or tools you are not using.
 
 One cosmetic quirk: Cursor's MCP settings shows a "tool name must only
 contain alphanumeric characters and underscores" warning for dotted names
-like `project.current`. Cursor staff have confirmed the warning is false —
-dotted tools are called and work normally.
+like `experiment.get_state`. Cursor staff have confirmed the warning is
+false — dotted tools are called and work normally. (The busiest tool,
+`project`, has no dot at all.)
 
 ## Use with Gemini CLI
 
