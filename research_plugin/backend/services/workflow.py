@@ -96,7 +96,7 @@ class WorkflowService:
                 (project_id,),
             ).fetchall()
             exp_rows = conn.execute(
-                "SELECT id, intent, status, attempt_index FROM experiments WHERE project_id = ? ORDER BY created_at, id",
+                "SELECT id, name, intent, status, attempt_index FROM experiments WHERE project_id = ? ORDER BY created_at, id",
                 (project_id,),
             ).fetchall()
             experiment = (
@@ -132,6 +132,14 @@ class WorkflowService:
                 takeover = self._reflection_workflow_takeover(reflection=reflection)
                 if takeover is not None:
                     workflow = takeover
+            elif (
+                requested_experiment_id is None
+                and experiment is not None
+                and str(experiment.get("status")) in TERMINAL_STATUSES
+            ):
+                workflow = self._live_experiments_takeover(
+                    exp_rows=exp_rows, reflection=reflection
+                )
             result = {
                 "project": {
                     **(project or {}),
@@ -583,6 +591,51 @@ class WorkflowService:
             missing=[reflection["hint"]] if reflection.get("hint") else [],
         )
 
+    def _live_experiments_takeover(
+        self, *, exp_rows, reflection: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """The workflow block when the auto-resolved (newest-created)
+        experiment is terminal while sibling experiments are still live.
+
+        The project-level "what now?" call must never answer 'none' over live
+        work: the slim projection drops the project's experiment list and the
+        reflection takeover only covers the idle project, so this lists the
+        live siblings in the guidance payload for the agent to re-orient onto
+        — or start the next experiment. Explicit experiment-scoped calls
+        never reach this (the resolved experiment's terminal gate stands)."""
+        live = [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "status": row["status"],
+                "attempt_index": row["attempt_index"],
+                "intent": row["intent"],
+            }
+            for row in exp_rows
+            if str(row["status"]) not in TERMINAL_STATUSES
+        ]
+        signal = (reflection or {}).get("signal") or {}
+        allowed = ["workflow.status_and_next"]
+        blocked: list[dict[str, str]] = []
+        if signal.get("experiment_create_blocked"):
+            reason = (reflection or {}).get("hint") or reflection_create_block_reason(
+                signal=signal
+            )
+            blocked.append({"action": "experiment.create", "reason": reason})
+        else:
+            allowed.append("experiment.create")
+        return self._next(
+            gate="live_experiments",
+            action=(
+                "tend_live_experiments (this experiment is finished; re-orient "
+                "with workflow.status_and_next(experiment_id=...) on one of "
+                "live_experiments, or create the next experiment)"
+            ),
+            allowed=allowed,
+            blocked=blocked,
+            live_experiments=live,
+        )
+
     def _with_experiment_create_block(
         self, *, workflow: dict[str, Any], signal: dict[str, Any]
     ) -> dict[str, Any]:
@@ -870,6 +923,7 @@ class WorkflowService:
         revision: str = "",
         review_gate: dict[str, Any] | None = None,
         resource_guidance: dict[str, Any] | None = None,
+        live_experiments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         result = {
             "current_gate": gate,
@@ -883,6 +937,8 @@ class WorkflowService:
             result["review_gate"] = review_gate
         if resource_guidance is not None:
             result["resource_guidance"] = resource_guidance
+        if live_experiments is not None:
+            result["live_experiments"] = live_experiments
         return result
 
     def _sort_active_experiments(

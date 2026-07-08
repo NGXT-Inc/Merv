@@ -95,15 +95,21 @@ For local development, link the plugin directory into
 `~/.cursor/plugins/local/research-plugin` (symlinks are supported), then
 enable it in Cursor.
 
-Two Cursor-specific notes:
+Three Cursor-specific notes:
 
 1. **Project root.** Cursor does not spawn stdio MCP servers in the workspace
    directory, so [mcp.json](../mcp.json) passes
    `"RESEARCH_PLUGIN_REPO_ROOT": "${workspaceFolder}"` — never rely on cwd.
-2. **Launcher path.** The bundled `mcp.json` uses a plugin-relative command
-   (`bin/research-plugin-mcp`). If your Cursor build does not resolve relative
-   commands against the plugin root, register the server manually in the
-   project's `.cursor/mcp.json` with the absolute path:
+   (If a client ever passes the variable through unexpanded, the launcher now
+   fails loudly instead of silently binding to the spawn cwd.)
+2. **Launcher path.** Cursor requires stdio commands to be on PATH or a full
+   path — there is no plugin-relative resolution and no `${pluginRoot}`
+   variable. The bundled `mcp.json` therefore uses
+   `${userHome}/.cursor/plugins/local/research-plugin/bin/research-plugin-mcp`,
+   which is correct for the documented install location (Cursor interpolates
+   variables in `command`). If you install the plugin anywhere else, register
+   the server manually in the project's `.cursor/mcp.json` with the absolute
+   path:
 
 ```json
 {
@@ -123,10 +129,39 @@ Two Cursor-specific notes:
 (`RESEARCH_PLUGIN_CONTROL_URL` points at the brain. Use the localhost default
 for local deployments, or a hosted HTTPS URL for hosted deployments.)
 
-The plugin exposes ~55 MCP tools; Cursor historically limits the number of
-active tools (~40 community-reported), so the plugin alone can exceed that
-ceiling. Disable unused MCP servers in the workspace and allowlist the
-research tools you need.
+3. **Tool ceiling.** The plugin exposes 56 MCP tools (46 with storage
+   disabled); Cursor has a hard cap of ~40 active tools across all MCP
+   servers (staff-confirmed) — tools beyond the cap are **silently invisible
+   to the agent**, with only a settings warning. Disable unused MCP servers
+   and allowlist this 34-tool set, which drives the full workflow with
+   headroom to spare:
+
+   - Orientation: `project.current`, `project.create`,
+     `workflow.status_and_next`
+   - Claims: `claim.create`, `claim.list`, `claim.update`
+   - Experiments: `experiment.create`, `experiment.list`,
+     `experiment.get_state`, `experiment.transition`,
+     `experiment.materialize_folders`, `experiment.exhibit`
+   - Resources: `resource.register_file`, `resource.associate`,
+     `resource.validate`
+   - Reviews: `review.request`, `review.start`, `review.submit`,
+     `review.status`
+   - Sandboxes: `sandbox.request`, `sandbox.get`, `sandbox.terminal`,
+     `sandbox.runs`, `sandbox.pull_outputs`, `sandbox.release`
+   - MLflow: `mlflow.context`, `mlflow.finalize_run`
+   - Reflection waves: `reflection.create`, `reflection.get`,
+     `reflection.list`, `reflection.transition`
+   - Feed: `feed.register`, `feed.post`, `feed.list`
+
+   The rest (`project.update`/`list`, `resource.list`/`resolve`/`delete`/
+   `associate_batch`, `sandbox.attach`/`extend`/`health`/`list`/`options`,
+   and the `storage.*` family) are conveniences to swap in when a project
+   needs them.
+
+One cosmetic quirk: Cursor's MCP settings shows a "tool name must only
+contain alphanumeric characters and underscores" warning for dotted names
+like `project.current`. Cursor staff have confirmed the warning is false —
+dotted tools are called and work normally.
 
 ## Use with Gemini CLI
 

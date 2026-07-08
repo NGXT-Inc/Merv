@@ -33,9 +33,13 @@ class CursorAdapterTest(unittest.TestCase):
         config = json.loads((PLUGIN_ROOT / "mcp.json").read_text())
         server = config["mcpServers"]["research-plugin"]
         self.assertEqual(server["env"]["RESEARCH_PLUGIN_REPO_ROOT"], "${workspaceFolder}")
-        command = Path(server["command"])
-        self.assertFalse(command.is_absolute(), "Cursor bundle must stay install-relative")
-        self.assertTrue(_executable(PLUGIN_ROOT / command))
+        # Cursor resolves stdio commands against PATH or as full paths only —
+        # no plugin-relative resolution — so the bundle addresses the launcher
+        # through its documented install location under ${userHome}.
+        command = server["command"]
+        install_prefix = "${userHome}/.cursor/plugins/local/research-plugin/"
+        self.assertTrue(command.startswith(install_prefix))
+        self.assertTrue(_executable(PLUGIN_ROOT / command.removeprefix(install_prefix)))
 
 
 class GeminiAdapterTest(unittest.TestCase):

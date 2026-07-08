@@ -2,7 +2,7 @@
   "mcpServers": {
     "research-plugin": {
       "type": "stdio",
-      "command": "bin/research-plugin-mcp",
+      "command": "${userHome}/.cursor/plugins/local/research-plugin/bin/research-plugin-mcp",
       "args": [],
       "env": {
         "RESEARCH_PLUGIN_REPO_ROOT": "${workspaceFolder}",

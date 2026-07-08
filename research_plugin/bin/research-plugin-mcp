@@ -32,10 +32,20 @@ export PYTHONPATH="$PLUGIN_DIR${PYTHONPATH:+:$PYTHONPATH}"
 if [ -z "${RESEARCH_PLUGIN_REPO_ROOT:-}" ]; then
   export RESEARCH_PLUGIN_REPO_ROOT="$PWD"
 else
+  GIVEN_REPO_ROOT="$RESEARCH_PLUGIN_REPO_ROOT"
   case "$RESEARCH_PLUGIN_REPO_ROOT" in
     /*) ;;
-    *) export RESEARCH_PLUGIN_REPO_ROOT="$(cd "$RESEARCH_PLUGIN_REPO_ROOT" >/dev/null 2>&1 && pwd)" ;;
+    *) RESEARCH_PLUGIN_REPO_ROOT="$(cd "$RESEARCH_PLUGIN_REPO_ROOT" >/dev/null 2>&1 && pwd)" || true ;;
   esac
+  # Fail loudly rather than silently falling back to the spawn cwd — an
+  # unresolvable value usually means the client left a variable like
+  # ${workspaceFolder} unexpanded, and every repo-local operation would
+  # otherwise target the wrong directory.
+  if [ -z "$RESEARCH_PLUGIN_REPO_ROOT" ] || [ ! -d "$RESEARCH_PLUGIN_REPO_ROOT" ]; then
+    echo "[research_plugin] RESEARCH_PLUGIN_REPO_ROOT='$GIVEN_REPO_ROOT' does not resolve to a directory (unexpanded \${workspaceFolder}?)" >&2
+    exit 1
+  fi
+  export RESEARCH_PLUGIN_REPO_ROOT
 fi
 
 # No backend state-path export: the stdio proxy never opens the project state DB.
