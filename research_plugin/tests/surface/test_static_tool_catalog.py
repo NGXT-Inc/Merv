@@ -104,7 +104,7 @@ class BarePythonProxyTest(unittest.TestCase):
         self.assertEqual(bare, live)
         names = {tool["name"] for tool in bare}
         self.assertIn("project.connect", names)
-        self.assertIn("resource.register_file", names)
+        self.assertIn("resource.register", names)
 
     def test_sandbox_request_without_pydantic_skips_local_validation(self) -> None:
         captured: dict = {}
