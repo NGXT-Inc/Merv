@@ -3,12 +3,13 @@
  * definitions and reuses only the shared transport (`request`, `mediaUrl`) from
  * api.js — so nothing in the core api client depends on the feed.
  */
-import { request, fetchObjectUrl } from '../api';
+import { request, fetchObjectUrl, fetchAuthedText } from '../api';
 
 export const feedApi = {
   // Reverse-chronological posts; `cursor` is the created_seq of the last item
   // from the previous page (infinite scroll). The first page (no cursor) also
-  // carries a soft posting `nudge` for agents — harmless/ignored by the UI.
+  // carries a soft posting `nudge` (surfaced as the quiet-feed banner) and may
+  // carry `researcher_attention` (agent-facing; ignored by the UI).
   getFeed: (pid, { limit = 30, cursor = null, signal } = {}) => {
     const p = new URLSearchParams();
     p.set('limit', String(limit));
@@ -19,7 +20,25 @@ export const feedApi = {
   // is attached (hosted mode serves feed bytes behind auth; a bare <img src>
   // can't carry it). Caller revokes the URL on unmount.
   imageObjectUrl: (relPath, opts) => fetchObjectUrl(relPath, opts),
-  // Usage analytics (fire-and-forget): feed_opened / post_viewed / link_clicked.
+  // Auth-aware loader for embed documents: raw HTML text, mounted by the card
+  // via <iframe srcdoc sandbox="allow-scripts"> (never a plain src URL, which
+  // couldn't carry the Bearer token in hosted mode).
+  embedText: (relPath, opts) => fetchAuthedText(relPath, opts),
+  // The researcher's single-user reaction toggles. Returns the updated post view.
+  setReaction: (pid, postId, kind, on) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/feed/${encodeURIComponent(postId)}/reactions`,
+      { method: 'POST', body: { kind, on } },
+    ),
+  // The researcher replies to a post. Returns the created post view
+  // (author "Researcher", in_reply_to set).
+  reply: (pid, postId, text) =>
+    request(
+      `/api/projects/${encodeURIComponent(pid)}/feed/${encodeURIComponent(postId)}/reply`,
+      { method: 'POST', body: { text } },
+    ),
+  // Usage analytics (fire-and-forget): feed_opened / post_viewed / link_clicked
+  // / image_viewed (also reused for embed opens — the allowlist is fixed).
   trackFeed: (pid, event, extra = {}) =>
     request(`/api/projects/${encodeURIComponent(pid)}/feed/track`, {
       method: 'POST',

@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProjectStore } from '../store/useProjectStore';
 import { feedApi } from './feedApi';
+import ContextHeader from './ContextHeader';
 import PostCard from './PostCard';
 import { useNow, dayLabel, withDayDividers } from './feedModel';
 import './feed.css';
 
 const PAGE_SIZE = 20;
 const POLL_MS = 10000;
+
+// The quiet-feed banner's one line, derived defensively — the nudge payload is
+// agent-facing and its fields may evolve; the UI states the silence plainly
+// and never repeats the agent-directed hint text.
+function nudgeLabel(nudge) {
+  const h = Number(nudge?.hours_since_last_post);
+  if (Number.isFinite(h) && h >= 1) return `Agents haven't posted in ~${Math.round(h)}h`;
+  return 'The feed has been quiet for a while';
+}
 
 /**
  * The social feed (Feed_PRD.md): a reverse-chronological, low-chrome stream of
@@ -27,6 +37,7 @@ export default function Feed() {
   const [status, setStatus] = useState('loading'); // loading | ready | error
   const [error, setError] = useState('');
   const [retryKey, setRetryKey] = useState(0);
+  const [nudge, setNudge] = useState(null); // page-1 quiet-feed signal
   const loadingMoreRef = useRef(false);
   const sentinelRef = useRef(null);
   // Mirrors for the async paths: newest seq across visible + buffered posts
@@ -57,12 +68,14 @@ export default function Feed() {
     // doesn't chase the reader down the page.
     const stored = Number(localStorage.getItem(`rsui:feed:lastSeen:${projectId}`));
     setLastSeenSeq(Number.isFinite(stored) && stored > 0 ? stored : null);
+    setNudge(null);
     feedApi.getFeed(projectId, { limit: PAGE_SIZE })
       .then((data) => {
         if (cancelled) return;
         setPosts(data.posts || []);
         setCursor(data.next_cursor ?? null);
         setHasMore(data.next_cursor != null);
+        setNudge(data.nudge || null);
         setStatus('ready');
         feedApi.trackFeed(projectId, 'feed_opened', { count: (data.posts || []).length }).catch(() => {});
       })
@@ -97,6 +110,9 @@ export default function Feed() {
     const t = setInterval(() => {
       feedApi.getFeed(projectId, { limit: PAGE_SIZE, signal: controller.signal })
         .then((data) => {
+          // Page-1 responses carry the quiet-feed signal; keep the banner
+          // current (it dissolves on its own once the agents speak again).
+          setNudge(data.nudge || null);
           const fresh = (data.posts || []).filter((p) => p.created_seq > topSeqRef.current);
           if (!fresh.length) return;
           setPending((prev) => {
@@ -166,6 +182,43 @@ export default function Feed() {
     if (projectId) feedApi.trackFeed(projectId, 'post_viewed', { post_id: postId }).catch(() => {});
   }, [projectId]);
 
+  // Optimistic single-user reaction toggle: flip locally, confirm with the
+  // server's post view, roll the flip back if the write fails.
+  const onReact = useCallback((post, kind) => {
+    if (!projectId) return;
+    const on = !post.reactions?.[kind];
+    const flip = (id, value) => setPosts((prev) => prev.map((p) => (
+      p.id === id ? { ...p, reactions: { ...(p.reactions || {}), [kind]: value } } : p
+    )));
+    flip(post.id, on);
+    feedApi.setReaction(projectId, post.id, kind, on)
+      .then((data) => {
+        // Take only the reactions from the confirm — the POST response is a
+        // bare service view without the HTTP-layer media URL enrichment, and
+        // replacing wholesale would strip image_url/embed_url off the post.
+        const view = data?.post || data;
+        if (view?.id && view.reactions) {
+          setPosts((prev) => prev.map((p) => (
+            p.id === view.id ? { ...p, reactions: view.reactions } : p
+          )));
+        }
+      })
+      .catch(() => flip(post.id, !on));
+  }, [projectId]);
+
+  // The researcher's reply: post it, then insert the created view immediately
+  // (front of the raw list — it owns the newest seq; the threading pass seats
+  // it under its parent). Errors surface in the composer, which stays open.
+  const onReply = useCallback(async (post, text) => {
+    if (!projectId) throw new Error('No project selected');
+    const data = await feedApi.reply(projectId, post.id, text);
+    const view = data?.post || data;
+    if (view?.id) {
+      setPosts((prev) => (prev.some((p) => p.id === view.id) ? prev : [view, ...prev]));
+    }
+    return view;
+  }, [projectId]);
+
   // One shared clock: every card's relative time ages in step, and the day
   // dividers roll over correctly at midnight.
   const now = useNow();
@@ -176,6 +229,10 @@ export default function Feed() {
       {/* Visually hidden on desktop; the mobile surface styles it as the
           page title (One-Surface redesign). */}
       <h1 className="feed-title">Feed</h1>
+      <ContextHeader posts={posts} now={now} />
+      {status === 'ready' && nudge && (
+        <div className="feed-nudge">{nudgeLabel(nudge)}</div>
+      )}
       <div className="feed-newpill-wrap" aria-live="polite">
         {pending.length > 0 && (
           <button type="button" className="feed-newpill" onClick={() => revealPending(true)}>
@@ -189,7 +246,10 @@ export default function Feed() {
           <div className="feed-list" aria-hidden="true">
             {[0, 1, 2].map((i) => (
               <div key={i} className="postcard postcard--skeleton">
-                <div className="skel skel--handle" />
+                <div className="skel-head">
+                  <span className="skel skel--avatar" />
+                  <div className="skel skel--handle" />
+                </div>
                 <div className="skel skel--line" />
                 <div className="skel skel--line skel--short" />
               </div>
@@ -245,6 +305,10 @@ export default function Feed() {
                 onView={onView}
                 now={now}
                 grouped={item.grouped}
+                depth={item.depth || 0}
+                orphan={Boolean(item.orphan)}
+                onReact={onReact}
+                onReply={onReply}
               />
             );
           })}

@@ -56,6 +56,19 @@ export async function fetchObjectUrl(relPath, { signal } = {}) {
   return URL.createObjectURL(await res.blob());
 }
 
+// Fetch a text asset WITH auth (same reasoning as fetchObjectUrl — hosted mode
+// serves bytes behind the Bearer token) for content that is rendered inline
+// rather than referenced by URL, e.g. sandboxed feed embeds mounted through
+// <iframe srcdoc>.
+export async function fetchAuthedText(relPath, { signal } = {}) {
+  const init = { headers: { 'X-RP-Client-Version': CLIENT_VERSION }, signal };
+  const token = authToken();
+  if (token) init.headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${relPath}`, init);
+  if (!res.ok) throw new Error(`HTTP ${res.status} on GET ${relPath}`);
+  return res.text();
+}
+
 async function send(path, { method = 'GET', body, signal, headers = {} } = {}) {
   const init = { method, signal, headers: { 'X-RP-Client-Version': CLIENT_VERSION, ...headers } };
   const token = authToken();

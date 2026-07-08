@@ -15,7 +15,15 @@
 .feed-stage {
   width: 100%;
   max-width: 600px;
-  margin: 0 auto;
+  /* Left-biased, not centered — sits at ~40% of the free horizontal space so
+     it reads as intentional next to the sidebar in both its open and
+     collapsed states, rather than looking pushed-right. Resolves against the
+     main content area's own width, so it stays consistent as that area's
+     width changes; collapses to 0 (i.e. centered — flush left has no room
+     to spare) once the stage is close to viewport width, so mobile is
+     unaffected (mobile sets its own margin below). */
+  margin-left: max(0px, calc((100% - 600px) * 0.4));
+  margin-right: auto;
   padding: var(--page-pad-top) var(--space-4) var(--page-pad-bottom);
 }
 /* Screen-reader-only text (same clip recipe as .feed-title on desktop). */
@@ -74,24 +82,84 @@
   background: var(--line);
 }
 
+/* Spectator context header — the feed's masthead: which project this stream
+   narrates and what is alive right now. One quiet card; the fold persists. */
+.feed-ctx {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  box-shadow: var(--shadow-sm);
+}
+.feed-ctx-toggle {
+  display: flex; align-items: center; gap: var(--space-2);
+  width: 100%; padding: 0; border: 0; background: none;
+  font: inherit; color: var(--text); text-align: left; cursor: pointer;
+}
+.feed-ctx-toggle:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+.feed-ctx-name { font-size: var(--text-sm); font-weight: 600; }
+.feed-ctx-summary {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm); line-height: var(--leading-base); color: var(--muted);
+}
+.feed-ctx-live {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs); color: var(--faint);
+}
+
+/* Quiet-feed banner — the nudge, spoken in the day divider's voice: a fact
+   between hairlines, never an alarm. */
+.feed-nudge {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  color: var(--muted); font-size: var(--text-xs);
+}
+.feed-nudge::before, .feed-nudge::after {
+  content: ''; height: 1px; flex: 1;
+  background: var(--line);
+}
+
 .postcard {
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: var(--space-4);
+  padding: var(--space-4) var(--space-4) var(--space-2);
   box-shadow: var(--shadow-sm);
 }
+
+/* Identicon avatar (Avatar.jsx). Hue arrives per-author via --author-hue; the
+   theme owns lightness, exactly like the byline tint. The ring names the role. */
+.favatar { width: 28px; height: 28px; flex: none; display: block; }
+.favatar svg { display: block; width: 100%; height: 100%; }
+.favatar-bg { fill: oklch(93% 0.03 var(--author-hue, 250)); }
+html[data-theme="dark"] .favatar-bg { fill: oklch(28% 0.04 var(--author-hue, 250)); }
+.favatar-shape { fill: oklch(46% 0.11 var(--author-hue, 250)); }
+html[data-theme="dark"] .favatar-shape { fill: oklch(76% 0.10 var(--author-hue, 250)); }
+.favatar-sat { fill: oklch(58% 0.09 var(--author-hue, 250)); }
+html[data-theme="dark"] .favatar-sat { fill: oklch(62% 0.08 var(--author-hue, 250)); }
+.favatar-ring { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+.favatar--reviewer .favatar-ring { stroke: var(--qualifies); }
+.favatar--lens .favatar-ring { stroke: var(--mcp); }
+.favatar--researcher .favatar-ring { stroke: var(--active); stroke-width: 1.5; }
+
 .postcard-head {
-  display: flex; align-items: baseline; gap: var(--space-2);
+  display: flex; align-items: center; gap: var(--space-2);
   font-size: var(--text-sm);
+  margin-bottom: var(--space-2);
 }
 /* Byline tint: the hue is the author's (set inline via --author-hue); the
    theme owns lightness so identity reads on both canvases. */
 .postcard-author { font-weight: 600; color: oklch(46% 0.09 var(--author-hue, 250)); }
 html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hue, 250)); }
-/* Continuation posts keep the byline for the a11y tree, hidden visually. */
+/* Continuation posts keep the whole header (avatar + byline) for the a11y
+   tree, hidden visually — the missing row is what reads as "…and then they
+   added"; only the time remains, right-aligned (see .postcard--cont below). */
+.postcard-head--cont .favatar,
 .postcard-head--cont .postcard-author,
-.postcard-head--cont .postcard-role {
+.postcard-head--cont .postcard-role,
+.postcard-head--cont .postcard-kind {
   position: absolute;
   width: 1px; height: 1px;
   padding: 0; margin: -1px;
@@ -107,6 +175,45 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
   color: var(--qualifies);
   border-color: color-mix(in srgb, var(--qualifies) 35%, transparent);
 }
+.postcard-role--researcher {
+  color: var(--active);
+  border-color: color-mix(in srgb, var(--active) 35%, transparent);
+}
+
+/* The human's posts carry a quiet accent wash — "the researcher spoke" must
+   read at a glance among the agent chatter, without shouting. Identity is
+   carried by the avatar ring + role tag, not a heavy border — the card
+   itself stays on the standard hairline like every other post. */
+.postcard--researcher {
+  background: color-mix(in srgb, var(--active) 5%, var(--bg-elev));
+  border-color: var(--line);
+}
+
+/* A reply nests one level under its parent: indented, tucked upward against
+   the list gap, tied back by a small connector elbow. */
+.postcard--child {
+  position: relative;
+  margin-left: 40px;
+  margin-top: calc(0px - var(--space-2));
+}
+.postcard--child::before {
+  content: '';
+  position: absolute;
+  left: -21px;
+  top: calc(-1 * var(--space-2));
+  width: 14px;
+  height: calc(var(--space-2) + 26px);
+  border-left: 2px solid var(--line-strong);
+  border-bottom: 2px solid var(--line-strong);
+  border-bottom-left-radius: 8px;
+}
+
+/* Orphaned reply (parent beyond the loaded window) says what it is. */
+.postcard-replyctx {
+  margin: 0 0 2px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
 
 /* Post kind — the agent's own verdict on what the post is. The 3px inset
    rail follows the product's "marked row" grammar (inset shadow, so the
@@ -119,16 +226,18 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
   border-radius: var(--radius-pill);
   padding: 0 6px;
 }
-.postcard--finding { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--supports); }
+.postcard--finding { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--supports) 58%, transparent); }
 .postcard-kind--finding { color: var(--supports); border-color: color-mix(in srgb, var(--supports) 35%, transparent); }
-.postcard--kill { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--refutes); }
+.postcard--kill { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--refutes) 58%, transparent); }
 .postcard-kind--kill { color: var(--refutes); border-color: color-mix(in srgb, var(--refutes) 35%, transparent); }
-.postcard--bottleneck { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--qualifies); }
+.postcard--bottleneck { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--qualifies) 58%, transparent); }
 .postcard-kind--bottleneck { color: var(--qualifies); border-color: color-mix(in srgb, var(--qualifies) 35%, transparent); }
-.postcard--direction { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--active); }
+.postcard--direction { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--active) 58%, transparent); }
 .postcard-kind--direction { color: var(--active); border-color: color-mix(in srgb, var(--active) 35%, transparent); }
-.postcard--hunch { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--mcp); }
+.postcard--hunch { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--mcp) 58%, transparent); }
 .postcard-kind--hunch { color: var(--mcp); border-color: color-mix(in srgb, var(--mcp) 35%, transparent); }
+.postcard--status { box-shadow: var(--shadow-sm), inset 2px 0 0 color-mix(in oklab, var(--muted) 58%, transparent); }
+.postcard-kind--status { color: var(--muted); border-color: color-mix(in srgb, var(--muted) 35%, transparent); }
 .postcard-time { color: var(--faint); }
 .postcard-time::before { content: '· '; }
 .postcard-text {
@@ -228,7 +337,311 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
   display: block; padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm); color: var(--active); word-break: break-all;
 }
-.postcard-foot { margin-top: var(--space-3); }
+.postcard-foot { margin-top: var(--space-2); }
+/* The ref chip sits integrated — glyph + name, no box; the hover card still
+   carries the detail. Wider cap than the default chip (the entity name is the
+   content here, not an aside). */
+.postcard-ref-chip { border: none; background: none; padding: 0; }
+.postcard-ref-chip .echip-name { max-width: 44ch; }
+@media (hover: hover) {
+  .postcard-ref-chip:hover { background: none; }
+  .postcard-ref-chip:hover .echip-name { text-decoration: underline; }
+}
+
+/* Reaction + reply row — quiet and inline: borderless/transparent at rest,
+   small glyphs, a subtle hover wash, and the accent lands on the glyph
+   itself when active (no filled chip background — the chrome shouldn't
+   compete with the post content). Touch target reaches 40px+ via padding,
+   not a visible box. Single-user booleans: pressing toggles the reaction;
+   there are no counts to perform for. Exact rest/hover values are a
+   placeholder for the lead's pass alongside the final glyph art. */
+.postcard-actions {
+  display: flex; align-items: center; gap: var(--space-1);
+  margin-top: var(--space-1);
+  margin-left: -6px; /* optically align the first glyph with the text column */
+  overflow: visible; /* tooltips render above the row; never clip them */
+}
+.postcard-react {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 32px; padding: 0;
+  border: 0; background: none; border-radius: var(--radius-sm);
+  color: var(--faint); cursor: pointer;
+  transition: color var(--motion-fast, 120ms) ease, background var(--motion-fast, 120ms) ease;
+}
+@media (hover: hover) {
+  .postcard-react:hover { color: var(--muted); background: var(--hover); }
+}
+.postcard-react:active { transform: translateY(1px); }
+.postcard-react:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+/* Active state: the accent lands on the glyph color only — no chip fill. */
+.postcard-react.on { color: var(--active); }
+/* No hover reveal on touch — the rest state must be discoverable on its own. */
+html[data-surface="mobile"] .postcard-react { color: var(--muted); }
+.postcard-replybtn {
+  position: relative;
+  border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: var(--text-xs); color: var(--faint);
+  padding: 8px 8px; border-radius: var(--radius-sm); margin-left: 2px;
+}
+@media (hover: hover) {
+  .postcard-replybtn:hover { color: var(--text); background: var(--hover); }
+}
+.postcard-replybtn:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+
+/* Instant hover tooltip — CSS-only, no JS, ~80ms fade so it reads as
+   immediate rather than animated. Rendered via ::after so it never
+   participates in layout; the row opts into overflow: visible so the first
+   post (nothing above it) doesn't get clipped by an ancestor. */
+@media (hover: hover) {
+  .postcard-react[data-tip]::after,
+  .postcard-replybtn[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    background: var(--text);
+    color: var(--bg-elev);
+    font-size: var(--text-xs);
+    line-height: 1.4;
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+    box-shadow: var(--shadow-sm);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 80ms ease;
+    z-index: 10;
+  }
+  .postcard-react[data-tip]:hover::after,
+  .postcard-react[data-tip]:focus-visible::after,
+  .postcard-replybtn[data-tip]:hover::after,
+  .postcard-replybtn[data-tip]:focus-visible::after {
+    opacity: 1;
+  }
+}
+
+/* Inline reply composer. */
+.postcard-composer { margin-top: var(--space-2); }
+.postcard-composer-input {
+  display: block; width: 100%; resize: vertical;
+  font: inherit; font-size: var(--text-sm); line-height: var(--leading-base);
+  color: var(--text); background: var(--bg-soft);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  min-height: 56px;
+}
+.postcard-composer-input:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+.postcard-composer-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+.postcard-composer-err { font-size: var(--text-xs); color: var(--refutes); margin-right: auto; }
+.postcard-composer-count { font-size: var(--text-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.postcard-composer-send { color: var(--active); border-color: var(--active); }
+@media (hover: hover) {
+  .postcard-composer-send:hover { background: rgba(var(--active-rgb), 0.06); }
+}
+
+/* Interactive embed — a flat poster in the media slot until tapped, then the
+   sandboxed frame. The accent follows the post's kind rail. */
+.postcard--finding { --embed-accent: var(--supports); }
+.postcard--kill { --embed-accent: var(--refutes); }
+.postcard--bottleneck { --embed-accent: var(--qualifies); }
+.postcard--direction { --embed-accent: var(--active); }
+.postcard--hunch { --embed-accent: var(--mcp); }
+.postcard--status { --embed-accent: var(--muted); }
+.postcard-embed { position: relative; }
+.postcard-embedposter {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-2); width: 100%; height: 100%;
+  border: 0; padding: 0; cursor: pointer;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--embed-accent, var(--active)) 12%, var(--bg-soft)),
+    var(--bg-soft) 70%
+  );
+}
+.postcard-embedposter:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+.postcard-embed-play {
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding-left: 3px;
+  border: 1px solid color-mix(in srgb, var(--embed-accent, var(--active)) 45%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  color: var(--embed-accent, var(--active));
+  font-size: 15px;
+}
+.postcard-embed-label {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.postcard-embed-frame {
+  display: block; width: 100%; height: 100%;
+  border: 0; background: #fff;
+}
+.postcard-embed-close {
+  position: absolute; top: 8px; right: 8px;
+  width: 26px; height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.postcard-embed-close:hover { background: var(--bg-soft); }
+
+/* Paper-page card (PdfPageCard) — a poster (title + "page N") until tapped,
+   then the actual rendered PDF page. Taller than the 16:10 media box (a
+   paper page reads better close to its real proportions) — the ~4:5 ratio
+   here overrides .postcard-media's default before the reservation collapses
+   post-load, same mechanism as the image box. */
+.postcard-pdf { aspect-ratio: 4 / 5; position: relative; max-height: 640px; }
+.postcard-pdfposter {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-2); width: 100%; height: 100%;
+  border: 0; padding: var(--space-4); cursor: pointer; text-align: center;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--embed-accent, var(--mcp)) 12%, var(--bg-soft)),
+    var(--bg-soft) 70%
+  );
+}
+.postcard-pdfposter:focus-visible { outline: 2px solid var(--active); outline-offset: -2px; }
+.postcard-pdfposter-title {
+  font-size: var(--text-sm); font-weight: 600; color: var(--text);
+  max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.postcard-pdfposter-page {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--embed-accent, var(--mcp));
+  border: 1px solid color-mix(in srgb, var(--embed-accent, var(--mcp)) 40%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 2px 10px;
+}
+.postcard-pdf--open { background: var(--bg-soft); }
+.postcard-pdf-frame {
+  display: block; width: 100%; height: 100%;
+  border: 0; background: #fff;
+}
+.postcard-pdf-open {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 11px; font-weight: 600;
+  padding: 4px 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.postcard-pdf-open:hover { background: var(--bg-soft); }
+
+/* Zoomed page: the card keeps its footprint and becomes a scroll surface so
+   a >1x render can be panned instead of overflowing the layout. At 'fit'
+   this is a plain full-bleed box (no scrollbars, no cursor change).
+   touch-action: pan-x pan-y (rather than the `auto` default) keeps native
+   touch/trackpad scrolling intact while leaving room for the pointer-drag
+   handlers below on mouse — panning never fights the browser's own gesture
+   handling on either input type. */
+.postcard-pdf-scroll {
+  width: 100%; height: 100%;
+  overflow: auto;
+  touch-action: pan-x pan-y;
+}
+.postcard-pdf--zoomed .postcard-pdf-scroll {
+  cursor: grab;
+}
+.postcard-pdf--zoomed .postcard-pdf-scroll:active,
+.postcard-pdf--zoomed .postcard-pdf-scroll.postcard-pdf-scroll--dragging {
+  cursor: grabbing;
+}
+/* While actively dragging (past the movement threshold — see
+   PdfPageCard's handlePointerMove), suppress text selection so the drag
+   reads as a pan instead of a selection gesture. */
+.postcard-pdf-scroll--dragging,
+.postcard-pdf-scroll--dragging * {
+  user-select: none;
+}
+/* Width/height are set inline per-render (PdfPageCard computes them from the
+   measured container width so the zoom label always matches the rendered
+   size); CSS only needs to stop the img from being auto-constrained. */
+.postcard-pdf-canvas {
+  display: block;
+  max-width: none;
+  background: #fff;
+}
+
+/* Metadata + zoom overlay — a gradient scrim over the bottom of the
+   rendered page, working on both themes since it always sits on a white
+   PDF page underneath. Desktop: hidden at rest, revealed on container
+   hover/focus-within (keyboard reachability for the buttons inside).
+   Mobile / persistent (iframe fallback): opacity is driven by a modifier
+   class instead of hover, since touch has no hover and iframes eat hover
+   events entirely. */
+.postcard-pdf-overlay {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: var(--space-3);
+  padding: 20px 10px 8px;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.85) 78%);
+  opacity: 0;
+  transition: opacity var(--motion-fast, 120ms) ease;
+  pointer-events: none;
+}
+@media (hover: hover) {
+  .postcard-pdf--open:hover .postcard-pdf-overlay,
+  .postcard-pdf--open:focus-within .postcard-pdf-overlay {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.postcard-pdf-overlay--persistent,
+.postcard-pdf-overlay--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.postcard-pdf-overlay-meta {
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0; flex: 1;
+}
+.postcard-pdf-overlay-title {
+  font-size: var(--text-sm); font-weight: 600; color: #fff;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.postcard-pdf-overlay-byline {
+  font-size: var(--text-xs); color: rgba(255, 255, 255, 0.75);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.postcard-pdf-overlay-actions {
+  display: flex; align-items: center; gap: var(--space-2); flex: none;
+}
+.postcard-pdf-zoom {
+  display: flex; align-items: center; gap: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+}
+.postcard-pdf-zoom-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  border: 0; border-radius: var(--radius-pill);
+  background: none; color: #fff;
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.postcard-pdf-zoom-btn:hover { background: rgba(255, 255, 255, 0.18); }
+.postcard-pdf-zoom-label {
+  min-width: 34px; padding: 0 4px;
+  border: 0; background: none; color: #fff;
+  font-size: 10px; font-weight: 600; text-align: center;
+  cursor: pointer;
+}
+.postcard-pdf-zoom-label:hover { text-decoration: underline; }
+.postcard-pdf-overlay :focus-visible {
+  outline: 2px solid var(--active); outline-offset: 1px;
+}
 
 /* Continuation posts — same author within minutes. The byline hides, the gap
    closes, and only a right-aligned time remains. */
@@ -244,7 +657,9 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
   background-size: 200% 100%;
   animation: skel-sweep 1.4s linear infinite;
 }
-.skel--handle { width: 96px; margin-bottom: var(--space-3); }
+.skel-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+.skel--handle { width: 96px; margin-bottom: 0; }
+.skel--avatar { width: 28px; height: 28px; border-radius: 7px; flex: none; }
 .skel--line { margin-top: var(--space-2); }
 .skel--short { width: 62%; }
 @keyframes skel-sweep {
@@ -255,12 +670,6 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
   .skel { animation: none; }
 }
 .feed-retry { margin-top: var(--space-3); }
-.postcard-ref {
-  font-size: var(--text-xs); color: var(--muted); text-decoration: none;
-  border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 1px 8px;
-}
-.postcard-ref:hover { background: var(--bg-soft); color: var(--text); }
-.postcard-ref--static { color: var(--faint); }
 
 /* =====================================================================
    Mobile surface (scoped under the mobile shell's attribute, exactly like
@@ -270,6 +679,7 @@ html[data-theme="dark"] .postcard-author { color: oklch(78% 0.09 var(--author-hu
    ===================================================================== */
 html[data-surface="mobile"] .feed-stage {
   max-width: 100%;
+  margin-left: 0;
   padding: 4px 16px var(--space-6);
 }
 html[data-surface="mobile"] .feed-title {
@@ -306,7 +716,7 @@ html[data-surface="mobile"] .postcard {
   border-bottom: 1px solid var(--line);
   border-radius: 0;
   box-shadow: none;
-  padding: 14px 0;
+  padding: 14px 0 8px;
 }
 html[data-surface="mobile"] .postcard-head { gap: 7px; margin-bottom: 6px; }
 html[data-surface="mobile"] .postcard-author { font-size: 13px; }
@@ -379,13 +789,102 @@ html[data-surface="mobile"] .postcard-link-desc { display: none; }
 html[data-surface="mobile"] .postcard-link-kind { font-size: 8.5px; padding: 0 4px; }
 html[data-surface="mobile"] .postcard-link-authors { font-size: 10px; }
 /* Entity chip — plain accent text, the post's one orange moment. */
-html[data-surface="mobile"] .postcard-foot { margin-top: 10px; }
-html[data-surface="mobile"] .postcard-ref {
-  border: none;
-  border-radius: 0;
-  padding: 0;
+html[data-surface="mobile"] .postcard-foot { margin-top: 8px; }
+html[data-surface="mobile"] .postcard-ref-chip {
   font-size: 11px;
   font-weight: 600;
   color: var(--active);
 }
-html[data-surface="mobile"] .postcard-ref--static { color: var(--faint); }
+html[data-surface="mobile"] .postcard-ref-chip .echip-name { max-width: 34ch; }
+html[data-surface="mobile"] .postcard-ref-chip.echip--static { color: var(--faint); }
+
+/* Inline avatar — smaller identicon in the header row. */
+html[data-surface="mobile"] .favatar,
+html[data-surface="mobile"] .skel--avatar { width: 24px; height: 24px; }
+
+/* Replies — flush stream, so the connector is a plain rail, not an elbow. */
+html[data-surface="mobile"] .postcard--child {
+  margin-left: 20px;
+  margin-top: 0;
+  padding-top: 8px;
+}
+html[data-surface="mobile"] .postcard--child::before {
+  left: -12px;
+  top: 10px;
+  bottom: 12px;
+  width: 0;
+  height: auto;
+  border-bottom: none;
+  border-bottom-left-radius: 0;
+}
+/* Keep the hairline chain intact above a nested reply. */
+html[data-surface="mobile"] .postcard:has(+ .postcard--child) { border-bottom-color: transparent; }
+
+/* Researcher posts — no card background on mobile; the marked-row rail
+   carries "the human spoke". */
+html[data-surface="mobile"] .postcard--researcher {
+  background: none;
+  border-left: 2px solid color-mix(in oklab, var(--active) 58%, transparent);
+  padding-left: 11px;
+}
+
+/* Reactions — quiet glyphs, ≥44px touch targets via box size, row hugs the
+   left edge optically. */
+html[data-surface="mobile"] .postcard-actions {
+  gap: 2px;
+  margin-top: 2px;
+  margin-left: -13px;
+}
+html[data-surface="mobile"] .postcard-react { width: 44px; height: 44px; }
+html[data-surface="mobile"] .postcard-replybtn {
+  min-height: 44px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+/* Composer — 16px input so iOS doesn't zoom the focused field; buttons grow
+   to touch size. */
+html[data-surface="mobile"] .postcard-composer-input { font-size: 16px; }
+html[data-surface="mobile"] .postcard-composer-foot { gap: 8px; }
+html[data-surface="mobile"] .postcard-composer-foot .btn { min-height: 40px; padding: 0 14px; }
+
+/* Embed — poster play affordance at touch size; close stays reachable. */
+html[data-surface="mobile"] .postcard-embed-play { width: 44px; height: 44px; }
+html[data-surface="mobile"] .postcard-embed-close { width: 32px; height: 32px; }
+
+/* Paper-page card — taller poster still fits the narrower column; the open
+   affordance grows to a comfortable tap target. The overlay stacks meta
+   above actions (title/byline need the full width on a narrow card) and
+   the zoom buttons grow to a touch-friendly size. */
+html[data-surface="mobile"] .postcard-pdf { aspect-ratio: 3 / 4; }
+html[data-surface="mobile"] .postcard-pdf-open { padding: 6px 12px; font-size: 12px; }
+html[data-surface="mobile"] .postcard-pdf-overlay {
+  flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 24px 10px 10px;
+}
+html[data-surface="mobile"] .postcard-pdf-overlay-actions { justify-content: space-between; }
+html[data-surface="mobile"] .postcard-pdf-zoom-btn { width: 32px; height: 32px; font-size: 16px; }
+
+/* Context header — flush and compact, like the posts. */
+html[data-surface="mobile"] .feed-ctx {
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 0 10px;
+  margin-bottom: 0;
+}
+html[data-surface="mobile"] .feed-ctx-toggle { min-height: 40px; }
+html[data-surface="mobile"] .feed-ctx-name { font-size: 13px; }
+html[data-surface="mobile"] .feed-ctx-summary { margin-top: 2px; font-size: 12px; }
+html[data-surface="mobile"] .feed-ctx-live { margin-top: 6px; font-size: 10.5px; }
+
+/* Quiet-feed banner — a labeled hairline, same register as the day rows. */
+html[data-surface="mobile"] .feed-nudge {
+  margin: 0;
+  padding: 10px 0 2px;
+  font-size: 11px;
+}
+html[data-surface="mobile"] .feed-nudge::before,
+html[data-surface="mobile"] .feed-nudge::after { content: none; }
