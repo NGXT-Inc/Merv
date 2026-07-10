@@ -1011,8 +1011,8 @@ html[data-surface="mobile"] .msyn-revision {
 }
 
 /* =====================================================================
-   ONE SURFACE (design_handoff_mobile_redesign) — shared primitives for
-   the redesigned mobile screens. One flowing column: no cards, hairlines
+   ONE SURFACE — shared primitives for the mobile screens. One flowing column:
+   no cards, hairlines
    only where meaning breaks, the 3px orange index the sole rupture.
    ===================================================================== */
 
@@ -1567,4 +1567,3 @@ html[data-surface="mobile"] .mlg-row {
 html[data-surface="mobile"] .mlg-row.champ { border-left-color: var(--active); }
 html[data-surface="mobile"] .mlg-row.focused { background: var(--select); }
 html[data-surface="mobile"] .mlg-note { margin: 8px 16px; font-size: 11px; color: var(--faint); }
-

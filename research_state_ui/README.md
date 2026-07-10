@@ -1,12 +1,13 @@
 # Research State UI
 
-Browser frontend for Research Plugin. It gives researchers a live view of
-projects, experiments, reviews, resources, sandboxes, and reflection waves while
-agents work through the backend workflow.
+Browser frontend for the Research Plugin brain. It reads and mutates research
+state through the brain's HTTP API; it never reads a research checkout
+directly. Checkout-local registration, validation, and output transfer remain
+the MCP proxy's responsibility.
 
 ## Run Locally
 
-Start the `research_plugin` HTTP daemon first, usually on `127.0.0.1:8787`.
+Start the local brain first, usually on `127.0.0.1:8787`.
 Then run the UI:
 
 ```bash
@@ -15,11 +16,11 @@ npm run dev
 ```
 
 Vite serves the app on `http://127.0.0.1:5173` by default and proxies `/api`
-and `/health` to the daemon.
+and `/health` to the local brain.
 
 ## Backend Target
 
-For local development, point the Vite proxy at a non-default daemon with:
+For local development, point the Vite proxy at a non-default brain URL with:
 
 ```bash
 RSUI_API=http://127.0.0.1:8788 npm run dev
@@ -31,9 +32,13 @@ For hosted or static builds, use:
 VITE_API_BASE=https://your-control-plane.example.com npm run build
 ```
 
-Hosted control planes that require auth can receive a build-time token through
-`VITE_API_TOKEN`. During development, the same values can also be overridden in
-browser local storage with `rsui:apiBase` and `rsui:apiToken`.
+The client can attach an optional bearer token from `VITE_API_TOKEN` or the
+`rsui:apiToken` local-storage key. The current Research Plugin brain does not
+authenticate end users, so a hosted deployment must remain behind a trusted
+network boundary; CORS is not authentication.
+
+The UI receives updates over server-sent events and falls back to conditional
+polling when the stream is unavailable.
 
 ## Commands
 

@@ -19,8 +19,8 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-# Which plane serves a tool once the backend splits into a cloud control plane
-# and a local data-plane proxy (docs/CONTROL_DATA_PLANE_SPLIT.md).
+# Which plane serves each tool in the brain/local-proxy topology
+# (docs/CONTROL_DATA_PLANE_SPLIT.md).
 # "control" = record/gate/lifecycle work, cloud-servable. "data" = touches the
 # local filesystem or local processes, must run on the user's machine.
 ToolPlane = Literal["control", "data"]
@@ -60,11 +60,11 @@ class ProjectInput(ContractModel):
 
     action: Literal["current", "connect", "create", "overview"] = Field(
         description=(
-            "current = orient: the hosted project linked to this folder plus a "
-            "compact at_a_glance block (the lightweight linked-project check); "
+            "current = return the brain project linked to this folder, or "
+            "exists=false when no local link exists; "
             "overview = the whole-project read — every claim (incl. "
             "settled/abandoned) and every experiment (incl. terminal) — for "
-            "orienting or re-grounding; connect = link this folder to a hosted "
+            "orienting or re-grounding; connect = link this folder to a brain "
             "project (pass project_id for an existing one, or name/summary to "
             "create and link in one step); create = create a project WITHOUT "
             "linking this folder (rare — connect is the normal bootstrap)."
@@ -922,11 +922,8 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=ProjectInput,
         description=(
             "Project identity for this folder, dispatched on 'action'. "
-            "action=current orients you: the hosted project linked to this "
-            "folder (or a report that none is linked yet) plus a compact "
-            "at_a_glance block — reflection age summary, recent "
-            "experiments/claims, latest reflection/project-graph resource "
-            "ids, ids changed since reflection, and any open reflection id. "
+            "action=current returns the brain project linked to this folder, "
+            "or exists=false when no local link exists. "
             "action=overview is the whole-project read for orienting or "
             "re-grounding: every claim (including settled/abandoned) and every "
             "experiment (including terminal), independent of what "
@@ -1016,24 +1013,29 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "MLflow write URI is configured, a plugin-created run id to resume."
             " Use retry_running only for infrastructure/interruption reruns "
             "where the experiment should stay running on the same attempt. "
-            "At submit_results the system generates the attempt's metrics "
-            "exhibit (all attempt-window MLflow runs + pulled result files, "
-            "each entry with provenance) and pins it as a system-authored "
-            "resource; report.md must reference it, and runs logged after "
-            "submit_results do not exist for the attempt."
+            "At submit_results the system evaluates the attempt's metrics "
+            "exhibit (up to the newest 50 attempt-window MLflow runs plus "
+            "eligible pinned result JSON, each entry with provenance). It pins "
+            "the exhibit when matching runs are found, or when MLflow is "
+            "unavailable after a plugin-created run; when pinned, report.md "
+            "must reference it. Runs logged "
+            "after submit_results remain in MLflow but are outside the "
+            "finalized attempt exhibit."
         ),
     ),
     "experiment.exhibit": ToolContract(
         input_model=ExperimentExhibitInput,
         description=(
             "Read-only preview of the system-generated metrics exhibit for a "
-            "running experiment: every MLflow run in the current attempt "
-            "window (no curation), plus "
-            "pulled result-file sources (metrics.json, results/*.json "
-            "associated with role 'result'). Call it before writing report.md "
-            "— at submit_results the system regenerates and pins this exhibit "
-            "as the authoritative record, and the report must reference and "
-            "interpret it rather than hand-copy numbers."
+            "running experiment: up to the newest 50 MLflow runs in the "
+            "current attempt window (no curation), plus eligible pinned "
+            "result-file sources (metrics.json, results.json, and "
+            "results/*.json associated with role 'result'). Call it before "
+            "writing report.md "
+            "— at submit_results the system regenerates it and pins it when "
+            "matching runs are found, or when MLflow is unavailable after a "
+            "plugin-created run. When pinned, the report must "
+            "reference and interpret it rather than hand-copy numbers."
         ),
     ),
     "mlflow.context": ToolContract(
@@ -1183,15 +1185,20 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "review.request": ToolContract(
         input_model=ReviewRequestInput,
         description=(
-            "Create a review request and one-time reviewer capability. The "
+            "Create a review request and request-scoped reviewer capability; "
+            "the plaintext is returned only in this response. The "
             "response's reviewer_handoff.spawn_prompt is a ready-to-use prompt "
-            "for the reviewer subagent — the reviewer itself consumes the "
-            "capability via review.start, never the requesting session."
+            "for the reviewer subagent. The reviewer presents the capability "
+            "via review.start with its own caller_session_id. Starting does "
+            "not consume it; the first accepted submission closes the request."
         ),
     ),
     "review.start": ToolContract(
         input_model=ReviewStartInput,
-        description="Start a read-only reviewer session.",
+        description=(
+            "Start a reviewer session for the pinned request snapshot. The "
+            "reviewer skill supplies the procedural read-only boundary."
+        ),
     ),
     "review.submit": ToolContract(
         input_model=ReviewSubmitInput,
@@ -1213,7 +1220,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
         input_model=ReviewStatusInput,
         description=(
             "Inspect review requests and submissions for a target, including "
-            "recovery guidance for lost or expired one-time reviewer capabilities."
+            "recovery guidance for lost or expired reviewer capabilities."
         ),
     ),
     "sandbox.request": ToolContract(
@@ -1498,8 +1505,8 @@ def tool_plane(name: str) -> ToolPlane:
     return TOOL_PLANE_REGISTRY[name]
 
 
-# Plane route sets, derived so the routing table and the registry cannot drift.
-# The proxy's dual-upstream routing (split mode) keys on these.
+# Plane route sets, derived so the routing table and registry cannot drift.
+# The proxy uses these to keep brain calls separate from checkout-local calls.
 CONTROL_PLANE_TOOL_NAMES = frozenset(
     name for name, plane in TOOL_PLANE_REGISTRY.items() if plane == "control"
 )
@@ -1532,11 +1539,9 @@ def static_tool_catalog(
             "name": name,
             "description": contract.description,
             "inputSchema": schema,
-            # The routing source of truth (cloud plan §3.3): the stdlib-only
-            # proxy reads this off the served catalog to build its
-            # dual-upstream route map, so the proxy never imports the
-            # pydantic-bound contracts module and the routing cannot drift
-            # from TOOL_PLANE_REGISTRY.
+            # The routing source of truth: the stdlib-only proxy reads this
+            # from the served catalog to route brain versus checkout-local
+            # calls, without importing the pydantic-bound contracts module.
             "plane": tool_plane(name),
         }
         if name in MCP_HIDDEN_TOOL_NAMES:

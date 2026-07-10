@@ -59,19 +59,19 @@ reviewer, not the linter.
 ## Refs: brief nodes, linked detail
 
 Prefer brief nodes that point at evidence over long `detail` prose. A node's
-`refs` array takes plain strings — repo-relative paths of synced files
+`refs` array takes plain strings — repo-relative paths of registered files
 (`experiments/<name>/results.json`) or known record ids (`res_…`, `rev_…`,
 `claim_…`, `exp_…`). The UI resolves them on read and renders them as links,
 so the user and the reviewer can jump from a node to the file, review, or
 claim behind it. Unresolvable refs are shown grayed out, never an error —
 whether and what to reference is your call. Files you reference should be
-synced (and usually registered as resources) so the links resolve.
+registered and associated as resources so the links resolve.
 
 ## Keeping it current
 
-Start the graph early (the objective node costs one minute) and sync it as
-the story develops — the user watches it live, and a decision is best
-recorded in the moment you make it, while the reasoning is still fresh; a
+Start the graph early (the objective node costs one minute) and re-register it
+as the story develops — the user watches submitted versions, and a decision is
+best recorded in the moment you make it, while the reasoning is still fresh; a
 graph reconstructed at the end keeps the events but loses the *why*. After a
 review rejection, consider whether the rejection and the rework belong in the
 story. If the graph is at the 16-node budget and something important must be

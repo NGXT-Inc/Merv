@@ -1,7 +1,8 @@
-"""Research Plugin HTTP daemon backend.
+"""Research Plugin brain implementation.
 
-Owns SQLite state, the activity log, the job execution backend, and sandbox SSH.
-Fronted to Codex by the stdio MCP proxy in `mcp_server`.
+The brain owns durable research records, workflow policy, reviews, sandbox
+lifecycle, and HTTP surfaces. A separate stdio MCP proxy owns checkout-local
+I/O in both hosted and local deployments.
 """
 
 __version__ = "0.0011"

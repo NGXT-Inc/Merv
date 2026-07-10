@@ -5,7 +5,7 @@ import { useProjectStore, projectPath } from '../store/useProjectStore';
  * Shared graph-model helpers — normalize the figure and logic/synthesis graph
  * payloads into the GraphOutline / GraphCanvasOverlay model, and the bottom-
  * sheet detail renderers. Used by the experiment graph section and the project
- * synthesis card. docs/MOBILE_UX_REVIEW.md §4.1 / §4.2.
+ * synthesis card.
  */
 
 // figure node status → small visual family (mirrors ExperimentFigure.statusClass).

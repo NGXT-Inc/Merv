@@ -281,15 +281,17 @@ def _exhibit_expectation(*, experiment_id: str, state: dict[str, Any]) -> dict[s
         "preview_tool": "experiment.exhibit",
         "notice": (
             "At submit_results the system generates a metrics exhibit from "
-            "your MLflow runs (every run in this attempt's window — no "
-            "curation) and pulled result files (metrics.json, results/*.json "
-            "associated with role 'result'), and pins it at "
-            f"{path}. Your report must reference {METRICS_EXHIBIT_FILENAME} "
-            "and answer around it — track accordingly: log every run to the "
-            "MLflow env you were handed, tag project_id/experiment_id, and "
-            "pull result files before submitting. Preview anytime with "
-            "experiment.exhibit; runs logged after submit_results do not "
-            "exist for this attempt."
+            "up to the newest 50 MLflow runs in this attempt's window (no "
+            "curation; the cap is recorded) and eligible pinned result JSON "
+            "(metrics.json, results.json, and results/*.json associated with "
+            "role 'result'). It pins the exhibit when matching runs are found, "
+            "or when MLflow is unavailable after a plugin-created run, at "
+            f"{path}. When pinned, your report must reference "
+            f"{METRICS_EXHIBIT_FILENAME} and answer around it — log every run "
+            "to the MLflow env you were handed, tag project_id/experiment_id, "
+            "and pull result files before submitting. Preview anytime with "
+            "experiment.exhibit; later runs remain in MLflow but are outside "
+            "the finalized exhibit."
         ),
     }
 

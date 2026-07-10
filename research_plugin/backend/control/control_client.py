@@ -1,8 +1,8 @@
-"""HTTP client for the control plane (cloud plan Phase 8, §3.1).
+"""HTTP client for a Research Plugin brain.
 
-``HttpControlPlaneClient`` is the wire-side sibling of the in-process control
-plane: it implements the same ``ControlPlaneClient.call(name, arguments)``
-contract by POSTing to a running control-plane ``/mcp/call`` endpoint. The
+``HttpControlPlaneClient`` implements the same
+``ControlPlaneClient.call(name, arguments)`` contract by POSTing to a running
+brain's ``/mcp/call`` endpoint. The
 dual-wiring contract suite (``test_control_plane_contract.py``) runs the exact
 same scenario corpus through it over a real in-process HTTP server — the
 plane-seam analog of ``test_sandbox_backend_contract.py``.
@@ -47,10 +47,10 @@ _ERROR_CODE_TYPES: dict[str, type[ResearchPluginError]] = {
 
 
 class ControlPlaneUnreachableError(ResearchPluginError):
-    """The control plane could not be reached at all (transport failure).
+    """The brain could not be reached at all (transport failure).
 
-    Distinct from a domain error returned BY the control plane: this is the
-    proxy's ``cloud_unreachable`` taxonomy (plan §3.3) — the cloud being down
+    Distinct from a domain error returned by the brain: this is the proxy's
+    ``cloud_unreachable`` taxonomy — the remote brain being down
     must not be confused with a validation failure it reported.
     """
 
@@ -71,7 +71,7 @@ class HttpControlPlaneClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         extra_context: dict[str, Any] | None = None,
     ) -> None:
-        # The cloud edge NEVER receives repo_root (plan §3.2): extra_context is
+        # The brain NEVER receives repo_root: extra_context is
         # for explicit project_id / client_id only; the proxy resolves the
         # repo→project mapping locally and attaches project_id here.
         self.base_url = base_url.rstrip("/")

@@ -8,7 +8,7 @@ import { useScrollLock } from './useScrollLock';
  * GraphCanvasOverlay — the opt-in "view as graph" spatial view. Lazy-loaded so
  * @xyflow stays out of the first-paint budget; renders the same normalized
  * nodes/edges as GraphOutline in a 100dvh overlay with touch pan/pinch.
- * docs/MOBILE_UX_REVIEW.md §4.1. Default export → React.lazy target.
+ * The default export is the React.lazy target.
  */
 function OutlineNode({ data }) {
   return (

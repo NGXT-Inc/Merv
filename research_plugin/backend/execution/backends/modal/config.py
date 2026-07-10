@@ -16,9 +16,9 @@ def _env_discovery_disabled() -> bool:
     """True in control mode, where implicit user-machine .env discovery is off.
 
     Reads RESEARCH_PLUGIN_MODE directly (no backend.config import) to keep the
-    execution backends loosely coupled from the composition layer. Local and
-    daemon modes keep today's .env behavior (the user owns the machine and the
-    bill); control resolves creds from the process env / secret store only.
+    execution backends loosely coupled from the composition layer. Local mode
+    keeps checkout-adjacent .env discovery for development; control resolves
+    credentials from the process environment or secret store only.
     """
     return (os.environ.get("RESEARCH_PLUGIN_MODE") or "").strip().lower() == "control"
 

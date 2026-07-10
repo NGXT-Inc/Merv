@@ -1,8 +1,5 @@
 # Brain / data-plane split
 
-**Status:** IMPLEMENTED (one topology; Phase 7 mode unification) ·
-**Drafted:** 2026-06-07 · **Updated:** 2026-07-05
-
 ## Rule
 
 > The brain never reads a user's checkout and never owns caller private keys.
@@ -10,8 +7,8 @@
 That rule is true for both deployments. Local deployment is not a different
 topology: it is the same brain composition running on localhost with small
 deployment defaults (SQLite, local-dir blobs, local management keys, no auth,
-localhost CORS). Hosted deployment points the same stdio proxy at a hosted brain
-URL.
+and a local-origin browser guard). Hosted deployment points the same stdio
+proxy at a hosted brain URL.
 
 ## Runtime shape
 
@@ -43,10 +40,10 @@ local upstream path.
 |---|---|---|
 | Projects, claims, experiments, reviews, reflections | `services/*` | Durable records and workflow policy. |
 | Workflow gates | `services/workflow.py`, validators | Pure policy over submitted records/bytes. |
-| Sandbox lifecycle | `services/sandboxes.py`, `execution/backends/*` | Provider credentials, VM lifecycle, quotas, reapers. |
+| Sandbox lifecycle | `services/sandbox/*`, `execution/backends/*` | Provider credentials, VM lifecycle, quotas, reapers. |
 | State and audit | `state/*` | SQLite locally, Postgres/durable stores hosted. |
-| Blob/storage records | `storage/*`, blob stores | Durable bytes submitted explicitly by the proxy or sandbox flow. |
-| UI/API surface | `transport/api/*` | Browser and control endpoints. Browser data-plane mutation routes are gone. |
+| Blob/storage records | `storage/*`, blob stores | Submitted artifacts and optional heavy objects sent explicitly through data-plane flows. |
+| UI/API surface | `transport/api/*` | Browser/control endpoints plus private proxy-submission routes under `/api/data-plane/*`; browsers do not perform checkout-local operations. |
 
 The brain may serve `/api/*` for the UI and `/mcp/*` for control-tool calls, but
 repo bytes enter only through explicit proxy-local tool submissions. It does not
@@ -57,25 +54,25 @@ inspect paths under a checkout.
 | Component | Modules | Why proxy-side |
 |---|---|---|
 | Resource observation | `dataplane/resource_observer.py`, `resource_validation.py`, `resource_artifacts.py` | Reads repo files, hashes bytes, captures gated artifacts. |
-| Experiment folders | `dataplane/experiment_folders.py`, `execution/sync_dirs.py` | Creates `experiments/<name>/` in the checkout. |
-| Feed images | `dataplane/feed_images.py` | Resolves local image files referenced by retained docs. |
+| Experiment folders | `dataplane/experiment_folders.py` | Creates `experiments/<name>/` in the checkout. |
+| Feed attachments | `dataplane/feed_images.py`, `dataplane/feed_embeds.py` | Reads local images and HTML embeds submitted with feed posts. |
 | Resource paths | `dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
+| Storage transfer | `storage/file_transfer.py`, called by `mcp_server/local_data_plane.py` | Hashes and transfers local checkout files through presigned object-store URLs. |
 | Sandbox output pulls | `dataplane/sandbox_outputs.py`, lazy-imported by `mcp_server/local_data_plane.py` | Runs safe `rsync` from the sandbox into the local experiment folder. |
 | Project links | `mcp_server/project_links.py` | Maps checkout folders to brain project ids in `project_links.sqlite`. |
-| Caller SSH custody | client/proxy environment | `sandbox.request` requires caller `public_key`; private keys remain local. |
-
-The old server-side data-plane worker/task/conn-file machinery is legacy support
-only when tests or compatibility harnesses instantiate it directly. It is not a
-brain/proxy production path.
+| Caller SSH custody | client/proxy environment | `sandbox.request` requires caller `public_key`; the caller owns the private key and supplies its path only for local rsync operations. |
 
 ## Tool split
 
 Control tools go to the brain. Data tools run in the proxy and submit explicit
 facts or bytes to the brain:
 
-- `resource.register` (register file(s) + optionally associate + capture bytes)
 - `experiment.materialize_folders`
-- `sandbox.pull_outputs`
+- `resource.register` (register file(s) + optionally associate + capture bytes)
+- `storage.upload_file` and `storage.download_file`
+- `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs`
+- `feed.post` (captures an optional local image or HTML embed before recording
+  the post)
 - `project` with `action: "connect"` — served by the proxy process itself: it
   validates (or creates) the project on the brain, then writes the
   folder→project link to `project_links.sqlite`. The one call where `project_id`
@@ -101,11 +98,15 @@ brain-side operational credentials.
 
 | Deployment | Brain URL | State/blob defaults | Auth/CORS | Proxy role |
 |---|---|---|---|---|
-| Hosted (default) | `https://experiments.rapidreview.io` | durable DB + object/blob store | operator/hosted policy | same thick data plane |
-| Local | `http://127.0.0.1:8787` | SQLite + local-dir blobs | auth off, localhost CORS | same thick data plane |
+| Hosted (default) | `https://experiments.rapidreview.io` | durable DB + submitted-byte blob store; optional heavy-object store | private operator surface; no end-user auth | same thick data plane |
+| Local | `http://127.0.0.1:8787` | SQLite + local-dir blobs | no auth; foreign browser origins rejected | same thick data plane |
 
 `RESEARCH_PLUGIN_MODE` names the preset used to start the brain. It does not
 create a second composition path.
+
+CORS and the client-version floor are not authentication. Until an end-user
+authentication layer exists, hosted control must remain behind trusted network
+and operator access controls.
 
 ## Related
 

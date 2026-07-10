@@ -1,20 +1,12 @@
-"""Idempotent cloud cleanup sweeps (cloud plan Phase 9).
+"""Idempotent brain housekeeping sweeps.
 
-The control plane needs periodic housekeeping that the local-mode in-process
-daemons never had to do at scale: terminate orphaned billing VMs, garbage-
-collect expired blobs, and reap provisions that wedged mid-provision.
-Heavy-storage expiry joins the same pattern. These are **pure,
-clock-injectable functions** —
-each takes ``now`` and returns a count — grouped behind ``CleanupService`` with
-a single ``run_all(now=...)`` entry point.
+``CleanupService`` reconciles tracked running sandbox rows, garbage-collects
+expired submitted blobs and heavy-storage aliases, and reaps stale provisioning
+rows. It does not discover arbitrary provider VMs without a registry row.
 
-Deliberately NOT a scheduler. There is no thread, no cron daemon, no timer here:
-scheduling is a documented seam. ``run_all`` is callable from a future cloud
-scheduler (a managed cron, a sidecar tick, a `/admin/cleanup` endpoint), and the
-control composition exposes the built service so an operator or a test can drive
-one pass. This keeps the sweeps unit-testable with injected clocks and keeps the
-control plane free of a long-lived scheduler we are not ready to own (the
-reaper thread, which IS owned, stays in SandboxDaemons).
+This module is deliberately not a scheduler. Operators invoke ``run_all``
+through the private admin endpoint from managed cron or a sidecar; the separate
+sandbox expiry reaper remains owned by ``SandboxService``.
 
 Every sweep is idempotent and best-effort per item: one bad row never aborts the
 pass. The sweeps reuse the existing primitives — the sandbox service's
@@ -23,9 +15,8 @@ pass. The sweeps reuse the existing primitives — the sandbox service's
 re-deriving termination logic, so the reaper and the sweeps can never disagree
 about what "gone" means.
 
-Local mode never runs these (it has no cloud cron); they are control-plane work.
-But they are mode-blind — the same SandboxService + blob store — so the
-in-process tests exercise the exact code the control plane schedules.
+The sweeps are adapter-neutral and can be exercised with either deployment
+preset, though only an operator-scheduled hosted deployment normally runs them.
 """
 
 from __future__ import annotations
@@ -57,7 +48,7 @@ class CleanupReport:
 
 
 class CleanupService:
-    """The control plane's cleanup sweeps, grouped behind ``run_all``.
+    """The brain's cleanup sweeps, grouped behind ``run_all``.
 
     Constructed from a ``SandboxService`` (registry + provisioner + backend),
     a ``BlobStore``, and optionally storage. Every method takes ``now``

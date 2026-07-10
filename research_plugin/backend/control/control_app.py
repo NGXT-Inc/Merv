@@ -1,4 +1,4 @@
-"""Control-plane app composition without local workspace/runtime wiring."""
+"""Unified brain app without checkout-local workspace/runtime wiring."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from ..tools.tool_handlers import build_control_tool_handlers
 
 
 class ControlApp:
-    """Hosted control app: record services, sandbox lifecycle, no local IO."""
+    """Brain app: record services, policy, and sandbox lifecycle; no checkout I/O."""
 
     def __init__(
         self,
@@ -86,7 +86,7 @@ class ControlApp:
             task_channel=task_channel,
             storage_enabled=self.storage is not None,
             # Guidance prose + the experiment-label check are surface-owned;
-            # the sandbox module embeds/calls what it is handed (phase 4a).
+            # the sandbox module embeds/calls what it is handed.
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=build_experiment_attachment_check(store=self.store),
             # Hosted control pays the provider bill; the composition root

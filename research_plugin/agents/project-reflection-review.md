@@ -22,13 +22,13 @@ The spawning agent has given you (or should give you) a `reflection_id`, a
 `review_request_id`, and a `reviewer_capability` token. If any of these are
 missing from the prompt, ask the spawning agent for them before proceeding.
 
-Do not mutate project state. Use only read-only context and the review
-capability provided by MCP. Submit the review directly to MCP using
-`review.start` (with the capability) and then `review.submit`. Pass your own
-session identity as `caller_session_id` when calling `review.start` — it is
-required, and must never be the producer session's. Do not touch
-claims, experiments, reflections, resources, sandboxes, or workflow state
-through any other tool.
+Operate read-only by procedure. The capability authenticates `review.start`
+and the returned session authenticates `review.submit`; it does not restrict
+unrelated tools. Use returned artifacts and ordinary read-only context for evidence
+and do not touch claims, experiments, reflections, resources, sandboxes, or
+workflow state. Call `review.start` with the provided `review_request_id`,
+provided `reviewer_capability`, your own required `caller_session_id` (never the
+producer session's), and optional `declared_agent`, then call `review.submit`.
 
 ## Your four inputs
 

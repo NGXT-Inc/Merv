@@ -1,150 +1,131 @@
-# Sandbox Execution Model (SSH, no jobs)
+# Modal Sandbox Backend
 
-This backend gives the agent **direct access to a Modal sandbox over SSH**. There
-is no job abstraction: the agent requests a sandbox for an experiment, receives
-SSH connection details, and runs ordinary shell commands itself. The plugin's
-role is to procure, track, and shut down sandboxes while recording what
-happened for user visibility.
+Modal is one implementation of the provider-neutral `SandboxBackend` contract.
+The agent-facing lifecycle is shared with Lambda Labs and Thunder Compute; only
+procurement mechanics and capability flags vary by provider.
 
-## Concepts
+## Architecture and ownership
 
-- **Experiment** is the default attachment context. An experiment may have
-  multiple live sandboxes, and a running sandbox can be attached to another
-  ready/running experiment.
-- **Sandbox registry** (`SandboxService`) is the central authority for
-  procurement, status, SSH access, and shutdown. It owns the durable
-  `sandboxes` table and the sandbox SSH keypair.
-- **Sandbox backend** (`ModalSandboxBackend`) owns the Modal mechanics: create a
-  sandbox, wire SSH, check liveness, terminate, and read the transcript.
-- **Workspace convention** is provider-neutral. The experiment's remote work
-  folder is `/workspace/<name>` and `/workspace/data` is the conventional
-  scratch home for datasets/caches. Nothing is copied back automatically:
-  agents explicitly pull light retained files with `sandbox.pull_outputs` or
-  upload heavy outputs with storage tools before release.
-
-## Procurement: request, reuse, or attach
-
-`sandbox.request(project_id, experiment_id, gpu?, cpu?, memory?, time_limit?)`:
-
-1. Look up an active sandbox attached to the experiment.
-2. If a matching row exists and the Modal sandbox is still alive, return its stored SSH
-   details (`reused: true`).
-3. Otherwise create a fresh sandbox, wire SSH, persist the row, and return the
-   new details (`reused: false`).
-
-Procurement is the registry's job, not the agent's. The agent always calls
-`sandbox.request`; whether it gets a reused or fresh sandbox is transparent.
-
-## SSH wiring
-
-SSH over Modal uses an unencrypted TCP tunnel because SSH already provides its
-own transport security:
-
-```python
-sandbox = modal.Sandbox.create(
-    "/opt/rp/boot.sh",
-    app=app,
-    image=image,
-    gpu=gpu,
-    cpu=cpu,
-    memory=memory,
-    timeout=time_limit,
-    workdir="/workspace/<name>",
-    unencrypted_ports=[22],
-    env={
-        "RP_AUTHORIZED_KEY": public_key,
-        "RP_EXPERIMENT_ID": experiment_id,
-        "RP_WORKDIR": "/workspace/<name>",
-        "RP_EXPERIMENT_DIR": "/workspace/<name>",
-        "RP_SANDBOX_DATA_DIR": "/workspace/data",
-        "RP_SESSION_DIR": "/workspace/.research_plugin_sessions/<experiment_id>",
-    },
-)
-host, port = sandbox.tunnels()[22].tcp_socket
+```text
+Agent client --stdio--> local MCP proxy --HTTP--> brain / SandboxService
+      |                       |                         |
+      | SSH commands          | rsync retained files   | Modal API
+      +-----------------------+-------------------------+--> Modal sandbox
 ```
 
-The keypair is generated and owned by the registry for the sandbox. Daemon and agent share a host,
-so the registry returns a ready-to-run command:
+- The brain's `SandboxService` owns durable sandbox rows, experiment
+  attachments, reuse policy, quotas, provisioning state, reaping, and release.
+- `ModalSandboxBackend` creates the container, exposes SSH, refreshes the
+  endpoint, checks liveness, terminates the container, and reads provider-side
+  transcript, usage, and run-receipt data.
+- The local proxy owns checkout paths and `sandbox.pull_outputs`. The brain does
+  not receive `repo_root` and never reads the checkout.
+- In project-local MCP sessions, the proxy injects hidden `project_id` scope.
+  Agent calls use `experiment_id` or `sandbox_uid`, not a caller-selected project
+  id.
 
-```bash
-ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null root@<host> '<your shell command>'
-```
+There is no agent-facing remote job API. Provisioning may run asynchronously
+inside the brain, while long commands use the provider-neutral `rp_run` receipt
+convention.
 
-Use `$RP_EXPERIMENT_DIR` for scripts, configs, compact outputs, reports, and
-figures that may need to be retained. Use `$RP_DATASET_DIR` (or anywhere
-outside the experiment folder) for large datasets, caches, checkpoints, and
-temporary derived data. Before release, pull light retained files into the
-local experiment folder with `sandbox.pull_outputs` or upload heavy outputs
-with storage tools.
+## Sandbox identity and workspace
 
-Agents should use CPU-only sandboxes for dataset inspection and data engineering
-unless the command needs GPU acceleration. They can request more RAM with
-`memory` in MiB and more CPU with `cpu` in Modal CPU cores.
+A sandbox is a project-scoped machine identified by `sandbox_uid`. It may be
+standalone, attached to multiple experiments, and left running while attachments
+change. An experiment may have multiple live sandboxes by requesting an
+additional machine.
 
-If the backend env file or process environment contains `HF_TOKEN`, sandbox
-creation passes it through with Modal's `secrets` API. The SSH wrapper exports
-both `HF_TOKEN` and `HUGGING_FACE_HUB_TOKEN` for Hugging Face tooling. The token
-value must not be written into retained files, transcripts, resources, or
-agent-visible API responses.
+The workdir is sandbox-owned, normally `/workspace/sandbox-<uid-prefix>`, and is
+independent of experiment attachment. The compatibility variables
+`$RP_WORKDIR` and `$RP_EXPERIMENT_DIR` both point there. `$RP_DATASET_DIR` and
+`$RP_SANDBOX_DATA_DIR` point to `/workspace/data` for caches, datasets,
+checkpoints, and other ephemeral bulk data.
 
-## Image additions
+Nothing is synchronized automatically. Files on the sandbox disappear on
+release or timeout unless the agent pulls compact evidence into the checkout or
+uploads heavy files to configured durable storage.
 
-The base image installs the baseline agent tooling plus two scripts:
+## SSH and key custody
 
-- `/opt/rp/boot.sh` writes `$RP_AUTHORIZED_KEY`, creates the experiment dir,
-  `/workspace/data`, `artifacts_to_keep/`, and the sessions dir, then
-  `exec`s `sshd -D`.
-- `/opt/rp/rec.sh` is the `ForceCommand` transcript wrapper.
+Modal exposes port 22 through an unencrypted TCP tunnel; SSH itself supplies
+transport encryption and authentication. Caller and brain credentials have
+distinct duties:
 
-## Visibility: the transcript wrapper
+- The caller owns the user SSH keypair and supplies only its OpenSSH public key
+  to `sandbox.request`. The corresponding private key stays on the caller's
+  machine and is used for agent SSH and proxy-local rsync pulls.
+- The brain owns separate management and provider credentials for operational
+  transcript, metrics, secret-delivery, and lifecycle paths. Those paths never
+  depend on the caller's private key, and brain credentials are never returned
+  as the caller's key.
 
-`sshd` is configured with `ForceCommand /opt/rp/rec.sh`. Every SSH channel is
-recorded to:
+The split proxy returns SSH facts (`host`, `port`, `user`), not a registry-owned
+private key or guaranteed ready-made command. The agent constructs and runs the
+SSH command with its own key. File-transfer commands bypass the transcript tee
+so rsync/scp protocols remain intact.
 
-```bash
-$RP_SESSION_DIR/transcript.log
-```
+## Procurement and lifecycle
 
-The wrapper records commands, streams stdout/stderr back to the SSH channel, and
-preserves the real command exit status. `sandbox.terminal` reads the transcript
-live from the running sandbox and persists a compact `last_command` snapshot
-from the transcript markers, so the latest command status remains visible if a
-later transcript read is temporarily unavailable.
+`sandbox.request` may create a standalone machine or attach it to an experiment.
+When an attached live sandbox is reusable, the service returns it; pass
+`additional=true` to request another machine for the same experiment.
 
-## Training observability: centralized MLflow
+Modal composes resources directly from `gpu`, `cpu`, and `memory`; omitting
+`gpu` requests CPU-only execution. `sandbox.options` describes the accepted GPU
+and compute choices. Unlike fixed-SKU providers, Modal does not return a
+`needs_selection` instance-type gate.
 
-Every sandbox installs the MLflow client package, but sandbox provisioning does
-not automatically export tracking env vars. Agents get the central tracking
-URI and experiment name from `mlflow.context` or
-`experiment.transition(start_running)`, then set those env vars in the SSH
-command that runs training. The sandbox does not run an MLflow tracking server,
-TensorBoard server, or sandbox-local dashboard tunnel.
+Provisioning waits for a bounded interval. If the container or SSH endpoint is
+not ready, `sandbox.request` returns `provisioning`; poll `sandbox.get` until it
+reports `running` or `failed`. Repeating `sandbox.request` is not a poll.
 
-## Shutdown / status
+`sandbox.attach` associates an existing running machine with another experiment
+without changing its workdir, SSH endpoint, or lifetime. Modal fixes its timeout
+when the container is created, so `sandbox.extend` may reject live extension.
 
-- `sandbox.release(project_id, experiment_id)` terminates the Modal sandbox and
-  marks the row `terminated`. The VM filesystem is ephemeral; agents must copy
-  out or upload any files they want to keep before release.
-- `time_limit` is the Modal sandbox `timeout`; Modal reaps the container when it
-  elapses. `sandbox.get` refreshes liveness and reconciles the row to
-  `terminated` when Modal says the sandbox is gone.
-- Sandboxes are tagged with `research_plugin`, `project_id`, `experiment_id`,
-  and sandbox role so a daemon restart can rediscover them.
+Release is destructive and two-step. The first `sandbox.release` call returns a
+retention checklist. Only `confirm_retained=true` terminates the container.
+Modal also enforces the requested `time_limit`; expiry destroys the filesystem.
 
-## Tool surface (agent-facing)
+## Execution and observability
+
+The SSH `ForceCommand` wrapper records commands and streamed output in a
+sandbox-scoped transcript while preserving exit status. `sandbox.terminal`
+supports cursor-based polling and the brain persists a compact `last_command`
+snapshot for temporary read failures.
+
+Use `rp_run <label> -- <command>` for work that must survive an SSH disconnect.
+It writes receipts under the sandbox workdir; the brain mirrors them so
+`sandbox.runs` remains queryable after the machine is gone. Logs and output files
+do not become durable merely because the receipt does.
+
+The image includes an MLflow client, not a tracking server. Agents obtain the
+central tracking environment from `mlflow.context` or the `start_running`
+transition. When `HF_TOKEN` is configured brain-side, Modal's secrets API makes
+it available inside the sandbox without returning the value to the agent API.
+Never print it or write it into retained files.
+
+## Current agent tool surface
 
 | Tool | Purpose |
-|------|---------|
-| `sandbox.request` | Procure or reuse the experiment's sandbox; returns SSH details and remote/local path guidance. |
-| `sandbox.get` | Current sandbox status + SSH details for the experiment. |
-| `sandbox.pull_outputs` | Copy selected files or directories from the remote experiment folder into the local experiment folder. |
-| `sandbox.list` | All experiment sandboxes in the project. |
-| `sandbox.release` | Terminate the experiment's sandbox after confirming needed files were retained. |
-| `sandbox.terminal` | Read the experiment's terminal transcript tail and latest command-status snapshot. |
-| `sandbox.health` | Is the execution backend reachable. |
+|---|---|
+| `sandbox.options` | Inspect provider-shaped hardware choices. |
+| `sandbox.request` | Reuse or procure a project sandbox, optionally attached to an experiment. |
+| `sandbox.get` | Poll or inspect by `sandbox_uid` or experiment attachment. |
+| `sandbox.attach` | Attach a running sandbox to another experiment. |
+| `sandbox.terminal` | Read transcript output and command status. |
+| `sandbox.runs` | Read or long-poll durable `rp_run` receipts. |
+| `sandbox.pull_outputs` | Proxy-local rsync of selected compact files into the checkout. |
+| `sandbox.extend` | Request a bounded lifetime extension when the provider supports it. |
+| `sandbox.release` | Confirm retention, then terminate the machine. |
 
-The agent's normal loop is: `sandbox.request` -> run/edit/write files over SSH
-in `$RP_EXPERIMENT_DIR` (heavy files outside it) -> `sandbox.pull_outputs` for
-light retained files or upload heavy files to durable storage ->
-register/associate resources -> transition to review.
+`sandbox.list` and `sandbox.health` remain available to HTTP/internal callers but
+are hidden from agent `tools/list`.
+
+## Review trust boundary
+
+Sandbox transcripts and run receipts provide execution visibility; they do not
+prove reviewer independence. Review trust comes from a role- and snapshot-scoped
+capability, a distinct `caller_session_id`, and stale/superseded submission
+checks. The reviewer skill imposes the read-only operating role; unrelated tool
+calls are not authenticated as belonging to that reviewer.

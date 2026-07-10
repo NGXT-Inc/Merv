@@ -11,8 +11,8 @@
   each of these has real content (the lint strips these HTML comments, so a
   section left as just guidance counts as empty):
     - Summary
-    - Results          (for quantitative attempts: MUST reference the system
-                        metrics exhibit and interpret it — see Results below)
+    - Results          (when the system pins a metrics exhibit: MUST reference
+                        and interpret it — see Results below)
     - Deviations from plan
     - Conclusion
 
@@ -39,18 +39,24 @@
 
 ## Results
 <!--
-  The numbers live in the system-generated metrics exhibit — every MLflow run
-  in this attempt's window plus pulled result files, pinned at submit_results
-  as this folder's metrics exhibit JSON. Preview it with `experiment.exhibit`
-  BEFORE writing this section, then write the interpretation around it:
+  When the system can build a metrics exhibit, it contains up to the newest 50
+  MLflow runs in this attempt's window plus eligible pinned result JSON and is
+  pinned at submit_results as this folder's metrics exhibit JSON. It records
+  when the run cap is reached. Preview with `experiment.exhibit` BEFORE writing
+  this section, then write the interpretation around it:
 
-  - Reference the exhibit by name (required for quantitative attempts), e.g.
+  If `experiment.exhibit` returns a pinned exhibit:
+  - Reference it by name (required whenever it exists), e.g.
     "All runs: [metrics exhibit](<exhibit json>)" — spell out its filename.
   - Read out the decisive comparisons in prose or a small summary view,
     citing run names/ids from the exhibit — never numbers that aren't in it.
   - Address ALL runs the exhibit shows, not just the good ones: failed seeds
     and aborted runs need a sentence each.
   - Use the exact metrics named in the plan's Evaluation section.
+
+  An unconfigured/no-run fallback can have quantitative result files without a
+  pinned exhibit. In that case, interpret the registered result evidence and
+  explain why no exhibit was available; do not invent an exhibit link.
 -->
 
 ## Figures

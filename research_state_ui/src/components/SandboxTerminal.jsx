@@ -120,7 +120,7 @@ export default function SandboxTerminal({
   // Pause polling while the tab/app is backgrounded and refresh on return.
   // Without this the 3s sandbox poll keeps the radio awake on a locked phone
   // (and the 1.5s terminal poll below is worse) — a live battery bug on every
-  // surface, called out in docs/MOBILE_UX_REVIEW.md §1.4.
+  // surface.
   useEffect(() => {
     let cancelled = false;
     fetchOnce();
@@ -176,9 +176,8 @@ export default function SandboxTerminal({
           {isLive && <span className="log-tail-live-dot" title="live" />}
         </div>
         <div className="cluster" style={{ gap: 8 }}>
-          {/* readOnly hides the release path here so it flows only through the
-              guarded slide-to-confirm on the Sandboxes screen (mobile) — see
-              docs/MOBILE_UX_REVIEW.md §1.2. */}
+          {/* readOnly hides the release path here so mobile release flows only
+              through the guarded slide-to-confirm on the Sandboxes screen. */}
           {!readOnly && (isLive || isProvisioning) && (
             <button className="btn btn--sm btn--ghost" onClick={onRelease} disabled={releasing}>
               {releasing ? 'Releasing…' : isProvisioning ? 'Cancel' : 'Release sandbox'}

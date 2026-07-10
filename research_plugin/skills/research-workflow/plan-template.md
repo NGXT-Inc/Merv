@@ -61,7 +61,8 @@
 
 ## Outputs
 <!-- RECOMMENDED. Named result files this experiment will produce and later
-     sync as result resources, e.g. experiments/<name>/results.json. -->
+     retain and register as result resources, e.g.
+     experiments/<name>/results.json. -->
 
 ## Risks & confounders
 <!-- RECOMMENDED. What could bias the result or break the run. -->

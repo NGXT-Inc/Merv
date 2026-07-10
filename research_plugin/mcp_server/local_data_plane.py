@@ -1,8 +1,8 @@
 """Proxy-local execution for split-mode data-plane tools.
 
 The MCP proxy runs on the user's machine, so it can safely perform the local
-file reads and validation that used to require a long-running daemon. Static
-imports stay stdlib-only; backend data-plane helpers are imported lazily inside
+file reads and validation required by the current architecture. Static imports
+stay stdlib-only; backend data-plane helpers are imported lazily inside
 methods so the proxy package's import discipline remains unchanged.
 """
 
@@ -257,9 +257,40 @@ class LocalDataPlane:
         }
 
     def _validate_register_intent(self, arguments: dict[str, Any]) -> None:
-        """Enforce the resource.register mode constraints in the proxy path
-        (the cloud never sees this data tool). Mirrors _validate_sandbox_request."""
-        input_cls = _import_attr("backend.tools.contracts", "ResourceRegisterInput")
+        """Enforce resource.register modes without requiring brain packages.
+
+        Pydantic supplies the full contract check when installed; the small
+        mode/trio invariant remains identical on a bare-Python client.
+        """
+        try:
+            input_cls = _import_attr(
+                "backend.tools.contracts", "ResourceRegisterInput"
+            )
+        except ImportError:
+            sources = [
+                arguments.get("path") is not None,
+                arguments.get("paths") is not None,
+                arguments.get("resource_id") is not None,
+            ]
+            if sum(sources) != 1:
+                raise LocalDataPlaneError(
+                    "provide exactly one of 'path', 'paths', or 'resource_id'"
+                )
+            trio = [
+                arguments.get("target_type") is not None,
+                arguments.get("target_id") is not None,
+                arguments.get("role") is not None,
+            ]
+            if any(trio) and not all(trio):
+                raise LocalDataPlaneError(
+                    "target_type, target_id, and role must be provided together"
+                )
+            if arguments.get("resource_id") is not None and not all(trio):
+                raise LocalDataPlaneError(
+                    "resource_id association mode requires target_type, "
+                    "target_id, and role"
+                )
+            return
         payload = dict(arguments)
         payload.setdefault("project_id", self._project_id())
         input_cls.model_validate(payload)

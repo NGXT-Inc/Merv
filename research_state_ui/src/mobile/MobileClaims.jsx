@@ -9,8 +9,8 @@ import { SkeletonCards } from './Skeleton';
 const STATUS_ORDER = ['active', 'supported', 'weakened', 'contradicted', 'draft', 'abandoned'];
 
 /**
- * Claims — the flush lifecycle-row language established by Experiments
- * (design_philosophy.md): an underline filter instead of boxed chips, then
+ * Claims — the flush lifecycle-row language established by Experiments:
+ * an underline filter instead of boxed chips, then
  * hairline-separated rows whose 3px left index carries the claim's own
  * status. Read-only — recording claims is the agent's / desktop's job.
  */

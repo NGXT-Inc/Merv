@@ -1,7 +1,7 @@
-// Sandbox parachute lifecycle: results rescued to cloud object storage when a
-// sandbox expired while the local daemon was offline. One source of truth for
-// the event-type → presentation mapping and the "latest event for a sandbox"
-// lookup, shared by the event timeline and the sandbox status chips.
+// Legacy parachute-event projection for historical databases. The current
+// runtime performs no automatic rescue or restore; new retention is explicit
+// through sandbox.pull_outputs or storage.upload_file. This remains the one
+// event-type → presentation mapping for old rows in timelines and status chips.
 //
 // `label` is the verbose form for the event feed; `short` is the compact form
 // for the chip on the sandbox table/cards. The `--failed` variant carries the
@@ -12,7 +12,7 @@ export const PARACHUTE_CHIPS = {
   'sandbox.parachute_failed':   { variant: 'failed',     label: '⚠ Parachute failed — possible data loss', short: '⚠ Parachute failed' },
 };
 
-// Newest parachute-lifecycle event type for an experiment/sandbox, or null.
+// Newest legacy parachute event type for an experiment/sandbox, or null.
 // Scans the deep events window and matches on either the experiment target or
 // the sandbox_id in the payload; picks the latest by id/created_at so feed
 // ordering doesn't matter.

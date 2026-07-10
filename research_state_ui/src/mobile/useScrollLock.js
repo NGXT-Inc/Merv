@@ -2,10 +2,9 @@ import { useEffect } from 'react';
 
 /**
  * Reference-counted body scroll lock. Uses the position:fixed technique so iOS
- * Safari doesn't rubber-band the page *behind* an overlay (the scroll-leak the
- * mobile plan calls out). Counting makes nesting safe — a node-detail sheet
+ * Safari doesn't rubber-band the page *behind* an overlay. Counting makes
+ * nesting safe — a node-detail sheet
  * opened from inside another sheet won't prematurely restore scroll.
- * docs/MOBILE_UX_REVIEW.md §3.2.
  */
 let lockCount = 0;
 let savedScrollY = 0;

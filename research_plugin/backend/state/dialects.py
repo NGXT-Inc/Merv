@@ -1,4 +1,4 @@
-"""The Postgres dialect of the record store (cloud plan Phase 6).
+"""Postgres dialect for the brain record store.
 
 ``PostgresStateStore`` serves the exact surface the services were written
 against on SQLite: ``connect()`` returns a connection whose ``execute``
@@ -9,21 +9,12 @@ a string-level placeholder translation (the codebase never uses ``?`` or
 that invariant honest) plus a DDL translation of the one SCHEMA constant.
 
 Single-writer semantics: SQLite gets them from ``BEGIN IMMEDIATE``; here a
-``pg_advisory_xact_lock`` keyed on the DSN serializes every write
-transaction. Coarse and conservative by design — replacing the global lock
-with row-scoped ``SELECT ... FOR UPDATE`` on the hot paths (attempt bumps,
-``current_version_id``) is a later optimization, not a Phase 6 concern.
+``pg_advisory_xact_lock`` keyed on the DSN serializes every write transaction.
+The UI's recent activity/tool-I/O rings are process-local diagnostics and are
+not part of this record-store dialect.
 
-Control-mode tool-call audit home (plan Phase 6 decision): the daemon-side
-``tool_calls.sqlite`` (its own machine-local AUTOINCREMENT schema,
-``tool_calls.py``) stays exactly where it is — it is per-plane telemetry,
-never synced across the seam. The control plane's tenant-scoped audit table
-lands with Phase 7's auth work, when there is a principal to attribute calls
-to; it is intentionally NOT part of this schema.
-
-psycopg is imported lazily: it is a dev/test + control-profile dependency
-(the Phase 8 packaging split scopes it), and local mode must keep working
-without it installed.
+psycopg is imported lazily so the stdlib-only proxy and local SQLite paths do
+not import it.
 """
 
 from __future__ import annotations

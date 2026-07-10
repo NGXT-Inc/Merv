@@ -11,7 +11,6 @@ import { SkeletonCards } from './Skeleton';
 /**
  * MobileReviews — read-only review queue + history as stacked cards (the
  * desktop page packs everything into nowrap .list-rows that crush on a phone).
- * docs/MOBILE_UX_REVIEW.md §2.8.
  */
 export default function MobileReviews() {
   const projectId = useProjectStore(s => s.projectId);

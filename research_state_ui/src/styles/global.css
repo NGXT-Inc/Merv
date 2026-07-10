@@ -6,10 +6,9 @@
 
 :root {
   color-scheme: light;
-  /* "Luna" — warm-paper light theme read from the project's brand deck
-     (design_handoff_mobile_redesign). The single universal accent is the
+  /* "Luna" — the warm-paper light theme. The single universal accent is
      brand orange; green/steel/red do quiet semantic duty only. Shared by
-     desktop and mobile by design. */
+     desktop and mobile. */
   --bg: #F2F2F0;
   --bg-elev: #FFFFFF;
   --bg-soft: #E7E7E4;
@@ -4230,7 +4229,11 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
   margin-top: 8px; font-size: var(--text-sm); color: var(--text); line-height: 1.45;
 }
 .refl-lens-body {
-  margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px;
+  margin-top: 10px;
+}
+.refl-lens-doc {
+  margin: 0;
+  padding: 14px 16px;
 }
 .refl-lens-pending {
   margin-top: 10px; font-size: var(--text-xs); color: var(--muted); font-style: italic;
@@ -4564,8 +4567,7 @@ a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; 
 .lgd-chip.ok { color: var(--supports); }
 .lgd-chip.bad { color: var(--refutes); }
 
-/* Parachute lifecycle chip (derived from sandbox.parachuted /
-   parachute_restored / parachute_failed events). */
+/* Legacy parachute-event chips retained for historical event rows only. */
 .parachute-chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: var(--radius-pill); font-size: var(--text-xs); font-weight: 500; border: 1px solid var(--line-strong); }
 .parachute-chip--uploaded, .parachute-chip--parachuted { color: var(--qualifies); border-color: rgba(var(--qualifies-rgb), .4); background: rgba(var(--qualifies-rgb), .08); }
 .parachute-chip--restored { color: var(--supports); border-color: rgba(var(--supports-rgb), .35); background: rgba(var(--supports-rgb), .07); }

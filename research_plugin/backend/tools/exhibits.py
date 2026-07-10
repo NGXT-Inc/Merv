@@ -5,7 +5,8 @@ boundaries: MLflow readback (mlflow), the attempt window (research_core
 events), and pinned result-file sources (artifacts). ``experiment.exhibit``
 previews the exhibit during ``running``; the ``submit_results`` tool path
 calls the same generation, then pins the bytes as a system-authored resource
-— runs logged after that moment do not exist for the attempt.
+— runs logged after that moment remain in MLflow but are outside the finalized
+attempt exhibit.
 """
 
 from __future__ import annotations
@@ -170,10 +171,12 @@ def preview_metrics_exhibit(
         "guidance": (
             "Preview of the system-generated metrics exhibit. At "
             "submit_results the system regenerates it from the same sources "
-            f"and pins it at {path}; every run in the attempt window appears "
-            "(no curation), runs logged after submit_results do not exist for "
-            "this attempt, and report.md must reference "
-            f"{METRICS_EXHIBIT_FILENAME} and interpret it rather than "
-            "restate numbers by hand."
+            f"and pins it at {path} when matching runs are found, or when "
+            "MLflow is unavailable after a plugin-created run. The "
+            "newest 50 runs are captured without curation and the exhibit "
+            "records when that cap is reached. Later runs remain in MLflow "
+            "but are outside the finalized exhibit. When pinned, report.md "
+            f"must reference {METRICS_EXHIBIT_FILENAME} and interpret it "
+            "rather than restate numbers by hand."
         ),
     }

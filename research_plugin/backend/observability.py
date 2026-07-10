@@ -1,28 +1,10 @@
-"""Structured logs + per-tenant counters (cloud plan Phase 9).
+"""Hosted request logging and operator counters.
 
-Two cloud-operability primitives that are dormant in local mode and load-bearing
-only in the control plane:
-
-- ``StructuredLogger`` emits one redacted JSON line to stdout per tool call /
-  HTTP request, carrying ``request_id`` + ``tenant_id`` + ``tool``/``path`` +
-  ``status`` + ``duration_ms``. This is the cloud's structured log stream
-  (scraped by the platform's log pipeline); it is SEPARATE from the daemon-local
-  ``activity.jsonl`` (which never syncs). It is gated on control mode — local
-  mode prints nothing new, so behavior is byte-identical. Redaction reuses the
-  existing ``SENSITIVE_KEYS`` so a capability/token never reaches stdout.
-
-- ``TenantCounters`` is the RED-ish per-tenant read: tool-call count (from the
-  append-only ``events`` table, which the control plane already writes per
-  project → tenant), sandbox-hours (the generation ledger, the same sum the
-  spend accountant uses), and blob bytes (the per-tenant generation count is the
-  cheap proxy; blob byte totals come from the store's blob accounting when the
-  control plane carries it — kept conservative here). Reusing ``events`` for the
-  audit trail (rather than a new audit table) is the deliberate lighter path:
-  events are already tenant-scoped, append-only, and queried by the UI.
-
-Audit-log placement (open decision J): cloud-only, via the existing ``events``
-table scoped by project → tenant. No thin local mirror — the local server keeps
-its own ``activity.jsonl`` and that is the local record.
+``StructuredLogger`` writes redacted JSON request records to stdout in control
+mode. ``TenantCounters`` reads durable event and sandbox-generation records for
+the private admin endpoint. These are operational views, not authentication or
+tenant-isolation boundaries. The UI's activity and tool-I/O diagnostics are
+separate bounded in-memory rings owned by ``ControlApp``.
 """
 
 from __future__ import annotations
@@ -90,7 +72,7 @@ class StructuredLogger:
 
 
 class TenantCounters:
-    """RED-ish per-tenant counters for the control plane (cloud plan Phase 9)."""
+    """Operator counters grouped by the stored tenant id."""
 
     def __init__(self, *, store: Any) -> None:
         self.store = store

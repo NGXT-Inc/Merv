@@ -8,7 +8,6 @@ const MAX = 110;      // clamp on indicator travel
  * for a fixed indicator the shell renders. Engages only at scrollTop 0 and
  * only for touch, and resists past the threshold so it feels rubber-bandy.
  * This is the instant override that makes adaptive polling acceptable.
- * docs/MOBILE_UX_REVIEW.md §3.4.
  *
  * Handlers read/write refs (not state) so the window listeners are attached
  * once and never thrash on every touch frame.

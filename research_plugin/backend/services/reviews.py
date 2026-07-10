@@ -48,8 +48,9 @@ class ReviewService:
     Reviews are target-polymorphic: an experiment review pins the experiment's
     snapshot and routes rejections to planned/running; a synthesis review pins
     the synthesis wave's snapshot and routes rejections to
-    reflecting/synthesizing. The capability machinery (one-time token,
-    snapshot pinning, producer-session rejection, read-only funnel) is shared.
+    reflecting/synthesizing. The capability machinery (plaintext returned once,
+    snapshot pinning, and producer-session rejection) is shared. Reviewer skills
+    provide the procedural read-only boundary.
     """
 
     def __init__(

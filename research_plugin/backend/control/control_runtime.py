@@ -21,7 +21,7 @@ from ..utils import ValidationError, now_iso, parse_iso
 
 
 class ControlActivitySink:
-    """Bounded in-memory activity sink for hosted control composition."""
+    """Bounded in-memory activity sink for the unified brain composition."""
 
     log_path = "<control-activity-disabled>"
 
@@ -110,7 +110,7 @@ class ControlActivitySink:
 
 
 class ControlToolCallSink:
-    """Bounded in-memory tool-call sink for hosted control composition."""
+    """Bounded in-memory tool-call sink for the unified brain composition."""
 
     db_path = "<control-tool-calls-disabled>"
 
@@ -248,9 +248,9 @@ class ControlToolCallSink:
 
 
 class ControlSandboxWorker:
-    """Control-side adapter for machine-local sandbox enrichment.
+    """Brain-side adapter for machine-local sandbox enrichment.
 
-    Hosted control never owns caller-side keys or conn files, so the worker
+    The brain never owns caller-side keys or connection files, so the worker
     exposes neutral empty enrichment while provider endpoint refresh remains a
     control-plane operation.
     """
@@ -272,9 +272,9 @@ class ControlSandboxWorker:
 
 
 class ControlTaskChannel:
-    """Hosted-control task channel after the split daemon removal.
+    """Neutral brain task channel for sandbox lifecycle callbacks.
 
-    Control updates sandbox rows and reapers through the neutral SandboxBackend
+    The brain updates sandbox rows and reapers through the neutral SandboxBackend
     protocol; caller-machine conn-file work lives in the local MCP proxy.
     """
 

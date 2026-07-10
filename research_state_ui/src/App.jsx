@@ -109,8 +109,8 @@ export default function App() {
   const isMobile = useViewport();
   const activeExperiments = useProjectStore(selectActiveExperiments);
   const sandboxes = useProjectStore(selectSandboxes);
-  // Adaptive cadence on mobile (review §1.3 / MOBILE_PLAN §3.5): poll fast only
-  // while something is live (a running experiment / sandbox), and decay to 30s
+  // Adaptive cadence on mobile: poll fast only while something is live (a
+  // running experiment / sandbox), and decay to 30s
   // on a quiet Now screen where each cellular radio wakeup is the dominant
   // battery cost. Pull-to-refresh is the instant override. Desktop stays 3s.
   const somethingLive =

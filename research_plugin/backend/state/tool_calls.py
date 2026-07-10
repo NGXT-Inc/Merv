@@ -84,7 +84,7 @@ class ToolCallStore:
             )
             # Redact bearer-like secrets before they hit disk (cloud plan Phase
             # 7). This store keeps full I/O, so review.request results and
-            # review.start args would otherwise persist one-time capabilities.
+            # review.start args would otherwise persist plaintext capabilities.
             stored_arguments = _redact_sensitive(arguments)
             stored_result = _redact_sensitive(result)
             # Derive scope + entity target from the args so the UI can render a

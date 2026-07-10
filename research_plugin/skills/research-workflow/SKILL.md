@@ -17,7 +17,8 @@ workflow state.
 - Claim: what we think.
 - Experiment: what we try.
 - Reflection: what the project has learned across experiments.
-- Resource: one regular file in the local repo.
+- Agent-authored resource: one regular file in the local repo. The brain-created
+  metrics exhibit is the system-authored exception.
 - Review: read-only design, experiment, reflection, human, or automated
   judgment submitted to MCP.
 
@@ -113,14 +114,12 @@ Heavy artifacts should go to durable object storage instead of into the repo.
    unless the current user request already provided that information, then call
    `project` with `action: "connect"` — it validates or creates the project and
    links this folder to it. If
-   `exists` is true, read `at_a_glance`: it links the latest reflection
-   document and project graph, shows whether newer experiments or claim changes
-   happened since that reflection, and gives recommended `resource.find`
-   reads (plus the reflection id for `reflection.get`) for more context. When
-   you need the full project picture — every claim including settled or
-   abandoned ones, every experiment including terminal ones — call `project`
-   with `action: "overview"` rather than inferring state from
-   `workflow.status_and_next`'s active-only view.
+   `exists` is true, it returns the linked project identity. When you need the
+   full project picture — every claim including settled or abandoned ones,
+   every experiment including terminal ones — call `project` with
+   `action: "overview"` rather than expecting an `at_a_glance` block from
+   `current` or inferring state from `workflow.status_and_next`'s active-only
+   view.
 2. Ask MCP for `workflow.status_and_next(experiment_id?)` before acting.
 3. Identify the claim or experiment being worked on. Before creating a new
    claim, check `project` `action: "overview"` so you do not recreate a
@@ -128,8 +127,11 @@ Heavy artifacts should go to durable object storage instead of into the repo.
    the siblings (name the contrast with them, and do not recreate a dead one).
 4. Follow MCP's `next_action`, allowed actions, blocked actions, and gate state.
 5. Use MCP for all claim, experiment, resource, review, and workflow mutations.
-6. Do not invent project scope. Use the project-local MCP defaults, or pass the
-   exact `project_id` returned by MCP when a schema requires it.
+6. Do not invent or pass project scope to normal agent-facing tools. Their
+   schemas hide `project_id`; the local proxy discards any supplied value and
+   injects the project linked to this checkout. The merged `project` tool is the
+   exception: `action: "connect"` accepts the user-selected existing
+   `project_id`, while `current` and `overview` take no agent-supplied scope.
 7. Edit local files only for implementation, notes, plans, configs, and results.
 8. Run lightweight commands locally when safe.
 9. For quantitative ML work, follow Quantitative observability whether running
@@ -232,13 +234,17 @@ reviewed.
 
 ### The metrics exhibit — the system writes the numbers, you write the meaning
 
-At `submit_results` the system generates a **metrics exhibit** and pins it as
-a system-authored resource (`experiments/<name>/metrics_exhibit.json`). It is
-built from observation, not from your account: every MLflow run in this
-attempt's window under `rp/<project>/<experiment>` — all of them, five seeds
-with one good one show as five rows — plus pulled result files (`metrics.json`,
-`results/*.json` associated with role `result`), each entry with provenance.
-Runs logged after `submit_results` do not exist for the attempt.
+At `submit_results` the system generates a **metrics exhibit** and pins it as a
+system-authored resource (`experiments/<name>/metrics_exhibit.json`) when the
+attempt has an observed MLflow run (or a plugin-created run cannot be read back
+because MLflow is unavailable). Attempts with nothing quantitative to exhibit
+get no exhibit and no exhibit-reference gate. A pinned exhibit is built from
+observation, not from your account: up to the newest 50 MLflow runs in this
+attempt's window under `rp/<project>/<experiment>` — the exhibit records when
+that cap is reached — plus eligible pinned result JSON (`metrics.json`,
+`results.json`, and `results/*.json` associated with role `result`), each entry
+with provenance. Runs logged after `submit_results` remain in MLflow but are
+outside the attempt's finalized exhibit.
 
 Consequences:
 - Whatever you log IS the record. Log every run to the MLflow env you were
@@ -246,30 +252,37 @@ Consequences:
   experiment folder before submitting — an empty or thin exhibit under a
   quantitative plan is a loud signal to the reviewer.
 - Call `experiment.exhibit` BEFORE writing `report.md` and write the report
-  around it: do not hand-copy numbers into a table; reference
-  `metrics_exhibit.json` and interpret it (the gate requires the reference for
-  quantitative attempts). Qualitative experiments with no runs get no exhibit
-  and no extra machinery.
+  around it. When it returns a pinned exhibit, reference
+  `metrics_exhibit.json` and interpret it; the gate requires that reference
+  whenever the exhibit exists. If an unconfigured/no-run fallback produces no
+  exhibit, interpret the registered result evidence and explain the gap instead
+  of inventing an exhibit link. Qualitative experiments with no runs get no
+  exhibit and no extra machinery.
 
 ## Execution environment
 
-Expensive or GPU work runs in a **cloud sandbox** that you drive directly over
-SSH. Once the experiment is `ready_to_run` (or already `running`), call
-`sandbox.request(experiment_id?, instance_type?, region?, gpu?, cpu?, memory?,
-time_limit?)` and follow the returned `hint`; `sandbox.request`/`sandbox.get`
-are the source of truth for provider selection, polling, expiry, credentials,
-and the remote work folder. A sandbox can also be created unattached and
-addressed by `sandbox_uid`.
+Expensive or isolated work can run in a **cloud sandbox** that you drive directly over
+SSH. Once the experiment is `ready_to_run` (or already `running`), generate or
+select a caller-owned SSH keypair and call `sandbox.request(experiment_id?,
+instance_type?, region?, gpu?, cpu?, memory?, time_limit?, public_key,
+additional?)`, passing only the single-line OpenSSH public key. Keep the private
+key local. Follow the returned `hint`; `sandbox.request`/`sandbox.get` are the
+source of truth for provider selection, polling, expiry, SSH facts, and the
+remote work folder. A sandbox can also be created unattached and addressed by
+`sandbox_uid`; `additional: true` requests another machine instead of reusing
+an experiment's attached live sandbox.
 
-Use the smallest viable machine. On Lambda Labs, omit `instance_type` first
-when you need the live machine menu; on Modal, request `gpu`/`cpu`/`memory`
-directly. If the response is `needs_selection` or `provisioning`, follow it and
-poll `sandbox.get` after `poll_after_seconds`; do not use repeated
-`sandbox.request` calls as a poll loop.
+Use the smallest viable machine. On fixed-SKU providers such as Lambda Labs or
+Thunder Compute, use `sandbox.options` or omit `instance_type` to get the live
+machine menu; on Modal, request `gpu`/`cpu`/`memory` directly. If the response
+is `needs_selection` or `provisioning`, follow it and poll `sandbox.get` after
+`poll_after_seconds`; do not use repeated `sandbox.request` calls as a poll
+loop.
 
-When `status` is `running`, run commands with the returned `ssh.command`
-dispatcher from the repo root, or `ssh.raw_command` if you cannot run from the
-repo root.
+When `status` is `running`, construct the SSH invocation from the returned
+`ssh.host`, `ssh.port`, and `ssh.user` facts plus the caller-owned private key.
+Some local enrichments may also return `ssh.command`, `ssh.raw_command`, or
+`ssh.key_path` conveniences, but the split proxy does not guarantee them.
 
 **Anything expected to run longer than ~5 minutes goes through `rp_run`** —
 never babysit a long command over a foreground SSH channel or poll the
@@ -314,11 +327,14 @@ sandbox responses are not the source of truth for tracking configuration. Save
 compact evidence under `$RP_EXPERIMENT_DIR`.
 
 Before registering or associating result resources, call `sandbox.pull_outputs`
-for light retained files, or upload heavy artifacts with `storage.upload_file`.
-Resource tools only see local repo files, so remote sandbox paths are not valid
-resources until you have pulled the files back locally. Do this before
-`sandbox.release`; release and expiry destroy the VM and anything you did not
-retain.
+for light retained files, passing the caller-owned private `key_path` when
+`sandbox.get` did not return an `ssh.key_path` enrichment. Upload heavy artifacts
+with `storage.upload_file` when durable storage is enabled. Resource tools only
+see local repo files, so remote sandbox paths are not valid resources until you
+have pulled the files back locally. Do this before `sandbox.release`; release
+and expiry destroy the VM and anything you did not retain. Release is two-step:
+the first call returns a retention checklist without deleting, and only a second
+call with `confirm_retained: true` terminates the machine.
 
 Do not embed secrets in commands or retained files. Treat the sandbox as
 ephemeral: durable outputs must be explicitly copied or uploaded and then
@@ -339,9 +355,10 @@ Prefer the minimal MCP shape:
 `name` is **required**: a short, folder-safe name (letters, digits, `.`, `_`,
 `-`; max 48 characters) that becomes the experiment folder
 `experiments/<name>/` — everything the experiment is (plan, code, results,
-report, graph) lives there, and that folder is what syncs to sandboxes. Names
-are unique within a project: if the name is already taken, creation is
-rejected and you must pick a new one.
+report, graph) lives there, and it is the local destination for retained
+sandbox outputs. Sandbox files are not synchronized automatically. Names are
+unique within a project: if the name is already taken, creation is rejected and
+you must pick a new one.
 
 The create response announces the folder: it includes `folder` (e.g.
 `experiments/lora-rank-sweep/`). Data-plane actions create the directory on
@@ -413,11 +430,13 @@ has BOTH a `result` resource and a `report` resource whose SUBMITTED content
 
 - **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
   with real content.
-- **Quantitative attempts: Results must reference the metrics exhibit**
-  (`metrics_exhibit.json`) and interpret it — every run it shows, the exact
-  metrics the plan's Evaluation section named. Do not hand-copy numbers into
-  your own table as the record; the exhibit is the record (see The metrics
-  exhibit above). Preview it with `experiment.exhibit` before writing.
+- **When a metrics exhibit is pinned, Results must reference it**
+  (`metrics_exhibit.json`) and interpret it — every run it shows, using the
+  exact metrics the plan's Evaluation section named. Do not hand-copy numbers
+  into your own table as the record; the exhibit is the record (see The metrics
+  exhibit above). Preview it with `experiment.exhibit` before writing. If no
+  exhibit is produced, interpret the registered result evidence and explain
+  the MLflow/no-run gap instead.
 - **Under 16 KB.** The report is the executive layer: link raw metrics files
   (`results.json`, logs) as separate result resources instead of inlining.
 - **Every relative image link has submitted figure content.** Save figures
@@ -475,7 +494,8 @@ the graph first; how to retell the story within the budget is your call.
 
 ## Resource discipline
 
-Resources are repo files. Prefer one file per resource.
+Agent-authored resources are repo files. Prefer one file per resource; the
+brain-created metrics exhibit is not something the agent registers.
 
 When the agent creates or changes files during an experiment:
 
@@ -504,16 +524,30 @@ When the agent creates or changes files during an experiment:
 ## Review discipline
 
 When `workflow.status_and_next` says to launch or wait for a reviewer, follow
-`workflow.review_gate`. If no request exists, call `review.request` and launch
-a separate reviewer with the returned `reviewer_handoff` — its `spawn_prompt`
-is a ready-made prompt for the reviewer subagent — and `reviewer_capability`.
-If a request is pending but you no longer have its
-one-time capability, call `review.request` again and use the fresh response.
+`workflow.review_gate`. If no request exists, call `review.request` with the
+exact target and role: `target_type: "experiment"`, the experiment's
+`target_id`, `role: "design_reviewer" | "experiment_reviewer"`, and your own
+`producer_session_id` (plus optional `reason`). Launch a separate reviewer with
+the returned `reviewer_handoff` — its `spawn_prompt` is a ready-made prompt for
+the reviewer subagent — and `reviewer_capability`. Reflection review instead
+uses `target_type: "reflection"` and `role: "reflection_reviewer"` as described
+by the `project-reflection` skill.
 
-Reviewer agents must be separate and read-only. They start and submit through
-MCP using the provided capability; they must not mutate claims, experiments,
-resources, sandboxes, or workflow state. The reviewer passes its own session
-identity as `caller_session_id` when calling `review.start` — it is required,
+The capability plaintext is returned only in the `review.request` response, so
+retain it long enough to hand off. It is not consumed by `review.start`: it
+remains usable to start a reviewer session while that request is still open.
+Do not issue a replacement request merely because a session started, because a
+new request supersedes the existing one. Request a fresh capability only when
+the prior plaintext was lost, expired, superseded, or the target snapshot
+changed.
+
+Reviewer agents must be separate and operate read-only by procedure. They call
+`review.start` with exactly `review_request_id`, `reviewer_capability`, their
+own `caller_session_id`, and optional `declared_agent`, then submit with the
+returned `review_session_id`. The start capability and submit session gate the
+review protocol, but the server does not authenticate unrelated tool calls as
+reviewer calls. Therefore reviewers must not mutate claims, experiments,
+resources, sandboxes, or workflow state. Their `caller_session_id` is required
 and must never be the producer session's.
 
 After any review submits, call `workflow.status_and_next` again. MCP's

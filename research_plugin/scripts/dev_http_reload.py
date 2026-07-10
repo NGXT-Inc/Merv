@@ -111,7 +111,14 @@ def main() -> int:
         ),
         help="Global registry DB for shared multi-project mode.",
     )
-    parser.add_argument("--activity-stderr", action="store_true", help="Mirror activity JSONL events to the backend terminal.")
+    parser.add_argument(
+        "--activity-stderr",
+        action="store_true",
+        help=(
+            "Pass the legacy compatibility flag to the brain; current "
+            "diagnostics are available over HTTP instead."
+        ),
+    )
     parser.add_argument("--interval", type=float, default=0.5)
     args = parser.parse_args()
 

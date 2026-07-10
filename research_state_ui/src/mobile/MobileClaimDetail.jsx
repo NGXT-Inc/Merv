@@ -9,7 +9,7 @@ import { Skeleton } from './Skeleton';
 
 /**
  * Mobile claim detail — one continuous flush surface, the same grammar as
- * the mobile experiment detail (design_philosophy.md): the statement IS the
+ * the mobile experiment detail: the statement is the
  * page; status, confidence, scope, and created date collapse into ONE
  * colored status block — no KvList box, no status pill, no separate cards.
  * Read-only — recording claims is the agent's / desktop's job.

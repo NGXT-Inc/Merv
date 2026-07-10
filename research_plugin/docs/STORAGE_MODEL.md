@@ -31,17 +31,17 @@ resources, or expensive to regenerate.
 
 ## Mental model
 
-The backend keeps a **ledger** of named aliases. Each alias points at a physical,
-content-addressed object (`sha256`) living in a bucket. The control plane records
-the ledger and mints presigned URLs; it never moves bytes. The **producer** —
-a GPU sandbox for a model it trained, or the local daemon for a precious local
-dataset — computes the file's `sha256` and streams the bytes directly to the
-bucket through a presigned URL. The user's machine is never in the byte path.
+The brain keeps a **ledger** of named aliases. Each alias points at a physical,
+content-addressed object (`sha256`) living in a bucket. The brain records the
+ledger and mints presigned URLs; it never proxies the object bytes. On the
+agent-facing path, the local MCP proxy computes the checksum and streams a
+checkout file directly to or from the object store.
 
 Nothing is automatic. An object lands in storage only because the agent decided a
-file is worth keeping and called `storage.upload_file`; a sandbox only receives an
-object when the agent explicitly fetches it. See "Saving" in
-[future_features/heavy_file_storage.md](../../dev_docs/future_features/heavy_file_storage.md).
+file is worth keeping and called `storage.upload_file`; downloading is equally
+explicit. Sandbox files must be retained before the sandbox is released or
+expires. The standard `storage.upload_file` helper reads a file from the local
+checkout through the MCP proxy.
 
 ## Core shape
 
@@ -57,7 +57,7 @@ object when the agent explicitly fetches it. See "Saving" in
   "content_type": "application/x-tar",
   "namespace": "proj_...",
   "status": "uploading | completing | available | expired | deleted",
-  "expires_at": "2026-08-24T14:21:03Z",   // null = pinned (kept forever)
+  "expires_at": "2026-08-24T14:21:03Z",   // null while uploading or when pinned
   "created_by": "codex | user",
   "producing_experiment_id": "exp_...",     // soft provenance — plain strings
   "producing_run": "",
@@ -73,8 +73,9 @@ Identity has two layers: the **physical object** is content-addressed by
 `content_sha256` within the namespace (so identical bytes are stored once); the
 **alias** is the `(name, version)` ledger row. Many aliases may point at one
 physical object — that is how a reused base model is stored once. `version`
-auto-increments per `(project_id, name)`; re-registering the same `name`+`sha`
-is idempotent and does not bump it.
+auto-increments per `(project_id, name)`. Re-registering the same `name`+`sha`
+is idempotent only when the matching ledger row is already `available`;
+non-available historical rows do not suppress a new version.
 
 ## Identity & dedup (locked decisions)
 
@@ -87,9 +88,13 @@ is idempotent and does not bump it.
 
 ## TTL / lifecycle
 
-- New / just-completed objects get `expires_at = now + 60 days`.
-- **Access auto-extends:** `storage.find` in resolve mode (the download path)
-  resets the clock to `now + 60d`, extend-only — it never shortens.
+- A new upload intent has no expiry while it is `uploading`. Completion assigns
+  `expires_at = now + 60 days`; a deduplicated alias created directly as
+  `available` receives the same deadline.
+- **Access auto-extends:** every `storage.find` resolve-mode call resets the
+  clock to `now + 60d`, extend-only — it never shortens. `include_download`
+  controls whether the response also contains a presigned URL, not the access
+  update.
 - **Pin** clears `expires_at` (kept forever); **unpin/renew** restore a 60-day
   deadline.
 - **Sweep:** `CleanupService` calls `sweep_expired`, which marks due rows
@@ -98,8 +103,9 @@ is idempotent and does not bump it.
 
 ## Operations (`storage.*` MCP tools)
 
-Project-scoped; the server rejects a missing `project_id`. Agents see four
-tools — `storage.upload_file`, `storage.download_file`, `storage.find`, and
+Project-scoped; the local MCP proxy injects the linked project id while brain
+and HTTP calls remain explicitly scoped. Agents see four tools —
+`storage.upload_file`, `storage.download_file`, `storage.find`, and
 `storage.object`. Two lower-level primitives (`storage.put_object`,
 `storage.complete_upload`) stay dispatchable for the manual presign path but are
 hidden from the agent-facing `tools/list` (`MCP_HIDDEN_TOOL_NAMES`);
@@ -107,36 +113,40 @@ hidden from the agent-facing `tools/list` (`MCP_HIDDEN_TOOL_NAMES`);
 
 Agent-facing:
 
-- `storage.upload_file(project_id, path, kind, name?, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
+- `storage.upload_file(path, kind, name?, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
   — data-plane convenience helper for local agents. Computes sha256 + size,
   registers the intent, streams the file to the presigned target, and completes
   the upload. `path` must stay inside the project repo (`..` and absolute paths
   are rejected); omitted `name` defaults to the repo-relative path.
-- `storage.download_file(project_id, path, object_id? | name?, version?, overwrite?)`
+- `storage.download_file(path, object_id? | name?, version?, overwrite?)`
   — data-plane convenience helper. Resolves the object, downloads to a temp
   file, verifies sha256 + size, then atomically replaces `path` (which must
   stay inside the project repo).
-- `storage.find(project_id, object_id? | name?, version?, include_download?, kind?, status?, include_expired?, limit?, offset?, compact?)`
+- `storage.find(object_id? | name?, version?, include_download?, kind?, status?, include_expired?, limit?, offset?, compact?)`
   — **resolve mode** (pass `object_id` or `name`): resolve one object to its
-  ledger row and, with `include_download=true`, a presigned **download** URL that
-  bumps the TTL. **List mode** (omit both): browse the ledger, filtered by
+  ledger row and bump its TTL; with `include_download=true`, also return a
+  presigned **download** URL. **List mode** (omit both): browse the ledger, filtered by
   `kind` / `status`, paginated with `limit` / `offset`, `compact=true` for a lean
   projection.
-- `storage.object(project_id, object_id, action)` — apply a lifecycle
+- `storage.object(object_id, action)` — apply a lifecycle
   `action` to one object: `pin` (expiry cleanup keeps it), `unpin` (restore its
   default expiry), `renew` (renew its default expiry window), or `delete` (drop
-  the alias, kept for audit; reclaim the physical bytes when no alias references
-  them).
+  the alias, kept for audit; reclaim the physical bytes when no active alias
+  references them).
 
 Hidden primitives (manual presign path):
 
 - `storage.put_object(project_id, name, kind, sha256, size_bytes, content_type?, producing_experiment_id?, producing_run?, source_uri?, notes?)`
-  — register intent. Returns `{deduped, object}` when the bytes already exist
-  (no upload), `{object, idempotent}` for an identical re-register, else
-  `{object, upload}` with a presigned (multipart) upload target.
+  — register intent. Returns `{object, idempotent}` for an identical available
+  `name`+SHA row, `{deduped, object}` when the physical bytes already exist but
+  a new alias/version is needed, or `{object, upload}` with a presigned
+  (multipart) upload target.
 - `storage.complete_upload(project_id, upload_id, parts?)` — finalize after the
-  producer streamed bytes: verifies size + sha256, lands the object, sets
-  `available` + a 60-day TTL.
+  producer streamed bytes, apply the provider-specific verification available,
+  and set `available` plus a 60-day TTL. S3 single-part completion requires a
+  matching provider `ChecksumSHA256` and enforces the declared size as a maximum;
+  multipart completion checks exact size but does not re-download the object to
+  recompute SHA-256.
 
 ## HTTP surface (read + lifecycle, for the UI)
 
@@ -153,38 +163,33 @@ The UI browses and manages lifecycle; it never uploads (bytes are agent-driven).
 One `ObjectStore` port; one production implementation:
 
 - `S3CompatibleObjectStore` — one class for **Cloudflare R2, AWS S3, and MinIO**,
-  parameterized by `endpoint_url` + region (boto3 lazy-imported). Multipart
-  presigned upload above a threshold; integrity verified via the
-  `x-amz-checksum-sha256` trailer (no GB re-hash).
+  parameterized by `endpoint_url` + region (boto3 lazy-imported). Large files
+  use multipart presigned uploads. Completion uses the provider metadata and
+  checksum guarantees described above; it never re-downloads multi-gigabyte
+  objects to recompute their checksum.
 
 Storage is optional and disabled when `RESEARCH_PLUGIN_STORAGE_PROVIDER` is
-unset; disabled backends do not advertise `storage.*` tools. Enable it with
-`RESEARCH_PLUGIN_STORAGE_PROVIDER=s3` plus `RESEARCH_PLUGIN_STORAGE_BUCKET`,
-`RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL`, `RESEARCH_PLUGIN_STORAGE_REGION`,
-`RESEARCH_PLUGIN_STORAGE_ACCESS_KEY_ID`, and
-`RESEARCH_PLUGIN_STORAGE_SECRET_ACCESS_KEY`. The storage credential vars are
-storage-specific and fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
-when unset. Local non-cloud deployments should run MinIO and point these env
-vars at it. Users bring their own S3-like storage by setting these — no code
-change.
+unset; disabled backends do not advertise `storage.*` tools. The required S3
+settings are `RESEARCH_PLUGIN_STORAGE_PROVIDER=s3` and
+`RESEARCH_PLUGIN_STORAGE_BUCKET`. Endpoint and region are provider-dependent.
+Credentials may come from the storage-specific variables, the standard `AWS_*`
+variables, or boto's normal credential chain. Local non-cloud deployments can
+run MinIO and set an endpoint URL. Users bring their own S3-like storage by
+configuration; no code change is required.
 
-## State layout
+## State placement
 
-```text
-.research_plugin/
-  state.sqlite          # the storage_objects ledger (alongside projects/experiments)
-```
-
-Hosted control keeps the ledger in Postgres and the bytes in the configured
-bucket (R2/S3/MinIO). Namespaces are project-scoped today; objects are never
-deduplicated across namespaces (cross-tenant dedup would leak content
-existence).
+The ledger lives with the rest of the brain's research records: SQLite for a
+local brain or Postgres for a hosted brain. Object bytes live in the configured
+S3-compatible bucket (R2, S3, or MinIO). Namespaces are project-scoped; objects
+are never deduplicated across namespaces because cross-tenant deduplication
+would leak content existence.
 
 ## Rules
 
 - Identity is `(project_id, name, version)`; physical bytes are shared by `sha256`.
-- The control plane never moves bytes — producers PUT/GET via presigned URLs.
+- The brain never proxies object bytes — producers PUT/GET via presigned URLs.
 - Deleting an alias keeps its ledger row (audit) and reclaims bytes only when
-  unreferenced.
+  no active (`uploading`, `completing`, or `available`) alias references them.
 - A reaped sandbox does NOT auto-save its outputs — saving is always an explicit
   `storage.upload_file`. Storage is decoupled from sandbox provisioning.

@@ -49,14 +49,36 @@ export default function LensReflectionCard({ projectId, lens, reflection }) {
 
       {open && covered && (
         <div className="refl-lens-body" onClick={(e) => e.stopPropagation()}>
-          <ResourceContentView
-            projectId={projectId}
-            resourceId={reflection.resourceId}
-            path={reflection.path}
-            version={reflection.versionId || null}
-            hideSource
-            dedupeTitle={lens.title}
-          />
+          <section className="spotlight refl-lens-doc">
+            <header className="spotlight-head spotlight-head--row">
+              <div className="spotlight-head-left">
+                <span className="spotlight-eyebrow">
+                  {lens.title || lens.id} reflection
+                </span>
+              </div>
+              <div className="spotlight-head-right">
+                <span className="mono spotlight-bar-path" title={reflection.path}>
+                  {reflection.path}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={() => setOpen(false)}
+                >
+                  Hide reflection
+                </button>
+              </div>
+            </header>
+            <div className="spotlight-body">
+              <ResourceContentView
+                projectId={projectId}
+                resourceId={reflection.resourceId}
+                path={reflection.path}
+                version={reflection.versionId || null}
+                hideSource
+              />
+            </div>
+          </section>
         </div>
       )}
     </div>

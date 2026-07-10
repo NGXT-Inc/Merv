@@ -92,11 +92,11 @@ def _serve_uvicorn(*, fastapi_app, host: str, port: int) -> tuple[str, int, "uvi
 
 
 def _serve_control(*, host: str, port: int) -> int:
-    """Run the cloud control-plane composition (cloud plan Phase 8).
+    """Run the hosted brain preset.
 
     Hosted/no-repo-root control requires durable DB, durable blob store, and a
-    mounted management key. This is a private operator-run control surface
-    until the real auth system lands.
+    mounted management key. It has no end-user authentication and is a private
+    operator surface.
     """
     from ..composition import build_control_server
 
@@ -141,14 +141,14 @@ def _serve_local(*, host: str, port: int, state_dir: Path) -> int:
 
 
 def control_main() -> int:
-    """Launch the cloud control plane (cloud plan Phase 9, §3.4).
+    """Launch the hosted brain.
 
     The console-script entry for the ``control`` extra and the deploy Dockerfile:
     forces control mode (RESEARCH_PLUGIN_MODE=control) so the image entrypoint
-    never accidentally binds the local topology. Auth is ON, and the reaper
-    runs. Cleanup
-    sweeps are BUILT (ControlPlaneServer.cleanup) but scheduling them is a
-    documented seam — a managed cron / sidecar POSTs /api/admin/cleanup.
+    never accidentally binds the local preset. The expiry reaper runs, but the
+    broader cleanup sweeps are only built; a managed cron or sidecar must POST
+    ``/api/admin/cleanup``. This surface has no end-user authentication and must
+    be deployed behind a trusted network boundary.
     """
     os.environ["RESEARCH_PLUGIN_MODE"] = "control"
     return main()
@@ -164,13 +164,19 @@ def main() -> int:
             "RESEARCH_PLUGIN_REGISTRY_STORE",
             str(Path.home() / ".research_plugin" / "registry.sqlite"),
         ),
-        help="Global registry DB for shared multi-project mode.",
+        help=(
+            "Compatibility path whose parent selects the local brain state "
+            "root; research records live under the sibling brain/ directory."
+        ),
     )
     parser.add_argument(
         "--activity-stderr",
         action="store_true",
         default=env_bool("RESEARCH_PLUGIN_ACTIVITY_STDERR", default=False),
-        help="Mirror activity JSONL events to stderr for live terminal watching.",
+        help=(
+            "Legacy compatibility flag. The unified brain exposes bounded "
+            "diagnostics over HTTP and does not mirror them to stderr."
+        ),
     )
     args = parser.parse_args()
 

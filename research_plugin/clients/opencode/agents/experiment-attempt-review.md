@@ -25,6 +25,9 @@ You must have been given an `experiment_id`, a `review_request_id`, and a
 the spawning agent for them. Pass your own session identity as
 `caller_session_id` when calling `review.start`.
 
-Never mutate research state: read project context only through read-only
-tools, then submit your verdict directly with `review.start` (using the
-capability) followed by `review.submit`.
+Never mutate research state: this is a procedural rule, because the capability
+authenticates `review.start` but does not restrict unrelated MCP tools. Read
+project context only through read-only tools. Call `review.start` with the
+provided `review_request_id`, provided `reviewer_capability`, your own required
+`caller_session_id`, and optional `declared_agent`; submit with the returned
+session via `review.submit`.

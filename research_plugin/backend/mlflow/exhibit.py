@@ -1,11 +1,11 @@
 """System-authored metrics exhibit for one experiment attempt.
 
 The exhibit is the observation-not-attestation record of a quantitative
-attempt: every MLflow run in the experiment's namespace inside the current
-attempt window plus every pinned result-file source, each entry with
-provenance. The agent never authors it — the system generates it (preview
-during ``running``, authoritative at ``submit_results``) and the report is
-written around it.
+attempt: the bounded MLflow snapshot (up to the newest 50 runs) filtered to the
+current attempt window plus eligible pinned result-file sources, each with
+provenance. The agent never authors it—the system generates it (preview during
+``running``, authoritative at ``submit_results``) and the report is written
+around it.
 
 This module is pure: callers supply the MLflow snapshot, the attempt window,
 and the result-file sources as plain data, so the same function produces the

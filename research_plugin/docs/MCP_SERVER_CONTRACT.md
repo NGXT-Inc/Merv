@@ -1,766 +1,309 @@
 # MCP Server Contract
 
-## Role
+This document describes the current agent-facing MCP architecture. The live
+schemas and descriptions generated from `backend/tools/contracts.py` are the
+authoritative per-field contract; `tools/list` is the authoritative catalog for
+the active deployment.
 
-The MCP server is the authority for research state and workflow state. Codex can
-reason and edit files, but MCP decides whether a state mutation is allowed, what
-gate is active, and what the workflow requires next.
+## Authority and topology
 
-Codex should usually begin with the broad orientation tool. In project-local MCP
-sessions, the stdio proxy supplies `project_id` from hidden repo context, so the
-agent-facing schema may omit it:
+The brain is the authority for durable research state and workflow policy. The
+agent client launches a local stdio MCP proxy that:
 
-```text
-workflow.status_and_next(experiment_id?)
-```
+- resolves the research checkout;
+- maps that checkout to a brain project id;
+- merges the brain and local tool catalogs;
+- injects project scope into project-scoped calls;
+- forwards control tools to one brain URL;
+- executes checkout-sensitive data tools locally.
 
-This tool exists because Codex may lose conversation memory. The server must be
-able to re-orient the agent and the user from durable state.
+The proxy never forwards `repo_root`. Brain services and HTTP routes receive an
+explicit `project_id`; the proxy hides that field from agent schemas when the
+machine-local checkout link supplies it.
 
-## Implementation note
-
-The MCP tool surface is split by responsibility, not deployment mode. The brain
-service owns control tools and the `/mcp/tools` catalog; it may run on localhost
-(`bin/research-plugin-http`) or at a hosted URL. What Codex launches via the
-plugin manifest (`bin/research-plugin-mcp`) is a stdio proxy that dials
-`RESEARCH_PLUGIN_CONTROL_URL` and always runs the checkout-local data tools
-itself: repo reads, hashing, validation, experiment folder materialization,
-light sandbox output pulls, caller SSH key custody, and the project link
-database. The proxy also adds the current repo root as hidden context and hides
-`project_id` from project-scoped tool schemas when that context can supply it.
-HTTP and core service calls still carry explicit `project_id`.
-
-Project identity is one agent tool, `project`, dispatched on `action`
-(`current` | `overview` | `connect` | `create`). `action: "overview"` is the
-whole-project read for orienting or re-grounding: every claim (including
-settled/abandoned) and every experiment (including terminal), independent of
-what `workflow.status_and_next` chooses to embed — it is served through the
-brain with the proxy-resolved project scope. In project-local MCP, `project`
-with `action: "current"` is folder-scoped and returns the project registered
-for the
-folder where the MCP proxy was started, or `exists: false` if that folder does
-not have a project yet. It never lists projects from other folders and does not
-create a project as a side effect. When `exists` is true, it also returns a
-compact `at_a_glance`: a one-line summary of how old the latest reflection is,
-recent experiments and claims capped at 5 each, the latest
-reflection/project-graph resource ids, ids for finished experiments or claim
-changes since that reflection, active experiment ids, and any open reflection
-id. If `exists` is false, the agent should ask the user whether to link an
-existing project id or create a new one (name + summary) before calling
-`project` with `action: "connect"`, unless the user already supplied that
-information. `action: "connect"` is served by the proxy itself: it validates
-the id against the brain (or creates the project via name), then writes the
-folder→project link to the machine-local link store — `project_id` stays
-visible in the `project` schema because for connect it is the caller's explicit
-choice, and re-linking a linked folder requires `overwrite=true`. `action:
-"create"` creates a project WITHOUT linking the folder (rare) and forwards to
-the brain; `current`/`connect` never reach the brain.
-
-## Tool groups
-
-### Memory tools
+The normal session bootstrap is:
 
 ```text
 project(action="current")
-project(action="overview")                         # full read: all claims + all experiments incl. terminal
-project(action="connect", project_id? | name? + summary?, overwrite?)
-project(action="create", name, summary?)          # create WITHOUT linking (rare)
-workflow.status_and_next(project_id, experiment_id?)
-project.update(project_id, name?, summary?)
-project.get(project_id)
-claim.list(project_id)                            # REST/UI + internal dispatch only; agents read all claims via project(action="overview")
-claim.create(project_id, statement, scope?)
-claim.update(project_id, claim_id, status?, confidence?)  # statement/scope are immutable; revise text via a reviewed reflection change spec or abandon-and-recreate
-experiment.list(project_id)                       # REST/UI + internal dispatch only; agents read all experiments via project(action="overview")
-experiment.create(project_id, name, intent, tested_claim_ids?)
-experiment.get_state(project_id, experiment_id)   # see "get_state shape" below
-resource.find(project_id, resource_id?, include_history?, kind?, experiment_id?, missing?, compact?, limit?, offset?)  # resource_id → resolve one; else list
-review.status(project_id, target_type, target_id) # REST/UI + internal dispatch only; not in the agent tools/list (agents poll workflow.status_and_next)
+project(action="connect", project_id=... | name=..., summary=...)?
+workflow.status_and_next(experiment_id?)
 ```
 
-Activity events are not an MCP tool: the UI reads them over HTTP
-(`/api/projects/<id>/events` and `/api/projects/<id>/events/stream`).
+`project(action="current")` returns the linked project or `exists: false`.
+`action="connect"` is the only operation where a caller-selected project id is
+authoritative: the proxy validates the existing project, or creates one from
+`name` and `summary`, and then stores the local folder link. `action="overview"`
+reads every claim and experiment for the linked project. `action="create"`
+creates a project without linking the folder.
 
-`experiment.create` is intentionally simple in durable storage: it creates a
-planned experiment with a short unique `name`, one `intent` string, and
-optional linked claims. `name` is required and folder-safe (letters, digits,
-`.`, `_`, `-`; max 48 chars): it becomes the experiment folder
-`experiments/<name>/`, which data-plane actions can materialize locally and
-which is also the folder synced to sandboxes. Names are unique per project
-(case-insensitive) — proposing a name that already exists is rejected with "an
-experiment named '<name>' already exists in this project — choose a new name".
-The create response confirms the folder in-band: alongside the experiment state
-it carries `folder`
-(`experiments/<name>/`) and a one-line `folder_guidance` telling the agent to
-work inside it from the start. The MCP schema advertises `name`,
-`intent`, and `tested_claim_ids` as the preferred shape, but the server
-accepts common Codex/user aliases:
+## Tool catalog
+
+The agent-visible control tools are:
 
 ```text
-claim_id -> tested_claim_ids[0]
-claim_ids -> tested_claim_ids
-title, hypothesis, design, success_criteria, risks -> deprecated; no longer
-  folded into intent. `intent` is the one-line headline; the full design lives
-  in the plan.md resource. These aliases are accepted for back-compat and, only
-  when `intent` is empty, the first non-empty one becomes the headline.
-status must be omitted or "planned"
+workflow.status_and_next
+project
+claim.create                 claim.update
+experiment.create            experiment.get_state
+experiment.transition        experiment.exhibit
+mlflow.context               mlflow.finalize_run
+reflection.create            reflection.get
+reflection.transition
+resource.find
+storage.find                 storage.object
+review.request               review.start               review.submit
+sandbox.options              sandbox.get
+sandbox.release              sandbox.extend
+sandbox.runs                 sandbox.terminal
+feed.register                feed.list
 ```
 
-Use `experiment.transition` for workflow state changes after creation.
-
-The plan resource follows a PRD-style schema (see
-`skills/research-workflow/plan-template.md`). `experiment.transition(submit_design)`
-is gated on a required spine — **Summary**, **Objective & hypothesis**,
-**Evaluation** — each present and non-empty in the plan file; the design
-reviewer judges whether the recommended sections (Method, Outputs, Risks) are
-sufficient.
-
-`experiment.transition(submit_results)` is gated on three current-attempt
-resources: a `result` file, a `report` file passing the report lint, and a
-logic graph (role `graph`, see `skills/research-workflow/graph-template.md`) —
-the agent-authored story of the experiment's decisions, problems, and pivots
-as a DAG. The graph lint checks only the envelope: valid JSON (`version: 1`),
-unique node ids with non-empty labels, **at most 16 nodes**, edges that
-reference existing nodes and form a DAG, file under 16 KB. Vocabulary,
-structure, and what deserves a node are the agent's editorial calls; the
-experiment reviewer judges the story's substance.
-
-### Reflection tools (project reflection waves)
+The proxy-local data tools are:
 
 ```text
-reflection.create(project_id, title?, lenses)   # lenses: exactly 5 (3 core + 2 authored)
-reflection.get(project_id, reflection_id)
-reflection.list(project_id)                     # REST/UI + internal dispatch only; reflection.get covers the open wave
-reflection.transition(project_id, reflection_id, transition)
+experiment.materialize_folders
+resource.register
+storage.upload_file          storage.download_file
+sandbox.request              sandbox.attach              sandbox.pull_outputs
+feed.post
 ```
 
-A reflection wave (`syn_…`) is the project-level reflection record:
-`reflecting → synthesizing → reflection_review → published` (plus `abandoned`).
-One wave may be open per project. `reflection.create` validates the roster
-envelope (the core lens ids `amplify`/`avoid`/`entropy` plus two
-authored lenses, each with `charter` + `why_distinct`) and snapshots the
-corpus. The snapshot includes the wave's new signal —
-`new_terminal_experiments`, the experiments that reached a terminal state
-since the last published wave — plus `previous_published_reflection_id` and
-`previous_lens_reflections` (lens id → path of that lens's reflection in the
-last published wave, for lens agents to learn from their own prior round). `submit_reflections` requires a current-attempt role-`reflection_lens_doc`
-resource named `<lens_id>.md` for every roster lens — each submitted by its
-own subagent. `submit_reflection_artifacts` requires the project logic graph (role
-`project_graph`, the same `graph_lint` envelope as experiment graphs — ≤16 nodes,
-DAG), a concise reflection document (role `reflection_doc`), and a
-materializable change spec (role `change_spec`). The change spec is the
-reviewed belief-state update: `claim_changes` plus a `create_experiments`
-decision with 1-3 planned experiments (each carrying a `parallelism` note
-when the wave has more than one). The
-reflection document is a 16 KB markdown artifact and may include relative image
-links; linked image bytes are captured when the document is associated.
-`publish`
-requires a passing `reflection_reviewer` review at the current snapshot; only
-then does it apply claim changes and create
-the approved planned experiments, while also pinning the published graph
-version. The response includes
-`post_publish_guidance` with the new experiment folders and recommended next
-calls: `experiment.materialize_folders(status="planned")`, then
-`workflow.status_and_next(experiment_id=...)` for the first new experiment.
-Resource associations on reflection waves are attempt-scoped, exactly like
-experiments, so a `return_to: "reflecting"` rejection (attempt bump)
-invalidates the prior reflections.
+Storage is optional. When no object store is configured, every `storage.*` tool
+is omitted instead of advertising an unavailable feature.
 
-Graph node `refs` resolve `syn_` ids too, so experiment graphs and the
-project graph can cross-link to the reflection that motivated them.
-`reflection.get` includes `gate_checklist`, a machine-readable dashboard of the
-current forward gate. During `reflecting` it lists one
-`reflection_lens:<lens_id>` item per roster lens, with `present`/`missing`
-coverage and the submitted path/version when available. During `synthesizing`
-it lists the required `project_graph`, `reflection_doc`, and `change_spec`
-resources, running the same pinned-byte validators that the transition uses so
-invalid artifacts surface as checklist `problems`. During `reflection_review`
-it exposes the `review:reflection_reviewer` item with `pending`, `requested`,
-`started`, or `passed` status at the current review snapshot.
-`reflection.get` includes `project_graph_diff`: when the current wave has a
-submitted project graph and a previous published graph exists, it compares the
-two pinned graph versions and reports added, removed, changed, and unchanged
-node/edge groups. When either graph cannot be read, the block is present with
-`available: false` and an explanatory `reason`/`problems` list.
-`workflow.status_and_next` carries a `project_reflection` block while a wave
-is open (slim wave state + gate guidance) or when the project has drifted
-from the last published reflection (computed on read, never stored). Drift has
-three levels: a soft "Consider running a project reflection…" hint once the
-advisory threshold is crossed; an idle-project recommendation where the
-workflow block becomes `current_gate: reflection_suggested`; and a hard create
-block once five newly-terminal experiments have accumulated since the last
-published reflection. At the hard threshold, `experiment.create` is removed
-from `allowed_actions`, listed in `blocked_actions`, and rejected by
-`experiment.create` until a project reflection is published. `claim.create`
-can remain allowed. Explicitly experiment-scoped calls are never taken over,
-but the `project_reflection` side block still carries the signal.
-
-The auto-resolved orientation also never answers "none" over live work: when
-the newest-created experiment is terminal while sibling experiments are still
-live, the workflow block becomes `current_gate: live_experiments` with a
-`live_experiments` list (id, name, status, attempt_index, intent) to
-re-orient onto via `workflow.status_and_next(experiment_id=...)`.
-`experiment.create` stays allowed unless the hard reflection block applies,
-in which case it moves to `blocked_actions` with the reason. Explicitly
-experiment-scoped calls keep the plain terminal answer.
-
-### Resource tools
+These tools remain dispatchable for HTTP views or proxy composition but are
+hidden from agent `tools/list`:
 
 ```text
-resource.register(project_id, path?, paths?, resource_id?, kind, title?, target_type?, target_id?, role?)
-    # path/paths → register/observe file(s); resource_id → associate an existing resource.
-    # Add the trio (target_type, target_id, role) to associate the registered resource(s).
-resource.find(project_id, resource_id?, include_history?, kind?, experiment_id?, missing?, compact?, limit?, offset?)
-    # resource_id → resolve one hydrated resource (include_history adds versions); else list with filters.
-resource.delete(project_id, resource_id)  # UI-convenience; hidden from the agent tools/list.
+project.get                  project.update              project.list
+claim.list                   experiment.list             reflection.list
+resource.delete
+storage.put_object           storage.complete_upload
+review.status
+sandbox.list                 sandbox.health
 ```
 
-`resource.register` is exactly one of three modes (a Pydantic model validator
-enforces this): pass `path` (one file), `paths` (a changed-files batch), or
-`resource_id` (associate an already-registered resource). The association trio
-(`target_type`, `target_id`, `role`) is all-or-none; the `resource_id` mode
-requires it. The server observes local repo files by path, stores latest
-metadata in `resources`, and records append-only observations in
-`resource_versions`. Each observed version captures size, mtime, content
-sha256, and mimetype; file content itself is not stored — historical content
-lives in the user's own repo / git history.
+The proxy's checked-in local catalog is regenerated from the same contracts and
+tested byte-for-byte. If the brain is unreachable, `tools/list` can still expose
+the local half; control tools are unavailable until the brain responds.
 
-Association validates the file against the role. For gated roles such as `plan`,
-`report`, and `graph`, `resource.register` enforces the byte caps and figure
-availability (every relative image link in a markdown plan/report/reflection
-doc must resolve to a local file under 5 MB) at register time; the required
-sections and graph-envelope structure lints run authoritatively at the workflow
-transition gate against the pinned bytes.
+## Project scope
 
-When a resource is associated with an experiment, MCP stores the experiment's
-current `attempt_index` and current `version_id` on that association. Workflow
-gates only count resources from the current attempt, so stale result files from
-a failed attempt cannot satisfy a rerun. A batch (`paths` with the trio) applies
-each row in order through the same role validation, gated-artifact byte capture,
-and attempt scoping as a single association.
+An unlinked checkout cannot call project-scoped tools. The proxy returns
+`project_not_linked` and instructs the agent to use `project(action="connect")`.
+Supplying an arbitrary `project_id` to another project-scoped tool does not
+switch projects: the proxy removes it and injects the linked id.
 
-Gates and lints judge the bytes SUBMITTED at `resource.register` (pinned to
-a version and stored in the blob store), never the live working tree. There is
-no background reconciliation: editing or deleting a file after association
-changes nothing the workflow can see — re-register the resource to submit the
-new content. MCP does not scan the repo or register new files.
+Core services never infer an active project. Scope inference exists only in the
+proxy adapter.
 
-### Workflow tools
+## Resource submissions
+
+`resource.register` has three modes:
 
 ```text
-workflow.status_and_next(project_id, experiment_id?)
-experiment.transition(project_id, experiment_id, transition, evidence?)
-experiment.materialize_folders(project_id, experiment_id?, status?)
+resource.register(path=..., kind=..., title?=...)
+resource.register(paths=[...], kind=..., title?=...)
+resource.register(resource_id=..., target_type=..., target_id=..., role=...)
 ```
 
-`experiment.materialize_folders` creates canonical local folders under
-`experiments/<name>/` without changing experiment state. With no `experiment_id`
-it defaults to planned experiments, which is the common case after reflection
-publish materializes a new wave; pass `status: null` to create folders for every
-experiment in the project.
+The first two modes may also include the complete association trio
+`target_type`, `target_id`, and `role`. The trio is all-or-none.
 
-The server may reject transitions that skip required gates. The agent-facing
-tool returns a **slim** projection — only what the next-action decision and the
-agent need — because this call is polled constantly and the underlying state is
-large. (The UI gets the full shape via the HTTP `/status` endpoints, which call
-the service directly.) The slim shape, scoped to an experiment:
+The proxy resolves and bounds each path, observes mtime/ctime/size/content type,
+computes SHA-256, and submits the facts. For gated roles it also submits
+size-capped bytes and referenced figures. The brain stores append-only version
+records and pins each association to an exact version and attempt.
 
-```json
-{
-  "scope": "experiment",
-  "workflow": {
-    "current_gate": "experiment_review",
-    "next_action": "launch_experiment_reviewer",
-    "allowed_actions": ["review.request"],
-    "blocked_actions": [
-      { "action": "experiment.complete", "reason": "missing passing experiment review" }
-    ],
-    "missing_evidence": [],
-    "revision_context": ""
-  },
-  "experiment": {
-    "id": "exp_...",
-    "status": "experiment_review",
-    "attempt_index": 2,
-    "intent": "…",
-    "conclusion": "",
-    "updated_at": "2026-06-03T04:41:37Z",
-    "tested_claim_ids": ["claim_..."],
-    "current_attempt_resources": [
-      { "id": "res_...", "association_role": "result",
-        "path": "experiments/004/results/status.json", "kind": "other",
-        "missing": 0, "size_bytes": 341 }
-    ],
-    "reviews": [
-      { "id": "rev_...", "role": "design_reviewer", "verdict": "pass", "created_at": "…" }
-    ]
-  },
-  "sandbox": {
-    "active": false,
-    "last_status": "terminated",
-    "note": "No active sandbox for this experiment — call sandbox.request to create or reuse one."
-  },
-  "project": { "id": "proj_...", "name": "…" }
-}
-```
+Workflow lints and reviews read the submitted bytes, never a later live edit.
+There is no background checkout scan. Re-register a changed file to submit a new
+version.
 
-When a sandbox is live, `sandbox` is `{ "active": true, "sandbox_id", "status",
-"gpu", "cpu", "memory", "ssh_host", "ssh_port", "ssh_user", "workdir",
-"sandbox_data_dir", "expires_at" }`.
-If the sandbox is lost or execution is interrupted for infrastructure reasons
-while the approved plan still stands, `allowed_transitions` includes
-`retry_running`. Calling `experiment.transition` with that transition keeps the
-experiment in `running`, preserves `attempt_index`, and stores the evidence in
-`revision_context` so the next run is explicitly a same-attempt infrastructure
-retry rather than a plan revision. MLflow run identity follows the retry: an
-open persisted run is resumed as-is, while a finalized (or missing) one is
-replaced with a freshly created run in the transition response. A review
-rejection back to `planned` clears the persisted run entirely, so the revised
-attempt's `start_running` mints an attempt-scoped fresh run.
-Dropped vs. the underlying `experiment.get_state`: the duplicate
-all-attempts `resources` list, per-resource version bookkeeping (`version_token`,
-`mtime_ns`, `*_version_id`, `git_commit`, timestamps), full review
-prose/`evidence`/`target_snapshot_id`, and the project-wide claim/experiment
-detail. For those, call the scoped tools (`experiment.get_state`,
-`resource.find`) — `experiment.get_state` carries the full review
-`findings`/`notes`/`evidence`/`verdict`. Called **without** `experiment_id` (only at
-project setup, before any experiment exists), it returns
-`{ "scope": "project", "workflow", "project": { id, name, summary, claims[] } }`.
+`resource.find(resource_id=..., include_history=true)` resolves one resource and
+its observed versions. Without `resource_id`, it lists with filters and
+pagination.
 
-#### get_state shape
+## Experiment workflow
 
-`experiment.get_state` (and the per-experiment entries of `experiment.list`) is
-the *detail* call, so it keeps the substance — `intent`, `conclusion`, the
-resource list, and full review `findings` / `notes` / `evidence` / `verdict`.
-It also carries `allowed_transitions`: the transitions available from the
-current status, each with `leads_to` and (where gated) a `requires` hint — so
-the agent learns the next legal step and its preconditions without trial and
-error. It also carries `gate_checklist`, a machine-readable view of the current
-forward gate derived from the same workflow table, for example:
-
-```json
-{
-  "status": "running",
-  "transition": "submit_results",
-  "leads_to": "experiment_review",
-  "ready": false,
-  "items": [
-    { "id": "resource:result", "kind": "resource", "role": "result",
-      "status": "present", "satisfied": true },
-    { "id": "resource:report", "kind": "resource", "role": "report",
-      "status": "valid", "validator": "report", "satisfied": true },
-    { "id": "resource:graph", "kind": "resource", "role": "graph",
-      "status": "invalid", "validator": "graph", "satisfied": false,
-      "problems": ["..."] }
-  ]
-}
-```
-
-Review-gated statuses expose a `review:<role>` item with `status` of
-`pending`, `requested`, `started`, or `passed`. Storage uploads that declare
-`producing_experiment_id` appear as compact `storage_objects` references
-alongside resources, with `{id, name, version, kind, content_sha256, size_bytes,
-content_type, status, expires_at, producing_run, source_uri, notes}` for every
-non-deleted storage object produced by the experiment. Once status is `running`
-or later, `experiment.get_state` also includes the experiment-scoped `mlflow`
-block and `mlflow_guidance`, matching the central tracking context returned by
-`experiment.transition(start_running)` and `mlflow.context`. When the backend
-MLflow write URI is configured, `start_running` creates the initial MLflow run;
-state includes `mlflow_run`, and the `mlflow` block nests the same object as
-`mlflow.run` while adding `MLFLOW_RUN_ID` / `RP_MLFLOW_RUN_ID` to `mlflow.env`.
-Agents should resume that plugin-created run instead of creating a sibling run.
-After the quantitative command exits, agents should call `mlflow.finalize_run`
-before `submit_results`; the helper defaults to the persisted run id, sets a
-terminal MLflow status when the backend write URI is available, performs a short
-REST readback loop, and refreshes `mlflow_run.status` in experiment state.
-Completed
-experiments with tested claims and a conclusion include
-`claim_update_suggestions`: conservative `claim.update` call skeletons scoped
-by `project_id` and `claim_id`, with an inferred `suggested_status` only when
-the conclusion text is clear enough. What
-`experiment.get_state` drops is pure waste:
-
-- the duplicate all-attempts `resources` list (a copy of
-  `current_attempt_resources`); resources from *earlier* attempts appear instead
-  as a compact `prior_attempt_resources: [{id, association_role, path,
-  association_attempt_index}]`, present only when a rerun produced them;
-- per-resource bookkeeping — `version_token` (itself `path:mtime:mtime:size`),
-  `mtime_ns`, the two usually-equal `*_version_id`, the three timestamps,
-  repeated `project_id`, constant `created_by`/`git_commit`/
-  `association_attempt_index`. Each resource keeps `{id, association_role, path,
-  kind, size_bytes, missing, title}`;
-- review internals — `target_snapshot_id`, `request_id`, `session_id`,
-  `target_id`, `target_type`, `project_id`.
-
-The UI gets the full shape (the HTTP routes call the service directly). For
-per-resource version history, use `resource.find(resource_id, include_history=true)`.
-
-### Execution tools
+The agent-facing statuses are:
 
 ```text
-sandbox.options(gpu?, region?)
-sandbox.request(experiment_id?, public_key, instance_type?, region?, gpu?, cpu?, memory?, time_limit?)
-sandbox.pull_outputs(experiment_id? | sandbox_uid, paths?, destination_path?, overwrite?, key_path?)
-sandbox.get(experiment_id? | sandbox_uid)
-sandbox.list()                                  # REST/UI + internal dispatch only; sandbox.get / status_and_next carry the live box
-sandbox.release(experiment_id? | sandbox_uid)
-sandbox.extend(experiment_id? | sandbox_uid, seconds?=1800)
-sandbox.terminal(experiment_id? | sandbox_uid, tail?, since?)   # cursor + running; poll with since=cursor for new output. Also last_command, last_exit_code / last_command_finished_at / command_running, and command_status_stale.
-sandbox.runs(experiment_id? | sandbox_uid, wait_seconds?=0)     # rp_run receipts: label, status (running/finished/lost), exit_code, started/finished, log path. wait_seconds long-polls (cap 300; keep <=45 at the common ~60s client tool timeout) and returns early on any finish.
-sandbox.health()                                # REST/UI + internal dispatch only (deploy doctor probe)
+planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
 ```
 
-There is no job abstraction. Codex requests a sandbox, gets back SSH connection
-details (including a short, ready-to-run `ssh.command`), and
-runs shell commands on the sandbox itself. Lightweight work still runs locally.
-
-The one long-run affordance is the `rp_run` launch convention, pre-installed
-on every sandbox: `rp_run <label> -- <command>` detaches the command (it
-survives SSH disconnect), logs to `$RP_EXPERIMENT_DIR/.runs/<label>/log.txt`,
-and the wrapper writes `finished_at` + `exit_code` receipt files when the
-command exits. The brain's daemon sweep mirrors those receipts (only live
-sandboxes are listed; a missing `.runs` dir is a cheap no-op) and emits a
-`run.finished` event exactly once per run. `sandbox.runs` serves the mirror —
-it stays answerable after the box was released or died (unfinished runs on a
-dead box report `lost`) — and reconciles live boxes on read, so `wait_seconds`
-long-polling observes a finish within a few seconds. While a sandbox has runs,
-every sandbox.* response for it carries a one-line `runs` summary pointing at
-`sandbox.runs`; the line is absent when no runs exist.
-
-`sandbox.request` is the procurement call. Sandboxes are project-scoped machines:
-experiment attachment is optional, one sandbox can be attached to multiple
-active experiments, and one experiment can have multiple live sandboxes. The
-response carries `ssh` (host, port, user, and command material when the caller
-supplies enough local key context), `workdir`, `experiment_dir`,
-`local_experiment_dir`, `data_dir`, `status`, `expires_at`, `reused`, and —
-when set — the reserved hardware (`gpu`, `cpu`, `memory`, `instance_type`,
-`region`).
-
-SSH key custody is BYO everywhere: the sandbox authorizes a caller-side
-OpenSSH public key supplied as `public_key`. The corresponding private key
-stays on the user's machine and is never sent to the brain. New
-`sandbox.request` rows record `public_key_source: "caller"`. Legacy
-`public_key_source: "managed"` rows remain readable/releasable/reattachable,
-but the request path no longer mints managed user keypairs.
-
-#### Hardware selection (provider-shaped)
-
-Procurement differs by backend, and the **default backend is Lambda Labs**:
-
-- **Lambda Labs (default)** sells fixed machine SKUs that bundle GPU + vCPU + RAM
-  together, so the agent picks an `instance_type` rather than independent
-  cpu/memory. When `sandbox.request` arrives with **no `instance_type`** and the
-  experiment has **no live sandbox to reuse**, the server does **not** provision.
-  It returns `status: "needs_selection"` with a live, cheapest-first `options`
-  menu (each entry: `instance_type`, `gpu`, `gpu_count`, `vcpus`, `memory_gib`,
-  `storage_gib`, `price_usd_per_hour`, `regions`). The agent re-calls
-  `sandbox.request(experiment_id, instance_type=<choice>, region?=<choice>)`.
-  Omit `region` to auto-pick a region that currently has capacity. On Lambda,
-  `gpu` is a free-form *filter* over the menu and `cpu`/`memory` are ignored (the
-  SKU fixes them).
-- **Thunder Compute** exposes fixed GPU specs that bundle GPU + vCPU +
-  RAM. When `sandbox.request` arrives with **no `instance_type`** and the
-  experiment has **no live sandbox to reuse**, the server returns
-  `status: "needs_selection"` with a live, cheapest-first `options` menu. The
-  agent re-calls `sandbox.request(experiment_id, instance_type=<choice>)`.
-  Thunder does not expose region selection through the current API.
-- **Modal** composes the machine from the request: set `gpu` (a concrete
-  attachable GPU, e.g. `A100`/`H100`; omit for CPU-only), `cpu` (Modal CPU cores,
-  1 core = 2 vCPUs), and `memory` (MiB). Modal never returns `needs_selection`.
-
-`sandbox.options` is the read-only discovery call: it returns the active
-backend's current catalog (Lambda: live available instance types; Modal: the
-gpu/cpu/memory menu) plus a `hint` on how to request. It never provisions.
-
-Agents should prefer CPU-only / smaller machines for exploratory data
-inspection, dataset downloads, schema checks, preprocessing scripts, joins,
-filtering, and other data engineering unless a command specifically needs GPU
-acceleration. On Lambda that means picking the smallest/cheapest viable SKU from
-the menu; on Modal, omitting `gpu`.
-
-There is no synced VM location. The sandbox's work folder is `experiment_dir`
-(`/workspace/<name>`, exported inside SSH commands as `$RP_EXPERIMENT_DIR`;
-`workdir` is the same path, and SSH commands start there). Files written there
-stay on the VM until the agent explicitly copies selected outputs back to the
-local checkout over SSH. Everything left on the VM dies with release or expiry.
-`data_dir` (`/workspace/data`, exported as `$RP_DATASET_DIR` /
-`$RP_SANDBOX_DATA_DIR`) is the conventional home for large datasets, caches,
-checkpoints, parquet files, and heavy intermediates. Heavy artifacts that need
-to survive should be uploaded through durable storage tools instead of copied
-into the repo. Agents should also prefer to save a Markdown data note in the
-local experiment folder (for example `experiments/<name>/data.md`) describing
-datasets used, source
-identifiers, split/filter choices, important columns, row counts, caveats, and
-where large ephemeral files were placed outside the folder.
-
-`sandbox.pull_outputs` is a proxy-local retained-output helper for light files
-created under the remote `experiment_dir`. It asks the brain for the sandbox
-record, then copies selected repo-relative files or directories into the local
-experiment folder over SSH/rsync using the caller's private key path. If the
-sandbox record does not include local key material, pass `key_path` from the
-client/proxy side. With no `paths`, it first checks for common outputs
-(`results/`, `figures/`, `report.md`, `graph.json`, `metrics.json`,
-`results.json`) and pulls the ones that exist. Existing local files are kept
-unless `overwrite: true` is supplied; kept files that differ from the sandbox
-are named in `files_kept_stale` (check it before registering results from a
-re-run), and `files_transferred` counts what actually landed. Remote symlinks
-and device nodes are never recreated locally. A failing path is reported in
-`errors` / `paths_failed` without discarding the paths that succeeded. After
-pulling files locally, use `resource.register` for retained artifacts. Heavy
-artifacts should go through durable storage tools.
-
-When the backend has `HF_TOKEN` in its env file or process environment,
-`sandbox.request` / `sandbox.get` include an `environment.available_tokens`
-entry naming `HF_TOKEN`. The token value is not returned. Inside SSH commands,
-`HF_TOKEN` and `HUGGING_FACE_HUB_TOKEN` are available for Hugging Face tooling.
-The backend passes the token through Modal's sandbox `secrets` API, not as a
-plain sandbox `env` value and not as a synced repo `.env` file.
-Agents must not print the token, write it into synced files, or register it as a
-resource.
-
-When a fresh sandbox/VM is created, setup returns SSH details and a remote work
-folder (`$RP_EXPERIMENT_DIR`). No files are copied automatically. Agents fetch
-code/data on the box, keep disposable bulk data under `$RP_DATASET_DIR`, and
-explicitly retain outputs before release: pull light files with
-`sandbox.pull_outputs` or upload heavy artifacts with storage tools. Resource
-tools only operate on local repo files, so a file produced remotely cannot be
-associated until it has been copied back locally. Release and expiry destroy
-the VM and any files the agent did not retain.
-
-Provisioning is **best-effort-synchronous**. Creating a sandbox can outlast the
-MCP call timeout (cold GPU, image/bootstrap work), so `sandbox.request` provisions on
-a background thread and waits up to a budget (default 45s,
-`RESEARCH_PLUGIN_SANDBOX_REQUEST_WAIT`):
-
-- settles in time → `status: "running"` with `ssh.command`, exactly as before;
-- still working → `status: "provisioning"` with `phase`, `detail`, and
-  `poll_after_seconds`, and no `ssh.command` yet.
-
-`sandbox.get` is the **poll**: read-only, never provisions, and returns the
-current row — `provisioning` (keep polling), `running` (use the returned SSH
-facts), `failed` (read `error`, then `sandbox.request` to retry), `terminated`,
-or `none` (never requested; not an error). It reconciles a `provisioning` row
-whose background job died (brain restart) to `failed` so a poll loop always
-reaches a terminal state. `sandbox.release` also cancels an in-flight provision. The agent
-contract: call `request`, then if `provisioning` poll `get` every
-`poll_after_seconds` until `running`/`failed` — never re-call `request` to poll.
-
-`sandbox.extend` extends a running sandbox's plugin-enforced `expires_at` by at
-most one 30-minute increment per call (`seconds <= 1800`). It is lifecycle-only:
-no files move and no SSH connection is refreshed. Extension is rejected when the
-backend does not support live lifetime extension (Modal may reject because its
-provider timeout is fixed at sandbox creation), when the sandbox is not running,
-when persisted command/heartbeat state shows no real activity, or when the new
-total lifetime would exceed the global 24-hour cap or tenant quota/spend policy.
-
-Visibility: every SSH command and its output are recorded to a per-experiment
-transcript inside the sandbox. `sandbox.terminal` reads it live from the sandbox.
-The response also persists and returns `last_command`, a compact snapshot of the
-latest parsed command marker: command id, command text, started/finished times,
-status (`running`, `succeeded`, `failed`, or `interrupted`), exit code, and a
-capped output tail. If a later transcript read fails, `sandbox.terminal` still
-returns that last-known command snapshot with `command_status_stale: true`, so
-agents can recover status even when SSH is temporarily unavailable. The UI
-renders the transcript as a terminal window. `workflow.status_and_next` may
-surface a last-known sandbox summary but stays a high-level orientation
-endpoint.
-
-The default backend is `lambda_labs`. Backend selection is controlled by
-`RESEARCH_PLUGIN_EXECUTION_BACKEND`; supported values are `thunder_compute`,
-`lambda_labs`, `modal`, and `fake` (tests). Lambda Labs exposes the VM's
-normal SSH endpoint and needs `LAMBDA_LABS_API_KEY` (or
-`RESEARCH_PLUGIN_LAMBDA_API_KEY`; region/instance type are chosen per request, with optional
-`RESEARCH_PLUGIN_LAMBDA_REGION` / `RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE`
-fallbacks). Thunder Compute remains available with `RESEARCH_PLUGIN_THUNDER_API_KEY`
-(or `THUNDER_COMPUTE_API_KEY`). Modal exposes SSH over an unencrypted Modal tunnel
-(`unencrypted_ports=[22]`). The caller supplies a public key for sandbox
-authorization and keeps the private key local. Output retention is explicit:
-the agent pulls selected light files back over SSH with `sandbox.pull_outputs`,
-while heavy files should go through durable storage tools. The execution
-contract (`SandboxBackend`) stays narrow so additional providers can live inside
-`execution/backends/`; a
-backend advertises whether it `requires_hardware_selection` (bundled SKUs) and
-may expose an optional `hardware_catalog()` that powers `sandbox.options` and the
-`needs_selection` menu.
-
-`time_limit` is enforced. Modal sandboxes self-terminate at their server-side
-timeout; for backends without server-side lifetime (Lambda Labs VMs, which
-otherwise bill until manually killed), the brain runs a background **reaper**
-that terminates any running sandbox past its `expires_at`. The reaper polls every
-`RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL` seconds (default 30) and can be
-disabled with `RESEARCH_PLUGIN_SANDBOX_REAPER=0`.
-
-Core HTTP/service calls still require an explicit `project_id`. In project-local
-MCP sessions, the proxy supplies that scope from hidden repo context and removes
-`project_id` from agent-facing schemas. Agents should call `project` with
-`action: "current"` first; if it returns `exists: false`, ask the user which
-project to link or create, then call `project` with `action: "connect"`.
-
-### Review tools
+`failed` and `abandoned` are terminal exits. The typed transitions are:
 
 ```text
-review.request(project_id, target_type, target_id, role, reason?)
+submit_design
+mark_ready_to_run
+start_running
+retry_running
+submit_results
+complete
+mark_failed
+abandon
+```
+
+The declarative table in `backend/domain/workflow_gates.py` drives enforcement,
+`allowed_transitions`, gate checklists, and `workflow.status_and_next`.
+
+- `submit_design` requires a pinned `plan` resource with the required section
+  spine.
+- `mark_ready_to_run` requires a passing design review for the current snapshot.
+- `submit_results` requires current-attempt `result`, `report`, and `graph`
+  resources. It generates the attempt's system metrics exhibit and pins it when
+  runs are found, or when a plugin-created run proves the attempt was quantitative
+  but MLflow is unavailable. When pinned, the report must reference and interpret
+  it.
+- `complete` requires a passing experiment review for the current snapshot.
+- `retry_running` is a same-attempt infrastructure retry and remains `running`.
+
+A result-review rejection must return to `running` when the approved plan still
+stands, or to `planned` with a new attempt when the design is flawed.
+
+`workflow.status_and_next` returns a deliberately slim orientation view:
+project summary, current experiment, gate, allowed/blocked actions, missing
+evidence, review substate, and next action. The HTTP UI uses richer service views.
+
+## Reflection workflow
+
+External tools and target types use **reflection**. Persisted ids still use the
+`syn_` prefix, and some response keys/internal services retain synthesis naming.
+The agent-facing statuses are:
+
+```text
+reflecting -> synthesizing -> reflection_review -> published
+```
+
+`abandoned` is terminal. The domain/store name for `reflection_review` is
+`synthesis_review`; projection adapters expose the reflection vocabulary to MCP.
+One wave may be open per project.
+
+- `reflection.create` snapshots the corpus and requires exactly five lenses:
+  `amplify`, `avoid`, `entropy`, and two project-specific lenses.
+- `submit_reflections` requires a separately submitted, non-empty
+  `reflection_lens_doc` for every roster lens.
+- `submit_reflection_artifacts` requires a valid `project_graph`, concise
+  `reflection_doc`, and materializable `change_spec`.
+- `publish` requires a passing `reflection_reviewer` review, then applies claim
+  changes and creates one to three planned experiments from the reviewed spec.
+
+A rejection returns to `synthesizing` when the lens documents stand, or to
+`reflecting` with a new attempt when the fan-out must be repeated.
+
+## Review sessions
+
+Supported reviewer roles are `design_reviewer`, `experiment_reviewer`,
+`reflection_reviewer`, `human`, and `automated_check`. The three workflow gates
+use their matching reviewer roles.
+
+The current protocol is:
+
+```text
+review.request(target_type, target_id, role, reason?, producer_session_id?)
 review.start(review_request_id, reviewer_capability, caller_session_id, declared_agent?)
 review.submit(review_session_id, verdict, synopsis, return_to?, notes?, findings?, evidence?)
-review.status(project_id, target_type, target_id) # REST/UI + internal dispatch only; not advertised to agents — the review gate in workflow.status_and_next re-reports review state on every poll
 ```
 
-`synopsis` is required: 1-3 plain sentences (40-420 chars), the researcher's
-TLDR rendered first on the experiment page. Plain prose, no entity ids, no
-markdown, no newlines — `notes`/`findings` stay machine-flavored detail.
+For the three workflow reviewer roles, `review.request` validates the active
+gate. `human` and `automated_check` are gate-exempt and may be requested outside
+a workflow review gate. Every request pins a target snapshot, stores a hash of
+the capability, and returns the plaintext capability once with
+`reviewer_handoff.spawn_prompt`. Requesting a fresh capability supersedes prior
+open requests for the same target and role.
 
-Reviewer roles:
+`caller_session_id` is required at `review.start` and must differ from the
+producer session. Start returns the submitted gated artifacts for the pinned
+snapshot. A capability remains startable while the request is `requested` or
+`started` and the capability is unexpired; the first accepted submission closes
+the request and prevents other sessions from submitting.
 
-- `design_reviewer`: reviews experiment plan before execution.
-- `experiment_reviewer`: reviews executed attempt, result resources, metrics,
-  and conclusion before completion or claim update.
-- `reflection_reviewer`: reviews a project reflection wave — the reflected
-  project logic graph, concise reflection document, and change spec against the
-  corpus and the five lens reflections — before publish. Rejections route via
-  `return_to`:
-  `synthesizing` (reflections stand) or `reflecting` (re-launch the fan-out).
-- `human`: records a human decision with the same mechanism.
-- `automated_check`: records deterministic checks or audit scripts.
+`review.submit` requires a plain-language `synopsis`. Rejected experiment-attempt
+and reflection reviews require `return_to`; design-review rejections always
+return to `planned`. Rejection immediately routes the target state. A passing
+review satisfies a workflow gate only when its role matches that gate and its
+snapshot is current; `human` and `automated_check` passes do not replace the
+required workflow reviewer. A pass does not perform the target's next
+transition.
 
-Review targets are polymorphic: `target_type` is `experiment` or `synthesis`.
-The same capability machinery applies to both — snapshot pinning covers the
-target's status, attempt, and current-attempt resource versions.
+Reviewer skills impose the read-only operating role. The dispatcher rejects
+other mutations that explicitly carry a `review_session_id`, but the system does
+not authenticate every read or unrelated call as that reviewer. Session
+separation is therefore a workflow boundary, not cryptographic model identity.
 
-Reviewers are read-only. A reviewer capability may only call read tools for the
-target context plus `review.submit` for its own review request. Recording a
-review does not automatically accept the underlying mutation unless policy says
-the review satisfies the gate.
+## Sandboxes
 
-### Reviewer identity tools
+Sandboxes are project-scoped machines. They may be standalone, attached to
+multiple experiments, and addressed by `sandbox_uid`. An experiment may have
+multiple active sandboxes.
 
-```text
-review.request(project_id, target_type, target_id, role, reason)
-review.start(review_request_id, reviewer_capability, declared_agent)
-review.submit(review_session_id, verdict, synopsis, notes, findings, evidence?)
-```
+`sandbox.request` requires a caller-owned OpenSSH public key. The brain records
+and authorizes the public key; caller private-key material never enters brain
+state. The response and `sandbox.get` expose SSH facts such as host, port, and
+user. The agent client constructs and runs SSH commands. `sandbox.pull_outputs`
+requires a caller-supplied `key_path` when pulling retained files.
 
-`review.request` returns:
+The sandbox workdir is machine-owned, independent of experiment attachment, and
+defaults under `/workspace`; provider-specific `RESEARCH_PLUGIN_*_WORKDIR`
+settings can change the root. Files are not synchronized automatically. Pull
+compact outputs into the local experiment folder before resource registration,
+and use durable object storage for heavy files.
 
-```json
-{
-  "review_request_id": "rr_...",
-  "reviewer_capability": "one-time-secret-or-handle",
-  "role": "experiment_reviewer",
-  "target_snapshot_id": "snap_...",
-  "target_snapshot": {
-    "target_type": "experiment",
-    "target_id": "exp_...",
-    "status": "experiment_review",
-    "attempt_index": 2,
-    "resources": [
-      {"resource_id": "res_...", "version_id": "rver_...", "role": "result", "attempt_index": 2}
-    ]
-  },
-  "expires_at": "2026-05-17T15:00:00Z"
-}
-```
+Provider behavior is capability-shaped:
 
-The response's `reviewer_handoff.spawn_prompt` is a ready-to-paste prompt for
-the reviewer subagent (skill name, `review_request_id`, and the one-time
-capability). The session is deliberately NOT started server-side: only the
-spawned reviewer consumes the capability via `review.start`, so the requesting
-session can never submit against its own gate. (An earlier
-`review.request_and_start` helper that auto-started the session was removed
-for exactly that reason.)
+- Lambda Labs (default) and Thunder Compute expose fixed instance types and may
+  return `needs_selection` with a live hardware menu.
+- Modal composes GPU/CPU/memory directly.
+- `fake` is used by tests.
 
-`review.status` and the HTTP review queue expose the same `target_snapshot`
-shape on review request and submitted review records. Frontends should use
-`target_snapshot.resources[].version_id` for exact reviewed resource versions and
-treat `target_snapshot_id` as an opaque backend fingerprint. Review request
-records also include `recovery`: a non-secret hint for lost one-time
-capabilities, for example `{capability_returned_once: true,
-capability_available: false, can_request_fresh_capability: true, tool:
-"review.request", arguments: {target_type, target_id, role}}`. The plaintext
-reviewer capability is still returned only by `review.request` at creation time.
-Requesting a fresh capability is revoke-and-reissue: it marks every prior open
-request for the same target/role `superseded`, so a lost or stale capability
-can no longer start a session, and its already-started session can no longer
-submit.
+Provisioning is best-effort synchronous. `sandbox.request` may return
+`provisioning`; poll with `sandbox.get`, never repeated request calls. Long work
+uses `rp_run`; `sandbox.runs` reports durable run receipts. Transcript and run
+lookups are sandbox-scoped even when addressed through an experiment.
 
-MCP should reject a review when:
+`sandbox.release` is a two-step destructive operation: the first call returns a
+retention checklist, and `confirm_retained=true` terminates the machine. Release
+or expiry destroys anything not explicitly retained.
 
-- the capability is expired, reused, or superseded by a fresh request
-- the role does not match the active gate
-- the target snapshot changed after the capability was issued or after the
-  review started (a stale session cannot mutate a target that moved on)
-- the review session matches the producer session for the plan/result
-- the reviewer attempts any mutation except `review.submit`
+## MLflow, storage, and feed
 
-This creates a practical local independence boundary. It does not prove
-cryptographic independence, so high-risk gates can require `human` review.
+- `mlflow.context(experiment_id?)` returns the centralized tracking endpoint,
+  namespace, and environment for direct MLflow clients.
+- `mlflow.finalize_run` closes or refreshes the plugin-associated run.
+- `storage.upload_file` and `storage.download_file` transfer checkout files via
+  the local proxy; `storage.find` and `storage.object` operate on the brain's
+  ledger.
+- `feed.post` runs locally because it may capture a checkout image or HTML embed;
+  feed registration and reads are brain control operations.
 
-### Mutation model
+## HTTP transport and errors
 
-There is no generic mutation-proposal queue. Every mutation is one of the typed
-tools above, validated and gated server-side (workflow gates, review gates,
-lints), and each accepted mutation appends an activity event in the same
-transaction.
+The brain exposes `/mcp/tools` and `/mcp/call`. It rejects `repo_root` context and
+direct MCP calls to data-plane tools. The proxy uses private `/api/data-plane/*`
+submission routes for validated observations and local-data results.
 
-## Permission rules
+Tool responses are tool-specific dictionaries; there is no universal mutation
+envelope. Domain validation and workflow failures remain MCP protocol errors.
+Transient transport failures are returned as error tool results so clients do
+not disable the entire server:
 
-Start with simple policy, not full RBAC:
+- `brain_not_running` for an unreachable loopback brain;
+- `cloud_unreachable` for a remote brain;
+- `daemon_bad_response` (a retained legacy error-code spelling) for an invalid
+  brain payload.
 
-- read operations are allowed
-- file observation is allowed only under repo root
-- resource registration only accepts repo-relative paths
-- experiment creation is allowed
-- moving an experiment to `complete` requires synced result resources
-- claim status changes require evidence and review
-- destructive changes require explicit human approval
-- reviewer agents cannot mutate state except by `review.submit`
-- Codex cannot mark its own review as design or experiment review
-- design review must pass before expensive execution
-- experiment review must pass before completion or claim update
-- a failed design review returns the experiment to `planned`
-- a failed experiment review returns the experiment to `planned` with prior
-  attempt context and review feedback preserved
+## Persistence
 
-## Response shape
+The brain selects its record and blob adapters at composition time:
 
-Every mutating tool should return:
+- local preset: SQLite and local-directory blobs under the brain state root;
+- control preset: Postgres and an S3-compatible submitted-byte blob store;
+- optional heavy-object storage: a separate S3-compatible bucket.
 
-```json
-{
-  "ok": true,
-  "accepted": true,
-  "change_id": "optional",
-  "requires_review": false,
-  "next_action": "optional-machine-action",
-  "message": "Human-readable status."
-}
-```
+The checkout never contains the brain database. The proxy owns only
+machine-local routing state in `project_links.sqlite`; project files remain
+ordinary checkout files until explicitly registered.
 
-Every rejection should explain the blocked invariant:
-
-```json
-{
-  "ok": false,
-  "accepted": false,
-  "error_code": "missing_experiment_review",
-  "message": "Experiment cannot complete until a separate experiment reviewer submits a passing review.",
-  "next_action": "launch_experiment_reviewer"
-}
-```
-
-## Minimal persistence
-
-Use one local SQLite database under `.research_plugin/state.sqlite`.
-
-Tables can be minimal:
-
-- claims
-- experiments
-- resources
-- reviews
-- review_requests
-- review_sessions
-- events
-- sandboxes
-
-No resource version table is needed for v0.1. Store the last observed file token
-directly on the resource row and append a lightweight event when it changes.
+See [ARCHITECTURE.md](ARCHITECTURE.md),
+[WORKFLOW_AND_REVIEW.md](WORKFLOW_AND_REVIEW.md), and
+[RESOURCE_MODEL.md](RESOURCE_MODEL.md) for the corresponding system contracts.

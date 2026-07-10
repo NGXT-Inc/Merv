@@ -7,7 +7,7 @@ import BottomSheet from './BottomSheet';
  * graph) as depth-ordered DOM rows instead of a touch-hostile canvas. No
  * @xyflow on the critical path: instant, scrollable, accessible. Tapping a row
  * opens a node-detail bottom sheet (fixes the desktop "invisible below-canvas
- * panel"). docs/MOBILE_UX_REVIEW.md §4.1.
+ * panel").
  *
  * Model-agnostic: the caller normalizes both graph shapes into
  *   nodes: [{ id, label, sublabel?, kindLabel?, color, glyph?, raw }]

@@ -37,14 +37,14 @@ Done. Register the MCP server in your research repo's opencode.json
       "command": ["$PLUGIN_DIR/bin/research-plugin-mcp"],
       "enabled": true,
       "environment": {
-        "RESEARCH_PLUGIN_DAEMON_URL": "http://127.0.0.1:8787"
+        "RESEARCH_PLUGIN_CONTROL_URL": ""
       }
     }
   }
 }
 
 OpenCode spawns local MCP servers with cwd = project root, which is exactly
-what the launcher needs. Start the HTTP daemon first:
-
-  $PLUGIN_DIR/bin/research-plugin-http
+what the proxy needs for checkout-local operations. An empty control URL uses
+the configured/default hosted brain. For a local deployment, set it to
+http://127.0.0.1:8787 and start $PLUGIN_DIR/bin/research-plugin-http first.
 EOF

@@ -16,10 +16,14 @@ into the living project logic graph (role `project_graph`), a concise reflection
 document (role `reflection_doc`), and a change spec (role
 `change_spec`).
 
-Do not mutate project state. Use only read-only context and the review
-capability provided by MCP. Submit the review directly to MCP: `review.start`
-requires your own session identity as `caller_session_id` (never the
-producer session's), then `review.submit`.
+Operate read-only by procedure. The capability authenticates `review.start`
+and the returned session authenticates `review.submit`; it does not restrict
+unrelated tools. Use returned artifacts and ordinary read-only context for evidence
+and do not mutate claims, experiments, reflections, resources, sandboxes, or
+workflow state. Call `review.start` with exactly the provided
+`review_request_id`, provided `reviewer_capability`, your own required
+`caller_session_id` (never the producer session's), and optional
+`declared_agent`, then call `review.submit`.
 
 ## Your four inputs
 
@@ -142,6 +146,9 @@ unknown keys:
       "evidence": "Node id, claim id, reflection file, or record that shows it.",
       "recommended_change": "Smallest correction."
     }
-  ]
+  ],
+  "evidence": {
+    "checked": ["Records or submitted artifacts used to verify the verdict."]
+  }
 }
 ```

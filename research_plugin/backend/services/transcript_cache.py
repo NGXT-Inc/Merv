@@ -1,17 +1,13 @@
-"""Control-side transcript cursor cache (cloud plan Phase 9, risk 14).
+"""Brain-side transcript cursor cache.
 
-The UI is pure 3-second polling and ``sandbox.terminal`` is a management-key SSH
-read of the whole transcript. With N viewers that is N SSH reads every 3s per
-sandbox — the poll-amplification the plan flags. This bounded, TTL'd cache holds
-the last full transcript per sandbox so repeated reads within the TTL serve from
-memory instead of re-hitting the backend/SSH. ``since=<cursor>`` is then applied
-to the cached bytes, so incremental polls stay correct AND cheap.
+Terminal detail views poll independently of the project-event SSE stream, and a
+terminal read may require management-channel SSH. This bounded, TTL-controlled
+cache coalesces repeated reads per sandbox. ``since=<cursor>`` is applied to the
+cached snapshot so incremental polls remain correct without multiplying SSH
+traffic.
 
-Deliberately tiny: an in-process dict with an LRU-ish bound and a per-entry TTL.
-Not a distributed cache (one control process per deployment in v1); a viewer that
-needs sub-TTL freshness can pass ``fresh=True`` to bypass. SSE/push is the real
-fix and stays backlog (plan §4 Phase 9). The cache stores transcript bytes only
-— no credentials, no keys.
+The cache is process-local and stores transcript bytes only—never credentials or
+keys. Callers can pass ``fresh=True`` to bypass it.
 
 Entries are ``TranscriptTail`` snapshots: the backend's tail window plus the
 transcript's TRUE byte size. Cursor comparisons use that total — not the window
@@ -28,8 +24,8 @@ from typing import Callable
 from ..sandbox.sandbox_backend import TranscriptTail
 
 
-# Default freshness window. Comfortably above the 3 s UI poll so concurrent
-# viewers coalesce, short enough that a single viewer sees near-live output.
+# Default freshness window: long enough to coalesce concurrent viewers, short
+# enough that a single viewer sees near-live output.
 DEFAULT_TTL_SECONDS = 2.0
 # Bound the cache so a long-lived control plane with many sandboxes can't grow
 # it without limit; the least-recently-stored entry is evicted past this.

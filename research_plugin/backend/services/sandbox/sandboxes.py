@@ -1290,10 +1290,9 @@ class SandboxService:
         reused: bool | None,
         use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
-        # Plane decomposition (plan §3.3): provider-portable row facts are a
-        # pure projection; the ssh command / key path / local folder come from
-        # the worker. Local mode merges them here, so tool results are
-        # unchanged; split mode performs the same merge across the seam.
+        # Provider-portable row facts are a pure projection. A composition may
+        # add local conveniences, but the current agent topology relies only on
+        # SSH facts; caller key paths and checkout folders remain proxy-local.
         row = self._with_active_experiment_ids(row=row)
         sandbox_uid = str(row.get("sandbox_uid") or "")
         view_name = f"sandbox-{sandbox_uid[:12]}"

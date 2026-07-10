@@ -1,84 +1,66 @@
 # Centralized MLflow
 
-**Status:** implemented  
-**Updated:** 2026-06-30
+MLflow is the quantitative ledger for Research Plugin projects. The brain owns
+workflow state, claims, reviews, resource records, and logic graphs. MLflow owns
+the empirical run record: parameters, metrics and their histories, run tags,
+datasets recorded through MLflow, and run artifacts.
 
-MLflow is the quantitative ledger for Research Plugin projects. The plugin
-keeps the workflow, claims, reviews, resources, and logic graph; MLflow keeps
-the empirical run record: params, metrics, metric histories, artifacts, dataset
-lineage, and model outputs.
-
-New runs log to one centralized MLflow tracking service for the backend
-deployment. Sandboxes and local executions are MLflow clients only.
-
-The plugin's MLflow bridge should stay small. Its job is to tell agents where
-MLflow is, which experiment namespace to use, which tags are required, and which
-dashboard links help humans inspect the ledger. Agents should use MLflow's own
-programmatic APIs for read, sort, filter, comparison, metric history, and
-artifact download.
-
-## Decisions
-
-- Run one MLflow server per backend deployment, not one per project.
-- Namespace runs as `rp/<project_id>/<experiment_id>`.
-- Keep stable IDs in MLflow names; human names belong in tags.
-- Treat MLflow as the primary quantitative source of truth. Do not mirror the
-  full MLflow database into plugin state.
-- Keep plugin-side MLflow reads as compatibility/context helpers, not as the
-  preferred agent navigation surface.
-- Store conclusions, claim relationships, reviews, and curated resource links in
-  plugin state; store raw quantitative run records and artifacts in MLflow.
-- Add auth later at the same endpoint/env-injection boundary.
-
-## Deployment Modes
-
-### Hosted / Remote Backend
-
-The backend VM runs MLflow beside the control server.
+All runs for one brain deployment use a shared MLflow service. Research Plugin
+names the MLflow experiment for a plugin experiment:
 
 ```text
-remote sandbox -> RESEARCH_PLUGIN_MLFLOW_TRACKING_URI / public MLflow URL
-backend        -> RESEARCH_PLUGIN_MLFLOW_SERVER_URI / internal MLflow URL
+rp/<project_id>/<experiment_id>
 ```
 
-The recommended hosted ingress is to keep MLflow parallel to the control app and
-route it through the same public HTTPS host, for example:
+The plugin stores compact run metadata on the experiment record: run id/name,
+status, artifact URI, creation time, and last error. It exposes bounded
+compatibility views on demand, but does not mirror MLflow's database. Agents use
+MLflow's native APIs for run search, comparison, metric history, and artifact
+access.
+
+## Runtime topology
+
+```text
+local execution or remote sandbox
+  -> RESEARCH_PLUGIN_MLFLOW_TRACKING_URI
+  -> MLflow tracking and artifact service
+
+brain
+  -> RESEARCH_PLUGIN_MLFLOW_SERVER_URI
+  -> run creation, finalization, health checks, and compact UI reads
+```
+
+`RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` must be reachable from every place that
+runs experiments. For a hosted deployment this normally means a public HTTPS
+URL. A Docker service name such as `http://mlflow:5000` is suitable for the
+brain's internal `SERVER_URI`, but not for agents or remote sandboxes.
+
+The hosted Compose stack runs MLflow beside the brain, with Postgres for MLflow
+metadata and an S3-compatible bucket for artifacts. Its recommended ingress
+layout is:
 
 ```text
 https://backend.example.com/mlflow -> MLflow
-https://backend.example.com         -> control
+https://backend.example.com         -> brain
 ```
 
-When using this path layout, set `RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX=/mlflow`
-for the MLflow container so the UI and static assets are generated under the
-same prefix. At the ingress layer, strip `/mlflow` only for MLflow API routes
-such as `/mlflow/api/*`, preserve `/mlflow` for the UI/static routes, and
-rewrite `/mlflow/ajax-api/*` to MLflow's root-mounted `/api/*` handlers. The
-browser bundle uses the AJAX path when loading experiment and run data.
+For that path layout in the reference Compose stack, set
+`RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX=/mlflow`; Compose passes it to MLflow's
+`--static-prefix` flag. The ingress must:
 
-The compose stack starts:
+- strip `/mlflow` for MLflow API routes such as `/mlflow/api/*`;
+- preserve `/mlflow` for the UI and static assets; and
+- rewrite `/mlflow/ajax-api/*` to MLflow's root-mounted `/api/*` handlers.
 
-- `control`
-- `mlflow`
-- Postgres databases for backend state and MLflow
-- MinIO buckets for backend blobs and MLflow artifacts
-
-### Local Backend
-
-If no external MLflow URI is configured, the local HTTP backend starts one
-managed MLflow process under the registry state directory.
-
-Local processes use the local URL directly:
-
-```text
-MLFLOW_TRACKING_URI=http://127.0.0.1:<port>
-```
-
-Remote sandboxes are MLflow clients. They publish to the configured tracking
-URI directly; sandbox access does not create MLflow tunnels or sandbox-local
-MLflow servers.
+The shipped localhost brain does not automatically start an MLflow process.
+Without explicit MLflow endpoint configuration, `mlflow.context` reports
+`configured: false`. To use MLflow with a local brain, run or select an MLflow
+service and configure the same endpoint variables. A loopback tracking URL works
+for local execution only; remote sandboxes need a URL they can reach directly.
 
 ## Configuration
+
+Typical hosted configuration:
 
 ```bash
 RESEARCH_PLUGIN_MLFLOW_MODE=external
@@ -87,29 +69,40 @@ RESEARCH_PLUGIN_MLFLOW_SERVER_URI=http://mlflow:5000
 RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL=https://backend.example.com/mlflow
 ```
 
-- `TRACKING_URI`: what agents/training code use.
-- `SERVER_URI`: optional backend-internal route for health checks and
-  compatibility reads.
-- `DASHBOARD_URL`: what users open.
-- `managed`: local backend starts MLflow itself.
-- `external`: backend points at an existing MLflow service.
+- `TRACKING_URI` is returned to agents and training code.
+- `SERVER_URI` is the optional brain-internal read/write endpoint.
+- `DASHBOARD_URL` is the browser URL; it defaults to `TRACKING_URI`.
+- `MODE=external` records that the brain uses a separately operated MLflow
+  service.
 
-`TRACKING_URI` and `SERVER_URI` intentionally mean different things in hosted
-control mode. `SERVER_URI` may be an internal service name such as
-`http://mlflow:5000`; the control plane can use it to read metrics, but remote
-sandboxes cannot. Agents only receive `MLFLOW_TRACKING_URI` when
-`RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` is set to a URL reachable from the run
-location, usually the public HTTPS MLflow endpoint. A deployment with only
-`SERVER_URI` configured can still show backend-read metrics, but agent logging is
-reported as unconfigured until `TRACKING_URI` is supplied.
+`SERVER_URI` alone lets the brain read MLflow for compatibility views, but it
+does not configure agent logging. `TRACKING_URI` alone gives agents a logging
+endpoint, but the brain cannot pre-create or finalize a canonical run because
+those writes require `SERVER_URI`. Configure both to use the complete workflow.
 
-## Agent Contract
+Hosted deployments can set:
 
-`mlflow.context` is the agent-facing MLflow bridge. With only `project_id`, it
-returns the project-level tracking URI, dashboard URL, namespace prefix, and the
-plugin experiment-to-MLflow-name map needed to browse runs with MLflow's native
-APIs. With `experiment_id`, it also returns the concrete MLflow experiment name
-and env vars for a quantitative run:
+```bash
+RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW=1
+```
+
+This makes brain startup fail when `TRACKING_URI` is empty. It does not probe
+that URL for reachability, and it does not make MLflow evidence an experiment
+workflow gate.
+
+## Agent contract
+
+The stdio proxy resolves the linked project and injects its `project_id`; agents
+do not pass project scope themselves. Use:
+
+```text
+mlflow.context()
+mlflow.context(experiment_id="exp_...")
+```
+
+Project scope returns the tracking URI, dashboard URL, namespace prefix, and a
+map from plugin experiments to MLflow experiment names. Experiment scope also
+returns the exact experiment name and environment variables for a run:
 
 ```json
 {
@@ -118,135 +111,134 @@ and env vars for a quantitative run:
   "experiment_id": "exp_456",
   "mlflow": {
     "configured": true,
+    "mode": "external",
     "tracking_uri": "https://backend.example.com/mlflow",
     "experiment_name": "rp/proj_123/exp_456",
     "dashboard_url": "https://backend.example.com/mlflow",
     "env": {
       "MLFLOW_TRACKING_URI": "https://backend.example.com/mlflow",
-      "MLFLOW_EXPERIMENT_NAME": "rp/proj_123/exp_456"
+      "MLFLOW_EXPERIMENT_NAME": "rp/proj_123/exp_456",
+      "RP_PROJECT_ID": "proj_123",
+      "RP_EXPERIMENT_ID": "exp_456"
     }
   }
 }
 ```
 
-`experiment.transition(start_running)` also returns the same experiment-scoped
-MLflow block as a convenience when a run begins. When
-`RESEARCH_PLUGIN_MLFLOW_SERVER_URI` is configured, the control plane also
-creates an initial MLflow run and persists its identity on the experiment. The
-returned block then includes `mlflow.run.run_id`, and `mlflow.env` includes
-`MLFLOW_RUN_ID` / `RP_MLFLOW_RUN_ID` so an agent can resume that run rather
-than accidentally creating a sibling run. After that point, `mlflow.context`,
-`experiment.get_state`, and the HTTP experiment state endpoint keep surfacing
-the experiment-scoped block and run identity so agents and the UI do not need
-to rediscover the tracking namespace.
+`experiment.transition(transition="start_running")` returns the same
+experiment-scoped block. When both `TRACKING_URI` and `SERVER_URI` are
+configured, the brain makes a best-effort attempt to create an initial MLflow
+run and persist its identity on the experiment. On success, the response
+includes `mlflow.run.run_id`, and the environment includes `MLFLOW_RUN_ID` and
+`RP_MLFLOW_RUN_ID`.
 
-Agents should use those env vars for quantitative experiments, whether running
-locally or inside a sandbox. If `MLFLOW_RUN_ID` is present, resume it with
-MLflow's native API (for example `mlflow.start_run(run_id=...)`) before logging.
-They should not start MLflow servers in sandboxes. The plugin does not rely on
-ambient shell state for this: a local agent or an SSH-driven sandbox run must
-read this block from MCP and set the returned env vars on the command that
-starts training. If `MLFLOW_TRACKING_URI` is absent from the current shell, call
-`mlflow.context`; do not fall back to a file-backed local MLflow store for a
-Research Plugin experiment.
+Set the returned variables on the command that starts training. If a run id is
+present, resume it with MLflow's native API, for example:
 
-After a quantitative command finishes, call `mlflow.finalize_run` for the
-experiment before submitting result resources. By default it uses the persisted
-plugin-created run id, sets terminal status to `FINISHED` through the backend
-MLflow write URI, then performs a short REST readback loop so stale immediate
-`RUNNING` statuses do not remain in experiment state. Pass `status="FAILED"` or
-`"KILLED"` for unsuccessful executions, or `status=null` when the script has
-already finalized the run and only readback is needed (readback-only mode runs
-the same poll loop). The update is read-before-write: a run that already reads
-back terminal keeps its status — a script-recorded `FAILED` is never rewritten
-by the `FINISHED` default (the response reports
-`update.skipped_already_terminal`).
+```python
+import os
 
-### Quantitative Run Metadata V0
+import mlflow
 
-MLflow is expected only for quantitative work: training, evaluation, sweeps,
-ablations, or any run where metrics drive the conclusion. It is not required
-for qualitative experiments, literature work, code-only probes, or planning
-tasks.
+mlflow.start_run(run_id=os.environ["MLFLOW_RUN_ID"])
+```
 
-For now, the ledger contract is deliberately small and soft. Every quantitative
-run should log enough metadata for an agent to connect the MLflow run back to
-the plugin experiment and understand what the run was trying to measure:
+Do not rely on ambient shell state and do not create a file-backed MLflow store
+as a fallback for a Research Plugin experiment. Remote sandboxes are clients of
+the configured central service; sandbox provisioning does not start MLflow or
+create a tunnel.
+
+An infrastructure retry stays on the same plugin attempt. If the persisted
+MLflow run is still open, `retry_running` returns it for resumption. If that run
+is terminal, the brain attempts to create and persist a fresh run for the same
+attempt.
+
+## Finalizing a quantitative run
+
+After a quantitative command finishes, call:
+
+```text
+mlflow.finalize_run(experiment_id="exp_...")
+```
+
+By default the tool uses the plugin-owned run id, requests `FINISHED` through
+the brain's `SERVER_URI`, and briefly polls MLflow so experiment state does not
+retain a stale `RUNNING` value. Use `status="FAILED"` or `status="KILLED"` for
+an unsuccessful run. Use `status=null` when the training script already closed
+the run and only readback is needed.
+
+Finalization reads before writing. A run that is already terminal keeps its
+recorded status, so the default cannot overwrite a script-recorded failure with
+`FINISHED`. Passing an explicit run id can finalize that run, but it does not
+replace a different canonical run already stored on the plugin experiment.
+
+## Quantitative run metadata
+
+MLflow is expected for training, evaluation, sweeps, ablations, and other work
+where metrics drive the conclusion. It is not required for qualitative
+experiments, literature work, code-only probes, or planning.
+
+Every quantitative run should identify:
 
 ```text
 project_id
 experiment_id
 run purpose or run group
-primary_metric, when there is a clear primary metric
-primary_metric_direction, when there is a clear primary metric
-execution backend or sandbox id, when readily available
+primary_metric, when one is defined
+primary_metric_direction, when one is defined
+execution backend or sandbox id, when useful
 ```
 
-When the plugin-created run is available, it already has `project_id`,
-`experiment_id`, `attempt_index`, and `created_by=research_plugin` tags. Agents
-may add run-purpose, metric-direction, backend, dataset, and config metadata to
-that same run as the experiment executes.
+A brain-created run already carries `project_id`, `experiment_id`,
+`attempt_index`, and `created_by=research_plugin` tags. Agents may add run
+purpose, metric direction, backend, dataset, and configuration metadata.
 
-Agents may log lightweight dataset or config notes when they are obvious and
-useful, but dataset digests, dataset versioning, config hashes, git metadata,
-and claim ids are not part of the V0 requirement. Claims remain traceable
-through the plugin experiment record.
+Keep compact plots, tables, evaluation JSON, prediction samples, confusion
+matrices, and resolved configuration as MLflow artifacts when they help explain
+the run. Keep workflow-facing summaries and selected figures as checkout
+resources. Large datasets and model files can use durable object storage. These
+are separate records; a repo resource is still a checkout file, not a pointer
+to an MLflow or storage object.
 
-Agents should also log compact artifacts that are useful in reports and reviews:
-plots, tables, evaluation JSON, prediction samples, confusion matrices, and
-resolved configs. Heavy artifacts should remain in durable object storage or
-MLflow artifact storage, with plugin resources pointing to the curated evidence
-that supports the workflow conclusion.
+## Metrics exhibit
 
-### Direct MLflow Reads
+During a running experiment, `experiment.exhibit` previews the system metrics
+exhibit. At `submit_results`, the brain regenerates and pins it when
+attempt-window runs are found, or when MLflow is unavailable after a
+plugin-created run established quantitative intent. It includes the
+attempt-window MLflow runs and eligible pinned result JSON, with provenance for
+each entry. Qualitative/no-run attempts receive no pinned exhibit. When an
+exhibit is pinned, the report must reference and interpret it. Runs written
+after `submit_results` remain in MLflow but are outside that attempt's finalized
+exhibit. Compatibility reads are bounded to the newest 50 runs; when that limit
+is reached, the exhibit records the cap rather than claiming an uncapped
+history.
 
-Agents are expected to use MLflow directly for quantitative navigation. Typical
-read tasks include:
+## UI compatibility views
+
+The brain exposes bounded MLflow views for the UI:
 
 ```text
-search runs by params, tags, status, and metric thresholds
-sort runs by the declared primary metric
-fetch metric histories for plotting
-list and download run artifacts
-compare runs across seeds, ablations, or datasets
-retrieve run tags and dataset metadata
+GET /api/projects/{project_id}/mlflow
+GET /api/projects/{project_id}/experiments/{experiment_id}/results/metrics
 ```
 
-The plugin should not grow a second query language for MLflow. New custom tools
-should be added only when they supply plugin context that MLflow does not know,
-such as the current project id, experiment id, namespace mapping, or dashboard
-links. `mlflow.finalize_run` is in that category: it closes the plugin-created
-run and refreshes the persisted `mlflow_run` status, but it is not a general run
-search or artifact browser.
+They include recent runs, parameters, final metric values, downsampled metric
+histories, dashboard links, and project-level MLflow health/configuration. The
+experiment metrics snapshot omits the queried MLflow base URL. These views are
+not a second quantitative ledger or an agent query language; the durable run
+record remains in MLflow.
 
-## UI Compatibility Views
+## Failure behavior
 
-The `/results/metrics` endpoint and project MLflow page expose bounded
-plugin-side views of MLflow data for UI compatibility. They are intentionally
-compact: recent runs, params, final metric values, and downsampled metric
-histories. Both feed one shared renderer: an inline per-experiment panel on the
-experiment detail page and the project-wide MLflow page. The service owns the
-`dashboard_experiment_url` deep link (namespace → `#/experiments/<id>`) so UI
-surfaces never reconstruct MLflow routes themselves.
+MLflow is best-effort in the experiment workflow:
 
-These views are not the quantitative ledger. They should not be extended into a
-full MLflow mirror or agent query layer. The durable record is the centralized
-MLflow backend and its artifact store. Compatibility views should strip internal
-server URLs before UI/API exposure.
-
-## Failure Policy
-
-MLflow is best-effort for now:
-
-- If configured and reachable, inject the bridge block and let agents log to the
-  central tracking server.
-- If unreachable, report readiness in experiment MLflow helpers and health output.
-- Training is not blocked solely because MLflow is down, but quantitative
-  reports should state the failure and preserve fallback result files under the
-  experiment folder.
-- Once MLflow is treated as a hard gate for a project, completion should require
-  MLflow run IDs or an explicit fallback evidence bundle.
-
-Future user auth should scope the same environment injection point. Do not point
-`RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` at a Docker-internal hostname unless all
-training clients run on that same network.
+- An unconfigured service is visible in MLflow context. Context itself derives
+  `configured` from URI presence and does not contact MLflow. Network access
+  occurs during initial/retry run creation, health checks, finalization, and
+  compatibility reads.
+- Experiment transitions do not gate on MLflow availability.
+- `RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW=1` separately makes brain startup fail
+  when `TRACKING_URI` is absent.
+- A quantitative run without usable MLflow should retain fallback result files
+  in the experiment folder and explain the gap in its report.

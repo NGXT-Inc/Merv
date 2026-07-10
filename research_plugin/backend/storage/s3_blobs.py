@@ -1,20 +1,20 @@
-"""S3-backed content-addressed blob store (cloud plan Phase 8, decision 7).
+"""S3-backed content-addressed submitted-byte blob store.
 
 The cloud implementation of the same ``BlobStore`` protocol as
 ``LocalDirBlobStore``, behind the same contract tests (``BlobStoreContractMixin``
 against a dockerized minio). ``S3BlobStore.presign_put`` returns a real
 single-use HTTPS PUT URL for off-process producers.
 
-boto3 is imported lazily (gated): the daemon/proxy/local profiles never need it,
-so installing the package is a control-profile concern only.
+boto3 is imported lazily so the stdlib-only proxy and local-directory blob path
+do not import it.
 
 Layout, keyed ``tenant/sha256`` like the local store:
 - ``<namespace>/<sha256>`` — the content-addressed object.
 - ``.uploads/<upload_id>`` — a staging key a presigned PUT lands in;
   ``finalize_put`` hashes it, copies to the content key, and deletes staging.
 TTL: per-object ``expires_at`` lives in object metadata; ``sweep_expired`` lists
-and deletes past-due objects (S3 lifecycle rules are the Phase 9 productionized
-backstop, but the protocol method is implemented here so the contract holds).
+and deletes past-due objects. Operators may also configure bucket lifecycle
+rules as a backstop.
 """
 
 from __future__ import annotations

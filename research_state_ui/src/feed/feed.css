@@ -673,7 +673,7 @@ html[data-surface="mobile"] .postcard-react { color: var(--muted); }
 
 /* =====================================================================
    Mobile surface (scoped under the mobile shell's attribute, exactly like
-   mobile.css) — the One-Surface stream (design_handoff_mobile_redesign):
+   mobile.css) — a single-column stream:
    flush posts on one column, a hairline between posts, at most one visual,
    orange only on the entity chip and link host.
    ===================================================================== */

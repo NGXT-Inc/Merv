@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 from backend.tools.contracts import STORAGE_TOOL_NAMES, TOOL_CONTRACTS
-from mcp_server.local_data_plane import LocalDataPlane
+from mcp_server.local_data_plane import LocalDataPlane, LocalDataPlaneError
 from mcp_server.proxy import (
     _STATIC_CATALOG_PATH,
     _render_static_catalog_text,
@@ -134,6 +134,47 @@ class BarePythonProxyTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(captured["path"], "/api/data-plane/sandboxes/request")
         self.assertEqual(captured["payload"]["project_id"], "proj_bare")
+
+    def test_resource_register_without_pydantic_uses_brain_validation(self) -> None:
+        (self.repo / "result.json").write_text('{"score": 1}\n', encoding="utf-8")
+        captured: dict = {}
+
+        def control_api_post(path: str, payload: dict) -> dict:
+            captured["path"] = path
+            captured["payload"] = payload
+            return {"id": "res_bare", **payload}
+
+        plane = LocalDataPlane(
+            repo_root=self.repo,
+            project_id_resolver=lambda: "proj_bare",
+            control_api_post=control_api_post,
+            control_tool_call=lambda tool, args: {},
+        )
+        with _without_pydantic():
+            result = plane.call_tool(
+                name="resource.register",
+                arguments={"path": "result.json", "kind": "result"},
+            )
+
+        self.assertEqual(result["id"], "res_bare")
+        self.assertEqual(captured["path"], "/api/data-plane/resources/observe")
+        self.assertEqual(captured["payload"]["project_id"], "proj_bare")
+        self.assertEqual(captured["payload"]["path"], "result.json")
+
+    def test_resource_register_modes_are_checked_without_pydantic(self) -> None:
+        plane = LocalDataPlane(
+            repo_root=self.repo,
+            project_id_resolver=lambda: "proj_bare",
+            control_api_post=lambda path, payload: {},
+            control_tool_call=lambda tool, args: {},
+        )
+        with _without_pydantic(), self.assertRaisesRegex(
+            LocalDataPlaneError, "provide exactly one"
+        ):
+            plane.call_tool(
+                name="resource.register",
+                arguments={"path": "a.md", "paths": ["b.md"]},
+            )
 
 
 if __name__ == "__main__":

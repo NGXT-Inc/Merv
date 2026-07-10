@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 /**
  * Tiny toast bus — module singleton + useSyncExternalStore, the same pattern
  * as useViewport/useTheme. `toast(msg)` from anywhere; <ToastHost/> (mounted
- * in MobileShell) renders the stack. docs/MOBILE_UX_REVIEW.md §3.8.
+ * in MobileShell) renders the stack.
  */
 let toasts = [];
 const listeners = new Set();

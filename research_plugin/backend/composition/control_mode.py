@@ -1,19 +1,10 @@
-"""Control-plane (cloud) composition (cloud plan Phase 8, §3.4).
+"""Unified brain composition with local and hosted deployment presets.
 
-Builds the multi-tenant control plane: record services + workflow + reviews +
-sandbox lifecycle/provisioner/reaper + blob store + quotas.
-Store from build_state_store (Postgres in hosted/no-repo-root control; SQLite
-only when an explicit dev/test repo_root is supplied). Blob store from
-build_blob_store. NO DataPlaneWorker file IO runs here — the cloud never touches
-a user checkout; data-plane tool calls are executed by the stateless MCP proxy
-on the user's machine and submitted as explicit facts/bytes.
-
-Provider creds resolve here (platform-owned keys, fixed decision 3). The cloud
-NEVER dials a user machine.
-
-Cloud reaper crash recovery (pulled into Phase 8 by the plan, risk 6): on
-startup the control app scans tenant sandbox rows for running/provisioning and
-resumes the reaper — a control restart must never leave billing VMs unreaped.
+The composition wires records, workflow, reviews, blobs, MLflow, quotas, and
+sandbox lifecycle. Hosted/no-checkout control requires Postgres, a durable blob
+store, and mounted management keys; local deployment selects SQLite and local
+adapters. Checkout I/O never runs here: the stdio MCP proxy submits explicit
+facts and bounded bytes, and the brain never dials a user machine.
 """
 
 from __future__ import annotations
@@ -64,10 +55,10 @@ _UNSET = object()
 
 
 class ControlPlaneServer:
-    """A running control-plane app plus its FastAPI app.
+    """A running brain app plus its FastAPI surface.
 
-    Holds the app (record services), the no-op hosted-control task channel,
-    cleanup service, and the FastAPI app that serves /mcp/* + /api/*.
+    Holds the record/policy app, task channel, cleanup service, and FastAPI app
+    that serves ``/mcp/*`` and ``/api/*``. Both deployment presets use it.
     ``fastapi_app`` is what uvicorn serves.
     """
 
@@ -81,10 +72,9 @@ class ControlPlaneServer:
     ) -> None:
         self.app = app
         self.task_channel = task_channel
-        # The cloud cleanup sweeps (plan Phase 9). Built but NOT scheduled here —
-        # scheduling is a documented seam (a managed cron / sidecar tick calls
-        # ``cleanup.run_all(now=...)``). The reaper thread that IS owned lives in
-        # SandboxDaemons; this is the broader periodic housekeeping.
+        # Broader cleanup sweeps are built but NOT scheduled here — a managed
+        # cron or sidecar tick calls ``cleanup.run_all(now=...)``. The owned
+        # expiry reaper lives in SandboxService; this is broader housekeeping.
         self.cleanup = cleanup
         self.fastapi_app = fastapi_app
 
@@ -105,7 +95,7 @@ def build_control_app(
     mlflow_tracking: CentralMlflowService | None = None,
     local_deployment: bool = False,
 ) -> tuple[ControlApp, ControlTaskChannel]:
-    """Build the control-plane app and hosted-control task channel.
+    """Build the unified brain app and its neutral task channel.
 
     ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
     production omits it and must provide DB_URL + BLOB_BUCKET + a mounted
@@ -152,15 +142,12 @@ def build_control_app(
             )
         ),
         mlflow_tracking=mlflow_tracking,
-        # Cost governance (cloud plan Phase 7): the hosted control plane holds
-        # the provider keys and pays for every VM, so the composition forces
-        # the expiry reaper on — the RESEARCH_PLUGIN_SANDBOX_REAPER off-switch
-        # is ignored here (local composition keeps it).
+        # The brain holds provider lifecycle responsibility, so this composition
+        # forces the expiry reaper on in both deployment presets.
         force_expiry_reaper=True,
     )
-    # Cloud reaper crash recovery (plan Phase 8, risk 6): a control restart with
-    # live VMs must re-acquire reaping. SandboxService already started the
-    # reaper thread; this resumes any reconcile/reap work for rows left running.
+    # A brain restart with live VMs must re-acquire reaping. SandboxService has
+    # already started the thread; this reconciles rows left running.
     _resume_active_sandboxes(app=app)
     return app, task_channel
 
@@ -171,7 +158,7 @@ def build_control_server(
     env: Mapping[str, str] | None = None,
     allowed_origins: list[str] | None = None,
 ) -> ControlPlaneServer:
-    """Build the control-plane FastAPI server."""
+    """Build the hosted-control FastAPI brain."""
     app, task_channel = build_control_app(repo_root=repo_root, env=env)
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins

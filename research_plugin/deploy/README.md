@@ -1,221 +1,137 @@
-# Research Plugin — hosted brain reference deploy
+# Hosted brain reference deployment
 
-This directory is the **reference stack** for running the hosted Research
-Plugin brain. It uses the same brain composition as local
-`research-plugin-http`, with hosted defaults: durable DB/blob services, mounted
-management keys, restricted CORS, and provider credentials in the server
-environment. It is for development, testing, and as a worked example — **it is
-not a managed deploy**. TLS, managed Postgres, a real secret store, autoscaling,
-backups, and the cleanup scheduler are the operator's responsibility (see "What
-this stack does NOT do" below).
+This directory is a worked deployment of the Research Plugin brain. The hosted
+entry point uses the same `ControlApp` composition as the local brain, with
+durable hosted adapters and stricter startup requirements. It is not a managed
+service or a production security boundary.
 
-## What's here
+The reference stack contains:
 
-| File | Purpose |
+| Service | Responsibility |
 |---|---|
-| `Dockerfile` | Hosted brain image: installs the `control` extra, runs `research-plugin-control` (uvicorn) as a non-root user, with a `HEALTHCHECK` hitting `/api/meta`. |
-| `Dockerfile.mlflow` | Separate MLflow server image for the reference compose stack. |
-| `docker-compose.yml` | Full local stack: control + MLflow + Postgres (record stores) + MinIO (S3-shape blob/storage/artifact stores), with one-shot bucket/database creators. |
-| `.env.example` | Documents the control-mode environment (§3.4 config matrix). Copy, fill, and keep out of version control. |
-| `.dockerignore` | Keeps secrets, local state, the React UI, and tests out of the build context. |
+| `control` | FastAPI brain: research records, workflow gates, reviews, sandbox lifecycle, UI API, and private proxy submission routes |
+| `postgres` | Research records and a separate MLflow database |
+| `minio` | Submitted-byte blobs, optional heavy-file storage, and MLflow artifacts |
+| `mlflow` | Central tracking server |
+| `mgmtkey` | Generates a development-only brain management SSH key |
 
-## Quick start (local full stack)
+The MCP proxy still runs on each agent machine. It reads the checkout, validates
+and hashes files, uses the caller-provided SSH key path for explicit local
+transfers without minting or persisting that key, and sends
+only explicit metadata or bounded submitted bytes to the brain. The browser UI
+is deployed separately and talks directly to the brain.
+
+## Start the reference stack
+
+From `research_plugin/`:
 
 ```sh
-# From the plugin root (research_plugin/):
 docker compose -f deploy/docker-compose.yml up --build
+curl -s http://127.0.0.1:8787/api/meta
 ```
 
-This brings up:
-- **Postgres** on `localhost:5432` — the record store (Postgres dialect).
-- **MLflow** on `localhost:5000` — centralized tracking server. It uses a
-  separate `mlflow` Postgres database and the `research-plugin-mlflow-artifacts`
-  MinIO bucket. This loopback URL is for local browser/dev access only; remote
-  sandboxes need `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` set to the public HTTPS
-  MLflow URL.
-- **MinIO** on `localhost:9000` (console `:9001`) — the S3-shape blob and
-  heavy-file storage backend; the `createbucket` job makes the Research Plugin
-  blob bucket, storage bucket, and MLflow artifact bucket.
-- **mgmtkey** one-shot — creates a dev-only management SSH key in a named volume
-  and mounts it read-only into control. Managed deploys should use a real secret
-  manager instead.
-- **control** on `localhost:8787` — private hosted brain API, proxy data-plane
-  submission endpoints ON, browser data-plane mutation routes OFF, reaper ON.
+The compose defaults start the complete set of services, but intentionally make
+the control container **record-only**:
 
-Verify the control plane is up and learn the version floor:
+- `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` is empty, so agents are not given a
+  run-reachable tracking URL.
+- sandbox provider credentials are empty, so provisioning is unavailable.
+
+Configure both before treating the stack as run-ready. Remote sandboxes must be
+able to reach the MLflow tracking URL. Heavy-storage presigned URLs are used by
+client-side MCP proxies (and the doctor), so they must be reachable from those
+clients; they do not need to be reachable from sandbox execution.
+
+Run the active readiness sweep after a deploy or restart:
 
 ```sh
-curl -s http://localhost:8787/api/meta
-# {"server_version":"...","min_proxy_version":"...","mode":"control",...}
+python3 deploy/doctor.py --control-url http://127.0.0.1:8787
 ```
 
-Run the one-shot readiness sweep after startup/restart:
+The doctor creates or reuses a smoke project, writes an MLflow run, checks the
+sandbox provider, and exercises heavy object storage. It therefore fails on the
+record-only defaults. `--skip-mlflow-write` skips only the write smoke (not
+MLflow configuration/health); `--skip-storage` skips the storage smoke.
 
-```sh
-python3 deploy/doctor.py --control-url http://localhost:8787
-```
-
-For the local MinIO reference stack, presigned storage URLs may use the Docker
-hostname. If running the doctor from the host, rewrite that hostname to the
-published loopback port:
+For the local MinIO stack, a host-run doctor may need its Docker hostname
+rewritten to the published port:
 
 ```sh
 RP_DOCTOR_URL_REWRITE=http://minio:9000=http://127.0.0.1:9000 \
-  python3 deploy/doctor.py --control-url http://localhost:8787
+  python3 deploy/doctor.py --control-url http://127.0.0.1:8787
 ```
 
-The current operator-run setup is a private hosted brain. Client VMs run
-`research-plugin-client configure --control-url ...` without any control-plane
-token. Put the service behind trusted network boundaries until the real auth
-system lands.
+## Hosted configuration
 
-## Modes & environment (§3.4)
+`research-plugin-control` forces `RESEARCH_PLUGIN_MODE=control`. With no
+explicit development `repo_root`, startup requires:
 
-The same code composition backs local and hosted brains; this reference
-entrypoint forces the hosted `control` preset. Key hosted variables (full list
-in `.env.example`):
+- `RESEARCH_PLUGIN_DB_URL`: Postgres record store;
+- `RESEARCH_PLUGIN_BLOB_BUCKET` plus the relevant `AWS_*` settings: durable
+  submitted-byte blob store;
+- `RESEARCH_PLUGIN_MGMT_KEY_PATH`: a mounted **private-key file** readable only
+  by the control process; and
+- either `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` or an adjacent `<key>.pub` file.
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `RESEARCH_PLUGIN_MODE` | yes (forced) | `control` |
-| `RESEARCH_PLUGIN_ALLOWED_ORIGINS` | prod | comma-separated hosted UI origins allowed by CORS |
-| `RESEARCH_PLUGIN_DB_URL` | prod | `postgres://…` (else SQLite — dev only) |
-| `RESEARCH_PLUGIN_BLOB_BUCKET` + `AWS_*` | prod | object store; presign must be a reachable HTTPS PUT |
-| `RESEARCH_PLUGIN_MLFLOW_MODE` + `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` | prod | centralized MLflow endpoint reported to training clients |
-| `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` | optional | backend-internal MLflow URL for metrics reads when it differs from the client URL |
-| `RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL` | optional | human-facing MLflow UI URL when it differs from the tracking URI |
-| `RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW` | prod | set `1` so control startup fails if agents would not receive `MLFLOW_TRACKING_URI` |
-| `RESEARCH_PLUGIN_EXECUTION_BACKEND` + provider creds | to provision | sandbox backend (`lambda_labs` by default) plus `RESEARCH_PLUGIN_LAMBDA_API_KEY` / `LAMBDA_LABS_API_KEY` / `LAMBDA_API_KEY`, or another backend's credentials |
-| `RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND` | prod | set `1` so control startup fails when the configured sandbox backend health check fails |
-| `RESEARCH_PLUGIN_MGMT_KEY_PATH` + `RESEARCH_PLUGIN_MGMT_PUBLIC_KEY` | prod | mounted management SSH key; readable by control, 0600/0400, rotated by drain/restart |
-| `THUNDER_COMPUTE_API_KEY` / `MODAL_*` / `LAMBDA_API_KEY` / `HF_TOKEN` | to provision | provider creds — **secret store only** in control mode (`.env` discovery is disabled); `HF_TOKEN` is delivered post-boot over the management channel, never embedded in VM `user_data` |
+Heavy object storage is optional. Enable it with
+`RESEARCH_PLUGIN_STORAGE_PROVIDER` and the storage bucket/credentials. This is
+separate from the submitted-byte blob store, which hosted startup requires.
 
-The production hosted entrypoint runs without a checkout/staging repo. Startup
-therefore fails fast unless the durable DB, durable blob store, and mounted
-management key variables are present. Passing an explicit `repo_root` is only
-for dev/test compatibility.
+Central MLflow has three URLs because callers, the brain, and people may reach
+it differently:
 
-For MLflow, `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` alone is enough for the brain
-to read metrics from an internal service, but it is not enough for agents
-to log runs. Set `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` to the public HTTPS URL
-reachable by every run location — local client machines and remote sandboxes —
-before expecting training code to emit MLflow runs. Agents retrieve that URL
-through `mlflow.context`; sandbox provisioning does not inject it by itself.
-When serving MLflow through the same host as the control plane, use a path such
-as `https://backend.example.com/mlflow` and set
-`RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX=/mlflow` so MLflow generates UI/static
-links under that prefix. Production hosted stacks should also set
-`RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW=1`; otherwise a deployment with only the
-backend-internal `SERVER_URI` can read MLflow but agents will not be able to log.
+| Variable | Consumer |
+|---|---|
+| `RESEARCH_PLUGIN_MLFLOW_TRACKING_URI` | agents and sandbox commands; must be reachable from every run location |
+| `RESEARCH_PLUGIN_MLFLOW_SERVER_URI` | brain metrics reads; may use an internal service URL |
+| `RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL` | links opened by people; defaults to the tracking URL |
 
-Lambda Labs is the default execution backend. Hosted stacks that should serve
-`sandbox.request` must inject one of `RESEARCH_PLUGIN_LAMBDA_API_KEY`,
-`LAMBDA_LABS_API_KEY`, or `LAMBDA_API_KEY` into the control container. Set
-`RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND=1` so startup fails if the key is
-missing or the lightweight Lambda catalog health check cannot reach the API.
+Set `RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW=1` to reject startup without an agent
+tracking URL. Set `RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND=1` to reject startup
+when the selected provider is unhealthy. Provider credentials and the brain
+management key belong only in the hosted secret store; they are never shipped
+to the MCP proxy.
 
-## Operating
+See `.env.example` for the supported variables.
 
-- **Version floor:** clients send `X-RP-Client-Version`; below-floor clients get
-  a `426` with an upgrade message. Floors are constants in `backend/version.py`.
-- **Post-start readiness:** run `python3 deploy/doctor.py` once after each deploy
-  or restart. It checks control, MLflow tracking/write, path-prefixed MLflow UI
-  AJAX routing, sandbox provider health and options, and object-storage
-  upload/download.
-- **Cleanup jobs:** the control plane BUILDS the cleanup sweeps (orphan VMs,
-  blob TTL GC, lease expiry, stale-provision reap) but does **not** schedule
-  them — POST `/api/admin/cleanup` from a managed cron / sidecar tick on your
-  cadence. `run_all` is idempotent and clock-injectable.
-- **Spend kill-switch:** a tripped per-tenant or global kill-switch refuses new
-  provisioning; budgets (GPU-hours / USD) are reconstructed from the generation
-  ledger. See `QuotaService`.
-- **Observability:** the control plane emits one redacted JSON log line per HTTP
-  request to stdout (request id + tenant id + path + status + duration). Run
-  with `PYTHONUNBUFFERED=1` (the image sets it) so your log pipeline sees them.
-- **Per-tenant counters:** GET `/api/admin/tenants/{tenant_id}/counters`.
+## Network and security boundary
 
-## TLS termination
+The brain serves plain HTTP on port 8787. A real deployment must terminate TLS
+at a load balancer or reverse proxy. In the reference Compose stack, if MLflow
+is exposed under `/mlflow`, set
+`RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX=/mlflow`; Compose forwards it to MLflow's
+`--static-prefix`. Route MLflow's tracking, artifact, UI, and `ajax-api` paths
+consistently. The Python brain itself does not read this variable.
 
-The hosted brain serves plain HTTP on `:8787`. Put it **behind a
-TLS-terminating load balancer / reverse proxy** (ALB, nginx, Caddy, Traefik) in
-production — the MCP proxy must dial `https://`. `/health` and `/api/meta`
-are open for liveness/handshake. All other routes are currently private
-operator/admin routes, not public internet routes.
+There is currently no end-user authentication or effective tenant isolation on
+the HTTP surface. CORS restrictions and the MCP client-version floor are not
+authentication. Keep the brain, MLflow, storage endpoints, and admin routes on
+a trusted operator network; do not expose the reference compose stack directly
+to the public internet.
 
-For the reference single-host deployment, keep MLflow parallel to the control
-app and route it at the ingress layer instead of opening port `5000` publicly:
+The UI may call control/lifecycle routes, but checkout-local data-plane
+mutations remain private proxy routes. The brain never receives a checkout root
+and cannot serve arbitrary live checkout files.
 
-```caddy
-backend.example.com {
-  handle /mlflow/health {
-    uri strip_prefix /mlflow
-    reverse_proxy 127.0.0.1:5000
-  }
+## Operations
 
-  handle /mlflow/api/* {
-    uri strip_prefix /mlflow
-    reverse_proxy 127.0.0.1:5000
-  }
+- Clients send `X-RP-Client-Version`; clients below the floor published by
+  `/api/meta` receive HTTP 426.
+- The sandbox expiry reaper runs inside hosted control. On restart, it
+  reconciles registered active rows.
+- Broader cleanup is not scheduled. Invoke `POST /api/admin/cleanup` from a
+  trusted cron or sidecar. It handles registered stale sandbox state, blob TTLs,
+  storage leases, and stale provisioning records; it does not discover and
+  terminate arbitrary provider VMs that have no ledger row.
+- HTTP request logs go to stdout. Diagnostic activity and tool-call rings are
+  process-local and bounded, so they reset on restart.
 
-  handle_path /mlflow/ajax-api/* {
-    rewrite * /api{path}
-    reverse_proxy 127.0.0.1:5000
-  }
+## What production must add
 
-  handle /mlflow* {
-    reverse_proxy 127.0.0.1:5000
-  }
-
-  # Reference MinIO buckets. Preserve the path exactly so S3 presigned URLs
-  # signed for https://backend.example.com/<bucket>/<key> remain valid.
-  handle /research-plugin-blobs/* {
-    reverse_proxy 127.0.0.1:9000
-  }
-
-  handle /research-plugin-storage/* {
-    reverse_proxy 127.0.0.1:9000
-  }
-
-  handle /research-plugin-mlflow-artifacts/* {
-    reverse_proxy 127.0.0.1:9000
-  }
-
-  handle {
-    reverse_proxy 127.0.0.1:8787
-  }
-}
-```
-
-This split is intentional: MLflow's tracking and artifact APIs stay mounted at
-the server root, so ingress strips `/mlflow` for API routes. The MLflow UI is
-served under the static prefix, so ingress preserves `/mlflow` for UI/static
-routes. MLflow's browser bundle calls relative `/ajax-api/...` endpoints under
-the UI prefix, so the reference Caddy route rewrites `/mlflow/ajax-api/*` to the
-server's root-mounted `/api/*` handlers.
-
-For the reference MinIO stack, set `RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL` and
-`AWS_ENDPOINT_URL_S3` to the public HTTPS origin routed above. Leaving them at
-`http://minio:9000` only proves storage works inside Docker; remote agents and
-Lambda VMs cannot use those presigned URLs.
-
-## What this stack does NOT do (documented seams)
-
-These are intentionally out of the reference stack — production owns them:
-
-- **TLS certificates** — terminate at your LB; this image speaks HTTP.
-- **Managed Postgres / backups** — the compose Postgres is ephemeral dev data.
-- **Managed MLflow / artifact lifecycle** — the compose MLflow server is a
-  reference service. Production should run it behind TLS and back its database
-  and artifacts with durable storage.
-- **A real secret store** — point `RESEARCH_PLUGIN_THUNDER_ENV_FILE` or
-  `RESEARCH_PLUGIN_MODAL_ENV_FILE` at a mounted secret, or inject
-  `THUNDER_COMPUTE_API_KEY`/`MODAL_*`/`LAMBDA_*`/`HF_TOKEN` from your platform's
-  secret manager. Never bake them into the image.
-- **The cleanup scheduler** — wire a managed cron to `POST /api/admin/cleanup`.
-- **Human login OAuth** — the hosted brain is currently private/operator-run;
-  device-flow OAuth is still backlog (open decision C).
-- **The React UI** — served separately (cloud SPA + CORS per origin); this image
-  is the API only. The viewer's degraded states (result content / figures
-  unavailable in this mode) are served by the API; the SPA renders them.
-- **S3 bucket lifecycle rules / alerting** — configure object expiry and
-  reaper-lag / provision-failure alerts on your platform.
+- TLS, routing, and a trusted network boundary;
+- managed Postgres, object storage, backups, and lifecycle rules;
+- a real secret manager and management-key rotation procedure;
+- a cleanup scheduler and operational alerting;
+- a separately deployed UI with explicit CORS origins; and
+- end-user authentication and authorization before any public or multi-tenant
+  use.

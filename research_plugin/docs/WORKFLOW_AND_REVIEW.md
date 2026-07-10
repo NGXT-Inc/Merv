@@ -2,11 +2,10 @@
 
 ## Experiment lifecycle
 
-The server should keep the experiment lifecycle small but explicit about review
-gates:
+The experiment lifecycle is small and explicit about review gates:
 
 ```text
-idea -> planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
+planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
             ^             |                            ^                 |
             |             v                            |                 v
             +------ needs_changes              return_to=running   needs_changes / fail
@@ -18,52 +17,66 @@ idea -> planned -> design_review -> ready_to_run -> running -> experiment_review
 Rejections attach revision context either way. failed / abandoned are terminal exits.
 ```
 
-Codex should not guess the state, the gate, or the next step. It should ask:
+An agent should not guess the state, the gate, or the next step. In a
+project-linked MCP session it asks:
 
 ```text
-workflow.status_and_next(project_id, experiment_id?)
+workflow.status_and_next(experiment_id?)
 ```
 
-`project_id` is required. Codex should select or create a project before any
-claim, experiment, resource, review, or sandbox workflow.
+The proxy supplies the linked `project_id`; brain services and HTTP routes still
+require explicit project scope. The agent should call `project(action="current")`
+and link or create a project before any claim, experiment, resource, review, or
+sandbox workflow.
 
-The server response should be useful to both Codex and the user: current project
+The server response is useful to both the agent and the user: current project
 summary, experiment status, active attempt, linked claims, plan resources, result
 resources, review state, blocked actions, allowed actions, and next action.
 
 ## Required gates
 
-MVP gates:
+Current gates:
 
-1. Plan gate: before expensive execution, the plan must identify claim, method,
-   inputs, outputs, metric, and expected resource files.
+1. Plan gate: before design review, the submitted plan must contain non-empty
+   **Summary**, **Objective & hypothesis**, and **Evaluation** sections. The
+   design reviewer judges the substantive method, outputs, decision rule,
+   success criteria, risks, and confounders.
 2. Design review gate: a separate read-only design reviewer must pass the plan.
-3. Result retention gate: after execution, Codex must retain the selected
+3. Result retention gate: after execution, the agent must retain the selected
    outputs locally and register/associate them as resources.
 4. Results report gate: before `submit_results`, the current attempt must carry
    a short markdown report (role `report`) with Summary, Results, Deviations
-   from plan, and Conclusion applying the plan's pre-registered decision rule;
-   under 16 KB; every relative figure link must resolve to a submitted figure
-   file. For quantitative attempts the system generates and pins a **metrics
-   exhibit** (every attempt-window MLflow run plus pulled result files, each
-   entry with provenance) at `submit_results`, and the
-   report must reference it — the server no longer polices agent-written
-   metric tables; the exhibit is the record and the report interprets it. See
+   from plan, and Conclusion sections; under 16 KB; every relative figure link
+   must resolve to a submitted figure file. The linter checks the sections and
+   shape; the reviewer judges whether the Conclusion actually applies the
+   plan's pre-registered decision rule. At `submit_results`, the system pins a
+   **metrics exhibit** when it finds attempt-window MLflow runs, or when MLflow
+   is unavailable after a plugin-created run established quantitative intent.
+   The exhibit contains up to the newest 50 matching runs plus eligible pinned
+   result JSON, each entry with provenance. When an exhibit is pinned, the report must
+   reference and interpret it — the server no longer polices agent-written
+   metric tables; the exhibit is the record. An unconfigured/no-run fallback
+   can have quantitative result files without producing an exhibit, so that
+   reference gate is conditional. See
    `skills/research-workflow/report-template.md`.
 5. Logic graph gate: before `submit_results`, the current attempt must also
    carry the experiment's logic graph (role `graph`) — a qualitative story
    the agent writes about the experiment's logical path: the hard decisions,
    the reasoning behind them, pivots, and lessons, told as a DAG. It is not
    an event or pipeline diagram and must be authored, never script-generated.
-   The server lints only the envelope (valid JSON, every node with an id and
-   label, at most 16 nodes, acyclic edges, under 16 KB); the story's
-   vocabulary, structure, and substance are the agent's design, judged by the
-   experiment reviewer. See `skills/research-workflow/graph-template.md`.
+   The server lints only the envelope: valid JSON with `version: 1`; a non-empty
+   node list with unique ids and non-empty labels; a list of edges whose
+   endpoints exist, contain no self-loops, and form a DAG; at most 16 nodes; and
+   a file under 16 KB. The story's vocabulary, structure, and substance are the
+   agent's design, judged by the experiment reviewer. See
+   `skills/research-workflow/graph-template.md`.
 6. Experiment review gate: a separate read-only experiment reviewer must pass
    the executed attempt, verifying the report against the raw result files and
    the logic graph's story against what actually happened.
-7. Claim update gate: claim status/confidence changes require evidence links and
-   a passing experiment or human review.
+Direct `claim.update` validates status and confidence vocabulary but does not
+enforce an evidence gate. Reviewed experiment completion returns advisory claim
+update suggestions, while a published reflection can apply claim changes from
+its reviewed change spec.
 
 ## Active experiment cap
 
@@ -94,12 +107,13 @@ The design reviewer checks:
 - the plan is small enough to run and review
 
 If design review fails, MCP returns the experiment to `planned` with review
-feedback attached. Codex revises the plan and asks MCP for status again.
+feedback attached. The producer revises the plan and asks MCP for status again.
 
 ## Experiment reviewer contract
 
-The experiment reviewer runs after execution and resource sync. It is read-only
-and submits its review directly to MCP.
+The experiment reviewer runs after execution, after selected outputs have been
+pulled locally and registered/associated. It is read-only and submits its
+review directly to MCP.
 
 The experiment reviewer checks:
 
@@ -117,8 +131,9 @@ The experiment reviewer checks:
 - avoid mutating research state directly
 
 A rejection routed to `running` keeps the approved plan and the current attempt
-intact: the agent fixes execution and/or the conclusion, re-syncs results, and
-resubmits for experiment review — no new design review. A rejection routed to
+intact: the agent fixes execution and/or the conclusion, pulls any revised
+outputs locally, registers/associates the new versions, and resubmits for
+experiment review — no new design review. A rejection routed to
 `planned` advances the attempt counter and requires a revised plan to pass a
 fresh design review. Either way the experiment is never silently moved to
 `failed` — that exit stays explicit. A rejection back to `planned` should carry
@@ -133,21 +148,27 @@ forward prior attempt context:
 
 ## Reviewer identity
 
-Local reviewer identity should be modeled by MCP-issued capabilities.
+Reviewer identity is modeled by MCP-issued capabilities.
 
-1. Main Codex calls `review.request`.
-2. MCP creates a review request and one-time read-only reviewer capability.
-3. Main Codex spawns the proper reviewer agent with the role skill and capability.
+1. The producer calls `review.request`.
+2. MCP creates a review request and a request-scoped reviewer capability. Its
+   plaintext value is returned only in that response; durable state stores a
+   hash.
+3. The producer spawns the proper reviewer agent with the role skill and capability.
 4. Reviewer calls `review.start`, inspects only allowed context, and calls
    `review.submit`.
-5. MCP verifies role, target snapshot, capability, and session lineage before
-   satisfying the gate.
+5. `review.request` verifies the workflow role against the active gate;
+   `review.start` verifies the target snapshot, capability, and that the
+   caller-supplied reviewer session string is non-empty and differs from the
+   producer-supplied string. A passing submit satisfies the gate only while the
+   request and snapshot remain current.
 
-Step 3 is deliberate and cannot be skipped: `review.request` returns a
+Step 3 is deliberate: `review.request` returns a
 `reviewer_handoff.spawn_prompt` that already contains the skill name, request
-id, and one-time capability, but only the spawned reviewer consumes it via
-`review.start`. A helper that started the session server-side was removed —
-it let the requesting session submit against its own gate.
+id, and capability. Only the spawned reviewer should present it via
+`review.start`, with a caller session distinct from the producer. Starting a
+review does not consume the capability; the first accepted submission closes
+the request.
 
 `workflow.status_and_next` keeps the user-facing stage as `design_review` or
 `experiment_review`, but exposes `workflow.review_gate.status` for the substate:
@@ -155,9 +176,12 @@ it let the requesting session submit against its own gate.
 - `none`: no request exists; call `review.request`.
 - `requested`: request exists, but no reviewer has started; launch the reviewer.
 - `started`: reviewer is active; wait and poll `workflow.status_and_next`.
+- `attested_blocked`: only a legacy attested pass exists while project policy
+  requires a verified review; request a fresh review.
 
-This is a practical local independence check, not cryptographic proof. For
-high-risk work, MCP can require human review.
+This is a practical session-separation check, not cryptographic proof of
+independent reasoning. See [REVIEW_IDENTITY.md](REVIEW_IDENTITY.md) for the exact
+checks and limitation.
 
 The reviewer submits through MCP:
 
@@ -176,9 +200,9 @@ page. It must read as plain prose in reader context — no entity ids
 newlines. `notes` and `findings` remain the machine-flavored detail; the
 synopsis is the human-readable headline above them.
 
-## Codex responsibilities after a run
+## Agent responsibilities after a run
 
-After any experiment execution, Codex should:
+After any experiment execution, the agent should:
 
 1. identify changed files with git/status or filesystem checks
 2. decide which files are research resources
@@ -202,27 +226,30 @@ review gates are satisfied.
 
 While an experiment is `running` and no result resource is associated yet,
 `workflow.status_and_next` returns `run_experiment_and_retain_results` with
-`resource_guidance`. Agents run the experiment on the sandbox over SSH, then
-pull selected output files back to the local checkout with `sandbox.pull_outputs`
-and associate them to the experiment with `association_role: "result"`. Once
+`resource_guidance`. Agents may execute locally or on a sandbox. After sandbox
+execution they pull selected output files back to the checkout with
+`sandbox.pull_outputs`, then call `resource.register` with `role: "result"`. Once
 result resources exist but no report exists, the gate becomes
 `results_report_required` with report-specific guidance; once a report exists
 but no logic graph does, the gate becomes
 `logic_graph_required`.
-The `submit_results` transition first finalizes the system metrics exhibit
-when the attempt has MLflow runs in its window (preview it earlier with
-`experiment.exhibit`), then lints the report file (sections, the exhibit
-reference when one is pinned, size, figure links) and the logic graph's
-envelope (valid JSON, node budget, DAG) before the experiment enters review.
-Runs logged after `submit_results` do not exist for the attempt.
+The `submit_results` transition first evaluates the system metrics exhibit
+(preview it earlier with `experiment.exhibit`) and pins it when attempt-window
+runs are present, or when MLflow is unavailable after a plugin-created run
+established quantitative intent. Qualitative/no-run attempts receive no pinned
+exhibit. It then lints the report file (sections, the exhibit reference when one
+is pinned, size, figure links) and the logic graph's envelope (valid JSON, node
+budget, DAG) before the experiment enters review.
+Runs logged after `submit_results` remain in MLflow but are outside the already
+finalized exhibit for that attempt.
 
 If infrastructure fails while the experiment is already `running` and the
 approved plan still stands, call
 `experiment.transition(transition="retry_running", evidence={...})`. This is a
 self-transition: the experiment remains `running`, `attempt_index` is unchanged,
 and `revision_context` records the retry reason so the agent reruns execution
-and retains fresh outputs before `submit_results`. Use `return_to="planned"` or
-a new experiment instead when the plan itself needs to change.
+and retains fresh outputs before `submit_results`. Revise through the review
+loop or create a new experiment instead when the plan itself needs to change.
 
 `workflow.status_and_next` runs those same deep lints once every required
 artifact exists: if a submitted artifact would fail the transition's lint, the gate is
@@ -239,20 +266,20 @@ applies.
 
 ## Completion rule
 
-An experiment can complete only when:
-
-- its result resources are retained and associated
-- its design and experiment review gates are satisfied
-- its conclusion is tied to resources and/or sandbox outputs
-- MCP accepts the completion transition
+`complete` is accepted only from `experiment_review` when a passing current-
+snapshot `experiment_reviewer` review satisfies the gate. The earlier
+`submit_results` transition has already enforced the current attempt's result,
+report, and graph resources. A conclusion is useful and drives claim-update
+suggestions, but it is not an additional completion precondition.
 
 ## Project reflection lifecycle (reflection waves)
 
 One level above experiments, the project maintains a **living project logic
 graph** — one JSON file under the same 16-node envelope as experiment graphs,
 holding the project's current logic state — through gated **reflection**
-records (`syn_…` ids; the wire keeps the legacy synthesis naming), one per
-reflection wave:
+records (`syn_…` ids; external tools call them reflections while some persisted
+ids, payload keys, and internal service names retain synthesis terminology), one
+per reflection wave:
 
 ```text
 reflecting -> synthesizing -> reflection_review -> published
@@ -274,8 +301,10 @@ Gates (envelope-only, same philosophy as experiment gates):
    (terminal experiments + claim statuses) is snapshotted at create.
 2. Reflection coverage gate: `submit_reflections` is blocked until every
    roster lens has a current-attempt role-`reflection_lens_doc` resource whose
-   filename is `<lens_id>.md`, non-empty on disk. Each reflection is
-   authored and submitted by its own read-only subagent.
+   filename is `<lens_id>.md` and whose pinned submission is non-empty. Each
+   reflection is authored and submitted by its own subagent. The subagent reads
+   project state without mutating it, then registers its own lens document as
+   the one required mutation.
 3. Reflection artifacts gate: `submit_reflection_artifacts` requires the project logic
    graph (role `project_graph`, the shared `graph_lint` envelope), a concise reflection
    document (role `reflection_doc`, required sections: Summary, Critical
@@ -289,20 +318,23 @@ Gates (envelope-only, same philosophy as experiment gates):
    review pinned to the wave's snapshot. The reviewer judges substance —
    does the story reconcile with the corpus, were the lenses genuinely
    diverse, is the belief-state update warranted, are the concrete experiments
-   justified — through the same capability machinery (one-time
-   token, snapshot pinning, producer-session rejection, read-only funnel) as
+   justified — through the same capability machinery (plaintext returned once,
+   snapshot pinning, producer-session rejection, reviewer-skill boundary) as
    experiment reviews. Rejections must route via `return_to`: `synthesizing`
    or `reflecting`.
 
 `reflection.get.gate_checklist` exposes the current gate as checklist data:
 missing per-lens reflections in `reflecting`, missing/invalid graph-doc-spec
 artifacts in `synthesizing`, and pending/requested/started/passed review state
-in `reflection_review`.
+in `reflection_review` (stored internally as `synthesis_review`). A legacy
+attested pass may surface as
+`attested_blocked` when the project requires verified reviews.
 
 On publish the record pins `published_graph_version_id`, so the single living
 graph file still yields an immutable per-wave history. The same publish
-transaction applies approved claim changes and either marks the project
-stopped or creates the approved planned experiments. Rejected reflection waves do not
+transaction applies approved claim changes and creates the approved planned
+experiments. Stopping remains a researcher decision and is not a valid change-
+spec action. Rejected reflection waves do not
 mutate claims or create experiments. The diversity heuristics (anti-overlap
 lens briefs, ambition quota, dead-end differentiation) live in the
 `project-reflection` skill, not in gates.

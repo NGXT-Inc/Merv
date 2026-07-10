@@ -1,4 +1,4 @@
-# Control-plane image for the Research Plugin cloud backend (plan Phase 9).
+# Hosted-brain image for Research Plugin.
 #
 # Installs the `control` extra (Postgres driver + object-store SDK + provider
 # SDK) and runs the control composition behind uvicorn. This is the REFERENCE
@@ -18,8 +18,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # curl is for the HEALTHCHECK probe. openssh-client is for the management SSH
-# channel (Lambda transcript/metrics/parachute/secret delivery) and the local
-# compose key-init job.
+# channel (Lambda/Thunder transcript, metrics, and secret delivery) and the
+# local Compose key-init job.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl openssh-client \
     && rm -rf /var/lib/apt/lists/*

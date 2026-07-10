@@ -132,8 +132,7 @@ function useLiveMetric(projectId, experimentId) {
 }
 
 /**
- * Home — the "Instrument snapshot" (design_handoff_mobile_redesign, Home Page
- * option 3a/3b). The supervisor's glance as an instrument: what this project
+ * Home — the supervisor's instrument snapshot: what this project
  * IS (a clamped project.summary — the name's already in the app bar), a
  * one-line standing, a 24h snapshot band, what's live now with real GPU-util
  * + the run's metric curve, then a compact Needs-you. One Surface: hairlines

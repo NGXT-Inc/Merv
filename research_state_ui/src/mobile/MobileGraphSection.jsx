@@ -11,7 +11,6 @@ const GraphCanvasOverlay = lazy(() => import('./GraphCanvasOverlay'));
  * Fetches both (single fetch on terminal experiments, slow poll while live),
  * renders the available one as a GraphOutline with a Figure/Story toggle, and
  * offers "view as graph" → a lazy fullscreen ReactFlow overlay.
- * docs/MOBILE_UX_REVIEW.md §4.1.
  */
 export default function MobileGraphSection({ projectId, experimentId, experimentStatus, attemptIndex }) {
   const [figure, setFigure] = useState(null);

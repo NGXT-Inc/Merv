@@ -210,30 +210,32 @@ def project(p):
 def system(s):
     parts = [
         szone(s["zone1"], 24, 40, 520, 260, "YOUR MACHINE"),
-        szone(s["zone2"], 584, 40, 384, 260, "HOSTED CONTROL PLANE",
-              note="also runs locally"),
+        szone(s["zone2"], 584, 40, 384, 260, "SERVICE SIDE",
+              note="brain can run locally"),
         sbox(s["plain"], 48, 84, 472, 56, "Agent platform",
              "Claude Code · Codex · Cursor · Gemini CLI · OpenCode"),
-        sbox(s["plain"], 48, 196, 160, 64, "Research repo", "files stay local"),
-        sbox(s["hub"], 360, 196, 160, 64, "MCP proxy", "repo files · SSH keys"),
-        sbox(s["frontend"], 608, 84, 336, 56, "Frontend UI", "read-only · for humans"),
-        sbox(s["brain"], 608, 196, 336, 64, "Brain", "owns all research state"),
-        sbox(s["infra"], 608, 340, 200, 56, "GPU sandboxes", "Lambda · Thunder · Modal"),
-        sbox(s["infra"], 838, 340, 130, 56, "Storage", "artifacts"),
+        sbox(s["plain"], 48, 196, 160, 64, "Research repo", "source · retained evidence"),
+        sbox(s["hub"], 360, 196, 160, 64, "MCP proxy", "repo IO · rsync · links"),
+        sbox(s["frontend"], 608, 84, 336, 56, "Frontend UI", "supervision · lifecycle controls"),
+        sbox(s["brain"], 608, 196, 336, 64, "Brain", "records · gates · providers"),
+        sbox(s["infra"], 608, 340, 200, 56, "Cloud sandboxes", "Lambda · Thunder · Modal"),
+        sbox(s["infra"], 828, 340, 140, 56, "Data services", "DB · blobs · MLflow"),
         link(s, "M 440 140 L 440 192", "", 0, 0),
         link(s, "M 356 228 L 214 228", "", 0, 0),
         link(s, "M 524 228 L 602 228", "", 0, 0),
-        link(s, "M 776 196 L 776 146", "", 0, 0),
-        link(s, "M 440 260 C 440 368, 500 368, 600 368", "SSH", 428, 322, "end"),
+        link(s, "M 776 140 L 776 192", "", 0, 0),
+        link(s, "M 284 140 C 284 328, 430 350, 600 350", "SSH commands", 348, 317, "start"),
+        link(s, "M 440 260 C 440 382, 500 382, 600 382", "rsync pulls", 428, 342, "end"),
         link(s, "M 700 260 L 700 334", "provisions", 710, 320, "start"),
-        link(s, "M 903 260 L 903 334", "", 0, 0),
+        link(s, "M 898 260 L 898 334", "", 0, 0),
     ]
     return svg(s, "".join(parts),
                "System architecture: on your machine, agent platforms talk to the MCP "
-               "proxy, which reads the research repo; the proxy talks to the hosted "
-               "brain, which owns all research state. The frontend UI is read-only, "
-               "for humans. The brain provisions GPU sandboxes and storage; the proxy "
-               "reaches sandboxes over SSH", 420, legend=False)
+               "proxy, which performs checkout-local IO and submits records or selected "
+               "bytes to the brain. The UI supervises the brain. The brain owns research "
+               "records, data stores, MLflow, and sandbox providers; the agent sends SSH "
+               "commands while the proxy pulls retained outputs with rsync", 420,
+               legend=False)
 
 
 for name, palette, sys_palette in (("light", LIGHT, SYS_LIGHT), ("dark", DARK, SYS_DARK)):

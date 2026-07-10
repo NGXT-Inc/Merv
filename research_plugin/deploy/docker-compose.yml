@@ -1,4 +1,4 @@
-# Local full-stack bring-up of the Research Plugin control plane (plan Phase 9).
+# Local full-stack bring-up of the hosted Research Plugin brain.
 #
 # Wires the control plane to Postgres (the record store) and MinIO (the S3-shape
 # blob store) so the whole cloud topology runs on a laptop. This is the
@@ -141,9 +141,9 @@ services:
       # plane's own host + local dev. Override with RESEARCH_PLUGIN_ALLOWED_ORIGINS
       # in the environment if a deployment needs a different set.
       RESEARCH_PLUGIN_ALLOWED_ORIGINS: ${RESEARCH_PLUGIN_ALLOWED_ORIGINS:-https://experiments.rapidreview.io,https://research-suite-chi.vercel.app,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}
-      # Record store: the Postgres dialect (cloud plan Phase 6).
+      # Record store: the Postgres dialect.
       RESEARCH_PLUGIN_DB_URL: postgresql://rp:rp_dev_password@postgres:5432/research_plugin
-      # Blob store: the S3-shape bucket on MinIO (cloud plan Phase 8). boto3
+      # Submitted-byte blob store: the S3-shape bucket on MinIO. boto3
       # reads these standard AWS env vars; the endpoint URL points it at MinIO.
       RESEARCH_PLUGIN_BLOB_BUCKET: research-plugin-blobs
       # Heavy-file storage: optional feature, enabled here through the same

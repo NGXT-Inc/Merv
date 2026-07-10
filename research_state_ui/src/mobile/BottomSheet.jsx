@@ -7,7 +7,7 @@ import { useScrollLock } from './useScrollLock';
  * A scrim + rounded panel anchored to the bottom of the viewport, with a drag
  * handle that dismisses on a downward drag/fling. Backs the More sheet and
  * every detail/picker overlay (graph node detail, sort menus, …) so the iOS
- * scroll-lock fix lives in exactly one place. docs/MOBILE_UX_REVIEW.md §3.2.
+ * scroll-lock fix lives in exactly one place.
  *
  * Props:
  *   open      — visibility

@@ -1,8 +1,7 @@
 """Proxy-local repo_root ↔ project_id links.
 
-This keeps the old daemon file format (`project_links.sqlite`, table
-`project_links`) so existing linked repositories keep working when split mode
-stops launching a local daemon.
+The proxy retains the legacy `project_links.sqlite` table shape so machines
+linked by pre-proxy releases continue to work. No daemon is involved.
 """
 
 from __future__ import annotations

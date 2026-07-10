@@ -6,7 +6,7 @@ const PAD = 4;
 /**
  * SlideToConfirm — a deliberate drag gesture for the one sanctioned destructive
  * mobile action (sandbox release). Replaces the tap-tap confirm that muscle
- * memory blows through. docs/MOBILE_UX_REVIEW.md §3.5.
+ * memory blows through.
  *
  * Fires onConfirm() once the knob reaches the end; the parent owns the busy
  * state and unmounts/resets on completion.

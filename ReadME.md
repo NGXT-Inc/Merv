@@ -1,7 +1,5 @@
 # Research Suite
 
-![Research Suite experiment workflow](experiments.png)
-
 Research Suite is a plugin for agentic coding platforms that helps agents run machine learning research as gated, reviewable experiment workflows.
 
 It is designed to work with Claude Code, Codex, Cursor, Gemini CLI, OpenCode, and other MCP-capable agent platforms. It includes a frontend for humans to observe agent behavior ranging from macro research strategy to experiment execution specifics.
@@ -24,13 +22,13 @@ Each experiment begins with a generated plan that is adversarially reviewed by a
   <img alt="Project workflow: completed experiments fan out to five reflection lenses, then Synthesis, Reflection review, Publish. Rejected reviews send work back to Synthesis or the fan-out." src="assets/project-workflow-light.svg">
 </picture>
 
-After a set of experiments is complete, the plugin drives a project-wide reflection. Five different sub-agents are called, each analyzing the progress of the last N experiments and the project so far under a different lens. Their goal is to look for patterns of what works, what does not, and what has not been tried, in order to set up the next phase of experiments. The analysis of the sub-agents is consolidated into a report, logic graph, and change spec. Those artifacts are adversarially reviewed by a different agent for accuracy.
+After a set of experiments is complete, the plugin drives a project-wide reflection. Five different sub-agents are called, each analyzing the wave's snapshot of all terminal experiments and current claim statuses under a different lens. Their goal is to look for patterns of what works, what does not, and what has not been tried, in order to set up the next phase of experiments. The analysis of the sub-agents is consolidated into a report, logic graph, and change spec. Those artifacts are adversarially reviewed by a different agent for accuracy.
 
 ## How the system fits together
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/system-architecture-dark.svg">
-  <img alt="System architecture: on your machine, agent platforms talk to an MCP proxy that reads the research repo; the proxy sends the hosted control plane project ids, never file paths. The brain owns all research state, the frontend UI reads it, and GPU sandboxes are provisioned by the brain and reached over SSH." src="assets/system-architecture-light.svg">
+  <img alt="System architecture: agent platforms use a local MCP proxy for checkout IO and a brain for durable records and workflow gates. The frontend supervises the brain. The brain provisions cloud sandboxes; agents run SSH commands and the proxy pulls retained outputs." src="assets/system-architecture-light.svg">
 </picture>
 
 Research Suite has three main pieces:
@@ -39,11 +37,20 @@ Research Suite has three main pieces:
 - **Backend** owns the research state: projects, claims, experiments, resources, review gates, reflections, and sandbox orchestration.
 - **Frontend** gives humans a visual way to inspect the project: experiments, reviews, artifacts, logic graphs, timelines, and current progress.
 
-By default the plugin connects to the hosted control plane; it can also run fully locally. Either way, repo files, SSH keys, and folder-to-project links stay on the user's machine — the control plane sees project ids, never file paths.
+By default the plugin connects to the hosted brain; it can also run fully
+locally. In either deployment the checkout root, folder-to-project links, and
+caller SSH private keys stay on the user's machine. The proxy explicitly sends
+project ids, repo-relative resource metadata, and selected submitted bytes; the
+brain never opens the checkout directly. Brain management keys remain separate
+operational credentials.
 
 ## Install
 
-Prerequisite for either client: `python3` 3.11+ on your `PATH`. That's all — no `pip` install and no local backend; the plugin talks to the hosted control plane by default. For Codex, Gemini CLI, and OpenCode, see [research_plugin/docs/CLIENTS.md](research_plugin/docs/CLIENTS.md).
+Prerequisites for every client are `python3` 3.11+ and a POSIX shell. No `pip`
+install or local brain is required; the proxy talks to the hosted brain by
+default. Sandbox SSH and output-pull workflows additionally use the system
+OpenSSH client and `rsync`. For Codex, Gemini CLI, and OpenCode, see
+[research_plugin/docs/CLIENTS.md](research_plugin/docs/CLIENTS.md).
 
 ### Claude Code
 
@@ -68,4 +75,7 @@ Then enable **research-plugin** on Cursor's Customize page and restart Cursor. (
 
 ### First run
 
-Open the repo you want to do research in as the workspace, then ask the agent to run `workflow.status_and_next` — it will orient itself and link the folder to a project.
+Open the repo you want to research as the workspace, then ask the agent to call
+`project(action="current")`. If the folder is unlinked, connect or create the
+project with `project(action="connect")`; then call
+`workflow.status_and_next()`.

@@ -41,7 +41,7 @@ from .project_links import ProjectLinks
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_CONTROL_URL = HOSTED_CONTROL_URL
 # sandbox.request can take minutes; the proxy returns its handle promptly and
-# the agent polls sandbox.get (plan §3.3). A short bound keeps a long-running
+# the agent polls sandbox.get. A short bound keeps a long-running
 # verb from blocking the stdio loop — it lands a row in 'provisioning' and the
 # agent polls. Kept generous so a fast create still returns SSH inline.
 LONG_VERB_TIMEOUT_SECONDS = 90.0
@@ -90,8 +90,8 @@ def _storage_feature_enabled() -> bool:
         return False
     return bool(config.storage_feature_enabled())
 
-# The transport taxonomy (plan §3.3): returned as TOOL RESULTS, not protocol
-# errors, so a transient outage of one plane never disables the server. Domain
+# Transport failures are returned as TOOL RESULTS, not protocol errors, so a
+# transient brain outage never disables the server. Domain
 # errors the upstream reports (validation_error, …) stay protocol errors.
 _TRANSPORT_ERROR_CODES = frozenset(
     {
@@ -224,7 +224,7 @@ class HttpProxyMcpServer:
                 message=f"method not found: {method}",
             )
         except _UpstreamError as exc:
-            # TRANSPORT taxonomy (plan §3.3) comes back as a TOOL RESULT so a
+            # Transport failures come back as a TOOL RESULT so a
             # transient outage of one plane never disables the whole server (and
             # never blocks the other plane's tools). DOMAIN errors the upstream
             # reported (validation_error, not_found, …) keep the old -32000
@@ -682,7 +682,7 @@ class HttpProxyMcpServer:
     def _headers(self, *, is_cloud: bool) -> dict[str, str]:
         _ = is_cloud
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        # Version/compat handshake (cloud plan Phase 9): stamp the proxy's
+        # Version/compat handshake: stamp the proxy's
         # version so the control plane can reject below-floor clients with an
         # actionable upgrade error. The header name is duplicated as a literal
         # (not imported from backend) so the proxy stays stdlib-only; it matches

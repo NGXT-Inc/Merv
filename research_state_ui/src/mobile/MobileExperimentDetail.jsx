@@ -11,13 +11,13 @@ import { expName, statusColor, statusLine, TERMINAL_STATUSES } from '../utils/ex
 import { pickIndependentRead } from '../utils/independentRead';
 
 /**
- * Mobile experiment detail — one continuous scroll (design handoff, sketch
- * 2b): Status → Plan → Run → Outcomes flow down a single surface, each
+ * Mobile experiment detail — one continuous scroll. Status → Plan → Run →
+ * Outcomes flow down a single surface, each
  * introduced by a small label and separated by a hairline. No section
  * navigator — just scroll.
  *
- * design_philosophy.md is the law here: the artifacts (intent, plan,
- * terminal, report, curves) are the content; everything about the workflow
+ * The artifacts (intent, plan, terminal, report, curves) are the content;
+ * everything about the workflow
  * collapses into ONE color-indexed status statement — no FSM enumeration,
  * no gate card, no counts. Heavy panes attach on tap: the terminal (its
  * poller) and the graph mount only when opened, so a long scroll never
@@ -206,7 +206,7 @@ export default function MobileExperimentDetail() {
 // The entire workflow apparatus as one statement: a 3px index in the state's
 // color (the same facet language as the list rows), the state sentence, and
 // — only while live — the server's next move, humanized from its snake_case.
-// FSM enumeration, gate cards, and counts are struck (design_philosophy §II).
+// FSM enumeration, gate cards, and counts are deliberately omitted.
 // Renders on the shared .mstatus* grammar (mobile.css) — any mobile detail
 // page can reuse it for its own one-line lifecycle statement.
 function StatusStatement({ experiment, workflow }) {

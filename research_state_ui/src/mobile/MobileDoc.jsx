@@ -9,9 +9,8 @@ import ExperimentReviewStepper from '../components/ExperimentReviewStepper';
 import { isMarkdown } from '../utils/format';
 
 /**
- * MobileDoc — a plan or report artifact as pure content. The document IS
- * the section (design_philosophy: strike what doesn't clear a cognitive
- * path), so the desktop spotlight chrome — file path, status pill,
+ * MobileDoc — a plan or report artifact as pure content. The document is the
+ * section, so the desktop spotlight chrome — file path, status pill,
  * show/hide toggles — doesn't exist here. One quiet disclosure row above
  * the body carries the review trail; everything else is the document.
  */

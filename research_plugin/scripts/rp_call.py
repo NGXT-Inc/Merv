@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Tiny driver that calls Research Plugin MCP tools through the real proxy.
 
-Reuses mcp_server.proxy (same routing/auth/version/project_id logic the Claude
-Code MCP client would use), so this is a faithful stand-in for the not-loaded
-MCP server. Usage:
+Reuses mcp_server.proxy (the same brain routing, version, project-link, and
+checkout-local data-plane logic an MCP client uses), so this is a faithful
+stand-in for a client-launched stdio server. Usage:
 
     rp_call.py list                       # tools/list (names + planes)
     rp_call.py schema <tool>              # full input schema for one tool
     rp_call.py call <tool> '<json-args>'  # tools/call, prints the result JSON
 
 Env: RESEARCH_PLUGIN_REPO_ROOT picks the project working dir (defaults to CWD).
-Control URL / daemon secret are read from ~/.research_plugin/client.json.
+RESEARCH_PLUGIN_CONTROL_URL overrides the machine brain URL stored in
+~/.research_plugin/client.json; an unconfigured machine uses the hosted brain.
 """
 from __future__ import annotations
 
@@ -20,14 +21,12 @@ import sys
 from pathlib import Path
 
 from research_plugin_shared.client_config import (
-    DAEMON_SECRET_FILE_NAME,
     CLIENT_CONFIG_ENV_VAR,
     read_client_config,
-    read_secret_file,
     resolve_client_config_path,
 )
-from mcp_server.daemon_marker import discover_daemon_url
-from mcp_server.proxy import HttpProxyMcpServer, ProxyConfig
+from mcp_server.project_links import default_project_links_path
+from mcp_server.proxy import DEFAULT_CONTROL_URL, HttpProxyMcpServer, ProxyConfig
 
 
 def _build_server() -> HttpProxyMcpServer:
@@ -36,23 +35,14 @@ def _build_server() -> HttpProxyMcpServer:
     cc = read_client_config({CLIENT_CONFIG_ENV_VAR: str(cfg_path)})
     control_url = (
         os.environ.get("RESEARCH_PLUGIN_CONTROL_URL") or cc.get("control_url", "")
-    ).rstrip("/") or None
-    daemon_url = (
-        os.environ.get("RESEARCH_PLUGIN_DAEMON_URL")
-        or discover_daemon_url(repo_root=repo_root)
-        or cc.get("daemon_url", "")
-    )
-    secret_file = (
-        os.environ.get("RESEARCH_PLUGIN_DAEMON_SECRET_FILE")
-        or cc.get("daemon_secret_file")
-        or str(Path.home() / ".research_plugin" / DAEMON_SECRET_FILE_NAME)
-    )
-    secret = read_secret_file(secret_file, keys=("token", "secret"))
+    ).rstrip("/") or DEFAULT_CONTROL_URL
     cfg = ProxyConfig(
         repo_root=repo_root,
-        daemon_url=daemon_url,
         control_url=control_url,
-        daemon_secret=secret,
+        project_links_path=default_project_links_path(
+            client_config=cc,
+            config_path=cfg_path,
+        ),
     )
     return HttpProxyMcpServer(config=cfg)
 

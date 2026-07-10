@@ -7,8 +7,7 @@ an actionable upgrade error (control mode only — local mode never enforces
 this).
 
 Floors are plain constants bumped by hand when a wire change makes an older
-client unsafe to serve. Within a major version the contract is additive-only
-(plan §4 Phase 9), so the floor moves rarely; it exists so a breaking change has
+client unsafe to serve. The floor moves rarely; it exists so a breaking change has
 a refusal mechanism instead of a confusing partial failure. The header is the
 client-version channel for stdio proxy /mcp + /api forwards.
 
@@ -22,8 +21,8 @@ from . import __version__
 
 # The header clients stamp their version on. Missing header is TOLERATED
 # (documented choice):
-# a pre-Phase-9 client predates the handshake, and refusing it would strand
-# in-flight upgrades; only an explicitly-too-old version is rejected. Once every
+# a client may predate the handshake, and refusing it would strand in-flight
+# upgrades; only an explicitly-too-old version is rejected. Once every
 # shipped client sends the header, the floor moving is the enforcement lever.
 CLIENT_VERSION_HEADER = "X-RP-Client-Version"
 

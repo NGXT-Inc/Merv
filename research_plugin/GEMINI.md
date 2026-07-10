@@ -1,37 +1,76 @@
 # Research Plugin
 
-This extension connects you to the Research Plugin MCP server: a research
-kernel that owns durable state (claims, experiments, resources, reviews,
-reflections), the gated experiment workflow, and cloud sandbox provisioning.
-The MCP server is a stdio proxy that always dials
-`RESEARCH_PLUGIN_CONTROL_URL`. For local deployments that URL is the localhost
-brain (`research-plugin-http`, start it first); for hosted deployments it is the
-hosted brain. The proxy always performs checkout-local data-plane work itself:
-repo reads, hashing, validation, output pulls, and caller SSH key custody.
+This extension exposes one Research Plugin MCP surface backed by two components:
 
-Operating rules:
+- a local stdio proxy that owns checkout-relative file IO, project links, local
+  storage transfer, feed attachments, and sandbox output pulls; and
+- a local or hosted brain that owns durable research records, workflow policy,
+  reviews, sandbox lifecycle, provider credentials, blobs, and optional heavy
+  storage.
 
-- Treat the MCP server as the single authority for research and workflow
-  state. Never reconstruct workflow state from memory.
-- Call `project` with `action: "current"` first. Then call
-  `workflow.status_and_next` before acting, and follow its `next_action`,
-  allowed actions, and gate guidance. For the full-project read — every claim
-  and experiment including settled/terminal ones — call `project` with
-  `action: "overview"`.
-- Local file edits are not research state. A file only becomes a research
-  resource after `resource.register` (register + associate in one call).
-- For the full operating procedure, load the `research-workflow` skill. For
-  project-level reflection waves, load the `project-reflection` skill.
-- When `workflow.status_and_next` asks for a design, experiment, or reflection
-  review, delegate to the matching bundled subagent (`experiment-design-review`,
-  `experiment-attempt-review`, or `project-reflection-review`), passing the target id,
-  `review_request_id`, and `reviewer_capability` in the prompt. Reviewers are
-  read-only and submit verdicts themselves via `review.start` / `review.submit`.
-- Expensive or GPU work runs in a sandbox over SSH (`sandbox.request` /
-  `sandbox.terminal` / `sandbox.release`), never locally. Copy retained files
-  off the box explicitly over SSH, or upload heavy artifacts with storage tools,
-  before releasing the sandbox.
-- For quantitative runs, call `mlflow.context` before training, then set the
-  returned `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME` in the local or
-  SSH command that starts the run. Do not infer tracking from the current shell,
-  and do not create a file-backed local MLflow store for plugin experiments.
+The brain never receives the checkout root or reads the checkout directly. The
+proxy submits explicit repo-relative metadata and selected evidence bytes.
+
+## Project scope
+
+Call `project(action="current")` first. If the checkout is unlinked, ask which
+existing project to use or what name and summary to create, then call
+`project(action="connect", ...)`. The proxy stores the folder link locally.
+
+For normal project-scoped tools, `project_id` is hidden context: do not use it to
+switch projects. The proxy removes any supplied value and injects the id linked
+to the current checkout. Use `project(action="overview")` for the full claim and
+experiment history.
+
+## Operating rules
+
+- Treat the brain state returned through MCP as authoritative. Start or resume
+  work with `workflow.status_and_next`, and follow its gate, allowed actions,
+  missing evidence, and next action.
+- Local edits are not research state. Use `resource.register` to observe a file
+  and optionally associate its submitted version with a target and role.
+- Load `research-workflow` for experiment work and `project-reflection` for a
+  five-lens reflection wave.
+- Use a sandbox for long or expensive work; lightweight checks may run locally.
+  Do not assume a provider. Inspect `sandbox.options` when hardware selection is
+  needed, then use the response's provider-shaped fields.
+- For quantitative work, use the MLflow context returned by
+  `experiment.transition(start_running)` or call `mlflow.context`. Resume the
+  plugin-created run, call `mlflow.finalize_run` before submitting results, and
+  do not create a file-backed MLflow store for plugin experiments.
+
+## Review boundary
+
+When a gate requests review, call `review.request` and delegate its handoff to a
+separate agent using `experiment-design-review`, `experiment-attempt-review`, or
+`project-reflection-review`. That reviewer calls `review.start` with its own
+`caller_session_id` and submits the verdict through `review.submit`.
+
+The capability is tied to a role and immutable target snapshot. At
+`review.start` the brain rejects invalid/expired/superseded capabilities, stale
+snapshots, or a declared reviewer session string equal to the declared producer
+string. At submission it rechecks that the request is open and the snapshot is
+current. Reviewer read-only behavior is an operating rule imposed by the skill;
+the system does not authenticate every unrelated tool call as that reviewer.
+This is a practical workflow boundary, not cryptographic proof of independence.
+
+## Sandbox loop
+
+The visible sandbox tools are `sandbox.options`, `sandbox.request`, `sandbox.get`,
+`sandbox.attach`, `sandbox.terminal`, `sandbox.runs`, `sandbox.pull_outputs`,
+`sandbox.extend`, and `sandbox.release`. Project scope is injected by the proxy;
+`sandbox.list` and `sandbox.health` are internal/UI tools and are hidden from the
+agent catalog.
+
+The caller generates and owns the SSH keypair. Pass only its public key to
+`sandbox.request`; caller private-key material never enters brain state. Brain
+management/transcript keys are separate operational credentials. A request may
+return `provisioning`; poll with `sandbox.get` rather than requesting again. The
+response provides SSH facts, and the agent constructs and runs the SSH command.
+
+Use `rp_run <label> -- <command>` for long commands and inspect receipts with
+`sandbox.runs`. Pull compact retained outputs with `sandbox.pull_outputs`
+(supplying the caller's `key_path`) or upload heavy files with storage tools when
+that optional feature is present. `sandbox.extend` is provider-dependent.
+`sandbox.release` is two-step: the first call returns a retention checklist;
+only re-call with `confirm_retained=true` after everything valuable is retained.

@@ -1,7 +1,6 @@
 /**
  * Skeleton placeholders — replace the literal "Loading…" text on async mobile
  * screens with shimmer rows that match the eventual layout.
- * docs/MOBILE_UX_REVIEW.md §1.6 / §3.8.
  */
 export function Skeleton({ lines = 3 }) {
   return (

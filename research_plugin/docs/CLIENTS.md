@@ -5,9 +5,10 @@ Everything heavy — state, gates, capability-based reviews, sandbox
 provisioning — lives in the client-neutral brain service (localhost
 `research-plugin-http`, or the hosted brain). The stdio MCP proxy is
 stdlib-only and always does the checkout-local data-plane work: repo reads,
-hashing, validation, output pulls, caller SSH key custody, and folder-to-project
-links. Each client gets a thin adapter on top of the same `bin/`, `skills/`,
-and `agents/` content:
+hashing, validation, output pulls using caller-provided SSH key paths, and
+folder-to-project links. It does not mint or persist caller private keys. Each
+client gets a thin adapter on top of the same `bin/`, `skills/`, and `agents/`
+content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
 |---|---|---|---|---|
@@ -25,8 +26,11 @@ Shared invariants across all clients:
   the env var explicitly; the others rely on cwd.
 - The proxy needs no pip installs: it runs on bare `python3` (3.11+). The
   tool catalog ships as checked-in JSON (`mcp_server/_tool_catalog.json`) so
-  client machines never import third-party packages; a venv is only needed to
-  run a local brain.
+  discovery works without third-party packages; optional local prevalidation
+  uses the live Pydantic contracts when they are already installed and otherwise
+  preserves the bare-Python path. A venv is only needed to run a local brain.
+  The launcher expects a POSIX shell, and sandbox SSH/output pulls rely on the
+  machine's OpenSSH client and `rsync`.
 - Skills follow the cross-tool Agent Skills layout (`skills/<name>/SKILL.md`
   with `name` + `description` frontmatter), which Claude Code, Codex, Cursor,
   Gemini CLI, and OpenCode all read natively.
@@ -64,16 +68,19 @@ depends on them:
   the agent back, and one `sandbox.runs` call fetches the receipts.
 - **Other clients** (Codex, Cursor, Gemini CLI, OpenCode): no background-task
   notification channel — end the turn after launching via rp_run and call
-  `sandbox.runs` when next attending the experiment. Every sandbox.* response
-  carries a one-line `runs` summary while runs exist, so a routine
-  `sandbox.get` also surfaces finished work.
+  `sandbox.runs` when next attending the experiment. Run-oriented sandbox
+  responses include compact receipts; `sandbox.runs` is the authoritative
+  status/readback call.
 
 ## Reviewer handoff per client
 
-The backend's `workflow.status_and_next` returns a client-neutral
-`launch_design_reviewer` / `launch_experiment_reviewer` /
-`launch_reflection_reviewer` action plus a `reviewer_capability`. What differs
-per client is only how the separate read-only reviewer agent is spawned:
+`workflow.status_and_next` reports the active review gate and tells the main
+agent when to request or launch a reviewer. The capability does **not** come
+from that status response. The main agent calls `review.request`; that response
+returns the short-lived `reviewer_capability` and a
+`reviewer_handoff.spawn_prompt` containing the matching skill, request id, and
+capability. What differs per client is only how the separate read-only reviewer
+agent is spawned with that prompt:
 
 - **Claude Code**: Agent tool with `subagent_type` set to
   `research-plugin:experiment-design-review` / `research-plugin:experiment-attempt-review` /
@@ -86,12 +93,17 @@ per client is only how the separate read-only reviewer agent is spawned:
 - **OpenCode**: the main agent delegates via the task tool to the installed
   subagent (or the user @-mentions it, e.g. `@experiment-design-review`).
 
-Independence is enforced server-side and identically everywhere: a one-time
-capability pinned to a target snapshot, a read-only reviewer funnel, and a
-producer-session check. `producer_session_id` / `caller_session_id` are
-self-reported; when a client cannot supply a distinct caller session id the
-review is recorded as `attested_agent_review` instead of
-`verified_agent_review` (see [REVIEW_IDENTITY.md](REVIEW_IDENTITY.md)).
+The reviewer begins with `review.start`, passing the request id, capability,
+and its own non-empty `caller_session_id`. That id is required and must differ
+from the `producer_session_id` recorded by `review.request`. The brain stores
+only a hash of the capability, pins the request to the target snapshot, rejects
+stale or superseded requests, and rechecks the snapshot at submission.
+
+New sessions that pass the distinct-id check are recorded as
+`verified_agent_review`; `attested_agent_review` remains only on legacy rows.
+The session ids are supplied by the clients, so this is workflow-level
+separation rather than cryptographic proof of separate execution. See
+[REVIEW_IDENTITY.md](REVIEW_IDENTITY.md).
 
 ## Use with Cursor
 
@@ -139,21 +151,14 @@ Three Cursor-specific notes:
 Set it explicitly only to force one workspace onto a different brain, e.g.
 `http://127.0.0.1:8787` for a local deployment.)
 
-3. **Tool ceiling.** Cursor has a hard cap of ~40 active tools across all
-   MCP servers (staff-confirmed) — tools beyond the cap are **silently
-   invisible to the agent**, with only a settings warning. The plugin's
-   agent-facing catalog fits under the cap in every configuration: **31
-   tools with storage disabled, 35 with storage enabled** (UI/internal
-   tools like `project.list` or `review.status` are served hidden and never
-   reach the client). No allowlist is needed for this plugin alone; if you
-   run other MCP servers alongside it, keep the combined active-tool total
-   under ~40 by disabling servers or tools you are not using.
+3. **Tool ceiling.** Cursor limits the combined active tools from all MCP
+   servers. Research Plugin hides UI/internal tools such as `project.list` and
+   `review.status` from the agent-facing catalog. If tools disappear when
+   several MCP servers are enabled, disable servers or tools that are not in
+   use.
 
-One cosmetic quirk: Cursor's MCP settings shows a "tool name must only
-contain alphanumeric characters and underscores" warning for dotted names
-like `experiment.get_state`. Cursor staff have confirmed the warning is
-false — dotted tools are called and work normally. (The busiest tool,
-`project`, has no dot at all.)
+Cursor's MCP settings may show a naming warning for dotted tools such as
+`experiment.get_state`; the client still calls those tools normally.
 
 ## Use with Gemini CLI
 
@@ -177,11 +182,6 @@ Notes:
   shared agent files do not use this (they stay client-common); the
   capability + producer-session checks are the load-bearing independence
   mechanism regardless.
-- Google announced (May 2026) a transition from Gemini CLI to Antigravity
-  CLI; extensions, skills, subagents, and hooks reportedly carry over as
-  Antigravity plugins. API-key and Code Assist users are unaffected by the
-  June 2026 sign-in cutoff. Treat this adapter as best-effort until the
-  Antigravity plugin surface is published.
 
 ## Use with OpenCode
 

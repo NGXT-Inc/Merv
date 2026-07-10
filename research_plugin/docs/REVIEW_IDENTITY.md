@@ -1,108 +1,112 @@
 # Review Identity
 
-## Problem
+## Boundary
 
-Design and experiment review must be independent enough to matter. In a local
-Codex workflow, identity cannot rely on IP address, user account, or machine
-boundary. Checking an agent's memory is also not a reliable enforcement
-mechanism.
-
-## Principle
-
-Treat reviewer identity as workflow identity:
+Design, experiment, and reflection reviews are intended to come from a session
+distinct from the producer. The brain enforces a declared-session separation:
 
 ```text
-review request + scoped capability + reviewer session + immutable target snapshot
+review request + request-scoped capability + reviewer session + immutable target snapshot
 ```
 
-The MCP server should enforce the review gate with capability-scoped sessions,
-not with trust in prompt text.
+The mechanism does not trust prompt text, IP addresses, or a claimed agent name.
+It also cannot authenticate the caller-supplied session strings, so the boundary
+is workflow-level rather than cryptographic identity.
 
-## Minimum viable protocol
+## Protocol
 
-1. Main agent creates or updates an experiment plan/result through MCP.
-2. MCP records the producer session and target snapshot.
-3. Main agent asks MCP for a review request:
-
-   ```text
-   review.request(project_id, target_type, target_id, role, reason)
-   ```
-
-   The `project_id` is explicit. MCP must not infer the active project from prior
-   state.
-
-4. MCP returns a one-time reviewer capability:
-
-   ```json
-   {
-     "review_request_id": "rr_...",
-     "role": "design_reviewer",
-     "target_snapshot_id": "snap_...",
-     "reviewer_capability": "opaque-one-time-token",
-     "read_scope": ["claim", "experiment", "resources"],
-     "expires_at": "2026-05-17T15:00:00Z"
-   }
-   ```
-
-5. Main agent spawns a separate reviewer agent with the role skill and passes the
-   capability.
-6. Reviewer starts a review session:
+1. The producer submits the plan, attempt artifacts, or reflection artifacts.
+2. The producer calls:
 
    ```text
-   review.start(review_request_id, reviewer_capability, declared_agent)
+   review.request(target_type, target_id, role, reason?, producer_session_id?)
    ```
 
-7. MCP gives that session read-only access to the target scope.
-8. Reviewer submits:
+3. For `design_reviewer`, `experiment_reviewer`, and `reflection_reviewer`, the
+   brain validates that the role matches the active gate. `human` and
+   `automated_check` are gate-exempt. The brain pins the target snapshot, hashes
+   a newly minted capability, and stores only that hash.
+4. The response returns the plaintext capability once, together with
+   `reviewer_handoff.spawn_prompt` containing the correct reviewer skill and
+   target context.
+5. A separate reviewer session presents the capability:
 
    ```text
-   review.submit(review_session_id, verdict, synopsis, notes, findings, evidence?)
+   review.start(review_request_id, reviewer_capability, caller_session_id, declared_agent?)
    ```
 
-## Enforced checks
+   `caller_session_id` is required and its declared value must differ from the
+   producer's declared session value.
+6. `review.start` returns the current attempt's submitted gated-role artifacts
+   plus any system metrics exhibit. Ordinary code, input, result, config, model,
+   and note resources are not bundled; reviewers obtain any additional context
+   through ordinary read-only calls. The reviewer skill imposes a procedural
+   read-only role. The reviewer submits one structured verdict through:
 
-MCP rejects review submission when:
+   ```text
+   review.submit(review_session_id, verdict, synopsis, return_to?, notes?, findings?, evidence?)
+   ```
 
-- capability is expired, reused, or unknown
-- role does not match the active gate
-- target snapshot changed after the capability was issued
-- reviewer session equals the producer session
-- reviewer tries to call mutation tools
-- review does not cite required target context
+The requesting session must not start the review on the reviewer's behalf. The
+server can compare the two declared strings, but cannot prove which client made
+the call.
 
-## Important limitation
+## Snapshot and capability checks
 
-Without trusted per-agent call metadata from the Codex client, this is not
-cryptographic proof of independence. A malicious or careless main agent could
-use the review capability itself.
+At `review.start`, the brain rejects the call when:
 
-The MVP should therefore distinguish:
+- the capability is missing, expired, or invalid;
+- a newer request superseded the request;
+- the target snapshot changed after the request was created; or
+- the declared `caller_session_id` equals the declared producer session.
 
-- `verified_agent_review`: MCP received trusted distinct agent/session metadata
-  from the client.
-- `attested_agent_review`: MCP enforced capability separation, but distinct
-  local agent identity is self-declared.
-- `human_review`: human decision recorded through the same review mechanism.
+The workflow-role/gate match is checked earlier, when `review.request` creates
+the request.
 
-High-risk gates can require `verified_agent_review` or `human_review`.
+At `review.submit`, the caller presents only `review_session_id`. The brain
+rejects a missing/already-submitted session, a request that is no longer open, a
+changed target snapshot, or a payload/`return_to` that violates the role
+contract. It does not receive or recheck the capability, its expiry, or the
+caller session at submission time.
 
-## Better future option
+The request remains startable while its status is `requested` or `started` and
+its capability is unexpired, so a capability is not consumed by the first
+`review.start`. The first accepted submission closes the request, so any other
+started session can no longer submit. The reviewer skills provide the read-only
+operating boundary; the hard server boundary is that only a passing
+`review.submit` with the workflow gate's exact role and current snapshot can
+satisfy that gate. The dispatcher also rejects other mutations when they
+explicitly carry a `review_session_id`.
 
-If Codex can provide unforgeable MCP call metadata, the server should compare:
+Requesting a fresh capability for the same target and role is
+revoke-and-reissue: all prior requested or started sessions for that gate become
+`superseded`. Plaintext capabilities are never recoverable from durable state.
 
-```text
-producer_agent_session_id != reviewer_agent_session_id
-```
+## What the snapshot pins
 
-and store:
+The snapshot identifies the target status, attempt, and exact submitted resource
+versions. `review.start` bundles pinned bytes for the gated artifacts and any
+system metrics exhibit; ordinary resource versions remain snapshot references
+but their bytes are not included in that response. Reviewers judge the bundled
+submissions rather than later working-tree edits. A gated file revision must be
+re-registered and reviewed under a fresh snapshot.
 
-- producer session id
-- reviewer session id
-- parent/child relationship if available
-- skill name used by reviewer
-- target snapshot id
-- review request id
-- review transcript hash or summary
+Experiment-attempt rejections must choose:
 
-That would make reviewer independence a client-enforced identity property rather
-than a convention.
+- `return_to="running"` when the approved plan still stands and execution or the
+  conclusion needs work;
+- `return_to="planned"` when the design is flawed and a new attempt is required.
+
+Reflection rejections choose `synthesizing` or `reflecting`. Design-review
+rejections always return to `planned`.
+
+## Independence level
+
+Every newly created reviewer session records `verified_agent_review` because a
+distinct, non-empty `caller_session_id` is mandatory. `attested_agent_review`
+exists only on legacy rows created before that requirement.
+
+This records only that two caller-supplied strings were non-empty and unequal.
+It does not prove that two clients—or two independent models—performed the
+reasoning, and possession of `review_session_id` is sufficient to submit. The
+current clients do not provide unforgeable per-agent identity metadata.

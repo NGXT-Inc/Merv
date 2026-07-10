@@ -3,11 +3,8 @@
 These functions turn a raw ``sandboxes`` row into the dicts callers consume:
 
 - ``agent_row_facts`` + ``merge_agent_view`` — the rich response for
-  ``sandbox.request``/``sandbox.get``, decomposed along the plane seam
-  (cloud plan §3.3): row facts are provider-portable and pure; the ssh
-  command, key path, and local folder come from the data-plane worker's
-  enrichment and are merged back in. Local mode merges in-process so tool
-  results are unchanged; in split mode the stdio MCP proxy performs the merge.
+  ``sandbox.request``/``sandbox.get``. Row facts are provider-portable and pure;
+  checkout-local key paths and folders belong to stdio-proxy enrichment.
 - ``sandbox_row_view`` — the canonical row projection used by the workflow's
   agent-facing status AND the HTTP/UI layer (formerly ``_ui_view``).
 - ``agent_summary`` — the compact per-row shape for ``sandbox.list``.
@@ -44,6 +41,10 @@ def _folder_contract_note(
     _ = attached_to_experiment
     folder_label = "work folder"
     local_label = "local sandbox folder"
+    if local_dir:
+        local_destination = f"the {local_label} ({local_dir})"
+    else:
+        local_destination = "a caller-chosen path inside the local checkout"
     if storage_enabled:
         heavy_note = (
             f"{storage_hint} Upload those durable files with "
@@ -62,8 +63,8 @@ def _folder_contract_note(
         "This sandbox is an EPHEMERAL SSH window: nothing is copied for you, and "
         "when it is released or reaped the VM and everything on it is destroyed. "
         "So pull anything you want to keep BEFORE then with "
-        "sandbox.pull_outputs — it copies the light retained files into the "
-        f"{local_label} ({local_dir}) without clobbering existing local files "
+        "sandbox.pull_outputs — it copies the light retained files into "
+        f"{local_destination} without clobbering existing local files "
         "(kept files are reported as files_kept_stale; pass overwrite=true to "
         "replace them) — and then register them as resources. "
         + heavy_note
@@ -202,11 +203,12 @@ def merge_agent_view(
         )
     if status == "provisioning":
         view["hint"] = (
-            "Provisioning. A fresh GPU VM commonly takes 5-15 minutes "
+            "Provisioning. A cloud sandbox commonly takes 5-15 minutes "
             "to boot and bootstrap. Poll "
             "sandbox.get every 30-60 seconds until status is running, then "
-            "run commands with ssh.command. Do not re-call sandbox.request "
-            "to poll. "
+            "construct SSH from the returned host, port, and user facts plus "
+            "the caller-owned private key. Do not re-call sandbox.request to "
+            "poll. "
             + _expiry_note(
                 view.get('expires_at'),
                 attached_to_experiment=attached_to_experiment,
@@ -232,25 +234,27 @@ def merge_agent_view(
                 "Save selected outputs under $RP_EXPERIMENT_DIR so "
                 "sandbox.pull_outputs can bring them off before release. "
             )
-        view["hint"] = (
-            f"Run commands with: {command} '<your shell command>' (from the repo root). "
-            + (
-                "Commands start inside the sandbox work folder. "
-                "Output streams back and is recorded to the sandbox terminal. "
-                if attached_to_experiment
-                else (
-                    "Commands start inside the sandbox work folder. "
-                    "Output streams back and is recorded to the sandbox terminal. "
-                )
+        if command:
+            connection_note = (
+                f"Run commands with the local convenience command: {command} "
+                "'<your shell command>'. "
             )
-            + "Every command runs under a tmux supervisor on the sandbox and "
-            "keeps running if SSH drops or your call times out - a timeout "
-            "means you stopped watching, not that the command stopped. Check "
-            "the terminal transcript for the command's exit marker before "
-            "re-running anything long. "
-            "If you are not in the repo root, use ssh.raw_command instead: it is a "
-            "full ssh command line, so run it directly and append your command in "
-            "single quotes (do not store it in a shell variable and re-invoke it). "
+            if raw_command:
+                connection_note += (
+                    f"The corresponding raw SSH prefix is: {raw_command}. "
+                )
+        else:
+            connection_note = (
+                "Connect with the caller-owned private key and the returned "
+                "ssh.host, ssh.port, and ssh.user facts. Construct that SSH "
+                "command locally; the brain does not know the private-key path. "
+            )
+        view["hint"] = (
+            connection_note
+            + "Commands should work inside the sandbox work folder. Use "
+            "`rp_run <label> -- <command>` for long jobs, then inspect "
+            "sandbox.runs rather than assuming a dropped SSH connection stopped "
+            "the job. "
             + _folder_contract_note(
                 remote_dir=remote_dir,
                 local_dir=local_dir,
@@ -269,10 +273,8 @@ def merge_agent_view(
             )
             + credential_note
             + output_note
-            + "The dispatcher multiplexes one SSH connection and auto-retries "
-            "transient connect failures, so do not wrap it in your own retry "
-            "loop; if commands keep failing to connect, call sandbox.get once "
-            "to refresh the endpoint."
+            + "If SSH connection facts go stale, call sandbox.get once to "
+            "refresh the endpoint."
         )
     else:
         view["hint"] = "No live sandbox found — call sandbox.request to create one."

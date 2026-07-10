@@ -1,14 +1,13 @@
 """Content-addressed blob storage for gated artifacts and generated objects.
 
 The split storage model from docs/CONTROL_DATA_PLANE_SPLIT.md uses one
-sha256-keyed, namespace-scoped store shared by artifact submissions (gated-role bytes
-captured at resource.register), report figures, and metrics snapshots. The local implementation is a plain directory under
-``.research_plugin/blobs/``; the cloud implementation (S3, Phase 8) implements
-the same protocol behind the same contract tests.
+sha256-keyed, namespace-scoped store shared by artifact submissions (gated-role
+bytes captured at resource.register), report figures, and metrics snapshots.
+The local implementation is a directory under the brain state root; hosted
+control uses the S3-compatible implementation behind the same protocol.
 
-The namespace maps to the project locally and to ``tenant/project`` in the
-cloud — blobs are never deduplicated across namespaces (cross-tenant dedup
-would leak content existence).
+Blobs are never deduplicated across namespaces because cross-project namespace
+deduplication would leak content existence.
 
 Single-use uploads: ``presign_put`` mints an upload target for bytes produced
 off-process and ``finalize_put`` lands them content-addressed, enforcing the

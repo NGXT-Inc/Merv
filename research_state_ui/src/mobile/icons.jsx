@@ -2,7 +2,6 @@
  * Inline SVG nav/glyph icons — replace the Unicode symbols (◉ ⚗ ≋ ⋯) that
  * render inconsistently across Android/iOS system fonts. Stroke uses
  * currentColor so the active-tab color flows through unchanged.
- * docs/MOBILE_UX_REVIEW.md §2.1 / §3.1.
  */
 const base = {
   width: 22,

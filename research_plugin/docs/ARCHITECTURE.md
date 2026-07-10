@@ -1,352 +1,252 @@
 # Research Plugin Architecture
 
-## Purpose
+This document describes the architecture implemented by the current codebase.
+The executable contracts in `backend/domain/*`, `backend/tools/contracts.py`, and
+the structural tests under `tests/structure/` are authoritative when prose and
+code disagree.
 
-`research_plugin` is a Codex plug-in that replaces the heavy backend with a
-small local research kernel exposed through MCP.
+## Product model
 
-The product model remains:
+Research Plugin gives agentic coding clients a shared, server-directed workflow
+for machine-learning research. Its durable model is:
 
-- Claim: what we think
-- Experiment: what we try
-- Resource: a repo file we use or produce
+- **Project** — the scope for research state and policy.
+- **Claim** — what the project currently believes.
+- **Experiment** — a planned, executed, and reviewed test of one or more claims.
+- **Resource** — a registered repo file and its observed versions.
+- **Review** — an independent judgment pinned to an immutable target snapshot.
+- **Reflection** — a reviewed project-wide update to the logic graph, claims,
+  and next experiment wave.
+- **Sandbox** — an ephemeral SSH-reachable machine used for execution.
+- **Storage object** — a durable heavy file kept outside the repo.
 
-Everything else exists to help Codex and humans mutate that model correctly.
+Agents do the reasoning and edit ordinary files. The brain owns research state
+and decides which mutations and workflow transitions are allowed.
 
-## Design thesis
+## Runtime topology
 
-The old backend had too many first-class subsystems for the MVP: resource
-versions, artifact refs, manifests, workflow persistence, agent telemetry,
-operation review, audits, execution, and API read models.
-
-The plug-in architecture keeps the hard boundary but shrinks the implementation:
-
-- Codex performs reasoning, editing, local scripting, and lightweight checks.
-- Codex skills define the operating procedure.
-- The MCP server owns durable memory and validates mutations.
-- The MCP server owns Modal/Lambda sandbox provisioning for ML execution.
-- The MCP server tells Codex the current status and next allowed workflow action.
-- Design review and full experiment review are separate read-only reviewer roles.
-- Reviewers submit structured reviews to MCP; MCP decides whether the gate passes.
-
-## Components
+There is one topology for both hosted and local deployments:
 
 ```mermaid
-flowchart TD
-  User["User"] --> Codex["Codex"]
-  Codex --> Skills["Research skills"]
-  Codex --> LocalRepo["Local repo files"]
-  Codex --> MCPProxy["research-plugin MCP proxy (stdio, stateless)"]
-
-  Browser["Browser UI"] --> Backend["research-plugin brain (local or hosted)"]
-  MCPProxy --> Backend
-
-  Backend --> Memory["Research memory (SQLite/Postgres)"]
-  Backend --> Policy["Permission and workflow policy"]
-  Backend --> Jobs["Sandbox registry (Modal/Lambda + SSH)"]
-  MCPProxy --> ResourceIO["Repo-file reads, hashes, validation, output pulls"]
-  Backend --> ReviewGates["Review gates"]
-
-  Skills --> DesignReviewer["Design reviewer agent"]
-  Skills --> ExperimentReviewer["Experiment reviewer agent"]
-  DesignReviewer --> MCPProxy
-  ExperimentReviewer --> MCPProxy
-  ResourceIO --> LocalRepo
+flowchart LR
+  User["Researcher"] --> Client["Agent client"]
+  Client --> Skills["Plugin skills and reviewer roles"]
+  Client -->|stdio MCP| Proxy["Local MCP proxy"]
+  Proxy -->|repo IO| Repo["Research checkout"]
+  Proxy -->|control calls and validated submissions| Brain["Brain service"]
+  Browser["Research State UI"] -->|HTTP API and SSE| Brain
+  Brain --> State["SQLite or Postgres"]
+  Brain --> Blobs["Local or S3-compatible stores"]
+  Brain --> MLflow["Central MLflow service"]
+  Brain --> Providers["Lambda Labs, Thunder Compute, or Modal"]
+  Client -->|SSH commands| Providers
+  Proxy -->|rsync retained outputs| Providers
 ```
 
-## Process topology
+### Brain service
 
-There is one topology:
+The brain is the single authority for research records and policy. It owns:
 
-1. **Brain service** — owns research state, workflow policy, review gates,
-   sandbox lifecycle/provisioning, quotas, cleanup, and the `/mcp/*` plus
-   `/api/*` surfaces. It never reads a user's checkout. `RESEARCH_PLUGIN_MODE`
-   selects a preset, not a different composition path:
-   `local` means localhost brain with SQLite, local-dir blobs, no auth, and
-   localhost CORS; `control` means hosted brain with durable services.
-2. **MCP stdio proxy** — short-lived, spawned by the client. It is the local
-   data plane in every deployment: it reads repo files, hashes and validates
-   artifacts, materializes experiment folders, pulls retained sandbox outputs
-   with rsync, keeps caller SSH key custody, and maps checkout folders to
-   projects in `project_links.sqlite`. It dials exactly one brain URL,
-   resolved as `RESEARCH_PLUGIN_CONTROL_URL` env var > machine config from
-   `research-plugin-client configure` > the hosted default
-   `https://experiments.rapidreview.io`; local deployments configure
-   `http://127.0.0.1:8787`.
+- projects, claims, experiments, resources, reviews, reflections, and events;
+- workflow gates, artifact lints, permissions, and reviewer capabilities;
+- sandbox registry, provider credentials, quotas, reapers, and cleanup;
+- blob metadata, optional heavy-object storage, and MLflow context;
+- the `/mcp/*`, `/api/*`, and server-sent-event surfaces.
 
-Start the localhost brain before local Codex work. Hosted users do not run a
-local brain, but the stdio proxy still runs locally because the brain is never
-allowed to see repo bytes or private key material.
+The brain never receives a checkout root and never opens files from a user's
+checkout. Repo-derived facts and size-capped submitted bytes reach it only
+through explicit data-plane submissions from the proxy.
 
-The load-bearing rule — *the brain cannot see a user's local filesystem* — puts
-file IO and caller key custody on the proxy-local data plane and everything
-else (orchestration, records, credentials, authz, cost governance) on the
-brain. The module assignment is in **`docs/CONTROL_DATA_PLANE_SPLIT.md`**;
-operating the hosted brain is **`docs/CONTROL_PLANE_OPERATIONS.md`**. For client
-VM setup, use **`docs/HOSTED_CLIENT_QUICKSTART.md`**.
+`RESEARCH_PLUGIN_MODE` selects deployment defaults, not a different component
+graph:
 
-## Ownership
+| Preset | Brain location | Record/blob defaults | Intended exposure |
+|---|---|---|---|
+| `local` | `http://127.0.0.1:8787` | SQLite and local-directory blobs | Loopback development; no user auth |
+| `control` | Operator-provided HTTPS URL | Postgres and S3-compatible stores | Private operator service behind TLS and network controls |
 
-Codex owns:
+The hosted control surface does not currently implement end-user authentication.
+CORS and the client-version floor are not authentication; a hosted brain must
+remain behind trusted infrastructure.
 
-- understanding the user's research intent
-- reading and editing repo files
-- writing scripts and lightweight experiment code
-- running local commands when cheap and safe
-- asking MCP for project memory, experiment status, and next action
-- launching separate reviewer agents when MCP requires design or experiment review
-- registering and associating retained local files as resources
-- reading MCP-returned resource paths directly from the local repo on later turns
+### Local MCP proxy
 
-MCP owns:
+Every client starts `research-plugin-mcp` as a short-lived stdio process. It is
+the local data plane in every deployment and owns:
 
-- project memory for claims, experiments, and resources
-- permissioned mutation checks
-- experiment state machine and next-action guidance
-- Modal/Lambda sandbox provisioning for expensive or long-running ML work
-- resource records and version history submitted by the proxy
-- resource associations to claims, experiments, reviews, and attempts
-- review records and required gates
-- reviewer capability tokens and read-only review sessions
-- final acceptance/rejection of proposed state changes
+- repo-relative path normalization and containment;
+- file observation, hashing, validation, and submitted-byte capture;
+- experiment-folder materialization;
+- caller public-key submission and use of a caller-supplied private-key path for
+  safe rsync pulls; the caller remains the private-key owner;
+- safe rsync pulls from sandboxes into the checkout;
+- local file uploads/downloads for durable storage;
+- feed image and local HTML-embed reads;
+- checkout-to-project links in `project_links.sqlite`.
 
-## Simplified data model
+The proxy's startup, JSON-RPC loop, routing, and checked-in tool catalog run on
+Python 3.11+ using only the standard library. Data-tool implementations are
+loaded lazily when invoked, so listing tools and reaching the hosted brain do not
+require a local package installation.
+
+The proxy resolves one brain URL in this order:
+
+1. `RESEARCH_PLUGIN_CONTROL_URL`;
+2. machine configuration written by `research-plugin-client configure`;
+3. `https://experiments.rapidreview.io`.
+
+It resolves project scope from the local checkout link and injects an explicit
+`project_id` into project-scoped brain calls. It never forwards `repo_root`.
+
+### Browser UI
+
+`research_state_ui` is a React/Vite supervisory interface, not an agent runtime.
+It reads project-scoped HTTP views, uses server-sent events for prompt refreshes,
+and falls back to conditional polling with ETags. It renders desktop and mobile
+surfaces for claims, experiments, reviews, resources, reflection waves,
+sandboxes, MLflow, storage, events, and the research feed.
+
+The browser cannot perform checkout-local operations. Resource registration,
+folder creation, local storage transfer, feed-image capture, and sandbox output
+pulls must go through the local MCP proxy.
+
+## Composition and persistence
+
+Both deployment presets use the same `ControlApp` composition. The composition
+root selects adapters and wires the modular monolith:
+
+- record store: SQLite locally or Postgres when `RESEARCH_PLUGIN_DB_URL` is set;
+- submitted-byte blob store: local directory or S3-compatible bucket;
+- optional heavy-object store: S3-compatible storage;
+- sandbox backend: Lambda Labs by default, Thunder Compute, Modal, or the fake
+  backend used in tests;
+- MLflow: an explicitly configured centralized tracking service.
+
+Research records live in the brain's selected record store. The only durable
+checkout-specific state owned by the proxy is the machine-local project-link
+database; research repos contain experiment files, not the brain database.
+
+Core research-record mutations and workflow milestones append project events in
+the same transaction as their state change. The UI reads those durable events
+for the research timeline. Recent tool-call traffic is a bounded in-memory
+diagnostic view and is not part of durable research state.
+
+## Tool routing
+
+The central registry in `backend/tools/contracts.py` assigns every tool to one
+plane. Control tools run in the brain. These checkout-sensitive tools run in the
+proxy and submit validated facts or bytes to the brain:
+
+- `experiment.materialize_folders`;
+- `resource.register`;
+- `storage.upload_file` and `storage.download_file`;
+- `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs`;
+- `feed.post`.
+
+The merged `project` tool is special:
+
+- `action="current"` reads the local checkout link;
+- `action="connect"` validates or creates a brain project, then writes the local
+  link;
+- `action="overview"` uses the linked project id and reads the brain;
+- `action="create"` creates a brain project without linking the checkout.
+
+The brain rejects `repo_root` context and direct calls to data-plane tools. This
+keeps the privacy boundary enforceable rather than conventional.
+
+## Workflow architecture
+
+Experiment transitions are declared once in
+`backend/domain/workflow_gates.py`:
 
 ```text
-Project
-  Claim[]
-  Experiment[]
-  Resource[]
-  Review[]
-  Event[]
+planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
 ```
 
-Claim:
+`failed` and `abandoned` are terminal exits. A result-review rejection returns
+to `running` when the plan still stands, or to `planned` with a new attempt when
+the design is flawed.
 
-- statement
-- scope
-- status: draft | active | supported | weakened | contradicted | abandoned
-- confidence: low | medium | high
-- grounds: links to experiments/resources/reviews
+The same gate table drives:
 
-Experiment:
+- enforcement in `ExperimentService`;
+- next-action guidance in `WorkflowService`;
+- transition discovery and gate checklists returned to agents and the UI.
 
-- question or intent
-- tested_claim_ids
-- status: idea | planned | design_review | ready_to_run | running | experiment_review | complete | failed | abandoned
-- plan file resource
-- result file resources
-- review records
-- conclusion proposal
-- attempts with prior plans, runs, reviews, and revision context
-
-Resource:
-
-- repo-relative file path
-- kind/role
-- last observed version token: `path + mtime_ns + size_bytes`
-- optional git commit pointer
-- associations to experiments, claims, reviews, and attempts
-
-Review:
-
-- target: experiment plan | experiment attempt | claim update
-- role: design_reviewer | experiment_reviewer | human | automated-check
-- reviewer identity: server-issued review session and capability
-- verdict: pass | fail | needs_changes
-- notes and required follow-up
-
-Event:
-
-- append-only history of accepted mutations and workflow milestones
-
-## Mutation model
-
-All meaning-changing mutations go through MCP tools.
-
-Codex may edit files locally, but the research state is not changed until MCP
-accepts a mutation.
-
-Examples:
-
-- create claim
-- create experiment
-- link experiment to claim
-- register resource file
-- mark experiment running
-- record sandbox result
-- record design review
-- record experiment review
-- propose claim status change
-- accept experiment conclusion
-
-The MCP server should return structured responses:
-
-```json
-{
-  "ok": true,
-  "state_changed": true,
-  "requires_review": false,
-  "next_action": "launch_experiment_reviewer",
-  "message": "Experiment result file registered. Launch experiment review next."
-}
-```
-
-## Workflow model
-
-The workflow should stay simple but server-directed:
+Reflection transitions are declared in
+`backend/domain/reflection_gates.py`:
 
 ```text
-idea -> planned -> design_review -> ready_to_run -> running -> experiment_review -> complete
-            ^             |                                  |
-            |             v                                  v
-            +------ needs_changes                    needs_changes
-            |                                                |
-            +---------------- planned with revision context --+
-
-failed / abandoned are terminal exits.
+reflecting -> synthesizing -> synthesis_review -> published
 ```
 
-The server decides which transitions are allowed. Codex first asks the large
-orientation question:
+`synthesis_review` is the persisted status name; the product label is
+"reflection review." Rejections return to `synthesizing` when the five lens
+documents still stand or to `reflecting` when the fan-out must be repeated.
 
-```text
-workflow.status_and_next(project_id, experiment_id?)
-```
+All meaning-changing actions use typed MCP or HTTP operations. Editing a local
+file does not mutate research state. A file becomes evidence only after
+`resource.register` observes it and, when requested, associates the submitted
+version with a target and role.
 
-In project-local MCP sessions, the stdio proxy supplies `project_id` from the
-current repo context, so the agent-facing schema can omit it:
+## Evidence and storage
 
-```text
-workflow.status_and_next(experiment_id?)
-```
+Three storage layers have distinct purposes:
 
-The server answers with a project/experiment summary, the current gate, allowed
-actions, blocked actions, missing evidence, and the next required step.
+1. **Repo files** hold source, plans, compact results, reports, figures, and
+   logic graphs. The proxy registers them as resources.
+2. **Submitted-byte blobs** pin size-capped gated artifacts and selected small
+   metric JSON so lints and reviewers see immutable submissions rather than a
+   later working-tree edit.
+3. **Heavy-object storage** keeps large datasets, checkpoints, archives, and
+   other valuable files that should not live in git.
 
-Core services never guess the active project. Every project-scoped service call
-is explicit; the project-local MCP proxy is the adapter that fills that explicit
-scope from repo context.
+MLflow is the quantitative run ledger. Plugin state stores the research meaning
+around those runs: claim links, reviewed conclusions, resource references, and
+workflow state.
 
-This tool is deliberately high-level. It can include a known sandbox summary from
-durable state, but it should not poll Modal or perform detailed inspection itself.
-Codex should use narrower tools when it needs fresh execution details.
+Nothing on a sandbox is durable by default. Before release or expiry, agents
+must pull compact evidence into the repo or upload heavy files to durable
+storage.
 
-Detailed tools exist for deeper inspection:
+## Reviewer boundary
 
-```text
-project.get(project_id)
-experiment.get_state(project_id, experiment_id)
-sandbox.get(project_id, experiment_id)
-sandbox.terminal(project_id, experiment_id)
-```
+Reviews use request-scoped capabilities rather than prompt trust:
 
-Possible next steps include:
+1. The producer calls `review.request`.
+2. The brain pins the target snapshot, stores only a hash of the capability, and
+   returns the plaintext capability once with a reviewer handoff prompt.
+3. A separate reviewer is expected to call `review.start` with a required
+   caller-supplied session string different from the producer-supplied string.
+4. `review.start` returns current-attempt gated artifacts plus any system
+   exhibit; the reviewer skill imposes a procedural read-only role whose only
+   intended state-changing call is `review.submit`.
+5. Request creation validates a workflow role against the active gate. Start
+   rejects invalid/expired/superseded capabilities, equal declared session
+   strings, or stale snapshots. Submit rechecks that the request is open and
+   the snapshot is current, and only the first valid submission is accepted.
 
-- write experiment plan
-- launch design reviewer
-- revise plan from design review feedback
-- request a sandbox and run the experiment over SSH
-- retain outputs and register resources
-- launch experiment reviewer
-- revise plan from experiment review feedback
-- propose claim update
-- complete experiment
+The dispatcher also rejects other mutations that explicitly carry a
+`review_session_id`, but it does not authenticate every read or unrelated tool
+call as that reviewer. This is a practical workflow boundary, not cryptographic
+proof that two separate models reasoned independently.
 
-If experiment review fails, the experiment returns to `planned`, but MCP carries
-forward prior run context: previous plan, result resources, failed review
-findings, and guidance about what should stay the same versus change.
+## Code boundaries
 
-## Sandbox execution
+The brain is a modular monolith with kernel, research-core, artifacts,
+object-storage, sandbox, feed, MLflow, and surface modules. The exact file
+classification and allowed dependency edges live in
+`tests/structure/test_module_boundaries.py`; the test currently permits no
+grandfathered violations.
 
-There is no job abstraction. Codex requests a sandbox and runs commands on it
-directly over SSH. A sandbox can be standalone or attached to an experiment; it
-can later be attached to another experiment without recreating the VM.
+Additional structure tests enforce:
 
-```text
-Codex
-  -> sandbox.request (MCP)
-      -> SandboxService registry  (project sandbox, optional experiment attachment)
-          -> SandboxBackend (Modal/Lambda)  ->  sandbox/VM + SSH endpoint
-  -> ssh <command>  (run by Codex itself, recorded to the experiment transcript)
-  -> explicit copy/upload of retained outputs before release
-```
+- complete and disjoint control/data tool assignments;
+- no checkout/process dependencies in brain-owned policy modules;
+- provider-neutral sandbox services;
+- a standard-library-only MCP proxy;
+- parity between live tool contracts and the checked-in proxy catalog.
 
-MCP owns policy, state, and visibility:
-
-- gate `sandbox.request` on experiment status (`ready_to_run` / `running`)
-- own per-sandbox SSH facts and the durable `sandboxes` row
-- procure / reuse / release sandboxes and reconcile liveness
-- expose the terminal transcript for visibility
-- tell Codex when output files should be retained and registered as resources
-
-`execution` owns the `SandboxBackend` implementations. The default backend is
-**Lambda Labs** (VM-backed GPU execution); Thunder Compute and Modal are also
-supported; `fake` is used for tests. Backends only procure SSH-reachable
-machines and expose lifecycle/observability hooks. Backends declare a
-`requires_hardware_selection` capability and may expose an optional
-`hardware_catalog()`: Thunder and Lambda bundle GPU+CPU+RAM into fixed instance
-types, so `SandboxService` returns a live availability menu (`needs_selection`)
-when `sandbox.request` omits the `instance_type`; Modal composes the machine from
-`gpu`/`cpu`/`memory` and needs no selection step.
-
-## Reviewer identity and independence
-
-Local reviewer identity cannot rely on IP addresses or machine boundaries. The
-MVP should model identity as server-issued workflow capability:
-
-1. Main Codex asks MCP for a review request.
-2. MCP creates `review_request_id` and a one-time `reviewer_capability`.
-3. The capability is scoped to one target, one role, read-only inspection tools,
-   and `review.submit` for that request.
-4. Main Codex spawns a separate reviewer agent with the appropriate review skill
-   and passes the capability plus target context.
-5. The reviewer starts a review session with MCP and submits the review directly.
-6. MCP rejects reviews from the same producer session, expired capabilities,
-   wrong role, wrong target, or capabilities minted before the target snapshot.
-
-This is not cryptographic proof that two independent local minds were involved.
-It is the practical local boundary: separate review assignment, separate tool
-scope, immutable target snapshot, session lineage, and audit trail. For stronger
-assurance, MCP can mark a review as `unverified_agent_review` and require human
-review for high-risk gates.
-
-## Plugin skills
-
-The primary skill should make Codex follow the research loop:
-
-1. inspect memory through MCP
-2. clarify claim or experiment intent
-3. create or update experiment plan through MCP
-4. edit local files as needed
-5. run lightweight checks locally
-6. request a sandbox from MCP and run long work on it over SSH
-7. retain outputs and register/associate local files as resources
-8. launch design or experiment reviewer agent when MCP requires it
-9. ensure the reviewer submits review directly to MCP
-10. propose claim/experiment updates through MCP
-11. ask MCP for next action until terminal
-
-The review skills should make reviewer agents adversarial but bounded:
-
-- design review checks whether the planned experiment can test the claim
-- experiment review checks implementation, outputs, metrics, and conclusion
-- both inspect only via read-only context/tools
-- return a structured verdict
-- submit the review to MCP
-- never mutate project state directly
-
-## MVP exclusions
-
-Do not include in v0.1:
-
-- artifact object store
-- content-addressed manifests
-- generic backend REST API
-- browser UI
-- multi-project server
-- OAuth
-- complex RBAC
-- Temporal-style workflow engine
-- broad automatic claim rewriting
-- directory resources
+See [MODULE_BOUNDARIES.md](MODULE_BOUNDARIES.md) for the import law and
+[CONTROL_DATA_PLANE_SPLIT.md](CONTROL_DATA_PLANE_SPLIT.md) for the detailed
+ownership table.

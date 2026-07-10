@@ -16,8 +16,7 @@ const GROUPS = [
 ];
 
 /**
- * Experiments — the lifecycle list in the One-Surface language
- * (design_handoff_mobile_redesign): an underline text filter instead of
+ * Experiments — a flush lifecycle list with an underline text filter instead of
  * boxed chips, then flush hairline-separated rows whose 3px left index is
  * colored by state. Read-only — creating experiments is the agent's job.
  */

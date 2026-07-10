@@ -41,8 +41,9 @@ not write the reflections — the subagents do.
 
 ```
 reflection.create (declare the 5-lens roster; corpus is snapshotted)
-  → reflecting:    fan out 5 read-only subagents; EACH submits its own
-                   reflection doc (role 'reflection_lens_doc', file <lens_id>.md)
+  → reflecting:    fan out 5 lens subagents; project reads are read-only and
+                   EACH registers its own reflection doc (role
+                   'reflection_lens_doc', file <lens_id>.md)
   → submit_reflections (blocked until every lens is covered)
   → synthesizing:  reconcile the reflections; update the living project
                    graph (role 'project_graph') + write the short reflection doc
@@ -75,7 +76,7 @@ cross-experiment pattern hunt, cost/compute efficiency, a domain-specific
 angle, or a classic coverage audit. The justification is required; whether
 the lenses are genuinely distinct is something the reviewer will judge.
 
-## Step 2 — fan out (one read-only subagent per lens)
+## Step 2 — fan out (one lens subagent per lens)
 
 Spawn five subagents in parallel. Each gets:
 
@@ -105,8 +106,9 @@ Spawn five subagents in parallel. Each gets:
   `syntheses/<syn_id>/reflections/<lens_id>.md` (the filename **must** be
   `<lens_id>.md` — coverage is matched by filename), then
   `resource.register` it to the reflection wave with role `reflection_lens_doc`
-  (one call — pass the `path` plus `target_type`/`target_id`/`role`) — **the
-  subagent submits its own reflection**; do not collect and submit on its behalf.
+  (one call — pass the `path`, `target_type: "reflection"`, the wave id as
+  `target_id`, and `role: "reflection_lens_doc"`) — **the subagent submits its
+  own reflection**; do not collect and submit on its behalf.
 
 After the wave publishes, each lens may also register a distinct handle with
 `feed.register` (`role="lens"`) and post ONE `feed.post` with its single
@@ -214,8 +216,13 @@ role='reflection_reviewer', producer_session_id=<your session>)`. The
 response's `reviewer_handoff.spawn_prompt` is a ready-made prompt for
 spawning the **separate** read-only `project-reflection-review` agent — use
 it rather than assembling the handoff yourself (the producer session cannot
-start the review). The reviewer sees the corpus, the previous graph,
-all five reflections, and your reflection artifacts — and verdicts route:
+start the review). The capability plaintext appears only in this request
+response, but `review.start` does not consume it; do not supersede the open
+request merely because the reviewer started. Reviewer read-only behavior is a
+procedural rule: the capability authenticates `review.start` and the returned
+session authenticates `review.submit`, but unrelated tool calls are not
+authenticated as reviewer calls. The reviewer sees the corpus, the previous
+graph, all five reflections, and your reflection artifacts — and verdicts route:
 
 - `pass` → call `reflection.transition(publish)`. The wave pins the graph
   version it published, applies the approved claim changes, and creates the

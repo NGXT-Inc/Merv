@@ -1,23 +1,10 @@
-"""Cost governance: per-tenant quota schema + the admission enforcement seam.
+"""Sandbox quota admission and spend accounting.
 
-Cloud plan Phase 7. Platform-owned provider credentials make spend control a
-hard blocker, same class as auth (decision 3): the cloud holds the Lambda/Modal
-keys, so it — not the user — pays for every VM, and a tenant with no ceiling
-could run the bill unbounded.
-
-Local-mode invariant: the implicit 'local' tenant has NO ``tenant_quotas`` row,
-which reads as unlimited, so ``check_admission`` is a no-op and local behavior
-is byte-identical. Enforcement bites only when a tenant has a quota row and a
-ceiling on it is exceeded.
-
-Phase 9 makes enforcement LIVE: a per-tenant and global spend kill-switch
-(an operator circuit-breaker that refuses new provisioning when tripped) and
-running-total USD/GPU-hour accounting reconstructed from the
-``sandbox_generations`` ledger (sum over generations of price × runtime; an
-open generation — ``ended_at IS NULL`` — bills to ``now``). ``check_admission``
-now consults the kill-switches and the budget. The 'local' tenant still has no
-quota row and no kill-switch, so all of this is dormant and local mode stays
-byte-identical.
+Quota rows can cap concurrency, lifetime, price, GPU-hours, USD, and blob bytes.
+Global or per-tenant kill switches refuse new provisioning. Spend is rebuilt
+from the sandbox-generation ledger, including open generations billed through
+``now``. A scope with no quota row or kill switch is unlimited; the current
+unauthenticated HTTP surface normally uses the implicit ``local`` tenant.
 """
 
 from __future__ import annotations

@@ -1,187 +1,146 @@
 # Resource Model
 
-## Goal
+## Definition
 
-Replace the old resource/artifact subsystem with the smallest model that still
-supports research memory:
+> An agent-authored resource is a regular file in a research checkout that the
+> local MCP proxy has explicitly registered with the brain. The one current
+> system-authored exception is a brain-created metrics exhibit, represented as
+> a resource with pinned bytes but no corresponding checkout file.
 
-> A resource is a regular file in the local repo.
+Checkout files may exist and change without becoming research resources.
+Registration is the boundary that records why a particular observed file
+version matters to a claim, experiment, review, reflection, or attempt.
 
-One file maps to one resource. The backend does not maintain artifact refs or
-generated manifests. It keeps append-only resource version rows with file
-metadata (size, mtime, content sha256, mimetype) — but it does not store the
-file contents themselves, apart from the narrow pinned-bytes exceptions
-described below. Historical content lives in the user's own repo
-(working tree or their git history).
+The proxy reads checkout files; the brain does not. The proxy normalizes and
+bounds the repo-relative path, computes metadata and a content hash, performs
+local artifact checks needed to capture submitted bytes, and sends the
+observation to the brain. The brain authoritatively validates the target and
+association role.
 
-## Mental model
+## Durable records
 
-Codex is free to work in the local repo. It can create, edit, delete, and inspect
-ordinary files as part of normal development and experimentation.
+One active resource exists per `(project_id, path)`. The brain stores:
 
-Those files are not research resources yet.
+- a stable `resource_id` and repo-relative `path`;
+- kind, title, creator, missing/deleted state, and current version;
+- append-only resource versions with size, mtime, SHA-256, content type, and
+  observation time;
+- associations to targets, roles, attempts, and exact version ids.
 
-A file becomes a research resource only when Codex registers it through the MCP
-server and the server accepts it. At that point, MCP stores:
+An experiment association is attempt-scoped. Resources from older attempts
+remain visible as history but cannot satisfy the current attempt's gates.
 
-- which repo-relative file path is the resource
-- what file version was observed at registration time
-- which experiment, claim, run, or review the file is associated with
-- what role the file played, such as plan, input, code, config, result, note, or
-  model
-- for experiment associations, which attempt the file belongs to
-
-The server owns the research memory that says "this file, at this observed
-version, mattered for this research object." It does not own the file contents
-themselves.
-
-On a later turn, Codex asks MCP for project or experiment state, receives the
-resource path, and reads the live file directly from the local repo. If the
-user needs the historical content of an overwritten file, they retrieve it
-from their own repo's git history.
-
-## Core shape
+A representative resource is:
 
 ```json
 {
-  "resource_id": "res_...",
+  "id": "res_...",
   "project_id": "proj_...",
-  "path": "experiments/eval_001/results.json",
-  "kind": "dataset | result | note | code | config | model | other",
-  "title": "Optional human title",
+  "path": "experiments/baseline/results/metrics.json",
+  "kind": "result",
+  "current_version_id": "rver_...",
+  "version_token": "experiments/baseline/results/metrics.json:1789520738123456789:1789520738123456799:42183",
+  "missing": 0,
+  "current_version": {
+    "id": "rver_...",
+    "content_sha256": "...",
+    "content_type": "application/json",
+    "size_bytes": 42183,
+    "mtime_ns": 1789520738123456789
+  },
   "associations": [
     {
-	      "target_type": "experiment | claim | review",
-	      "target_id": "exp_...",
-	      "role": "plan | input | code | config | result | note | model",
-	      "attempt_index": 2,
-	      "version_id": "rver_..."
-	    }
-	  ],
-  "created_by": "codex | user",
-  "last_observed": {
-    "mtime_ns": 1789520738123456789,
-    "size_bytes": 42183,
-    "observed_at": "2026-05-17T14:21:03Z",
-	    "git_commit": "optional-if-clean-and-tracked"
-	  }
-	}
-	```
-
-The resource identity is the repo-relative path. The observed version token is
-latest-file metadata. The durable historical identity is `resource_versions.id`,
-which is attached to resource associations and review fingerprints.
-
-## State layout
-
-The backend keeps its state under the project root:
-
-```text
-.research_plugin/
-  state.sqlite
-  activity.jsonl
+      "target_type": "experiment",
+      "target_id": "exp_...",
+      "role": "result",
+      "attempt_index": 2,
+      "version_id": "rver_..."
+    }
+  ]
+}
 ```
 
-SQLite is the workflow/index store:
+The live path is convenient identity; `resource_versions.id` is the immutable
+historical identity used by associations and review snapshots.
 
-- projects, claims, experiments, reviews, sandboxes
-- resource ids and current live path
-- resource version metadata (sha256, size, mtime, mimetype)
-- which version was associated to which attempt/role
+## Submitted bytes
 
-There is no general content store — historical file content is the user's
-responsibility (live working tree or their own git history) — apart from the
-narrow pinned-bytes exceptions below.
+Most resources are metadata-only. Historical content for those files remains
+the user's responsibility through the working tree, git history, or durable
+object storage.
 
-## Pinned bytes (the exceptions)
+The brain stores bytes for the narrow cases that must remain immutable after
+submission:
 
-Three narrow cases capture bytes into the blob store at association time so
-gates and reviewers judge immutable submitted content, not the live tree:
+- **Gated artifacts** — plans, reports, experiment graphs, project graphs,
+  reflection lens documents, reflection documents, and change specs. Each role
+  has a size cap. Workflow lints and reviewers read the pinned submission, not a
+  later working-tree edit.
+- **Small metric result JSON** — `metrics.json`, `results.json`, and JSON files
+  under `results/`, up to 16 KB, may be captured so the system metrics exhibit
+  can ingest them.
+- **Metrics exhibits** — at `submit_results` the brain evaluates the
+  system-authored exhibit. It pins the exhibit when attempt-window runs are
+  found, or when MLflow is unavailable after a plugin-created run established
+  quantitative intent. Qualitative/no-run attempts get no exhibit. Agents
+  cannot create or replace this role.
 
-- **Gated roles** (`plan`, `report`, `graph`, reflection docs, `change_spec`,
-  `project_graph`): size-capped byte capture — lints and reviews read the
-  snapshot pinned at `resource.register` (the association step).
-- **Small metric result files** on role `result` (`metrics.json`,
-  `results.json`, or any `results/*.json`, ≤16 KB): captured opportunistically
-  so the metrics exhibit can ingest the numbers. Over-cap or non-matching
-  result files associate as metadata-only, exactly as before.
-- **The metrics exhibit itself**: a system-authored resource (role `exhibit`,
-  `created_by: system`) generated and pinned by the backend at
-  `submit_results`. The role is deliberately absent from `RESOURCE_ROLES`, so
-  agents cannot associate, replace, or delete it.
+Changing a submitted file does not update the pinned version. Fix the file and
+call `resource.register` again to submit the revision.
 
-Everything else stays metadata-only.
+## Version identity
 
-## About using edit time
-
-Using edit date/time alone is simple, but weak as a version identity:
-
-- some filesystems have coarse timestamp resolution
-- copies can preserve timestamps
-- tools can rewrite content without meaningful timestamp semantics
-- timestamp changes do not always mean semantic changes
-
-For the lean MVP, use this stable compromise:
+The lightweight observation token is:
 
 ```text
-version_token = path + mtime_ns + size_bytes
+path + mtime_ns + ctime_ns + size_bytes
 ```
 
-If the file is tracked by git and the worktree is clean enough to identify it,
-also store:
+The proxy also computes a full-file SHA-256. The brain uses the hash to avoid
+duplicate semantic version rows when a file is re-observed unchanged. Git commit
+capture is not part of the current observation path.
 
-```text
-git_commit + path
-```
+## State placement
 
-MCP computes a full-file `content_sha256` so it can avoid creating duplicate
-version rows when a file is re-observed without semantic change.
+Research records and pinned blobs live in the brain's selected stores:
 
-## Operations
+- local brain: SQLite plus a local blob directory under its configured state
+  root;
+- hosted brain: Postgres plus configured S3-compatible blob storage.
 
-The MCP server should expose resource operations that are intentionally boring:
+The brain database is not stored in the research checkout. The checkout contains
+the actual project and experiment files. The proxy separately keeps the
+machine-local checkout-to-project link database in `project_links.sqlite`.
 
-- `resource.register(project_id, path?, paths?, resource_id?, kind, title?, target_type?, target_id?, role?)`
-  — register/observe a single `path` or a `paths` batch, and (when the trio is
-  present) associate each registered resource; `resource_id` associates an
-  already-registered resource. Folds in the old `register_file` + `associate`
-  + `associate_batch` + preflight `validate`.
-- `resource.delete(project_id, resource_id)` — UI-convenience; hidden from the
-  agent tools/list.
-- `resource.find(project_id, resource_id?, include_history?, filters?)` —
-  `resource_id` resolves one hydrated resource (`include_history=true` attaches
-  the observed `versions`, the old `resource.history`); otherwise lists with
-  `kind`/`experiment_id`/`missing`/`compact`/`limit`/`offset` filters. Folds in
-  the old `resource.list` + `resource.resolve`.
+## MCP operations
 
-Every resource operation is project-scoped. The server must reject missing
-`project_id` rather than guessing an active project.
+- `resource.register(path=...)` observes one file.
+- `resource.register(paths=[...])` observes a batch.
+- Supplying `target_type`, `target_id`, and `role` associates each observed
+  version in the same call; the trio is all-or-none.
+- `resource.register(resource_id=..., target_type=..., target_id=..., role=...)`
+  associates an already registered resource.
+- `resource.find(resource_id=..., include_history=true)` resolves one resource
+  and optionally its version history.
+- `resource.find(...)` without `resource_id` lists filtered resources.
+- `resource.delete` is an internal/UI operation hidden from agent `tools/list`.
 
-Allowed association roles are `plan`, `input`, `code`, `config`, `result`,
-`note`, `model`, and `other`. Experiment output files use the singular role
-`result`; the MCP tool schema and validation errors expose this vocabulary so
-agents do not need to guess.
-
-No `artifact_ref.create`, `resource_version.create`, `manifest.create`,
-`cache_resource`, `verify_artifact`, or `restore` tool in the MVP. Restoring old
-content should happen as a normal live file edit followed by a new
-`resource.register`, which preserves append-only history.
+Project scope remains explicit in brain and HTTP calls. In a project-local MCP
+session the proxy injects the linked `project_id` and hides it from schemas where
+the caller should not choose it.
 
 ## Rules
 
-- paths must be repo-relative
-- paths must stay inside the configured repo root
-- ignored files are not resources unless explicitly registered
-- directories are not resources in v0.1
-- one path maps to at most one active resource
-- moving a file is a resource path update, not a new artifact lineage system
-- deleting a file does not delete the resource memory; it marks the resource
-  missing until restored or archived
-- deleting a resource removes it from active project tracking and associations,
-  but keeps observed version rows for audit/history
-- local files may exist without being resources
-- resources may point to missing local files, but MCP must report them as missing
-  in status responses
-- experiment resource associations are attempt-scoped; old resources stay
-  visible as history but do not satisfy gates for the current attempt
-- `.research_plugin/` is backend state and cannot be registered as a resource
+- Paths are repo-relative and must remain inside the configured checkout.
+- Directories are not resources.
+- `.research_plugin/` state cannot be registered as research evidence.
+- Ignored files are not discovered automatically, but an explicit valid path may
+  be registered.
+- Moving and registering a file at a new path creates or revives the resource at
+  that path; the proxy does not automatically rewrite the old resource.
+- Deleting or moving a live file does not update brain state automatically. The
+  current proxy performs explicit observations, not background reconciliation.
+- Deleting a resource removes it from active tracking and associations while
+  retaining version metadata for audit.
+- The brain never scans a checkout and never treats an unregistered edit as a
+  state mutation.

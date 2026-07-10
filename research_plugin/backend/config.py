@@ -1,15 +1,9 @@
-"""Central mode/config resolution for the backend.
+"""Central deployment-preset and adapter configuration for the brain.
 
-The backend has two process roles selected by ``RESEARCH_PLUGIN_MODE``:
-
-- ``local``  — today's topology: one process binds the control plane and the
-  data plane in-process (default, and the only mode implemented so far).
-- ``control`` — cloud control plane (multi-tenant records, gates, lifecycle).
-
-Mode resolution is fail-fast: an unknown value refuses to start rather than
-silently running in the wrong topology. All later config (DB URLs, blob
-backends, control URLs) hangs off this module so there is exactly one place
-that decides what a process is.
+``local`` and ``control`` use the same brain composition. The preset selects
+loopback/small-store defaults or hosted durable adapters; the stdio MCP proxy
+remains the checkout-local data plane in both cases. Unknown preset values fail
+at startup.
 """
 
 from __future__ import annotations
@@ -37,13 +31,12 @@ if TYPE_CHECKING:  # the store import stays lazy at runtime (see build_state_sto
 
 MODE_ENV_VAR = "RESEARCH_PLUGIN_MODE"
 
-# Record-store selection (cloud plan Phase 6). Absent ⇒ the SQLite default
-# (local mode, today's behavior, byte-identical). A postgres:// URL selects
-# the Postgres dialect — used by tests and the control profile.
+# Record-store selection. Absent means the SQLite default used by the local
+# preset. A postgres:// or postgresql:// URL selects the hosted Postgres dialect.
 DB_URL_ENV_VAR = "RESEARCH_PLUGIN_DB_URL"
 
 # Split-transport config. The MCP proxy sends local data-plane submissions to
-# CONTROL_URL. The cloud never dials a user machine. The blob bucket/dir
+# CONTROL_URL. The brain never dials a user machine. The blob bucket/dir
 # selects the BlobStore impl per mode.
 BLOB_DIR_ENV_VAR = "RESEARCH_PLUGIN_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "RESEARCH_PLUGIN_BLOB_BUCKET"
@@ -67,7 +60,7 @@ _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 
 
 class Mode(str, Enum):
-    """The process role (cloud plan §1.1). ``local`` is the default forever."""
+    """Brain deployment preset. ``local`` is the default."""
 
     LOCAL = "local"
     CONTROL = "control"
@@ -116,7 +109,7 @@ def resolve_daemon_state_dir(env: Mapping[str, str] | None = None) -> Path:
 
 
 def resolve_control_url(env: Mapping[str, str] | None = None) -> str | None:
-    """The hosted control-plane URL, or None."""
+    """The configured brain URL (hosted or localhost), or None."""
     source = env if env is not None else os.environ
     raw = (source.get(CONTROL_URL_ENV_VAR) or "").strip()
     if not raw:
@@ -230,14 +223,13 @@ def resolve_allowed_origins(env: Mapping[str, str] | None = None) -> list[str]:
 def build_blob_store(
     *, default_root: Path, env: Mapping[str, str] | None = None
 ):
-    """The BlobStore the configuration selects (cloud plan Phase 8).
+    """The submitted-byte BlobStore selected by configuration.
 
     A bucket name selects ``S3BlobStore`` (boto3 imported only on that branch,
     so local installs never need it); otherwise a ``LocalDirBlobStore`` rooted
     at the configured dir or ``default_root``. Same protocol + contract tests
-    either way, so callers stay blob-impl-blind. The control profile MUST set a
-    bucket so off-process uploads use reachable HTTPS URLs instead of local
-    loopback tokens.
+    either way, so callers stay blob-implementation blind. Hosted/no-checkout
+    control validates that a bucket is present at its composition root.
     """
     bucket = resolve_blob_bucket(env)
     if bucket:
@@ -286,7 +278,7 @@ def build_state_store(
 ) -> "BaseStateStore":
     """The record store the configuration selects, fail-fast like the mode.
 
-    No URL keeps today's behavior exactly: the SQLite store at ``db_path``.
+    No URL selects the SQLite store at ``db_path``.
     A postgres:// URL selects the Postgres dialect (psycopg imported only on
     that branch, so local installs never need it). Any other scheme refuses
     to start rather than guessing a dialect.
