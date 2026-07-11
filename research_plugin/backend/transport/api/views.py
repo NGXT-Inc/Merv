@@ -32,6 +32,21 @@ def _activity_event_project_id(event: dict[str, Any]) -> str | None:
     return None
 
 
+def _compact_claims(claims: Any) -> list[dict[str, Any]]:
+    """Claim identity + belief state only — enough for a ledger surface to
+    label and color a link, without duplicating the claims endpoint."""
+    return [
+        {
+            "id": claim.get("id"),
+            "statement": claim.get("statement"),
+            "status": claim.get("status"),
+            "confidence": claim.get("confidence"),
+        }
+        for claim in claims or []
+        if isinstance(claim, dict)
+    ]
+
+
 def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     source_counts: dict[str, int] = {}
     event_counts: dict[str, int] = {}
@@ -603,6 +618,10 @@ class ResearchHttpApi:
                 "name": exp.get("name") or eid,
                 "status": exp.get("status") or "",
                 "intent": exp.get("intent") or "",
+                # The epistemic side of the join: which claims this
+                # experiment's runs are evidence for, so ledger surfaces can
+                # link every run back to the beliefs it moves.
+                "tested_claims": _compact_claims(exp.get("tested_claims")),
                 "mlflow_experiment_name": mlflow_experiment_name(
                     project_id=project_id, experiment_id=eid
                 ),
@@ -613,6 +632,58 @@ class ResearchHttpApi:
                 "metrics": metrics,
             })
         return self._present({"mlflow": health, "experiments": items})
+
+    def claim_evidence_view(self, *, project_id: str, claim_id: str) -> dict[str, Any]:
+        """One claim's quantitative evidence: the MLflow runs of every
+        experiment that tests it, beside that experiment's review verdicts.
+
+        The per-experiment items mirror the mlflow_overview_view shape
+        (``metrics`` is the bounded results_metrics payload), so UI ledger
+        code reads both payloads identically. This is a join over existing
+        records, not a second quantitative ledger.
+        """
+        claim = self.get_claim(project_id, claim_id)
+        health = self.app.mlflow_tracking.health()
+        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        items: list[dict[str, Any]] = []
+        for exp in experiments:
+            tested = exp.get("tested_claims") or []
+            if not any(str(c.get("id") or "") == claim_id for c in tested):
+                continue
+            eid = str(exp.get("id") or "")
+            if not eid:
+                continue
+            metrics = self.app.mlflow_tracking.results_metrics(
+                experiment_id=eid, project_id=project_id
+            )
+            items.append({
+                "experiment_id": eid,
+                "name": exp.get("name") or eid,
+                "status": exp.get("status") or "",
+                "intent": exp.get("intent") or "",
+                "attempt_index": exp.get("attempt_index") or 1,
+                "conclusion": exp.get("conclusion") or "",
+                "created_at": exp.get("created_at"),
+                "reviews": [
+                    {
+                        "id": review.get("id"),
+                        "role": review.get("role"),
+                        "verdict": review.get("verdict"),
+                        "synopsis": review.get("synopsis"),
+                        "created_at": review.get("created_at"),
+                    }
+                    for review in exp.get("reviews") or []
+                ],
+                "mlflow_experiment_name": mlflow_experiment_name(
+                    project_id=project_id, experiment_id=eid
+                ),
+                "dashboard_experiment_url": (
+                    metrics.get("dashboard_experiment_url", "")
+                    if isinstance(metrics, dict) else ""
+                ),
+                "metrics": metrics,
+            })
+        return self._present({"claim": claim, "mlflow": health, "experiments": items})
 
     def sandbox_health_view(self) -> dict[str, Any]:
         return self.app.sandboxes.backend_health()

@@ -6,6 +6,7 @@ import { FrontierChart, DotStrip, KnobScatter } from '../components/LedgerCharts
 import { planLedger, rankRuns, anchorValueOf } from '../utils/metricProfile';
 import { readDirectionOverrides, writeDirectionOverride } from '../utils/mlflowPrefs';
 import { statusColor } from '../utils/experiment';
+import { claimStatusColor } from '../utils/evidence';
 import { fmtNum, fmtStamp } from '../utils/format';
 
 /**
@@ -324,8 +325,12 @@ function Pulse({ plan }) {
   );
 }
 
-// The pinned experiment vs the field, one readout per comparable metric.
+// The pinned experiment vs the field, one readout per comparable metric —
+// plus the claims its runs are evidence for, closing the loop between the
+// quantitative ledger and the project's belief state.
 function FocusBanner({ exp, plan, onClear, openHref }) {
+  const px = useProjectHref();
+  const claims = Array.isArray(exp.tested_claims) ? exp.tested_claims : [];
   const cells = plan.strips.map(fp => {
     const mine = fp.values.filter(p => plan.runs[p.i].expId === exp.experiment_id);
     if (!mine.length) return null;
@@ -349,6 +354,22 @@ function FocusBanner({ exp, plan, onClear, openHref }) {
         <button className="btn btn--sm btn--ghost" onClick={onClear}>Clear focus</button>
       </div>
       {exp.intent && <p className="lgd-focus-intent">{exp.intent}</p>}
+      {claims.length > 0 && (
+        <div className="lgd-claims">
+          <span className="lgd-claims-label">evidence for</span>
+          {claims.map(c => (
+            <Link
+              key={c.id}
+              className="lgd-claim-chip"
+              to={px(`/claims/${c.id}`)}
+              style={{ borderColor: claimStatusColor(c.status), color: claimStatusColor(c.status) }}
+              title={`${c.status || 'active'} · confidence ${c.confidence || 'medium'}`}
+            >
+              {c.statement}
+            </Link>
+          ))}
+        </div>
+      )}
       {cells.length > 0 ? (
         <div className="lgd-focus-grid">
           {cells.map(c => (

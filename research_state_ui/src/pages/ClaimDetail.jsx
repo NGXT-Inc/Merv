@@ -4,11 +4,15 @@ import { api } from '../api';
 import { useProjectStore, selectExperiments, selectEventsAll, useProjectHref } from '../store/useProjectStore';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
+import Sparkline from '../components/Sparkline';
 import { ConfidenceSignal } from '../components/ClaimEvidence';
 import { classifyExperiment, outcomeColor, outcomeLabel, outcomeGlyph, claimStatusColor } from '../utils/evidence';
 import { expName } from '../utils/experiment';
 import { computeClaimShifts, relDays } from '../utils/claimShifts';
-import { fmtStamp } from '../utils/format';
+import { planLedger, anchorValueOf } from '../utils/metricProfile';
+import { readDirectionOverrides } from '../utils/mlflowPrefs';
+import { curveValues } from '../utils/metrics';
+import { fmtStamp, fmtNum } from '../utils/format';
 
 export default function ClaimDetail() {
   const { claimId } = useParams();
@@ -17,6 +21,7 @@ export default function ClaimDetail() {
   const experiments = useProjectStore(selectExperiments);
   const events = useProjectStore(selectEventsAll);
   const [claim, setClaim] = useState(null);
+  const [evidence, setEvidence] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -29,9 +34,53 @@ export default function ClaimDetail() {
     return () => { cancelled = true; };
   }, [projectId, claimId]);
 
+  // The quantitative layer: MLflow runs of every experiment testing this
+  // claim. Optional by design — the outcome list stands alone without it.
+  useEffect(() => {
+    let cancelled = false;
+    setEvidence(null);
+    api.getClaimEvidence(projectId, claimId)
+      .then(d => !cancelled && setEvidence(d))
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [projectId, claimId]);
+
   const linkedExperiments = experiments.filter(e =>
     Array.isArray(e.tested_claims) && e.tested_claims.some(c => c.id === claimId),
   );
+
+  // The evidence payload mirrors the MLflow overview shape, so the ledger
+  // profiler reads it directly: focus metric, direction, and per-run values
+  // scoped to just this claim's experiments.
+  const quant = useMemo(() => {
+    if (!evidence?.mlflow?.configured) return null;
+    const plan = planLedger(evidence, { directionOverrides: readDirectionOverrides(projectId) });
+    if (!plan.focus || plan.runs.length === 0) return null;
+    const strip = plan.strips.find(s => s.key === plan.focus.key);
+    if (!strip || strip.values.length === 0) return null;
+    const dir = plan.focus.direction;
+    const sorted = strip.values.slice().sort((a, b) => (dir < 0 ? a.v - b.v : b.v - a.v));
+    const byExp = new Map();
+    for (const p of strip.values) {
+      const expId = plan.runs[p.i].expId;
+      const cur = byExp.get(expId);
+      if (!cur || (dir < 0 ? p.v < cur.v : p.v > cur.v)) byExp.set(expId, p);
+    }
+    const cells = new Map();
+    for (const [expId, best] of byExp) {
+      const run = plan.runs[best.i];
+      const anchor = anchorValueOf(run, plan.focus.key);
+      cells.set(expId, {
+        value: best.v,
+        delta: anchor != null ? best.v - anchor : null,
+        anchor,
+        rank: sorted.findIndex(p => p.i === best.i) + 1,
+        curve: curveValues(run.history?.[plan.focus.key]),
+        live: /running/i.test(run.runStatus || ''),
+      });
+    }
+    return { focus: plan.focus, runCount: strip.values.length, cells };
+  }, [evidence, projectId]);
 
   const shifts = useMemo(
     () => computeClaimShifts(events).filter(s => s.claimId === claimId),
@@ -67,10 +116,16 @@ export default function ClaimDetail() {
 
       <section className="section" style={{ marginTop: 32 }}>
         <div className="section-title">Evidence</div>
+        {quant && (
+          <p className="lgd-note">
+            measured by <span className="lgd-line-k">{quant.focus.key}</span>
+            {' '}({quant.focus.direction < 0 ? 'lower' : 'higher'} is better) across {quant.runCount} recorded run{quant.runCount === 1 ? '' : 's'}
+          </p>
+        )}
         {linkedExperiments.length === 0 ? (
           <div className="empty">No experiments link to this claim yet.</div>
         ) : (
-          <EvidenceHistory experiments={linkedExperiments} />
+          <EvidenceHistory experiments={linkedExperiments} quant={quant} />
         )}
       </section>
 
@@ -104,7 +159,9 @@ export default function ClaimDetail() {
 
 // Chronological evidence rows: the tested-by list plus what each test cost
 // (attempts) and concluded — the "why" behind the claim's current status.
-function EvidenceHistory({ experiments }) {
+// When the claim's experiments have recorded MLflow runs, each row also
+// carries its measured result on the claim's focus metric.
+function EvidenceHistory({ experiments, quant }) {
   const px = useProjectHref();
   const ordered = experiments
     .slice()
@@ -118,6 +175,7 @@ function EvidenceHistory({ experiments }) {
           ? new Date(e.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })
           : null;
         const conclusion = (e.conclusion || '').trim().split('\n')[0];
+        const q = quant?.cells.get(e.id);
         return (
           <li key={e.id} className="ev-row">
             <Link to={px(`/experiments/${e.id}`)} className="claim-exp-line">
@@ -131,10 +189,35 @@ function EvidenceHistory({ experiments }) {
               {started && <span>{started}</span>}
               {attempts > 1 && <span>· {attempts} attempts</span>}
             </div>
+            {q && <QuantCell q={q} focus={quant.focus} runCount={quant.runCount} ledgerHref={px(`/mlflow?focus=${e.id}`)} />}
             {conclusion && <p className="ev-row-why">{conclusion}</p>}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+// One experiment's best measurement of the claim's focus metric: the value,
+// its delta against the run's own baseline, its rank among every run the
+// claim has, and the metric's trajectory — with a jump into the ledger.
+function QuantCell({ q, focus, runCount, ledgerHref }) {
+  const improved = q.delta != null && (focus.direction > 0 ? q.delta > 0 : q.delta < 0);
+  return (
+    <div className="ev-quant">
+      <span className="ev-quant-key">{focus.key}</span>
+      <span className="ev-quant-val">{fmtNum(q.value)}</span>
+      {q.delta != null && (
+        <span className={`ev-quant-delta ${improved ? 'good' : 'bad'}`}>
+          {q.delta >= 0 ? '+' : '−'}{fmtNum(Math.abs(q.delta))} vs {fmtNum(q.anchor)}
+        </span>
+      )}
+      <span className="ev-quant-rank">#{q.rank}/{runCount}</span>
+      {q.live && <span className="ev-quant-live">live</span>}
+      {q.curve.length >= 2 && (
+        <span className="ev-quant-spark"><Sparkline points={q.curve} height={18} /></span>
+      )}
+      <Link className="ev-quant-link" to={ledgerHref}>ledger →</Link>
+    </div>
   );
 }

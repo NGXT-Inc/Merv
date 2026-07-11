@@ -34,6 +34,12 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     def get_claim(project_id: str, claim_id: str) -> dict[str, Any]:
         return api_for_project(project_id).get_claim(project_id=project_id, claim_id=claim_id)
 
+    @api_router.get("/api/projects/{project_id}/claims/{claim_id}/evidence")
+    def claim_evidence(project_id: str, claim_id: str) -> dict[str, Any]:
+        return api_for_project(project_id).claim_evidence_view(
+            project_id=project_id, claim_id=claim_id
+        )
+
     @api_router.patch("/api/projects/{project_id}/claims/{claim_id}")
     @api_router.put("/api/projects/{project_id}/claims/{claim_id}")
     def update_claim(project_id: str, claim_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:

@@ -3239,6 +3239,26 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
   font-size: var(--text-xs);
   color: var(--muted);
 }
+/* The measured result line: the experiment's best value on the claim's
+   focus metric, delta vs its own baseline, rank across the claim's runs. */
+.ev-quant {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  padding-left: 24px;
+  font-size: var(--text-xs);
+}
+.ev-quant-key { color: var(--muted); font-family: var(--font-mono); }
+.ev-quant-val { font-family: var(--font-mono); font-size: var(--text-sm); }
+.ev-quant-delta { font-family: var(--font-mono); }
+.ev-quant-delta.good { color: var(--supports); }
+.ev-quant-delta.bad { color: var(--refutes); }
+.ev-quant-rank { font-family: var(--font-mono); color: var(--faint); }
+.ev-quant-live { color: var(--active); font-weight: 600; }
+.ev-quant-spark { display: inline-flex; align-items: center; width: 76px; }
+.ev-quant-link { white-space: nowrap; }
 
 
 /* ───────────────  Sandbox terminal  ─────────────────────────────── */
@@ -4495,6 +4515,22 @@ a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; 
 .lgd-focus-status { font-size: var(--text-xs); font-weight: 600; }
 .lgd-focus-intent { font-size: var(--text-sm); color: var(--muted); margin: 6px 0 12px; max-width: 78ch; }
 .lgd-focus-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 20px; }
+/* Claims the focused experiment's runs are evidence for — chips colored by
+   the claim's own belief status, linking into the claims ledger. */
+.lgd-claims { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+.lgd-claims-label { font-size: var(--text-xs); color: var(--faint); }
+.lgd-claim-chip {
+  max-width: 44ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  border: 1px solid;
+  border-radius: var(--radius-lg);
+  padding: 1px 9px;
+  text-decoration: none;
+}
+.lgd-claim-chip:hover { text-decoration: underline; }
 .lgd-focus-cell { display: flex; align-items: baseline; gap: 8px; font-size: var(--text-sm); }
 .lgd-focus-key { flex: 1; min-width: 0; font-size: var(--text-xs); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lgd-focus-val { font-family: var(--font-mono); }

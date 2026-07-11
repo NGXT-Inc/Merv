@@ -156,6 +156,12 @@ export const api = {
       body: { statement, scope: scope || '', confidence: confidence || 'medium' },
     }),
   getClaim: (pid, cid) => request(`/api/projects/${encodeURIComponent(pid)}/claims/${encodeURIComponent(cid)}`),
+  // The claim ↔ quantitative-record join: every experiment testing the claim
+  // with its review verdicts AND its MLflow runs (results_metrics shape, same
+  // as getMlflowOverview items) — so the claim page can show measured
+  // evidence, not just outcome labels.
+  getClaimEvidence: (pid, cid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/claims/${encodeURIComponent(cid)}/evidence`),
 
   // Experiments
   createExperiment: (pid, { name, intent, claim_ids }) =>

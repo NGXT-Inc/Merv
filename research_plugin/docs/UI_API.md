@@ -116,12 +116,19 @@ and active processes. `active_processes` includes both `provisioning` and
 GET   /api/projects/{project_id}/claims
 POST  /api/projects/{project_id}/claims
 GET   /api/projects/{project_id}/claims/{claim_id}
+GET   /api/projects/{project_id}/claims/{claim_id}/evidence
 PATCH /api/projects/{project_id}/claims/{claim_id}
 PUT   /api/projects/{project_id}/claims/{claim_id}
 ```
 
 Claim creation accepts `statement`, `scope`, and `confidence`. Updates use the
 same control-plane validation as MCP claim mutations.
+
+`/evidence` is the claim ↔ quantitative-record join: the claim, MLflow health,
+and one item per experiment testing the claim — its status, attempt index,
+conclusion, compact review verdicts, and its bounded MLflow `metrics` payload
+in the same shape as the project `/mlflow` overview items. It is a read-time
+join over existing records, not a second quantitative ledger.
 
 ## Experiments and MLflow
 
@@ -150,7 +157,9 @@ agent-authored logic graph plus lint problems and resolved references.
 `.../results/metrics` is a bounded UI view over centralized MLflow: matching
 runs, params, final values, and downsampled metric histories. It is not a second
 metrics database. `/mlflow` aggregates that view across the project's
-experiments and provides dashboard links when configured.
+experiments and provides dashboard links when configured; each overview item
+also carries `tested_claims` (compact claim identity + belief state) so ledger
+surfaces can link runs back to the claims they are evidence for.
 
 ## Reflections
 

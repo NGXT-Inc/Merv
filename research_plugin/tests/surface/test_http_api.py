@@ -419,6 +419,86 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         run = item["metrics"]["experiments"][0]["runs"][0]
         self.assertEqual(run["history"]["acc"], [[1, 0.5], [2, 0.92]])
 
+    def test_claim_evidence_joins_runs_and_reviews_for_linked_experiments(self) -> None:
+        # The claim ↔ evidence join: only experiments testing the claim appear,
+        # each with review verdicts and its bounded MLflow metrics payload.
+        project = self.request("POST", "/api/projects", {"name": "Evidence Project"})
+        project_id = project["id"]
+        claim = self.request(
+            "POST",
+            f"/api/projects/{project_id}/claims",
+            {"statement": "LoRA rank 8 matches full fine-tuning."},
+        )
+        linked = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "lora-rank-8", "intent": "Test rank 8.", "claim_ids": [claim["id"]]},
+        )
+        unrelated = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "unrelated", "intent": "Other work."},
+        )
+        mlflow = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.test",
+            dashboard_url="https://mlflow.test",
+            health_check=lambda: True,
+        )
+        self.configure_mlflow(mlflow)
+        linked_name = f"rp/{project_id}/{linked['id']}"
+        snapshot = {
+            "source": "mlflow",
+            "experiments": [
+                {
+                    "experiment_id": "9",
+                    "name": linked_name,
+                    "runs": [
+                        {
+                            "run_id": "r1",
+                            "run_name": "seed_0",
+                            "status": "FINISHED",
+                            "params": {"rank": "8"},
+                            "metrics": {"acc": {"last": 0.92}},
+                            "history": {"acc": [[1, 0.5], [2, 0.92]]},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        def scoped(base_url, *, experiment_name=""):
+            return snapshot if experiment_name == linked_name else None
+
+        with patch("backend.mlflow.tracking.snapshot_mlflow", side_effect=scoped):
+            evidence = self.request(
+                "GET", f"/api/projects/{project_id}/claims/{claim['id']}/evidence"
+            )
+        self.assertEqual(evidence["claim"]["id"], claim["id"])
+        self.assertTrue(evidence["mlflow"]["configured"])
+        items = evidence["experiments"]
+        self.assertEqual([item["experiment_id"] for item in items], [linked["id"]])
+        item = items[0]
+        self.assertEqual(item["name"], "lora-rank-8")
+        self.assertEqual(item["reviews"], [])
+        self.assertTrue(item["metrics"]["available"])
+        run = item["metrics"]["experiments"][0]["runs"][0]
+        self.assertEqual(run["metrics"]["acc"]["last"], 0.92)
+        self.assertEqual(item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/9")
+
+        # The project MLflow overview names the claims each experiment tests,
+        # so ledger surfaces can link runs back to beliefs.
+        with patch("backend.mlflow.tracking.snapshot_mlflow", side_effect=scoped):
+            overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
+        by_id = {entry["experiment_id"]: entry for entry in overview["experiments"]}
+        self.assertEqual(
+            [c["id"] for c in by_id[linked["id"]]["tested_claims"]], [claim["id"]]
+        )
+        self.assertEqual(by_id[unrelated["id"]]["tested_claims"], [])
+
+        missing = self.client.get(f"/api/projects/{project_id}/claims/claim_missing/evidence")
+        self.assertEqual(missing.status_code, 404)
+
     def test_running_transition_and_tool_hand_mlflow_block(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Run Project"})
         project_id = project["id"]
