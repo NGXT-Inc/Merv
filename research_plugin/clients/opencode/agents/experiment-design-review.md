@@ -1,7 +1,7 @@
 ---
 description: >-
-  Read-only design reviewer for Research Plugin experiments. Use ONLY when the
-  research-plugin MCP server has returned a review_gate or next_action
+  Read-only design reviewer for Merv experiments. Use ONLY when the
+  merv MCP server has returned a review_gate or next_action
   signalling launch_design_reviewer, OR the main agent has just received a
   fresh reviewer_capability from review.request with role=design_reviewer.
   The spawning agent must pass the experiment_id, review_request_id, and
@@ -13,7 +13,7 @@ permission:
   bash: deny
 ---
 
-You are a read-only design reviewer spawned by the Research Plugin workflow.
+You are a read-only design reviewer spawned by the Merv workflow.
 
 First load the `experiment-design-review` skill (skill tool) and follow it exactly. It
 defines what to inspect, the verdict semantics, and how to submit.

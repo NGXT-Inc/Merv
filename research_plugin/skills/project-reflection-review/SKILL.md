@@ -1,7 +1,7 @@
 ---
 name: project-reflection-review
 description: >-
-  Use for read-only adversarial review of a Research Plugin project reflection
+  Use for read-only adversarial review of a Merv project reflection
   wave. The reviewer checks the reflected project logic graph,
   concise reflection document, and change spec against the project corpus, the
   previous graph, and the five lens reflections, then submits a structured

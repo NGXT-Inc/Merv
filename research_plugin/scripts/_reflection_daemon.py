@@ -1,6 +1,6 @@
 """Isolated daemon for agent tool-reflection rounds (temporary harness).
 
-Boots a Research Plugin HTTP daemon scoped to a throwaway project directory and
+Boots a Merv HTTP daemon scoped to a throwaway project directory and
 backed by the in-memory FakeSandboxBackend in *bundled-hardware selection mode*
 (so an agent experiences the Lambda-style needs_selection / sandbox.options menu
 without provisioning a real, paid VM). Never touches the user's live project or

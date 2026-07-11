@@ -10,8 +10,8 @@ unauthenticated HTTP surface normally uses the implicit ``local`` tenant.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Iterator
 
 from ..ports.quota_admission import AdmissionRequest
 from ..state.store import BaseStateStore, row_to_dict
@@ -198,6 +198,100 @@ class QuotaService:
             usd += hours * float(data.get("price_usd_per_hour") or 0.0)
         return {"usd": usd, "gpu_hours": gpu_hours}
 
+    def project_spend(
+        self, *, project_id: str, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """A project's compute spend from the generation ledger, grouped for the UI.
+
+        Same billing rule as ``tenant_spend`` — price × wall-clock hours, an
+        open generation bills to ``now`` — plus the groupings a spend panel
+        needs: per experiment, per hardware SKU, and per UTC day (a generation
+        spanning midnight is apportioned across the days it ran). Hours quoted
+        at $0 (Modal, local) are summed separately so the UI can say "N hours
+        unpriced" instead of passing off a partial total as the whole truth.
+        """
+        now_dt = now or datetime.now(tz=UTC)
+        conn = self.store.connect()
+        try:
+            rows = conn.execute(
+                "SELECT experiment_id, instance_type, gpu, price_usd_per_hour, "
+                "started_at, ended_at "
+                "FROM sandbox_generations WHERE project_id = ? ORDER BY created_seq",
+                (project_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        totals = {"usd": 0.0, "hours": 0.0, "unpriced_hours": 0.0}
+        open_generations = 0
+        burn_usd_per_hour = 0.0
+        generations = 0
+        by_experiment: dict[str, dict[str, Any]] = {}
+        by_hardware: dict[tuple[str, str, float], dict[str, Any]] = {}
+        daily: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            data = row_to_dict(row=row) or {}
+            started = parse_iso(data.get("started_at"))
+            if started is None:
+                continue
+            ended = parse_iso(data.get("ended_at"))
+            end = ended or now_dt
+            hours = max(0.0, (end - started).total_seconds() / 3600.0)
+            price = float(data.get("price_usd_per_hour") or 0.0)
+            usd = hours * price
+            generations += 1
+            totals["usd"] += usd
+            totals["hours"] += hours
+            if price <= 0:
+                totals["unpriced_hours"] += hours
+            if ended is None:
+                open_generations += 1
+                burn_usd_per_hour += price
+            exp_id = str(data.get("experiment_id") or "")
+            exp = by_experiment.setdefault(
+                exp_id,
+                {"experiment_id": exp_id, "usd": 0.0, "hours": 0.0, "generations": 0},
+            )
+            exp["usd"] += usd
+            exp["hours"] += hours
+            exp["generations"] += 1
+            hw_key = (
+                str(data.get("instance_type") or ""),
+                str(data.get("gpu") or ""),
+                price,
+            )
+            hw = by_hardware.setdefault(
+                hw_key,
+                {
+                    "instance_type": hw_key[0],
+                    "gpu": hw_key[1],
+                    "price_usd_per_hour": price,
+                    "usd": 0.0,
+                    "hours": 0.0,
+                    "generations": 0,
+                },
+            )
+            hw["usd"] += usd
+            hw["hours"] += hours
+            hw["generations"] += 1
+            for day, day_hours in _hours_by_utc_day(started=started, ended=end):
+                bucket = daily.setdefault(day, {"date": day, "usd": 0.0, "hours": 0.0})
+                bucket["usd"] += day_hours * price
+                bucket["hours"] += day_hours
+        def by_spend(entry: dict[str, Any]) -> tuple[float, float]:
+            return (-entry["usd"], -entry["hours"])
+
+        return {
+            "total_usd": totals["usd"],
+            "total_hours": totals["hours"],
+            "unpriced_hours": totals["unpriced_hours"],
+            "generations": generations,
+            "open_generations": open_generations,
+            "burn_usd_per_hour": burn_usd_per_hour,
+            "by_experiment": sorted(by_experiment.values(), key=by_spend),
+            "by_hardware": sorted(by_hardware.values(), key=by_spend),
+            "daily": sorted(daily.values(), key=lambda bucket: bucket["date"]),
+        }
+
     def check_admission(self, *, request: AdmissionRequest) -> None:
         """Admit a sandbox procurement, or raise PermissionDeniedError.
 
@@ -357,6 +451,21 @@ class QuotaService:
                     "quota": "usd_budget",
                 },
             )
+
+
+def _hours_by_utc_day(
+    *, started: datetime, ended: datetime
+) -> Iterator[tuple[str, float]]:
+    """Yield (YYYY-MM-DD, hours) portions of [started, ended) per UTC day."""
+    cursor = started.astimezone(UTC)
+    ended = ended.astimezone(UTC)
+    while cursor < ended:
+        next_midnight = datetime(
+            cursor.year, cursor.month, cursor.day, tzinfo=UTC
+        ) + timedelta(days=1)
+        chunk_end = min(ended, next_midnight)
+        yield cursor.date().isoformat(), (chunk_end - cursor).total_seconds() / 3600.0
+        cursor = chunk_end
 
 
 def _int_or_none(value: Any) -> int | None:

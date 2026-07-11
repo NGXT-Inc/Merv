@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.mlflow.config import resolve_mlflow_mode
 from backend.mlflow.local_server import LocalMlflowServer
+from backend.mlflow.metrics import MlflowSnapshotError
 from backend.mlflow.tracking import CentralMlflowService
 from backend.utils import ValidationError
 
@@ -149,6 +150,31 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         self.assertEqual(context["env"]["RP_PROJECT_ID"], "proj_123")
         self.assertNotIn("MLFLOW_EXPERIMENT_NAME", context["env"])
 
+    def test_credentials_ride_only_when_requested(self) -> None:
+        service = CentralMlflowService(
+            mode="external",
+            tracking_uri="https://mlflow.example.test/",
+            agent_key="rr_sk_agent",
+        )
+        # Default (UI-facing) blocks never carry the credential pair.
+        plain = service.context(project_id="p", experiment_id="e").to_dict()
+        self.assertNotIn("MLFLOW_TRACKING_PASSWORD", plain["env"])
+        self.assertNotIn("MLFLOW_TRACKING_PASSWORD", service.project_context(project_id="p")["env"])
+        # Agent-facing blocks opt in and get the Basic-auth env pair.
+        agent = service.context(
+            project_id="p", experiment_id="e", include_credentials=True
+        ).to_dict()
+        self.assertEqual(agent["env"]["MLFLOW_TRACKING_USERNAME"], "rp-agent")
+        self.assertEqual(agent["env"]["MLFLOW_TRACKING_PASSWORD"], "rr_sk_agent")
+        scoped = service.project_context(project_id="p", include_credentials=True)
+        self.assertEqual(scoped["env"]["MLFLOW_TRACKING_PASSWORD"], "rr_sk_agent")
+        # No key configured -> opting in adds nothing.
+        bare = CentralMlflowService(tracking_uri="https://mlflow.example.test")
+        agent_bare = bare.context(
+            project_id="p", experiment_id="e", include_credentials=True
+        ).to_dict()
+        self.assertNotIn("MLFLOW_TRACKING_PASSWORD", agent_bare["env"])
+
     def test_unconfigured_context_still_names_experiment(self) -> None:
         context = CentralMlflowService().context(
             project_id="proj_123", experiment_id="exp_456"
@@ -217,6 +243,46 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         )
         self.assertTrue(metrics["available"])
         self.assertNotIn("base_url", metrics)
+
+    def test_results_metrics_distinguishes_unreachable_from_no_runs(self) -> None:
+        service = CentralMlflowService(server_uri="http://mlflow:5000")
+        with patch("backend.mlflow.tracking.snapshot_mlflow", return_value=None):
+            empty = service.results_metrics(project_id="proj", experiment_id="exp")
+        with patch(
+            "backend.mlflow.tracking.snapshot_mlflow",
+            side_effect=MlflowSnapshotError("down"),
+        ):
+            unreachable = service.results_metrics(
+                project_id="proj", experiment_id="exp"
+            )
+
+        self.assertFalse(empty["available"])
+        self.assertIn("No MLflow runs", empty["hint"])
+        self.assertFalse(unreachable["available"])
+        self.assertEqual(unreachable["hint"], "MLflow unreachable.")
+
+    def test_namespace_experiments_returns_metadata_and_dashboard_links(self) -> None:
+        service = CentralMlflowService(
+            server_uri="http://mlflow:5000",
+            dashboard_url="https://mlflow.test",
+        )
+        with patch(
+            "backend.mlflow.tracking.search_mlflow_experiments",
+            return_value=[
+                {"name": "rp/proj/exp", "experiment_id": "7"},
+                {"name": "rp/proj/stray", "experiment_id": "8"},
+            ],
+        ) as search:
+            experiments = service.namespace_experiments(project_id="proj")
+
+        search.assert_called_once_with(
+            "http://mlflow:5000", name_like="rp/proj/%"
+        )
+        self.assertEqual(experiments[1]["name"], "rp/proj/stray")
+        self.assertEqual(
+            experiments[1]["dashboard_experiment_url"],
+            "https://mlflow.test/#/experiments/8",
+        )
 
     def test_create_run_creates_experiment_and_returns_resume_identity(self) -> None:
         service = CentralMlflowService(

@@ -150,7 +150,7 @@ export default function App() {
     return (
       <FullPageStatus>
         <h2>Backend not reachable</h2>
-        <p>Is the research_plugin HTTP server running on <code>127.0.0.1:8787</code>?</p>
+        <p>Is the Merv HTTP server running on <code>127.0.0.1:8787</code>?</p>
         <p className="mono" style={{ fontSize: 'var(--text-xs)', marginTop: 8 }}>
           python3 scripts/dev_http_reload.py --host 127.0.0.1 --port 8787
         </p>

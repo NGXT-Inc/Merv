@@ -1,4 +1,4 @@
-# Secrets — never committed; real creds live at ~/.config/research-plugin/.env
+# Secrets — never committed; real creds live at ~/.config/merv/.env
 .env
 .env.local
 

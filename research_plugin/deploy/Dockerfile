@@ -1,11 +1,11 @@
-# Hosted-brain image for Research Plugin.
+# Hosted-brain image for Merv.
 #
 # Installs the `control` extra (Postgres driver + object-store SDK + provider
 # SDK) and runs the control composition behind uvicorn. This is the REFERENCE
 # stack — not a managed deploy: TLS termination, a real secret store, managed
 # Postgres, and the cleanup scheduler are all the operator's responsibility (see
 # deploy/README.md). Build context is the plugin root:
-#   docker build -f deploy/Dockerfile -t research-plugin-control .
+#   docker build -f deploy/Dockerfile -t merv-control .
 #
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim AS base
@@ -53,4 +53,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # control_main forces RESEARCH_PLUGIN_MODE=control (data-plane submission
 # endpoints on, reaper on). Keep it behind a TLS-terminating private boundary in
 # production.
-ENTRYPOINT ["research-plugin-control"]
+ENTRYPOINT ["merv-control"]

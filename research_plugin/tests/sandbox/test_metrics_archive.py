@@ -4,7 +4,13 @@ import json
 import unittest
 from unittest.mock import patch
 
-from backend.mlflow.metrics import MAX_HISTORY_POINTS, downsample_history, snapshot_mlflow
+from backend.mlflow.metrics import (
+    MAX_HISTORY_POINTS,
+    MAX_METRIC_KEYS,
+    MlflowSnapshotError,
+    downsample_history,
+    snapshot_mlflow,
+)
 
 
 class FakeResponse:
@@ -28,6 +34,7 @@ class FakeClient:
         self.runs = runs or {}
         self.history = history or {}
         self.fail = fail
+        self.history_calls = 0
 
     def __enter__(self):
         return self
@@ -46,6 +53,7 @@ class FakeClient:
                 experiments = [e for e in experiments if e.get("name") == name]
             return FakeResponse({"experiments": experiments})
         if url.endswith("/metrics/get-history"):
+            self.history_calls += 1
             key = (params or {}).get("run_id"), (params or {}).get("metric_key")
             return FakeResponse({"metrics": self.history.get(key, [])})
         raise AssertionError(f"unexpected GET {url}")
@@ -154,6 +162,43 @@ class SnapshotMlflowTest(unittest.TestCase):
             snapshot["experiments"][0]["runs"][0]["metrics"]["acc"]["last"], 0.9
         )
 
+    def test_snapshot_can_skip_history_for_overview_reads(self) -> None:
+        client = FakeClient(
+            experiments=[{"experiment_id": "1", "name": "rp/proj/exp"}],
+            runs={
+                "1": [{
+                    "info": {"run_id": "r1"},
+                    "data": {"metrics": [{"key": "acc", "value": 0.9}]},
+                }]
+            },
+        )
+        with _client_patch(client):
+            snapshot = snapshot_mlflow(
+                "http://x",
+                experiment_name="rp/proj/exp",
+                include_history=False,
+            )
+        run = snapshot["experiments"][0]["runs"][0]
+        self.assertNotIn("history", run)
+        self.assertEqual(client.history_calls, 0)
+
+    def test_run_discloses_metric_key_cap(self) -> None:
+        metrics = [
+            {"key": f"metric_{i}", "value": float(i)}
+            for i in range(MAX_METRIC_KEYS)
+        ]
+        client = FakeClient(
+            experiments=[{"experiment_id": "1", "name": "rp/proj/exp"}],
+            runs={
+                "1": [{"info": {"run_id": "r1"}, "data": {"metrics": metrics}}]
+            },
+        )
+        with _client_patch(client):
+            snapshot = snapshot_mlflow("http://x", include_history=False)
+        run = snapshot["experiments"][0]["runs"][0]
+        self.assertEqual(run["metrics_capped_at"], MAX_METRIC_KEYS)
+        self.assertEqual(len(run["metrics"]), MAX_METRIC_KEYS)
+
     def test_snapshot_none_when_no_runs_anywhere(self) -> None:
         client = FakeClient(
             experiments=[{"experiment_id": "0", "name": "Default", "last_update_time": 1}],
@@ -162,9 +207,10 @@ class SnapshotMlflowTest(unittest.TestCase):
         with _client_patch(client):
             self.assertIsNone(snapshot_mlflow("http://x"))
 
-    def test_snapshot_none_when_unreachable_or_blank(self) -> None:
+    def test_snapshot_distinguishes_unreachable_from_blank(self) -> None:
         with _client_patch(FakeClient(fail=True)):
-            self.assertIsNone(snapshot_mlflow("http://x"))
+            with self.assertRaises(MlflowSnapshotError):
+                snapshot_mlflow("http://x")
         self.assertIsNone(snapshot_mlflow(""))
 
     def test_downsample_caps_points_and_keeps_endpoints(self) -> None:

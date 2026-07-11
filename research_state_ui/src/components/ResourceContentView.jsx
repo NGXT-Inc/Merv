@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { AuthedImg, RawLink } from './AuthedMedia';
 import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
 import FileRenderer from './FileRenderer';
 import PdfView from './PdfView';
@@ -141,7 +142,7 @@ export default function ResourceContentView({
       <div className="image-view">
         {/* Not lazy: inside a small overflow:auto preview panel a lazy image
             sits "below the fold" of the scroll box and never loads. */}
-        <img
+        <AuthedImg
           className="image-view-img"
           src={api.resourceFileUrl(projectId, resourceId)}
           alt={path || 'image'}
@@ -155,7 +156,7 @@ export default function ResourceContentView({
       <div className="empty">
         Binary file{size != null ? ` (${formatBytes(size)})` : ''}.{' '}
         {hasLocalDataPlane ? (
-          <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+          <RawLink href={api.resourceFileUrl(projectId, resourceId)}>Open raw</RawLink>
         ) : null}
       </div>
     );
@@ -167,9 +168,7 @@ export default function ResourceContentView({
       <div>
         <div className="error-message">{error}</div>
         {hasLocalDataPlane ? (
-          <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">
-            Open raw file
-          </a>
+          <RawLink href={api.resourceFileUrl(projectId, resourceId)}>Open raw file</RawLink>
         ) : null}
       </div>
     );
@@ -209,7 +208,7 @@ export default function ResourceContentView({
         <div className="empty">
           Binary file ({formatBytes(meta)}).{' '}
           {hasLocalDataPlane ? (
-            <a className="btn btn--sm" href={api.resourceFileUrl(projectId, resourceId)} target="_blank" rel="noreferrer">Open raw</a>
+            <RawLink href={api.resourceFileUrl(projectId, resourceId)}>Open raw</RawLink>
           ) : null}
         </div>
       ) : (

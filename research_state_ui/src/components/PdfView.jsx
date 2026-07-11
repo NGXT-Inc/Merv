@@ -21,6 +21,7 @@
  * react-pdf / pdfjs-dist. The component contract stays the same.
  */
 import { api } from '../api';
+import { RawLink, useAuthedSrc } from './AuthedMedia';
 
 function filenameOf(path) {
   if (!path) return 'document.pdf';
@@ -29,15 +30,18 @@ function filenameOf(path) {
 
 export default function PdfView({ projectId, resourceId, path }) {
   const url = api.resourceFileUrl(projectId, resourceId);
+  // Hosted auth: an iframe can't carry the Bearer header, so render the blob.
+  const frameSrc = useAuthedSrc(url);
+  if (!frameSrc) return null;
   return (
     <>
       <iframe
-        src={`${url}#toolbar=0&navpanes=0&view=FitH`}
+        src={`${frameSrc}#toolbar=0&navpanes=0&view=FitH`}
         title={filenameOf(path)}
         className="pdf-view-frame"
         loading="lazy"
       />
-      <div className="content-truncated-note"><a href={url} target="_blank" rel="noreferrer">Open raw</a></div>
+      <div className="content-truncated-note"><RawLink href={url} className="">Open raw</RawLink></div>
     </>
   );
 }

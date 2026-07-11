@@ -112,6 +112,10 @@ mkdir -p "$RP_SESSION_DIR" 2>/dev/null || true
     printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
     printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
   fi
+  if [ -n "${MLFLOW_TRACKING_PASSWORD:-}" ]; then
+    printf 'MLFLOW_TRACKING_USERNAME=%q\n' "${MLFLOW_TRACKING_USERNAME:-rp-agent}"
+    printf 'MLFLOW_TRACKING_PASSWORD=%q\n' "$MLFLOW_TRACKING_PASSWORD"
+  fi
 } > /opt/rp/env
 mkdir -p /run/sshd
 ssh-keygen -A >/dev/null 2>&1 || true
@@ -144,7 +148,7 @@ RP_SESSION_DIR="${RP_SESSION_DIR:-/workspace/.research_plugin_sessions/$RP_EXPER
 if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
   HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
-export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN RP_SESSION_DIR
+export RP_WORKDIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD RP_SESSION_DIR
 mkdir -p "$RP_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$RP_EXPERIMENT_DIR/artifacts_to_keep" "$RP_SESSION_DIR" 2>/dev/null || true
 LOG_DIR="$RP_SESSION_DIR"
 LOG="$LOG_DIR/transcript.log"
@@ -552,12 +556,25 @@ class ModalSandboxBackend(SandboxBackendBase):
         ``Secret.from_dotenv()`` so sandbox creation is independent of the
         daemon's current working directory.
         """
-        if not os.environ.get("HF_TOKEN"):
-            return []
+        secrets: list[Any] = []
         keys = ["HF_TOKEN"]
         if os.environ.get("HUGGING_FACE_HUB_TOKEN"):
             keys.append("HUGGING_FACE_HUB_TOKEN")
-        return [modal.Secret.from_local_environ(keys)]
+        if os.environ.get("HF_TOKEN"):
+            secrets.append(modal.Secret.from_local_environ(keys))
+        # MLflow credential pair for the authenticated hosted /mlflow route;
+        # the brain env holds only the namespaced key, so map it explicitly.
+        agent_key = os.environ.get("RESEARCH_PLUGIN_MLFLOW_AGENT_KEY", "")
+        if agent_key:
+            secrets.append(
+                modal.Secret.from_dict(
+                    {
+                        "MLFLOW_TRACKING_USERNAME": "rp-agent",
+                        "MLFLOW_TRACKING_PASSWORD": agent_key,
+                    }
+                )
+            )
+        return secrets
 
     def _ssh_endpoint(self, *, sandbox: Any) -> tuple[str, int]:
         get_tunnels = getattr(sandbox, "tunnels", None)

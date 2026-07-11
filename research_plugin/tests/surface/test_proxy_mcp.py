@@ -73,7 +73,7 @@ class HttpProxyMcpServerUnifiedBrainTest(unittest.TestCase):
             config=ProxyConfig(repo_root=self.repo, control_url="http://127.0.0.1:1"),
         )
         init = offline.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
-        self.assertEqual(init["result"]["serverInfo"]["name"], "research-plugin")
+        self.assertEqual(init["result"]["serverInfo"]["name"], "merv")
         ping = offline.handle({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}})
         self.assertEqual(ping["result"], {})
 
@@ -278,7 +278,7 @@ class HttpProxyMcpServerOfflineTest(unittest.TestCase):
         self.assertTrue(result.get("isError"))
         structured = result["structuredContent"]
         self.assertEqual(structured["error_code"], "brain_not_running")
-        self.assertIn("research-plugin-http", structured["error"])
+        self.assertIn("merv-http", structured["error"])
 
 
 if __name__ == "__main__":

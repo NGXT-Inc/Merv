@@ -174,13 +174,20 @@ def write_secrets_via_mgmt_ssh(
 
 
 def sandbox_tokens() -> dict[str, str]:
+    tokens: dict[str, str] = {}
     token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        return {}
-    tokens = {"HF_TOKEN": token}
-    hub_token = os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
-    if hub_token:
-        tokens["HUGGING_FACE_HUB_TOKEN"] = hub_token
+    if token:
+        tokens["HF_TOKEN"] = token
+        hub_token = os.environ.get("HUGGING_FACE_HUB_TOKEN", "")
+        if hub_token:
+            tokens["HUGGING_FACE_HUB_TOKEN"] = hub_token
+    # MLflow credential pair (never the tracking URI — routing still flows
+    # through mlflow.context): makes hosted-MLflow auth ambient in every SSH
+    # session so agents never put the secret on a command line.
+    agent_key = os.environ.get("RESEARCH_PLUGIN_MLFLOW_AGENT_KEY", "")
+    if agent_key:
+        tokens["MLFLOW_TRACKING_USERNAME"] = "rp-agent"
+        tokens["MLFLOW_TRACKING_PASSWORD"] = agent_key
     return tokens
 
 

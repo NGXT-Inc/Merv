@@ -398,14 +398,34 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                             "status": "FINISHED",
                             "params": {"lr": "0.001"},
                             "metrics": {"acc": {"last": 0.92}},
-                            "history": {"acc": [[1, 0.5], [2, 0.92]]},
                         }
                     ],
                 }
             ],
         }
 
-        with patch("backend.mlflow.tracking.snapshot_mlflow", return_value=snapshot):
+        namespace = [
+            {
+                "name": f"rp/{project_id}/{exp_id}",
+                "experiment_id": "7",
+                "dashboard_experiment_url": "https://mlflow.test/#/experiments/7",
+            },
+            {
+                "name": f"rp/{project_id}/stray",
+                "experiment_id": "8",
+                "dashboard_experiment_url": "https://mlflow.test/#/experiments/8",
+            },
+        ]
+        with (
+            patch(
+                "backend.mlflow.tracking.snapshot_mlflow", return_value=snapshot
+            ) as snapshot_read,
+            patch.object(
+                self.app.mlflow_tracking,
+                "namespace_experiments",
+                return_value=namespace,
+            ),
+        ):
             overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
         self.assertTrue(overview["mlflow"]["configured"])
         self.assertEqual(overview["mlflow"]["dashboard_url"], "https://mlflow.test")
@@ -417,7 +437,45 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # Deep link resolves the MLflow numeric id from the matching snapshot.
         self.assertEqual(item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/7")
         run = item["metrics"]["experiments"][0]["runs"][0]
-        self.assertEqual(run["history"]["acc"], [[1, 0.5], [2, 0.92]])
+        self.assertNotIn("history", run)
+        snapshot_read.assert_called_once_with(
+            "https://mlflow.test",
+            experiment_name=f"rp/{project_id}/{exp_id}",
+            include_history=False,
+        )
+        self.assertEqual(
+            overview["unmapped_mlflow_experiments"], [namespace[1]]
+        )
+
+    def test_project_mlflow_overview_short_circuits_when_unreachable(self) -> None:
+        project = self.request("POST", "/api/projects", {"name": "MLflow Down"})
+        project_id = project["id"]
+        exp = self.request(
+            "POST",
+            f"/api/projects/{project_id}/experiments",
+            {"name": "exp-ml", "intent": "Train"},
+        )
+        self.configure_mlflow(CentralMlflowService(
+            tracking_uri="https://mlflow.test",
+            health_check=lambda: False,
+        ))
+
+        with (
+            patch.object(self.app.mlflow_tracking, "results_metrics") as metrics,
+            patch.object(
+                self.app.mlflow_tracking, "namespace_experiments"
+            ) as namespace,
+        ):
+            overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
+
+        metrics.assert_not_called()
+        namespace.assert_not_called()
+        self.assertFalse(overview["mlflow"]["reachable"])
+        self.assertFalse(overview["experiments"][0]["metrics"]["available"])
+        self.assertEqual(
+            overview["experiments"][0]["experiment_id"], exp["id"]
+        )
+        self.assertEqual(overview["unmapped_mlflow_experiments"], [])
 
     def test_running_transition_and_tool_hand_mlflow_block(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Run Project"})

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart the Research Plugin HTTP API when backend source files change."""
+"""Restart the Merv HTTP API when backend source files change."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def server_command(
     activity_stderr: bool,
 ) -> list[str]:
     # Go through the bash launcher so the credential-resolution chain in
-    # bin/research-plugin-http (user-config dirs > plugin-tree fallback) runs
+    # bin/merv-http (user-config dirs > plugin-tree fallback) runs
     # before backend.transport.http_server starts. If we exec'd `python -m backend.transport.http_server`
     # directly here, RESEARCH_PLUGIN_MODAL_ENV_FILE never gets set and the
     # Modal client breaks because nothing populates MODAL_TOKEN_ID/SECRET.
@@ -72,8 +72,8 @@ def start_server(
     env = os.environ.copy()
     env["RESEARCH_PLUGIN_REGISTRY_STORE"] = str(registry_store_path)
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    # PYTHONPATH and python interpreter are set by bin/research-plugin-http.
-    launcher = plugin_root / "bin" / "research-plugin-http"
+    # PYTHONPATH and python interpreter are set by bin/merv-http.
+    launcher = plugin_root / "bin" / "merv-http"
     command = server_command(
         launcher=launcher,
         registry_store_path=registry_store_path,

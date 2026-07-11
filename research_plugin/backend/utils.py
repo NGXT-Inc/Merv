@@ -1,4 +1,4 @@
-"""Cross-cutting helpers for the Research Plugin backend.
+"""Cross-cutting helpers for the Merv backend.
 
 Holds the small, dependency-free utilities every layer needs:
 

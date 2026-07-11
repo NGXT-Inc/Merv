@@ -1,16 +1,18 @@
-"""FastAPI app assembly for the Research Plugin HTTP surface."""
+"""FastAPI app assembly for the Merv HTTP surface."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError as PydanticValidationError
 
 from ... import __version__
+from ...services.auth import UnauthorizedError
 from ...services.identity import LOCAL_PRINCIPAL
 from ...state import monotonic_ms
 from ...tools.contracts import DATA_PLANE_TOOL_NAMES, PROJECT_SCOPED_TOOL_NAMES, TOOL_CONTRACTS
@@ -32,7 +34,7 @@ from ..mcp_http import register_mcp_routes
 from .context import ApiRouteContext
 from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, is_local_origin
 from .views import ResearchHttpApi
-from . import claims, events, experiments, feed, meta, projects, reflections, resources, reviews, sandboxes, storage
+from . import claims, events, experiments, feed, meta, projects, reflections, resources, reviews, sandboxes, sdk_auth, storage
 
 
 def create_fastapi_app(
@@ -41,6 +43,7 @@ def create_fastapi_app(
     allowed_origins: list[str] | None = None,
     cleanup: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
+    auth: Any | None = None,
 ) -> FastAPI:
     # Unified HTTP brain. File, SSH, and rsync work is always submitted by the
     # local MCP proxy; the server never accepts repo_root context or data-plane
@@ -96,6 +99,21 @@ def create_fastapi_app(
                     "reason": "requires_local_data_plane",
                 },
             )
+        # Membership boundary for authenticated (hosted) callers. Non-member
+        # projects 404 like nonexistent ones; project/list handlers receive
+        # the user id so creation records membership and listing filters.
+        user_id = str(getattr(principal, "user_id", "") or "")
+
+        def require_member(project_id: str | None) -> None:
+            if user_id and project_id and not api.app.store.is_project_member(
+                project_id=project_id, user_id=user_id
+            ):
+                raise NotFoundError(f"project not found: {project_id}")
+
+        require_member(arguments.get("project_id"))
+        internal_kwargs = (
+            {"user_id": user_id} if user_id and name in ("project", "project.list") else None
+        )
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if surface.use_hosted_tool_policies
@@ -104,15 +122,18 @@ def create_fastapi_app(
         if policy is not None:
             call_kwargs: dict[str, Any] = {}
             if policy.telemetry_from_review_request:
-                call_kwargs["telemetry_project_id"] = (
-                    api.app.reviews.request_project_id(
-                        review_request_id=arguments.get("review_request_id")
-                    )
+                review_project_id = api.app.reviews.request_project_id(
+                    review_request_id=arguments.get("review_request_id")
                 )
+                # Review tools resolve their project indirectly; gate on the
+                # resolved id so a capability can't cross project boundaries.
+                require_member(review_project_id)
+                call_kwargs["telemetry_project_id"] = review_project_id
             return api.app.call_tool(
                 name=name,
                 arguments=arguments,
                 activity_source=activity_source,
+                internal_kwargs=internal_kwargs,
                 **call_kwargs,
             )
         if name in PROJECT_SCOPED_TOOL_NAMES and "project_id" not in arguments:
@@ -133,9 +154,14 @@ def create_fastapi_app(
                 include_data_plane_enrichment=False,
             )
             return result
-        return api.app.call_tool(name=name, arguments=arguments, activity_source=activity_source)
+        return api.app.call_tool(
+            name=name,
+            arguments=arguments,
+            activity_source=activity_source,
+            internal_kwargs=internal_kwargs,
+        )
 
-    http = FastAPI(title="Research Plugin API", version=__version__)
+    http = FastAPI(title="Merv API", version=__version__)
 
     @http.middleware("http")
     async def reject_foreign_origins(request: Request, call_next):
@@ -163,18 +189,59 @@ def create_fastapi_app(
             )
         return await call_next(request)
 
+    # Membership gate inputs: project-scoped paths carry the id as the segment
+    # after /api/projects/; activity + debug are project-scoped via query param.
+    project_path = re.compile(r"^/api/projects/([^/]+)")
+    query_scoped_prefixes = ("/api/activity", "/api/debug/")
+
+    def _member_gate(request: Request, user_id: str) -> JSONResponse | None:
+        # Non-members get the same 404 a nonexistent project would produce.
+        path = request.url.path
+        match = project_path.match(path)
+        if match:
+            project_id = match.group(1)
+            if not api.app.store.is_project_member(project_id=project_id, user_id=user_id):
+                return JSONResponse(
+                    {"detail": "project not found", "error_code": "not_found"},
+                    status_code=404,
+                )
+            return None
+        if path.startswith(query_scoped_prefixes):
+            project_id = request.query_params.get("project_id") or ""
+            if not project_id:
+                return JSONResponse(
+                    {
+                        "detail": "project_id is required on this endpoint when authenticated",
+                        "error_code": "validation_error",
+                    },
+                    status_code=400,
+                )
+            if not api.app.store.is_project_member(project_id=project_id, user_id=user_id):
+                return JSONResponse(
+                    {"detail": "project not found", "error_code": "not_found"},
+                    status_code=404,
+                )
+        return None
+
     @http.middleware("http")
     async def attach_principal(request: Request, call_next):
         if request.method == "OPTIONS":
             return await call_next(request)
         request.state.principal = LOCAL_PRINCIPAL
         request.state.authenticated = False
-        # /health is liveness; /api/meta is the version handshake itself.
-        if request.url.path in ("/health", "/api/meta"):
+        # /health is liveness; /api/meta is the version handshake itself (it
+        # also tells the UI whether and how to log in). The MLflow gate route
+        # verifies credentials itself with Basic-challenge semantics, and the
+        # /api/sdk/auth/* device-flow routes serve clients that are logging in
+        # (session ids and refresh tokens are their own credentials).
+        if request.url.path in (
+            "/health", "/api/meta", "/internal/auth/mlflow"
+        ) or request.url.path.startswith("/api/sdk/auth/"):
             return await call_next(request)
         # Version/compat floor (cloud plan Phase 9). A below-floor client is
         # rejected with an actionable upgrade error. A missing header is
-        # tolerated for pre-Phase-9 clients.
+        # tolerated for pre-Phase-9 clients. Runs BEFORE auth so an outdated
+        # client gets the upgrade message, not a login error.
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
         if surface.hosted_control and client_version and is_below_floor(
             client_version=client_version, floor=MIN_PROXY_VERSION
@@ -183,8 +250,8 @@ def create_fastapi_app(
                 {
                     "detail": (
                         f"client version {client_version} is below the minimum "
-                        f"supported {MIN_PROXY_VERSION}; upgrade the research-plugin "
-                        "client (pip install -U research-plugin) and reconnect"
+                        f"supported {MIN_PROXY_VERSION}; upgrade the merv "
+                        "client (pip install -U merv) and reconnect"
                     ),
                     "error_code": "client_too_old",
                     "min_version": MIN_PROXY_VERSION,
@@ -192,6 +259,25 @@ def create_fastapi_app(
                 },
                 status_code=426,
             )
+        if auth is not None:
+            try:
+                principal = auth.verify_bearer(request.headers.get("Authorization"))
+            except UnauthorizedError as exc:
+                return JSONResponse(
+                    {
+                        "detail": (
+                            f"{exc.message}; sign in on the web UI or set an API "
+                            "key (merv-client login --api-key rr_sk_...)"
+                        ),
+                        "error_code": "unauthorized",
+                    },
+                    status_code=401,
+                )
+            request.state.principal = principal
+            request.state.authenticated = True
+            denied = _member_gate(request, principal.user_id)
+            if denied is not None:
+                return denied
         return await call_next(request)
 
     @http.middleware("http")
@@ -267,7 +353,36 @@ def create_fastapi_app(
         return JSONResponse({"detail": "invalid HTTP request", "errors": exc.errors()}, status_code=400)
 
     def app_for_data_plane_project(request: Request, project_id: str) -> Any:
+        # Data-plane routes carry project_id in the BODY, so the path-based
+        # membership gate can't see them; enforce here at their single funnel.
+        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        user_id = str(getattr(principal, "user_id", "") or "")
+        if user_id and project_id and not api.app.store.is_project_member(
+            project_id=project_id, user_id=user_id
+        ):
+            raise NotFoundError(f"project not found: {project_id}")
         return api_for_project(project_id).app
+
+    if auth is not None:
+        # Browser-handoff login for CLI/proxy clients (merv-client login).
+        http.include_router(
+            sdk_auth.build_router(verifier=auth, allowed_origins=allowed_origins or [])
+        )
+
+        @http.get("/internal/auth/mlflow")
+        def mlflow_gate(request: Request) -> Response:
+            # Caddy forward_auth target for the /mlflow reverse-proxy routes.
+            # Accepts the same credentials as the API plus HTTP Basic (browser
+            # prompt / MLFLOW_TRACKING_USERNAME+PASSWORD pairs put the key in
+            # the password slot). 204 admits, 401 challenges.
+            try:
+                auth.verify_basic_or_bearer(request.headers.get("Authorization"))
+            except UnauthorizedError:
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'},
+                )
+            return Response(status_code=204)
 
     ctx = ApiRouteContext(
         api=api,
@@ -276,6 +391,7 @@ def create_fastapi_app(
         api_for_project=api_for_project,
         route_call_tool=route_call_tool,
         app_for_data_plane_project=app_for_data_plane_project,
+        auth_meta=auth.meta() if auth is not None else None,
     )
     for build in (
         meta.build_router,

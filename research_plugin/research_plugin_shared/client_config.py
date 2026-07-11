@@ -10,9 +10,12 @@ from pathlib import Path
 
 CLIENT_CONFIG_ENV_VAR = "RESEARCH_PLUGIN_CLIENT_CONFIG"
 CONTROL_URL_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_URL"
+# RapidReview API key (rr_sk_...) for the hosted brain; env beats the
+# client.json "api_key" field, mirroring the control_url chain.
+API_KEY_ENV_VAR = "RESEARCH_PLUGIN_API_KEY"
 DAEMON_STATE_DIR_ENV_VAR = "RESEARCH_PLUGIN_DAEMON_STATE_DIR"
 # Brain URL defaults: unconfigured machines dial the hosted brain; local
-# deployments opt in via `research-plugin-client configure` or the env var.
+# deployments opt in via `merv-client configure` or the env var.
 HOSTED_CONTROL_URL = "https://experiments.rapidreview.io"
 LOCAL_BRAIN_URL = "http://127.0.0.1:8787"
 DEFAULT_CLIENT_CONFIG_PATH = Path.home() / ".research_plugin" / "client.json"

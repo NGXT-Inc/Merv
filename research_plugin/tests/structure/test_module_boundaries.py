@@ -90,6 +90,7 @@ FILE_MODULES = {
     "domain/feed_policy.py": FEED,
     # surface: composition/transport strays and cross-module glue services.
     "services/__init__.py": SURFACE,  # import-free shell (test_plane_layout)
+    "services/auth.py": SURFACE,  # Supabase verifier, composed only hosted-side
     "services/cleanup.py": SURFACE,
     "services/identity.py": SURFACE,
     "services/permissions.py": SURFACE,

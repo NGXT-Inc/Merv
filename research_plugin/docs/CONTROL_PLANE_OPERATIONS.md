@@ -1,7 +1,7 @@
 # Operating the Hosted Brain
 
 This runbook covers the `control` deployment preset served by
-`research-plugin-control`. It is the operational companion to
+`merv-control`. It is the operational companion to
 `CONTROL_DATA_PLANE_SPLIT.md`; the reference container stack is documented in
 `../deploy/README.md`.
 
@@ -19,7 +19,7 @@ Consequences:
   directly to the public internet;
 - treat CORS and `X-RP-Client-Version` as browser/compatibility controls, not
   authentication;
-- protect the separately served Research State UI and MLflow endpoint at the
+- protect the separately served Merv UI and MLflow endpoint at the
   same infrastructure boundary.
 
 ## Topology and modes
@@ -29,8 +29,8 @@ while an agent-launched stdio MCP proxy performs checkout-local work.
 
 | `RESEARCH_PLUGIN_MODE` | Brain preset | Record/blob defaults | Entrypoint |
 |---|---|---|---|
-| `local` (default) | loopback development brain | SQLite and local-directory blobs | `research-plugin-http` |
-| `control` | hosted private brain | Postgres, S3-compatible blobs, mounted management key | `research-plugin-control` |
+| `local` (default) | loopback development brain | SQLite and local-directory blobs | `merv-http` |
+| `control` | hosted private brain | Postgres, S3-compatible blobs, mounted management key | `merv-control` |
 
 The proxy is the data plane in both modes. It reads and validates repo files,
 uses a caller-provided SSH key path for explicit output pulls without minting
@@ -40,7 +40,7 @@ never receives `repo_root` and never dials a user machine.
 Both brains own sandbox provider lifecycle and the expiry reaper. Neither
 preset automatically copies files out of a sandbox.
 
-Unknown mode values fail at startup. The `research-plugin-control` console
+Unknown mode values fail at startup. The `merv-control` console
 entrypoint forces `RESEARCH_PLUGIN_MODE=control`.
 
 ## Required control configuration
@@ -211,7 +211,7 @@ or SQLite audit files.
 
 ## UI traffic and degraded content
 
-The Research State UI uses project events over SSE for prompt refreshes, with
+The Merv UI uses project events over SSE for prompt refreshes, with
 ETag-based conditional polling as fallback. Desktop fallback polling is 3 s;
 mobile uses 5 s while work is live and 30 s when quiet. Detail views may own
 slower safety pollers for external state such as MLflow.

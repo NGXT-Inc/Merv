@@ -391,7 +391,7 @@ class ControlAppTest(unittest.TestCase):
             env = {
                 **mounted_env,
                 DB_URL_ENV_VAR: "postgresql://user:pass@db/research_plugin",
-                BLOB_BUCKET_ENV_VAR: "research-plugin-blobs",
+                BLOB_BUCKET_ENV_VAR: "merv-blobs",
             }
             with (
                 patch(
@@ -484,7 +484,12 @@ class ControlAppTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertNoLogs("backend.composition.control_mode", level="WARNING"):
+            # Auth is deliberately unconfigured here (this test's requests are
+            # tokenless), which now emits its own open-surface warning — so
+            # assert the CORS warning specifically rather than no-logs-at-all.
+            with self.assertLogs(
+                "backend.composition.control_mode", level="WARNING"
+            ) as logs:
                 server = build_control_server(
                     repo_root=root,
                     env={
@@ -492,6 +497,7 @@ class ControlAppTest(unittest.TestCase):
                         CONTROL_RESTRICT_CORS_ENV_VAR: "false",
                     },
                 )
+            self.assertNotIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
             self.addCleanup(server.shutdown)
             client = TestClient(server.fastapi_app, raise_server_exceptions=False)
 

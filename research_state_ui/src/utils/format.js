@@ -7,6 +7,21 @@ export function fmtNum(v) {
   return Number(v.toPrecision(4)).toString();
 }
 
+// Money reads at cents until $100, whole dollars after — the jitter of live
+// billing isn't worth two decimals at that magnitude.
+export function fmtUsd(v) {
+  if (!Number.isFinite(v)) return '—';
+  const digits = v >= 100 ? 0 : 2;
+  return '$' + v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// Compute-hours: minutes under an hour, one decimal until 100 h.
+export function fmtHrs(v) {
+  if (!Number.isFinite(v)) return '—';
+  if (v < 1) return `${Math.round(v * 60)} min`;
+  return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))} h`;
+}
+
 export function formatBytes(n) {
   if (n == null) return '';
   if (n < 1024) return `${n} B`;

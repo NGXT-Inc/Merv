@@ -39,7 +39,7 @@ class DeployArtifactsTest(unittest.TestCase):
         # must be present before the wheel/install step runs in the image.
         self.assertIn("COPY research_plugin_shared ./research_plugin_shared", text)
         # Runs the control console-script entrypoint, not a raw module.
-        self.assertIn("research-plugin-control", text)
+        self.assertIn("merv-control", text)
         # Non-root user.
         self.assertIn("USER ", text)
         self.assertIn("useradd", text)
@@ -57,7 +57,7 @@ class DeployArtifactsTest(unittest.TestCase):
             pyproject = tomllib.load(handle)
         scripts = pyproject["project"]["scripts"]
         self.assertEqual(
-            scripts.get("research-plugin-control"),
+            scripts.get("merv-control"),
             "backend.transport.http_server:control_main",
         )
         # The control extra exists and carries the Postgres + object-store deps.

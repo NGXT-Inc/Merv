@@ -8,6 +8,23 @@ import { setSurfaceOverride } from '../store/useViewport';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
 import SandboxRetentionIndicator from './SandboxRetentionIndicator';
+import { getAuthEmail, onAuthChange, signOut } from '../auth';
+
+// Account row: only renders under hosted auth (email present); localhost has
+// no session and shows nothing.
+function AuthFoot() {
+  const [email, setEmail] = useState(getAuthEmail());
+  useEffect(() => onAuthChange(() => setEmail(getAuthEmail())), []);
+  if (!email) return null;
+  return (
+    <div className="sidebar-foot-actions" style={{ marginTop: 6 }}>
+      <span className="sync-indicator" title={email} style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {email}
+      </span>
+      <button className="btn btn--ghost btn--sm" onClick={() => signOut()}>Sign out</button>
+    </div>
+  );
+}
 
 function fmtUpdatedAgo(ms) {
   if (!ms) return 'never';
@@ -196,7 +213,7 @@ export default function Sidebar({ onRefresh, onHide }) {
 
       <div className="sidebar-foot">
         <SandboxRetentionIndicator />
-        <div className="sync-indicator" title={`research_plugin · v${serverVersion || CLIENT_VERSION}`}>
+        <div className="sync-indicator" title={`merv · v${serverVersion || CLIENT_VERSION}`}>
           <span className={dotClass} />
           <span>ui {pollLabel} · updated {fmtUpdatedAgo(lastSyncedAt)}</span>
         </div>
@@ -224,6 +241,7 @@ export default function Sidebar({ onRefresh, onHide }) {
             backdrop
           </button>
         </div>
+        <AuthFoot />
         {lastSyncError && <div className="error-message" style={{ fontSize: 11 }}>{lastSyncError}</div>}
       </div>
     </aside>

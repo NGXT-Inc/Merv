@@ -1,7 +1,7 @@
 ---
 name: research-workflow
 description: >-
-  Use when the agent should operate the Research Plugin workflow: ask MCP for
+  Use when the agent should operate the Merv workflow: ask MCP for
   status and next action, inspect claims, create or run experiments, register
   repo-file resources, use MCP-controlled mutations, and launch read-only design
   or experiment reviewers when required.
@@ -9,7 +9,7 @@ description: >-
 
 # Research Workflow
 
-Use the Research Plugin MCP server as the authority for research state and
+Use the Merv MCP server as the authority for research state and
 workflow state.
 
 ## Core model
@@ -188,7 +188,7 @@ and experiment names, e.g. `mlflow.set_tracking_uri(...)`,
 `MlflowClient.list_artifacts(...)`, and `MlflowClient.download_artifacts(...)`.
 Plot comparisons yourself from those queries — a labeled figure you can analyze
 and post to the feed. Do not create a file-backed local MLflow store as the
-default tracking path for Research Plugin experiments. If MLflow is unavailable,
+default tracking path for Merv experiments. If MLflow is unavailable,
 say so in the report and still save compact result files.
 
 For quantitative runs, resume the plugin-created run when `MLFLOW_RUN_ID` is

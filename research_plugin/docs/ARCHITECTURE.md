@@ -1,4 +1,4 @@
-# Research Plugin Architecture
+# Merv Architecture
 
 This document describes the architecture implemented by the current codebase.
 The executable contracts in `backend/domain/*`, `backend/tools/contracts.py`, and
@@ -7,7 +7,7 @@ code disagree.
 
 ## Product model
 
-Research Plugin gives agentic coding clients a shared, server-directed workflow
+Merv gives agentic coding clients a shared, server-directed workflow
 for machine-learning research. Its durable model is:
 
 - **Project** — the scope for research state and policy.
@@ -34,7 +34,7 @@ flowchart LR
   Client -->|stdio MCP| Proxy["Local MCP proxy"]
   Proxy -->|repo IO| Repo["Research checkout"]
   Proxy -->|control calls and validated submissions| Brain["Brain service"]
-  Browser["Research State UI"] -->|HTTP API and SSE| Brain
+  Browser["Merv UI"] -->|HTTP API and SSE| Brain
   Brain --> State["SQLite or Postgres"]
   Brain --> Blobs["Local or S3-compatible stores"]
   Brain --> MLflow["Central MLflow service"]
@@ -71,7 +71,7 @@ remain behind trusted infrastructure.
 
 ### Local MCP proxy
 
-Every client starts `research-plugin-mcp` as a short-lived stdio process. It is
+Every client starts `merv-mcp` as a short-lived stdio process. It is
 the local data plane in every deployment and owns:
 
 - repo-relative path normalization and containment;
@@ -92,7 +92,7 @@ require a local package installation.
 The proxy resolves one brain URL in this order:
 
 1. `RESEARCH_PLUGIN_CONTROL_URL`;
-2. machine configuration written by `research-plugin-client configure`;
+2. machine configuration written by `merv-client configure`;
 3. `https://experiments.rapidreview.io`.
 
 It resolves project scope from the local checkout link and injects an explicit

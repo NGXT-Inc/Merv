@@ -1,7 +1,7 @@
 ---
 name: experiment-attempt-review
 description: >-
-  Use for read-only adversarial review of a completed Research Plugin experiment
+  Use for read-only adversarial review of a completed Merv experiment
   attempt. The reviewer checks code, result files, metrics, and conclusions,
   then submits a structured review to MCP without mutating state.
 ---

@@ -1,6 +1,6 @@
-# Research Suite
+# Merv
 
-Research Suite is a plugin for agentic coding platforms that helps agents run machine learning research as gated, reviewable experiment workflows.
+Merv is a plugin for agentic coding platforms that helps agents run machine learning research as gated, reviewable experiment workflows.
 
 It is designed to work with Claude Code, Codex, Cursor, Gemini CLI, OpenCode, and other MCP-capable agent platforms. It includes a frontend for humans to observe agent behavior ranging from macro research strategy to experiment execution specifics.
 
@@ -31,7 +31,7 @@ After a set of experiments is complete, the plugin drives a project-wide reflect
   <img alt="System architecture: agent platforms use a local MCP proxy for checkout IO and a brain for durable records and workflow gates. The frontend supervises the brain. The brain provisions cloud sandboxes; agents run SSH commands and the proxy pulls retained outputs." src="assets/system-architecture-light.svg">
 </picture>
 
-Research Suite has three main pieces:
+Merv has three main pieces:
 
 - **Agent adapters** connect Claude Code, Codex, Cursor, Gemini CLI, OpenCode, and other agentic clients to the same workflow.
 - **Backend** owns the research state: projects, claims, experiments, resources, review gates, reflections, and sandbox orchestration.
@@ -56,7 +56,7 @@ OpenSSH client and `rsync`. For Codex, Gemini CLI, and OpenCode, see
 
 ```bash
 claude plugin marketplace add NGXT-Inc/Research-Suite
-claude plugin install research-plugin@research-suite
+claude plugin install merv@rapidreview
 ```
 
 Restart Claude Code.
@@ -68,10 +68,10 @@ Cursor loads local plugins from a directory, so clone the repo and link the plug
 ```bash
 git clone https://github.com/NGXT-Inc/Research-Suite.git ~/Research-Suite
 mkdir -p ~/.cursor/plugins/local
-ln -sfn ~/Research-Suite/research_plugin ~/.cursor/plugins/local/research-plugin
+ln -sfn ~/Research-Suite/research_plugin ~/.cursor/plugins/local/merv
 ```
 
-Then enable **research-plugin** on Cursor's Customize page and restart Cursor. (To update later: `git -C ~/Research-Suite pull` and restart.)
+Then enable **merv** on Cursor's Customize page and restart Cursor. (To update later: `git -C ~/Research-Suite pull` and restart.)
 
 ### First run
 

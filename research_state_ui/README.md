@@ -1,6 +1,6 @@
-# Research State UI
+# Merv UI
 
-Browser frontend for the Research Plugin brain. It reads and mutates research
+Browser frontend for the Merv brain. It reads and mutates research
 state through the brain's HTTP API; it never reads a research checkout
 directly. Checkout-local registration, validation, and output transfer remain
 the MCP proxy's responsibility.
@@ -33,7 +33,7 @@ VITE_API_BASE=https://your-control-plane.example.com npm run build
 ```
 
 The client can attach an optional bearer token from `VITE_API_TOKEN` or the
-`rsui:apiToken` local-storage key. The current Research Plugin brain does not
+`rsui:apiToken` local-storage key. The current Merv brain does not
 authenticate end users, so a hosted deployment must remain behind a trusted
 network boundary; CORS is not authentication.
 

@@ -120,10 +120,16 @@ class _BoomExperiments:
 
 
 class _StubMlflowTracking:
-    def __init__(self, *, finalize_result: dict[str, Any]) -> None:
+    def __init__(
+        self, *, finalize_result: dict[str, Any], raises: bool = False
+    ) -> None:
         self._finalize_result = finalize_result
+        self.raises = raises
+        self.finalize_calls: list[dict[str, Any]] = []
 
-    def context(self, *, project_id: str, experiment_id: str) -> Any:
+    def context(
+        self, *, project_id: str, experiment_id: str, include_credentials: bool = False
+    ) -> Any:
         class _Ctx:
             def to_dict(self_inner) -> dict[str, Any]:
                 return {"configured": True}
@@ -139,6 +145,15 @@ class _StubMlflowTracking:
         status: str | None = "FINISHED",
         wait_seconds: float = 2.0,
     ) -> dict[str, Any]:
+        self.finalize_calls.append({
+            "project_id": project_id,
+            "experiment_id": experiment_id,
+            "run_id": run_id,
+            "status": status,
+            "wait_seconds": wait_seconds,
+        })
+        if self.raises:
+            raise RuntimeError("mlflow down")
         return dict(self._finalize_result)
 
 
@@ -247,6 +262,105 @@ class ExperimentTransitionFeedNoteTest(unittest.TestCase):
         )
         self.assertEqual(result["status"], "complete")
         self.assertNotIn("feed_note", result)
+
+
+class ExperimentTransitionMlflowFinalizeTest(unittest.TestCase):
+    def test_terminal_transitions_finalize_the_plugin_run_with_mapped_status(self) -> None:
+        cases = (
+            ("submit_results", "experiment_review", "FINISHED"),
+            ("complete", "complete", "FINISHED"),
+            ("abandon", "abandoned", "KILLED"),
+            ("mark_failed", "failed", "FAILED"),
+        )
+        for transition, experiment_status, mlflow_status in cases:
+            with self.subTest(transition=transition):
+                experiments = _StubExperiments(state={
+                    "id": "exp_1",
+                    "project_id": "proj_1",
+                    "status": experiment_status,
+                    "mlflow_run": {
+                        "run_id": "run_1",
+                        "status": "RUNNING",
+                        "created_by_plugin": True,
+                    },
+                })
+                mlflow = _StubMlflowTracking(finalize_result={
+                    "run": {"run_id": "run_1", "status": mlflow_status}
+                })
+                handlers = build_control_tool_handlers(**_target(
+                    experiments=experiments,
+                    mlflow_tracking=mlflow,
+                    feed=_StubFeed(muted={"exp_1"}),
+                ))
+
+                result = handlers["experiment.transition"](
+                    experiment_id="exp_1",
+                    transition=transition,
+                    project_id="proj_1",
+                )
+
+                self.assertEqual(mlflow.finalize_calls[0]["status"], mlflow_status)
+                self.assertEqual(mlflow.finalize_calls[0]["run_id"], "run_1")
+                self.assertEqual(mlflow.finalize_calls[0]["wait_seconds"], 0.0)
+                self.assertEqual(result["mlflow_run"]["status"], mlflow_status)
+
+    def test_mlflow_finalize_error_never_blocks_terminal_transition(self) -> None:
+        experiments = _StubExperiments(state={
+            "id": "exp_1",
+            "project_id": "proj_1",
+            "status": "failed",
+            "mlflow_run": {
+                "run_id": "run_1",
+                "status": "RUNNING",
+                "created_by_plugin": True,
+            },
+        })
+        mlflow = _StubMlflowTracking(finalize_result={}, raises=True)
+        handlers = build_control_tool_handlers(**_target(
+            experiments=experiments,
+            mlflow_tracking=mlflow,
+            feed=_StubFeed(muted={"exp_1"}),
+        ))
+
+        result = handlers["experiment.transition"](
+            experiment_id="exp_1",
+            transition="mark_failed",
+            project_id="proj_1",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(mlflow.finalize_calls), 1)
+
+    def test_non_plugin_and_already_terminal_runs_are_not_finalized(self) -> None:
+        for created_by_plugin, status in ((False, "RUNNING"), (True, "FAILED")):
+            with self.subTest(
+                created_by_plugin=created_by_plugin, status=status
+            ):
+                experiments = _StubExperiments(state={
+                    "id": "exp_1",
+                    "project_id": "proj_1",
+                    "status": "complete",
+                    "mlflow_run": {
+                        "run_id": "run_1",
+                        "status": status,
+                        "created_by_plugin": created_by_plugin,
+                    },
+                })
+                mlflow = _StubMlflowTracking(finalize_result={})
+                handlers = build_control_tool_handlers(**_target(
+                    experiments=experiments,
+                    mlflow_tracking=mlflow,
+                    feed=_StubFeed(muted={"exp_1"}),
+                ))
+
+                result = handlers["experiment.transition"](
+                    experiment_id="exp_1",
+                    transition="complete",
+                    project_id="proj_1",
+                )
+
+                self.assertEqual(result["mlflow_run"]["status"], status)
+                self.assertEqual(mlflow.finalize_calls, [])
 
 
 class MlflowFinalizeRunFeedNoteTest(unittest.TestCase):

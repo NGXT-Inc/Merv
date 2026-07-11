@@ -10,8 +10,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .metrics import snapshot_mlflow
+from .metrics import (
+    MlflowSnapshotError,
+    search_mlflow_experiments,
+    snapshot_mlflow,
+)
 from .config import (
+    MLFLOW_AGENT_USERNAME,
+    resolve_mlflow_agent_key,
     resolve_mlflow_dashboard_url,
     resolve_mlflow_mode,
     resolve_mlflow_server_uri,
@@ -20,7 +26,7 @@ from .config import (
 
 
 def mlflow_experiment_name(*, project_id: str, experiment_id: str) -> str:
-    """Stable MLflow namespace for one Research Plugin experiment."""
+    """Stable MLflow namespace for one Merv experiment."""
     return f"rp/{project_id}/{experiment_id}"
 
 
@@ -75,6 +81,7 @@ class CentralMlflowService:
         server_uri: str = "",
         dashboard_url: str = "",
         note: str = "",
+        agent_key: str = "",
         health_check: Callable[[], bool] | None = None,
     ) -> None:
         self.mode = mode.strip().lower()
@@ -83,6 +90,10 @@ class CentralMlflowService:
         self.server_uri = self._control_uri or self.tracking_uri
         self.dashboard_url = (dashboard_url.strip().rstrip("/") or self.tracking_uri)
         self.note = note.strip()
+        # Credential for the authenticated hosted /mlflow route. Only ever
+        # serialized into agent-facing env blocks (include_credentials=True);
+        # UI-facing views keep the default and never see it.
+        self.agent_key = agent_key.strip()
         self._health_check = health_check
         self._last_probe_at = 0.0
         self._last_reachable: bool | None = None
@@ -96,9 +107,22 @@ class CentralMlflowService:
             tracking_uri=resolve_mlflow_tracking_uri(env),
             server_uri=resolve_mlflow_server_uri(env),
             dashboard_url=resolve_mlflow_dashboard_url(env),
+            agent_key=resolve_mlflow_agent_key(env),
         )
 
-    def project_context(self, *, project_id: str) -> dict[str, object]:
+    def _credential_env(self, *, include_credentials: bool) -> dict[str, str]:
+        # MLflow's client turns this pair into Basic auth on every tracking
+        # and artifact call; the same pair answers the browser's 401 prompt.
+        if not (include_credentials and self.agent_key and self.tracking_uri):
+            return {}
+        return {
+            "MLFLOW_TRACKING_USERNAME": MLFLOW_AGENT_USERNAME,
+            "MLFLOW_TRACKING_PASSWORD": self.agent_key,
+        }
+
+    def project_context(
+        self, *, project_id: str, include_credentials: bool = False
+    ) -> dict[str, object]:
         """Project-scoped MLflow navigation context for agents.
 
         This does not query MLflow. It gives agents the endpoint and namespace
@@ -107,6 +131,7 @@ class CentralMlflowService:
         env: dict[str, str] = {"RP_PROJECT_ID": project_id}
         if self.tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self.tracking_uri
+        env.update(self._credential_env(include_credentials=include_credentials))
         configured = bool(self.tracking_uri)
         result: dict[str, object] = {
             "configured": configured,
@@ -129,6 +154,7 @@ class CentralMlflowService:
         attempt_id: str = "",
         sandbox_id: str = "",
         execution_backend: str = "",
+        include_credentials: bool = False,
     ) -> MlflowTrackingContext:
         experiment_name = mlflow_experiment_name(
             project_id=project_id, experiment_id=experiment_id
@@ -140,6 +166,7 @@ class CentralMlflowService:
         }
         if self.tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self.tracking_uri
+        env.update(self._credential_env(include_credentials=include_credentials))
         if attempt_id:
             env["RP_ATTEMPT_ID"] = attempt_id
         if sandbox_id:
@@ -498,7 +525,13 @@ class CentralMlflowService:
             result["note"] = self.note
         return result
 
-    def results_metrics(self, *, project_id: str, experiment_id: str) -> dict[str, object]:
+    def results_metrics(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        include_history: bool = True,
+    ) -> dict[str, object]:
         """Read experiment metrics from the centralized MLflow server."""
         context = self.context(project_id=project_id, experiment_id=experiment_id)
         read_uri = self.server_uri or context.tracking_uri
@@ -509,10 +542,19 @@ class CentralMlflowService:
                 "source": "mlflow",
                 "hint": context.note,
             }
-        snapshot = snapshot_mlflow(
-            read_uri,
-            experiment_name=context.experiment_name,
-        )
+        try:
+            snapshot = snapshot_mlflow(
+                read_uri,
+                experiment_name=context.experiment_name,
+                **({"include_history": False} if not include_history else {}),
+            )
+        except MlflowSnapshotError:
+            return {
+                "experiment_id": experiment_id,
+                "available": False,
+                "source": "mlflow",
+                "hint": "MLflow unreachable.",
+            }
         if not isinstance(snapshot, dict):
             return {
                 "experiment_id": experiment_id,
@@ -530,6 +572,34 @@ class CentralMlflowService:
         drill_url = self._dashboard_experiment_url(portable, context.experiment_name)
         if drill_url:
             result["dashboard_experiment_url"] = drill_url
+        return result
+
+    def namespace_experiments(self, *, project_id: str) -> list[dict[str, object]]:
+        """List experiment metadata under one project's MLflow namespace."""
+        read_uri = self.server_uri or self.tracking_uri
+        if not read_uri:
+            return []
+        try:
+            experiments = search_mlflow_experiments(
+                read_uri, name_like=f"rp/{project_id}/%"
+            )
+        except MlflowSnapshotError:
+            return []
+        result: list[dict[str, object]] = []
+        for experiment in experiments:
+            experiment_id = str(experiment.get("experiment_id") or "")
+            name = str(experiment.get("name") or "")
+            if not experiment_id or not name:
+                continue
+            entry: dict[str, object] = {
+                "name": name,
+                "experiment_id": experiment_id,
+            }
+            if self.dashboard_url:
+                entry["dashboard_experiment_url"] = (
+                    f"{self.dashboard_url}/#/experiments/{experiment_id}"
+                )
+            result.append(entry)
         return result
 
     def _dashboard_experiment_url(

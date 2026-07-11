@@ -3,7 +3,7 @@
 The plugin targets five agentic clients from one canonical content tree.
 Everything heavy — state, gates, capability-based reviews, sandbox
 provisioning — lives in the client-neutral brain service (localhost
-`research-plugin-http`, or the hosted brain). The stdio MCP proxy is
+`merv-http`, or the hosted brain). The stdio MCP proxy is
 stdlib-only and always does the checkout-local data-plane work: repo reads,
 hashing, validation, output pulls using caller-provided SSH key paths, and
 folder-to-project links. It does not mint or persist caller private keys. Each
@@ -12,7 +12,7 @@ content:
 
 | Client | Adapter | MCP registration | Skills | Reviewer subagents |
 |---|---|---|---|---|
-| Claude Code | `.claude-plugin/plugin.json` + `.mcp.json` | `${CLAUDE_PLUGIN_ROOT}` launcher path; cwd = project root | `skills/` auto-discovered | `agents/` auto-discovered (`research-plugin:` namespace) |
+| Claude Code | `.claude-plugin/plugin.json` + `.mcp.json` | `${CLAUDE_PLUGIN_ROOT}` launcher path; cwd = project root | `skills/` auto-discovered | `agents/` auto-discovered (`merv:` namespace) |
 | Codex | `.codex-plugin/plugin.json` + `.mcp.codex.json` | plugin-relative launcher path; cwd = project root | `skills/` via manifest | spawned via review skills |
 | Cursor | `.cursor-plugin/plugin.json` + `mcp.json` | `${workspaceFolder}` env var (cwd is NOT the workspace) | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
 | Gemini CLI | `gemini-extension.json` + `GEMINI.md` | `${extensionPath}` launcher, `${workspacePath}` env var | `skills/` auto-discovered (Agent Skills standard) | `agents/` auto-discovered |
@@ -20,7 +20,7 @@ content:
 
 Shared invariants across all clients:
 
-- The launcher [bin/research-plugin-mcp](../bin/research-plugin-mcp) resolves
+- The launcher [bin/merv-mcp](../bin/merv-mcp) resolves
   the project from `RESEARCH_PLUGIN_REPO_ROOT`, defaulting to `$PWD`. Clients
   that do not spawn stdio servers in the project directory (Cursor) must set
   the env var explicitly; the others rely on cwd.
@@ -40,12 +40,12 @@ Shared invariants across all clients:
   agent wrappers in `clients/opencode/agents/` that load the matching review
   skill.
 - The MCP proxy resolves its brain URL as: `RESEARCH_PLUGIN_CONTROL_URL` env
-  var > machine config written by `research-plugin-client configure` >
+  var > machine config written by `merv-client configure` >
   the hosted brain `https://experiments.rapidreview.io`. Out of the box every
   client therefore dials the hosted brain and runs no local brain. For a local
-  deployment, run `research-plugin-client configure --control-url
+  deployment, run `merv-client configure --control-url
   http://127.0.0.1:8787` (or set the env var) and start
-  `bin/research-plugin-http`. Shipped manifests leave the env var empty on
+  `bin/merv-http`. Shipped manifests leave the env var empty on
   purpose — pinning a URL there would shadow the machine config.
 
 ## Long runs (rp_run) per client
@@ -83,8 +83,8 @@ capability. What differs per client is only how the separate read-only reviewer
 agent is spawned with that prompt:
 
 - **Claude Code**: Agent tool with `subagent_type` set to
-  `research-plugin:experiment-design-review` / `research-plugin:experiment-attempt-review` /
-  `research-plugin:project-reflection-review`.
+  `merv:experiment-design-review` / `merv:experiment-attempt-review` /
+  `merv:project-reflection-review`.
 - **Codex**: spawn a reviewer agent with the matching review skill.
 - **Cursor**: delegate to the plugin subagent (`/experiment-design-review`, or natural
   language); subagents run with a clean context window.
@@ -112,7 +112,7 @@ plus [mcp.json](../mcp.json) at plugin root; `skills/` and `agents/` are
 auto-discovered from the same locations all other clients use.
 
 For local development, link the plugin directory into
-`~/.cursor/plugins/local/research-plugin` (symlinks are supported), then
+`~/.cursor/plugins/local/merv` (symlinks are supported), then
 enable it in Cursor.
 
 Three Cursor-specific notes:
@@ -125,7 +125,7 @@ Three Cursor-specific notes:
 2. **Launcher path.** Cursor requires stdio commands to be on PATH or a full
    path — there is no plugin-relative resolution and no `${pluginRoot}`
    variable. The bundled `mcp.json` therefore uses
-   `${userHome}/.cursor/plugins/local/research-plugin/bin/research-plugin-mcp`,
+   `${userHome}/.cursor/plugins/local/merv/bin/merv-mcp`,
    which is correct for the documented install location (Cursor interpolates
    variables in `command`). If you install the plugin anywhere else, register
    the server manually in the project's `.cursor/mcp.json` with the absolute
@@ -134,9 +134,9 @@ Three Cursor-specific notes:
 ```json
 {
   "mcpServers": {
-    "research-plugin": {
+    "merv": {
       "type": "stdio",
-      "command": "/absolute/path/to/research_plugin/bin/research-plugin-mcp",
+      "command": "/absolute/path/to/research_plugin/bin/merv-mcp",
       "env": {
         "RESEARCH_PLUGIN_REPO_ROOT": "${workspaceFolder}",
         "RESEARCH_PLUGIN_CONTROL_URL": ""
@@ -147,12 +147,12 @@ Three Cursor-specific notes:
 ```
 
 (Leave `RESEARCH_PLUGIN_CONTROL_URL` empty so the machine config from
-`research-plugin-client configure` wins, falling back to the hosted brain.
+`merv-client configure` wins, falling back to the hosted brain.
 Set it explicitly only to force one workspace onto a different brain, e.g.
 `http://127.0.0.1:8787` for a local deployment.)
 
 3. **Tool ceiling.** Cursor limits the combined active tools from all MCP
-   servers. Research Plugin hides UI/internal tools such as `project.list` and
+   servers. Merv hides UI/internal tools such as `project.list` and
    `review.status` from the agent-facing catalog. If tools disappear when
    several MCP servers are enabled, disable servers or tools that are not in
    use.

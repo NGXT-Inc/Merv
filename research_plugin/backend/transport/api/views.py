@@ -1,4 +1,4 @@
-"""HTTP presentation helpers for the Research Plugin API."""
+"""HTTP presentation helpers for the Merv API."""
 
 from __future__ import annotations
 
@@ -62,9 +62,20 @@ class ResearchHttpApi:
     def __init__(self, *, app: Any) -> None:
         self.app = app
 
-    def call_tool(self, *, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call_tool(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        internal_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return self._present(
-            self.app.call_tool(name=name, arguments=arguments, activity_source="http")
+            self.app.call_tool(
+                name=name,
+                arguments=arguments,
+                activity_source="http",
+                internal_kwargs=internal_kwargs,
+            )
         )
 
     def _present(self, value: Any) -> Any:
@@ -478,21 +489,25 @@ class ResearchHttpApi:
         return data, rel.rsplit("/", 1)[-1]
 
     def create_project(
-        self, body: dict[str, Any], *, tenant_id: str | None = None
+        self, body: dict[str, Any], *, tenant_id: str | None = None, user_id: str = ""
     ) -> dict[str, Any]:
         name = body.get("name") or body.get("title") or "Untitled Project"
         summary = body.get("summary") or body.get("description") or body.get("research_goal") or ""
         # Route through call_tool (not the service directly) so HTTP-driven
         # project creation emits the same activity/tool_calls telemetry the MCP
-        # path does — tenant_id rides in via internal_kwargs in hosted mode only.
+        # path does — tenant_id/user_id ride in via internal_kwargs in hosted
+        # mode only (the creator becomes the project's first member).
+        internal: dict[str, Any] = {}
+        if tenant_id is not None:
+            internal["tenant_id"] = tenant_id
+        if user_id:
+            internal["user_id"] = user_id
         return self._present(
             self.app.call_tool(
                 name="project",
                 arguments={"action": "create", "name": name, "summary": summary},
                 activity_source="http",
-                internal_kwargs=(
-                    {"tenant_id": tenant_id} if tenant_id is not None else None
-                ),
+                internal_kwargs=internal or None,
             )
         )
 
@@ -561,6 +576,19 @@ class ResearchHttpApi:
             ]
         })
 
+    def compute_cost_view(self, *, project_id: str) -> dict[str, Any]:
+        """Project compute spend for the UI, experiment names hydrated.
+
+        Sourced from the sandbox_generations ledger (not live sandbox rows),
+        so terminated fleets keep counting toward the total.
+        """
+        spend = self.app.quotas.project_spend(project_id=project_id)
+        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        names = {str(exp.get("id") or ""): str(exp.get("name") or "") for exp in experiments}
+        for entry in spend["by_experiment"]:
+            entry["experiment_name"] = names.get(entry["experiment_id"], "")
+        return self._present(spend)
+
     def sandbox_metrics_view(
         self,
         *,
@@ -589,14 +617,26 @@ class ResearchHttpApi:
         """
         health = self.app.mlflow_tracking.health()
         experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        unreachable = health.get("reachable") is False
         items: list[dict[str, Any]] = []
         for exp in experiments:
             eid = str(exp.get("id") or "")
             if not eid:
                 continue
             # results_metrics owns the deep-link (namespace→#/experiments/<id>).
-            metrics = self.app.mlflow_tracking.results_metrics(
-                experiment_id=eid, project_id=project_id
+            metrics = (
+                {
+                    "experiment_id": eid,
+                    "available": False,
+                    "source": "mlflow",
+                    "hint": "MLflow unreachable.",
+                }
+                if unreachable
+                else self.app.mlflow_tracking.results_metrics(
+                    experiment_id=eid,
+                    project_id=project_id,
+                    include_history=False,
+                )
             )
             items.append({
                 "experiment_id": eid,
@@ -612,7 +652,22 @@ class ResearchHttpApi:
                 ),
                 "metrics": metrics,
             })
-        return self._present({"mlflow": health, "experiments": items})
+        expected_names = {str(item["mlflow_experiment_name"]) for item in items}
+        namespace_experiments = (
+            []
+            if unreachable
+            else self.app.mlflow_tracking.namespace_experiments(project_id=project_id)
+        )
+        unmapped = [
+            experiment
+            for experiment in namespace_experiments
+            if str(experiment.get("name") or "") not in expected_names
+        ]
+        return self._present({
+            "mlflow": health,
+            "experiments": items,
+            "unmapped_mlflow_experiments": unmapped,
+        })
 
     def sandbox_health_view(self) -> dict[str, Any]:
         return self.app.sandboxes.backend_health()

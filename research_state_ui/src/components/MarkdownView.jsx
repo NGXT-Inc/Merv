@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import CodeBlock from './CodeBlock';
 import EntityChip from './EntityChip';
 import rehypeEntityChips from '../utils/rehypeEntityChips';
+import { useAuthedSrc } from './AuthedMedia';
 
 /**
  * Renders a single markdown image. Report figures resolve to blob-store bytes
@@ -13,6 +14,9 @@ import rehypeEntityChips from '../utils/rehypeEntityChips';
  */
 function FigureImg({ src, alt, title }) {
   const [failed, setFailed] = useState(false);
+  // Under hosted auth the bytes need the Bearer header → blob URL; passthrough
+  // locally. Covers every markdown consumer (reports, plans, mobile docs).
+  const authedSrc = useAuthedSrc(src);
   const filename = ((src || alt || '').split('/').pop()) || 'figure';
   if (failed) {
     return (
@@ -22,7 +26,8 @@ function FigureImg({ src, alt, title }) {
       </span>
     );
   }
-  return <img src={src} alt={alt || ''} title={title} loading="lazy" onError={() => setFailed(true)} />;
+  if (!authedSrc) return null;
+  return <img src={authedSrc} alt={alt || ''} title={title} loading="lazy" onError={() => setFailed(true)} />;
 }
 
 /**

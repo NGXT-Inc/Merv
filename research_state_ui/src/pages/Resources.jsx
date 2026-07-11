@@ -8,6 +8,7 @@ import {
   selectHasLocalDataPlaneHttp,
 } from '../store/useProjectStore';
 import { api } from '../api';
+import { RawLink } from '../components/AuthedMedia';
 import ObjId from '../components/ObjId';
 import ResourceContentView from '../components/ResourceContentView';
 import { formatBytes } from '../utils/format';
@@ -171,14 +172,12 @@ function PreviewPanel({
                 {associating ? 'Cancel' : 'Associate with experiment'}
               </button>
               {hasLocalDataPlane ? (
-                <a
+                <RawLink
                   className="btn btn--sm btn--ghost"
                   href={api.resourceFileUrl(projectId, resource.id)}
-                  target="_blank"
-                  rel="noreferrer"
                 >
                   Open raw
-                </a>
+                </RawLink>
               ) : null}
               <button
                 type="button"

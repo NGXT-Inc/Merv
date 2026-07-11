@@ -1,11 +1,11 @@
 # Centralized MLflow
 
-MLflow is the quantitative ledger for Research Plugin projects. The brain owns
+MLflow is the quantitative ledger for Merv projects. The brain owns
 workflow state, claims, reviews, resource records, and logic graphs. MLflow owns
 the empirical run record: parameters, metrics and their histories, run tags,
 datasets recorded through MLflow, and run artifacts.
 
-All runs for one brain deployment use a shared MLflow service. Research Plugin
+All runs for one brain deployment use a shared MLflow service. Merv
 names the MLflow experiment for a plugin experiment:
 
 ```text
@@ -144,7 +144,7 @@ mlflow.start_run(run_id=os.environ["MLFLOW_RUN_ID"])
 ```
 
 Do not rely on ambient shell state and do not create a file-backed MLflow store
-as a fallback for a Research Plugin experiment. Remote sandboxes are clients of
+as a fallback for a Merv experiment. Remote sandboxes are clients of
 the configured central service; sandbox provisioning does not start MLflow or
 create a tunnel.
 

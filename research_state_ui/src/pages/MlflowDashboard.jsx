@@ -24,7 +24,7 @@ export default function MlflowDashboard() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
-  const focusExpId = searchParams.get('focus');
+  const requestedFocusExpId = searchParams.get('focus');
 
   useEffect(() => {
     if (!projectId) return undefined;
@@ -48,7 +48,14 @@ export default function MlflowDashboard() {
 
   const mlflow = data?.mlflow;
   const experiments = Array.isArray(data?.experiments) ? data.experiments : [];
+  const focusExpId = experiments.some(e => e.experiment_id === requestedFocusExpId)
+    ? requestedFocusExpId
+    : null;
   const dashboardUrl = mlflow?.configured ? (mlflow.dashboard_url || mlflow.tracking_uri) : null;
+  const mlflowUnreachable = mlflow?.configured && mlflow?.reachable === false;
+  const unmappedCount = Array.isArray(data?.unmapped_mlflow_experiments)
+    ? data.unmapped_mlflow_experiments.length
+    : 0;
 
   // When neither convention nor contract settles which way the focus metric
   // is good, the user can flip it — remembered per project.
@@ -114,6 +121,9 @@ export default function MlflowDashboard() {
   const pick = (i) => toggleFocus(plan.runs[i].expId);
 
   const focusedExp = focusExpId ? experiments.find(e => e.experiment_id === focusExpId) : null;
+  const experimentsWithoutRuns = hasLedger
+    ? experiments.filter(e => !plan.runs.some(r => r.expId === e.experiment_id)).length
+    : 0;
 
   return (
     <div className="page-stage">
@@ -134,6 +144,11 @@ export default function MlflowDashboard() {
       </header>
 
       {error && <div className="error-message">{error}</div>}
+      {mlflowUnreachable && (
+        <div className="error-message" role="alert">
+          MLflow is configured but unreachable — the ledger below may be incomplete/stale
+        </div>
+      )}
 
       {!data ? null : !mlflow?.configured ? (
         <div className="empty-state">
@@ -144,6 +159,9 @@ export default function MlflowDashboard() {
         <div className="empty-state"><h2>No experiments yet</h2></div>
       ) : (
         <>
+          {!hasLedger && !mlflowUnreachable && (
+            <div className="empty-state"><h2>No runs recorded yet</h2></div>
+          )}
           {hasLedger && plan.summary && <Pulse plan={plan} />}
 
           {focusedExp && (
@@ -158,10 +176,12 @@ export default function MlflowDashboard() {
           {hasLedger && plan.focus && (
             <section className="section">
               <h2 className="section-title">Frontier — {plan.focus.key}</h2>
-              {(plan.focus.directionAssumed || plan.focus.directionSource === 'override') && (
+              {(plan.focus.directionAssumed || ['declared', 'override'].includes(plan.focus.directionSource)) && (
                 <p className="lgd-note">
                   {plan.focus.directionSource === 'override'
                     ? `Direction set here — ${plan.focus.direction > 0 ? 'higher' : 'lower'} is better.`
+                    : plan.focus.directionSource === 'declared'
+                      ? `Direction declared by runs — ${plan.focus.direction > 0 ? 'higher' : 'lower'} is better.`
                     : 'No direction convention matched — assuming lower is better.'}
                   <button
                     type="button"
@@ -223,13 +243,16 @@ export default function MlflowDashboard() {
                   />
                 ))}
               </div>
-              {experiments.length > 0 && (() => {
-                const norun = experiments.filter(e => !plan.runs.some(r => r.expId === e.experiment_id)).length;
-                return norun > 0
-                  ? <p className="lgd-note">+ {norun} experiment{norun === 1 ? '' : 's'} without recorded runs</p>
-                  : null;
-              })()}
             </section>
+          )}
+
+          {experimentsWithoutRuns > 0 && (
+            <p className="lgd-note">+ {experimentsWithoutRuns} experiment{experimentsWithoutRuns === 1 ? '' : 's'} without recorded runs</p>
+          )}
+          {unmappedCount > 0 && (
+            <p className="lgd-note">
+              {unmappedCount} MLflow experiment{unmappedCount === 1 ? '' : 's'} in this project&rsquo;s namespace {unmappedCount === 1 ? 'isn\'t' : 'aren\'t'} linked to any plugin experiment
+            </p>
           )}
 
           {hasLedger && plan.strips.length > 0 && (
@@ -461,4 +484,3 @@ function LedgerFootnotes({ plan }) {
     </section>
   );
 }
-

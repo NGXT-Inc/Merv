@@ -247,6 +247,38 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
 
+    def test_mlflow_credential_pair_rides_secrets_channel_only(self) -> None:
+        # The credential pair goes ambient via modal secrets; the tracking URI
+        # invariant is untouched (routing still flows through mlflow.context).
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"RESEARCH_PLUGIN_MLFLOW_AGENT_KEY": "rr_sk_agent"},
+            clear=False,
+        ):
+            secrets = self.backend._sandbox_secrets(FakeModal)
+        self.assertEqual(
+            secrets,
+            [
+                {
+                    "secret": {
+                        "MLFLOW_TRACKING_USERNAME": "rp-agent",
+                        "MLFLOW_TRACKING_PASSWORD": "rr_sk_agent",
+                    }
+                }
+            ],
+        )
+        from backend.execution.vm_ssh import sandbox_tokens
+
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"RESEARCH_PLUGIN_MLFLOW_AGENT_KEY": "rr_sk_agent"},
+            clear=False,
+        ):
+            tokens = sandbox_tokens()
+        self.assertEqual(tokens.get("MLFLOW_TRACKING_USERNAME"), "rp-agent")
+        self.assertEqual(tokens.get("MLFLOW_TRACKING_PASSWORD"), "rr_sk_agent")
+        self.assertNotIn("MLFLOW_TRACKING_URI", tokens)
+
     def test_boot_script_has_no_sandbox_mlflow_or_tensorboard_server(self) -> None:
         # The image layering writes the boot script as a heredoc into the
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
@@ -369,7 +401,7 @@ class ModalSandboxBackendTest(unittest.TestCase):
         for bad in ("/workspace", "/workspace/exp_cache", "/workspace/.research_plugin_sessions"):
             with self.assertRaises(BackendValidationError):
                 ModalConfig(
-                    app_name="research-plugin-jobs",
+                    app_name="merv-jobs",
                     retention_seconds=600,
                     sandbox_timeout=4200,
                     job_timeout=3000,

@@ -1,4 +1,4 @@
-# Local full-stack bring-up of the hosted Research Plugin brain.
+# Local full-stack bring-up of the hosted Merv brain.
 #
 # Wires the control plane to Postgres (the record store) and MinIO (the S3-shape
 # blob store) so the whole cloud topology runs on a laptop. This is the
@@ -28,7 +28,7 @@ services:
       retries: 10
 
   # One-shot: create the separate MLflow database. MLflow owns generic table
-  # names, so keep it out of the Research Plugin record-store database.
+  # names, so keep it out of the Merv record-store database.
   mlflowdb:
     image: postgres:16-alpine
     depends_on:
@@ -68,9 +68,9 @@ services:
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 rpminio rpminio_dev_password &&
-      mc mb --ignore-existing local/research-plugin-blobs &&
-      mc mb --ignore-existing local/research-plugin-storage &&
-      mc mb --ignore-existing local/research-plugin-mlflow-artifacts &&
+      mc mb --ignore-existing local/merv-blobs &&
+      mc mb --ignore-existing local/merv-storage &&
+      mc mb --ignore-existing local/merv-mlflow-artifacts &&
       echo 'bucket ready';
       "
 
@@ -85,7 +85,7 @@ services:
         condition: service_completed_successfully
     environment:
       MLFLOW_BACKEND_STORE_URI: postgresql://rp:rp_dev_password@postgres:5432/mlflow
-      MLFLOW_ARTIFACTS_DESTINATION: s3://research-plugin-mlflow-artifacts
+      MLFLOW_ARTIFACTS_DESTINATION: s3://merv-mlflow-artifacts
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: rpminio
       AWS_SECRET_ACCESS_KEY: rpminio_dev_password
@@ -110,7 +110,7 @@ services:
       /bin/sh -c "
       mkdir -p /run/secrets/research_plugin_mgmt_key &&
       if [ ! -f /run/secrets/research_plugin_mgmt_key/key ]; then
-        ssh-keygen -t ed25519 -N '' -q -C research-plugin-dev-mgmt -f /run/secrets/research_plugin_mgmt_key/key;
+        ssh-keygen -t ed25519 -N '' -q -C merv-dev-mgmt -f /run/secrets/research_plugin_mgmt_key/key;
       fi &&
       chown 10001:10001 /run/secrets/research_plugin_mgmt_key/key /run/secrets/research_plugin_mgmt_key/key.pub &&
       chmod 600 /run/secrets/research_plugin_mgmt_key/key &&
@@ -145,11 +145,11 @@ services:
       RESEARCH_PLUGIN_DB_URL: postgresql://rp:rp_dev_password@postgres:5432/research_plugin
       # Submitted-byte blob store: the S3-shape bucket on MinIO. boto3
       # reads these standard AWS env vars; the endpoint URL points it at MinIO.
-      RESEARCH_PLUGIN_BLOB_BUCKET: research-plugin-blobs
+      RESEARCH_PLUGIN_BLOB_BUCKET: merv-blobs
       # Heavy-file storage: optional feature, enabled here through the same
       # S3-compatible path used for R2/S3 production deployments.
       RESEARCH_PLUGIN_STORAGE_PROVIDER: s3
-      RESEARCH_PLUGIN_STORAGE_BUCKET: research-plugin-storage
+      RESEARCH_PLUGIN_STORAGE_BUCKET: merv-storage
       RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL: ${RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL:-http://minio:9000}
       RESEARCH_PLUGIN_STORAGE_REGION: ${RESEARCH_PLUGIN_STORAGE_REGION:-us-east-1}
       # Centralized MLflow: tracking/dashboard URLs are reported to agents.

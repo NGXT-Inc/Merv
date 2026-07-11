@@ -1,4 +1,4 @@
-"""HTTP client for a Research Plugin brain.
+"""HTTP client for a Merv brain.
 
 ``HttpControlPlaneClient`` implements the same
 ``ControlPlaneClient.call(name, arguments)`` contract by POSTing to a running

@@ -26,6 +26,7 @@ from ..config import (
     build_object_store,
     build_state_store,
     REQUIRE_AGENT_MLFLOW_ENV_VAR,
+    REQUIRE_AUTH_ENV_VAR,
     REQUIRE_SANDBOX_BACKEND_ENV_VAR,
     resolve_blob_bucket,
     resolve_db_url,
@@ -39,6 +40,11 @@ from ..env import env_bool
 from ..execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
+from ..services.auth import (
+    SUPABASE_JWT_SECRET_ENV_VAR,
+    SUPABASE_URL_ENV_VAR,
+    SupabaseVerifier,
+)
 from ..services.cleanup import CleanupService
 from ..mlflow import CentralMlflowService
 from ..mlflow.config import MLFLOW_TRACKING_URI_ENV_VAR
@@ -48,7 +54,7 @@ from ..sandbox.mgmt_keys import LocalMgmtKeyStore
 from ..utils import ValidationError
 
 
-CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/research-plugin-control")
+CONTROL_COMPAT_REPO_ROOT = Path("/var/empty/merv-control")
 LOCAL_BRAIN_STATE_DIR_ENV_VAR = "RESEARCH_PLUGIN_LOCAL_STATE_DIR"
 LOGGER = logging.getLogger(__name__)
 _UNSET = object()
@@ -152,6 +158,22 @@ def build_control_app(
     return app, task_channel
 
 
+def _validate_auth_requirement(
+    *,
+    auth: SupabaseVerifier | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    if auth is not None or not env_bool(REQUIRE_AUTH_ENV_VAR, False, env=env):
+        return
+    raise ValidationError(
+        f"{REQUIRE_AUTH_ENV_VAR}=1 requires {SUPABASE_URL_ENV_VAR} and "
+        f"{SUPABASE_JWT_SECRET_ENV_VAR}; set them (shared with the RapidReview "
+        "Supabase project) or disable the requirement for an intentionally "
+        "open deployment.",
+        details={"missing": [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR]},
+    )
+
+
 def build_control_server(
     *,
     repo_root: Path | None = None,
@@ -170,11 +192,22 @@ def build_control_server(
             ALLOWED_ORIGINS_ENV_VAR,
         )
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
+    auth = SupabaseVerifier.from_env(env)
+    _validate_auth_requirement(auth=auth, env=env)
+    if auth is None:
+        LOGGER.warning(
+            "Supabase auth is not configured (%s/%s unset); the hosted control "
+            "surface is OPEN — set %s=1 to make this a startup failure",
+            SUPABASE_URL_ENV_VAR,
+            SUPABASE_JWT_SECRET_ENV_VAR,
+            REQUIRE_AUTH_ENV_VAR,
+        )
     fastapi_app = create_fastapi_app(
         app=app,
         allowed_origins=origins,
         cleanup=cleanup,
         surface_policy=surface,
+        auth=auth,
     )
     return ControlPlaneServer(
         app=app,

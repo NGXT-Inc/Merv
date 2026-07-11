@@ -1,5 +1,5 @@
 {
-  "name": "research-state-ui",
+  "name": "merv-ui",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.19",
+    "@supabase/supabase-js": "^2.110.2",
     "@xyflow/react": "^12.11.0",
     "pdfjs-dist": "^6.1.200",
     "prism-react-renderer": "^2.4.1",

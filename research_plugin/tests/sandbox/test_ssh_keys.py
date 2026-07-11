@@ -29,7 +29,7 @@ class SshKeysTest(unittest.TestCase):
         with patch("backend.ssh_keys.subprocess.run") as run:
             public_key = ensure_ed25519_keypair(
                 key_path=self.key_path,
-                comment="research-plugin-exp_1",
+                comment="merv-exp_1",
                 missing_action="provision sandbox SSH access",
                 failure_subject="sandbox SSH key",
             )
@@ -41,7 +41,7 @@ class SshKeysTest(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             self.assertEqual(kwargs, {"check": True, "capture_output": True, "text": True})
             self.assertEqual(cmd[-2:], ["-f", str(self.key_path)])
-            self.assertIn("research-plugin-exp_1", cmd)
+            self.assertIn("merv-exp_1", cmd)
             self.key_path.write_text("PRIVATE\n", encoding="utf-8")
             self.key_path.with_suffix(".pub").write_text(
                 "ssh-ed25519 AAAAgenerated\n", encoding="utf-8"
@@ -51,7 +51,7 @@ class SshKeysTest(unittest.TestCase):
         with patch("backend.ssh_keys.subprocess.run", side_effect=fake_run):
             public_key = ensure_ed25519_keypair(
                 key_path=self.key_path,
-                comment="research-plugin-exp_1",
+                comment="merv-exp_1",
                 missing_action="provision sandbox SSH access",
                 failure_subject="sandbox SSH key",
             )
@@ -69,7 +69,7 @@ class SshKeysTest(unittest.TestCase):
             ):
                 ensure_ed25519_keypair(
                     key_path=self.key_path,
-                    comment="research-plugin-exp_1",
+                    comment="merv-exp_1",
                     missing_action="provision sandbox SSH access",
                     failure_subject="sandbox SSH key",
                 )
@@ -85,7 +85,7 @@ class SshKeysTest(unittest.TestCase):
             ):
                 ensure_ed25519_keypair(
                     key_path=self.key_path,
-                    comment="research-plugin-exp_1",
+                    comment="merv-exp_1",
                     missing_action="provision sandbox SSH access",
                     failure_subject="sandbox SSH key",
                 )

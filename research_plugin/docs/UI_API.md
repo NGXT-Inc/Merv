@@ -1,6 +1,6 @@
 # Browser HTTP API
 
-The Research State UI talks directly to the brain's `/api/*` HTTP surface. The
+The Merv UI talks directly to the brain's `/api/*` HTTP surface. The
 same brain also serves `/mcp/*` to local stdio proxies, but the browser is not an
 agent runtime and has no chat endpoint.
 

@@ -305,7 +305,7 @@ class LambdaAvailabilityTest(unittest.TestCase):
             },
             clear=True,
         ):
-            backend = build_sandbox_backend(repo_root=Path("/tmp/research-plugin-test"))
+            backend = build_sandbox_backend(repo_root=Path("/tmp/merv-test"))
 
         self.assertEqual(backend.capabilities.name, "lambda_labs")
 
@@ -313,7 +313,7 @@ class LambdaAvailabilityTest(unittest.TestCase):
         # No name arg and no RESEARCH_PLUGIN_EXECUTION_BACKEND -> Lambda Labs.
         # Construction is lazy, so this must not resolve credentials yet.
         with patch.dict(os.environ, {}, clear=True):
-            backend = build_sandbox_backend(repo_root=Path("/tmp/research-plugin-test"))
+            backend = build_sandbox_backend(repo_root=Path("/tmp/merv-test"))
         self.assertEqual(backend.capabilities.name, "lambda_labs")
         self.assertTrue(backend.capabilities.requires_hardware_selection)
         self.assertFalse(backend.capabilities.configurable_resources)

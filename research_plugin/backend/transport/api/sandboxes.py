@@ -37,6 +37,12 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
             payload=lambda: target.sandbox_list_view(project_id=project_id),
         )
 
+    @api_router.get("/api/projects/{project_id}/compute-cost")
+    def compute_cost(project_id: str) -> dict[str, Any]:
+        # No ETag: open generations bill to now, so the payload moves with the
+        # clock even when no row changes.
+        return api_for_project(project_id).compute_cost_view(project_id=project_id)
+
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
         return api.sandbox_health_view()

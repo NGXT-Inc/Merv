@@ -1,2 +1,2 @@
-"""Stdlib-only shared helpers for Research Plugin launchers."""
+"""Stdlib-only shared helpers for Merv launchers."""
 

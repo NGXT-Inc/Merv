@@ -1,6 +1,6 @@
 # Hosted brain reference deployment
 
-This directory is a worked deployment of the Research Plugin brain. The hosted
+This directory is a worked deployment of the Merv brain. The hosted
 entry point uses the same `ControlApp` composition as the local brain, with
 durable hosted adapters and stricter startup requirements. It is not a managed
 service or a production security boundary.
@@ -63,7 +63,7 @@ RP_DOCTOR_URL_REWRITE=http://minio:9000=http://127.0.0.1:9000 \
 
 ## Hosted configuration
 
-`research-plugin-control` forces `RESEARCH_PLUGIN_MODE=control`. With no
+`merv-control` forces `RESEARCH_PLUGIN_MODE=control`. With no
 explicit development `repo_root`, startup requires:
 
 - `RESEARCH_PLUGIN_DB_URL`: Postgres record store;

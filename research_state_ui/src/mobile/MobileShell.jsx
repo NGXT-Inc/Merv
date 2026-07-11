@@ -53,7 +53,7 @@ export default function MobileShell({ children, onRefresh }) {
   // Any navigation closes the sheet.
   useEffect(() => { setSheetOpen(false); }, [location.pathname]);
 
-  const projectName = home?.project?.name || 'Research State';
+  const projectName = home?.project?.name || 'Merv';
   const stale = lastSyncError || (lastSyncedAt && now - lastSyncedAt > 30000);
   const dotClass = stale ? 'sync-dot stale' : (isPolling ? 'sync-dot' : 'sync-dot paused');
 

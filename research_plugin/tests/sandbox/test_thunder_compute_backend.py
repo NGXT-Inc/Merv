@@ -227,7 +227,7 @@ class ThunderBackendTest(unittest.TestCase):
 
     def test_build_sandbox_backend_accepts_thunder_aliases(self) -> None:
         with patch.dict(os.environ, {"RESEARCH_PLUGIN_EXECUTION_BACKEND": "thunder"}, clear=True):
-            aliased = build_sandbox_backend(repo_root=Path("/tmp/research-plugin-test"))
+            aliased = build_sandbox_backend(repo_root=Path("/tmp/merv-test"))
         self.assertEqual(aliased.capabilities.name, "thunder_compute")
 
         with patch.dict(
@@ -235,7 +235,7 @@ class ThunderBackendTest(unittest.TestCase):
             {"RESEARCH_PLUGIN_EXECUTION_BACKEND": "thunder_compute"},
             clear=True,
         ):
-            canonical = build_sandbox_backend(repo_root=Path("/tmp/research-plugin-test"))
+            canonical = build_sandbox_backend(repo_root=Path("/tmp/merv-test"))
         self.assertEqual(canonical.capabilities.name, "thunder_compute")
 
     def test_hardware_catalog_lists_thunder_options(self) -> None:
@@ -255,12 +255,12 @@ class ThunderBackendTest(unittest.TestCase):
             return {
                 "7": {
                     "status": "terminated",
-                    "sshPublicKeys": ["ssh-ed25519 AAAAmgmt research-plugin-mgmt-exp1"],
+                    "sshPublicKeys": ["ssh-ed25519 AAAAmgmt merv-mgmt-exp1"],
                 },
                 "8": {
                     "status": "running",
                     "sshPublicKeys": [
-                        {"publicKey": "ssh-ed25519 AAAAmgmt research-plugin-mgmt-exp1"}
+                        {"publicKey": "ssh-ed25519 AAAAmgmt merv-mgmt-exp1"}
                     ],
                 },
             }

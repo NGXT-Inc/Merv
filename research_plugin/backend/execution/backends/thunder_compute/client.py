@@ -84,7 +84,7 @@ class ThunderComputeClient:
                 "Accept": "application/json",
                 "Authorization": f"Bearer {self.config.api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "research-plugin/0.0005",
+                "User-Agent": "merv/0.0005",
             },
         )
         try:

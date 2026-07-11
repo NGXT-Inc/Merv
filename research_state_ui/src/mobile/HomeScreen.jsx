@@ -12,7 +12,8 @@ import {
   selectExperiments,
 } from '../store/useProjectStore';
 import { expName } from '../utils/experiment';
-import { fmtDuration } from '../utils/format';
+import { fmtDuration, fmtUsd, fmtHrs } from '../utils/format';
+import { densifyDaily } from '../utils/spend';
 import { goodDirection, curveValues } from '../utils/metrics';
 
 const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
@@ -97,6 +98,22 @@ function useLiveGpu(projectId, sandbox) {
   return gpu;
 }
 
+// Project compute spend from the generations ledger — refetched when the
+// fleet changes shape (the endpoint has no push signal; billing moves with
+// the clock, so the minute tick would over-fetch).
+function useComputeSpend(projectId, fleetSignal) {
+  const [spend, setSpend] = useState(null);
+  useEffect(() => {
+    if (!projectId) { setSpend(null); return undefined; }
+    let cancelled = false;
+    api.getComputeCost(projectId)
+      .then(d => { if (!cancelled) setSpend(d); })
+      .catch(() => { if (!cancelled) setSpend(null); });
+    return () => { cancelled = true; };
+  }, [projectId, fleetSignal]);
+  return spend;
+}
+
 // Latest metric curve for the live experiment, from the durable MLflow ledger.
 function useLiveMetric(projectId, experimentId) {
   const [metric, setMetric] = useState(null); // {key, values:[…last 30], last}
@@ -174,6 +191,7 @@ export default function HomeScreen() {
     || null;
   const gpu = useLiveGpu(projectId, liveSandbox);
   const metric = useLiveMetric(projectId, liveExp?.id);
+  const spend = useComputeSpend(projectId, `${sandboxes.length}:${running.length}`);
 
   // ── 24h snapshot band (derived client-side; approximate by design) ──
   const tiles = useMemo(() => {
@@ -364,6 +382,45 @@ export default function HomeScreen() {
           )}
         </>
       )}
+
+      {spend && spend.generations > 0 && (
+        <>
+          <div className="mbreak" />
+          <div className="mml">Compute spend</div>
+          <div className="mspend">
+            <div className="mspend-head">
+              <span className="mspend-total tabular">
+                {spend.total_usd > 0 ? fmtUsd(spend.total_usd) : fmtHrs(spend.total_hours)}
+              </span>
+              {spend.open_generations > 0 && spend.burn_usd_per_hour > 0 && (
+                <span className="mspend-burn">{fmtUsd(spend.burn_usd_per_hour)}/hr now</span>
+              )}
+            </div>
+            <MiniBars daily={spend.daily} />
+            <div className="mspend-sub">
+              {fmtHrs(spend.total_hours)} across {spend.generations} generation{spend.generations === 1 ? '' : 's'}
+              {spend.total_usd > 0 && spend.unpriced_hours > 0 && ` · ${fmtHrs(spend.unpriced_hours)} unpriced`}
+              {spend.total_usd <= 0 && ' · no provider pricing'}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Daily spend strip — sibling of MiniSpark, bars instead of a pulse line.
+function MiniBars({ daily }) {
+  const days = densifyDaily(daily);
+  if (days.length < 2) return null;
+  const priced = days.some(d => d.usd > 0);
+  const vals = days.map(d => (priced ? d.usd : d.hours));
+  const vmax = Math.max(...vals) || 1;
+  return (
+    <div className="mspend-bars" aria-hidden="true">
+      {days.map((d, i) => (
+        <span key={d.date} style={{ height: `${Math.max(4, (vals[i] / vmax) * 100)}%` }} />
+      ))}
     </div>
   );
 }

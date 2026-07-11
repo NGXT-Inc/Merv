@@ -16,6 +16,10 @@ MAX_EXPERIMENT_SCAN = 1000
 REQUEST_TIMEOUT = 3.0
 
 
+class MlflowSnapshotError(RuntimeError):
+    """MLflow could not be read while building a snapshot."""
+
+
 def finite_metric_value(value: Any) -> float | None:
     try:
         number = float(value)
@@ -38,7 +42,7 @@ def downsample_history(
 
 
 def snapshot_mlflow(
-    base_url: str, *, experiment_name: str = ""
+    base_url: str, *, experiment_name: str = "", include_history: bool = True
 ) -> dict[str, Any] | None:
     """Extract experiments -> runs -> params/metrics/history from MLflow."""
     base = (base_url or "").split("#", 1)[0].rstrip("/")
@@ -60,12 +64,44 @@ def snapshot_mlflow(
                         "experiment_id": experiment_id,
                         "name": experiment.get("name") or "",
                         "last_update_time": experiment.get("last_update_time"),
-                        "runs": [_run_record(client, base, run) for run in runs],
+                        "runs": [
+                            _run_record(
+                                client, base, run, include_history=include_history
+                            )
+                            for run in runs
+                        ],
                     }
                 )
-    except Exception:  # noqa: BLE001 - snapshotting is best-effort by contract
-        return None
+    except Exception as exc:  # noqa: BLE001 - normalized for the tracking facade
+        raise MlflowSnapshotError("MLflow snapshot failed") from exc
     return {"source": "mlflow", "base_url": base, "experiments": captured} if captured else None
+
+
+def search_mlflow_experiments(
+    base_url: str, *, name_like: str
+) -> list[dict[str, Any]]:
+    """Search experiment metadata once without fetching any runs."""
+    base = (base_url or "").split("#", 1)[0].rstrip("/")
+    if not base:
+        return []
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
+            response = client.get(
+                f"{base}/api/2.0/mlflow/experiments/search",
+                params={
+                    "max_results": MAX_EXPERIMENT_SCAN,
+                    "filter": "name LIKE '" + name_like.replace("'", "\\'") + "'",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:  # noqa: BLE001 - normalized for the tracking facade
+        raise MlflowSnapshotError("MLflow experiment search failed") from exc
+    return [
+        experiment
+        for experiment in (payload.get("experiments") or [])
+        if isinstance(experiment, dict)
+    ]
 
 
 def _search_experiments(
@@ -100,24 +136,26 @@ def _search_runs(
 ) -> list[dict[str, Any]]:
     if not experiment_id:
         return []
-    try:
-        response = client.post(
-            f"{base}/api/2.0/mlflow/runs/search",
-            json={
-                "experiment_ids": [experiment_id],
-                "order_by": ["attributes.start_time DESC"],
-                "max_results": MAX_RUNS,
-            },
-        )
-        if response.status_code != 200:
-            return []
-        runs = response.json().get("runs") or []
-    except Exception:  # noqa: BLE001
-        return []
+    response = client.post(
+        f"{base}/api/2.0/mlflow/runs/search",
+        json={
+            "experiment_ids": [experiment_id],
+            "order_by": ["attributes.start_time DESC"],
+            "max_results": MAX_RUNS,
+        },
+    )
+    response.raise_for_status()
+    runs = response.json().get("runs") or []
     return [run for run in runs if isinstance(run, dict)][:MAX_RUNS]
 
 
-def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[str, Any]:
+def _run_record(
+    client: httpx.Client,
+    base: str,
+    run: dict[str, Any],
+    *,
+    include_history: bool,
+) -> dict[str, Any]:
     info = run.get("info") or {}
     data = run.get("data") or {}
     run_id = str(info.get("run_id") or "")
@@ -135,13 +173,14 @@ def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[st
         and tag.get("key")
         and not str(tag["key"]).startswith("mlflow.")
     }
+    raw_metrics = data.get("metrics") or []
     metrics: dict[str, dict[str, Any]] = {}
     history: dict[str, list[list[Any]]] = {}
-    for metric in (data.get("metrics") or [])[:MAX_METRIC_KEYS]:
+    for metric in raw_metrics[:MAX_METRIC_KEYS]:
         if not isinstance(metric, dict) or not metric.get("key"):
             continue
         key = str(metric["key"])
-        points = _metric_history(client, base, run_id, key)
+        points = _metric_history(client, base, run_id, key) if include_history else []
         metrics[key] = {
             "last": finite_metric_value(metric.get("value")),
             "step": metric.get("step"),
@@ -153,7 +192,7 @@ def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[st
             if values:
                 metrics[key]["min"] = min(values)
                 metrics[key]["max"] = max(values)
-    return {
+    record = {
         "run_id": run_id,
         "run_name": str(info.get("run_name") or ""),
         "status": str(info.get("status") or ""),
@@ -162,8 +201,12 @@ def _run_record(client: httpx.Client, base: str, run: dict[str, Any]) -> dict[st
         "params": params,
         "tags": tags,
         "metrics": metrics,
-        "history": history,
     }
+    if include_history:
+        record["history"] = history
+    if len(raw_metrics) >= MAX_METRIC_KEYS:
+        record["metrics_capped_at"] = MAX_METRIC_KEYS
+    return record
 
 
 def _metric_history(

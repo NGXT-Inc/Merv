@@ -30,6 +30,13 @@ _TERMINAL_EXPERIMENT_FEED_EVENTS = {
     "abandoned": "experiment_abandoned",
 }
 
+_TRANSITION_MLFLOW_STATUSES = {
+    "submit_results": "FINISHED",
+    "complete": "FINISHED",
+    "abandon": "KILLED",
+    "mark_failed": "FAILED",
+}
+
 
 def _attach_feed_note(
     result: dict[str, Any],
@@ -93,7 +100,12 @@ def _mlflow_connection(
     run location can connect the same way."""
     if mlflow_tracking is None or not project_id or not experiment_id:
         return {"configured": False}
-    return mlflow_tracking.context(project_id=project_id, experiment_id=experiment_id).to_dict()
+    # Agent-facing (MCP) block: carries the MLflow credential env pair when the
+    # hosted route is authenticated. UI views call context() directly and never
+    # pass include_credentials, so no secret reaches browser payloads.
+    return mlflow_tracking.context(
+        project_id=project_id, experiment_id=experiment_id, include_credentials=True
+    ).to_dict()
 
 
 def _attach_mlflow_run(block: dict[str, Any], run: dict[str, Any] | None) -> dict[str, Any]:
@@ -116,7 +128,9 @@ def _mlflow_project_connection(
     """Project-level MLflow connection and namespace map for direct API reads."""
     if mlflow_tracking is None or not project_id:
         return {"configured": False}
-    block = dict(mlflow_tracking.project_context(project_id=project_id))
+    block = dict(
+        mlflow_tracking.project_context(project_id=project_id, include_credentials=True)
+    )
     listed = experiments.list_experiments(project_id=project_id)["experiments"]
     block["experiments"] = [
         {
@@ -269,6 +283,46 @@ def _ensure_mlflow_run_for_retry(
     )
 
 
+def _finalize_plugin_mlflow_run(
+    *,
+    experiments: Any,
+    mlflow_tracking: Any,
+    state: dict[str, Any],
+    project_id: str,
+    experiment_id: str,
+    status: str,
+) -> dict[str, Any]:
+    run = state.get("mlflow_run") or {}
+    run_id = str(run.get("run_id") or "")
+    run_status = str(run.get("status") or "").upper()
+    if (
+        mlflow_tracking is None
+        or not run_id
+        or not run.get("created_by_plugin")
+        or run_status in MLFLOW_TERMINAL_RUN_STATUSES
+    ):
+        return state
+    try:
+        finalized = mlflow_tracking.finalize_run(
+            project_id=project_id,
+            experiment_id=experiment_id,
+            run_id=run_id,
+            status=status,
+            wait_seconds=0.0,
+        )
+        readback = finalized.get("run")
+        if isinstance(readback, dict) and str(readback.get("run_id") or "") == run_id:
+            return experiments.record_mlflow_run(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                run=readback,
+                event_type="experiment.mlflow_run_refreshed",
+            )
+    except Exception:  # noqa: BLE001 - MLflow must never block workflow state
+        pass
+    return state
+
+
 def _exhibit_expectation(*, experiment_id: str, state: dict[str, Any]) -> dict[str, Any]:
     """Expectation-setting handed to the agent the moment execution starts:
     whatever it logs IS the record, so proper logging is the only way its
@@ -376,6 +430,16 @@ def build_control_tool_handlers(
                 state=result,
                 project_id=resolved_project_id,
                 experiment_id=experiment_id,
+            )
+        terminal_mlflow_status = _TRANSITION_MLFLOW_STATUSES.get(transition)
+        if terminal_mlflow_status:
+            result = _finalize_plugin_mlflow_run(
+                experiments=experiments,
+                mlflow_tracking=mlflow_tracking,
+                state=result,
+                project_id=resolved_project_id,
+                experiment_id=experiment_id,
+                status=terminal_mlflow_status,
             )
         slim = slim_experiment_state(result)
         # The moment an experiment starts running, hand the agent the MLflow
@@ -589,13 +653,16 @@ def build_control_tool_handlers(
         summary: str = "",
         overwrite: bool = False,
         tenant_id: str | None = None,
+        user_id: str = "",
     ) -> dict[str, Any]:
         # The merged `project` tool. current/connect are served by the local
         # proxy (which owns the folder→project link store) and never reach the
         # brain; create and overview forward here. If current/connect DO arrive,
         # an old proxy without the interceptor (or a direct HTTP caller) sent them.
         if action == "create":
-            return projects.create(name=name, summary=summary, tenant_id=tenant_id)
+            return projects.create(
+                name=name, summary=summary, tenant_id=tenant_id, user_id=user_id
+            )
         if action == "overview":
             # The whole-project read: reuse the exact claim.list and
             # experiment.list projections so overview never drifts from them.
@@ -613,7 +680,7 @@ def build_control_tool_handlers(
             }
         raise ValidationError(
             f'project action="{action}" is served by the local research_plugin '
-            "proxy, not the brain. Seeing this means your research_plugin client "
+            "proxy, not the brain. Seeing this means your Merv client "
             "is older than the brain — update the plugin (git pull) and restart "
             "your MCP client."
         )

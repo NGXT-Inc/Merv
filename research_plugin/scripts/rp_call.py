@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny driver that calls Research Plugin MCP tools through the real proxy.
+"""Tiny driver that calls Merv MCP tools through the real proxy.
 
 Reuses mcp_server.proxy (the same brain routing, version, project-link, and
 checkout-local data-plane logic an MCP client uses), so this is a faithful

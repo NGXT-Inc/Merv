@@ -43,6 +43,7 @@ class ProjectService:
         name: str,
         summary: str = "",
         tenant_id: str | None = None,
+        user_id: str = "",
     ) -> dict[str, Any]:
         name = self._validate_name(name)
         tenant_id = (tenant_id or "local").strip() or "local"
@@ -61,6 +62,12 @@ class ProjectService:
                     now_iso(),
                 ),
             )
+            if user_id:
+                # Authenticated creator becomes the project's first member.
+                conn.execute(
+                    "INSERT INTO project_members (project_id, user_id, added_at) VALUES (?, ?, ?)",
+                    (project_id, user_id, now_iso()),
+                )
             self.store.record_event(
                 conn=conn,
                 project_id=project_id,
@@ -134,11 +141,26 @@ class ProjectService:
             conn.close()
 
     def list_projects(
-        self, *, tenant_id: str | None = None, include_hidden: bool = False
+        self,
+        *,
+        tenant_id: str | None = None,
+        include_hidden: bool = False,
+        user_id: str = "",
     ) -> dict[str, Any]:
         conn = self.store.connect()
         try:
-            if tenant_id is None:
+            if user_id:
+                # Authenticated (hosted) callers see only projects they are a
+                # member of; the local surface passes no user_id and sees all.
+                rows = conn.execute(
+                    """
+                    SELECT p.* FROM projects p
+                    JOIN project_members m ON m.project_id = p.id AND m.user_id = ?
+                    ORDER BY p.created_at, p.id
+                    """,
+                    (user_id,),
+                ).fetchall()
+            elif tenant_id is None:
                 rows = conn.execute("SELECT * FROM projects ORDER BY created_at, id").fetchall()
             else:
                 rows = conn.execute(
@@ -159,7 +181,7 @@ class ProjectService:
                 "exists": False,
                 "project": None,
                 "hint": (
-                    "No Research Plugin project exists yet. Ask the user what project "
+                    "No Merv project exists yet. Ask the user what project "
                     "name and short summary to use, then call the project tool with "
                     'action="connect".'
                 ),

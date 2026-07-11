@@ -90,6 +90,17 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_members (
+  -- Access layer for authenticated (hosted) mode: user_id is a Supabase
+  -- auth.users UUID; a row grants full member access to the project. The
+  -- local surface carries no user_id, so membership never filters it.
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, user_id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
 CREATE TABLE IF NOT EXISTS claims (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -1040,6 +1051,46 @@ class BaseStateStore:
                 item["payload"] = json.loads(str(item.pop("payload_json", "{}")))
                 events.append(item)
             return {"events": events}
+        finally:
+            conn.close()
+
+    def add_project_member(self, *, project_id: str, user_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO project_members (project_id, user_id, added_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (project_id, user_id) DO NOTHING
+                """,
+                (project_id, user_id, now_iso()),
+            )
+
+    def remove_project_member(self, *, project_id: str, user_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            )
+
+    def is_project_member(self, *, project_id: str, user_id: str) -> bool:
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def list_project_members(self, *, project_id: str) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, added_at FROM project_members WHERE project_id = ? ORDER BY added_at",
+                (project_id,),
+            ).fetchall()
+            return [row_to_dict(row=row) or {} for row in rows]
         finally:
             conn.close()
 

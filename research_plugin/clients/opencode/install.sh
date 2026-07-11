@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Research Plugin skills and reviewer agents for OpenCode.
+# Install Merv skills and reviewer agents for OpenCode.
 #
 # OpenCode has no declarative plugin bundle, so this script symlinks the
 # plugin's canonical skills and the OpenCode-specific reviewer agents into
@@ -32,9 +32,9 @@ Done. Register the MCP server in your research repo's opencode.json
 
 {
   "mcp": {
-    "research-plugin": {
+    "merv": {
       "type": "local",
-      "command": ["$PLUGIN_DIR/bin/research-plugin-mcp"],
+      "command": ["$PLUGIN_DIR/bin/merv-mcp"],
       "enabled": true,
       "environment": {
         "RESEARCH_PLUGIN_CONTROL_URL": ""
@@ -46,5 +46,5 @@ Done. Register the MCP server in your research repo's opencode.json
 OpenCode spawns local MCP servers with cwd = project root, which is exactly
 what the proxy needs for checkout-local operations. An empty control URL uses
 the configured/default hosted brain. For a local deployment, set it to
-http://127.0.0.1:8787 and start $PLUGIN_DIR/bin/research-plugin-http first.
+http://127.0.0.1:8787 and start $PLUGIN_DIR/bin/merv-http first.
 EOF

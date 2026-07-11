@@ -1,11 +1,11 @@
 {
-  "name": "research-plugin",
-  "version": "0.0011",
+  "name": "merv",
+  "version": "0.0012",
   "description": "Lean research-state workflow with project-local MCP context, resources, reviews, and cloud SSH sandboxes. Skills for the agent loop, subagents for read-only design, experiment, and reflection review.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
-    "research-plugin": {
-      "command": "${extensionPath}${/}bin${/}research-plugin-mcp",
+    "merv": {
+      "command": "${extensionPath}${/}bin${/}merv-mcp",
       "args": [],
       "env": {
         "RESEARCH_PLUGIN_REPO_ROOT": "${workspacePath}",

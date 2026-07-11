@@ -1,6 +1,6 @@
 """MLflow tracking integration.
 
-This package contains the Research Plugin facade around real MLflow services:
+This package contains the Merv facade around real MLflow services:
 agent-facing tracking context, backend metric snapshots, and the local managed
 server wrapper.
 """

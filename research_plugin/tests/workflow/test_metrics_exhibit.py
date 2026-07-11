@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from backend.mlflow.exhibit import build_metrics_exhibit, exhibit_bytes
-from backend.mlflow.metrics import MAX_RUNS
+from backend.mlflow.exhibit import WINDOW_SKEW_MS, build_metrics_exhibit, exhibit_bytes
+from backend.mlflow.metrics import MAX_METRIC_KEYS, MAX_RUNS
 from backend.mlflow.tracking import MlflowTrackingContext
 from backend.utils import ValidationError, WorkflowError
 
@@ -92,6 +92,18 @@ class ExhibitBuilderTest(unittest.TestCase):
         ]
         exhibit = _build(snapshot=_snapshot(runs))
         self.assertEqual([r["run_id"] for r in exhibit["runs"]], ["current"])
+        self.assertEqual(exhibit["mlflow"]["runs_excluded_by_window"], 1)
+
+    def test_attempt_window_tolerates_small_clock_skew(self) -> None:
+        runs = [
+            _run("within-skew", start_ms=WINDOW_START_MS - WINDOW_SKEW_MS + 1),
+            _run("outside-skew", start_ms=WINDOW_START_MS - WINDOW_SKEW_MS - 1),
+        ]
+        exhibit = _build(snapshot=_snapshot(runs))
+        self.assertEqual(
+            [run["run_id"] for run in exhibit["runs"]], ["within-skew"]
+        )
+        self.assertEqual(exhibit["mlflow"]["runs_excluded_by_window"], 1)
 
     def test_missing_window_start_includes_all_runs(self) -> None:
         runs = [_run("early", start_ms=WINDOW_START_MS - 3_600_000)]
@@ -130,6 +142,12 @@ class ExhibitBuilderTest(unittest.TestCase):
         runs = [_run(f"r{i}", start_ms=WINDOW_START_MS + i) for i in range(MAX_RUNS)]
         exhibit = _build(snapshot=_snapshot(runs))
         self.assertEqual(exhibit["mlflow"]["runs_capped_at"], MAX_RUNS)
+
+    def test_run_metric_cap_is_carried_into_exhibit(self) -> None:
+        run = _run("capped", start_ms=WINDOW_START_MS + 1000)
+        run["metrics_capped_at"] = MAX_METRIC_KEYS
+        exhibit = _build(snapshot=_snapshot([run]))
+        self.assertEqual(exhibit["runs"][0]["metrics_capped_at"], MAX_METRIC_KEYS)
 
 
 class FakeMlflowTracking:

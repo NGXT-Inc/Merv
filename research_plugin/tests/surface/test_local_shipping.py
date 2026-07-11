@@ -23,7 +23,7 @@ class LocalShippingTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.source_plugin = PLUGIN_ROOT
-        self.install_dir = self.root / "installed" / "research-plugin"
+        self.install_dir = self.root / "installed" / "merv"
         self.research_repo = self.root / "research-repo"
         self.research_repo.mkdir(parents=True)
         self._copy_install()
@@ -178,7 +178,7 @@ class LocalShippingTest(unittest.TestCase):
     def _start_mcp_from_config(self, extra_env: dict[str, str] | None = None):
         manifest = json.loads((self.install_dir / ".codex-plugin" / "plugin.json").read_text())
         mcp_config = json.loads((self.install_dir / manifest["mcpServers"]).read_text())
-        server = mcp_config["mcpServers"]["research-plugin"]
+        server = mcp_config["mcpServers"]["merv"]
         command = Path(server["command"])
         if not command.is_absolute():
             command = self.install_dir / command
@@ -197,7 +197,7 @@ class LocalShippingTest(unittest.TestCase):
         """Spin up the localhost brain on a free port."""
         return subprocess.Popen(
             [
-                str(self.install_dir / "bin" / "research-plugin-http"),
+                str(self.install_dir / "bin" / "merv-http"),
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -226,29 +226,29 @@ class LocalShippingTest(unittest.TestCase):
 
     def test_plugin_manifest_paths_resolve_for_local_install(self) -> None:
         manifest = json.loads((self.install_dir / ".codex-plugin" / "plugin.json").read_text())
-        self.assertEqual(manifest["name"], "research-plugin")
+        self.assertEqual(manifest["name"], "merv")
         self.assertEqual(BACKEND_VERSION, MCP_VERSION)
         self.assertTrue(manifest["version"].startswith(f"{BACKEND_VERSION}+"))
         self.assertTrue((self.install_dir / manifest["skills"]).is_dir())
 
         mcp_config = json.loads((self.install_dir / manifest["mcpServers"]).read_text())
-        command = mcp_config["mcpServers"]["research-plugin"]["command"]
+        command = mcp_config["mcpServers"]["merv"]["command"]
         command_path = Path(command)
         self.assertFalse(command_path.is_absolute(), "Codex MCP launcher must be plugin-relative")
         if not command_path.is_absolute():
             command_path = self.install_dir / command_path
         self.assertTrue(command_path.exists())
         self.assertTrue(os.access(command_path, os.X_OK))
-        env = mcp_config["mcpServers"]["research-plugin"].get("env", {})
+        env = mcp_config["mcpServers"]["merv"].get("env", {})
         # Shipped manifests must not pin a brain URL: an empty value keeps the
-        # machine config from `research-plugin-client configure` in charge,
+        # machine config from `merv-client configure` in charge,
         # with the hosted brain as the built-in fallback.
         self.assertEqual(env["RESEARCH_PLUGIN_CONTROL_URL"], "")
 
     def test_http_launcher_rejects_explicit_repo(self) -> None:
         proc = subprocess.run(
             [
-                str(self.install_dir / "bin" / "research-plugin-http"),
+                str(self.install_dir / "bin" / "merv-http"),
                 "--repo",
                 str(self.research_repo),
                 "--host",

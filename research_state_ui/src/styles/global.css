@@ -4928,3 +4928,39 @@ a.echip--dead, button.echip--dead { color: var(--faint); }
 /* Logic-panel refs stack one chip per line. */
 .lgr-refs { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .lgr-ref-chip { max-width: 100%; }
+
+/* =====================================================================
+   Compute spend (Home) — daily columns + per-experiment meters.
+   Spend is neutral operational info, so marks wear --steel; --active
+   stays reserved for focus/selection.
+   ===================================================================== */
+.spend-chart { position: relative; padding: 2px 0 20px; }
+.spend-y { position: absolute; top: 0; right: 0; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); pointer-events: none; }
+.spend-bars { display: flex; align-items: flex-end; gap: 2px; height: 96px; border-bottom: 1px solid var(--line); }
+.spend-bar { flex: 1; max-width: 22px; height: 100%; display: flex; align-items: flex-end; }
+.spend-bar-fill { width: 100%; min-height: 1px; background: rgba(var(--steel-rgb), 0.75); border-radius: 3px 3px 0 0; }
+@media (hover: hover) {
+  .spend-bar:hover .spend-bar-fill { background: var(--steel); }
+}
+.spend-xlabs { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); pointer-events: none; }
+
+.spend-rows { margin-top: var(--space-3); }
+.spend-row { display: grid; grid-template-columns: var(--kv-label) 1fr 76px 64px; align-items: center; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); }
+.spend-row-name { font-size: var(--text-sm); color: var(--text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.spend-row-name:hover { color: var(--active); }
+.spend-row-meter { height: 4px; background: var(--bg-soft); border-radius: var(--radius-pill); overflow: hidden; }
+.spend-row-meter > span { display: block; height: 100%; background: rgba(var(--steel-rgb), 0.75); border-radius: var(--radius-pill); }
+.spend-row-val { text-align: right; font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.spend-row-hrs { text-align: right; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); font-variant-numeric: tabular-nums; }
+.spend-row--more { display: block; font-size: var(--text-xs); color: var(--faint); border-bottom: 0; }
+
+/* ---- Auth gate (hosted sign-in; never rendered on localhost) ---- */
+.auth-gate { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--bg); }
+.auth-gate-card { display: flex; flex-direction: column; gap: 10px; width: min(340px, 90vw); padding: 28px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-elev); }
+.auth-gate-title { margin: 0; font-size: var(--text-lg); }
+.auth-gate-hint { margin: 0 0 6px; color: var(--muted); font-size: var(--text-sm); }
+.auth-gate-input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font-size: var(--text-sm); }
+.auth-gate-input:focus { outline: none; border-color: var(--line-strong); }
+.auth-gate-error { color: var(--refutes); font-size: var(--text-xs); }
+.auth-gate-submit { justify-content: center; }
+.auth-gate-google { justify-content: center; }

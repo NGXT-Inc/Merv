@@ -202,8 +202,8 @@ class DualKeyProvisionTest(unittest.TestCase):
 
 
 class BootstrapContentTest(unittest.TestCase):
-    USER_KEY = "ssh-ed25519 AAAAuser research-plugin-exp1"
-    MGMT_KEY = "ssh-ed25519 AAAAmgmt research-plugin-mgmt-exp1"
+    USER_KEY = "ssh-ed25519 AAAAuser merv-exp1"
+    MGMT_KEY = "ssh-ed25519 AAAAmgmt merv-mgmt-exp1"
 
     def _user_data(self, *, management_public_key: str = "") -> str:
         return build_user_data(

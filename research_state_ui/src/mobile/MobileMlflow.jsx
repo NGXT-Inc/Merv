@@ -25,7 +25,7 @@ export default function MobileMlflow() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  const focusExpId = searchParams.get('focus');
+  const requestedFocusExpId = searchParams.get('focus');
   const [metricKey, setMetricKey] = useState(null); // null → the plan's focus metric
   const [sort, setSort] = useState({ col: 'value', asc: null }); // asc null → column default
 
@@ -51,6 +51,14 @@ export default function MobileMlflow() {
     [data, projectId],
   );
   const hasLedger = !!(plan && plan.runs.length > 0);
+  const experiments = Array.isArray(data?.experiments) ? data.experiments : [];
+  const focusExpId = experiments.some(e => e.experiment_id === requestedFocusExpId)
+    ? requestedFocusExpId
+    : null;
+  const mlflowUnreachable = data?.mlflow?.configured && data.mlflow?.reachable === false;
+  const unmappedCount = Array.isArray(data?.unmapped_mlflow_experiments)
+    ? data.unmapped_mlflow_experiments.length
+    : 0;
 
   // The pivoted metric: chips switch it; everything below follows.
   const fp = useMemo(() => {
@@ -116,8 +124,8 @@ export default function MobileMlflow() {
   const failures = hasLedger
     ? plan.diagnostics.flatMap(d => d.values.filter(p => p.v !== 0).map(p => ({ key: d.key, run: plan.runs[p.i], v: p.v })))
     : [];
-  const norun = hasLedger && Array.isArray(data.experiments)
-    ? data.experiments.filter(e => !plan.runs.some(r => r.expId === e.experiment_id)).length
+  const norun = hasLedger
+    ? experiments.filter(e => !plan.runs.some(r => r.expId === e.experiment_id)).length
     : 0;
 
   return (
@@ -129,11 +137,16 @@ export default function MobileMlflow() {
         </div>
 
         {error && <div className="mbanner">{error}</div>}
+        {mlflowUnreachable && (
+          <div className="mbanner" role="alert">
+            MLflow is configured but unreachable — the ledger below may be incomplete/stale
+          </div>
+        )}
         {!data ? (
           <Skeleton lines={5} />
         ) : !data.mlflow?.configured ? (
           <div className="mquiet">MLflow isn't configured{data.mlflow?.note ? ` — ${data.mlflow.note}` : ''}</div>
-        ) : !hasLedger ? (
+        ) : mlflowUnreachable && !hasLedger ? null : !hasLedger ? (
           <div className="mquiet">no runs recorded yet</div>
         ) : (
           <>
@@ -226,6 +239,11 @@ export default function MobileMlflow() {
 
       {hasLedger && norun > 0 && (
         <p className="mlg-note">+ {norun} experiment{norun === 1 ? '' : 's'} without recorded runs</p>
+      )}
+      {unmappedCount > 0 && (
+        <p className="mlg-note">
+          {unmappedCount} MLflow experiment{unmappedCount === 1 ? '' : 's'} in this project's namespace {unmappedCount === 1 ? 'isn\'t' : 'aren\'t'} linked to any plugin experiment
+        </p>
       )}
     </div>
   );

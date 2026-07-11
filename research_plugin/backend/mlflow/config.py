@@ -18,6 +18,10 @@ MLFLOW_MODE_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_MODE"
 MLFLOW_TRACKING_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_TRACKING_URI"
 MLFLOW_SERVER_URI_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_SERVER_URI"
 MLFLOW_DASHBOARD_URL_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL"
+# RapidReview API key handed to agents as MLFLOW_TRACKING_USERNAME/PASSWORD so
+# runs anywhere can log through the Caddy-authenticated /mlflow route.
+MLFLOW_AGENT_KEY_ENV_VAR = "RESEARCH_PLUGIN_MLFLOW_AGENT_KEY"
+MLFLOW_AGENT_USERNAME = "rp-agent"
 
 
 def resolve_mlflow_mode(env: Mapping[str, str] | None = None) -> str:
@@ -51,3 +55,9 @@ def resolve_mlflow_dashboard_url(env: Mapping[str, str] | None = None) -> str:
     """Optional human-facing MLflow dashboard URL; defaults to tracking URI."""
     source = env if env is not None else os.environ
     return (source.get(MLFLOW_DASHBOARD_URL_ENV_VAR) or "").strip().rstrip("/")
+
+
+def resolve_mlflow_agent_key(env: Mapping[str, str] | None = None) -> str:
+    """Optional agent credential for the authenticated hosted MLflow route."""
+    source = env if env is not None else os.environ
+    return (source.get(MLFLOW_AGENT_KEY_ENV_VAR) or "").strip()

@@ -1,6 +1,6 @@
-# Research Plugin
+# Merv
 
-Research Plugin gives agentic coding clients (Claude Code, Codex, Cursor,
+Merv gives agentic coding clients (Claude Code, Codex, Cursor,
 Gemini CLI, OpenCode) a shared state machine for machine learning research:
 claims, experiments, repo-file resources, review gates, reflection waves, and
 sandboxed execution. A brain running locally or as a hosted service owns durable
@@ -24,7 +24,7 @@ output pulls also use the system OpenSSH client and `rsync`. Then:
 2. Open your research repo and start a session:
 
 ```text
-Use Research Plugin. Start with project(action="current"), then workflow.status_and_next.
+Use Merv. Start with project(action="current"), then workflow.status_and_next.
 ```
 
 The proxy dials the hosted brain by default. On first use the agent asks which
@@ -66,8 +66,8 @@ For development, or to keep all state on your machine:
 ```bash
 cd /path/to/research_plugin
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-./bin/research-plugin-http --host 127.0.0.1 --port 8787
-bin/research-plugin-client configure --control-url http://127.0.0.1:8787
+./bin/merv-http --host 127.0.0.1 --port 8787
+bin/merv-client configure --control-url http://127.0.0.1:8787
 ```
 
 Sandbox provider credentials (Lambda Labs by default; Thunder, Modal, and a

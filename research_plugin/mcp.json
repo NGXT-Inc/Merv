@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "research-plugin": {
+    "merv": {
       "type": "stdio",
-      "command": "${userHome}/.cursor/plugins/local/research-plugin/bin/research-plugin-mcp",
+      "command": "${userHome}/.cursor/plugins/local/merv/bin/merv-mcp",
       "args": [],
       "env": {
         "RESEARCH_PLUGIN_REPO_ROOT": "${workspaceFolder}",

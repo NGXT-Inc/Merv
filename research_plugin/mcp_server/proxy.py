@@ -13,7 +13,7 @@ never reads the user's checkout.
 Error taxonomy is returned as TOOL RESULTS, not ``-32000`` protocol errors, so a
 client never disables the server over a transient outage. Loopback brain
 outages get an actionable ``brain_not_running`` hint to start
-``research-plugin-http``; remote outages keep ``cloud_unreachable``. Domain
+``merv-http``; remote outages keep ``cloud_unreachable``. Domain
 errors stay protocol errors.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+import time
 import traceback
 from copy import deepcopy
 from dataclasses import dataclass
@@ -108,6 +109,12 @@ class ProxyConfig:
     control_url: str | None
     project_links_path: Path | None = None
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    # RapidReview API key (rr_sk_...) for the hosted brain; empty against a
+    # loopback brain, which requires no credential.
+    api_key: str = ""
+    # Machine config file holding a merv-client login session (access/refresh
+    # tokens); the proxy refreshes it silently as it nears expiry.
+    client_config_path: Path | None = None
 
     def with_url(self, url: str) -> "ProxyConfig":
         return ProxyConfig(
@@ -115,6 +122,8 @@ class ProxyConfig:
             control_url=url,
             project_links_path=self.project_links_path,
             timeout_seconds=self.timeout_seconds,
+            api_key=self.api_key,
+            client_config_path=self.client_config_path,
         )
 
 
@@ -146,10 +155,10 @@ class _UpstreamError(Exception):
 
 def _brain_not_running_message(*, control_url: str | None) -> str:
     return (
-        "research_plugin brain server is not running"
+        "Merv brain server is not running"
         + (f" at {control_url}" if control_url else "")
         + ". Start it with:\n"
-        "    research-plugin-http\n"
+        "    merv-http\n"
         "If it is on another port, set RESEARCH_PLUGIN_CONTROL_URL "
         "to the brain URL."
     )
@@ -168,6 +177,7 @@ class HttpProxyMcpServer:
     def __init__(self, *, config: ProxyConfig) -> None:
         self.config = config
         self._tool_cache: dict[str, _ToolMeta] | None = None
+        self._session_cache: dict[str, Any] | None = None
         self._project_links: ProjectLinks | None = None
         self._local_data_plane: LocalDataPlane | None = None
 
@@ -203,7 +213,7 @@ class HttpProxyMcpServer:
                     result={
                         "protocolVersion": "2025-06-18",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "research-plugin", "version": __version__},
+                        "serverInfo": {"name": "merv", "version": __version__},
                     },
                 )
             if method == "notifications/initialized":
@@ -444,7 +454,7 @@ class HttpProxyMcpServer:
                 "project": None,
                 "repo_root": str(self.config.repo_root),
                 "hint": (
-                    "No hosted Research Plugin project is linked for this folder. "
+                    "No hosted Merv project is linked for this folder. "
                     "Ask the user which existing project_id to link and call the "
                     'project tool with action="connect" and that project_id; or '
                     "ask for a project name and short summary and call it with "
@@ -680,7 +690,6 @@ class HttpProxyMcpServer:
         return self._send(req=req, is_cloud=is_cloud, timeout=timeout or self.config.timeout_seconds)
 
     def _headers(self, *, is_cloud: bool) -> dict[str, str]:
-        _ = is_cloud
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         # Version/compat handshake: stamp the proxy's
         # version so the control plane can reject below-floor clients with an
@@ -688,7 +697,72 @@ class HttpProxyMcpServer:
         # (not imported from backend) so the proxy stays stdlib-only; it matches
         # backend.version.CLIENT_VERSION_HEADER, pinned by a surface test.
         headers["X-RP-Client-Version"] = __version__
+        # Hosted auth rides only on cloud calls; the loopback brain never sees
+        # a credential. Header name is a literal for the same stdlib-only
+        # reason as above.
+        if is_cloud:
+            bearer = self._cloud_bearer()
+            if bearer:
+                headers["Authorization"] = f"Bearer {bearer}"
         return headers
+
+    # ---- hosted credential (API key or merv-client login session) ---------
+
+    def _cloud_bearer(self) -> str:
+        # An API key (env > machine config) is static and wins outright.
+        if self.config.api_key:
+            return self.config.api_key
+        session = self._login_session()
+        if not session:
+            return ""
+        # Refresh preemptively so long-lived MCP sessions never trip a mid-call
+        # 401: a five-minute skew comfortably outlives one request.
+        if float(session.get("expires_at") or 0) - time.time() < 300:
+            session = self._refresh_login_session(session) or session
+        return str(session.get("access_token") or "")
+
+    def _login_session(self) -> dict[str, Any] | None:
+        if self._session_cache is None:
+            path = self.config.client_config_path
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8")) if path else {}
+            except (OSError, ValueError):
+                raw = {}
+            self._session_cache = raw if raw.get("access_token") else {}
+        return self._session_cache or None
+
+    def _refresh_login_session(self, session: dict[str, Any]) -> dict[str, Any] | None:
+        refresh_token = str(session.get("refresh_token") or "")
+        if not refresh_token or not self.config.control_url:
+            return None
+        request = Request(
+            f"{self.config.control_url}/api/sdk/auth/refresh",
+            data=json.dumps({"refresh_token": refresh_token}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=self.config.timeout_seconds) as response:
+                fresh = json.loads(response.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001 - stale token still errors upstream with the login hint
+            return None
+        updated = dict(session)
+        updated.update(
+            access_token=str(fresh.get("access_token") or ""),
+            refresh_token=str(fresh.get("refresh_token") or refresh_token),
+            expires_at=int(time.time()) + int(fresh.get("expires_in") or 3600),
+        )
+        self._session_cache = updated
+        path = self.config.client_config_path
+        if path is not None:
+            try:
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(updated), encoding="utf-8")
+                tmp.chmod(0o600)
+                tmp.replace(path)
+            except OSError:
+                pass  # in-memory session still carries this proxy process
+        return updated
 
     def _send(self, *, req: Request, is_cloud: bool, timeout: float) -> dict[str, Any]:
         try:

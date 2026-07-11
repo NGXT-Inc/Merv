@@ -1,4 +1,4 @@
-"""HTTP process for the Research Plugin brain server.
+"""HTTP process for the Merv brain server.
 
 Owns the running uvicorn server: binds the socket and serves the FastAPI app
 from the unified brain composition. Local deployment is just this server on

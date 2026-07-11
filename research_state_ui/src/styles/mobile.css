@@ -1567,3 +1567,44 @@ html[data-surface="mobile"] .mlg-row {
 html[data-surface="mobile"] .mlg-row.champ { border-left-color: var(--active); }
 html[data-surface="mobile"] .mlg-row.focused { background: var(--select); }
 html[data-surface="mobile"] .mlg-note { margin: 8px 16px; font-size: 11px; color: var(--faint); }
+
+/* Compute spend — closing instrument section: headline dollars, a daily bar
+   strip, one context line. Marks wear --steel (neutral operational info). */
+html[data-surface="mobile"] .mspend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+html[data-surface="mobile"] .mspend-total {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  color: var(--text);
+}
+html[data-surface="mobile"] .mspend-burn {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--active);
+}
+html[data-surface="mobile"] .mspend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 28px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+html[data-surface="mobile"] .mspend-bars > span {
+  flex: 1;
+  max-width: 14px;
+  background: rgba(var(--steel-rgb), 0.75);
+  border-radius: 2px 2px 0 0;
+}
+html[data-surface="mobile"] .mspend-sub {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 6px;
+}

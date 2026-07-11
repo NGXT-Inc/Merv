@@ -1,22 +1,22 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "research-suite",
+  "name": "rapidreview",
   "owner": {
-    "name": "Papyrus"
+    "name": "RapidReview"
   },
   "metadata": {
     "description": "Research workflow plugins: durable project state, repo-file resources, design and experiment review, cloud SSH sandboxes.",
-    "version": "0.0011"
+    "version": "0.0012"
   },
   "plugins": [
     {
-      "name": "research-plugin",
+      "name": "merv",
       "source": "./research_plugin",
       "description": "Lean research-state workflow with project-local MCP context, resources, reviews, and cloud SSH sandboxes. Skills for the agent loop, subagents for read-only design, experiment, and reflection review.",
-      "version": "0.0011",
+      "version": "0.0012",
       "category": "productivity",
       "author": {
-        "name": "Papyrus"
+        "name": "RapidReview"
       },
       "keywords": [
         "research",

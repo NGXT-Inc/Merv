@@ -1,4 +1,4 @@
-"""Compatibility exports for the split Research Plugin HTTP API package."""
+"""Compatibility exports for the split Merv HTTP API package."""
 
 from __future__ import annotations
 

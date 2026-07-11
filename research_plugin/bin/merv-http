@@ -26,7 +26,7 @@ elif [[ -x "$PLUGIN_DIR/.venv/bin/python" ]]; then
   PYTHON_BIN="$PLUGIN_DIR/.venv/bin/python"
 else
   cat >&2 <<EOF
-research-plugin-http: no Python interpreter with the backend dependencies found.
+merv-http: no Python interpreter with the backend dependencies found.
 
 Looked for, in order:
   \$RESEARCH_PLUGIN_PYTHON              (unset)
@@ -49,7 +49,7 @@ export PYTHONPATH="$PLUGIN_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # committed. Priority (first hit wins):
 #   1. any explicit provider env file override
 #   2. ${CLAUDE_PLUGIN_DATA}/.env                  (Claude Code per-user data dir)
-#   3. ${XDG_CONFIG_HOME:-${HOME}/.config}/research-plugin/.env  (XDG standard)
+#   3. ${XDG_CONFIG_HOME:-${HOME}/.config}/merv/.env  (XDG standard)
 #   4. ${HOME}/.research_plugin/.env               (legacy location)
 #   5. $PLUGIN_DIR/.env                            (dev-only; gitignored)
 # If none exist, providers may fall back to their native auth.
@@ -58,7 +58,7 @@ if [[ -z "${RESEARCH_PLUGIN_LAMBDA_ENV_FILE:-}" \
   && -z "${RESEARCH_PLUGIN_THUNDER_ENV_FILE:-}" ]]; then
   for candidate in \
     "${CLAUDE_PLUGIN_DATA:-/__unset__}/.env" \
-    "${XDG_CONFIG_HOME:-${HOME}/.config}/research-plugin/.env" \
+    "${XDG_CONFIG_HOME:-${HOME}/.config}/merv/.env" \
     "${HOME}/.research_plugin/.env" \
     "$PLUGIN_DIR/.env"; do
     if [[ -f "$candidate" ]]; then

@@ -23,6 +23,7 @@ from .metrics import MAX_RUNS
 
 METRICS_EXHIBIT_KIND = "metrics_exhibit"
 METRICS_EXHIBIT_FILENAME = "metrics_exhibit.json"
+WINDOW_SKEW_MS = 5 * 60 * 1000
 
 
 def iso_to_epoch_ms(value: Any) -> int | None:
@@ -44,7 +45,7 @@ def _exhibit_run(*, run: dict[str, Any]) -> dict[str, Any]:
         for key, value in (run.get("metrics") or {}).items()
         if isinstance(value, dict)
     }
-    return {
+    exhibit_run = {
         "run_id": run.get("run_id") or "",
         "run_name": run.get("run_name") or "",
         "status": run.get("status") or "",
@@ -55,6 +56,9 @@ def _exhibit_run(*, run: dict[str, Any]) -> dict[str, Any]:
         "metrics": metrics,
         "source": {"type": "mlflow", "run_id": run.get("run_id") or ""},
     }
+    if run.get("metrics_capped_at"):
+        exhibit_run["metrics_capped_at"] = run["metrics_capped_at"]
+    return exhibit_run
 
 
 def _snapshot_runs(snapshot: Any, *, experiment_name: str) -> tuple[list[dict[str, Any]], bool]:
@@ -83,11 +87,19 @@ def build_metrics_exhibit(
     pinned final are the same generation for the same state."""
     all_runs, available = _snapshot_runs(snapshot, experiment_name=experiment_name)
     window_started_ms = iso_to_epoch_ms(window_started_at)
+    window_floor_ms = (
+        window_started_ms - WINDOW_SKEW_MS
+        if window_started_ms is not None
+        else None
+    )
     in_window = [
         run
         for run in all_runs
-        if window_started_ms is None
-        or (isinstance(run.get("start_time"), (int, float)) and run["start_time"] >= window_started_ms)
+        if window_floor_ms is None
+        or (
+            isinstance(run.get("start_time"), (int, float))
+            and run["start_time"] >= window_floor_ms
+        )
     ]
     in_window.sort(key=lambda run: (run.get("start_time") or 0, str(run.get("run_id") or "")))
     runs = [_exhibit_run(run=run) for run in in_window]
@@ -118,6 +130,7 @@ def build_metrics_exhibit(
             "configured": mlflow_configured,
             "available": available,
             "experiment_name": experiment_name,
+            "runs_excluded_by_window": len(all_runs) - len(in_window),
         },
         "runs": runs,
         "result_files": files,

@@ -1,4 +1,4 @@
-"""Entrypoint for the Research Plugin MCP stdio proxy.
+"""Entrypoint for the Merv MCP stdio proxy.
 
 The MCP process is the local data-plane adapter. It always talks to one brain
 URL and performs repo-local file work itself.
@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from research_plugin_shared.client_config import (
+    API_KEY_ENV_VAR,
     CLIENT_CONFIG_ENV_VAR,
     read_client_config,
     resolve_client_config_path,
@@ -23,8 +24,8 @@ from .proxy import DEFAULT_CONTROL_URL, HttpProxyMcpServer, ProxyConfig, _is_loo
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="research-plugin-mcp",
-        description="Stdio MCP proxy for the research_plugin brain service.",
+        prog="merv-mcp",
+        description="Stdio MCP proxy for the Merv brain service.",
     )
     parser.add_argument(
         "--repo",
@@ -56,15 +57,20 @@ def main() -> int:
         or client_config.get("control_url", "")
         or DEFAULT_CONTROL_URL
     ).rstrip("/")
+    # RapidReview API key for the hosted brain: env beats machine config,
+    # mirroring the control_url chain. Absent against a loopback brain.
+    api_key = (
+        os.environ.get(API_KEY_ENV_VAR, "") or client_config.get("api_key", "")
+    ).strip()
     if _is_loopback_url(control_url):
         sys.stderr.write(
-            "[research_plugin] using local brain URL "
-            f"{control_url}; start it with `research-plugin-http`.\n"
+            "[merv] using local brain URL "
+            f"{control_url}; start it with `merv-http`.\n"
         )
     elif control_url == DEFAULT_CONTROL_URL:
         sys.stderr.write(
-            f"[research_plugin] using hosted brain {DEFAULT_CONTROL_URL} "
-            "(default; override with `research-plugin-client configure "
+            f"[merv] using hosted brain {DEFAULT_CONTROL_URL} "
+            "(default; override with `merv-client configure "
             "--control-url ...` or RESEARCH_PLUGIN_CONTROL_URL).\n"
         )
 
@@ -72,6 +78,8 @@ def main() -> int:
         repo_root=repo_root,
         control_url=control_url,
         project_links_path=project_links_path,
+        api_key=api_key,
+        client_config_path=client_config_path,
     )
     HttpProxyMcpServer(config=config).serve()
     return 0

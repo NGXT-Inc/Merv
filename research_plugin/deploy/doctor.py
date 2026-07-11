@@ -24,7 +24,7 @@ from urllib import request as urllib_request
 
 DEFAULT_CONTROL_URL = "http://127.0.0.1:8787"
 DEFAULT_PROJECT_NAME = "Deploy Doctor"
-SMOKE_BYTES = b"research-plugin deploy doctor storage smoke\n"
+SMOKE_BYTES = b"merv deploy doctor storage smoke\n"
 
 
 class DoctorError(RuntimeError):

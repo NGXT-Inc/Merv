@@ -145,7 +145,7 @@ class ClientConfigTest(unittest.TestCase):
                 "RESEARCH_PLUGIN_CONTROL_URL": "",
             }
             argv = [
-                "research-plugin-mcp",
+                "merv-mcp",
                 "--repo",
                 str(unlinked),
             ]

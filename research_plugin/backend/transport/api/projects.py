@@ -21,14 +21,45 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     api_router = APIRouter()
     api = ctx.api
     api_for_project = ctx.api_for_project
+
+    def _request_user_id(request: Request) -> str:
+        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        return str(getattr(principal, "user_id", "") or "")
+
     @api_router.get("/api/projects")
     def list_projects(request: Request) -> dict[str, Any]:
-        return api.call_tool(name="project.list", arguments={})
+        user_id = _request_user_id(request)
+        return api.call_tool(
+            name="project.list",
+            arguments={},
+            internal_kwargs={"user_id": user_id} if user_id else None,
+        )
 
     @api_router.post("/api/projects", status_code=201)
     def create_project(request: Request, body: JsonBody = Body(default=None)) -> dict[str, Any]:
         payload = body or {}
-        return api.create_project(body=payload, tenant_id=None)
+        return api.create_project(
+            body=payload, tenant_id=None, user_id=_request_user_id(request)
+        )
+
+    @api_router.get("/api/projects/{project_id}/members")
+    def list_members(project_id: str) -> dict[str, Any]:
+        return {"members": api.app.store.list_project_members(project_id=project_id)}
+
+    @api_router.post("/api/projects/{project_id}/members", status_code=201)
+    def add_member(project_id: str, body: JsonBody = Body(default=None)) -> dict[str, Any]:
+        # Any member may share the project (the membership gate already ran).
+        user_id = str((body or {}).get("user_id") or "").strip()
+        if not user_id:
+            raise ValidationError("user_id is required", details={"field": "user_id"})
+        api.app.projects.get(project_id=project_id)
+        api.app.store.add_project_member(project_id=project_id, user_id=user_id)
+        return {"members": api.app.store.list_project_members(project_id=project_id)}
+
+    @api_router.delete("/api/projects/{project_id}/members/{user_id}")
+    def remove_member(project_id: str, user_id: str) -> dict[str, Any]:
+        api.app.store.remove_project_member(project_id=project_id, user_id=user_id)
+        return {"members": api.app.store.list_project_members(project_id=project_id)}
 
     @api_router.get("/api/projects/{project_id}")
     def get_project(project_id: str) -> dict[str, Any]:

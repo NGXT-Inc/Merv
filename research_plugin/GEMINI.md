@@ -1,6 +1,6 @@
-# Research Plugin
+# Merv
 
-This extension exposes one Research Plugin MCP surface backed by two components:
+This extension exposes one Merv MCP surface backed by two components:
 
 - a local stdio proxy that owns checkout-relative file IO, project links, local
   storage transfer, feed attachments, and sandbox output pulls; and

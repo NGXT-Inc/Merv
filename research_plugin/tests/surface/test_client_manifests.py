@@ -24,7 +24,7 @@ def _executable(path: Path) -> bool:
 class ControlUrlResolutionTest(unittest.TestCase):
     def test_no_shipped_manifest_pins_a_control_url(self) -> None:
         # A pinned URL in a manifest env block shadows the machine config
-        # written by `research-plugin-client configure`. Empty (or absent)
+        # written by `merv-client configure`. Empty (or absent)
         # keeps resolution at env > machine config > hosted default.
         manifests = {
             ".mcp.json": ("mcpServers", "env"),
@@ -35,32 +35,32 @@ class ControlUrlResolutionTest(unittest.TestCase):
         for name, (servers_key, env_key) in manifests.items():
             with self.subTest(manifest=name):
                 config = json.loads((PLUGIN_ROOT / name).read_text())
-                server = config[servers_key]["research-plugin"]
+                server = config[servers_key]["merv"]
                 self.assertEqual(server.get(env_key, {}).get("RESEARCH_PLUGIN_CONTROL_URL", ""), "")
         opencode = json.loads(
             (PLUGIN_ROOT / "clients" / "opencode" / "opencode.json.example").read_text()
         )
-        environment = opencode["mcp"]["research-plugin"].get("environment", {})
+        environment = opencode["mcp"]["merv"].get("environment", {})
         self.assertEqual(environment.get("RESEARCH_PLUGIN_CONTROL_URL", ""), "")
 
 
 class CursorAdapterTest(unittest.TestCase):
     def test_plugin_manifest(self) -> None:
         manifest = json.loads((PLUGIN_ROOT / ".cursor-plugin" / "plugin.json").read_text())
-        self.assertEqual(manifest["name"], "research-plugin")
+        self.assertEqual(manifest["name"], "merv")
         self.assertEqual(manifest["version"], BACKEND_VERSION)
 
     def test_mcp_config_supplies_workspace_root(self) -> None:
         # Cursor does not spawn stdio servers in the workspace, so the repo
         # root must arrive via ${workspaceFolder}, never via cwd.
         config = json.loads((PLUGIN_ROOT / "mcp.json").read_text())
-        server = config["mcpServers"]["research-plugin"]
+        server = config["mcpServers"]["merv"]
         self.assertEqual(server["env"]["RESEARCH_PLUGIN_REPO_ROOT"], "${workspaceFolder}")
         # Cursor resolves stdio commands against PATH or as full paths only —
         # no plugin-relative resolution — so the bundle addresses the launcher
         # through its documented install location under ${userHome}.
         command = server["command"]
-        install_prefix = "${userHome}/.cursor/plugins/local/research-plugin/"
+        install_prefix = "${userHome}/.cursor/plugins/local/merv/"
         self.assertTrue(command.startswith(install_prefix))
         self.assertTrue(_executable(PLUGIN_ROOT / command.removeprefix(install_prefix)))
 
@@ -68,11 +68,11 @@ class CursorAdapterTest(unittest.TestCase):
 class GeminiAdapterTest(unittest.TestCase):
     def test_extension_manifest(self) -> None:
         manifest = json.loads((PLUGIN_ROOT / "gemini-extension.json").read_text())
-        self.assertEqual(manifest["name"], "research-plugin")
+        self.assertEqual(manifest["name"], "merv")
         self.assertEqual(manifest["version"], BACKEND_VERSION)
         self.assertTrue((PLUGIN_ROOT / manifest["contextFileName"]).is_file())
 
-        server = manifest["mcpServers"]["research-plugin"]
+        server = manifest["mcpServers"]["merv"]
         self.assertEqual(server["env"]["RESEARCH_PLUGIN_REPO_ROOT"], "${workspacePath}")
         command = server["command"]
         self.assertTrue(command.startswith("${extensionPath}"))
@@ -86,9 +86,9 @@ class OpenCodeAdapterTest(unittest.TestCase):
         self.assertTrue(_executable(adapter / "install.sh"))
 
         config = json.loads((adapter / "opencode.json.example").read_text())
-        server = config["mcp"]["research-plugin"]
+        server = config["mcp"]["merv"]
         self.assertEqual(server["type"], "local")
-        self.assertEqual(Path(server["command"][0]).name, "research-plugin-mcp")
+        self.assertEqual(Path(server["command"][0]).name, "merv-mcp")
 
     def test_reviewer_agents_load_matching_review_skills(self) -> None:
         # OpenCode agents are thin wrappers: each must defer to the same-named

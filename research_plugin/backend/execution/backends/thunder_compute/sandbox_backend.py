@@ -236,7 +236,7 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = ""
     ) -> str | None:
-        marker = f"research-plugin-mgmt-{sandbox_uid or experiment_id}"
+        marker = f"merv-mgmt-{sandbox_uid or experiment_id}"
         try:
             instances = self.client.list_instances()
         except Exception:  # noqa: BLE001

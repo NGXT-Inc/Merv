@@ -286,6 +286,130 @@ class QuotaAdmissionTest(unittest.TestCase):
         self.assertAlmostEqual(closed_spend["usd"], 2.0)
 
 
+class ProjectSpendTest(unittest.TestCase):
+    """project_spend: the UI-grouped reading of the generations ledger."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=FakeSandboxBackend(),
+        )
+        self.store = self.app.store
+        self.quotas = QuotaService(store=self.store)
+        self.project_id = self.app.call_tool("project", {"action": "create", "name": "Proj S"})["id"]
+        self._gen_count = 0
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+        self.tmp.cleanup()
+
+    def _generation(
+        self,
+        *,
+        experiment_id: str,
+        price: float,
+        started_at: str,
+        ended_at: str | None,
+        instance_type: str = "",
+        gpu: str = "",
+        project_id: str | None = None,
+        seq: int = 0,
+    ) -> None:
+        self._gen_count += 1
+        with self.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sandbox_generations
+                  (id, experiment_id, project_id, tenant_id, instance_type, gpu,
+                   price_usd_per_hour, started_at, ended_at, created_seq)
+                VALUES (?, ?, ?, 'local', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"sbg_{self._gen_count}",
+                    experiment_id,
+                    project_id or self.project_id,
+                    instance_type,
+                    gpu,
+                    price,
+                    started_at,
+                    ended_at,
+                    seq,
+                ),
+            )
+
+    def test_totals_and_groupings(self) -> None:
+        # exp_a: 2h at $2 (closed) = $4; exp_b: 1h at $4 (closed) = $4 plus an
+        # unpriced 3h Modal-style generation.
+        self._generation(
+            experiment_id="exp_a", price=2.0, instance_type="gpu_1x_a10",
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T02:00:00Z",
+        )
+        self._generation(
+            experiment_id="exp_b", price=4.0, instance_type="gpu_1x_h100",
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T01:00:00Z",
+        )
+        self._generation(
+            experiment_id="exp_b", price=0.0, gpu="A100",
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T03:00:00Z",
+        )
+        spend = self.quotas.project_spend(project_id=self.project_id)
+        self.assertAlmostEqual(spend["total_usd"], 8.0)
+        self.assertAlmostEqual(spend["total_hours"], 6.0)
+        self.assertAlmostEqual(spend["unpriced_hours"], 3.0)
+        self.assertEqual(spend["generations"], 3)
+        self.assertEqual(spend["open_generations"], 0)
+        self.assertAlmostEqual(spend["burn_usd_per_hour"], 0.0)
+        # Groupings sorted by spend, then hours (the $0 generation ranks last
+        # among hardware but pushes exp_b's hours ahead of exp_a's).
+        self.assertEqual(
+            [e["experiment_id"] for e in spend["by_experiment"]], ["exp_b", "exp_a"]
+        )
+        self.assertAlmostEqual(spend["by_experiment"][0]["usd"], 4.0)
+        self.assertAlmostEqual(spend["by_experiment"][0]["hours"], 4.0)
+        self.assertEqual(
+            [h["instance_type"] for h in spend["by_hardware"]],
+            ["gpu_1x_a10", "gpu_1x_h100", ""],
+        )
+        self.assertEqual(spend["by_hardware"][2]["gpu"], "A100")
+
+    def test_open_generation_bills_to_now_and_sets_burn(self) -> None:
+        now = datetime(2026, 1, 2, 6, 0, 0, tzinfo=UTC)
+        self._generation(
+            experiment_id="exp_a", price=1.5,
+            started_at="2026-01-02T00:00:00Z", ended_at=None,
+        )
+        spend = self.quotas.project_spend(project_id=self.project_id, now=now)
+        self.assertAlmostEqual(spend["total_usd"], 9.0)
+        self.assertEqual(spend["open_generations"], 1)
+        self.assertAlmostEqual(spend["burn_usd_per_hour"], 1.5)
+
+    def test_daily_apportions_across_midnight(self) -> None:
+        # 22:00 → 04:00 at $1/h: 2h on day one, 4h on day two.
+        self._generation(
+            experiment_id="exp_a", price=1.0,
+            started_at="2026-01-01T22:00:00Z", ended_at="2026-01-02T04:00:00Z",
+        )
+        spend = self.quotas.project_spend(project_id=self.project_id)
+        self.assertEqual(
+            [(d["date"], round(d["hours"], 6), round(d["usd"], 6)) for d in spend["daily"]],
+            [("2026-01-01", 2.0, 2.0), ("2026-01-02", 4.0, 4.0)],
+        )
+
+    def test_scoped_to_project(self) -> None:
+        other = self.app.call_tool("project", {"action": "create", "name": "Other"})["id"]
+        self._generation(
+            experiment_id="exp_x", price=5.0, project_id=other,
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T01:00:00Z",
+        )
+        spend = self.quotas.project_spend(project_id=self.project_id)
+        self.assertEqual(spend["generations"], 0)
+        self.assertAlmostEqual(spend["total_usd"], 0.0)
+        self.assertEqual(spend["daily"], [])
+
+
 class QuotaProvisionRecordingTest(unittest.TestCase):
     """End-to-end: price plumbed through provision, generation row recorded."""
 

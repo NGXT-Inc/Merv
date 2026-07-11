@@ -1,10 +1,10 @@
-import { goodDirection, curveValues } from './metrics.js';
+import { goodDirection } from './metrics.js';
 
 /**
  * metricProfile — profile a project MLflow ledger and decide what to render.
  *
  * Project-agnostic by construction: every metric/param key gets a statistical
- * fingerprint (coverage, variance, series depth, numeric vs categorical,
+ * fingerprint (coverage, variance, numeric vs categorical,
  * direction, baseline_/delta_ pairing), a role falls out of deterministic
  * rules over the fingerprint, and the page composes renderers from the roles.
  * Pure data → data; no React, unit-testable with node.
@@ -140,7 +140,7 @@ export function classifyRunMetrics(run) {
 
 /**
  * The whole read model for the page:
- *   { runs, focus, summary, strips, curves, knobs, diagnostics, invariants, sparse }
+ *   { runs, focus, summary, strips, knobs, diagnostics, invariants, sparse }
  * focus.directionAssumed flags a guessed lower-is-better so the UI can say so.
  *
  * Direction precedence: user override (opts.directionOverrides, key → ±1)
@@ -153,18 +153,13 @@ export function planLedger(payload, opts = {}) {
 
   // ── metric fingerprints ──
   const keys = new Set(runs.flatMap(r => Object.keys(r.metrics)));
-  const paramKeysLower = new Set(runs.flatMap(r => Object.keys(r.params)).map(k => k.toLowerCase()));
   const fps = [];
   for (const key of keys) {
-    // Config echoed into metrics (same key logged as a param) — the param is
-    // authoritative; the metric copy would double-report every knob.
-    if (paramKeysLower.has(key.toLowerCase()) && !anchorTarget(key)) continue;
     const values = [];
-    let seriesDepth = 0;
     runs.forEach((r, i) => {
+      const echoedParam = Object.keys(r.params).some(k => k.toLowerCase() === key.toLowerCase());
       const m = r.metrics[key];
-      if (m && Number.isFinite(m.last)) values.push({ i, v: m.last });
-      seriesDepth = Math.max(seriesDepth, curveValues(r.history[key]).length);
+      if ((!echoedParam || anchorTarget(key)) && m && Number.isFinite(m.last)) values.push({ i, v: m.last });
     });
     if (!values.length) continue;
     const nums = values.map(p => p.v);
@@ -172,7 +167,7 @@ export function planLedger(payload, opts = {}) {
     const min = Math.min(...nums); const max = Math.max(...nums);
     const allBinary = nums.every(v => v === 0 || v === 1);
     const fp = {
-      key, values, min, max, distinct, seriesDepth,
+      key, values, min, max, distinct,
       coverage: values.length / n,
       direction: goodDirection(key),
       hasAnchor: keys.has(`baseline_${key}`) || keys.has(`base_${key}`)
@@ -195,12 +190,15 @@ export function planLedger(payload, opts = {}) {
   }
 
   // ── the declared contract, when agents logged one (last run wins) ──
-  const contract = {};
+  let contract = {};
   for (const r of runs) {
     const pm = r.params.primary_metric;
-    if (pm) contract.key = String(pm);
+    if (!pm) continue;
     const d = String(r.params.primary_metric_direction || '').toLowerCase();
-    if (d) contract.direction = /min|down|lower/.test(d) ? -1 : /max|up|higher/.test(d) ? 1 : undefined;
+    contract = {
+      key: String(pm),
+      direction: /min|down|lower/.test(d) ? -1 : /max|up|higher/.test(d) ? 1 : undefined,
+    };
   }
 
   // ── focus metric: declared contract, else anchored + directional + covered ──
@@ -251,8 +249,6 @@ export function planLedger(payload, opts = {}) {
     ((b === focusFp) - (a === focusFp))
     || (Math.abs(b.direction) - Math.abs(a.direction))
     || (b.coverage - a.coverage));
-  const curves = fps.filter(fp => fp.seriesDepth >= 3 && fp.role !== 'anchor' && fp.role !== 'derived');
-
   // ── params: constants are config; varied ones are knobs ranked by pull ──
   const paramKeys = new Set(runs.flatMap(r => Object.keys(r.params)));
   const knobs = [];
@@ -279,7 +275,7 @@ export function planLedger(payload, opts = {}) {
   knobs.sort((a, b) => pull(b) - pull(a));
 
   return {
-    runs, focus, summary, strips, curves, knobs,
+    runs, focus, summary, strips, knobs,
     diagnostics: fps.filter(fp => fp.role === 'diagnostic'),
     invariants: [
       ...fps.filter(fp => fp.role === 'invariant').map(fp => ({ key: fp.key, value: fp.values[0].v })),

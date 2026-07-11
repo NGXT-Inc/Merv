@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "research-plugin": {
-      "command": "bin/research-plugin-mcp",
+    "merv": {
+      "command": "bin/merv-mcp",
       "args": [],
       "env": {
         "RESEARCH_PLUGIN_CONTROL_URL": ""

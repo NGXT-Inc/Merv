@@ -7,6 +7,10 @@ import datetime as dt
 import json
 import sqlite3
 import sys
+import time
+import urllib.error
+import urllib.request
+import webbrowser
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,7 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return int(args.func(args) or 0)
     except ClientError as exc:
-        print(f"research-plugin-client: {exc}", file=sys.stderr)
+        print(f"merv-client: {exc}", file=sys.stderr)
         return 2
 
 
@@ -37,8 +41,8 @@ class ClientError(Exception):
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="research-plugin-client",
-        description="Configure hosted control and link local folders to Research Plugin projects.",
+        prog="merv-client",
+        description="Configure hosted control and link local folders to Merv projects.",
     )
     parser.add_argument(
         "--config",
@@ -48,11 +52,26 @@ def _parser() -> argparse.ArgumentParser:
 
     configure = sub.add_parser(
         "configure",
-        aliases=["login"],
         help="Save hosted-control URL for this machine.",
     )
     _add_control_args(configure)
     configure.set_defaults(func=_cmd_configure)
+
+    login = sub.add_parser(
+        "login",
+        help=(
+            "Sign in to the hosted brain: opens the browser (Google or "
+            "email/password via your RapidReview account) and stores the "
+            "session on this machine. Use --api-key for headless setups."
+        ),
+    )
+    _add_control_args(login)
+    login.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the login URL instead of opening a browser (SSH/containers).",
+    )
+    login.set_defaults(func=_cmd_login)
 
     link = sub.add_parser(
         "link",
@@ -103,6 +122,16 @@ def _add_control_args(parser: argparse.ArgumentParser, *, required: bool = True)
             "deployment."
         ),
     )
+    parser.add_argument(
+        "--api-key",
+        required=False,
+        default=None,
+        help=(
+            "RapidReview API key (rr_sk_...) for the hosted brain; mint one in "
+            "the RapidReview account settings. Stored 0600 in the client "
+            "config. Not needed for a local deployment."
+        ),
+    )
 
 
 def _cmd_configure(args: argparse.Namespace) -> int:
@@ -111,9 +140,87 @@ def _cmd_configure(args: argparse.Namespace) -> int:
     config = configure_client(
         config_path=config_path,
         control_url=args.control_url or HOSTED_CONTROL_URL,
+        api_key=args.api_key,
     )
     _print_configured(config_path=config_path, config=config)
     return 0
+
+
+def _post_json(url: str, payload: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8")).get("detail", "")
+        except Exception:  # noqa: BLE001
+            pass
+        raise ClientError(body or f"HTTP {exc.code} from {url}") from exc
+    except urllib.error.URLError as exc:
+        raise ClientError(f"brain unreachable at {url}: {exc.reason}") from exc
+
+
+def _cmd_login(args: argparse.Namespace) -> int:
+    config_path = _config_path(args)
+    existing = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
+    control_url = (
+        args.control_url or existing.get("control_url", "") or HOSTED_CONTROL_URL
+    ).rstrip("/")
+    # Headless shortcut: a RapidReview API key needs no browser at all.
+    if args.api_key:
+        config = configure_client(
+            config_path=config_path, control_url=control_url, api_key=args.api_key
+        )
+        _print_configured(config_path=config_path, config=config)
+        return 0
+
+    data = _post_json(f"{control_url}/api/sdk/auth/session", {})
+    auth_url = data["auth_url"]
+    print(f"Login URL: {auth_url}")
+    opened = False
+    if not args.no_browser:
+        try:
+            opened = webbrowser.open(auth_url)
+        except Exception:  # noqa: BLE001
+            opened = False
+    print(
+        "(Browser window should have opened)"
+        if opened
+        else "Open the URL above in your browser to log in."
+    )
+    print("Waiting for sign-in... (Ctrl+C to cancel)")
+    try:
+        for _ in range(150):  # 5 minutes at 2s intervals
+            time.sleep(2)
+            result = _post_json(
+                f"{control_url}/api/sdk/auth/session/poll",
+                {"session_id": data["session_id"]},
+            )
+            if result.get("status") == "complete":
+                config = configure_client(
+                    config_path=config_path,
+                    control_url=control_url,
+                    session={
+                        "access_token": result.get("access_token", ""),
+                        "refresh_token": result.get("refresh_token", ""),
+                        "expires_at": int(time.time()) + int(result.get("expires_in") or 3600),
+                        "email": result.get("email", ""),
+                    },
+                )
+                print(f"Logged in as {config.get('email') or 'your account'}")
+                _print_configured(config_path=config_path, config=config)
+                return 0
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        return 1
+    raise ClientError("login timed out; rerun merv-client login")
 
 
 def _cmd_connect(args: argparse.Namespace) -> int:
@@ -124,6 +231,7 @@ def _cmd_connect(args: argparse.Namespace) -> int:
         config = configure_client(
             config_path=config_path,
             control_url=control_url or HOSTED_CONTROL_URL,
+            api_key=args.api_key,
         )
         _print_configured(config_path=config_path, config=config)
     if args.project_id:
@@ -185,6 +293,8 @@ def configure_client(
     *,
     config_path: Path,
     control_url: str,
+    api_key: str | None = None,
+    session: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     control_url = (control_url or HOSTED_CONTROL_URL).strip()
     existing = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
@@ -196,6 +306,20 @@ def configure_client(
         "control_url": control_url.rstrip("/"),
         "daemon_state_dir": str(daemon_state_dir),
     }
+    # None preserves an already-stored credential; a provided value replaces it.
+    stored_key = existing.get("api_key", "") if api_key is None else api_key.strip()
+    if stored_key:
+        config["api_key"] = stored_key
+    if session is None:
+        # Preserve a stored browser-login session across re-configures.
+        for field in ("access_token", "refresh_token", "expires_at", "email"):
+            if existing.get(field):
+                config[field] = str(existing[field])
+    else:
+        for field in ("access_token", "refresh_token", "expires_at", "email"):
+            value = session.get(field)
+            if value:
+                config[field] = str(value)
     _write_json_private(config_path, config)
     return config
 
@@ -279,7 +403,7 @@ def _require_config(config_path: Path) -> dict[str, str]:
     if missing:
         raise ClientError(
             "machine is not configured; run "
-            "research-plugin-client configure --control-url ..."
+            "merv-client configure --control-url ..."
         )
     state_dir = str(_state_dir(config_path=config_path, config=config))
     config.setdefault("daemon_state_dir", state_dir)
@@ -328,7 +452,7 @@ def _now_iso() -> str:
 
 
 def _has_control_config_args(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "control_url", None))
+    return bool(getattr(args, "control_url", None)) or getattr(args, "api_key", None) is not None
 
 
 def _write_json_private(path: Path, payload: Mapping[str, str]) -> None:
@@ -349,6 +473,9 @@ def _repo(raw: str) -> Path:
 def _print_configured(*, config_path: Path, config: Mapping[str, str]) -> None:
     print(f"configured machine client: {config_path}")
     print(f"control_url={config['control_url']}")
+    # Never echo credentials themselves — this output gets pasted into issues/docs.
+    print(f"api_key={'set' if config.get('api_key') else 'unset'}")
+    print(f"session={'signed in' if config.get('access_token') else 'none'}")
 
 
 if __name__ == "__main__":

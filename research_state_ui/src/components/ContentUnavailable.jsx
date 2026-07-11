@@ -1,3 +1,5 @@
+import { RawLink } from './AuthedMedia';
+
 /**
  * ContentUnavailable — degraded panel shown when a resource's bytes are not
  * servable in the current mode. The cloud control plane keeps result-role
@@ -10,11 +12,7 @@ export default function ContentUnavailable({ content, fallbackLink = null }) {
     <div className="content-unavailable">
       <div className="content-unavailable-title">Content unavailable in this mode</div>
       <div className="content-unavailable-detail">{content?.detail || content?.reason}</div>
-      {fallbackLink && (
-        <a className="btn btn--sm" href={fallbackLink.href} target="_blank" rel="noreferrer">
-          {fallbackLink.label}
-        </a>
-      )}
+      {fallbackLink && <RawLink href={fallbackLink.href}>{fallbackLink.label}</RawLink>}
     </div>
   );
 }

@@ -39,6 +39,9 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
             "local_data_plane_http": surface.allow_data_plane_http,
             **surface.data_plane_http_capabilities(),
         }
+        # Auth handshake: tells the UI whether to show a login and which
+        # Supabase project to sign in against (public values only).
+        payload["auth"] = ctx.auth_meta or {"required": False}
         return payload
 
     @api_router.api_route(

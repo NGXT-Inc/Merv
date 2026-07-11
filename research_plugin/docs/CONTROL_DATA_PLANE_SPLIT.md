@@ -17,7 +17,7 @@ USER MACHINE
   Agent client
       │ stdio
       ▼
-  research-plugin-mcp
+  merv-mcp
       ├─ local data tools: repo reads, hashes, validation, folder mkdir,
       │                    rsync output pulls, project_links.sqlite
       └─ control tools/data submissions over HTTP
@@ -30,7 +30,7 @@ USER MACHINE
 
 The proxy always dials one brain URL, resolved as the
 `RESEARCH_PLUGIN_CONTROL_URL` env var > machine config from
-`research-plugin-client configure` > the hosted default. Local deployments
+`merv-client configure` > the hosted default. Local deployments
 configure `http://127.0.0.1:8787`. There is no marker discovery and no thin
 local upstream path.
 

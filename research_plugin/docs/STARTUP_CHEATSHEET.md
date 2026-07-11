@@ -58,7 +58,7 @@ One-shot:
 
 ```bash
 cd "$RESEARCH_PLUGIN"
-./bin/research-plugin-http --host 127.0.0.1 --port 8787
+./bin/merv-http --host 127.0.0.1 --port 8787
 ```
 
 Auto-reload while editing backend code:
@@ -81,7 +81,7 @@ curl -s http://127.0.0.1:8787/api/projects
 Machine configuration is the normal local-development path:
 
 ```bash
-"$RESEARCH_PLUGIN/bin/research-plugin-client" configure \
+"$RESEARCH_PLUGIN/bin/merv-client" configure \
   --control-url http://127.0.0.1:8787
 ```
 
@@ -93,7 +93,7 @@ one-off override.
 
 Use the client-specific instructions in [CLIENTS.md](CLIENTS.md). For example,
 when developing the Codex plugin from this checkout, add the repository as a
-local marketplace and enable `research-plugin` in the target workspace.
+local marketplace and enable `merv` in the target workspace.
 
 Open the research checkout in the agent client. The first calls should be:
 
@@ -116,7 +116,7 @@ The terminal fallback is:
 
 ```bash
 cd "$RESEARCH_REPO"
-"$RESEARCH_PLUGIN/bin/research-plugin-client" link --project-id proj_...
+"$RESEARCH_PLUGIN/bin/merv-client" link --project-id proj_...
 ```
 
 ## Start the UI

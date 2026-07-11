@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "research-plugin": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/research-plugin-mcp",
+    "merv": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/merv-mcp",
       "args": [],
       "env": {
         "RESEARCH_PLUGIN_CONTROL_URL": ""

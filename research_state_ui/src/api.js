@@ -20,18 +20,34 @@ const BASE = (
 // The UI build's wire version, stamped on every request as X-RP-Client-Version
 // (the cloud control plane reads it for the compat handshake; local mode
 // ignores it). Kept in lockstep with the research_plugin package version.
-export const CLIENT_VERSION = '0.0011';
+export const CLIENT_VERSION = '0.0012';
 
 // Bearer token for the hosted control plane. Dormant in local mode: with no
 // token configured no Authorization header is sent, and the local backend
-// (auth=None) serves every request as the implicit local principal. Resolution
-// mirrors BASE — build-time override, then a runtime override.
+// (auth=None) serves every request as the implicit local principal. The live
+// Supabase session (hosted sign-in) wins; the localStorage slot remains as a
+// dev override and can also hold an rr_sk_ API key.
+import { getAuthToken } from './auth';
+
 function authToken() {
   return (
-    import.meta.env.VITE_API_TOKEN
+    getAuthToken()
+    || import.meta.env.VITE_API_TOKEN
     || (typeof localStorage !== 'undefined' && localStorage.getItem('rsui:apiToken'))
     || ''
   );
+}
+
+// True when requests carry a credential — the signal that header-less media
+// surfaces (<img>, <iframe>, new-tab links) must switch to blob: URLs.
+export function mediaNeedsAuth() {
+  return Boolean(authToken());
+}
+
+// Media URLs from api helpers are BASE-prefixed absolutes; fetchObjectUrl
+// expects the server-relative path.
+export function stripApiBase(url) {
+  return BASE && url.startsWith(BASE) ? url.slice(BASE.length) : url;
 }
 
 // Absolute URL for a server-provided relative media/asset path, prefixed with
@@ -90,7 +106,12 @@ async function send(path, { method = 'GET', body, signal, headers = {} } = {}) {
     // Typed codes for the two control-plane gates so callers can react
     // (login prompt / upgrade banner) instead of showing a raw HTTP error.
     // Both are inert in local mode, which never returns 401/426.
-    if (res.status === 401) err.code = 'unauthorized';
+    if (res.status === 401) {
+      err.code = 'unauthorized';
+      // Wherever the 401 lands (boot, poller, detail panel), AuthGate hears
+      // this and re-shows the sign-in instead of a silent data freeze.
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('rp:unauthorized'));
+    }
     else if (res.status === 426) err.code = 'client_too_old';
     else if (data && data.error_code) err.code = data.error_code;
     throw err;
@@ -312,6 +333,13 @@ export const api = {
     request(`/api/projects/${encodeURIComponent(pid)}/mlflow`),
   releaseSandbox: (pid, eid, { sandboxUid = null } = {}) =>
     request(sandboxPath(pid, eid, sandboxUid, '/release'), { method: 'POST' }),
+  // Project compute spend from the sandbox-generations ledger (price × runtime,
+  // open boxes bill to now) — covers terminated fleets, unlike listSandboxes.
+  // Returns { total_usd, total_hours, unpriced_hours, generations,
+  // open_generations, burn_usd_per_hour, by_experiment:[...], by_hardware:[...],
+  // daily:[{date, usd, hours}] }.
+  getComputeCost: (pid) =>
+    request(`/api/projects/${encodeURIComponent(pid)}/compute-cost`),
 
   // Storage — long-term heavy-file ledger (datasets/models preserved off-repo in
   // S3-compatible storage, R2 first). The UI browses + manages lifecycle; bytes

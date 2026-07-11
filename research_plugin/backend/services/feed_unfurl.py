@@ -34,7 +34,7 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
-_USER_AGENT = "research-plugin-feed-unfurl/1.0"
+_USER_AGENT = "merv-feed-unfurl/1.0"
 _DEFAULT_TIMEOUT = 6.0
 _MAX_REDIRECTS = 4
 _MAX_HTML_BYTES = 1_500_000

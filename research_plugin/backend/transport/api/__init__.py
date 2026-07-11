@@ -1,4 +1,4 @@
-"""Research Plugin HTTP API package."""
+"""Merv HTTP API package."""
 
 from .app import create_fastapi_app
 from .shared import conditional_json

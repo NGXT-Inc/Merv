@@ -33,7 +33,7 @@ class DevHttpReloadTest(unittest.TestCase):
     def test_server_command_defaults_to_shared_mode(self) -> None:
         module = load_dev_http_reload()
         command = module.server_command(
-            launcher=Path("/tmp/bin/research-plugin-http"),
+            launcher=Path("/tmp/bin/merv-http"),
             registry_store_path=Path("/tmp/registry.sqlite"),
             host="127.0.0.1",
             port=8787,

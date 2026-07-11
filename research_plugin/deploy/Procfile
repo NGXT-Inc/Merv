@@ -1,7 +1,7 @@
-# Process declaration for the hosted Research Plugin control plane.
+# Process declaration for the hosted Merv control plane.
 # The user-machine side is the stateless MCP proxy launched by the agent client,
 # not a Procfile-managed daemon.
 
 # Cloud control plane. Keep private behind a TLS-terminating load balancer.
 # Needs RESEARCH_PLUGIN_DB_URL + RESEARCH_PLUGIN_BLOB_BUCKET.
-control: research-plugin-control
+control: merv-control
