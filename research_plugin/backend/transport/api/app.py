@@ -44,6 +44,7 @@ def create_fastapi_app(
     cleanup: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
     auth: Any | None = None,
+    ui_base_url: str = "",
 ) -> FastAPI:
     # Unified HTTP brain. File, SSH, and rsync work is always submitted by the
     # local MCP proxy; the server never accepts repo_root context or data-plane
@@ -366,7 +367,11 @@ def create_fastapi_app(
     if auth is not None:
         # Browser-handoff login for CLI/proxy clients (merv-client login).
         http.include_router(
-            sdk_auth.build_router(verifier=auth, allowed_origins=allowed_origins or [])
+            sdk_auth.build_router(
+                verifier=auth,
+                allowed_origins=allowed_origins or [],
+                ui_base_url=ui_base_url,
+            )
         )
 
         @http.get("/internal/auth/mlflow")

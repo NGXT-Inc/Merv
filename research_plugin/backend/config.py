@@ -50,6 +50,9 @@ MGMT_KEY_PATH_ENV_VAR = "RESEARCH_PLUGIN_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "RESEARCH_PLUGIN_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "RESEARCH_PLUGIN_ALLOWED_ORIGINS"
 CONTROL_RESTRICT_CORS_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_RESTRICT_CORS"
+# Where the device-flow sign-in page lives. Unlike a CORS origin this may
+# carry a path (e.g. https://rapidreview.io/merv) for path-mounted UIs.
+UI_BASE_URL_ENV_VAR = "RESEARCH_PLUGIN_UI_BASE_URL"
 # MLflow-extension env config (MLFLOW_MODE/TRACKING_URI/SERVER_URI/DASHBOARD)
 # lives in backend/mlflow/config.py — the extension owns its own knobs.
 # The enforcement knob below is composition policy, so it stays here.
@@ -222,6 +225,22 @@ def resolve_allowed_origins(env: Mapping[str, str] | None = None) -> list[str]:
             )
         origins.append(origin)
     return origins
+
+
+def resolve_ui_base_url(env: Mapping[str, str] | None = None) -> str:
+    """Hosted UI base for the sign-in handoff, or "" when unset."""
+    source = env if env is not None else os.environ
+    raw = (source.get(UI_BASE_URL_ENV_VAR) or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValidationError(
+            f"invalid {UI_BASE_URL_ENV_VAR}: {raw!r} "
+            "(expected an http:// or https:// URL, path suffix allowed)",
+            details={"url": raw},
+        )
+    return raw
 
 
 def build_blob_store(

@@ -4,6 +4,11 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/merv/:path(.*\\..+)", "destination": "/:path" },
+    { "source": "/merv/:path*", "destination": "/index.html" }
+  ],
+  "redirects": [
+    { "source": "/", "destination": "/merv", "permanent": false },
+    { "source": "/p/:path*", "destination": "/merv/p/:path*", "permanent": false }
   ]
 }

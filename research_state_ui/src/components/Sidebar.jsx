@@ -1,27 +1,77 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useProjectStore, useProjectHref, selectStats, selectResources, selectSandboxes } from '../store/useProjectStore';
 import { CLIENT_VERSION } from '../api';
 import { useTheme } from '../store/useTheme';
 import { useBackdrop, setBackdrop } from '../store/useBackdrop';
 import { setSurfaceOverride } from '../store/useViewport';
+import ProductSwitch from './ProductSwitch';
 import ProjectSwitcher from './ProjectSwitcher';
 import FileTree from './FileTree';
 import SandboxRetentionIndicator from './SandboxRetentionIndicator';
-import { getAuthEmail, onAuthChange, signOut } from '../auth';
+import { getAuthEmail, isAuthEnabled, onAuthChange, signOut } from '../auth';
 
-// Account row: only renders under hosted auth (email present); localhost has
-// no session and shows nothing.
-function AuthFoot() {
+// Account/settings chip: the sidebar's bottommost row, always present.
+// Opens an upward menu carrying the UI settings (refresh, surface, theme,
+// backdrop) plus sign-out when a hosted session exists; on localhost the
+// account slot says so instead of hiding.
+function AccountFoot({ onRefresh }) {
+  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
+  const backdropOn = useBackdrop();
   const [email, setEmail] = useState(getAuthEmail());
+  const [open, setOpen] = useState(false);
+  const footRef = useRef(null);
   useEffect(() => onAuthChange(() => setEmail(getAuthEmail())), []);
-  if (!email) return null;
+  // Close on any press outside the chip/menu (same pattern as the project chip).
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (footRef.current && !footRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const hosted = isAuthEnabled();
+  const label = email || (hosted ? 'Sign in' : 'Local session');
   return (
-    <div className="sidebar-foot-actions" style={{ marginTop: 6 }}>
-      <span className="sync-indicator" title={email} style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {email}
-      </span>
-      <button className="btn btn--ghost btn--sm" onClick={() => signOut()}>Sign out</button>
+    <div className="account-foot" ref={footRef}>
+      {open && (
+        <div className="account-menu" role="menu">
+          <div className="account-menu-head">{email || (hosted ? 'Not signed in' : 'Local session')}</div>
+          <button type="button" className="account-menu-item" onClick={() => { setOpen(false); onRefresh?.(); }}>
+            Refresh now
+          </button>
+          <button type="button" className="account-menu-item" onClick={() => setSurfaceOverride('mobile')}>
+            Switch to mobile
+          </button>
+          <button
+            type="button"
+            className="account-menu-item"
+            onClick={() => setThemeMode(NEXT_THEME_MODE[themeMode])}
+            title={`Theme follows ${themeMode === 'system' ? 'the OS' : 'your choice'} — click to switch to ${NEXT_THEME_MODE[themeMode]}`}
+          >
+            Theme · {themeMode === 'system' ? `auto (${theme})` : themeMode}
+          </button>
+          <button type="button" className="account-menu-item" onClick={() => setBackdrop(!backdropOn)}>
+            Backdrop · {backdropOn ? 'on' : 'off'}
+          </button>
+          <div className="account-menu-sep" />
+          {email ? (
+            <button type="button" className="account-menu-item" onClick={() => { setOpen(false); signOut(); }}>
+              Sign out
+            </button>
+          ) : (
+            <div className="account-menu-note">
+              {hosted ? 'Reload to sign in.' : 'Accounts live on the hosted app.'}
+            </div>
+          )}
+        </div>
+      )}
+      <button type="button" className="account-row" onClick={() => setOpen(v => !v)} aria-expanded={open}>
+        <span className="account-avatar" aria-hidden="true">{(email[0] || '·').toUpperCase()}</span>
+        <span className="account-name" title={label}>{label}</span>
+        <span className="account-caret" aria-hidden="true">▾</span>
+      </button>
     </div>
   );
 }
@@ -68,8 +118,6 @@ export function IconSidebar(props) {
 }
 
 export default function Sidebar({ onRefresh, onHide }) {
-  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
-  const backdropOn = useBackdrop();
   const home = useProjectStore(s => s.home);
   const stats = useProjectStore(selectStats);
   const lastSyncedAt = useProjectStore(s => s.lastSyncedAt);
@@ -113,10 +161,10 @@ export default function Sidebar({ onRefresh, onHide }) {
 
   return (
     <aside className="sidebar">
-      {/* The active project IS the sidebar's header — no app self-branding.
-          The backend/UI version lives on as the sync indicator's tooltip. */}
-      <div className="sidebar-top">
-        <ProjectSwitcher />
+      {/* Utility row: org wordmark left, collapse control top-right
+          (reference grammar). */}
+      <div className="sidebar-util">
+        <span className="sidebar-wordmark">rapidreview</span>
         {onHide && (
           <button
             type="button"
@@ -126,6 +174,13 @@ export default function Sidebar({ onRefresh, onHide }) {
             aria-label="Hide sidebar"
           ><IconSidebar /></button>
         )}
+      </div>
+      {/* Product switch: its own full-width row — the app's only self-branding. */}
+      <ProductSwitch />
+      {/* Primary-action slot under the switch: the project chip (context
+          selector); the backend/UI version lives on in the sync tooltip. */}
+      <div className="sidebar-top">
+        <ProjectSwitcher />
       </div>
 
       <nav className="sidebar-nav">
@@ -217,32 +272,8 @@ export default function Sidebar({ onRefresh, onHide }) {
           <span className={dotClass} />
           <span>ui {pollLabel} · updated {fmtUpdatedAgo(lastSyncedAt)}</span>
         </div>
-        <div className="sidebar-foot-actions">
-          <button className="btn btn--ghost btn--sm" onClick={onRefresh}>Refresh now</button>
-          <button className="btn btn--ghost btn--sm" onClick={() => setSurfaceOverride('mobile')}>
-            Switch to mobile
-          </button>
-        </div>
-        <div className="sidebar-foot-actions" style={{ marginTop: 6 }}>
-          <button
-            className="btn btn--ghost btn--sm"
-            onClick={() => setThemeMode(NEXT_THEME_MODE[themeMode])}
-            title={`Theme follows ${themeMode === 'system' ? 'the OS' : 'your choice'} — click to switch to ${NEXT_THEME_MODE[themeMode]}`}
-          >
-            <span aria-hidden="true">{theme === 'dark' ? '◑' : '◐'}</span>
-            {themeMode === 'system' ? `auto · ${theme}` : themeMode}
-          </button>
-          <button
-            className="btn btn--ghost btn--sm"
-            onClick={() => setBackdrop(!backdropOn)}
-            title={backdropOn ? 'Turn off the ambient background' : 'Turn on the ambient background'}
-          >
-            <span aria-hidden="true">{backdropOn ? '◈' : '◇'}</span>
-            backdrop
-          </button>
-        </div>
-        <AuthFoot />
         {lastSyncError && <div className="error-message" style={{ fontSize: 11 }}>{lastSyncError}</div>}
+        <AccountFoot onRefresh={onRefresh} />
       </div>
     </aside>
   );

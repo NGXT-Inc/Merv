@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  // Served under rapidreview.io/merv in production; assets resolve from /merv/.
+  base: '/merv/',
   plugins: [react()],
   server: {
     // PORT lets a managed preview run alongside a manually-started dev server.

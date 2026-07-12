@@ -8,7 +8,7 @@ import './styles/mobile.css';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename="/merv">
       {/* AuthGate holds the app until /api/meta answers; hosted mode signs in
           first so App's boot requests already carry the session token. */}
       <AuthGate>

@@ -32,6 +32,11 @@ export function getAuthEmail() {
   return email;
 }
 
+// True once initAuth constructed a client (hosted mode); false on localhost.
+export function isAuthEnabled() {
+  return client !== null;
+}
+
 export function onAuthChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);

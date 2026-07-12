@@ -26,7 +26,9 @@ SESSION_TTL_SECONDS = 600.0
 _POLL_PENDING = {"status": "pending"}
 
 
-def build_router(*, verifier: Any, allowed_origins: list[str]) -> APIRouter:
+def build_router(
+    *, verifier: Any, allowed_origins: list[str], ui_base_url: str = ""
+) -> APIRouter:
     router = APIRouter()
     sessions: dict[str, dict[str, Any]] = {}
     lock = threading.Lock()
@@ -37,8 +39,11 @@ def build_router(*, verifier: Any, allowed_origins: list[str]) -> APIRouter:
             sessions.pop(sid, None)
 
     def _ui_origin(request: Request) -> str:
-        # The sign-in page lives on the hosted UI: first CORS origin when the
-        # UI is served cross-origin, else this server's own origin (co-hosted).
+        # The sign-in page lives on the hosted UI: the configured UI base URL
+        # (may carry a path, e.g. /merv) wins, else the first CORS origin when
+        # the UI is served cross-origin, else this server's own origin.
+        if ui_base_url:
+            return ui_base_url
         if allowed_origins:
             return allowed_origins[0].rstrip("/")
         return str(request.base_url).rstrip("/")

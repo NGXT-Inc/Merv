@@ -33,6 +33,7 @@ from ..config import (
     resolve_allowed_origins,
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
+    resolve_ui_base_url,
 )
 from ..control.control_app import ControlApp
 from ..control.control_runtime import ControlTaskChannel
@@ -208,6 +209,7 @@ def build_control_server(
         cleanup=cleanup,
         surface_policy=surface,
         auth=auth,
+        ui_base_url=resolve_ui_base_url(env),
     )
     return ControlPlaneServer(
         app=app,

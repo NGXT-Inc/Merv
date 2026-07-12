@@ -26,6 +26,8 @@
         } catch (e) { /* default light */ }
       })();
     </script>
+    <!-- Prewarm the sibling Map product so the switch feels instant in prod. -->
+    <script type="speculationrules">{"prerender":[{"urls":["/map/"],"eagerness":"moderate"}]}</script>
   </head>
   <body>
     <div id="root"></div>

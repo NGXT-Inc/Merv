@@ -60,6 +60,7 @@ export default function AuthGate({ children }) {
   // CLI device-flow handoff: once signed in, /auth/sdk posts this browser's
   // session to the brain for the polling terminal — instead of the app,
   // which may still be booting (this route must work with zero projects).
+  // useLocation is basename-relative, so this also matches /merv/auth/sdk.
   if (state.required && location.pathname === '/auth/sdk') return <SdkHandoff />;
   return children;
 }

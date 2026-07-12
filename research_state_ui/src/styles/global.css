@@ -4,6 +4,12 @@
    Tokens + canonical DS classes only — page-specific bloat omitted.
    ===================================================================== */
 
+/* Cross-document view transitions: the Merv ⇄ Map product switch is a
+   full-page navigation; this lets same-origin hops crossfade in prod. */
+@view-transition {
+  navigation: auto;
+}
+
 :root {
   color-scheme: light;
   /* "Luna" — the warm-paper light theme. The single universal accent is
@@ -612,6 +618,67 @@ button.th, [role="button"].th { cursor: pointer; user-select: none; }
   transition: color var(--motion-fast), background var(--motion-fast);
 }
 .sidebar-hide:hover { color: var(--text); background: var(--bg-soft); }
+/* Utility row: org wordmark left, collapse control right, above the switch. */
+.sidebar-util {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding-left: 10px;
+}
+/* Org mark — lowercase sans, medium weight, tight tracking, no logo
+   glyph. Identical treatment on both products' sidebars. */
+.sidebar-wordmark {
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  user-select: none;
+}
+/* Product switch — segmented Merv | Map tabs on their own full-width row;
+   the app's only brand mark. Inset track + raised active segment, built
+   from the surface token trio. */
+.product-switch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: 12px;
+  background: var(--bg-soft);
+  border-radius: var(--radius-md);
+}
+.product-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  line-height: 1.2;
+  font-weight: 540;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.product-tab svg { flex-shrink: 0; color: var(--faint); transition: color var(--motion-fast); }
+a.product-tab:hover { color: var(--text); }
+a.product-tab:hover svg { color: var(--muted); }
+/* Active segment: raised fill + hairline ring, per the reference. */
+.product-tab--active {
+  background: var(--bg-elev);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--line), var(--shadow-sm);
+}
+/* The active product's glyph is the one spot the brand accent meets the name. */
+.product-tab--active svg { color: var(--active); }
+/* Umbra inverts the surface order (elev darker than soft), so the raised
+   segment borrows the strong hairline tone plus a faint lighter ring. */
+html[data-theme="dark"] .product-tab--active {
+  background: var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(var(--faint-rgb), 0.5), var(--shadow-sm);
+}
 .sidebar-nav {
   display: flex;
   flex-direction: column;
@@ -672,6 +739,94 @@ button.th, [role="button"].th { cursor: pointer; user-select: none; }
   gap: 6px;
   flex-wrap: wrap;
   padding-left: 2px;
+}
+/* Account chip: the sidebar's bottommost row (reference grammar) — avatar
+   initial + label above its own hairline; clicking opens a small upward
+   menu with the sign-in/out action. Always rendered, even on localhost. */
+.account-foot {
+  position: relative;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--motion-fast);
+}
+.account-row:hover { background: var(--bg-soft); }
+.account-caret { color: var(--faint); font-size: 9px; flex-shrink: 0; }
+.account-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-menu-head {
+  font-size: var(--text-xs);
+  color: var(--faint);
+  padding: 4px 8px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-menu-item {
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.account-menu-item:hover { background: var(--bg-soft); color: var(--text); }
+.account-menu-note {
+  padding: 4px 8px 6px;
+  font-size: var(--text-xs);
+  color: var(--faint);
+  font-style: italic;
+}
+.account-menu-sep { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+.account-avatar {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.account-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--muted);
 }
 .sync-dot {
   width: 6px;

@@ -57,7 +57,10 @@ Any member can manage members (two-trusted-users model; no roles).
   Supabase, so clients never talk to Supabase directly). Headless fallback:
   `merv-client login --api-key rr_sk_...` (env `RESEARCH_PLUGIN_API_KEY`
   overrides); `--no-browser` prints the URL for SSH sessions. Device-flow
-  routes (`/api/sdk/auth/*`) exist only on auth-enabled deployments.
+  routes (`/api/sdk/auth/*`) exist only on auth-enabled deployments. The
+  minted `auth_url` points at `RESEARCH_PLUGIN_UI_BASE_URL` (a path-mounted
+  UI like `https://rapidreview.io/merv` is fine), falling back to the first
+  CORS origin, then the API's own origin.
 - **Agents / MLflow**: `mlflow.context` env blocks carry
   `MLFLOW_TRACKING_USERNAME/PASSWORD` (the key in the password slot) when
   `RESEARCH_PLUGIN_MLFLOW_AGENT_KEY` is set; sandbox provisioning also
@@ -71,7 +74,9 @@ Any member can manage members (two-trusted-users model; no roles).
    RapidReview sessions.
 2. Set env on the VM: `SUPABASE_URL`, `SUPABASE_JWT_SECRET`,
    `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY`,
-   `RESEARCH_PLUGIN_REQUIRE_AUTH=1`. Restart the brain.
+   `RESEARCH_PLUGIN_REQUIRE_AUTH=1`,
+   `RESEARCH_PLUGIN_UI_BASE_URL=https://rapidreview.io/merv` (where
+   `merv-client login` sends the browser). Restart the brain.
 3. Backfill membership for existing projects (one insert per project):
    ```sql
    INSERT INTO project_members (project_id, user_id, added_at)

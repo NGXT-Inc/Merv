@@ -21,6 +21,7 @@ import jwt
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
+from backend.config import UI_BASE_URL_ENV_VAR, resolve_ui_base_url
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.services.auth import SupabaseVerifier, UnauthorizedError
 from backend.transport.http_api import create_fastapi_app
@@ -337,6 +338,31 @@ class AuthedSurfaceTest(unittest.TestCase):
             "/api/sdk/auth/session/poll", json={"session_id": session_id}
         )
         self.assertEqual(replay.status_code, 400, replay.text)
+
+    def test_device_flow_ui_base_url_beats_first_origin(self) -> None:
+        # A path-mounted UI (rapidreview.io/merv) cannot be a CORS origin, so
+        # the env-configured base URL must win over allowed_origins[0].
+        client = TestClient(
+            create_fastapi_app(
+                self.app,
+                allowed_origins=["https://ui.example"],
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=True, hosted_control=True
+                ),
+                auth=_verifier(),
+                ui_base_url=resolve_ui_base_url(
+                    {UI_BASE_URL_ENV_VAR: "https://rapidreview.io/merv/"}
+                ),
+            ),
+            raise_server_exceptions=False,
+        )
+        created = client.post("/api/sdk/auth/session")
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertTrue(
+            created.json()["auth_url"].startswith(
+                "https://rapidreview.io/merv/auth/sdk?session="
+            )
+        )
 
     def test_refresh_proxies_to_supabase(self) -> None:
         ok = self.client.post(
