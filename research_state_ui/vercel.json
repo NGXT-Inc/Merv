@@ -4,7 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/merv/:path(.*\\..+)", "destination": "/:path" },
+    { "source": "/merv/:path(.*\\.(?:js|mjs|css|png|jpe?g|svg|gif|ico|webp|webmanifest|json|xml|txt|woff2?|ttf|map|pdf|wasm))", "destination": "/:path" },
     { "source": "/merv/:path*", "destination": "/index.html" }
   ],
   "redirects": [
