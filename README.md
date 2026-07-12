@@ -63,15 +63,18 @@ Restart Claude Code.
 
 ### Cursor
 
-Cursor loads local plugins from a directory, so clone the repo and link the plugin bundle into `~/.cursor/plugins/local`:
+Cursor loads local plugins from a directory. Clone the repo and **copy** the plugin bundle into `~/.cursor/plugins/local` (Cursor rejects symlinks that point outside that directory):
 
 ```bash
 git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
 mkdir -p ~/.cursor/plugins/local
-ln -sfn ~/Merv/merv ~/.cursor/plugins/local/merv
+rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' \
+  ~/Merv/merv/ ~/.cursor/plugins/local/merv/
+# Optional but recommended if `python3` on PATH is older than 3.10:
+python3.11 -m venv ~/.cursor/plugins/local/merv/.venv
 ```
 
-Then enable **merv** on Cursor's Customize page and restart Cursor. (To update later: `git -C ~/Merv pull` and restart.)
+Then enable **merv** on Cursor's Customize page and restart Cursor (or run **Developer: Reload Window**). To update later: `git -C ~/Merv pull`, re-run the `rsync`, and reload.
 
 ### Sign in
 
@@ -124,12 +127,14 @@ claude plugin install merv@rapidreview
 Restart Claude Code. (If you already run `merv@rapidreview`, just
 `claude plugin marketplace update rapidreview && claude plugin update merv`.)
 
-**Cursor** — replace the old link with the renamed plugin directory:
+**Cursor** — replace the old install with a real copy of the renamed plugin directory:
 
 ```bash
 git -C ~/Merv pull   # or wherever your clone lives; old remotes redirect
-rm -f ~/.cursor/plugins/local/research-plugin
-ln -sfn ~/Merv/merv ~/.cursor/plugins/local/merv
+rm -rf ~/.cursor/plugins/local/research-plugin ~/.cursor/plugins/local/merv
+rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' \
+  ~/Merv/merv/ ~/.cursor/plugins/local/merv/
+python3.11 -m venv ~/.cursor/plugins/local/merv/.venv
 ```
 
 Re-enable **merv** on Cursor's Customize page and restart Cursor.

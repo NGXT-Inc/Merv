@@ -111,9 +111,16 @@ The plugin ships a Cursor plugin bundle: [.cursor-plugin/plugin.json](../.cursor
 plus [mcp.json](../mcp.json) at plugin root; `skills/` and `agents/` are
 auto-discovered from the same locations all other clients use.
 
-For local development, link the plugin directory into
-`~/.cursor/plugins/local/merv` (symlinks are supported), then
-enable it in Cursor.
+For local development, **copy** the plugin directory into
+`~/.cursor/plugins/local/merv`, then enable it in Cursor. Cursor rejects
+symlinks whose target is outside `~/.cursor/plugins/local` (you will see
+`loadUserLocalPlugin merv rejected: symlink target ... is outside ...` in
+the Cursor Plugins log). Re-`rsync` after editing the checkout, or keep a
+real directory under `plugins/local` as your working tree.
+
+If the machine's default `python3` is older than 3.10, create a venv in the
+local install so the launcher does not fall through to a broken interpreter:
+`python3.11 -m venv ~/.cursor/plugins/local/merv/.venv`.
 
 Three Cursor-specific notes:
 
