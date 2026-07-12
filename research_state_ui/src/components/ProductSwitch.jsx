@@ -43,7 +43,7 @@ function IconConstellation() {
 // Dev runs the products on separate ports; production mounts both on one
 // origin (rapidreview.io/map + /merv), so the cross-link is a same-origin path.
 const IS_DEV_HOST = /^(localhost|127\.)/.test(window.location.hostname);
-const MAP_HREF = IS_DEV_HOST ? 'http://localhost:4000/map/' : '/map/';
+const MAP_HREF = IS_DEV_HOST ? 'http://localhost:4000/map/' : '/map';
 
 // Map sits left, Merv right.
 const PRODUCTS = [
