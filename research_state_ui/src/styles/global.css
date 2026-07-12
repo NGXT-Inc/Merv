@@ -508,6 +508,10 @@ button.th, [role="button"].th { cursor: pointer; user-select: none; }
 .sidebar {
   width: var(--sidebar-w);
   flex-shrink: 0;
+  /* Same name in both products: the cross-document view transition morphs
+     rail-to-rail, so the product switch reads as "sidebar stays, content
+     swaps". */
+  view-transition-name: product-rail;
   border-right: 1px solid var(--line-soft);
   /* Transparent so the ambient graph runs continuously from here into the main
      column — one unbroken backdrop rather than a graph that starts at the divider. */

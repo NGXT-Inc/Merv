@@ -96,7 +96,6 @@ function SdkHandoff() {
   return (
     <div className="auth-gate">
       <div className="auth-modal auth-modal--center">
-        <div className="auth-brand">Merv</div>
         <p className="auth-modal-sub">{message}</p>
       </div>
     </div>
@@ -188,8 +187,7 @@ function SignIn() {
     return (
       <div className="auth-gate">
         <form className="auth-modal" onSubmit={forgot}>
-          <div className="auth-brand">Merv</div>
-          <h2 className="auth-modal-title">Reset password</h2>
+            <h2 className="auth-modal-title">Reset password</h2>
           <p className="auth-modal-sub">
             Enter your email and we&apos;ll send you a link to reset your password.
           </p>
@@ -221,7 +219,6 @@ function SignIn() {
   return (
     <div className="auth-gate">
       <form className="auth-modal" onSubmit={submit}>
-        <div className="auth-brand">Merv</div>
         <h2 className="auth-modal-title">{mode === 'signup' ? 'Create account' : 'Sign in'}</h2>
         <p className="auth-modal-sub">Use your RapidReview account.</p>
 
