@@ -113,8 +113,9 @@ PATH) — run the copy your install created:
 ~/Merv/merv/bin/merv-client login
 ```
 
-This opens the browser to complete sign-in; the session is stored locally
-and shared by every client on the machine. On a headless box, add
+This opens the browser and **waits until sign-in completes** there (agents:
+run it in the background rather than a foreground shell that will time out).
+The session is stored locally and shared by every client on the machine. On a headless box, add
 `--no-browser` (prints the URL to open elsewhere) or use
 `--api-key rr_sk_...` (keys are issued by your project owner).
 
