@@ -94,6 +94,9 @@ This opens the browser to complete sign-in; the session is stored locally and
 shared by every client on the machine. On a headless box, add `--no-browser`
 (prints the URL to open elsewhere) or use `--api-key rr_sk_...`.
 
+For instructions on creating and storing an API key, see
+[Authenticate this machine](merv/docs/HOSTED_CLIENT_QUICKSTART.md#authenticate-this-machine).
+
 ### First run
 
 Open the repo you want to research as the workspace, then ask the agent to call
