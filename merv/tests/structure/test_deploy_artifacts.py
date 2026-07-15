@@ -81,9 +81,7 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW", text)
         self.assertIn("RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND", text)
         self.assertIn("RESEARCH_PLUGIN_EXECUTION_BACKEND", text)
-        self.assertIn("RESEARCH_PLUGIN_LAMBDA_API_KEY", text)
-        self.assertIn("LAMBDA_LABS_API_KEY", text)
-        self.assertIn("HF_TOKEN", text)
+        self.assertIn("RESEARCH_PLUGIN_PROVIDER_ENV_FILE", text)
         self.assertIn("${RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL:-http://minio:9000}", text)
         self.assertIn("${AWS_ENDPOINT_URL_S3:-http://minio:9000}", text)
         self.assertIn("ssh-keygen", text)
@@ -91,6 +89,22 @@ class DeployArtifactsTest(unittest.TestCase):
         # Builds from the deploy Dockerfile.
         self.assertIn("dockerfile: deploy/Dockerfile", text)
         self.assertIn("dockerfile: deploy/Dockerfile.mlflow", text)
+
+    def test_compose_does_not_override_provider_env_file_with_empty_secrets(self) -> None:
+        text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+        for var in (
+            "RESEARCH_PLUGIN_LAMBDA_API_KEY:",
+            "LAMBDA_LABS_API_KEY:",
+            "LAMBDA_API_KEY:",
+            "RESEARCH_PLUGIN_THUNDER_API_KEY:",
+            "THUNDER_COMPUTE_API_KEY:",
+            "MODAL_TOKEN_ID:",
+            "MODAL_TOKEN_SECRET:",
+            "HF_TOKEN:",
+            "HUGGING_FACE_HUB_TOKEN:",
+        ):
+            with self.subTest(variable=var):
+                self.assertNotIn(var, text)
 
     def test_env_example_documents_control_matrix(self) -> None:
         text = (DEPLOY / ".env.example").read_text(encoding="utf-8")
@@ -105,6 +119,7 @@ class DeployArtifactsTest(unittest.TestCase):
             "RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW",
             "RESEARCH_PLUGIN_EXECUTION_BACKEND",
             "RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND",
+            "RESEARCH_PLUGIN_PROVIDER_ENV_FILE",
             "RESEARCH_PLUGIN_LAMBDA_API_KEY",
             "AWS_ENDPOINT_URL_S3",
         ):

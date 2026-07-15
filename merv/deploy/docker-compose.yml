@@ -124,6 +124,12 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    # Provider credentials are injected directly into the container from this
+    # file. Do not mirror them below with empty `environment` defaults: Compose
+    # gives `environment` precedence over `env_file`, which would silently
+    # erase valid secrets supplied by a production override.
+    env_file:
+      - ${RESEARCH_PLUGIN_PROVIDER_ENV_FILE:-/dev/null}
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,23 +175,11 @@ services:
       AWS_SECRET_ACCESS_KEY: rpminio_dev_password
       AWS_DEFAULT_REGION: us-east-1
       AWS_ENDPOINT_URL_S3: ${AWS_ENDPOINT_URL_S3:-http://minio:9000}
-      # Provider creds come from the env / a secret store ONLY in control mode
-      # (.env discovery is disabled). Leave unset for a record-only dev stack;
-      # set THUNDER_* / MODAL_* / LAMBDA_* (and HF_TOKEN) to provision sandboxes.
+      # Provider creds come from RESEARCH_PLUGIN_PROVIDER_ENV_FILE or an
+      # override service's env_file ONLY in control mode (.env discovery is
+      # disabled). Leave the file unset for a record-only dev stack.
       RESEARCH_PLUGIN_EXECUTION_BACKEND: ${RESEARCH_PLUGIN_EXECUTION_BACKEND:-lambda_labs}
       RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND: ${RESEARCH_PLUGIN_REQUIRE_SANDBOX_BACKEND:-0}
-      RESEARCH_PLUGIN_LAMBDA_API_KEY: ${RESEARCH_PLUGIN_LAMBDA_API_KEY:-}
-      LAMBDA_LABS_API_KEY: ${LAMBDA_LABS_API_KEY:-}
-      LAMBDA_API_KEY: ${LAMBDA_API_KEY:-}
-      RESEARCH_PLUGIN_LAMBDA_API_BASE: ${RESEARCH_PLUGIN_LAMBDA_API_BASE:-}
-      RESEARCH_PLUGIN_LAMBDA_REGION: ${RESEARCH_PLUGIN_LAMBDA_REGION:-}
-      RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE: ${RESEARCH_PLUGIN_LAMBDA_INSTANCE_TYPE:-}
-      RESEARCH_PLUGIN_THUNDER_API_KEY: ${RESEARCH_PLUGIN_THUNDER_API_KEY:-}
-      THUNDER_COMPUTE_API_KEY: ${THUNDER_COMPUTE_API_KEY:-}
-      MODAL_TOKEN_ID: ${MODAL_TOKEN_ID:-}
-      MODAL_TOKEN_SECRET: ${MODAL_TOKEN_SECRET:-}
-      HF_TOKEN: ${HF_TOKEN:-}
-      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     ports:
       - "8787:8787"
     volumes:

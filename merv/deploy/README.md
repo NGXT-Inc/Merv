@@ -30,6 +30,21 @@ docker compose -f deploy/docker-compose.yml up --build
 curl -s http://127.0.0.1:8787/api/meta
 ```
 
+Provider credentials use a separate container env file so Compose cannot erase
+them with empty `environment` defaults. Keep that file outside the checkout,
+restrict it to the deployment account, and pass its absolute path when starting
+the stack:
+
+```sh
+RESEARCH_PLUGIN_PROVIDER_ENV_FILE=/run/secrets/merv-provider.env \
+  docker compose -f deploy/docker-compose.yml up --build -d
+```
+
+The file may contain `RESEARCH_PLUGIN_LAMBDA_API_KEY` (or
+`LAMBDA_LABS_API_KEY`), Thunder/Modal credentials, and `HF_TOKEN`. Do not also
+declare those names with empty values under the control service's
+`environment:` map: Compose gives that map precedence over `env_file`.
+
 The compose defaults start the complete set of services, but intentionally make
 the control container **record-only**:
 
