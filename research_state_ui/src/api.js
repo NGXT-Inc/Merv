@@ -27,7 +27,7 @@ export const CLIENT_VERSION = '0.0013';
 // (auth=None) serves every request as the implicit local principal. The live
 // Supabase session (hosted sign-in) wins; the localStorage slot remains as a
 // dev override and can also hold an rr_sk_ API key.
-import { getAuthToken } from './auth';
+import { getAuthToken, tryRefreshSession } from './auth';
 
 function authToken() {
   return (
@@ -85,7 +85,7 @@ export async function fetchAuthedText(relPath, { signal } = {}) {
   return res.text();
 }
 
-async function send(path, { method = 'GET', body, signal, headers = {} } = {}) {
+async function send(path, { method = 'GET', body, signal, headers = {} } = {}, retried = false) {
   const init = { method, signal, headers: { 'X-RP-Client-Version': CLIENT_VERSION, ...headers } };
   const token = authToken();
   if (token) init.headers['Authorization'] = `Bearer ${token}`;
@@ -100,6 +100,15 @@ async function send(path, { method = 'GET', body, signal, headers = {} } = {}) {
     try { data = JSON.parse(text); } catch { data = { raw: text }; }
   }
   if (!res.ok && res.status !== 304) {
+    // A 401 on a Supabase-session request usually just means the access token
+    // aged out (tab closed or backgrounded past the ~1h TTL). Refresh the
+    // session and replay the request once before treating it as a real
+    // auth failure — otherwise a routine expiry logs the user out.
+    if (res.status === 401 && !retried && getAuthToken()) {
+      if (await tryRefreshSession()) {
+        return send(path, { method, body, signal, headers }, true);
+      }
+    }
     const err = new Error((data && (data.message || data.detail || data.error)) || `HTTP ${res.status} on ${method} ${path}`);
     err.status = res.status;
     err.data = data;
@@ -108,8 +117,10 @@ async function send(path, { method = 'GET', body, signal, headers = {} } = {}) {
     // Both are inert in local mode, which never returns 401/426.
     if (res.status === 401) {
       err.code = 'unauthorized';
-      // Wherever the 401 lands (boot, poller, detail panel), AuthGate hears
-      // this and re-shows the sign-in instead of a silent data freeze.
+      // Only unrecoverable 401s (refresh token dead: revoked account, rotated
+      // secret) reach here. Wherever the 401 lands (boot, poller, detail
+      // panel), AuthGate hears this and re-shows the sign-in instead of a
+      // silent data freeze.
       if (typeof window !== 'undefined') window.dispatchEvent(new Event('rp:unauthorized'));
     }
     else if (res.status === 426) err.code = 'client_too_old';
