@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { AuthedImg, RawLink } from './AuthedMedia';
 import { useProjectStore, selectHasLocalDataPlaneHttp } from '../store/useProjectStore';
@@ -98,6 +98,13 @@ export default function ResourceContentView({
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Stable identity: MarkdownView keys its `img` component (and its memo) on
+  // this — an inline arrow here would remount every figure per re-render.
+  const resolveImageSrc = useCallback(
+    (src) => api.resourceFileUrl(projectId, resourceId, src),
+    [projectId, resourceId],
+  );
 
   useEffect(() => {
     // Skip the /content fetch entirely for PDFs, images, and known-binary
@@ -215,11 +222,7 @@ export default function ResourceContentView({
         <FileRenderer
           text={text}
           path={path || content.path}
-          resolveImageSrc={
-            hasLocalDataPlane
-              ? (src) => api.resourceFileUrl(projectId, resourceId, src)
-              : null
-          }
+          resolveImageSrc={hasLocalDataPlane ? resolveImageSrc : null}
         />
       )}
     </div>

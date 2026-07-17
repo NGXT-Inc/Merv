@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import MarkdownView from './MarkdownView';
 import FileRenderer from './FileRenderer';
@@ -45,6 +45,14 @@ export default function ReportSpotlight({
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [projectId, reportResource?.id, reportResource?.version_token]);
+
+  // Stable identity: MarkdownView keys its `img` component (and its memo) on
+  // this — an inline arrow here would remount every figure per re-render.
+  const reportId = reportResource?.id;
+  const resolveImageSrc = useCallback(
+    (src) => api.resourceFileUrl(projectId, reportId, src),
+    [projectId, reportId],
+  );
 
   if (!reportResource) return null;
 
@@ -109,7 +117,7 @@ export default function ReportSpotlight({
             ) : isMarkdown(reportResource.path) ? (
               <MarkdownView
                 text={content.content ?? ''}
-                resolveImageSrc={(src) => api.resourceFileUrl(projectId, reportResource.id, src)}
+                resolveImageSrc={resolveImageSrc}
               />
             ) : (
               <FileRenderer text={content.content ?? ''} path={reportResource.path} />

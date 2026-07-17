@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import PlanBody from '../components/PlanBody';
 import MarkdownView from '../components/MarkdownView';
@@ -37,6 +37,14 @@ export default function MobileDoc({
     return () => { cancelled = true; };
   }, [projectId, resource?.id, resource?.version_token]);
 
+  // Stable identity: MarkdownView keys its `img` component (and its memo) on
+  // this — an inline arrow here would remount every figure per re-render.
+  const resourceId = resource?.id;
+  const resolveImageSrc = useCallback(
+    (src) => api.resourceFileUrl(projectId, resourceId, src),
+    [projectId, resourceId],
+  );
+
   if (!resource) return null;
 
   const inReview = experimentStatus === (kind === 'plan' ? 'design_review' : 'experiment_review');
@@ -45,8 +53,6 @@ export default function MobileDoc({
   if (latest?.verdict === 'pass') verdict = 'accepted';
   else if (inReview) verdict = 'under review';
   else if (reviews.length > 0) verdict = 'revising';
-
-  const resolveImageSrc = (src) => api.resourceFileUrl(projectId, resource.id, src);
 
   return (
     <div className="mdoc">

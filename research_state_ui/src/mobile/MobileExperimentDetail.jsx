@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useProjectStore, selectResources, useProjectHref } from '../store/useProjectStore';
@@ -38,10 +38,17 @@ export default function MobileExperimentDetail() {
   // to attach to is dead chrome.
   const hasSandbox = (statusData?.sandboxes || []).length > 0;
 
+  // Unchanged payloads keep their state identity so idle poll ticks don't
+  // re-render the page (same guard ExperimentFigure uses on its document).
+  const lastStatusJsonRef = useRef(null);
   const fetchStatus = useCallback(async () => {
     try {
       const data = await api.getExperimentStatus(projectId, experimentId);
-      setStatusData(data);
+      const json = JSON.stringify(data);
+      if (lastStatusJsonRef.current !== json) {
+        lastStatusJsonRef.current = json;
+        setStatusData(data);
+      }
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -51,6 +58,7 @@ export default function MobileExperimentDetail() {
   // Navigating experiment→experiment keeps this component mounted; reset so
   // the old experiment never flashes and heavy panes fold back shut.
   useEffect(() => {
+    lastStatusJsonRef.current = null; // blanked state must not block the refill
     setStatusData(null);
     setError(null);
     setTermOpen(false);

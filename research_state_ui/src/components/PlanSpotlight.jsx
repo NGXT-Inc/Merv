@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import PlanBody from './PlanBody';
 import ReviewEvolutionStepper from './ReviewEvolutionStepper';
@@ -39,6 +39,14 @@ export default function PlanSpotlight({
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [projectId, planResource?.id, planResource?.version_token]);
+
+  // Stable identity: MarkdownView keys its `img` component (and its memo) on
+  // this — an inline arrow here would remount every figure per re-render.
+  const planId = planResource?.id;
+  const resolveImageSrc = useCallback(
+    (src) => api.resourceFileUrl(projectId, planId, src),
+    [projectId, planId],
+  );
 
   if (!planResource) {
     return (
@@ -112,7 +120,7 @@ export default function PlanSpotlight({
               <PlanBody
                 text={content.content ?? ''}
                 path={planResource.path}
-                resolveImageSrc={(src) => api.resourceFileUrl(projectId, planResource.id, src)}
+                resolveImageSrc={resolveImageSrc}
               />
             )
           ) : null}

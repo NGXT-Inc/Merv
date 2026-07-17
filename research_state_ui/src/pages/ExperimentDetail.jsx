@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import {
@@ -68,10 +68,17 @@ export default function ExperimentDetail() {
   // into view.
   useScrollToHash([statusData]);
 
+  // Unchanged payloads keep their state identity so idle poll ticks don't
+  // re-render the page (same guard ExperimentFigure uses on its document).
+  const lastStatusJsonRef = useRef(null);
   const fetchStatus = useCallback(async () => {
     try {
       const data = await api.getExperimentStatus(projectId, experimentId);
-      setStatusData(data);
+      const json = JSON.stringify(data);
+      if (lastStatusJsonRef.current !== json) {
+        lastStatusJsonRef.current = json;
+        setStatusData(data);
+      }
       setError(null);
     } catch (err) {
       setError(err.message);
