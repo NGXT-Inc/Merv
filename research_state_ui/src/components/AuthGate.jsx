@@ -41,8 +41,9 @@ export default function AuthGate({ children }) {
       unsubscribe = onAuthChange(sync);
       sync();
     })();
-    // A mid-session 401 (revoked account, rotated secret) clears the stale
-    // session so the login screen returns instead of a silent data freeze.
+    // api.js only emits this after a silent refresh attempt failed, so the
+    // session is truly dead (revoked account, rotated secret). Clear it so
+    // the login screen returns instead of a silent data freeze.
     const onUnauthorized = () => {
       if (getAuthToken()) signOut();
     };

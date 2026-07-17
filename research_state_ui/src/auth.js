@@ -52,9 +52,41 @@ export async function initAuth(authMeta) {
   const { createClient } = await import('@supabase/supabase-js');
   client = createClient(authMeta.supabase_url, authMeta.supabase_anon_key);
   const { data } = await client.auth.getSession();
-  applySession(data?.session || null);
+  let session = data?.session || null;
+  // getSession can hand back a session whose access token already aged out
+  // (tab closed past the ~1h TTL). Refresh before mirroring so the app's
+  // boot requests never go out with a stale bearer token.
+  if (session?.expires_at && session.expires_at * 1000 <= Date.now()) {
+    const refreshed = await client.auth.refreshSession().catch(() => null);
+    session = refreshed?.data?.session || null;
+  }
+  applySession(session);
   client.auth.onAuthStateChange((_event, session) => applySession(session));
   return true;
+}
+
+// Silent recovery for a 401: exchanges the stored refresh token for a new
+// session. Returns true when a live session came back; false means the
+// refresh token itself is dead (revoked account, rotated secret) and only a
+// real re-login can help. Single-flight so concurrent 401s from pollers
+// share one refresh instead of stampeding the auth endpoint.
+let refreshPromise = null;
+export function tryRefreshSession() {
+  if (!client) return Promise.resolve(false);
+  if (!refreshPromise) {
+    refreshPromise = client.auth
+      .refreshSession()
+      .then(({ data, error }) => {
+        if (error || !data?.session) return false;
+        applySession(data.session);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
 }
 
 export async function signInWithPassword(emailInput, password) {
