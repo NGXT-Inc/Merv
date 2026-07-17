@@ -57,6 +57,23 @@ export function mediaUrl(relPath) {
   return `${BASE}${relPath}`;
 }
 
+// Media-bytes fetch with the same 401 → refresh → replay-once recovery send()
+// uses: the short-lived access token can age out between polls, so a lazily
+// loaded figure may fire with a stale bearer. No rp:unauthorized here — a dead
+// session surfaces through send()'s pollers; a failed media fetch just leaves
+// its placeholder.
+async function fetchAuthed(relPath, { signal } = {}, retried = false) {
+  const init = { headers: { 'X-RP-Client-Version': CLIENT_VERSION }, signal };
+  const token = authToken();
+  if (token) init.headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${relPath}`, init);
+  if (res.status === 401 && !retried && getAuthToken() && (await tryRefreshSession())) {
+    return fetchAuthed(relPath, { signal }, true);
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status} on GET ${relPath}`);
+  return res;
+}
+
 // Fetch a binary asset WITH auth and return an object URL for use as an <img>
 // src. In hosted control mode every route past /health and /api/meta requires
 // the Bearer token, but the browser never attaches it to a plain <img src>, so
@@ -64,11 +81,7 @@ export function mediaUrl(relPath) {
 // through fetch() and wrapped in a blob: URL. Works unchanged in local mode
 // (no token → same-origin fetch). Caller MUST URL.revokeObjectURL when done.
 export async function fetchObjectUrl(relPath, { signal } = {}) {
-  const init = { headers: { 'X-RP-Client-Version': CLIENT_VERSION }, signal };
-  const token = authToken();
-  if (token) init.headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${relPath}`, init);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on GET ${relPath}`);
+  const res = await fetchAuthed(relPath, { signal });
   return URL.createObjectURL(await res.blob());
 }
 
@@ -77,12 +90,7 @@ export async function fetchObjectUrl(relPath, { signal } = {}) {
 // rather than referenced by URL, e.g. sandboxed feed embeds mounted through
 // <iframe srcdoc>.
 export async function fetchAuthedText(relPath, { signal } = {}) {
-  const init = { headers: { 'X-RP-Client-Version': CLIENT_VERSION }, signal };
-  const token = authToken();
-  if (token) init.headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${relPath}`, init);
-  if (!res.ok) throw new Error(`HTTP ${res.status} on GET ${relPath}`);
-  return res.text();
+  return (await fetchAuthed(relPath, { signal })).text();
 }
 
 async function send(path, { method = 'GET', body, signal, headers = {} } = {}, retried = false) {
