@@ -13,7 +13,9 @@ import './expmap.css';
 const SAT_ICON = { paper: '¶', claim: '✦', sbx: '▣' };
 const PANEL_W = 380;
 // Satellite wrap geometry: rows below the card, each within its width.
-const SAT_ROW_W = CARD_W + 36;
+// Budget fits two max-width chips per row: 6 + 2×(20×6.2 + 34) = 322 ≤ 328
+// (labels are capped at 19 kept chars + '…' in useMapModel's satTrunc).
+const SAT_ROW_W = CARD_W + 44;
 const SAT_ROWS = 2;
 const SAT_ROW_H = 26;
 const satW = (label) => label.length * 6.2 + 34;

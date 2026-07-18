@@ -102,12 +102,17 @@ const clip = (s, n) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-// Satellite label: ≤ 24 chars, cut on a word boundary, '…' when truncated.
+// Satellite label: ≤ 19 kept chars — sized so two max-width chips always
+// share one row under the card (2×(20×6.2+34)+6 ≤ SAT_ROW_W). The word-
+// boundary cut only applies when the cap lands mid-word; a cap that already
+// ends on a boundary keeps the whole head ("Switch Transformers…").
+const SAT_LABEL_MAX = 19;
 function satTrunc(s) {
   const t = (s || '').trim();
-  if (t.length <= 24) return t;
-  const head = t.slice(0, 24);
-  const cut = head.includes(' ') ? head.slice(0, head.lastIndexOf(' ')) : head;
+  if (t.length <= SAT_LABEL_MAX) return t;
+  const head = t.slice(0, SAT_LABEL_MAX);
+  const midWord = /\w/.test(t[SAT_LABEL_MAX]);
+  const cut = midWord && head.includes(' ') ? head.slice(0, head.lastIndexOf(' ')) : head;
   return `${cut.replace(/[\s,;:.]+$/, '')}…`;
 }
 
