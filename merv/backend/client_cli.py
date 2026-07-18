@@ -47,7 +47,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--config",
-        help="Machine client config path (default: ~/.research_plugin/client.json).",
+        help=(
+            "Machine client config path (default: ~/.merv/client.json, or the "
+            "legacy ~/.research_plugin/client.json when that dir exists)."
+        ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

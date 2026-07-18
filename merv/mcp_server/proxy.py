@@ -36,7 +36,7 @@ from research_plugin_shared.client_config import HOSTED_CONTROL_URL, LOCAL_BRAIN
 
 from . import __version__
 from .local_data_plane import LocalDataPlane, LocalDataPlaneError
-from .project_links import ProjectLinks
+from .project_links import ProjectLinks, default_project_links_path
 
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -608,9 +608,7 @@ class HttpProxyMcpServer:
 
     def _links(self) -> ProjectLinks:
         if self._project_links is None:
-            db_path = self.config.project_links_path or (
-                Path.home() / ".research_plugin" / "project_links.sqlite"
-            )
+            db_path = self.config.project_links_path or default_project_links_path()
             self._project_links = ProjectLinks(db_path=db_path)
         return self._project_links
 

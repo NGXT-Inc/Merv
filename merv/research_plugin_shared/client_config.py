@@ -16,6 +16,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from .machine_dirs import resolve_machine_state_dir
+
 
 ENV_PREFIX = "MERV_"
 LEGACY_ENV_PREFIX = "RESEARCH_PLUGIN_"
@@ -68,14 +70,21 @@ DAEMON_STATE_DIR_ENV_VAR = "MERV_DAEMON_STATE_DIR"
 # deployments opt in via `merv-client configure` or the env var.
 HOSTED_CONTROL_URL = "https://experiments.rapidreview.io"
 LOCAL_BRAIN_URL = "http://127.0.0.1:8787"
-DEFAULT_CLIENT_CONFIG_PATH = Path.home() / ".research_plugin" / "client.json"
-DEFAULT_DAEMON_SECRET_PATH = Path.home() / ".research_plugin" / "daemon_secret"
 DAEMON_SECRET_FILE_NAME = "daemon_secret"
+
+
+def default_client_config_path() -> Path:
+    """Default machine config path; resolved per call (see machine_dirs)."""
+    return resolve_machine_state_dir() / "client.json"
+
+
+def default_daemon_secret_path() -> Path:
+    return resolve_machine_state_dir() / DAEMON_SECRET_FILE_NAME
 
 
 def resolve_client_config_path(env: Mapping[str, str] | None = None) -> Path:
     raw = dual_env_value(CLIENT_CONFIG_ENV_VAR, env)
-    return Path(raw).expanduser() if raw else DEFAULT_CLIENT_CONFIG_PATH
+    return Path(raw).expanduser() if raw else default_client_config_path()
 
 
 def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, str]:

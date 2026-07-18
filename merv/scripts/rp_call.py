@@ -11,7 +11,9 @@ stand-in for a client-launched stdio server. Usage:
 
 Env: MERV_REPO_ROOT picks the project working dir (defaults to CWD).
 MERV_CONTROL_URL overrides the machine brain URL stored in
-~/.research_plugin/client.json; an unconfigured machine uses the hosted brain.
+the machine client config (~/.merv/client.json, or the legacy
+~/.research_plugin/client.json when that dir exists); an unconfigured machine
+uses the hosted brain.
 """
 from __future__ import annotations
 

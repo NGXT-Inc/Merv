@@ -118,7 +118,7 @@ def _serve_control(*, host: str, port: int) -> int:
     return 0
 
 
-def _serve_local(*, host: str, port: int, state_dir: Path) -> int:
+def _serve_local(*, host: str, port: int, state_dir: Path | None) -> int:
     """Run the localhost brain preset."""
     from ..composition import build_local_server
 
@@ -160,11 +160,12 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(env_value("MERV_HTTP_PORT") or "8787"))
     parser.add_argument(
         "--registry-store",
-        default=env_value("MERV_REGISTRY_STORE")
-        or str(Path.home() / ".research_plugin" / "registry.sqlite"),
+        default=env_value("MERV_REGISTRY_STORE"),
         help=(
             "Compatibility path whose parent selects the local brain state "
-            "root; research records live under the sibling brain/ directory."
+            "root (research records live under the sibling brain/ directory). "
+            "Unset lets the composition resolve ~/.merv/brain, or the legacy "
+            "~/.research_plugin/brain when that state already exists."
         ),
     )
     parser.add_argument(
@@ -187,7 +188,11 @@ def main() -> int:
     return _serve_local(
         host=args.host,
         port=args.port,
-        state_dir=Path(args.registry_store).expanduser().resolve().parent / "brain",
+        state_dir=(
+            Path(args.registry_store).expanduser().resolve().parent / "brain"
+            if args.registry_store
+            else None
+        ),
     )
 
 
