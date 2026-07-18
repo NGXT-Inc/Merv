@@ -9,7 +9,7 @@ All runs for one brain deployment use a shared MLflow service. Merv
 names the MLflow experiment for a plugin experiment:
 
 ```text
-rp/<project_id>/<experiment_id>
+merv/<project_id>/<experiment_id>
 ```
 
 The plugin stores compact run metadata on the experiment record: run id/name,
@@ -113,11 +113,11 @@ returns the exact experiment name and environment variables for a run:
     "configured": true,
     "mode": "external",
     "tracking_uri": "https://backend.example.com/mlflow",
-    "experiment_name": "rp/proj_123/exp_456",
+    "experiment_name": "merv/proj_123/exp_456",
     "dashboard_url": "https://backend.example.com/mlflow",
     "env": {
       "MLFLOW_TRACKING_URI": "https://backend.example.com/mlflow",
-      "MLFLOW_EXPERIMENT_NAME": "rp/proj_123/exp_456",
+      "MLFLOW_EXPERIMENT_NAME": "merv/proj_123/exp_456",
       "RP_PROJECT_ID": "proj_123",
       "RP_EXPERIMENT_ID": "exp_456"
     }

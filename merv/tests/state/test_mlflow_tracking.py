@@ -122,12 +122,12 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         self.assertEqual(context["tracking_uri"], "https://mlflow.example.test")
         self.assertEqual(context["dashboard_url"], "https://mlflow-ui.example.test")
         self.assertEqual(service.server_uri, "http://mlflow:5000")
-        self.assertEqual(context["experiment_name"], "rp/proj_123/exp_456")
+        self.assertEqual(context["experiment_name"], "merv/proj_123/exp_456")
         self.assertEqual(
             context["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.example.test"
         )
         self.assertEqual(
-            context["env"]["MLFLOW_EXPERIMENT_NAME"], "rp/proj_123/exp_456"
+            context["env"]["MLFLOW_EXPERIMENT_NAME"], "merv/proj_123/exp_456"
         )
         self.assertEqual(context["env"]["RP_SANDBOX_ID"], "sb_789")
         self.assertEqual(context["env"]["RP_EXECUTION_BACKEND"], "lambda_labs")
@@ -145,7 +145,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         self.assertEqual(context["tracking_uri"], "https://mlflow.example.test")
         self.assertEqual(context["dashboard_url"], "https://mlflow-ui.example.test")
         self.assertEqual(context["project_id"], "proj_123")
-        self.assertEqual(context["experiment_namespace_prefix"], "rp/proj_123/")
+        self.assertEqual(context["experiment_namespace_prefix"], "merv/proj_123/")
         self.assertEqual(context["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.example.test")
         self.assertEqual(context["env"]["RP_PROJECT_ID"], "proj_123")
         self.assertNotIn("MLFLOW_EXPERIMENT_NAME", context["env"])
@@ -182,7 +182,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
 
         self.assertFalse(context["configured"])
         self.assertEqual(context["mode"], "unconfigured")
-        self.assertEqual(context["experiment_name"], "rp/proj_123/exp_456")
+        self.assertEqual(context["experiment_name"], "merv/proj_123/exp_456")
         self.assertNotIn("MLFLOW_TRACKING_URI", context["env"])
         self.assertIn("note", context)
 
@@ -221,7 +221,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         snapshot = {
             "source": "mlflow",
             "base_url": "http://mlflow:5000",
-            "experiments": [{"name": "rp/proj_123/exp_456", "runs": []}],
+            "experiments": [{"name": "merv/proj_123/exp_456", "runs": []}],
         }
         with patch(
             "backend.mlflow.tracking.snapshot_mlflow",
@@ -239,7 +239,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         self.assertTrue(health["read_configured"])
         self.assertIn("agents cannot log", health["note"])
         snapshot_mlflow.assert_called_once_with(
-            "http://mlflow:5000", experiment_name="rp/proj_123/exp_456"
+            "http://mlflow:5000", experiment_name="merv/proj_123/exp_456"
         )
         self.assertTrue(metrics["available"])
         self.assertNotIn("base_url", metrics)
@@ -269,16 +269,16 @@ class MlflowTrackingServiceTest(unittest.TestCase):
         with patch(
             "backend.mlflow.tracking.search_mlflow_experiments",
             return_value=[
-                {"name": "rp/proj/exp", "experiment_id": "7"},
-                {"name": "rp/proj/stray", "experiment_id": "8"},
+                {"name": "merv/proj/exp", "experiment_id": "7"},
+                {"name": "merv/proj/stray", "experiment_id": "8"},
             ],
         ) as search:
             experiments = service.namespace_experiments(project_id="proj")
 
         search.assert_called_once_with(
-            "http://mlflow:5000", name_like="rp/proj/%"
+            "http://mlflow:5000", name_like="merv/proj/%"
         )
-        self.assertEqual(experiments[1]["name"], "rp/proj/stray")
+        self.assertEqual(experiments[1]["name"], "merv/proj/stray")
         self.assertEqual(
             experiments[1]["dashboard_experiment_url"],
             "https://mlflow.test/#/experiments/8",
@@ -304,7 +304,7 @@ class MlflowTrackingServiceTest(unittest.TestCase):
             )
 
         self.assertTrue(run["created"])
-        self.assertEqual(run["experiment_name"], "rp/proj_123/exp_456")
+        self.assertEqual(run["experiment_name"], "merv/proj_123/exp_456")
         self.assertEqual(run["experiment_id"], "7")
         self.assertEqual(run["run_id"], "run_123")
         self.assertEqual(run["run_name"], "exp_456-attempt-2")

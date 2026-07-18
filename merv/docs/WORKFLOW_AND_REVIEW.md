@@ -277,9 +277,7 @@ suggestions, but it is not an additional completion precondition.
 One level above experiments, the project maintains a **living project logic
 graph** — one JSON file under the same 16-node envelope as experiment graphs,
 holding the project's current logic state — through gated **reflection**
-records (`syn_…` ids; external tools call them reflections while some persisted
-ids, payload keys, and internal service names retain synthesis terminology), one
-per reflection wave:
+records (`syn_…` ids), one per reflection wave:
 
 ```text
 reflecting -> synthesizing -> reflection_review -> published
@@ -326,8 +324,7 @@ Gates (envelope-only, same philosophy as experiment gates):
 `reflection.get.gate_checklist` exposes the current gate as checklist data:
 missing per-lens reflections in `reflecting`, missing/invalid graph-doc-spec
 artifacts in `synthesizing`, and pending/requested/started/passed review state
-in `reflection_review` (stored internally as `synthesis_review`). A legacy
-attested pass may surface as
+in `reflection_review`. A legacy attested pass may surface as
 `attested_blocked` when the project requires verified reviews.
 
 On publish the record pins `published_graph_version_id`, so the single living

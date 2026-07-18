@@ -25,9 +25,15 @@ from .config import (
 )
 
 
+# Namespace prefix for every Merv-created MLflow experiment. Pre-rename
+# servers hold `rp/...` names; scripts/migrate_mlflow_namespace.py renames
+# them in place at deploy.
+MLFLOW_NAMESPACE_PREFIX = "merv"
+
+
 def mlflow_experiment_name(*, project_id: str, experiment_id: str) -> str:
     """Stable MLflow namespace for one Merv experiment."""
-    return f"rp/{project_id}/{experiment_id}"
+    return f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/{experiment_id}"
 
 
 MLFLOW_STATE_STATUSES = frozenset({"running", "experiment_review", "complete", "failed"})
@@ -139,7 +145,7 @@ class CentralMlflowService:
             "tracking_uri": self.tracking_uri,
             "dashboard_url": self.dashboard_url,
             "project_id": project_id,
-            "experiment_namespace_prefix": f"rp/{project_id}/",
+            "experiment_namespace_prefix": f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/",
             "env": env,
         }
         if not configured:
@@ -581,7 +587,7 @@ class CentralMlflowService:
             return []
         try:
             experiments = search_mlflow_experiments(
-                read_uri, name_like=f"rp/{project_id}/%"
+                read_uri, name_like=f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/%"
             )
         except MlflowSnapshotError:
             return []

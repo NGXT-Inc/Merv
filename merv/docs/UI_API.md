@@ -161,9 +161,8 @@ GET /api/projects/{project_id}/reflections/current/graph
 GET /api/projects/{project_id}/reflections/{reflection_id}/graph
 ```
 
-These are the canonical reflection-wave paths. Some response keys retain their
-older synthesis names (`syntheses`, `open_synthesis`, `synthesis_id`), and the
-stored review-stage status is `synthesis_review`.
+These are the canonical reflection-wave paths; response keys and the stored
+review-stage status (`reflection_review`) use the reflection vocabulary.
 
 The overview returns full wave states, the open/latest wave, and the project
 reflection staleness signal. A wave includes its five-lens roster, corpus,

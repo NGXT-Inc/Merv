@@ -186,12 +186,11 @@ Reflection transitions are declared in
 `backend/domain/reflection_gates.py`:
 
 ```text
-reflecting -> synthesizing -> synthesis_review -> published
+reflecting -> synthesizing -> reflection_review -> published
 ```
 
-`synthesis_review` is the persisted status name; the product label is
-"reflection review." Rejections return to `synthesizing` when the five lens
-documents still stand or to `reflecting` when the fan-out must be repeated.
+Rejections return to `synthesizing` when the five lens documents still stand
+or to `reflecting` when the fan-out must be repeated.
 
 All meaning-changing actions use typed MCP or HTTP operations. Editing a local
 file does not mutate research state. A file becomes evidence only after

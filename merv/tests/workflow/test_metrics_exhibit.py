@@ -46,7 +46,7 @@ def _run(
     }
 
 
-def _snapshot(runs: list[dict], *, name: str = "rp/proj/exp") -> dict:
+def _snapshot(runs: list[dict], *, name: str = "merv/proj/exp") -> dict:
     return {
         "available": True,
         "source": "mlflow",
@@ -59,7 +59,7 @@ def _build(**overrides) -> dict:
         project_id="proj",
         experiment_id="exp",
         attempt_index=1,
-        experiment_name="rp/proj/exp",
+        experiment_name="merv/proj/exp",
         window_started_at=WINDOW_START,
         snapshot=None,
         mlflow_configured=True,
@@ -165,7 +165,7 @@ class FakeMlflowTracking:
             mode="external",
             tracking_uri=self.tracking_uri,
             dashboard_url="",
-            experiment_name=f"rp/{project_id}/{experiment_id}",
+            experiment_name=f"merv/{project_id}/{experiment_id}",
             env={},
         )
 
@@ -182,7 +182,7 @@ class FakeMlflowTracking:
             "experiments": [
                 {
                     "experiment_id": "1",
-                    "name": f"rp/{project_id}/{experiment_id}",
+                    "name": f"merv/{project_id}/{experiment_id}",
                     "runs": list(self.runs),
                 }
             ],
