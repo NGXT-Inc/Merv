@@ -61,7 +61,7 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "project_overview.py",
     SERVICES_ROOT / "reflection_tools.py",
     SERVICES_ROOT / "feed.py",
-    SERVICES_ROOT / "sandbox" / "sandbox_metrics.py",
+    BACKEND_ROOT / "sandbox" / "sandbox_metrics.py",
     BACKEND_ROOT / "control" / "record_core.py",
     BACKEND_ROOT / "control" / "control_app.py",
     BACKEND_ROOT / "control" / "control_runtime.py",
@@ -446,7 +446,7 @@ load("subprocess")
 
     def test_sandbox_views_do_not_import_execution(self) -> None:
         # Remote directory names are projected without provider execution machinery.
-        path = SERVICES_ROOT / "sandbox" / "sandbox_views.py"
+        path = BACKEND_ROOT / "sandbox" / "sandbox_views.py"
         self.assertNotIn("execution", _import_segments(path))
 
     def test_sandbox_services_use_backend_port_not_execution_package(self) -> None:
@@ -455,7 +455,7 @@ load("subprocess")
         for name in ("sandbox_daemons.py", "sandbox_provisioner.py", "sandboxes.py"):
             with self.subTest(module=name):
                 self.assertNotIn(
-                    "execution", _import_segments(SERVICES_ROOT / "sandbox" / name)
+                    "execution", _import_segments(BACKEND_ROOT / "sandbox" / name)
                 )
 
     def test_sandbox_backend_port_is_neutral(self) -> None:
@@ -506,7 +506,7 @@ load("subprocess")
 import sys
 import backend.sandbox.sandbox_support
 for name in (
-	    "backend.services.sandbox.sandboxes",
+	    "backend.sandbox.sandboxes",
 	    "backend.workspace",
 ):
     if name in sys.modules:
@@ -806,7 +806,7 @@ for name in (
 
     def test_local_ssh_keygen_is_single_sourced(self) -> None:
         self.assertEqual(
-            _imports(BACKEND_ROOT / "ssh_keys.py"),
+            _imports(BACKEND_ROOT / "sandbox" / "ssh_keys.py"),
             {"os", "pathlib", "subprocess", "utils"},
         )
         path = BACKEND_ROOT / "sandbox" / "mgmt_keys.py"

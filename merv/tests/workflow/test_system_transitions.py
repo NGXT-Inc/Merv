@@ -21,7 +21,7 @@ from backend.domain.workflow_gates import (
     TRANSITION_REQUIREMENTS,
 )
 from backend.utils import WorkflowError
-from tests.paths import SERVICES_ROOT
+from tests.paths import BACKEND_ROOT
 
 
 class SystemTransitionTestBase(unittest.TestCase):
@@ -109,7 +109,7 @@ class SandboxDrivenTransitionTest(SystemTransitionTestBase):
     def test_sandbox_code_has_no_raw_experiment_writes(self) -> None:
         # The boundary itself: sandbox services must not UPDATE/INSERT the
         # experiments table.
-        source = (SERVICES_ROOT / "sandbox" / "sandboxes.py").read_text(
+        source = (BACKEND_ROOT / "sandbox" / "sandboxes.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("UPDATE experiments", source)

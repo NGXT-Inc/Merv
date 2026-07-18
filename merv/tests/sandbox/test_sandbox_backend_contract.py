@@ -200,7 +200,7 @@ class SandboxBackendContractTest(unittest.TestCase):
         )
         self.assertIn("force_expiry_reaper=True", control_source)
         daemons_source = (
-            BACKEND_ROOT / "services" / "sandbox" / "sandbox_daemons.py"
+            BACKEND_ROOT / "sandbox" / "sandbox_daemons.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn("resolve_mode", daemons_source)
 
