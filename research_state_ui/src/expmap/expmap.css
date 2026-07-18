@@ -92,8 +92,26 @@ html[data-theme="dark"] { --xmap-leader: rgba(255, 255, 255, 0.14); }
 }
 .xmap-when { color: var(--muted); font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .xmap-status { margin-left: auto; display: flex; align-items: center; gap: 5px; }
-.xmap-card-title { font-size: 14px; font-weight: 600; line-height: 1.3; color: var(--text); }
-.xmap-tldr { font-size: 12px; line-height: 1.5; color: var(--muted); }
+/* One-line title + 3-line tldr keep every card at the layout's 122px: real
+   synopses run long and would otherwise overflow into the satellite row. */
+.xmap-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xmap-tldr {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .xmap-tldr-kind {
   font-family: var(--font-mono);
   font-size: 9px;

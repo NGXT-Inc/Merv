@@ -12,6 +12,7 @@ import './expmap.css';
 
 const SAT_ICON = { paper: '¶', claim: '✦', sbx: '▣' };
 const PANEL_W = 380;
+const MAX_SATS = 4;
 const zoomBelowHalf = (s) => s.transform[2] < 0.5;
 
 // Camera animations collapse to 0ms under prefers-reduced-motion.
@@ -36,6 +37,26 @@ function fitViewportFor(bounds, vw, vh) {
   const s = Math.min(1.15, (vw - 80) / (maxX - minX), (vh - 150) / (maxY - minY));
   return { x: (vw - (minX + maxX) * s) / 2, y: (vh + 26 - (minY + maxY) * s) / 2, zoom: s };
 }
+
+// The canvas is finite: panning is clamped to the fitted frame plus a
+// quarter-viewport of play on each side, and zooming out stops just past the
+// fit — the experiments can never leave the screen.
+function panBounds(bounds, vw, vh) {
+  const f = fitViewportFor(bounds, vw, vh);
+  const w = vw / f.zoom;
+  const h = vh / f.zoom;
+  const x0 = -f.x / f.zoom;
+  const y0 = -f.y / f.zoom;
+  return {
+    minZoom: Math.max(0.05, f.zoom * 0.8),
+    extent: [[x0 - w / 4, y0 - h / 4], [x0 + w * 1.25, y0 + h * 1.25]],
+  };
+}
+
+// React Flow inline-styles pointer-events:none onto node wrappers unless nodes
+// are draggable/selectable or a node click handler exists; our nodes are
+// neither, so this noop is what keeps cards, satellites, and hover clickable.
+const noopNodeClick = () => {};
 
 // Suppress the click that follows a >4px drag (a pan that started on a node).
 function useDragGuard() {
@@ -70,9 +91,17 @@ function ExpNode({ data }) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); }
   };
 
-  // Satellite pills advance by the prototype's label-width formula.
+  // Satellite pills advance by the prototype's label-width formula. The row
+  // is capped: past MAX_SATS the tail folds into a '+N' chip that opens the
+  // experiment panel, where the full reference list lives.
+  let satList = card.sats || [];
+  let satOverflow = 0;
+  if (satList.length > MAX_SATS) {
+    satOverflow = satList.length - (MAX_SATS - 1);
+    satList = satList.slice(0, MAX_SATS - 1);
+  }
   let sx = 6;
-  const sats = (card.sats || []).map((s) => {
+  const sats = satList.map((s) => {
     const left = sx;
     sx += s.label.length * 6.2 + 34;
     return { ...s, left };
@@ -134,6 +163,17 @@ function ExpNode({ data }) {
               <span className={`xmap-sat-label${s.type === 'sbx' ? ' xmap-sat-label--sbx' : ''}`}>{s.label}</span>
             </button>
           ))}
+          {satOverflow > 0 && (
+            <button
+              type="button"
+              className="xmap-sat"
+              style={{ left: sx, top: CARD_H + 10 }}
+              aria-label={`${satOverflow} more references — open panel`}
+              onClick={guard(onSelect)}
+            >
+              <span className="xmap-sat-label xmap-sat-label--sbx">+{satOverflow}</span>
+            </button>
+          )}
         </>
       )}
     </div>
@@ -215,7 +255,7 @@ function Legend({ hasAbandoned }) {
   );
 }
 
-function MapCanvas({ model, wrapRef, initialViewport }) {
+function MapCanvas({ model, wrapRef, size, initialViewport }) {
   const { cards, layout, objects, citedBy } = model;
   const rf = useReactFlow();
   const compact = useStore(zoomBelowHalf);
@@ -305,6 +345,12 @@ function MapCanvas({ model, wrapRef, initialViewport }) {
 
   const b = layout.bounds || { minX: 0, maxX: 0, minY: 0, maxY: 0 };
 
+  // Finite canvas: clamp panning and outward zoom around the fitted frame.
+  const pan = useMemo(
+    () => (layout.bounds && size ? panBounds(layout.bounds, size.w, size.h) : null),
+    [layout.bounds, size],
+  );
+
   return (
     <MapCtx.Provider value={ctx}>
       <ReactFlow
@@ -318,11 +364,13 @@ function MapCanvas({ model, wrapRef, initialViewport }) {
         nodesFocusable={false}
         elementsSelectable={false}
         edgesFocusable={false}
+        onNodeClick={noopNodeClick}
         panOnDrag
         zoomOnScroll
         zoomOnDoubleClick={false}
-        minZoom={0.25}
+        minZoom={pan ? pan.minZoom : 0.25}
         maxZoom={2.5}
+        translateExtent={pan ? pan.extent : undefined}
         defaultViewport={initialViewport}
       >
         {/* Keyed to the nodes array: any rebuilt node objects (poll ticks,
@@ -402,7 +450,7 @@ export default function ExperimentMap() {
         <div className="empty-state"><h2>No experiments yet</h2></div>
       ) : model.ready && initialViewport ? (
         <ReactFlowProvider>
-          <MapCanvas model={model} wrapRef={wrapRef} initialViewport={initialViewport} />
+          <MapCanvas model={model} wrapRef={wrapRef} size={size} initialViewport={initialViewport} />
         </ReactFlowProvider>
       ) : null}
     </div>

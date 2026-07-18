@@ -102,7 +102,8 @@ function ExperimentPanel({ card, cards, objects, citedBy, onClose, onTransport, 
     card.artifacts != null ? `${card.artifacts} artifacts` : null,
     card.agent || null,
     card.computeStr || null,
-    card.sbxIds?.length ? card.sbxIds.join(' ') : null,
+    // Count, not uids — prod uids are 32-hex; the sandbox panel shows the full id.
+    card.sbxIds?.length ? `${card.sbxIds.length} sandbox${card.sbxIds.length === 1 ? '' : 'es'}` : null,
   ].filter(Boolean);
 
   return (

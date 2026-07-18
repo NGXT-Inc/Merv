@@ -21,6 +21,16 @@ import { computeLayout, nowX as clampNowX } from './mapLayout';
 
 // arxiv.org/(abs|pdf)/<id> or bare arXiv:<id>; id = \d{4}.\d{4,5}, optional vN.
 const ARXIV_RE = /\barxiv(?:\.org\/(?:abs|pdf)\/|:)(\d{4}\.\d{4,5})(?:v\d+)?(?!\d)/gi;
+// Paper titles come from the citing text itself (arXiv's API sends no CORS
+// headers, so the browser can't ask it): markdown links and quoted citations.
+const ARXIV_MD_RE = /\[([^\]\n]{3,160})\]\(\s*(?:https?:\/\/)?(?:www\.)?arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})(?:v\d+)?[^)]*\)/gi;
+const ARXIV_QUOTED_RE = /["“”']([^"“”'\n]{3,160})["“”']\s*[,;:(\s-]{0,4}arxiv(?:\.org\/(?:abs|pdf)\/|:)\s*(\d{4}\.\d{4,5})/gi;
+
+// A usable harvested title: not itself a URL/arXiv id the author pasted as link text.
+const paperTitle = (raw) => {
+  const t = (raw || '').replace(/\s+/g, ' ').trim();
+  return t && !/arxiv|^https?:/i.test(t) ? t : null;
+};
 
 // ── module caches (survive re-renders, re-mounts, and project revisits) ────
 
@@ -263,6 +273,26 @@ export function useMapModel() {
     const citedBy = {};
     const cards = [];
 
+    // Pre-pass: harvest paper titles from every experiment's text first, so a
+    // title cited properly in one report names that paper on every card.
+    const paperTitles = new Map();
+    const textByExp = new Map();
+    for (const e of experiments) {
+      const text = ['plan', 'report']
+        .map((role) => {
+          const r = roleResource(e, role);
+          return r ? textCache.get(textKey(r)) || '' : '';
+        })
+        .join('\n');
+      textByExp.set(e.id, text);
+      for (const re of [ARXIV_MD_RE, ARXIV_QUOTED_RE]) {
+        for (const m of text.matchAll(re)) {
+          const t = paperTitle(m[1]);
+          if (t && !paperTitles.has(m[2])) paperTitles.set(m[2], t);
+        }
+      }
+    }
+
     for (const e of experiments) {
       const outcome = classifyExperiment(e);
       const startMs = stableStartMs(e);
@@ -270,12 +300,7 @@ export function useMapModel() {
       const endMs = terminal ? Date.parse(e.updated_at || '') || null : null;
 
       // Text scan over plan + report ('' until fetched — refs fill in later).
-      const text = ['plan', 'report']
-        .map((role) => {
-          const r = roleResource(e, role);
-          return r ? textCache.get(textKey(r)) || '' : '';
-        })
-        .join('\n');
+      const text = textByExp.get(e.id) || '';
 
       const refs = [];
       const seenRef = new Set();
@@ -303,11 +328,22 @@ export function useMapModel() {
       const cardPaperIds = [];
       for (const m of text.matchAll(ARXIV_RE)) {
         const pid = m[1];
+        const title = paperTitles.get(pid);
         if (!papers[pid]) {
-          papers[pid] = { title: `arXiv ${pid}`, sub: 'arxiv.org', url: `https://arxiv.org/abs/${pid}`, detail: null };
+          papers[pid] = {
+            title: title || `arXiv ${pid}`,
+            sub: title ? `arXiv ${pid} · arxiv.org` : 'arxiv.org',
+            url: `https://arxiv.org/abs/${pid}`,
+            detail: null,
+          };
         }
         if (!cardPaperIds.includes(pid)) cardPaperIds.push(pid);
-        pushRef({ type: 'paper', id: pid, label: `arXiv ${pid}`, sub: 'arxiv.org' });
+        pushRef({
+          type: 'paper',
+          id: pid,
+          label: title ? clip(title, 44) : `arXiv ${pid}`,
+          sub: title ? `arXiv ${pid}` : 'arxiv.org',
+        });
       }
 
       // Claims: tested_claims seed the map before any text arrives; claim ids
@@ -327,15 +363,32 @@ export function useMapModel() {
 
       const sbxRows = sbxByExp.get(e.id) || [];
       const sbxIds = [];
+      // Sandbox satellites read as hardware, not uids: one chip per distinct
+      // SKU ('3× 8×H100'), falling back to a short uid when the SKU is unknown.
+      // The chip opens its group's first sandbox; the panel meta counts them all.
+      const sbxGroups = new Map();
       for (const s of sbxRows) {
         const id = s.sandbox_uid || s.sandbox_id;
-        if (id && !sbxIds.includes(id)) sbxIds.push(id);
+        if (!id || sbxIds.includes(id)) continue;
+        sbxIds.push(id);
+        const hw = s.gpu || s.instance_type || null;
+        const k = hw || id;
+        if (!sbxGroups.has(k)) sbxGroups.set(k, { id, hw, n: 0 });
+        sbxGroups.get(k).n += 1;
       }
 
       const sats = [
-        ...cardPaperIds.map((pid) => ({ type: 'paper', id: pid, label: `arXiv ${pid}` })),
+        ...cardPaperIds.map((pid) => ({
+          type: 'paper',
+          id: pid,
+          label: paperTitles.has(pid) ? satTrunc(paperTitles.get(pid)) : `arXiv ${pid}`,
+        })),
         ...claimIds.map((cid) => ({ type: 'claim', id: cid, label: satTrunc(claimById.get(cid)?.statement) || 'claim' })),
-        ...sbxIds.map((sid) => ({ type: 'sbx', id: sid, label: sid })),
+        ...[...sbxGroups.values()].map((g) => ({
+          type: 'sbx',
+          id: g.id,
+          label: g.hw ? (g.n > 1 ? `${g.n}× ${g.hw}` : g.hw) : g.id.slice(0, 8),
+        })),
       ];
 
       const runId = e.mlflow_run?.run_id;
@@ -405,8 +458,10 @@ export function useMapModel() {
       const id = s.sandbox_uid || s.sandbox_id;
       if (!id || sbxObjs[id]) continue;
       const hw = s.gpu || s.instance_type || null;
+      // Short uid in the title — prod uids are 32-hex; the head row shows the full id.
+      const shortId = id.length > 12 ? id.slice(0, 8) : id;
       sbxObjs[id] = {
-        title: hw ? `${id} · ${hw}` : id,
+        title: hw ? `${shortId} · ${hw}` : shortId,
         sub: [s.status, s.region].filter(Boolean).join(' · '),
         // Hardware line the fleet table renders — the fields we actually have.
         detail: [
