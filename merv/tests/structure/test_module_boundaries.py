@@ -32,8 +32,9 @@ MODULES = (KERNEL, RESEARCH_CORE, ARTIFACTS, OBJECT_STORAGE, SANDBOX, FEED, MLFL
 # Directory-level assignments (deepest matching prefix wins; FILE_MODULES wins
 # over both). Paths are backend-relative posix.
 PACKAGE_MODULES = {
-    "state": KERNEL,
-    "ports": KERNEL,
+    "kernel": KERNEL,
+    "state": KERNEL,  # transitional shim package for backend.kernel.state
+    "ports": KERNEL,  # transitional shim package for backend.kernel.ports
     "domain": RESEARCH_CORE,
     "artifacts": ARTIFACTS,
     "storage": OBJECT_STORAGE,
