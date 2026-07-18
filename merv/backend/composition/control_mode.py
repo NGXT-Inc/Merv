@@ -326,7 +326,7 @@ def _build_mgmt_key_store(
     public_key = resolve_mgmt_public_key(env)
     if not key_path:
         raise ValidationError(
-            "RESEARCH_PLUGIN_MGMT_KEY_PATH is required in control mode; "
+            f"{MGMT_KEY_PATH_ENV_VAR} is required in control mode; "
             "mount an externally managed management key"
         )
     return MountedMgmtKeyStore(

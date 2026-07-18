@@ -159,7 +159,7 @@ def _brain_not_running_message(*, control_url: str | None) -> str:
         + (f" at {control_url}" if control_url else "")
         + ". Start it with:\n"
         "    merv-http\n"
-        "If it is on another port, set RESEARCH_PLUGIN_CONTROL_URL "
+        "If it is on another port, set MERV_CONTROL_URL "
         "to the brain URL."
     )
 
@@ -647,7 +647,7 @@ class HttpProxyMcpServer:
         url = (self.config.control_url or "").strip().rstrip("/")
         if not url:
             raise _UpstreamError(
-                "control_url is required; set RESEARCH_PLUGIN_CONTROL_URL to "
+                "control_url is required; set MERV_CONTROL_URL to "
                 f"the hosted brain ({HOSTED_CONTROL_URL}) or to "
                 f"{LOCAL_BRAIN_URL} for a local brain",
                 error_code="cloud_unreachable",

@@ -70,7 +70,7 @@ def start_server(
     activity_stderr: bool,
 ) -> subprocess.Popen:
     env = os.environ.copy()
-    env["RESEARCH_PLUGIN_REGISTRY_STORE"] = str(registry_store_path)
+    env["MERV_REGISTRY_STORE"] = str(registry_store_path)
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     # PYTHONPATH and python interpreter are set by bin/merv-http.
     launcher = plugin_root / "bin" / "merv-http"

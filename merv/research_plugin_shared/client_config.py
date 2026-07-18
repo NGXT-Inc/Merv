@@ -58,12 +58,12 @@ def dual_env_value(
     return None
 
 
-CLIENT_CONFIG_ENV_VAR = "RESEARCH_PLUGIN_CLIENT_CONFIG"
-CONTROL_URL_ENV_VAR = "RESEARCH_PLUGIN_CONTROL_URL"
+CLIENT_CONFIG_ENV_VAR = "MERV_CLIENT_CONFIG"
+CONTROL_URL_ENV_VAR = "MERV_CONTROL_URL"
 # RapidReview API key (rr_sk_...) for the hosted brain; env beats the
 # client.json "api_key" field, mirroring the control_url chain.
-API_KEY_ENV_VAR = "RESEARCH_PLUGIN_API_KEY"
-DAEMON_STATE_DIR_ENV_VAR = "RESEARCH_PLUGIN_DAEMON_STATE_DIR"
+API_KEY_ENV_VAR = "MERV_API_KEY"
+DAEMON_STATE_DIR_ENV_VAR = "MERV_DAEMON_STATE_DIR"
 # Brain URL defaults: unconfigured machines dial the hosted brain; local
 # deployments opt in via `merv-client configure` or the env var.
 HOSTED_CONTROL_URL = "https://experiments.rapidreview.io"
@@ -74,8 +74,7 @@ DAEMON_SECRET_FILE_NAME = "daemon_secret"
 
 
 def resolve_client_config_path(env: Mapping[str, str] | None = None) -> Path:
-    source = env if env is not None else os.environ
-    raw = (source.get(CLIENT_CONFIG_ENV_VAR) or "").strip()
+    raw = dual_env_value(CLIENT_CONFIG_ENV_VAR, env)
     return Path(raw).expanduser() if raw else DEFAULT_CLIENT_CONFIG_PATH
 
 
