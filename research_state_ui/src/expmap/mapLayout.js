@@ -146,17 +146,28 @@ export function nowX(xFor, positions, nowMs) {
   return Math.round(Math.max(xFor(nowMs), rightMost + 48));
 }
 
+// A narrow story in a wide pane stretches to fill it (uniformly — the
+// narrative ratios survive), but never past this factor.
+const STRETCH_MAX = 4;
+
 /**
  * Composed layout for the map. cards = [{ id, startMs }] →
  * { pos, ticks, nowX, bounds, xFor }; bounds covers the card rects.
+ * targetW (optional): world width the cards should occupy — when the base
+ * scale comes up shorter, every gap stretches by the same factor (≤ 4×) so
+ * the story uses the pane instead of clustering mid-screen.
  * (xFor is included beyond the base contract so the view can refresh the
  * cheap now-clamp without re-packing.)
  */
-export function computeLayout(cards, nowMs) {
+export function computeLayout(cards, nowMs, targetW) {
   const scale = buildTimeScale(cards.map((c) => c.startMs));
-  const pos = packRows(cards.map((c) => ({ id: c.id, x: Math.round(scale.xFor(c.startMs)) })));
-  const ticks = dayTicks(cards, scale.xFor, nowMs);
-  const nx = nowX(scale.xFor, pos, nowMs);
+  const last = scale.anchors[scale.anchors.length - 1];
+  const baseW = (last ? last.x : 0) + CARD_W;
+  const stretch = targetW ? Math.min(STRETCH_MAX, Math.max(1, targetW / baseW)) : 1;
+  const xFor = (t) => scale.xFor(t) * stretch;
+  const pos = packRows(cards.map((c) => ({ id: c.id, x: Math.round(xFor(c.startMs)) })));
+  const ticks = dayTicks(cards, xFor, nowMs);
+  const nx = nowX(xFor, pos, nowMs);
   let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
   for (const p of Object.values(pos)) {
     if (p.x < minX) minX = p.x;
@@ -165,5 +176,5 @@ export function computeLayout(cards, nowMs) {
     if (p.y + CARD_H > maxY) maxY = p.y + CARD_H;
   }
   if (!Number.isFinite(minX)) { minX = 0; maxX = 0; minY = 0; maxY = 0; }
-  return { pos, ticks, nowX: nx, bounds: { minX, maxX, minY, maxY }, xFor: scale.xFor };
+  return { pos, ticks, nowX: nx, bounds: { minX, maxX, minY, maxY }, xFor };
 }

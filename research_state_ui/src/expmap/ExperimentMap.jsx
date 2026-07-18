@@ -12,7 +12,11 @@ import './expmap.css';
 
 const SAT_ICON = { paper: '¶', claim: '✦', sbx: '▣' };
 const PANEL_W = 380;
-const MAX_SATS = 4;
+// Satellite wrap geometry: rows below the card, each within its width.
+const SAT_ROW_W = CARD_W + 36;
+const SAT_ROWS = 2;
+const SAT_ROW_H = 26;
+const satW = (label) => label.length * 6.2 + 34;
 const zoomBelowHalf = (s) => s.transform[2] < 0.5;
 
 // Camera animations collapse to 0ms under prefers-reduced-motion.
@@ -91,21 +95,38 @@ function ExpNode({ data }) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); }
   };
 
-  // Satellite pills advance by the prototype's label-width formula. The row
-  // is capped: past MAX_SATS the tail folds into a '+N' chip that opens the
-  // experiment panel, where the full reference list lives.
-  let satList = card.sats || [];
+  // Satellite pills wrap around the card instead of running off its right
+  // edge: up to two rows below it, each kept within the card's width; what
+  // doesn't fit folds into a '+N' chip that opens the panel, where the full
+  // reference list lives. Advance uses the prototype's label-width formula.
+  const sats = [];
   let satOverflow = 0;
-  if (satList.length > MAX_SATS) {
-    satOverflow = satList.length - (MAX_SATS - 1);
-    satList = satList.slice(0, MAX_SATS - 1);
+  let satFold = null;
+  {
+    const all = card.sats || [];
+    let row = 0;
+    let sx = 6;
+    for (let i = 0; i < all.length; i++) {
+      const w = satW(all[i].label);
+      let nr = row;
+      let nx = sx;
+      if (nx + w > SAT_ROW_W) { nr += 1; nx = 6; }
+      if (nr >= SAT_ROWS) { satOverflow = all.length - i; break; }
+      row = nr;
+      sats.push({ ...all[i], left: nx, top: row * SAT_ROW_H });
+      sx = nx + w;
+    }
+    if (satOverflow) {
+      // The fold chip must land on the last row — reclaim the tail slot if full.
+      if (sx + 46 > SAT_ROW_W && sats.length) {
+        const popped = sats.pop();
+        satOverflow += 1;
+        sx = popped.left;
+        row = popped.top / SAT_ROW_H;
+      }
+      satFold = { left: sx, top: row * SAT_ROW_H };
+    }
   }
-  let sx = 6;
-  const sats = satList.map((s) => {
-    const left = sx;
-    sx += s.label.length * 6.2 + 34;
-    return { ...s, left };
-  });
 
   const dotPulse = card.status === 'running' ? ' xmap-dot--pulse' : '';
   return (
@@ -156,7 +177,7 @@ function ExpNode({ data }) {
               key={`${s.type}:${s.id}`}
               type="button"
               className={`xmap-sat${selObj === `${s.type}:${s.id}` ? ` xmap-sat--sel-${s.type}` : ''}`}
-              style={{ left: s.left, top: CARD_H + 10 }}
+              style={{ left: s.left, top: CARD_H + 10 + s.top }}
               onClick={guard(() => selectObject(s.type, s.id))}
             >
               <span className={`xmap-sat-ic xmap-ic--${s.type}`} aria-hidden="true">{SAT_ICON[s.type] || '▣'}</span>
@@ -167,7 +188,7 @@ function ExpNode({ data }) {
             <button
               type="button"
               className="xmap-sat"
-              style={{ left: sx, top: CARD_H + 10 }}
+              style={{ left: satFold.left, top: CARD_H + 10 + satFold.top }}
               aria-label={`${satOverflow} more references — open panel`}
               onClick={guard(onSelect)}
             >
@@ -413,13 +434,11 @@ function MapCanvas({ model, wrapRef, size, initialViewport }) {
  * layout come from useMapModel; this file is view-only.
  */
 export default function ExperimentMap() {
-  const model = useMapModel();
   const wrapRef = useRef(null);
-  const empty = model.ready && (model.cards || []).length === 0;
-
   // Measure the map area before mounting the canvas so the first frame IS the
   // fitted frame: the initial viewport comes from pure layout data instead of
   // an animated post-init fit, which node measurement can stall in hidden tabs.
+  // The width also feeds the model so the world stretches to fill the pane.
   const [size, setSize] = useState(null);
   useLayoutEffect(() => {
     const el = wrapRef.current;
@@ -433,6 +452,9 @@ export default function ExperimentMap() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  const model = useMapModel(size?.w);
+  const empty = model.ready && (model.cards || []).length === 0;
 
   // Initial-only by design: React Flow applies defaultViewport once, so later
   // layout/resize changes never yank the camera out from under the user.

@@ -192,7 +192,7 @@ function stableStartMs(e) {
 
 // ── the hook ───────────────────────────────────────────────────────────────
 
-export function useMapModel() {
+export function useMapModel(viewW) {
   const projectId = useProjectStore((s) => s.projectId);
   const home = useProjectStore((s) => s.home);
   const experiments = useProjectStore(selectExperiments);
@@ -429,13 +429,20 @@ export function useMapModel() {
     return { cards, papers, citedBy };
   }, [home, experiments, claims, sandboxes, overview, spend, textTick]);
 
-  // Heavy packing keyed on ids + start times only: a poll tick that changes
-  // card contents (status, tldr, metrics) must not re-pack the world.
+  // Heavy packing keyed on ids + start times + a coarse pane-width bucket:
+  // a poll tick that changes card contents (status, tldr, metrics) must not
+  // re-pack the world, and neither should every pixel of a window drag.
+  const wBucket = viewW ? Math.round(viewW / 96) * 96 : 0;
   const layoutKey = model.cards.map((c) => `${c.id}:${c.startMs}`).join('|');
   const world = useMemo(
-    () => computeLayout(model.cards.map((c) => ({ id: c.id, startMs: c.startMs })), Date.now()),
+    () => computeLayout(
+      model.cards.map((c) => ({ id: c.id, startMs: c.startMs })),
+      Date.now(),
+      // Fill the pane at fit: fitViewportFor pads 280+60 world px + 80 screen.
+      wBucket ? Math.max(0, wBucket - 420) : null,
+    ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layoutKey],
+    [layoutKey, wBucket],
   );
   // The now-clamp is cheap — keep it current without touching the memo above.
   const nx = clampNowX(world.xFor, world.pos, Date.now());
