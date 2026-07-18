@@ -1,33 +1,42 @@
 /**
  * mapLayout — pure layout math for the Experiment Map.
  *
- * Ported from the design-handoff prototype (design_handoff_experiment_map/
- * "Experiment Map.dc.html"): a gap-compressed piecewise-linear time axis,
- * greedy row packing, per-day axis ticks, and the clamped "now" line.
+ * Row packing, per-day ticks, and the clamped "now" line follow the
+ * design-handoff prototype. The time axis does not (user respec, 7/18):
+ * it is a NARRATIVE scale, not a calendar — order is exact (left = older),
+ * but each consecutive gap maps to a sublinear spread, so a same-day burst
+ * still fans out while an idle week barely stretches. Dates stay truthful
+ * at the cards; the header ticks ride the elastic scale.
  * Pure data → data; no React, no fetches, unit-testable with node.
  */
 
-export const HOUR = 6;      // px per hour along the time axis
-export const GAP_H = 30;    // gaps longer than this many hours compress
-export const BREAK_W = 90;  // px a compressed gap collapses to
 export const CARD_W = 284;
 export const CARD_H = 122;
 export const ROW_H = 200;
 
+// Per-step spread: a gap of h hours advances the axis by SPREAD_MIN px
+// (simultaneous starts) up to SPREAD_MAX px, saturating at ~30 days. On this
+// curve 5 hours ≈ 170px and 5 days ≈ 250px — "kind of equidistant".
+export const SPREAD_MIN = 120;
+export const SPREAD_MAX = 300;
+const SPREAD_SAT_H = 720;
+const spreadFrac = (h) => Math.min(1, Math.log1p(Math.max(0, h)) / Math.log1p(SPREAD_SAT_H));
+const spreadFor = (h) => SPREAD_MIN + (SPREAD_MAX - SPREAD_MIN) * spreadFrac(h);
+
 /**
- * Gap-compressed time scale over experiment start times.
- * Sorted unique times become piecewise-linear anchors; a gap > GAP_H hours
- * occupies a fixed BREAK_W px. Returns { anchors, xFor }; xFor interpolates
- * between anchors and extrapolates past the last one at HOUR px/h.
+ * Narrative time scale over experiment start times. Sorted unique times
+ * become anchors; consecutive anchors sit spreadFor(gap) px apart. Returns
+ * { anchors, xFor }; xFor interpolates linearly between anchors, clamps flat
+ * before the first, and past the last ramps continuously to at most
+ * SPREAD_MAX px — the "now" line can never run far away from the newest card.
  */
 export function buildTimeScale(startTimesMs) {
   const times = [...new Set(startTimesMs)].filter(Number.isFinite).sort((a, b) => a - b);
   if (times.length === 0) return { anchors: [], xFor: () => 0 };
   const anchors = [{ t: times[0], x: 0 }];
   for (let i = 1; i < times.length; i++) {
-    const dtH = (times[i] - times[i - 1]) / 3600000;
     const prev = anchors[anchors.length - 1];
-    anchors.push({ t: times[i], x: prev.x + (dtH > GAP_H ? BREAK_W : dtH * HOUR) });
+    anchors.push({ t: times[i], x: prev.x + spreadFor((times[i] - times[i - 1]) / 3600000) });
   }
   const xFor = (t) => {
     if (t <= anchors[0].t) return anchors[0].x;
@@ -39,7 +48,7 @@ export function buildTimeScale(startTimesMs) {
       }
     }
     const la = anchors[anchors.length - 1];
-    return la.x + ((t - la.t) / 3600000) * HOUR; // extrapolate past the last event
+    return la.x + SPREAD_MAX * spreadFrac((t - la.t) / 3600000); // 0 → SPREAD_MAX, continuous
   };
   return { anchors, xFor };
 }
