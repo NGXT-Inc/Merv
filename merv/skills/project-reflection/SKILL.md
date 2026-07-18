@@ -103,7 +103,7 @@ Spawn five subagents in parallel. Each gets:
 - read-only project access (claims, experiments and their logic graphs,
   reports, reviews, resources — via MCP reads and repo files);
 - the instruction to write its reflection to
-  `syntheses/<syn_id>/reflections/<lens_id>.md` (the filename **must** be
+  `reflections/<syn_id>/reflections/<lens_id>.md` (the filename **must** be
   `<lens_id>.md` — coverage is matched by filename), then
   `resource.register` it to the reflection wave with role `reflection_lens_doc`
   (one call — pass the `path`, `target_type: "reflection"`, the wave id as

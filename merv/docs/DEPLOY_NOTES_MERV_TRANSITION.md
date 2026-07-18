@@ -40,3 +40,28 @@ MLflow lookups are name-based, so an un-migrated server keeps working — but
 existing experiments stay reachable under their old `rp/...` names only
 (metrics ledger, exhibits, and namespace listings will not see them as
 `merv/...`) until the script runs.
+
+## Synthesis -> reflection unification (migration 19)
+
+The reflection wave drops its internal synthesis vocabulary; only the
+consolidation phase keeps the name `synthesizing`. Migration 19 runs
+automatically on first boot after the pull (control-up.sh path) and rewrites
+persisted state: the two wave-relation tables (+ columns), the
+`synthesis_review` status, events history (types, target_type, payload
+vocabulary), review target types and snapshot ids, and association target
+types. UI and brain deploy in lockstep from main — the UI reads only the
+post-migration shapes (`reflections`/`open_reflection` keys,
+`reflection_review` status, `reflection.*` event types, the `/reflection`
+mobile route).
+
+## Deploy order (prod)
+
+1. Release/drain all active sandboxes (on-box rename, above).
+2. MERV key-flip in the Azure compose override where still pending (tracked
+   in the ops dir notes).
+3. `pg_dump` backup, fast-forward pull, `control-up.sh` — applies migration
+   19 on boot.
+4. `python3 merv/scripts/migrate_mlflow_namespace.py` against prod MLflow
+   (after a `--dry-run` look).
+5. Vercel picks up the UI from main; verify the Home reflection panel, the
+   mobile `/reflection` screen, and review history on a reflection wave.

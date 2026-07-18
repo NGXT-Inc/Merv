@@ -167,17 +167,14 @@ evidence, review substate, and next action. The HTTP UI uses richer service view
 
 ## Reflection workflow
 
-External tools and target types use **reflection**. Persisted ids still use the
-`syn_` prefix, and some response keys/internal services retain synthesis naming.
-The agent-facing statuses are:
+External tools and target types use **reflection**. Persisted ids keep the
+`syn_` prefix. The statuses are:
 
 ```text
 reflecting -> synthesizing -> reflection_review -> published
 ```
 
-`abandoned` is terminal. The domain/store name for `reflection_review` is
-`synthesis_review`; projection adapters expose the reflection vocabulary to MCP.
-One wave may be open per project.
+`abandoned` is terminal. One wave may be open per project.
 
 - `reflection.create` snapshots the corpus and requires exactly five lenses:
   `amplify`, `avoid`, `entropy`, and two project-specific lenses.
