@@ -133,8 +133,8 @@ class SnapshotMlflowTest(unittest.TestCase):
     def test_snapshot_can_scope_to_one_experiment_name(self) -> None:
         client = FakeClient(
             experiments=[
-                {"experiment_id": "1", "name": "rp/proj_a/exp_a"},
-                {"experiment_id": "2", "name": "rp/proj_b/exp_b"},
+                {"experiment_id": "1", "name": "merv/proj_a/exp_a"},
+                {"experiment_id": "2", "name": "merv/proj_b/exp_b"},
             ],
             runs={
                 "1": [
@@ -153,18 +153,18 @@ class SnapshotMlflowTest(unittest.TestCase):
         )
         with _client_patch(client):
             snapshot = snapshot_mlflow(
-                "https://mlflow.test", experiment_name="rp/proj_b/exp_b"
+                "https://mlflow.test", experiment_name="merv/proj_b/exp_b"
             )
         self.assertIsNotNone(snapshot)
         self.assertEqual(len(snapshot["experiments"]), 1)
-        self.assertEqual(snapshot["experiments"][0]["name"], "rp/proj_b/exp_b")
+        self.assertEqual(snapshot["experiments"][0]["name"], "merv/proj_b/exp_b")
         self.assertEqual(
             snapshot["experiments"][0]["runs"][0]["metrics"]["acc"]["last"], 0.9
         )
 
     def test_snapshot_can_skip_history_for_overview_reads(self) -> None:
         client = FakeClient(
-            experiments=[{"experiment_id": "1", "name": "rp/proj/exp"}],
+            experiments=[{"experiment_id": "1", "name": "merv/proj/exp"}],
             runs={
                 "1": [{
                     "info": {"run_id": "r1"},
@@ -175,7 +175,7 @@ class SnapshotMlflowTest(unittest.TestCase):
         with _client_patch(client):
             snapshot = snapshot_mlflow(
                 "http://x",
-                experiment_name="rp/proj/exp",
+                experiment_name="merv/proj/exp",
                 include_history=False,
             )
         run = snapshot["experiments"][0]["runs"][0]
@@ -188,7 +188,7 @@ class SnapshotMlflowTest(unittest.TestCase):
             for i in range(MAX_METRIC_KEYS)
         ]
         client = FakeClient(
-            experiments=[{"experiment_id": "1", "name": "rp/proj/exp"}],
+            experiments=[{"experiment_id": "1", "name": "merv/proj/exp"}],
             runs={
                 "1": [{"info": {"run_id": "r1"}, "data": {"metrics": metrics}}]
             },

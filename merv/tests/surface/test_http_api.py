@@ -390,7 +390,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "experiments": [
                 {
                     "experiment_id": "7",
-                    "name": f"rp/{project_id}/{exp_id}",
+                    "name": f"merv/{project_id}/{exp_id}",
                     "runs": [
                         {
                             "run_id": "r1",
@@ -406,12 +406,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         namespace = [
             {
-                "name": f"rp/{project_id}/{exp_id}",
+                "name": f"merv/{project_id}/{exp_id}",
                 "experiment_id": "7",
                 "dashboard_experiment_url": "https://mlflow.test/#/experiments/7",
             },
             {
-                "name": f"rp/{project_id}/stray",
+                "name": f"merv/{project_id}/stray",
                 "experiment_id": "8",
                 "dashboard_experiment_url": "https://mlflow.test/#/experiments/8",
             },
@@ -440,7 +440,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertNotIn("history", run)
         snapshot_read.assert_called_once_with(
             "https://mlflow.test",
-            experiment_name=f"rp/{project_id}/{exp_id}",
+            experiment_name=f"merv/{project_id}/{exp_id}",
             include_history=False,
         )
         self.assertEqual(
@@ -504,7 +504,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # Transitioning into running hands back the MLflow connection block.
         run_created = {
             "created": True,
-            "experiment_name": f"rp/{project_id}/{exp_id}",
+            "experiment_name": f"merv/{project_id}/{exp_id}",
             "experiment_id": "7",
             "run_id": "run_123",
             "run_name": f"{exp_id}-attempt-1",
@@ -526,7 +526,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(transitioned["status"], "running")
         self.assertTrue(transitioned["mlflow"]["configured"])
-        self.assertEqual(transitioned["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
+        self.assertEqual(transitioned["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
         self.assertEqual(transitioned["mlflow"]["env"]["MLFLOW_TRACKING_URI"], "https://mlflow.test")
         self.assertEqual(transitioned["mlflow"]["run"]["run_id"], "run_123")
         self.assertEqual(transitioned["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_123")
@@ -537,14 +537,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"project_id": project_id, "experiment_id": exp_id},
         )
         self.assertTrue(state["mlflow"]["configured"])
-        self.assertEqual(state["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
+        self.assertEqual(state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
         self.assertEqual(state["mlflow_run"]["run_id"], "run_123")
         self.assertEqual(state["mlflow"]["run"]["run_id"], "run_123")
         self.assertIn("MLflow", state["mlflow_guidance"])
 
         http_state = self.request("GET", f"/api/projects/{project_id}/experiments/{exp_id}")
         self.assertTrue(http_state["mlflow"]["configured"])
-        self.assertEqual(http_state["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
+        self.assertEqual(http_state["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
         self.assertEqual(http_state["mlflow"]["run"]["run_id"], "run_123")
 
         # The standalone MLflow context tool returns the same block on demand.
@@ -554,7 +554,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(ctx["scope"], "experiment")
         self.assertTrue(ctx["mlflow"]["configured"])
-        self.assertEqual(ctx["mlflow"]["experiment_name"], f"rp/{project_id}/{exp_id}")
+        self.assertEqual(ctx["mlflow"]["experiment_name"], f"merv/{project_id}/{exp_id}")
         self.assertIn("MLFLOW_EXPERIMENT_NAME", ctx["mlflow"]["env"])
         self.assertEqual(ctx["mlflow"]["run"]["run_id"], "run_123")
         self.assertEqual(ctx["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_123")
@@ -562,7 +562,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         finalized = {
             "configured": True,
             "control_configured": True,
-            "experiment_name": f"rp/{project_id}/{exp_id}",
+            "experiment_name": f"merv/{project_id}/{exp_id}",
             "run_id": "run_123",
             "requested_status": "FINISHED",
             "update": {"attempted": True, "status": "FINISHED", "applied": True},
@@ -600,11 +600,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(project_ctx["scope"], "project")
         self.assertEqual(project_ctx["mlflow"]["tracking_uri"], "https://mlflow.test")
         self.assertEqual(
-            project_ctx["mlflow"]["experiment_namespace_prefix"], f"rp/{project_id}/"
+            project_ctx["mlflow"]["experiment_namespace_prefix"], f"merv/{project_id}/"
         )
         self.assertEqual(
             project_ctx["mlflow"]["experiments"][0]["mlflow_experiment_name"],
-            f"rp/{project_id}/{exp_id}",
+            f"merv/{project_id}/{exp_id}",
         )
         self.assertNotIn("MLFLOW_EXPERIMENT_NAME", project_ctx["mlflow"]["env"])
 

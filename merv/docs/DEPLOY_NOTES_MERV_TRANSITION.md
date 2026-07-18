@@ -23,3 +23,20 @@ release:
 
 - `rp_run` on PATH as a symlink to `merv_run`.
 - `RP_EXPERIMENT_DIR` exported as a deprecated twin of `MERV_EXPERIMENT_DIR`.
+
+## MLflow namespace rp/ -> merv/
+
+New experiments are created under `merv/<project>/<experiment>`
+(MLFLOW_NAMESPACE_PREFIX in backend/mlflow/tracking.py). Run at deploy, on
+prod and against local dev MLflow:
+
+```
+python3 merv/scripts/migrate_mlflow_namespace.py --dry-run   # inspect plan
+python3 merv/scripts/migrate_mlflow_namespace.py             # rename in place
+```
+
+Idempotent and safe to re-run; name collisions are skipped with a report.
+MLflow lookups are name-based, so an un-migrated server keeps working — but
+existing experiments stay reachable under their old `rp/...` names only
+(metrics ledger, exhibits, and namespace listings will not see them as
+`merv/...`) until the script runs.

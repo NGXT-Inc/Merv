@@ -1055,7 +1055,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
             "project-level tracking URI, dashboard URL, namespace prefix, env, "
             "and plugin experiment-to-MLflow-name map for direct MlflowClient "
             "navigation. With experiment_id, also returns the exact "
-            "rp/<project>/<experiment> experiment name and env vars to set "
+            "merv/<project>/<experiment> experiment name and env vars to set "
             "(MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, …) before a "
             "quantitative run, plus the plugin-created run id when available. "
             "Returns configured=false when no tracking server is set."

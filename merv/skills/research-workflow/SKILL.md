@@ -177,7 +177,7 @@ mkdir -p "$MERV_EXPERIMENT_DIR"/results "$MERV_EXPERIMENT_DIR"/figures
 For local non-sandbox runs, call `mlflow.context` to get the central tracking
 URI. Omit `experiment_id` when you need project-level navigation context and the
 plugin experiment-to-MLflow-name map; include `experiment_id` when you need the
-exact `rp/<project>/<experiment>` name and env vars for a run. A missing
+exact `merv/<project>/<experiment>` name and env vars for a run. A missing
 `MLFLOW_TRACKING_URI` in your current shell is not evidence that the backend
 lacks MLflow; fetch it with `mlflow.context`. Do not create a file-backed local
 MLflow store just because the shell env is empty. `experiment.transition` to
@@ -240,7 +240,7 @@ attempt has an observed MLflow run (or a plugin-created run cannot be read back
 because MLflow is unavailable). Attempts with nothing quantitative to exhibit
 get no exhibit and no exhibit-reference gate. A pinned exhibit is built from
 observation, not from your account: up to the newest 50 MLflow runs in this
-attempt's window under `rp/<project>/<experiment>` — the exhibit records when
+attempt's window under `merv/<project>/<experiment>` — the exhibit records when
 that cap is reached — plus eligible pinned result JSON (`metrics.json`,
 `results.json`, and `results/*.json` associated with role `result`), each entry
 with provenance. Runs logged after `submit_results` remain in MLflow but are
