@@ -11,6 +11,8 @@ from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, 
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
+RESEARCH_CORE = BACKEND_ROOT / "research_core"
+RESEARCH_CORE_DOMAIN = RESEARCH_CORE / "domain"
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
     BACKEND_ROOT / "transport" / "admin_http.py",
@@ -27,6 +29,10 @@ HTTP_API_PACKAGE = BACKEND_ROOT / "transport" / "api"
 
 def _source(name: str) -> str:
     return (SERVICES / name).read_text(encoding="utf-8")
+
+
+def _rc_source(name: str) -> str:
+    return (RESEARCH_CORE / name).read_text(encoding="utf-8")
 
 
 def _api_app_source() -> str:
@@ -50,6 +56,10 @@ def _artifacts_source(name: str) -> str:
 
 def _import_modules(name: str) -> set[str]:
     return {module.split(".", 1)[0] for module in _import_module_names(SERVICES / name)}
+
+
+def _rc_import_modules(name: str) -> set[str]:
+    return {module.split(".", 1)[0] for module in _import_module_names(RESEARCH_CORE / name)}
 
 
 def _import_module_names(path: Path) -> set[str]:
@@ -226,10 +236,10 @@ DOMAIN_FORBIDDEN_SEGMENTS = {
 
 class ServiceLayoutTest(unittest.TestCase):
     def test_experiment_service_keeps_lint_and_agent_projection_out(self) -> None:
-        source = _source("experiments.py")
+        source = _rc_source("experiments.py")
 
         self.assertNotIn("def slim_experiment_state", source)
-        self.assertNotIn("experiment_views", _import_segments(SERVICES / "experiments.py"))
+        self.assertNotIn("experiment_views", _import_segments(RESEARCH_CORE / "experiments.py"))
         self.assertNotIn("def get_state_agent", source)
         self.assertNotIn("def list_experiments_agent", source)
         self.assertNotIn("def report_problems", source)
@@ -240,21 +250,21 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_record_services_do_not_create_local_workspaces(self) -> None:
         for name in ("experiments.py", "reflections.py"):
             with self.subTest(module=name):
-                source = _source(name)
-                import_modules = _import_module_names(SERVICES / name)
+                source = _rc_source(name)
+                import_modules = _import_module_names(RESEARCH_CORE / name)
                 self.assertNotIn("ensure_workspace", source)
                 self.assertNotIn("_ensure_workspace", source)
                 self.assertNotIn("reflection_policy", import_modules)
                 self.assertFalse(
-                    _import_modules(name) & LOCAL_FS_IMPORTS,
+                    _rc_import_modules(name) & LOCAL_FS_IMPORTS,
                     f"{name} should not import local filesystem helpers",
                 )
                 self.assertNotIn(".mkdir(", source)
                 self.assertNotIn("open(", source)
 
     def test_workflow_service_keeps_agent_projection_out(self) -> None:
-        source = _source("workflow.py")
-        imports = _import_segments(SERVICES / "workflow.py")
+        source = _rc_source("workflow.py")
+        imports = _import_segments(RESEARCH_CORE / "workflow.py")
 
         self.assertNotIn("def slim_status_and_next", source)
         self.assertNotIn("def _slim_experiment", source)
@@ -298,7 +308,7 @@ class ServiceLayoutTest(unittest.TestCase):
         # image parsing. No filesystem imports — figure resolution is the
         # caller's business (submission capture).
         self.assertEqual(
-            _import_module_names(DOMAIN_ROOT / "artifacts.py"),
+            _import_module_names(RESEARCH_CORE_DOMAIN / "artifacts.py"),
             {"re", "collections.abc", "artifacts.markdown_images"},
         )
 
@@ -507,12 +517,12 @@ class ServiceLayoutTest(unittest.TestCase):
         get_type_hints(ResourceService.__init__)
 
     def test_review_service_uses_permission_port(self) -> None:
-        imports = _import_segments(SERVICES / "reviews.py")
+        imports = _import_segments(RESEARCH_CORE / "reviews.py")
         self.assertNotIn("permissions", imports)
         self.assertNotIn("identity", imports)
         self.assertIn("domain", imports)
         self.assertIn("review_policy", imports)
-        source = _source("reviews.py")
+        source = _rc_source("reviews.py")
         self.assertIn("permissions: ReviewPolicy", source)
         self.assertNotIn("class ReviewPolicy", source)
         from backend.ports.review_policy import ReviewPolicy
@@ -521,11 +531,11 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_review_return_policy_is_domain_leaf_module(self) -> None:
         self.assertEqual(
-            _import_module_names(DOMAIN_ROOT / "review_returns.py"),
+            _import_module_names(RESEARCH_CORE_DOMAIN / "review_returns.py"),
             {"dataclasses"},
         )
-        imports = _import_module_names(SERVICES / "reviews.py")
-        source = _source("reviews.py")
+        imports = _import_module_names(RESEARCH_CORE / "reviews.py")
+        source = _rc_source("reviews.py")
 
         self.assertIn("domain.review_returns", imports)
         self.assertIn("resolve_review_return", source)
@@ -534,9 +544,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("experiment-design-review rejections cannot return_to", source)
 
     def test_review_gate_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(DOMAIN_ROOT / "review_gates.py"), set())
-        imports = _import_module_names(SERVICES / "reviews.py")
-        source = _source("reviews.py")
+        self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / "review_gates.py"), set())
+        imports = _import_module_names(RESEARCH_CORE / "reviews.py")
+        source = _rc_source("reviews.py")
 
         self.assertIn("domain.review_gates", imports)
         self.assertIn("expected_review_gate_role", source)
@@ -546,12 +556,12 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn('"experiment_review":', source)
 
     def test_review_service_uses_direct_concrete_targets(self) -> None:
-        imports = _import_segments(SERVICES / "reviews.py")
+        imports = _import_segments(RESEARCH_CORE / "reviews.py")
 
         self.assertIn("experiments", imports)
         self.assertIn("reflections", imports)
         self.assertNotIn("review_targets", imports)
-        source = _source("reviews.py")
+        source = _rc_source("reviews.py")
         self.assertIn("experiments: ExperimentService", source)
         self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ExperimentReviewTarget", source)
@@ -604,12 +614,12 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_experiment_names_are_domain_policy(self) -> None:
         self.assertEqual(
-            _import_module_names(DOMAIN_ROOT / "experiment_names.py"),
+            _import_module_names(RESEARCH_CORE_DOMAIN / "experiment_names.py"),
             {"re", "utils"},
         )
         for name in ("experiments.py", "reflections.py"):
             with self.subTest(module=name):
-                imports = _import_module_names(SERVICES / name)
+                imports = _import_module_names(RESEARCH_CORE / name)
                 self.assertIn("domain.experiment_names", imports)
                 self.assertNotIn("experiment_names", imports)
 
@@ -617,10 +627,10 @@ class ServiceLayoutTest(unittest.TestCase):
         # The synthesis->reflection projection layer is gone (external names
         # ARE the internal names); the tool adapter forwards to the service.
         self.assertFalse((DOMAIN_ROOT / "reflection_projection.py").exists())
-        reflection_imports = _import_segments(SERVICES / "reflection_tools.py")
+        reflection_imports = _import_segments(RESEARCH_CORE / "reflection_tools.py")
         self.assertIn("reflections", reflection_imports)
         self.assertNotIn("reflection_waves", reflection_imports)
-        reflection_source = _source("reflection_tools.py")
+        reflection_source = _rc_source("reflection_tools.py")
         self.assertIn("reflections: ReflectionService", reflection_source)
         self.assertNotIn("class ReflectionWaveStore", reflection_source)
         from backend.services.reflection_tools import ReflectionToolService
@@ -633,7 +643,7 @@ class ServiceLayoutTest(unittest.TestCase):
         get_type_hints(ReflectionToolService.create)
 
     def test_graph_lint_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(DOMAIN_ROOT / "graph_lint.py"), {"json"})
+        self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / "graph_lint.py"), {"json"})
 
     def test_domain_modules_do_not_import_backend_layers(self) -> None:
         for path in sorted(DOMAIN_ROOT.glob("*.py")):
@@ -1135,7 +1145,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("FROM reflections", source)
 
     def test_graph_ref_resolver_uses_reference_type_registry(self) -> None:
-        source = (SERVICES / "graph_refs.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE / "graph_refs.py").read_text(encoding="utf-8")
         self.assertIn("class GraphRefType:", source)
         self.assertIn("GRAPH_REF_TYPES: tuple[GraphRefType, ...]", source)
         self.assertEqual(source.count("GraphRefType("), 5)
@@ -1191,32 +1201,32 @@ class ServiceLayoutTest(unittest.TestCase):
         }
         for name, imports in expected.items():
             with self.subTest(module=name):
-                self.assertEqual(_import_module_names(DOMAIN_ROOT / name), imports)
+                self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / name), imports)
 
     def test_reflection_service_uses_experiment_name_leaf(self) -> None:
-        self.assertNotIn("experiments", _import_segments(SERVICES / "reflections.py"))
-        source = _source("reflections.py")
+        self.assertNotIn("experiments", _import_segments(RESEARCH_CORE / "reflections.py"))
+        source = _rc_source("reflections.py")
         self.assertIn("experiment_writer: ReflectionExperimentWriter", source)
         self.assertNotIn("INSERT INTO experiments", source)
         self.assertNotIn("experiment_claims", source)
 
     def test_reflection_service_uses_claim_vocabulary(self) -> None:
-        self.assertNotIn("claims", _import_segments(SERVICES / "reflections.py"))
-        source = _source("reflections.py")
-        self.assertIn("reflection_writers", _import_segments(SERVICES / "reflections.py"))
+        self.assertNotIn("claims", _import_segments(RESEARCH_CORE / "reflections.py"))
+        source = _rc_source("reflections.py")
+        self.assertIn("reflection_writers", _import_segments(RESEARCH_CORE / "reflections.py"))
         self.assertIn("claims: ReflectionClaimWriter", source)
         self.assertNotIn("INSERT INTO claims", source)
         self.assertNotIn("UPDATE claims", source)
 
     def test_reflection_service_does_not_write_projects(self) -> None:
-        source = _source("reflections.py")
+        source = _rc_source("reflections.py")
         self.assertNotIn("UPDATE projects", source)
         self.assertNotIn("project.stopped", source)
 
     def test_status_views_use_domain_vocabulary(self) -> None:
         for name in ("project_overview.py", "workflow_views.py", "reflections.py"):
             with self.subTest(module=name):
-                self.assertNotIn("workflow_gates", _import_segments(SERVICES / name))
+                self.assertNotIn("workflow_gates", _import_segments(RESEARCH_CORE / name))
 
     def test_identity_constants_are_domain_vocabulary(self) -> None:
         from backend.domain.vocabulary import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
@@ -1231,8 +1241,8 @@ class ServiceLayoutTest(unittest.TestCase):
             & _assigned_names(SERVICES / "identity.py")
         )
         self.assertIn("domain.vocabulary", _import_module_names(SERVICES / "identity.py"))
-        self.assertNotIn("identity", _import_segments(SERVICES / "reviews.py"))
-        self.assertNotIn("services.identity", _source("reviews.py"))
+        self.assertNotIn("identity", _import_segments(RESEARCH_CORE / "reviews.py"))
+        self.assertNotIn("services.identity", _rc_source("reviews.py"))
 
     def test_opaque_secret_token_helpers_are_single_sourced(self) -> None:
         self.assertEqual(
@@ -1240,7 +1250,7 @@ class ServiceLayoutTest(unittest.TestCase):
             {"hashlib", "hmac", "secrets"},
         )
         sensitive_paths = (
-            BACKEND_ROOT / "services" / "reviews.py",
+            RESEARCH_CORE / "reviews.py",
             BACKEND_ROOT / "state" / "store.py",
         )
         for path in sensitive_paths:
@@ -1250,7 +1260,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertIn("secret_tokens", _import_module_names(path))
 
         for path in (
-            BACKEND_ROOT / "services" / "reviews.py",
+            RESEARCH_CORE / "reviews.py",
         ):
             with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
                 self.assertNotIn("hmac", _import_module_names(path))
@@ -1258,18 +1268,18 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertNotIn(
             "def _hash_capability",
-            (BACKEND_ROOT / "services" / "reviews.py").read_text(encoding="utf-8"),
+            (RESEARCH_CORE / "reviews.py").read_text(encoding="utf-8"),
         )
 
     def test_view_modules_do_not_import_service_state_machines(self) -> None:
         for name in ("experiment_views.py", "workflow_views.py"):
             with self.subTest(module=name):
-                modules = _import_modules(name)
+                modules = _rc_import_modules(name)
                 self.assertNotIn("experiments", modules)
                 self.assertNotIn("workflow", modules)
 
     def test_experiment_view_is_a_leaf_projection(self) -> None:
-        self.assertEqual(_import_modules("experiment_views.py"), {"typing"})
+        self.assertEqual(_rc_import_modules("experiment_views.py"), {"typing"})
 
 
 if __name__ == "__main__":

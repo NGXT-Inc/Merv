@@ -1,41 +1,4 @@
-"""Pure reviewer handoff payload construction."""
-
-from __future__ import annotations
-
-from typing import Any
-
-
-
-def reviewer_handoff_payload(
-    *,
-    role: str,
-    target_type: str,
-    target_id: str,
-    review_request_id: str = "",
-    reviewer_capability: str = "",
-) -> dict[str, Any]:
-    skill = {
-        "design_reviewer": "experiment-design-review",
-        "experiment_reviewer": "experiment-attempt-review",
-        "reflection_reviewer": "project-reflection-review",
-    }.get(role, "")
-    handoff: dict[str, Any] = {
-        "role": role,
-        "skill": skill,
-        "target_type": target_type,
-        "target_id": target_id,
-        "read_only": True,
-        "start_tool": "review.start",
-        "submit_tool": "review.submit",
-    }
-    if review_request_id and reviewer_capability and skill:
-        handoff["spawn_prompt"] = (
-            f"You are the {role} for {target_type} {target_id}. "
-            f"Follow the {skill} skill. Begin by calling review.start with "
-            f"review_request_id={review_request_id}, "
-            f"reviewer_capability={reviewer_capability}, and your own "
-            "session identity as caller_session_id (required; never the "
-            "producer's). You are read-only: your sole permitted mutation "
-            "is review.submit."
-        )
-    return handoff
+"""Transitional shim — moved to backend.research_core.domain.review_handoff; deleted at de-shim."""
+import sys
+from ..research_core.domain import review_handoff as _moved
+sys.modules[__name__] = _moved

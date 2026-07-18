@@ -34,7 +34,8 @@ MODULES = (KERNEL, RESEARCH_CORE, ARTIFACTS, OBJECT_STORAGE, SANDBOX, FEED, MLFL
 PACKAGE_MODULES = {
     "state": KERNEL,
     "ports": KERNEL,
-    "domain": RESEARCH_CORE,
+    "research_core": RESEARCH_CORE,
+    "domain": RESEARCH_CORE,  # remaining sibling-owned files + transitional shims
     "artifacts": ARTIFACTS,
     "storage": OBJECT_STORAGE,
     "services/sandbox": SANDBOX,

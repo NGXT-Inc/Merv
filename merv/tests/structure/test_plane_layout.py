@@ -38,6 +38,7 @@ from tests.paths import (
 
 # Record halves that must be servable from a cloud control plane: no local
 # processes, no conn machinery, no dataplane worker.
+RESEARCH_CORE_ROOT = BACKEND_ROOT / "research_core"
 ARTIFACTS_MODULES = tuple(sorted(ARTIFACTS_ROOT.glob("*.py")))
 DOMAIN_MODULES = tuple(sorted(DOMAIN_ROOT.glob("*.py")))
 PORT_MODULES = tuple(sorted(PORTS_ROOT.glob("*.py")))
@@ -547,11 +548,11 @@ for name in (
         # implementation pair today.
         # Keep it lean by avoiding a single-impl reader port until a real
         # ControlApp composition gives that port a second implementation.
-        imports = _import_segments(SERVICES_ROOT / "project_overview.py")
+        imports = _import_segments(RESEARCH_CORE_ROOT / "project_overview.py")
         self.assertIn("projects", imports)
         self.assertIn("reflections", imports)
         self.assertNotIn("project_readers", imports)
-        source = (SERVICES_ROOT / "project_overview.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE_ROOT / "project_overview.py").read_text(encoding="utf-8")
         self.assertIn("projects: ProjectService", source)
         self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ProjectCurrentReader", source)
@@ -593,12 +594,12 @@ for name in (
         # workflow.status_and_next is a control-safe orientation view. It
         # should compose against narrow read ports instead of redeclaring
         # collaborator protocols inside the workflow service module.
-        imports = _import_segments(SERVICES_ROOT / "workflow.py")
+        imports = _import_segments(RESEARCH_CORE_ROOT / "workflow.py")
         self.assertFalse(
             {"experiments", "reviews", "sandboxes", "reflections"} & imports
         )
         self.assertIn("workflow_readers", imports)
-        source = (SERVICES_ROOT / "workflow.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE_ROOT / "workflow.py").read_text(encoding="utf-8")
         self.assertIn("experiments: ExperimentWorkflowReader", source)
         self.assertNotIn("class ExperimentWorkflowReader", source)
         self.assertNotIn("class ReviewWorkflowReader", source)
@@ -629,10 +630,10 @@ for name in (
         # reflection.* has one adapter and one implementation today. Keep it
         # lean by avoiding a single-impl port, but pin the narrow method surface
         # the adapter is allowed to use.
-        imports = _import_segments(SERVICES_ROOT / "reflection_tools.py")
+        imports = _import_segments(RESEARCH_CORE_ROOT / "reflection_tools.py")
         self.assertIn("reflections", imports)
         self.assertNotIn("reflection_waves", imports)
-        source = (SERVICES_ROOT / "reflection_tools.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE_ROOT / "reflection_tools.py").read_text(encoding="utf-8")
         self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ReflectionWaveStore", source)
         from backend.services.reflection_tools import ReflectionToolService
