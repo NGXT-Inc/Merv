@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useProjectStore, selectExperiments, selectClaims, useProjectHref } from '../store/useProjectStore';
+import ExperimentMap from '../expmap/ExperimentMap';
 import { api } from '../api';
 import ObjId from '../components/ObjId';
 import StatusPill from '../components/StatusPill';
@@ -46,6 +47,15 @@ export default function Experiments() {
   const [showForm, setShowForm] = useState(false);
   const [sortKey, setSortKey] = useState('created');
   const [sortDir, setSortDir] = useState('desc');
+  // View state lives in the URL (?view=map) like ?focus=, but replaces
+  // instead of pushing: a mode toggle shouldn't stack history entries.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view = searchParams.get('view') === 'map' ? 'map' : 'table';
+  function setView(v) {
+    const next = new URLSearchParams(searchParams);
+    if (v === 'map') next.set('view', 'map'); else next.delete('view');
+    setSearchParams(next, { replace: true });
+  }
 
   const rows = useMemo(() => {
     const nowMs = Date.now();
@@ -70,11 +80,32 @@ export default function Experiments() {
   }
 
   return (
-    <div className="page-stage">
+    <div className={`page-stage${view === 'map' ? ' xmap-stage' : ''}`}>
       <header className="page-header page-header--lg">
         <div className="page-head-row">
-          <div>
+          <div className="xmap-title-row">
             <h1 className="page-title">What we try</h1>
+            <span className="fig-title-tabs" role="tablist" aria-label="Experiments view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'table'}
+                className={`fig-title-tab${view === 'table' ? ' fig-title-tab--on' : ''}`}
+                onClick={() => setView('table')}
+              >
+                Table
+              </button>
+              <span className="fig-title-tab-sep" aria-hidden="true">/</span>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'map'}
+                className={`fig-title-tab${view === 'map' ? ' fig-title-tab--on' : ''}`}
+                onClick={() => setView('map')}
+              >
+                Map
+              </button>
+            </span>
           </div>
           <div className="page-actions">
             <button className="btn btn--primary" onClick={() => setShowForm(v => !v)}>
@@ -93,7 +124,9 @@ export default function Experiments() {
         />
       )}
 
-      {rows.length === 0 ? (
+      {view === 'map' ? (
+        <ExperimentMap />
+      ) : rows.length === 0 ? (
         <div className="empty-state">
           <h2>No experiments yet</h2>
         </div>
