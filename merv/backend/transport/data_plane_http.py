@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import Body, Request
 
-from ..services.feed import MAX_EMBED_BYTES, MAX_IMAGE_BYTES
+from ..feed.feed import MAX_EMBED_BYTES, MAX_IMAGE_BYTES
 from ..tools.contracts import _validate_openssh_public_key
 from ..utils import ValidationError
 

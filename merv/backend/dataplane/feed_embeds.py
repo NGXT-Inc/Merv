@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..domain.feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type
+from ..feed.feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type
 from ..utils import ValidationError
 from .repo_paths import resolve_repo_path
 

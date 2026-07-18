@@ -7,7 +7,7 @@ from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
 from typing import Any, Protocol, get_type_hints, is_typeddict
 
-from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERVICES_ROOT
+from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, FEED_ROOT, PLUGIN_ROOT, PORTS_ROOT, SERVICES_ROOT
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
@@ -589,18 +589,16 @@ class ServiceLayoutTest(unittest.TestCase):
         )
 
     def test_feed_service_does_not_read_local_image_paths(self) -> None:
-        source = _source("feed.py")
-        imports = _import_module_names(SERVICES / "feed.py")
+        source = (FEED_ROOT / "feed.py").read_text(encoding="utf-8")
 
-        self.assertNotIn("from . import feed_policy", source)
-        self.assertNotIn("feed_policy", imports)
+        self.assertIn("from . import feed_policy", source)
         self.assertNotIn("resolve_repo_relative_file", source)
         self.assertNotIn(".read_bytes(", source)
         self.assertNotIn("workspace", source)
         self.assertIn("post_observed", source)
 
     def test_feed_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(DOMAIN_ROOT / "feed_policy.py"), set())
+        self.assertEqual(_import_module_names(FEED_ROOT / "feed_policy.py"), set())
 
     def test_experiment_names_are_domain_policy(self) -> None:
         self.assertEqual(
@@ -728,7 +726,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_services_type_against_base_state_store(self) -> None:
         concrete_store_names = {"StateStore", "SqliteStateStore"}
-        for path in sorted(SERVICES.rglob("*.py")):
+        for path in sorted((*SERVICES.rglob("*.py"), *FEED_ROOT.rglob("*.py"))):
             if path.name == "__init__.py":
                 continue
             with self.subTest(module=path.name):
@@ -999,7 +997,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 "collections.abc",
                 "typing",
                 "fastapi",
-                "services.feed",
+                "feed.feed",
                 "tools.contracts",
                 "utils",
             },

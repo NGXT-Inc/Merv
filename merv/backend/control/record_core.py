@@ -9,7 +9,7 @@ from ..artifacts.resources import ResourceService
 from ..services.association_targets import AssociationTargets
 from ..services.claims import ClaimService
 from ..services.experiments import ExperimentService
-from ..services.feed import FeedService
+from ..feed.feed import FeedService
 from ..services.graph_refs import GraphRefResolver
 from ..services.permissions import PermissionService
 from ..services.project_overview import ProjectOverviewService
