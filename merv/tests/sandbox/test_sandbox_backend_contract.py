@@ -6,10 +6,16 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from backend.execution.backends.digitalocean import DigitalOceanSandboxBackend
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.execution.backends.hyperstack import HyperstackSandboxBackend
 from backend.execution.backends.lambda_labs import LambdaLabsSandboxBackend
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
+from backend.execution.backends.tensordock import TensorDockSandboxBackend
 from backend.execution.backends.thunder_compute import ThunderComputeSandboxBackend
+from backend.execution.backends.verda import VerdaSandboxBackend
+from backend.execution.backends.voltage_park import VoltageParkSandboxBackend
+from backend.execution.multiplexer import MultiplexingSandboxBackend
 from backend.sandbox.sandbox_backend import (
     BackendCapabilities,
     ProvisionedSandbox,
@@ -23,6 +29,7 @@ from tests.paths import BACKEND_ROOT, SERVICES_ROOT
 
 BACKEND_METHODS = (
     "acquire",
+    "capabilities_for",
     "is_alive",
     "terminate",
     "read_transcript",
@@ -96,6 +103,12 @@ class SandboxBackendContractTest(unittest.TestCase):
             ModalSandboxBackend,
             LambdaLabsSandboxBackend,
             ThunderComputeSandboxBackend,
+            HyperstackSandboxBackend,
+            DigitalOceanSandboxBackend,
+            VerdaSandboxBackend,
+            VoltageParkSandboxBackend,
+            TensorDockSandboxBackend,
+            MultiplexingSandboxBackend,
             FakeSandboxBackend,
         ):
             with self.subTest(backend=backend_cls.__name__):
@@ -108,6 +121,8 @@ class SandboxBackendContractTest(unittest.TestCase):
     def test_base_optional_methods_return_sentinel_defaults(self) -> None:
         backend = MinimalBackend()
 
+        # Single-provider default: one backend serves every request.
+        self.assertIs(backend.capabilities_for(provider="anything"), backend.capabilities)
         self.assertIsNone(backend.sample_metrics(sandbox_id="sb"))
         self.assertIsNone(backend.refresh_ssh_endpoint(sandbox_id="sb"))
         self.assertIsNone(backend.hardware_catalog())
@@ -190,7 +205,16 @@ class SandboxBackendContractTest(unittest.TestCase):
         self.assertNotIn("resolve_mode", daemons_source)
 
     def test_services_do_not_dispatch_on_provider_name_literals(self) -> None:
-        provider_names = {"modal", "lambda_labs", "thunder_compute"}
+        provider_names = {
+            "modal",
+            "lambda_labs",
+            "thunder_compute",
+            "hyperstack",
+            "digitalocean",
+            "verda",
+            "voltage_park",
+            "tensordock",
+        }
         for path in SERVICES_ROOT.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             string_literals = {

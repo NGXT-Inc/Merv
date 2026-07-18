@@ -123,8 +123,12 @@ root selects adapters and wires the modular monolith:
 - record store: SQLite locally or Postgres when `MERV_DB_URL` is set;
 - submitted-byte blob store: local directory or S3-compatible bucket;
 - optional heavy-object store: S3-compatible storage;
-- sandbox backend: Lambda Labs by default, Thunder Compute, Modal, or the fake
-  backend used in tests;
+- sandbox backend: Lambda Labs by default; Thunder Compute, Modal, Hyperstack,
+  DigitalOcean, Verda (DataCrunch), Voltage Park, TensorDock, or the fake
+  backend used in tests. `RESEARCH_PLUGIN_EXECUTION_BACKENDS` (comma-separated)
+  runs several at once behind one multiplexer that routes per-request by
+  provider and prefixes sandbox ids with their owner (see
+  [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md));
 - MLflow: an explicitly configured centralized tracking service.
 
 Research records live in the brain's selected record store. The only durable
