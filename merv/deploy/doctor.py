@@ -128,7 +128,7 @@ class Doctor:
             self._ok("mlflow", f"tracking_uri={tracking_uri}, write skipped")
 
     def _write_mlflow_smoke(self, *, tracking_uri: str, project_id: str) -> MlflowSmoke:
-        experiment_name = f"rp/{project_id}/deploy_doctor"
+        experiment_name = f"merv/{project_id}/deploy_doctor"
         base = f"{tracking_uri}/api/2.0/mlflow"
         experiment_id = ""
         try:
