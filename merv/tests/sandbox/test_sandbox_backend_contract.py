@@ -6,10 +6,16 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from backend.execution.backends.digitalocean import DigitalOceanSandboxBackend
 from backend.execution.backends.fake import FakeSandboxBackend
+from backend.execution.backends.hyperstack import HyperstackSandboxBackend
 from backend.execution.backends.lambda_labs import LambdaLabsSandboxBackend
 from backend.execution.backends.modal.sandbox_backend import ModalSandboxBackend
+from backend.execution.backends.tensordock import TensorDockSandboxBackend
 from backend.execution.backends.thunder_compute import ThunderComputeSandboxBackend
+from backend.execution.backends.verda import VerdaSandboxBackend
+from backend.execution.backends.voltage_park import VoltageParkSandboxBackend
+from backend.execution.multiplexer import MultiplexingSandboxBackend
 from backend.sandbox.sandbox_backend import (
     BackendCapabilities,
     ProvisionedSandbox,
@@ -97,6 +103,12 @@ class SandboxBackendContractTest(unittest.TestCase):
             ModalSandboxBackend,
             LambdaLabsSandboxBackend,
             ThunderComputeSandboxBackend,
+            HyperstackSandboxBackend,
+            DigitalOceanSandboxBackend,
+            VerdaSandboxBackend,
+            VoltageParkSandboxBackend,
+            TensorDockSandboxBackend,
+            MultiplexingSandboxBackend,
             FakeSandboxBackend,
         ):
             with self.subTest(backend=backend_cls.__name__):
