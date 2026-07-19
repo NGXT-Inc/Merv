@@ -13,6 +13,7 @@ forward mapping internal port 22 when the VM detail reports one.
 from __future__ import annotations
 
 import base64
+from contextlib import suppress
 import time
 from pathlib import Path
 from typing import Any
@@ -165,10 +166,8 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if vm_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_vm(vm_id)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:

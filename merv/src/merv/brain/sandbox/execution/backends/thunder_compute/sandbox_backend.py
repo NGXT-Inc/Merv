@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 import shlex
 import subprocess
 import time
@@ -159,10 +160,8 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if instance_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_instance(instance_id)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:

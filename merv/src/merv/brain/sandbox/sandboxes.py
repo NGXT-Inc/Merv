@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, suppress
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1229,7 +1229,7 @@ class SandboxService:
             secrets = {}
         if not secrets:
             return
-        try:
+        with suppress(Exception):  # secret delivery must never fail a request
             self.backend.write_secrets(
                 sandbox_id=sandbox_id,
                 secrets=secrets,
@@ -1237,8 +1237,6 @@ class SandboxService:
                 ssh_port=int(row.get("ssh_port") or 0),
                 key_path=str(self._mgmt_key_path(row=row)),
             )
-        except Exception:  # noqa: BLE001 — secret delivery must never fail a request
-            pass
 
     # ---------- paths / management-key plumbing ----------
 

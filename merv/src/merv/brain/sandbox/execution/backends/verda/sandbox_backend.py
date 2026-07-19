@@ -8,6 +8,7 @@ Billing rounds UP to 10-minute increments.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import time
 from pathlib import Path
 from typing import Any
@@ -168,19 +169,15 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if instance_id:
-                try:
+                with suppress(Exception):
                     self.client.perform_action(instance_id=instance_id, action="delete")
-                except Exception:  # noqa: BLE001
-                    pass
             for cleanup, resource_id in (
                 (self.client.delete_script, script_id),
                 (self.client.delete_ssh_key, key_id),
             ):
                 if resource_id:
-                    try:
+                    with suppress(Exception):
                         cleanup(resource_id)
-                    except Exception:  # noqa: BLE001
-                        pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:
@@ -342,10 +339,8 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
                 continue
             for resource in resources:
                 if str(resource.get("name") or "") == f"{hostname}{suffix}" and resource.get("id"):
-                    try:
+                    with suppress(Exception):
                         deleter(str(resource["id"]))
-                    except Exception:  # noqa: BLE001
-                        pass
 
 
 def build_verda_sandbox_backend(

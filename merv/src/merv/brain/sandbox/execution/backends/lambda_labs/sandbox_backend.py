@@ -7,6 +7,7 @@ developer shell with the tools agents expect.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -172,15 +173,11 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if instance_id:
-                try:
+                with suppress(Exception):
                     self.client.terminate_instances([instance_id])
-                except Exception:  # noqa: BLE001
-                    pass
             if key_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_ssh_key(key_id)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:
@@ -362,10 +359,8 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             key_name = str(key.get("name") or "")
             key_id = str(key.get("id") or "")
             if key_name in wanted and key_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_ssh_key(key_id)
-                except Exception:  # noqa: BLE001
-                    pass
 
 
 def build_user_data(

@@ -9,6 +9,7 @@ access for the account, and the default image is the AI/ML-ready Ubuntu
 
 from __future__ import annotations
 
+from contextlib import suppress
 import time
 from pathlib import Path
 from typing import Any
@@ -167,15 +168,11 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if droplet_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_droplet(droplet_id)
-                except Exception:  # noqa: BLE001
-                    pass
             if key_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_ssh_key(key_id)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:
@@ -201,10 +198,8 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
         except Exception:  # noqa: BLE001
             return False
         for key_id in key_ids:
-            try:
+            with suppress(Exception):
                 self.client.delete_ssh_key(key_id)
-            except Exception:  # noqa: BLE001
-                pass
         return True
 
     def health(self) -> dict:

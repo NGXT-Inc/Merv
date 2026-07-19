@@ -15,6 +15,7 @@ reuse-vs-create policy; this layer only knows how to:
 from __future__ import annotations
 
 import base64
+from contextlib import suppress
 import os
 import shlex
 import threading
@@ -267,10 +268,8 @@ class ModalSandboxBackend(SandboxBackendBase):
             self._notify(on_phase, "connecting", "waiting for ssh")
             host, port = self._ssh_endpoint(sandbox=sandbox)
         except BaseException:
-            try:
+            with suppress(Exception):
                 sandbox.terminate()
-            except Exception:  # noqa: BLE001
-                pass
             raise
         return ProvisionedSandbox(
             sandbox_id=sandbox_id,
@@ -346,17 +345,13 @@ class ModalSandboxBackend(SandboxBackendBase):
         except Exception:  # noqa: BLE001
             return False
         ok = False
-        try:
+        with suppress(Exception):
             sandbox.terminate()
             ok = True
-        except Exception:  # noqa: BLE001
-            pass
-        try:
+        with suppress(Exception):
             detach = getattr(sandbox, "detach", None)
             if callable(detach):
                 detach()
-        except Exception:  # noqa: BLE001
-            pass
         return ok
 
     def read_transcript(
@@ -700,10 +695,8 @@ class ModalSandboxBackend(SandboxBackendBase):
         set_tags = getattr(sandbox, "set_tags", None)
         if not callable(set_tags):
             return
-        try:
+        with suppress(Exception):
             set_tags(dict(tags))
-        except Exception:  # noqa: BLE001
-            pass
 
 
 def _transcript_rel_path(experiment_id: str) -> str:

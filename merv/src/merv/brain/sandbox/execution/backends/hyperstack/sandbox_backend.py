@@ -9,6 +9,7 @@ SSH never becomes reachable. Billing is per-minute while the VM exists
 
 from __future__ import annotations
 
+from contextlib import suppress
 import time
 from pathlib import Path
 from typing import Any
@@ -185,15 +186,11 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
             )
         except Exception:
             if vm_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_vm(vm_id)
-                except Exception:  # noqa: BLE001
-                    pass
             if keypair_id:
-                try:
+                with suppress(Exception):
                     self.client.delete_keypair(keypair_id)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:
@@ -332,10 +329,8 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
             return
         for keypair in keypairs:
             if str(keypair.get("name") or "") in wanted and keypair.get("id"):
-                try:
+                with suppress(Exception):
                     self.client.delete_keypair(keypair["id"])
-                except Exception:  # noqa: BLE001
-                    pass
 
 
 def _sandbox_name(experiment_id: str) -> str:
