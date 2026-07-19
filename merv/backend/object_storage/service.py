@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from ..ports.object_store import ObjectStore
-from ..domain.storage_guidance import storage_guidance
-from ..storage.blobs import _validate_keys
+from .storage_guidance import storage_guidance
+from .blobs import _validate_keys
 from ..state.store import (
     BaseStateStore,
     Connection,
