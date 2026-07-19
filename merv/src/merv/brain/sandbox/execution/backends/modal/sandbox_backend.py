@@ -240,7 +240,7 @@ class ModalSandboxBackend(SandboxBackendBase):
             kwargs["secrets"] = secrets
         if request.gpu:
             kwargs["gpu"] = request.gpu
-        _call(on_phase, "creating", f"gpu={request.gpu or 'cpu'}")
+        self._notify(on_phase, "creating", f"gpu={request.gpu or 'cpu'}")
         try:
             sandbox = modal.Sandbox.create("bash", "/opt/merv/boot.sh", **kwargs)
         except Exception as exc:  # noqa: BLE001
@@ -263,8 +263,8 @@ class ModalSandboxBackend(SandboxBackendBase):
             )
             # Hand the id back so the registry persists it before the slow tunnel
             # wait. May raise to cancel.
-            _call(on_created, sandbox_id, name or "")
-            _call(on_phase, "connecting", "waiting for ssh")
+            self._notify(on_created, sandbox_id, name or "")
+            self._notify(on_phase, "connecting", "waiting for ssh")
             host, port = self._ssh_endpoint(sandbox=sandbox)
         except BaseException:
             try:
@@ -704,12 +704,6 @@ class ModalSandboxBackend(SandboxBackendBase):
             set_tags(dict(tags))
         except Exception:  # noqa: BLE001
             pass
-
-
-def _call(cb: Any, *args: Any) -> None:
-    """Invoke a progress callback if present; let it raise (to cancel)."""
-    if cb is not None:
-        cb(*args)
 
 
 def _transcript_rel_path(experiment_id: str) -> str:

@@ -94,7 +94,7 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
                 "e.g. 1H100.80S.30V). Call sandbox.options, or sandbox.request "
                 "without an instance_type, to see live availability, then pick one."
             )
-        _call(on_phase, "checking_capacity", instance_type)
+        self._notify(on_phase, "checking_capacity", instance_type)
         option, location = self._resolve_placement(
             instance_type=instance_type,
             location=(request.region or self.config.location_code or "").strip(),
@@ -105,7 +105,7 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
         script_id = ""
         instance_id = ""
         try:
-            _call(on_phase, "registering_ssh_key", f"{instance_name}-key")
+            self._notify(on_phase, "registering_ssh_key", f"{instance_name}-key")
             key_id = self.client.add_ssh_key(
                 name=f"{instance_name}-key", key=request.public_key
             )
@@ -129,7 +129,7 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
                 name=f"{instance_name}-boot", script=script
             )
 
-            _call(on_phase, "creating", f"{instance_type} in {location}")
+            self._notify(on_phase, "creating", f"{instance_type} in {location}")
             instance_id = self.client.deploy_instance(
                 instance_type=instance_type,
                 image=self.config.image,
@@ -139,9 +139,9 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
                 ssh_key_ids=[key_id],
                 startup_script_id=script_id,
             )
-            _call(on_created, instance_id, instance_name)
+            self._notify(on_created, instance_id, instance_name)
 
-            _call(on_phase, "connecting", "waiting for running instance and ssh")
+            self._notify(on_phase, "connecting", "waiting for running instance and ssh")
             instance = self._wait_for_running_instance(instance_id=instance_id)
             ip = str(instance.get("ip") or "")
             if not ip:
@@ -352,11 +352,6 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_verda_sandbox_backend(

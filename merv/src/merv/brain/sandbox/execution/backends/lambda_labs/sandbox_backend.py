@@ -109,21 +109,21 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
         # type. If the agent overrode the instance type, don't force that region
         # onto it — auto-pick a region with capacity for the chosen SKU instead.
         default_region = "" if request.instance_type else self.config.region_name
-        _call(on_phase, "checking_capacity", instance_type)
+        self._notify(on_phase, "checking_capacity", instance_type)
         region, specs = self._resolve_placement(
             instance_type=instance_type,
             region=(request.region or default_region or "").strip(),
             requested_gpu=request.gpu,
         )
 
-        _call(on_phase, "registering_ssh_key", key_name)
+        self._notify(on_phase, "registering_ssh_key", key_name)
         key_id = ""
         instance_id = ""
         try:
             key = self.client.add_ssh_key(name=key_name, public_key=request.public_key)
             key_id = str(key.get("id") or "")
 
-            _call(on_phase, "creating", f"{instance_type} in {region}")
+            self._notify(on_phase, "creating", f"{instance_type} in {region}")
             workdir = request.remote_workdir or remote_experiment_dir(
                 experiment_id=request.experiment_id, root=self.config.remote_root
             )
@@ -146,9 +146,9 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
                 name=instance_name,
                 user_data=user_data,
             )
-            _call(on_created, instance_id, instance_name)
+            self._notify(on_created, instance_id, instance_name)
 
-            _call(on_phase, "connecting", "waiting for active instance and ssh")
+            self._notify(on_phase, "connecting", "waiting for active instance and ssh")
             instance = self._wait_for_active_instance(instance_id=instance_id)
             ip = str(instance.get("ip") or instance.get("hostname") or "")
             if not ip:
@@ -434,11 +434,6 @@ install_with_uv_or_pip {python_packages} || true
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_lambda_labs_sandbox_backend(*, repo_root: Path | None = None, **_kwargs: Any) -> LambdaLabsSandboxBackend:

@@ -251,6 +251,12 @@ class SandboxBackendBase:
 
     capabilities: BackendCapabilities
 
+    @staticmethod
+    def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
+        """Invoke a progress callback, allowing it to raise to cancel."""
+        if callback is not None:
+            callback(*args)
+
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
         """Single-provider default: one backend serves every request."""
         _ = provider

@@ -98,7 +98,7 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
                 "id). Call sandbox.options, or sandbox.request without an "
                 "instance_type, to see live presets, then pick one."
             )
-        _call(on_phase, "checking_capacity", config_id)
+        self._notify(on_phase, "checking_capacity", config_id)
         option = self._resolve_preset(
             config_id=config_id,
             region=(request.region or "").strip(),
@@ -107,7 +107,7 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
 
         vm_id = ""
         try:
-            _call(on_phase, "creating", f"preset {config_id}")
+            self._notify(on_phase, "creating", f"preset {config_id}")
             workdir = request.remote_workdir or remote_experiment_dir(
                 experiment_id=request.experiment_id, root=self.config.remote_root
             )
@@ -135,9 +135,9 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
                 ],
                 cloud_init=_bootstrap_cloud_init(bootstrap),
             )
-            _call(on_created, vm_id, vm_name)
+            self._notify(on_created, vm_id, vm_name)
 
-            _call(on_phase, "connecting", "waiting for running VM and ssh")
+            self._notify(on_phase, "connecting", "waiting for running VM and ssh")
             vm = self._wait_for_running_vm(vm_id=vm_id)
             host, port = _ssh_endpoint(vm)
             if not host:
@@ -333,11 +333,6 @@ def _vm_hourly_rate(vm: dict[str, Any]) -> float:
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_voltage_park_sandbox_backend(

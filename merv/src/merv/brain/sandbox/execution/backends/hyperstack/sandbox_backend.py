@@ -108,13 +108,13 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
                 "+ RAM). Call sandbox.options, or sandbox.request without an "
                 "instance_type, to see live availability, then pick one."
             )
-        _call(on_phase, "checking_capacity", flavor_name)
+        self._notify(on_phase, "checking_capacity", flavor_name)
         option = self._resolve_flavor(flavor_name=flavor_name, requested_gpu=request.gpu)
 
         keypair_id = ""
         vm_id = ""
         try:
-            _call(on_phase, "registering_ssh_key", key_name)
+            self._notify(on_phase, "registering_ssh_key", key_name)
             keypair = self.client.import_keypair(
                 name=key_name,
                 environment_name=self.config.environment_name,
@@ -122,7 +122,7 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
             )
             keypair_id = str(keypair.get("id") or "")
 
-            _call(on_phase, "creating", f"{flavor_name} in {self.config.environment_name}")
+            self._notify(on_phase, "creating", f"{flavor_name} in {self.config.environment_name}")
             workdir = request.remote_workdir or remote_experiment_dir(
                 experiment_id=request.experiment_id, root=self.config.remote_root
             )
@@ -152,9 +152,9 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
             vm_id = str(instance.get("id") or "")
             if not vm_id:
                 raise BackendUnavailableError("Hyperstack created a VM without an id")
-            _call(on_created, vm_id, instance_name)
+            self._notify(on_created, vm_id, instance_name)
 
-            _call(on_phase, "connecting", "waiting for active VM and ssh")
+            self._notify(on_phase, "connecting", "waiting for active VM and ssh")
             instance = self._wait_for_active_vm(vm_id=vm_id)
             ip = str(instance.get("floating_ip") or "")
             if not ip:
@@ -342,11 +342,6 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:50]  # Hyperstack caps VM names at 50 chars
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_hyperstack_sandbox_backend(

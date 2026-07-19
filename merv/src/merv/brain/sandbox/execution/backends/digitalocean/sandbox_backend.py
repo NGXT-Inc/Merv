@@ -94,7 +94,7 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
                 "Call sandbox.options, or sandbox.request without an instance_type, "
                 "to see the available GPU sizes, then pick one."
             )
-        _call(on_phase, "checking_capacity", size)
+        self._notify(on_phase, "checking_capacity", size)
         option, region = self._resolve_placement(
             size=size,
             region=(request.region or self.config.region or "").strip(),
@@ -104,12 +104,12 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
         key_id: int | str = ""
         droplet_id = ""
         try:
-            _call(on_phase, "registering_ssh_key", f"{droplet_name}-key")
+            self._notify(on_phase, "registering_ssh_key", f"{droplet_name}-key")
             key_id = self._ensure_ssh_key(
                 name=f"{droplet_name}-key", public_key=request.public_key
             )
 
-            _call(on_phase, "creating", f"{size} in {region}")
+            self._notify(on_phase, "creating", f"{size} in {region}")
             workdir = request.remote_workdir or remote_experiment_dir(
                 experiment_id=request.experiment_id, root=self.config.remote_root
             )
@@ -138,9 +138,9 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
                 user_data=user_data,
             )
             droplet_id = str(droplet["id"])
-            _call(on_created, droplet_id, droplet_name)
+            self._notify(on_created, droplet_id, droplet_name)
 
-            _call(on_phase, "connecting", "waiting for active droplet and ssh")
+            self._notify(on_phase, "connecting", "waiting for active droplet and ssh")
             droplet = self._wait_for_active_droplet(droplet_id=droplet_id)
             ip = _public_ipv4(droplet)
             if not ip:
@@ -365,11 +365,6 @@ def _public_ipv4(droplet: dict[str, Any]) -> str:
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_digitalocean_sandbox_backend(

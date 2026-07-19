@@ -102,7 +102,7 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
                 f"(e.g. 1x-h100-sxm5-80gb), got: {instance_type}"
             )
         gpu_count, v0_name = parsed
-        _call(on_phase, "checking_capacity", instance_type)
+        self._notify(on_phase, "checking_capacity", instance_type)
         option = self._resolve_option(
             instance_type=instance_type,
             region=(request.region or "").strip(),
@@ -113,7 +113,7 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
 
         instance_id = ""
         try:
-            _call(on_phase, "creating", f"{instance_type} in {location_id}")
+            self._notify(on_phase, "creating", f"{instance_type} in {location_id}")
             workdir = request.remote_workdir or remote_experiment_dir(
                 experiment_id=request.experiment_id, root=self.config.remote_root
             )
@@ -143,9 +143,9 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
                 cloud_init=_bootstrap_cloud_init(bootstrap),
             )
             instance_id = str(instance.get("id") or "")
-            _call(on_created, instance_id, vm_name)
+            self._notify(on_created, instance_id, vm_name)
 
-            _call(on_phase, "connecting", "waiting for running VM and ssh")
+            self._notify(on_phase, "connecting", "waiting for running VM and ssh")
             instance = self._wait_for_running_instance(instance_id=instance_id)
             host, port = _ssh_endpoint(instance)
             if not host:
@@ -337,11 +337,6 @@ def _ssh_endpoint(instance: dict[str, Any]) -> tuple[str, int]:
 def _sandbox_name(experiment_id: str) -> str:
     safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
     return f"rp-{safe or 'exp'}"[:60]
-
-
-def _call(cb: Any, *args: Any) -> None:
-    if cb is not None:
-        cb(*args)
 
 
 def build_tensordock_sandbox_backend(
