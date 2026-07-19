@@ -1,6 +1,8 @@
 # De-shim inventories — consolidated from the five Sol tranche reviews
 
 > Transient integration input; deleted with RESTRUCTURE_MAP.md at the end.
+> This is historical review evidence: legacy paths are intentional and exempt
+> from end-state stale-path sweeps.
 
 ## feed (T1)
 ## Verdict: CORRECTIONS REQUIRED

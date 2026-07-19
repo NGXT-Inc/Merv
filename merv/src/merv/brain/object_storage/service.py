@@ -7,8 +7,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from merv.shared.file_transfer import (
+    download_target_to_file,
+    file_digest,
+    upload_file_to_target,
+)
+from merv.shared.storage_guidance import storage_guidance
+
 from ..kernel.ports.object_store import ObjectStore
-from .storage_guidance import storage_guidance
 from .blobs import _validate_keys
 from ..kernel.state.store import (
     BaseStateStore,
@@ -17,8 +23,14 @@ from ..kernel.state.store import (
     next_created_seq,
     row_to_dict,
 )
-from ..kernel.utils import NotFoundError, ValidationError, format_iso, iso_after, new_id, now_iso
-from .file_transfer import download_target_to_file, file_digest, upload_file_to_target
+from ..kernel.utils import (
+    NotFoundError,
+    ValidationError,
+    format_iso,
+    iso_after,
+    new_id,
+    now_iso,
+)
 
 
 STORAGE_KINDS = {"dataset", "model", "other"}
@@ -87,7 +99,11 @@ class StorageLedgerService:
                 (project_id, name, sha256),
             ).fetchone()
             if existing is not None:
-                return {"deduped": False, "idempotent": True, "object": self._hydrate(row=existing)}
+                return {
+                    "deduped": False,
+                    "idempotent": True,
+                    "object": self._hydrate(row=existing),
+                }
 
             version = self._next_version(conn=conn, project_id=project_id, name=name)
             stat = self.objects.stat(namespace=namespace, sha256=sha256)
@@ -111,7 +127,12 @@ class StorageLedgerService:
                     source_uri=source_uri,
                     notes=notes,
                 )
-                self._record(conn=conn, project_id=project_id, event_type="storage.registered", row=row)
+                self._record(
+                    conn=conn,
+                    project_id=project_id,
+                    event_type="storage.registered",
+                    row=row,
+                )
                 return {"deduped": True, "object": self._hydrate(row=row)}
 
             upload = self.objects.presign_upload(
@@ -140,7 +161,12 @@ class StorageLedgerService:
                 source_uri=source_uri,
                 notes=notes,
             )
-            self._record(conn=conn, project_id=project_id, event_type="storage.registered", row=row)
+            self._record(
+                conn=conn,
+                project_id=project_id,
+                event_type="storage.registered",
+                row=row,
+            )
             return {"object": self._hydrate(row=row), "upload": upload}
 
     def upload_file(
@@ -278,13 +304,19 @@ class StorageLedgerService:
                 (now_iso(), project_id, upload_id),
             )
             if int(getattr(cursor, "rowcount", 0)) != 1:
-                raise NotFoundError(f"upload not found in project {project_id}: {upload_id}")
-            row = self._get_by_upload(conn=conn, project_id=project_id, upload_id=upload_id)
+                raise NotFoundError(
+                    f"upload not found in project {project_id}: {upload_id}"
+                )
+            row = self._get_by_upload(
+                conn=conn, project_id=project_id, upload_id=upload_id
+            )
         try:
             stat = self.objects.complete_upload(upload_id=upload_id, parts=parts)
         except Exception:
             with self.store.transaction() as conn:
-                project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+                project_id = self.store.require_project_id(
+                    conn=conn, project_id=project_id
+                )
                 conn.execute(
                     """
                     UPDATE storage_objects
@@ -297,12 +329,16 @@ class StorageLedgerService:
         if str(stat.namespace) != str(row["namespace"]) or str(stat.sha256) != str(
             row["content_sha256"]
         ):
-            raise ValidationError(f"upload {upload_id} completed with unexpected object identity")
+            raise ValidationError(
+                f"upload {upload_id} completed with unexpected object identity"
+            )
         now = now_iso()
         expires_at = iso_after(seconds=STORAGE_DEFAULT_TTL_SECONDS)
         try:
             with self.store.transaction() as conn:
-                project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+                project_id = self.store.require_project_id(
+                    conn=conn, project_id=project_id
+                )
                 cursor = conn.execute(
                     """
                     UPDATE storage_objects
@@ -378,7 +414,9 @@ class StorageLedgerService:
                     else "status = 'available'"
                 )
             base = f"FROM storage_objects WHERE {' AND '.join(where)}"
-            total_row = conn.execute(f"SELECT COUNT(*) AS total {base}", params).fetchone()
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS total {base}", params
+            ).fetchone()
             total = int(total_row["total"] if total_row is not None else 0)
             query = f"SELECT * {base} ORDER BY name, version DESC, created_seq DESC"
             page_params = list(params)
@@ -441,8 +479,14 @@ class StorageLedgerService:
                 version=version,
             )
             if row is None or str(row["status"]) != "available":
-                target = object_id if object_id else (f"{name}@{version}" if version is not None else name)
-                raise NotFoundError(f"storage object not available in project {project_id}: {target}")
+                target = (
+                    object_id
+                    if object_id
+                    else (f"{name}@{version}" if version is not None else name)
+                )
+                raise NotFoundError(
+                    f"storage object not available in project {project_id}: {target}"
+                )
             expires_at = row["expires_at"]
             if expires_at is not None and str(next_expiry) > str(expires_at):
                 conn.execute(
@@ -462,7 +506,9 @@ class StorageLedgerService:
                     """,
                     (now, now, row["id"]),
                 )
-            row = self._get_by_id(conn=conn, project_id=project_id, object_id=str(row["id"]))
+            row = self._get_by_id(
+                conn=conn, project_id=project_id, object_id=str(row["id"])
+            )
             obj = self._hydrate(row=row)
         result: dict[str, Any] = {"object": obj}
         if include_download:
@@ -474,7 +520,9 @@ class StorageLedgerService:
         return result
 
     def pin(self, *, project_id: str | None, object_id: str) -> dict[str, Any]:
-        return self._set_expiry(project_id=project_id, object_id=object_id, expires_at=None)
+        return self._set_expiry(
+            project_id=project_id, object_id=object_id, expires_at=None
+        )
 
     def unpin(self, *, project_id: str | None, object_id: str) -> dict[str, Any]:
         return self._set_expiry(
@@ -491,7 +539,11 @@ class StorageLedgerService:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = self._get_by_id(conn=conn, project_id=project_id, object_id=object_id)
             if str(row["status"]) == "deleted":
-                return {"deleted": False, "reclaimed": False, "object": self._hydrate(row=row)}
+                return {
+                    "deleted": False,
+                    "reclaimed": False,
+                    "object": self._hydrate(row=row),
+                }
             if str(row["status"]) == "completing":
                 raise ValidationError(
                     f"storage object is completing and cannot be deleted: {object_id}"
@@ -501,7 +553,9 @@ class StorageLedgerService:
                 "UPDATE storage_objects SET status = 'deleted', updated_at = ? WHERE id = ?",
                 (now, object_id),
             )
-            updated = self._get_by_id(conn=conn, project_id=project_id, object_id=object_id)
+            updated = self._get_by_id(
+                conn=conn, project_id=project_id, object_id=object_id
+            )
             self._record(
                 conn=conn,
                 project_id=project_id,
@@ -511,7 +565,9 @@ class StorageLedgerService:
             obj = self._hydrate(row=updated)
             namespace = str(row["namespace"])
             sha256 = str(row["content_sha256"])
-        reclaimed = self._reclaim_if_unreferenced_after_commit(namespace=namespace, sha256=sha256)
+        reclaimed = self._reclaim_if_unreferenced_after_commit(
+            namespace=namespace, sha256=sha256
+        )
         return {"deleted": True, "reclaimed": reclaimed, "object": obj}
 
     def sweep_expired(self, *, now: str | datetime | None = None) -> int:
@@ -534,7 +590,9 @@ class StorageLedgerService:
                     (cutoff, row["id"]),
                 )
                 updated = self._get_by_id(
-                    conn=conn, project_id=str(row["project_id"]), object_id=str(row["id"])
+                    conn=conn,
+                    project_id=str(row["project_id"]),
+                    object_id=str(row["id"]),
                 )
                 self._record(
                     conn=conn,
@@ -545,7 +603,9 @@ class StorageLedgerService:
                 freed.append((str(row["namespace"]), str(row["content_sha256"])))
                 swept += 1
         for namespace, sha256 in freed:
-            self._reclaim_if_unreferenced_after_commit(namespace=namespace, sha256=sha256)
+            self._reclaim_if_unreferenced_after_commit(
+                namespace=namespace, sha256=sha256
+            )
         return swept
 
     def _insert_object(
@@ -617,7 +677,9 @@ class StorageLedgerService:
                 (expires_at, now_iso(), object_id),
             )
             return self._hydrate(
-                row=self._get_by_id(conn=conn, project_id=project_id, object_id=object_id)
+                row=self._get_by_id(
+                    conn=conn, project_id=project_id, object_id=object_id
+                )
             )
 
     def _resolve_row(
@@ -660,16 +722,22 @@ class StorageLedgerService:
             (project_id, object_id),
         ).fetchone()
         if row is None:
-            raise NotFoundError(f"storage object not found in project {project_id}: {object_id}")
+            raise NotFoundError(
+                f"storage object not found in project {project_id}: {object_id}"
+            )
         return row
 
-    def _get_by_upload(self, *, conn: Connection, project_id: str, upload_id: str) -> Row:
+    def _get_by_upload(
+        self, *, conn: Connection, project_id: str, upload_id: str
+    ) -> Row:
         row = conn.execute(
             "SELECT * FROM storage_objects WHERE project_id = ? AND upload_id = ?",
             (project_id, upload_id),
         ).fetchone()
         if row is None:
-            raise NotFoundError(f"upload not found in project {project_id}: {upload_id}")
+            raise NotFoundError(
+                f"upload not found in project {project_id}: {upload_id}"
+            )
         return row
 
     def _next_version(self, *, conn: Connection, project_id: str, name: str) -> int:
@@ -687,7 +755,9 @@ class StorageLedgerService:
         self, *, namespace: str, sha256: str
     ) -> bool:
         with self.store.transaction() as conn:
-            return self._reclaim_if_unreferenced(conn=conn, namespace=namespace, sha256=sha256)
+            return self._reclaim_if_unreferenced(
+                conn=conn, namespace=namespace, sha256=sha256
+            )
 
     def _reclaim_if_unreferenced(
         self, *, conn: Connection, namespace: str, sha256: str

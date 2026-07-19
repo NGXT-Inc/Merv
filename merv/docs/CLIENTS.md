@@ -24,11 +24,13 @@ Shared invariants across all clients:
   the project from `MERV_REPO_ROOT`, defaulting to `$PWD`. Clients
   that do not spawn stdio servers in the project directory (Cursor) must set
   the env var explicitly; the others rely on cwd.
-- The proxy needs no pip installs: it runs on bare `python3` (3.11+). The
+- The source-launched `merv-mcp` proxy needs no pip installs and runs on bare
+  `python3` 3.9+. The
   tool catalog ships as checked-in JSON (`src/merv/proxy/_tool_catalog.json`) so
-  discovery works without third-party packages; optional local prevalidation
-  uses the live Pydantic contracts when they are already installed and otherwise
-  preserves the bare-Python path. A venv is only needed to run a local brain.
+  it is the proxy's sole runtime registry and discovery works without Pydantic
+  or any brain import. The `merv-client` CLI, `merv-http`, and brain remain
+  Python 3.11+; a venv is needed only for those brain/CLI surfaces when the
+  machine does not already provide 3.11+.
   The launcher expects a POSIX shell, and sandbox SSH/output pulls rely on the
   machine's OpenSSH client and `rsync`.
 - Skills follow the cross-tool Agent Skills layout (`skills/<name>/SKILL.md`

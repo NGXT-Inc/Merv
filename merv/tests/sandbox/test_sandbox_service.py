@@ -11,7 +11,7 @@ from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities, SandboxRequest
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
-from merv.brain.workspace import local_experiment_dir
+from merv.proxy.workspace import local_experiment_dir
 
 
 class SandboxServiceTest(unittest.TestCase):
@@ -29,7 +29,9 @@ class SandboxServiceTest(unittest.TestCase):
                 health_check=lambda: True,
             ),
         )
-        self.project_id = self.call("project", action="create", name="Sandbox Project")["id"]
+        self.project_id = self.call("project", action="create", name="Sandbox Project")[
+            "id"
+        ]
 
     def tearDown(self) -> None:
         self.app.shutdown()
@@ -53,32 +55,46 @@ class SandboxServiceTest(unittest.TestCase):
         )
 
     def _experiment(self, *, status: str = "ready_to_run", name: str = "exp-1") -> str:
-        exp_id = self.call("experiment.create", name=name, project_id=self.project_id, intent="x")["id"]
+        exp_id = self.call(
+            "experiment.create", name=name, project_id=self.project_id, intent="x"
+        )["id"]
         if status != "planned":
             with self.app.store.transaction() as conn:
-                conn.execute("UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id))
+                conn.execute(
+                    "UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id)
+                )
         return exp_id
 
     # ---- gating ----
 
     def test_request_allows_planned_experiment_attachment(self) -> None:
         exp_id = self._experiment(status="planned")
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["active_experiment_ids"], [exp_id])
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "planned")
 
     def test_request_unknown_experiment(self) -> None:
         with self.assertRaises(NotFoundError):
-            self.call("sandbox.request", project_id=self.project_id, experiment_id="exp_nope")
+            self.call(
+                "sandbox.request", project_id=self.project_id, experiment_id="exp_nope"
+            )
 
     # ---- procurement ----
 
     def test_request_creates_and_returns_ssh(self) -> None:
         exp_id = self._experiment()
         result = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, gpu="A100", time_limit=1200
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            gpu="A100",
+            time_limit=1200,
         )
         self.assertEqual(result["status"], "running")
         self.assertFalse(result["reused"])
@@ -92,7 +108,9 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(result["experiment_dir"], f"/workspace/sandbox-{uid[:12]}")
         self.assertEqual(result["data_dir"], "/workspace/data")
         self.assertEqual(result["public_key_source"], "caller")
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
     def test_request_without_experiment_creates_standalone_sandbox(self) -> None:
@@ -111,7 +129,9 @@ class SandboxServiceTest(unittest.TestCase):
             sandbox_uid=result["sandbox_uid"],
         )
         self.assertEqual(got["sandbox_id"], result["sandbox_id"])
-        other_project = self.call("project", action="create", name="Other Project")["id"]
+        other_project = self.call("project", action="create", name="Other Project")[
+            "id"
+        ]
         with self.assertRaises(NotFoundError):
             self.call(
                 "sandbox.get",
@@ -140,7 +160,9 @@ class SandboxServiceTest(unittest.TestCase):
             "notes": ["HF_TOKEN is available inside the sandbox."],
         }
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["environment"]["available_tokens"], ["HF_TOKEN"])
         self.assertNotIn("hf_", str(result))
 
@@ -149,8 +171,12 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_request_reuses_live_sandbox(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        second = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+        second = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertTrue(second["reused"])
         self.assertEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 1)
@@ -183,11 +209,15 @@ class SandboxServiceTest(unittest.TestCase):
         row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=uid)
         self.assertEqual(row["mgmt_key_ref"], uid)
         self.assertEqual(
-            self.call("experiment.get_state", project_id=self.project_id, experiment_id=source)["status"],
+            self.call(
+                "experiment.get_state", project_id=self.project_id, experiment_id=source
+            )["status"],
             "ready_to_run",
         )
         self.assertEqual(
-            self.call("experiment.get_state", project_id=self.project_id, experiment_id=target)["status"],
+            self.call(
+                "experiment.get_state", project_id=self.project_id, experiment_id=target
+            )["status"],
             "ready_to_run",
         )
         conn = self.app.store.connect()
@@ -203,7 +233,9 @@ class SandboxServiceTest(unittest.TestCase):
             ).fetchall()
         finally:
             conn.close()
-        by_experiment = {row["experiment_id"]: row["detached_at"] for row in attachments}
+        by_experiment = {
+            row["experiment_id"]: row["detached_at"] for row in attachments
+        }
         self.assertEqual(set(by_experiment), {source, target})
         self.assertIsNone(by_experiment[source])
         self.assertIsNone(by_experiment[target])
@@ -314,7 +346,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_request_additional_creates_parallel_sandbox(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
             "sandbox.request",
             project_id=self.project_id,
@@ -326,12 +360,17 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertNotIn("command", first["ssh"])
         self.assertNotIn("command", second["ssh"])
-        self.assertEqual(first["workdir"], f"/workspace/sandbox-{first['sandbox_uid'][:12]}")
+        self.assertEqual(
+            first["workdir"], f"/workspace/sandbox-{first['sandbox_uid'][:12]}"
+        )
         self.assertNotEqual(first["workdir"], second["workdir"])
         self.assertIn(second["sandbox_uid"][:12], second["workdir"])
 
         rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
-        self.assertEqual({row["sandbox_uid"] for row in rows}, {first["sandbox_uid"], second["sandbox_uid"]})
+        self.assertEqual(
+            {row["sandbox_uid"] for row in rows},
+            {first["sandbox_uid"], second["sandbox_uid"]},
+        )
         listed = self.call("sandbox.list", project_id=self.project_id)["sandboxes"]
         self.assertIn(first["sandbox_uid"], {row["sandbox_uid"] for row in listed})
         self.assertIn(second["sandbox_uid"], {row["sandbox_uid"] for row in listed})
@@ -341,7 +380,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_get_terminal_and_release_target_sandbox_uid(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
             "sandbox.request",
             project_id=self.project_id,
@@ -362,7 +403,9 @@ class SandboxServiceTest(unittest.TestCase):
             experiment_id=exp_id,
             sandbox_uid=second["sandbox_uid"],
         )
-        self.assertEqual(self.backend.transcript_reads[-1]["sandbox_id"], second["sandbox_id"])
+        self.assertEqual(
+            self.backend.transcript_reads[-1]["sandbox_id"], second["sandbox_id"]
+        )
 
         released = self.call(
             "sandbox.release",
@@ -374,12 +417,16 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(released["sandbox_uid"], first["sandbox_uid"])
         self.assertIn(first["sandbox_id"], self.backend.terminated)
         self.assertTrue(self.backend.is_alive(sandbox_id=second["sandbox_id"]))
-        primary = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        primary = self.call(
+            "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(primary["sandbox_uid"], second["sandbox_uid"])
 
     def test_release_provisioning_sibling_does_not_touch_live_primary(self) -> None:
         exp_id = self._experiment()
-        primary = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        primary = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         pending_uid = self.app.sandboxes.registry.create_sandbox(
             experiment_id=exp_id,
             project_id=self.project_id,
@@ -412,7 +459,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_release_without_uid_releases_all_live_sandboxes(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
             "sandbox.request",
             project_id=self.project_id,
@@ -434,7 +483,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_reaper_does_not_change_experiment_status(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
             "sandbox.request",
             project_id=self.project_id,
@@ -447,7 +498,9 @@ class SandboxServiceTest(unittest.TestCase):
                 ("2000-01-01T00:00:00Z", first["sandbox_uid"]),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
         with self.app.store.transaction() as conn:
@@ -456,14 +509,21 @@ class SandboxServiceTest(unittest.TestCase):
                 ("2000-01-01T00:00:00Z", second["sandbox_uid"]),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
     def test_reaper_keeps_provisioning_sibling_association(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
         )
         with self.app.store.transaction() as conn:
             conn.execute(
@@ -475,16 +535,23 @@ class SandboxServiceTest(unittest.TestCase):
                 ("2000-01-01T00:00:00Z", first["sandbox_uid"]),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
     def test_additional_sandbox_gets_a_distinct_local_dir(self) -> None:
         # Regression (F2): parallel sandboxes must NOT share one local experiment
         # folder, or explicit retained-file copies would collide.
         exp_id = self._experiment()
-        primary = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        primary = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         extra = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
         )
         primary_dir = local_experiment_dir(
             repo_root=self.repo,
@@ -501,9 +568,13 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_request_recreates_after_death(self) -> None:
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.backend.kill(sandbox_id=first["sandbox_id"])
-        second = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertFalse(second["reused"])
         self.assertNotEqual(first["sandbox_id"], second["sandbox_id"])
         self.assertEqual(len(self.backend.acquired), 2)
@@ -512,7 +583,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_get_refreshes_moved_endpoint(self) -> None:
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         old_host = created["ssh"]["host"]
         # Sandbox stays alive but Modal relocates its SSH tunnel.
         self.backend.move_endpoint(
@@ -543,7 +616,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_get_reconciles_dead_sandbox(self) -> None:
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.backend.kill(sandbox_id=created["sandbox_id"])
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(got["status"], "terminated")
@@ -553,24 +628,35 @@ class SandboxServiceTest(unittest.TestCase):
         # reconcile on the next sandbox.get. The sandbox terminates and its active
         # attachment closes; the experiment status is not a sandbox concern.
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(
-            self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)["status"],
+            self.call(
+                "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+            )["status"],
             "ready_to_run",
         )
         self.backend.kill(sandbox_id=created["sandbox_id"])
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
         self.assertEqual(got["status"], "terminated")
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
     def test_get_reconcile_keeps_sibling_attachment_alive(self) -> None:
         # With a parallel (additional) sandbox still live, reconciling one dead
         # sandbox removes only that sandbox's attachment.
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         second = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, additional=True
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            additional=True,
         )
         self.backend.kill(sandbox_id=first["sandbox_id"])
         self.call(
@@ -580,7 +666,9 @@ class SandboxServiceTest(unittest.TestCase):
             sandbox_uid=first["sandbox_uid"],
         )
         self.assertEqual(
-            self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)["status"],
+            self.call(
+                "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+            )["status"],
             "ready_to_run",
         )
         self.backend.kill(sandbox_id=second["sandbox_id"])
@@ -591,7 +679,9 @@ class SandboxServiceTest(unittest.TestCase):
             sandbox_uid=second["sandbox_uid"],
         )
         self.assertEqual(
-            self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)["status"],
+            self.call(
+                "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+            )["status"],
             "ready_to_run",
         )
 
@@ -647,11 +737,21 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_metrics_for_running_sandbox(self) -> None:
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         sample = {
             "cpu": {"used_cores": 1.5, "limit_cores": 2.0},
             "memory": {"used_bytes": 2147483648, "limit_bytes": 8589934592},
-            "gpus": [{"index": 0, "name": "A100", "util_pct": 42, "mem_used_mib": 1024, "mem_total_mib": 40960}],
+            "gpus": [
+                {
+                    "index": 0,
+                    "name": "A100",
+                    "util_pct": 42,
+                    "mem_used_mib": 1024,
+                    "mem_total_mib": 40960,
+                }
+            ],
         }
         self.backend.metrics[created["sandbox_id"]] = sample
         result = self.app.sandboxes.sample_metrics(
@@ -667,8 +767,12 @@ class SandboxServiceTest(unittest.TestCase):
     def test_terminal_reads_transcript(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.backend.append_transcript(experiment_id=exp_id, text="$ python train.py\nloss 0.1\n")
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.append_transcript(
+            experiment_id=exp_id, text="$ python train.py\nloss 0.1\n"
+        )
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertIn("train.py", term["transcript"])
         self.assertTrue(term["running"])
         self.assertEqual(term["cursor"], len(term["transcript"]))
@@ -677,18 +781,26 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(experiment_id=exp_id, text="epoch 1\n")
-        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         cursor = first["cursor"]
         # No new output yet → since=cursor yields empty new output.
         same = self.call(
-            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id, since=cursor
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=cursor,
         )
         self.assertEqual(same["transcript"], "")
         self.assertEqual(same["new_chars"], 0)
         # New output appended → since=cursor returns ONLY the new bytes.
         self.backend.append_transcript(experiment_id=exp_id, text="epoch 2\n")
         delta = self.call(
-            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id, since=cursor
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=cursor,
         )
         self.assertEqual(delta["transcript"], "epoch 2\n")
         self.assertEqual(delta["new_chars"], len("epoch 2\n"))
@@ -706,7 +818,9 @@ class SandboxServiceTest(unittest.TestCase):
         big = ("x" * 99 + "\n") * 600  # 60,000 bytes — beyond the tail window
         self.backend.append_transcript(experiment_id=exp_id, text=big)
 
-        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(first["cursor"], len(big))  # true size, not window size
         self.assertEqual(len(first["transcript"]), window_len)
         self.assertTrue(big.endswith(first["transcript"]))
@@ -737,7 +851,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_terminal_running_false_after_release(self) -> None:
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.call(
             "sandbox.release",
             project_id=self.project_id,
@@ -780,7 +896,9 @@ class SandboxServiceTest(unittest.TestCase):
     # ---- terminal: per-command exit status (rec.sh markers) ----
 
     @staticmethod
-    def _rec(command: str, output: str, exit_code: int, *, ts: str = "2026-06-09T12:00:00Z") -> str:
+    def _rec(
+        command: str, output: str, exit_code: int, *, ts: str = "2026-06-09T12:00:00Z"
+    ) -> str:
         """A completed-command transcript block in the rec.sh marker format."""
         return f"\n[{ts}] $ {command}\n{output}[{ts}] (exit {exit_code})\n"
 
@@ -789,9 +907,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(
             experiment_id=exp_id,
-            text=self._rec("python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"),
+            text=self._rec(
+                "python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"
+            ),
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(term["last_exit_code"], 0)
         self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:05Z")
         self.assertFalse(term["command_running"])
@@ -809,7 +931,9 @@ class SandboxServiceTest(unittest.TestCase):
         self.backend.append_transcript(
             experiment_id=exp_id, text=self._rec("false", "", 1)
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(term["last_exit_code"], 1)
         self.assertFalse(term["command_running"])
 
@@ -818,9 +942,12 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         # A command started and is still streaming output — no exit marker yet.
         self.backend.append_transcript(
-            experiment_id=exp_id, text="\n[2026-06-09T12:00:00Z] $ sleep 100\npartial...\n"
+            experiment_id=exp_id,
+            text="\n[2026-06-09T12:00:00Z] $ sleep 100\npartial...\n",
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertTrue(term["command_running"])
         self.assertIsNone(term["last_exit_code"])
         self.assertIsNone(term["last_command_finished_at"])
@@ -835,7 +962,9 @@ class SandboxServiceTest(unittest.TestCase):
                 + "\n[2026-06-09T12:00:10Z] $ sleep 100\npartial...\n"
             ),
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertTrue(term["command_running"])
         self.assertEqual(term["last_exit_code"], 0)
         self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:01Z")
@@ -846,12 +975,16 @@ class SandboxServiceTest(unittest.TestCase):
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(
-            experiment_id=exp_id, text=self._rec("true", "", 0, ts="2026-06-09T12:00:01Z")
+            experiment_id=exp_id,
+            text=self._rec("true", "", 0, ts="2026-06-09T12:00:01Z"),
         )
         self.backend.append_transcript(
-            experiment_id=exp_id, text=self._rec("exit 2", "", 2, ts="2026-06-09T12:00:09Z")
+            experiment_id=exp_id,
+            text=self._rec("exit 2", "", 2, ts="2026-06-09T12:00:09Z"),
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(term["last_exit_code"], 2)
         self.assertEqual(term["last_command_finished_at"], "2026-06-09T12:00:09Z")
         self.assertFalse(term["command_running"])
@@ -860,8 +993,12 @@ class SandboxServiceTest(unittest.TestCase):
         # Old-style transcript with no rec.sh markers → best-effort nulls.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.backend.append_transcript(experiment_id=exp_id, text="$ python train.py\nloss 0.1\n")
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.append_transcript(
+            experiment_id=exp_id, text="$ python train.py\nloss 0.1\n"
+        )
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertIsNone(term["last_exit_code"])
         self.assertIsNone(term["last_command_finished_at"])
         self.assertFalse(term["command_running"])
@@ -871,11 +1008,18 @@ class SandboxServiceTest(unittest.TestCase):
         # poll that returns no new output still reports the finished command.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        self.backend.append_transcript(experiment_id=exp_id, text=self._rec("true", "", 0))
-        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        self.backend.append_transcript(
+            experiment_id=exp_id, text=self._rec("true", "", 0)
+        )
+        first = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         cursor = first["cursor"]
         delta = self.call(
-            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id, since=cursor
+            "sandbox.terminal",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            since=cursor,
         )
         self.assertEqual(delta["transcript"], "")
         self.assertEqual(delta["new_chars"], 0)
@@ -885,7 +1029,9 @@ class SandboxServiceTest(unittest.TestCase):
         # A terminated sandbox whose log ends on a command-start marker is not
         # "running a command" — command_running is gated on the sandbox liveness.
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.backend.append_transcript(
             experiment_id=exp_id, text="\n[2026-06-09T12:00:00Z] $ sleep 100\n"
         )
@@ -908,9 +1054,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(
             experiment_id=exp_id,
-            text=self._rec("python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"),
+            text=self._rec(
+                "python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"
+            ),
         )
-        first = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         cursor = first["cursor"]
 
         def unavailable(**_kwargs):
@@ -940,13 +1090,19 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(
             experiment_id=exp_id,
-            text=self._rec("python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"),
+            text=self._rec(
+                "python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"
+            ),
         )
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         with self.app.store.transaction() as conn:
-            first = conn.execute("SELECT updated_at FROM sandboxes").fetchone()["updated_at"]
+            first = conn.execute("SELECT updated_at FROM sandboxes").fetchone()[
+                "updated_at"
+            ]
         for _ in range(3):
-            self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+            )
         with self.app.store.transaction() as conn:
             row = conn.execute("SELECT updated_at FROM sandboxes").fetchone()
         self.assertEqual(row["updated_at"], first)
@@ -956,13 +1112,19 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         self.backend.append_transcript(
             experiment_id=exp_id,
-            text=self._rec("python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"),
+            text=self._rec(
+                "python train.py", "loss 0.1\n", 0, ts="2026-06-09T12:00:05Z"
+            ),
         )
-        term = self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
+        term = self.call(
+            "sandbox.terminal", project_id=self.project_id, experiment_id=exp_id
+        )
         finished = term["last_command"]
         self.assertEqual(finished["status"], "succeeded")
         with self.app.store.transaction() as conn:
-            uid = conn.execute("SELECT sandbox_uid FROM sandboxes").fetchone()["sandbox_uid"]
+            uid = conn.execute("SELECT sandbox_uid FROM sandboxes").fetchone()[
+                "sandbox_uid"
+            ]
         # A slow reader that parsed an older transcript (same command, no exit
         # marker yet) must not overwrite the finished snapshot.
         stale = {
@@ -984,7 +1146,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_release_terminates(self) -> None:
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         released = self.call(
             "sandbox.release",
             project_id=self.project_id,
@@ -992,7 +1156,9 @@ class SandboxServiceTest(unittest.TestCase):
             confirm_retained=True,
         )
         self.assertEqual(released["status"], "terminated")
-        self.assertIn("Only files the agent explicitly copied or uploaded", released["hint"])
+        self.assertIn(
+            "Only files the agent explicitly copied or uploaded", released["hint"]
+        )
         self.assertIn(created["sandbox_id"], self.backend.terminated)
 
     def test_release_requires_retention_confirmation(self) -> None:
@@ -1000,7 +1166,9 @@ class SandboxServiceTest(unittest.TestCase):
         # terminate — it returns a retention checklist and leaves the sandbox
         # alive. Only confirm_retained=True actually destroys the VM.
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         pending = self.call(
             "sandbox.release", project_id=self.project_id, experiment_id=exp_id
         )
@@ -1119,19 +1287,31 @@ class SandboxServiceTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValidationError, "max lifetime"):
-            self.call("sandbox.extend", project_id=self.project_id, experiment_id=exp_id)
+            self.call(
+                "sandbox.extend", project_id=self.project_id, experiment_id=exp_id
+            )
 
     # ---- validation ----
 
     def test_invalid_gpu_rejected(self) -> None:
         exp_id = self._experiment()
         with self.assertRaises(ValidationError):
-            self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id, gpu="NOTREAL")
+            self.call(
+                "sandbox.request",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                gpu="NOTREAL",
+            )
 
     def test_invalid_time_limit_rejected(self) -> None:
         exp_id = self._experiment()
         with self.assertRaises(ValidationError):
-            self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id, time_limit=5)
+            self.call(
+                "sandbox.request",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                time_limit=5,
+            )
 
     # ---- hardware selection (bundled-hardware backends like Lambda Labs) ----
 
@@ -1147,20 +1327,37 @@ class SandboxServiceTest(unittest.TestCase):
 
         def catalog(*, gpu=None, region=None):
             options = [
-                {"instance_type": "gpu_1x_a10", "gpu": "A10", "gpu_count": 1,
-                 "vcpus": 30, "memory_gib": 200, "price_usd_per_hour": 0.75,
-                 "regions": ["us-west-1"], "available": True},
-                {"instance_type": "gpu_8x_h100", "gpu": "H100", "gpu_count": 8,
-                 "vcpus": 208, "memory_gib": 1800, "price_usd_per_hour": 35.92,
-                 "regions": ["us-east-1"], "available": True},
+                {
+                    "instance_type": "gpu_1x_a10",
+                    "gpu": "A10",
+                    "gpu_count": 1,
+                    "vcpus": 30,
+                    "memory_gib": 200,
+                    "price_usd_per_hour": 0.75,
+                    "regions": ["us-west-1"],
+                    "available": True,
+                },
+                {
+                    "instance_type": "gpu_8x_h100",
+                    "gpu": "H100",
+                    "gpu_count": 8,
+                    "vcpus": 208,
+                    "memory_gib": 1800,
+                    "price_usd_per_hour": 35.92,
+                    "regions": ["us-east-1"],
+                    "available": True,
+                },
             ]
             if gpu:
                 needle = str(gpu).upper()
                 options = [o for o in options if needle in o["gpu"].upper()]
             return {
-                "provider": "lambda_labs", "selection_required": True,
-                "select_with": "instance_type", "reason": "bundled hardware",
-                "regions": ["us-east-1", "us-west-1"], "count": len(options),
+                "provider": "lambda_labs",
+                "selection_required": True,
+                "select_with": "instance_type",
+                "reason": "bundled hardware",
+                "regions": ["us-east-1", "us-west-1"],
+                "count": len(options),
                 "options": options,
             }
 
@@ -1169,7 +1366,9 @@ class SandboxServiceTest(unittest.TestCase):
     def test_request_without_instance_type_returns_menu(self) -> None:
         self._require_hardware_selection()
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "needs_selection")
         self.assertEqual(result["options"][0]["instance_type"], "gpu_1x_a10")
         self.assertIn("instance_type", result["hint"])
@@ -1180,8 +1379,11 @@ class SandboxServiceTest(unittest.TestCase):
         self._require_hardware_selection()
         exp_id = self._experiment()
         result = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id,
-            instance_type="gpu_1x_a10", region="us-west-1",
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            instance_type="gpu_1x_a10",
+            region="us-west-1",
         )
         self.assertEqual(result["status"], "running")
         self.assertEqual(result["instance_type"], "gpu_1x_a10")
@@ -1196,7 +1398,10 @@ class SandboxServiceTest(unittest.TestCase):
         # 'A10' is not a Modal VALID_GPUS name; on a bundled backend it is a
         # filter, so it must not raise — it just still needs an instance_type.
         result = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, gpu="A10"
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            gpu="A10",
         )
         self.assertEqual(result["status"], "needs_selection")
 
@@ -1211,18 +1416,24 @@ class SandboxServiceTest(unittest.TestCase):
     def test_options_filters_by_gpu(self) -> None:
         self._require_hardware_selection()
         result = self.call("sandbox.options", project_id=self.project_id, gpu="h100")
-        self.assertEqual([o["instance_type"] for o in result["options"]], ["gpu_8x_h100"])
+        self.assertEqual(
+            [o["instance_type"] for o in result["options"]], ["gpu_8x_h100"]
+        )
 
     def test_reused_bundled_sandbox_skips_menu_and_keeps_instance_type(self) -> None:
         self._require_hardware_selection()
         exp_id = self._experiment()
         self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id,
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
             instance_type="gpu_1x_a10",
         )
         # A re-request without instance_type reuses the live sandbox rather than
         # re-prompting for selection.
-        second = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertTrue(second["reused"])
         self.assertEqual(second["instance_type"], "gpu_1x_a10")
 
@@ -1234,7 +1445,9 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_reaper_terminates_expired_sandbox(self) -> None:
         exp_id = self._experiment()
-        created = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         sid = created["sandbox_id"]
         with self.app.store.transaction() as conn:
             conn.execute(
@@ -1256,7 +1469,9 @@ class SandboxServiceTest(unittest.TestCase):
     def test_reaper_does_not_change_running_experiment(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
         with self.app.store.transaction() as conn:
             conn.execute(
@@ -1270,7 +1485,9 @@ class SandboxServiceTest(unittest.TestCase):
                 ("2000-01-01T00:00:00Z", exp_id),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "ready_to_run")
 
     def test_reaper_leaves_experiments_past_running_alone(self) -> None:
@@ -1278,7 +1495,8 @@ class SandboxServiceTest(unittest.TestCase):
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
         with self.app.store.transaction() as conn:
             conn.execute(
-                "UPDATE experiments SET status = 'experiment_review' WHERE id = ?", (exp_id,)
+                "UPDATE experiments SET status = 'experiment_review' WHERE id = ?",
+                (exp_id,),
             )
             conn.execute(
                 """
@@ -1291,13 +1509,18 @@ class SandboxServiceTest(unittest.TestCase):
                 ("2000-01-01T00:00:00Z", exp_id),
             )
         self.assertEqual(self.app.sandboxes.reap_expired(), 1)
-        state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(state["status"], "experiment_review")
 
     def test_reaper_skips_unexpired_sandbox(self) -> None:
         exp_id = self._experiment()
         self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id, time_limit=3600
+            "sandbox.request",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            time_limit=3600,
         )
         self.assertEqual(self.app.sandboxes.reap_expired(), 0)
         got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
@@ -1308,11 +1531,15 @@ class SandboxServiceTest(unittest.TestCase):
     def _await_status(self, exp_id: str, target: str, timeout: float = 5.0) -> dict:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            got = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+            got = self.call(
+                "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+            )
             if got["status"] == target:
                 return got
             time.sleep(0.02)
-        return self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        return self.call(
+            "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+        )
 
     def _await_sandbox_status(
         self, sandbox_uid: str, target: str, timeout: float = 5.0
@@ -1334,12 +1561,16 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.request_wait_seconds = 0.05
         self.backend.gate = threading.Event()
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "provisioning")
         self.assertEqual(result["poll_after_seconds"], 30)
         self.assertNotIn("command", result["ssh"])
         # get keeps reporting provisioning while the job is gated.
-        polled = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        polled = self.call(
+            "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(polled["status"], "provisioning")
         # Release the gate; the job finishes and get flips to running with SSH.
         self.backend.gate.set()
@@ -1353,9 +1584,13 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.request_wait_seconds = 0.05
         self.backend.gate = threading.Event()
         exp_id = self._experiment()
-        first = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        first = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(first["status"], "provisioning")
-        second = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        second = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(second["status"], "provisioning")
         self.assertEqual(len(self.backend.acquired), 1)  # no duplicate provision
         self.backend.gate.set()
@@ -1367,7 +1602,9 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.request_wait_seconds = 2.0
         self.backend.fail_after_create = True
         exp_id = self._experiment()
-        result = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "failed")
         self.assertTrue(result["error"])
         # The sandbox that was created before the tunnel failure got terminated.
@@ -1377,7 +1614,9 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.request_wait_seconds = 0.05
         self.backend.gate = threading.Event()
         exp_id = self._experiment()
-        started = self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
+        started = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(started["status"], "provisioning")
         self.call(
             "sandbox.release",
@@ -1397,14 +1636,20 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.provisioner.begin_provisioning_row(
             experiment_id=exp_id,
             project_id=self.project_id,
-            req=SandboxRequest(experiment_id=exp_id, project_id=self.project_id, public_key="k"),
+            req=SandboxRequest(
+                experiment_id=exp_id, project_id=self.project_id, public_key="k"
+            ),
         )
-        result = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "failed")
 
     def test_get_returns_none_when_never_requested(self) -> None:
         exp_id = self._experiment()
-        result = self.call("sandbox.get", project_id=self.project_id, experiment_id=exp_id)
+        result = self.call(
+            "sandbox.get", project_id=self.project_id, experiment_id=exp_id
+        )
         self.assertEqual(result["status"], "none")
 
 

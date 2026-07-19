@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.dataplane.feed_images import LocalFeedImageReader
+from merv.proxy.dataplane.feed_images import LocalFeedImageReader
 from merv.brain.kernel.utils import ValidationError
 
 

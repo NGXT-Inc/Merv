@@ -11,8 +11,9 @@ import hashlib
 import mimetypes
 from pathlib import Path
 
-from ..kernel.ports.resource_records import ResourceObservation
-from ..kernel.utils import NotFoundError, ValidationError
+from merv.shared.errors import NotFoundError, ValidationError
+from merv.shared.resource_records import ResourceObservation
+
 from .repo_paths import resolve_repo_path
 
 

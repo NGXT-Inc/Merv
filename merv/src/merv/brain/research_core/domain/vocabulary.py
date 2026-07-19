@@ -3,7 +3,7 @@
 This module is deliberately dependency-free. It gives services, contracts, and
 transport adapters one place to agree on stable status vocabulary without
 pulling policy services across feature boundaries. Artifact role vocabulary
-lives with its owner in ``src/merv/brain/artifacts/roles.py``.
+lives with its owner in ``src/merv/shared/artifact_roles.py``.
 """
 
 from __future__ import annotations

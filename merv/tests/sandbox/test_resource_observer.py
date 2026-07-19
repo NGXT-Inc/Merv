@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.dataplane.resource_observer import LocalResourceObserver
+from merv.proxy.dataplane.resource_observer import LocalResourceObserver
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 
 

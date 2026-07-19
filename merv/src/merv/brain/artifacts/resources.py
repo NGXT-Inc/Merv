@@ -8,9 +8,25 @@ import os
 from pathlib import Path
 from typing import Any
 
+from merv.shared.artifact_roles import (
+    GATED_ROLE_BYTE_CAPS,
+    SYSTEM_CREATED_BY,
+    metric_result_capture_cap,
+)
+from merv.shared.markdown_images import (
+    MARKDOWN_FIGURE_MAX_BYTES,
+    MARKDOWN_FIGURE_ROLES,
+    markdown_image_links,
+)
 from merv.shared.project_dirs import PROJECT_STATE_DIR_NAMES
 
-from ..kernel.utils import NotFoundError, ValidationError, WorkflowError, new_id, now_iso
+from ..kernel.utils import (
+    NotFoundError,
+    ValidationError,
+    WorkflowError,
+    new_id,
+    now_iso,
+)
 from ..kernel.ports.resource_records import ResourceAssociationPolicy
 from ..object_storage.blobs import BlobStore
 from ..kernel.state.store import (
@@ -21,17 +37,7 @@ from ..kernel.state.store import (
     row_to_dict,
     rows_to_dicts,
 )
-from .markdown_images import (
-    MARKDOWN_FIGURE_MAX_BYTES,
-    MARKDOWN_FIGURE_ROLES,
-    markdown_image_links,
-)
 from .pinned import pinned_text_for_version as load_pinned_text_for_version
-from .roles import (
-    GATED_ROLE_BYTE_CAPS,
-    SYSTEM_CREATED_BY,
-    metric_result_capture_cap,
-)
 
 
 class ResourceService:
@@ -107,7 +113,17 @@ class ResourceService:
                         deleted = 0, updated_at = ?
                     WHERE id = ?
                     """,
-                    (kind, kind, title, token, int(mtime_ns), int(size_bytes), observed_at, observed_at, resource_id),
+                    (
+                        kind,
+                        kind,
+                        title,
+                        token,
+                        int(mtime_ns),
+                        int(size_bytes),
+                        observed_at,
+                        observed_at,
+                        resource_id,
+                    ),
                 )
                 event_type = "resource.observed"
             else:
@@ -164,7 +180,9 @@ class ResourceService:
             )
             return self.resolve(resource_id=resource_id, conn=conn)
 
-    def delete(self, *, resource_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def delete(
+        self, *, resource_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             resource = conn.execute(
@@ -172,20 +190,28 @@ class ResourceService:
                 (resource_id, project_id),
             ).fetchone()
             if resource is None:
-                raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+                raise NotFoundError(
+                    f"resource not found in project {project_id}: {resource_id}"
+                )
             if str(resource["created_by"]) == SYSTEM_CREATED_BY:
                 raise ValidationError(
                     f"{resource['path']} is a system-generated artifact; it "
                     "cannot be deleted"
                 )
             if int(resource["deleted"] or 0):
-                return {"deleted": False, "resource": self._hydrate_resource(row=resource, conn=conn)}
+                return {
+                    "deleted": False,
+                    "resource": self._hydrate_resource(row=resource, conn=conn),
+                }
             deleted_at = now_iso()
             association_count = conn.execute(
                 "SELECT COUNT(*) AS count FROM resource_associations WHERE resource_id = ?",
                 (resource_id,),
             ).fetchone()["count"]
-            conn.execute("DELETE FROM resource_associations WHERE resource_id = ?", (resource_id,))
+            conn.execute(
+                "DELETE FROM resource_associations WHERE resource_id = ?",
+                (resource_id,),
+            )
             conn.execute(
                 """
                 UPDATE resources
@@ -200,9 +226,14 @@ class ResourceService:
                 event_type="resource.deleted",
                 target_type="resource",
                 target_id=resource_id,
-                payload={"path": resource["path"], "removed_associations": association_count},
+                payload={
+                    "path": resource["path"],
+                    "removed_associations": association_count,
+                },
             )
-            deleted = conn.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+            deleted = conn.execute(
+                "SELECT * FROM resources WHERE id = ?", (resource_id,)
+            ).fetchone()
             return {
                 "deleted": True,
                 "removed_associations": association_count,
@@ -249,14 +280,20 @@ class ResourceService:
         MCP proxy submits the artifact bytes it just read locally; control
         checks them against the pinned version hash before storing blobs.
         """
-        self.permissions.validate_resource_association(target_type=target_type, role=role)
+        self.permissions.validate_resource_association(
+            target_type=target_type, role=role
+        )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            resource = conn.execute("SELECT * FROM resources WHERE id = ? AND deleted = 0", (resource_id,)).fetchone()
+            resource = conn.execute(
+                "SELECT * FROM resources WHERE id = ? AND deleted = 0", (resource_id,)
+            ).fetchone()
             if resource is None:
                 raise NotFoundError(f"resource not found: {resource_id}")
             if resource["project_id"] != project_id:
-                raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+                raise NotFoundError(
+                    f"resource not found in project {project_id}: {resource_id}"
+                )
             version_id = str(resource["current_version_id"] or "")
             if not version_id:
                 raise ValidationError(
@@ -291,7 +328,9 @@ class ResourceService:
         role: str,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        self.permissions.validate_resource_association(target_type=target_type, role=role)
+        self.permissions.validate_resource_association(
+            target_type=target_type, role=role
+        )
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             resource = conn.execute(
@@ -300,14 +339,18 @@ class ResourceService:
             if resource is None:
                 raise NotFoundError(f"resource not found: {resource_id}")
             if resource["project_id"] != project_id:
-                raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+                raise NotFoundError(
+                    f"resource not found in project {project_id}: {resource_id}"
+                )
             target_project_id = self._ensure_target_exists(
                 conn=conn,
                 target_type=target_type,
                 target_id=target_id,
             )
             if target_project_id is not None and target_project_id != project_id:
-                raise NotFoundError(f"{target_type} not found in project {project_id}: {target_id}")
+                raise NotFoundError(
+                    f"{target_type} not found in project {project_id}: {target_id}"
+                )
             attempt_index = self._association_attempt_index(
                 conn=conn,
                 target_type=target_type,
@@ -371,7 +414,8 @@ class ResourceService:
                 page_params.append(int(offset))
             rows = conn.execute(query, page_params).fetchall()
             resources = [
-                self._hydrate_resource(row=row, conn=conn, compact=compact) for row in rows
+                self._hydrate_resource(row=row, conn=conn, compact=compact)
+                for row in rows
             ]
             returned = len(resources)
             return {
@@ -405,12 +449,18 @@ class ResourceService:
             conn = self.store.connect()
         try:
             if owns_conn:
-                project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            row = conn.execute("SELECT * FROM resources WHERE id = ?", (resource_id,)).fetchone()
+                project_id = self.store.require_project_id(
+                    conn=conn, project_id=project_id
+                )
+            row = conn.execute(
+                "SELECT * FROM resources WHERE id = ?", (resource_id,)
+            ).fetchone()
             if row is None:
                 raise NotFoundError(f"resource not found: {resource_id}")
             if project_id is not None and row["project_id"] != project_id:
-                raise NotFoundError(f"resource not found in project {project_id}: {resource_id}")
+                raise NotFoundError(
+                    f"resource not found in project {project_id}: {resource_id}"
+                )
             resource = self._hydrate_resource(row=row, conn=conn)
             if include_history:
                 version_rows = conn.execute(
@@ -423,18 +473,23 @@ class ResourceService:
                     (resource_id, row["project_id"]),
                 ).fetchall()
                 resource["versions"] = [
-                    self._hydrate_version(row=version_row, conn=conn) for version_row in version_rows
+                    self._hydrate_version(row=version_row, conn=conn)
+                    for version_row in version_rows
                 ]
             return resource
         finally:
             if owns_conn:
                 conn.close()
 
-    def history(self, *, resource_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def history(
+        self, *, resource_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
         conn = self.store.connect()
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            resource = self.resolve(resource_id=resource_id, project_id=project_id, conn=conn)
+            resource = self.resolve(
+                resource_id=resource_id, project_id=project_id, conn=conn
+            )
             rows = conn.execute(
                 """
                 SELECT *
@@ -444,7 +499,10 @@ class ResourceService:
                 """,
                 (resource_id, project_id),
             ).fetchall()
-            return {"resource": resource, "versions": [self._hydrate_version(row=row, conn=conn) for row in rows]}
+            return {
+                "resource": resource,
+                "versions": [self._hydrate_version(row=row, conn=conn) for row in rows],
+            }
         finally:
             conn.close()
 
@@ -626,8 +684,15 @@ class ResourceService:
             return True
 
     _COMPACT_FIELDS = (
-        "id", "project_id", "path", "kind", "title", "current_version_id",
-        "version_token", "missing", "updated_at",
+        "id",
+        "project_id",
+        "path",
+        "kind",
+        "title",
+        "current_version_id",
+        "version_token",
+        "missing",
+        "updated_at",
     )
 
     def _hydrate_resource(
@@ -649,8 +714,13 @@ class ResourceService:
         ).fetchall()
         data["associations"] = rows_to_dicts(rows=assoc_rows)
         if data.get("current_version_id"):
-            row = conn.execute("SELECT * FROM resource_versions WHERE id = ?", (data["current_version_id"],)).fetchone()
-            data["current_version"] = self._hydrate_version(row=row, conn=conn) if row else None
+            row = conn.execute(
+                "SELECT * FROM resource_versions WHERE id = ?",
+                (data["current_version_id"],),
+            ).fetchone()
+            data["current_version"] = (
+                self._hydrate_version(row=row, conn=conn) if row else None
+            )
         else:
             data["current_version"] = None
         return data
@@ -672,7 +742,9 @@ class ResourceService:
 
     def _validate_content_sha256(self, value: str) -> None:
         if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
-            raise ValidationError("content_sha256 must be a lowercase sha256 hex digest")
+            raise ValidationError(
+                "content_sha256 must be a lowercase sha256 hex digest"
+            )
 
     def _validate_submitted_figure_link(self, *, link: str) -> None:
         if not link:
@@ -736,7 +808,12 @@ class ResourceService:
                 f"{resource['path']} is {size} bytes; the maximum for a role-{role!r} "
                 f"artifact is {cap} bytes — slim the file before associating "
                 "(move raw data/outputs elsewhere and reference them)",
-                details={"path": resource["path"], "role": role, "size_bytes": size, "max_bytes": cap},
+                details={
+                    "path": resource["path"],
+                    "role": role,
+                    "size_bytes": size,
+                    "max_bytes": cap,
+                },
             )
         version = conn.execute(
             "SELECT content_sha256, content_type FROM resource_versions WHERE id = ?",
@@ -984,7 +1061,9 @@ class ResourceService:
             sha = self.blobs.put(
                 namespace=project_id,
                 data=data,
-                content_type=str(figure.get("content_type") or "application/octet-stream"),
+                content_type=str(
+                    figure.get("content_type") or "application/octet-stream"
+                ),
             )
             conn.execute(
                 """
@@ -1014,7 +1093,9 @@ class ResourceService:
             target_id=target_id,
         )
         if target_project_id is not None and target_project_id != project_id:
-            raise NotFoundError(f"{target_type} not found in project {project_id}: {target_id}")
+            raise NotFoundError(
+                f"{target_type} not found in project {project_id}: {target_id}"
+            )
         attempt_index = self._association_attempt_index(
             conn=conn,
             target_type=target_type,
@@ -1048,11 +1129,18 @@ class ResourceService:
             event_type="resource.associated",
             target_type=target_type,
             target_id=target_id,
-            payload={"resource_id": resource_id, "version_id": version_id, "role": role, "attempt_index": attempt_index},
+            payload={
+                "resource_id": resource_id,
+                "version_id": version_id,
+                "role": role,
+                "attempt_index": attempt_index,
+            },
         )
         return self.resolve(resource_id=resource_id, conn=conn)
 
-    def _version_token(self, *, path: str, mtime_ns: int, ctime_ns: int, size_bytes: int) -> str:
+    def _version_token(
+        self, *, path: str, mtime_ns: int, ctime_ns: int, size_bytes: int
+    ) -> str:
         # ctime is included so an in-place edit that preserves mtime+size (e.g. a
         # restored mtime) still changes the token: content cannot change without
         # bumping the inode change time, even when mtime is held constant.
@@ -1117,12 +1205,12 @@ class ResourceService:
             target_id=resource_id,
             payload={"path": rel_path, "version_id": version_id},
         )
-        row = conn.execute("SELECT * FROM resource_versions WHERE id = ?", (version_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM resource_versions WHERE id = ?", (version_id,)
+        ).fetchone()
         return self._hydrate_version(row=row, conn=conn)
 
-    def _hydrate_version(
-        self, *, row: Row | None, conn: Connection
-    ) -> dict[str, Any]:
+    def _hydrate_version(self, *, row: Row | None, conn: Connection) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
         if not data:
             return data

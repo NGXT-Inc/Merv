@@ -21,10 +21,10 @@ from merv.shared.project_dirs import (
     resolve_project_state_dir,
 )
 
-from merv.brain.dataplane.repo_paths import repo_relative_path
+from merv.proxy.dataplane.repo_paths import repo_relative_path
 from merv.brain.kernel.state.activity import ActivityLogger
 from merv.brain.kernel.utils import ValidationError
-from merv.brain.workspace import LocalWorkspace
+from merv.proxy.workspace import LocalWorkspace
 
 
 class ResolveProjectStateDirTest(unittest.TestCase):
@@ -83,7 +83,9 @@ class ResolveProjectStateDirTest(unittest.TestCase):
                 lambda: (self.repo / LEGACY_PROJECT_STATE_DIR).mkdir(),
             ),
         ):
-            with self.subTest(state_dir=state_dir), tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(
+                state_dir=state_dir
+            ), tempfile.TemporaryDirectory() as tmp:
                 self.repo = Path(tmp)
                 prepare()
                 workspace = LocalWorkspace(repo_root=self.repo)
@@ -102,7 +104,9 @@ class ResolveProjectStateDirTest(unittest.TestCase):
                     logger = ActivityLogger(
                         repo_root=self.repo, enabled=True, mirror_stderr=False
                     )
-                self.assertEqual(logger.log_path, self.repo / state_dir / "activity.jsonl")
+                self.assertEqual(
+                    logger.log_path, self.repo / state_dir / "activity.jsonl"
+                )
                 logger.emit(event_type="test.event", payload={})
                 self.assertTrue((self.repo / state_dir / "activity.jsonl").is_file())
 

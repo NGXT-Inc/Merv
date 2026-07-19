@@ -2,8 +2,7 @@
 
 Holds the small, dependency-free utilities every layer needs:
 
-  - Domain error hierarchy (``ResearchPluginError`` and subclasses) used by
-    services and surfaced through the MCP / HTTP boundary.
+  - Identity-preserving re-exports of the shared domain error hierarchy.
   - ``new_id(prefix=...)`` for opaque, prefixed entity ids.
   - ``now_iso()`` / ``format_iso()`` / ``parse_iso()`` for consistent ISO-8601
     timestamp handling.
@@ -17,55 +16,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-
-# ---------------------------------------------------------------------------
-# Domain errors
-# ---------------------------------------------------------------------------
-
-
-class ResearchPluginError(Exception):
-    """Base class for domain and tool errors."""
-
-    error_code = "research_plugin_error"
-
-    def __init__(self, message: str, *, details: dict | None = None) -> None:
-        super().__init__(message)
-        self.message = message
-        self.details = details or {}
-
-
-class NotFoundError(ResearchPluginError):
-    error_code = "not_found"
-
-
-class PermissionDeniedError(ResearchPluginError):
-    error_code = "permission_denied"
-
-
-class ValidationError(ResearchPluginError):
-    error_code = "validation_error"
-
-
-class WorkflowError(ResearchPluginError):
-    error_code = "workflow_error"
-
-
-class ContentUnavailableError(ResearchPluginError):
-    """A file's bytes are not reachable from this plane (cloud plan Phase 9).
-
-    Raised when content lives only on an offline/absent data-plane daemon (or is
-    metadata-only in the cloud, fixed decision 6). Distinct from NotFoundError so
-    the UI can render an explicit "content unavailable in this mode" degraded
-    state instead of treating it as a missing record.
-    """
-
-    error_code = "content_unavailable"
-
-
-class DataPlaneRequiredError(ResearchPluginError):
-    """The requested mutation must be performed by the local data plane."""
-
-    error_code = "data_plane_required"
+from merv.shared.errors import (
+    ContentUnavailableError,
+    DataPlaneRequiredError,
+    NotFoundError,
+    PermissionDeniedError,
+    ResearchPluginError,
+    ValidationError,
+    WorkflowError,
+)
+from merv.shared.path_utils import safe_experiment_dirname
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +66,3 @@ def parse_iso(value: object) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
-def safe_experiment_dirname(experiment_id: str) -> str:
-    """Filesystem-safe directory name for an experiment.
-
-    Kernel-floor path primitive shared by the research-core folder layout
-    (research_core/domain/paths.py) and the sandbox module's remote workdir naming
-    (sandbox/sandbox_paths.py) without a cross-module edge.
-    """
-    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in experiment_id) or "experiment"

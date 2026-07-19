@@ -6,10 +6,11 @@ import json
 import mimetypes
 from typing import Any
 
+from merv.shared.artifact_roles import GATED_ROLES, PROJECT_GRAPH_ROLES
+
 from ... import __version__
 from ...artifacts.figure_view import build_experiment_figure
 from ...artifacts.resource_selection import preferred_associated_resource
-from ...artifacts.roles import GATED_ROLES, PROJECT_GRAPH_ROLES
 from ...research_core.domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from ...mlflow import mlflow_experiment_name, mlflow_visible_for_status
 from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
@@ -81,7 +82,9 @@ class ResearchHttpApi:
     def _present(self, value: Any) -> Any:
         return self._strip_local_data_plane(value)
 
-    def experiment_state_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+    def experiment_state_view(
+        self, *, project_id: str, experiment_id: str
+    ) -> dict[str, Any]:
         state = self.app.experiments.get_state(
             experiment_id=experiment_id,
             project_id=project_id,
@@ -154,7 +157,11 @@ class ResearchHttpApi:
 
             events = [ev for ev in events if _belongs(ev)]
         payload = {
-            "filter": {key: value for key, value in (("source", source), ("project_id", project_id)) if value},
+            "filter": {
+                key: value
+                for key, value in (("source", source), ("project_id", project_id))
+                if value
+            },
             "events": events,
             "summary": (
                 # Summarize over the full filtered scan window, not the trimmed
@@ -215,57 +222,73 @@ class ResearchHttpApi:
         # slimmed `workflow.status_and_next` tool is for the agent only, so call
         # the service method directly here.
         status = self.app.workflow.status_and_next(project_id=project_id)
-        resources = self.call_tool(name="resource.find", arguments={"project_id": project_id})["resources"]
+        resources = self.call_tool(
+            name="resource.find", arguments={"project_id": project_id}
+        )["resources"]
         reviews = self.review_queue(project_id=project_id)
         events = self.events(project_id=project_id, limit=25)["events"]
         claims = status["project"]["active_claims"]
         experiments = [
             # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
-            self.app.experiments.get_state(experiment_id=exp["id"], project_id=project_id)
+            self.app.experiments.get_state(
+                experiment_id=exp["id"], project_id=project_id
+            )
             for exp in status["project"]["active_experiments"]
         ]
         active_work = self.app.workflow.active_work(project_id=project_id)
         active_experiments = active_work["active_experiments"]
         active_processes = active_work["active_processes"]
         active_experiment = active_experiments[0] if active_experiments else None
-        workflow = active_experiment.get("workflow") if active_experiment else status["workflow"]
-        return self._present({
-            "project": status["project"],
-            "claims": claims,
-            "experiments": experiments,
-            "active_experiments": active_experiments,
-            "active_processes": active_processes,
-            "resources": resources,
-            "reviews": reviews,
-            "pending_change_sets": [],
-            "recent_events": events,
-            "stats": {
-                "claims": len(claims),
-                "experiments": len(experiments),
-                "active_experiments": len(active_experiments),
-                "active_processes": len(active_processes),
-                "resources": len(resources),
-                "open_reviews": len(reviews["requests"]),
-            },
-            "workflow": workflow,
-            "active_experiment": active_experiment,
-            # Central, cross-experiment MLflow endpoint so the UI can offer a
-            # project-level entry point.
-            "mlflow": self.app.mlflow_tracking.health(),
-        })
+        workflow = (
+            active_experiment.get("workflow")
+            if active_experiment
+            else status["workflow"]
+        )
+        return self._present(
+            {
+                "project": status["project"],
+                "claims": claims,
+                "experiments": experiments,
+                "active_experiments": active_experiments,
+                "active_processes": active_processes,
+                "resources": resources,
+                "reviews": reviews,
+                "pending_change_sets": [],
+                "recent_events": events,
+                "stats": {
+                    "claims": len(claims),
+                    "experiments": len(experiments),
+                    "active_experiments": len(active_experiments),
+                    "active_processes": len(active_processes),
+                    "resources": len(resources),
+                    "open_reviews": len(reviews["requests"]),
+                },
+                "workflow": workflow,
+                "active_experiment": active_experiment,
+                # Central, cross-experiment MLflow endpoint so the UI can offer a
+                # project-level entry point.
+                "mlflow": self.app.mlflow_tracking.health(),
+            }
+        )
 
     def experiments_view(self, project_id: str) -> dict[str, Any]:
         # Full per-experiment state for the UI; the experiment.list tool stays slim.
-        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        experiments = self.app.experiments.list_experiments(project_id=project_id)[
+            "experiments"
+        ]
         return {
-            "experiments": [self._experiment_view_model(exp=exp) for exp in experiments],
+            "experiments": [
+                self._experiment_view_model(exp=exp) for exp in experiments
+            ],
             "current": experiments[-1] if experiments else None,
             "resource_use": [],
             "recent_runs": [],
         }
 
     def resources_tree(self, project_id: str) -> dict[str, Any]:
-        resources = self.call_tool(name="resource.find", arguments={"project_id": project_id})["resources"]
+        resources = self.call_tool(
+            name="resource.find", arguments={"project_id": project_id}
+        )["resources"]
         by_kind: dict[str, list[dict[str, Any]]] = {}
         for resource in resources:
             by_kind.setdefault(resource.get("kind", "other"), []).append(resource)
@@ -306,7 +329,9 @@ class ResearchHttpApi:
         return self.app.store.recent_events(project_id=project_id, limit=limit)
 
     def get_claim(self, project_id: str, claim_id: str) -> dict[str, Any]:
-        claims = self.call_tool(name="claim.list", arguments={"project_id": project_id})["claims"]
+        claims = self.call_tool(
+            name="claim.list", arguments={"project_id": project_id}
+        )["claims"]
         for claim in claims:
             if claim["id"] == claim_id:
                 return claim
@@ -315,7 +340,10 @@ class ResearchHttpApi:
     def resource_content(
         self, project_id: str, resource_id: str, version: str | None = None
     ) -> dict[str, Any]:
-        resource = self.call_tool(name="resource.find", arguments={"project_id": project_id, "resource_id": resource_id})
+        resource = self.call_tool(
+            name="resource.find",
+            arguments={"project_id": project_id, "resource_id": resource_id},
+        )
         # An explicit version pins the EXACT submitted bytes of one resource
         # version (used by the reflection-wave UI to render a past wave's
         # graph, reflection doc, or change spec faithfully, not the latest
@@ -443,9 +471,7 @@ class ResearchHttpApi:
         if latest_assoc not in candidates:
             candidates.append(latest_assoc)
         for version_id in candidates:
-            text = self.app.resources.submitted_text_for_version(
-                version_id=version_id
-            )
+            text = self.app.resources.submitted_text_for_version(version_id=version_id)
             if text is not None:
                 return text, version_id
         return None
@@ -453,7 +479,10 @@ class ResearchHttpApi:
     def resource_file(
         self, project_id: str, resource_id: str, rel: str | None = None
     ) -> tuple[bytes, dict[str, str]]:
-        resource = self.call_tool(name="resource.find", arguments={"project_id": project_id, "resource_id": resource_id})
+        resource = self.call_tool(
+            name="resource.find",
+            arguments={"project_id": project_id, "resource_id": resource_id},
+        )
         if rel:
             # A file referenced by the resource, e.g. a markdown relative image
             # link. Submitted figures serve from the blob store; uncaptured
@@ -481,9 +510,7 @@ class ResearchHttpApi:
         version_id = self._latest_gated_version_id(resource=resource)
         if version_id is None:
             return None
-        data = self.app.resources.submitted_figure(
-            version_id=version_id, link_path=rel
-        )
+        data = self.app.resources.submitted_figure(version_id=version_id, link_path=rel)
         if data is None:
             return None
         return data, rel.rsplit("/", 1)[-1]
@@ -492,7 +519,12 @@ class ResearchHttpApi:
         self, body: dict[str, Any], *, tenant_id: str | None = None, user_id: str = ""
     ) -> dict[str, Any]:
         name = body.get("name") or body.get("title") or "Untitled Project"
-        summary = body.get("summary") or body.get("description") or body.get("research_goal") or ""
+        summary = (
+            body.get("summary")
+            or body.get("description")
+            or body.get("research_goal")
+            or ""
+        )
         # Route through call_tool (not the service directly) so HTTP-driven
         # project creation emits the same activity/tool_calls telemetry the MCP
         # path does — tenant_id/user_id ride in via internal_kwargs in hosted
@@ -511,13 +543,25 @@ class ResearchHttpApi:
             )
         )
 
-    def create_experiment(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def create_experiment(
+        self, project_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
         name = body.get("name") or ""
         intent = body.get("intent") or body.get("title") or body.get("question") or ""
         claim_ids = body.get("tested_claim_ids") or body.get("claim_ids") or []
-        return self.call_tool(name="experiment.create", arguments={"project_id": project_id, "name": name, "intent": intent, "tested_claim_ids": claim_ids})
+        return self.call_tool(
+            name="experiment.create",
+            arguments={
+                "project_id": project_id,
+                "name": name,
+                "intent": intent,
+                "tested_claim_ids": claim_ids,
+            },
+        )
 
-    def register_resource(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def register_resource(
+        self, project_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
         path = body.get("path")
         if not path:
             raise ValidationError("resource creation requires a repo-relative path")
@@ -534,13 +578,17 @@ class ResearchHttpApi:
 
     def filter_experiments(self, project_id: str, status: str | None) -> dict[str, Any]:
         # Full per-experiment state for the UI; the experiment.list tool stays slim.
-        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        experiments = self.app.experiments.list_experiments(project_id=project_id)[
+            "experiments"
+        ]
         if status:
             experiments = [exp for exp in experiments if exp.get("status") == status]
         return {"experiments": experiments}
 
     def filter_resources(self, project_id: str, kind: str | None) -> dict[str, Any]:
-        resources = self.call_tool(name="resource.find", arguments={"project_id": project_id})["resources"]
+        resources = self.call_tool(
+            name="resource.find", arguments={"project_id": project_id}
+        )["resources"]
         if kind:
             resources = [res for res in resources if res.get("kind") == kind]
         return {"resources": resources}
@@ -569,12 +617,14 @@ class ResearchHttpApi:
         return self._present(self.app.sandboxes.row_view(row=row))
 
     def sandbox_list_view(self, *, project_id: str) -> dict[str, Any]:
-        return self._present({
-            "sandboxes": [
-                self.app.sandboxes.row_view(row=row)
-                for row in self.app.sandboxes.rows(project_id=project_id)
-            ]
-        })
+        return self._present(
+            {
+                "sandboxes": [
+                    self.app.sandboxes.row_view(row=row)
+                    for row in self.app.sandboxes.rows(project_id=project_id)
+                ]
+            }
+        )
 
     def compute_cost_view(self, *, project_id: str) -> dict[str, Any]:
         """Project compute spend for the UI, experiment names hydrated.
@@ -583,8 +633,12 @@ class ResearchHttpApi:
         so terminated fleets keep counting toward the total.
         """
         spend = self.app.quotas.project_spend(project_id=project_id)
-        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
-        names = {str(exp.get("id") or ""): str(exp.get("name") or "") for exp in experiments}
+        experiments = self.app.experiments.list_experiments(project_id=project_id)[
+            "experiments"
+        ]
+        names = {
+            str(exp.get("id") or ""): str(exp.get("name") or "") for exp in experiments
+        }
         for entry in spend["by_experiment"]:
             entry["experiment_name"] = names.get(entry["experiment_id"], "")
         return self._present(spend)
@@ -602,7 +656,9 @@ class ResearchHttpApi:
             sandbox_uid=sandbox_uid,
         )
 
-    def results_metrics_view(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+    def results_metrics_view(
+        self, *, project_id: str, experiment_id: str
+    ) -> dict[str, Any]:
         """Centralized MLflow metrics for one experiment."""
         return self.app.mlflow_tracking.results_metrics(
             experiment_id=experiment_id, project_id=project_id
@@ -616,7 +672,9 @@ class ResearchHttpApi:
         the central MLflow UI spans multiple projects.
         """
         health = self.app.mlflow_tracking.health()
-        experiments = self.app.experiments.list_experiments(project_id=project_id)["experiments"]
+        experiments = self.app.experiments.list_experiments(project_id=project_id)[
+            "experiments"
+        ]
         unreachable = health.get("reachable") is False
         items: list[dict[str, Any]] = []
         for exp in experiments:
@@ -638,20 +696,23 @@ class ResearchHttpApi:
                     include_history=False,
                 )
             )
-            items.append({
-                "experiment_id": eid,
-                "name": exp.get("name") or eid,
-                "status": exp.get("status") or "",
-                "intent": exp.get("intent") or "",
-                "mlflow_experiment_name": mlflow_experiment_name(
-                    project_id=project_id, experiment_id=eid
-                ),
-                "dashboard_experiment_url": (
-                    metrics.get("dashboard_experiment_url", "")
-                    if isinstance(metrics, dict) else ""
-                ),
-                "metrics": metrics,
-            })
+            items.append(
+                {
+                    "experiment_id": eid,
+                    "name": exp.get("name") or eid,
+                    "status": exp.get("status") or "",
+                    "intent": exp.get("intent") or "",
+                    "mlflow_experiment_name": mlflow_experiment_name(
+                        project_id=project_id, experiment_id=eid
+                    ),
+                    "dashboard_experiment_url": (
+                        metrics.get("dashboard_experiment_url", "")
+                        if isinstance(metrics, dict)
+                        else ""
+                    ),
+                    "metrics": metrics,
+                }
+            )
         expected_names = {str(item["mlflow_experiment_name"]) for item in items}
         namespace_experiments = (
             []
@@ -663,27 +724,36 @@ class ResearchHttpApi:
             for experiment in namespace_experiments
             if str(experiment.get("name") or "") not in expected_names
         ]
-        return self._present({
-            "mlflow": health,
-            "experiments": items,
-            "unmapped_mlflow_experiments": unmapped,
-        })
+        return self._present(
+            {
+                "mlflow": health,
+                "experiments": items,
+                "unmapped_mlflow_experiments": unmapped,
+            }
+        )
 
     def sandbox_health_view(self) -> dict[str, Any]:
         return self.app.sandboxes.backend_health()
 
-    def experiment_figure(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+    def experiment_figure(
+        self, *, project_id: str, experiment_id: str
+    ) -> dict[str, Any]:
         """Derived figure graph for the UI canvas (no agent-authored overlay yet)."""
-        experiment = self.app.experiments.get_state(experiment_id=experiment_id, project_id=project_id)
+        experiment = self.app.experiments.get_state(
+            experiment_id=experiment_id, project_id=project_id
+        )
         review_attempts = {
             str(review.get("id")): int(
                 self.app.reviews.snapshot_from_id(
                     snapshot_id=str(review.get("target_snapshot_id") or "")
-                ).get("attempt_index") or 0
+                ).get("attempt_index")
+                or 0
             )
             for review in experiment.get("reviews", [])
         }
-        sandbox_row = self.app.sandboxes.get_row(experiment_id=experiment_id, project_id=project_id)
+        sandbox_row = self.app.sandboxes.get_row(
+            experiment_id=experiment_id, project_id=project_id
+        )
         sandbox = (
             self.app.sandboxes.row_view(row=sandbox_row)
             if sandbox_row is not None
@@ -705,7 +775,9 @@ class ResearchHttpApi:
             ),
         )
 
-    def experiment_logic_graph(self, *, project_id: str, experiment_id: str) -> dict[str, Any]:
+    def experiment_logic_graph(
+        self, *, project_id: str, experiment_id: str
+    ) -> dict[str, Any]:
         """Agent-authored logic graph (role 'graph'), parsed + envelope-linted.
 
         Prefers the current attempt's association; falls back to the latest
@@ -737,7 +809,9 @@ class ResearchHttpApi:
                 **base,
                 "available": False,
                 "graph": None,
-                "problems": ["graph has no submitted content — re-associate it (role 'graph')"],
+                "problems": [
+                    "graph has no submitted content — re-associate it (role 'graph')"
+                ],
                 "path": chosen.get("path"),
             }
         return self._graph_payload(
@@ -748,7 +822,9 @@ class ResearchHttpApi:
         """All reflection waves plus the staleness/coverage signal for the UI."""
         return self.app.reflection_waves.overview(project_id=project_id)
 
-    def reflection_detail(self, *, project_id: str, reflection_id: str) -> dict[str, Any]:
+    def reflection_detail(
+        self, *, project_id: str, reflection_id: str
+    ) -> dict[str, Any]:
         return self.app.reflection_waves.get_state(
             reflection_id=reflection_id, project_id=project_id
         )
@@ -761,7 +837,9 @@ class ResearchHttpApi:
         payload shape as the per-experiment graph endpoint so the UI renders
         both through one component.
         """
-        selection = self.app.reflection_waves.project_logic_graph_selection(project_id=project_id)
+        selection = self.app.reflection_waves.project_logic_graph_selection(
+            project_id=project_id
+        )
         return self._graph_payload_for_reflection(
             project_id=project_id,
             reflection=selection.get("reflection"),
@@ -769,7 +847,9 @@ class ResearchHttpApi:
             extra_base={"signal": selection.get("signal")},
         )
 
-    def reflection_graph(self, *, project_id: str, reflection_id: str) -> dict[str, Any]:
+    def reflection_graph(
+        self, *, project_id: str, reflection_id: str
+    ) -> dict[str, Any]:
         """The logic graph of one specific reflection wave, rendered from the
         bytes that wave pinned (role 'project_graph'). Lets the UI show a past
         wave's graph faithfully even though project/logic_graph.json is a
@@ -798,10 +878,18 @@ class ResearchHttpApi:
         project-current endpoint adds the staleness `signal`)."""
         base: dict[str, Any] = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
         chosen = graph_resource or (
-            self._reflection_graph_resource(reflection=reflection) if reflection else None
+            self._reflection_graph_resource(reflection=reflection)
+            if reflection
+            else None
         )
         if reflection is None or chosen is None:
-            return {**base, "available": False, "reflection": None, "graph": None, "problems": []}
+            return {
+                **base,
+                "available": False,
+                "reflection": None,
+                "graph": None,
+                "problems": [],
+            }
         base["reflection"] = {
             "id": reflection.get("id"),
             "title": reflection.get("title"),
@@ -826,7 +914,12 @@ class ResearchHttpApi:
         )
 
     def _graph_payload(
-        self, *, base: dict[str, Any], chosen: dict[str, Any], text: str, project_id: str
+        self,
+        *,
+        base: dict[str, Any],
+        chosen: dict[str, Any],
+        text: str,
+        project_id: str,
     ) -> dict[str, Any]:
         """Parse + lint + resolve-refs the available-graph tail shared by the
         experiment and reflection graph endpoints (byte-identical payload)."""
@@ -873,11 +966,17 @@ class ResearchHttpApi:
     def _experiment_view_model(self, *, exp: dict[str, Any]) -> dict[str, Any]:
         current = exp.get("current_attempt_resources", [])
         plans = [res["id"] for res in current if res.get("association_role") == "plan"]
-        results = [res["id"] for res in current if res.get("association_role") == "result"]
+        results = [
+            res["id"] for res in current if res.get("association_role") == "result"
+        ]
         return {
             **exp,
             "tests_claims": [claim["id"] for claim in exp.get("tested_claims", [])],
-            "input_resources": [res["id"] for res in current if res.get("association_role") in {"input", "code", "config", "plan"}],
+            "input_resources": [
+                res["id"]
+                for res in current
+                if res.get("association_role") in {"input", "code", "config", "plan"}
+            ],
             "output_resources": results,
             "check": {
                 "summary": exp.get("intent", ""),

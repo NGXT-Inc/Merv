@@ -13,9 +13,14 @@ import json
 import re
 from typing import Any, Callable
 
-from ...artifacts.markdown_images import markdown_image_links
+from merv.shared.artifact_roles import (
+    PROJECT_GRAPH_ROLE,
+    PROJECT_GRAPH_ROLES,
+    REFLECTION_LENS_DOC_ROLES,
+)
+from merv.shared.markdown_images import markdown_image_links
+
 from ...artifacts.resource_selection import preferred_associated_resource
-from ...artifacts.roles import PROJECT_GRAPH_ROLE, PROJECT_GRAPH_ROLES, REFLECTION_LENS_DOC_ROLES
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -172,9 +177,8 @@ def current_reflection_requirement_resource(
 def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
     stems: dict[str, dict[str, Any]] = {}
     for res in reflection.get("current_attempt_resources", []):
-        if (
-            res.get("association_role") not in REFLECTION_LENS_DOC_ROLES
-            or res.get("missing")
+        if res.get("association_role") not in REFLECTION_LENS_DOC_ROLES or res.get(
+            "missing"
         ):
             continue
         path = str(res.get("path") or "")

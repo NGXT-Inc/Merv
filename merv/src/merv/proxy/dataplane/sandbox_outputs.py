@@ -7,7 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from ..kernel.utils import ValidationError
+from merv.shared.errors import ValidationError
+
 from .repo_paths import repo_relative_path, resolve_repo_path
 
 
@@ -99,9 +100,7 @@ def pull_sandbox_outputs(
             # One failing path must not discard (or hide) the paths that
             # already landed — report per-path and keep going.
             errors.append({"path": rel_path, "error": str(exc)})
-    kept_stale = [
-        name for item in copied for name in item.get("files_kept_stale", [])
-    ]
+    kept_stale = [name for item in copied for name in item.get("files_kept_stale", [])]
     return {
         "ok": not errors,
         "experiment_id": sandbox.get("experiment_id"),
@@ -144,9 +143,13 @@ def _destination_root(
         try:
             candidate.relative_to(repo_root)
         except ValueError as exc:
-            raise ValidationError("sandbox local_experiment_dir escapes repo root") from exc
+            raise ValidationError(
+                "sandbox local_experiment_dir escapes repo root"
+            ) from exc
         return candidate
-    experiment_id = str(sandbox.get("experiment_id") or sandbox.get("sandbox_uid") or "")
+    experiment_id = str(
+        sandbox.get("experiment_id") or sandbox.get("sandbox_uid") or ""
+    )
     if not experiment_id:
         raise ValidationError("experiment_id or destination_path is required")
     return repo_root / "experiments" / experiment_id
@@ -177,16 +180,13 @@ def _remote_existing_paths(
     ssh_user: str,
     key_path: str,
 ) -> list[str]:
-    script = (
-        f"base={shlex.quote(remote_dir.rstrip('/'))}; "
-        + " ".join(
-            (
-                "p="
-                + shlex.quote(path)
-                + '; if [ -e "$base/${p%/}" ]; then printf "%s\\n" "$p"; fi;'
-            )
-            for path in paths
+    script = f"base={shlex.quote(remote_dir.rstrip('/'))}; " + " ".join(
+        (
+            "p="
+            + shlex.quote(path)
+            + '; if [ -e "$base/${p%/}" ]; then printf "%s\\n" "$p"; fi;'
         )
+        for path in paths
     )
     result = runner(
         _ssh_command(
@@ -210,7 +210,9 @@ def _remote_existing_paths(
             "could not inspect sandbox output paths over SSH",
             details={"stderr": _stderr(result)},
         )
-    existing = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    existing = [
+        line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+    ]
     allowed = set(paths)
     return [path for path in existing if path in allowed]
 
@@ -276,14 +278,18 @@ def _rsync_one(
     # Without overwrite, a dry run WITHOUT --ignore-existing lists every file
     # that differs from the sandbox; subtracting what the real run actually
     # transferred names the existing local files that were kept stale.
-    would_change = run_rsync(dry_run=True, ignore_existing=False) if not overwrite else set()
+    would_change = (
+        run_rsync(dry_run=True, ignore_existing=False) if not overwrite else set()
+    )
     transferred = run_rsync(dry_run=False, ignore_existing=not overwrite)
     kept_stale = sorted(would_change - transferred)
 
     files, bytes_present = _local_stats(local_target)
     return {
         "remote_path": rel_path,
-        "local_path": _repo_relative_or_absolute(repo_root=repo_root, path=local_target),
+        "local_path": _repo_relative_or_absolute(
+            repo_root=repo_root, path=local_target
+        ),
         "files_transferred": len(transferred),
         "files_kept_stale": kept_stale,
         "files_present": files,

@@ -64,7 +64,8 @@ mkdir -p ~/.cursor/plugins/local
 rm -rf ~/.cursor/plugins/local/research-plugin ~/.cursor/plugins/local/merv
 rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' \
   ~/Merv/merv/ ~/.cursor/plugins/local/merv/
-# Optional but recommended if `python3` on PATH is older than 3.11:
+# Optional only for merv-client/merv-http when `python3` is older than 3.11;
+# merv-mcp itself runs on Python 3.9+:
 python3.11 -m venv ~/.cursor/plugins/local/merv/.venv
 ```
 

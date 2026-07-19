@@ -8,9 +8,9 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import Body, Request
+from merv.shared.tool_validation import validate_openssh_public_key
 
 from ..feed.feed import MAX_EMBED_BYTES, MAX_IMAGE_BYTES
-from ..tools.contracts import _validate_openssh_public_key
 from ..kernel.utils import ValidationError
 
 JsonBody = dict[str, Any] | None
@@ -83,9 +83,7 @@ def register_data_plane_routes(
             ctime_ns=int(payload.get("ctime_ns") or 0),
             size_bytes=int(payload.get("size_bytes") or 0),
             content_sha256=_required_text(payload, "content_sha256"),
-            content_type=str(
-                payload.get("content_type") or "application/octet-stream"
-            ),
+            content_type=str(payload.get("content_type") or "application/octet-stream"),
         )
 
     @http.post("/api/data-plane/resources/associate")
@@ -156,9 +154,7 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        public_key = _validate_openssh_public_key(
-            _required_text(payload, "public_key")
-        )
+        public_key = validate_openssh_public_key(_required_text(payload, "public_key"))
         if not public_key:
             raise ValidationError("public_key is required for sandbox.request")
         experiment_id = str(payload.get("experiment_id") or "").strip()

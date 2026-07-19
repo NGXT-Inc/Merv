@@ -19,7 +19,6 @@ errors stay protocol errors.
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 import time
@@ -32,7 +31,12 @@ from urllib.parse import urlsplit
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
-from merv.shared.client_config import HOSTED_CONTROL_URL, LOCAL_BRAIN_URL
+from merv.shared.client_config import (
+    HOSTED_CONTROL_URL,
+    LOCAL_BRAIN_URL,
+    dual_env_value,
+)
+from merv.shared.errors import ValidationError
 
 from . import __version__
 from .local_data_plane import LocalDataPlane, LocalDataPlaneError
@@ -49,47 +53,36 @@ LONG_VERB_TIMEOUT_SECONDS = 90.0
 LONG_VERBS = frozenset({"sandbox.request"})
 _LOCAL_ENRICHED_CONTROL_TOOLS = frozenset({"sandbox.get", "sandbox.health"})
 
-# Checked-in rendering of the proxy-local tool catalog, for machines running
-# the proxy on bare python3 where the live contracts (pydantic) cannot be
-# imported. scripts/regen_tool_catalog.py rewrites it;
-# tests/surface/test_static_tool_catalog.py pins it identical to the live
-# render so it can never go stale.
+# The checked-in JSON is the proxy's sole runtime tool registry. The generator
+# renders it from the brain-owned contracts, and parity tests prevent drift.
 _STATIC_CATALOG_PATH = Path(__file__).with_name("_tool_catalog.json")
-
-
-def _live_local_tool_catalog(*, storage_enabled: bool | None = None) -> list[dict[str, Any]]:
-    """Render the proxy-served tool catalog from the live contracts (pydantic)."""
-    contracts = importlib.import_module("merv.brain.tools.contracts")
-    allowed = contracts.DATA_PLANE_TOOL_NAMES | _LOCAL_ENRICHED_CONTROL_TOOLS
-    return [
-        tool
-        for tool in contracts.static_tool_catalog(storage_enabled=storage_enabled)
-        if tool.get("name") in allowed
-    ]
-
-
-def _render_static_catalog_text() -> str:
-    """Canonical text of _tool_catalog.json: the full catalog, storage included
-    (the reader applies the storage filter at runtime)."""
-    tools = _live_local_tool_catalog(storage_enabled=True)
-    return json.dumps({"tools": tools}, indent=2, sort_keys=True) + "\n"
+_STORAGE_PROVIDER_ENV_VAR = "MERV_STORAGE_PROVIDER"
 
 
 def _static_local_tool_catalog() -> list[dict[str, Any]]:
     tools = json.loads(_STATIC_CATALOG_PATH.read_text(encoding="utf-8"))["tools"]
     if not _storage_feature_enabled():
-        tools = [tool for tool in tools if not str(tool.get("name", "")).startswith("storage.")]
+        tools = [
+            tool
+            for tool in tools
+            if not str(tool.get("name", "")).startswith("storage.")
+        ]
     return tools
 
 
 def _storage_feature_enabled() -> bool:
-    # merv.brain.config is pinned stdlib-safe (it must import without pydantic);
-    # the guard is for a torn tree only.
-    try:
-        config = importlib.import_module("merv.brain.config")
-    except ImportError:  # pragma: no cover - the tree always ships src/merv/brain/
+    """Mirror brain config's dual-spelled, explicit-s3 storage feature gate."""
+    raw = (dual_env_value(_STORAGE_PROVIDER_ENV_VAR) or "").lower()
+    if not raw:
         return False
-    return bool(config.storage_feature_enabled())
+    if raw != "s3":
+        raise ValidationError(
+            f"unknown {_STORAGE_PROVIDER_ENV_VAR}: {raw!r} "
+            "(expected 's3', or unset to disable storage)",
+            details={"provider": raw},
+        )
+    return True
+
 
 # Transport failures are returned as TOOL RESULTS, not protocol errors, so a
 # transient brain outage never disables the server. Domain
@@ -227,7 +220,9 @@ class HttpProxyMcpServer:
                 name = params.get("name", "")
                 arguments = params.get("arguments") or {}
                 result = self._call_tool(name=name, arguments=arguments)
-                return self._result(request_id=request_id, result=self._tool_result(result=result))
+                return self._result(
+                    request_id=request_id, result=self._tool_result(result=result)
+                )
             return self._error_response(
                 request_id=request_id,
                 code=-32601,
@@ -266,7 +261,9 @@ class HttpProxyMcpServer:
             )
         except Exception as exc:  # pragma: no cover - exposes unexpected bugs
             traceback.print_exc(file=sys.stderr)
-            return self._error_response(request_id=request_id, code=-32603, message=str(exc))
+            return self._error_response(
+                request_id=request_id, code=-32603, message=str(exc)
+            )
 
     # ---- tools/list ------------------------------------------------------
 
@@ -351,7 +348,9 @@ class HttpProxyMcpServer:
             args["project_id"] = self._resolve_project_id_required()
         return self._call_cloud_raw(name=name, arguments=args)
 
-    def _call_cloud_raw(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _call_cloud_raw(
+        self, *, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         """Forward arguments verbatim — no link-derived project_id rewriting."""
         body = self._http_post(
             url=f"{self._require_control_url()}/mcp/call",
@@ -361,7 +360,9 @@ class HttpProxyMcpServer:
         )
         return self._result_dict(body=body)
 
-    def _call_control_api(self, *, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _call_control_api(
+        self, *, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         return self._http_post(
             url=f"{self._require_control_url()}{path}",
             payload=payload,
@@ -369,7 +370,9 @@ class HttpProxyMcpServer:
             timeout=self.config.timeout_seconds,
         )
 
-    def _call_local_data(self, *, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _call_local_data(
+        self, *, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
         try:
             return self._local_executor().call_tool(
                 name=name,
@@ -462,7 +465,9 @@ class HttpProxyMcpServer:
                     "step."
                 ),
             }
-        project = dict(self._call_cloud(name="project.get", arguments={"project_id": project_id}))
+        project = dict(
+            self._call_cloud(name="project.get", arguments={"project_id": project_id})
+        )
         project["repo_root"] = str(self.config.repo_root)
         return {
             "exists": True,
@@ -571,8 +576,13 @@ class HttpProxyMcpServer:
                 metadata.setdefault(
                     tool_name,
                     _ToolMeta(
-                        plane=tool.get("plane") if isinstance(tool.get("plane"), str) else "control",
-                        project_scoped=isinstance(props, dict) and "project_id" in props,
+                        plane=(
+                            tool.get("plane")
+                            if isinstance(tool.get("plane"), str)
+                            else "control"
+                        ),
+                        project_scoped=isinstance(props, dict)
+                        and "project_id" in props,
                     ),
                 )
             # Pin the cache only when the brain answered: a partial catalog
@@ -584,13 +594,9 @@ class HttpProxyMcpServer:
         return self._tool_cache.get(name, _ToolMeta())
 
     def _local_tool_catalog(self) -> list[dict[str, Any]]:
-        # Prefer the live contracts so development never serves a stale
-        # catalog; fall back to the checked-in JSON on bare-python clients
-        # where pydantic is not installed.
-        try:
-            return _live_local_tool_catalog()
-        except ImportError:
-            return _static_local_tool_catalog()
+        # Runtime routing is deterministic and dependency-free; regeneration
+        # and parity checks are the only bridge to the brain-owned contracts.
+        return _static_local_tool_catalog()
 
     def _local_executor(self) -> LocalDataPlane:
         if self._local_data_plane is None:
@@ -639,7 +645,11 @@ class HttpProxyMcpServer:
             except (TypeError, ValueError):
                 wait = 0.0
             return max(self.config.timeout_seconds, wait + 30.0)
-        return LONG_VERB_TIMEOUT_SECONDS if name in LONG_VERBS else self.config.timeout_seconds
+        return (
+            LONG_VERB_TIMEOUT_SECONDS
+            if name in LONG_VERBS
+            else self.config.timeout_seconds
+        )
 
     def _require_control_url(self) -> str:
         url = (self.config.control_url or "").strip().rstrip("/")
@@ -676,16 +686,25 @@ class HttpProxyMcpServer:
 
     def _http_get(self, *, url: str, is_cloud: bool) -> dict[str, Any]:
         req = Request(url, method="GET", headers=self._headers(is_cloud=is_cloud))
-        return self._send(req=req, is_cloud=is_cloud, timeout=self.config.timeout_seconds)
+        return self._send(
+            req=req, is_cloud=is_cloud, timeout=self.config.timeout_seconds
+        )
 
     def _http_post(
-        self, *, url: str, payload: dict[str, Any], is_cloud: bool, timeout: float | None = None
+        self,
+        *,
+        url: str,
+        payload: dict[str, Any],
+        is_cloud: bool,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         req = Request(
             url, data=data, method="POST", headers=self._headers(is_cloud=is_cloud)
         )
-        return self._send(req=req, is_cloud=is_cloud, timeout=timeout or self.config.timeout_seconds)
+        return self._send(
+            req=req, is_cloud=is_cloud, timeout=timeout or self.config.timeout_seconds
+        )
 
     def _headers(self, *, is_cloud: bool) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -742,7 +761,9 @@ class HttpProxyMcpServer:
         try:
             with urlopen(request, timeout=self.config.timeout_seconds) as response:
                 fresh = json.loads(response.read().decode("utf-8"))
-        except Exception:  # noqa: BLE001 - stale token still errors upstream with the login hint
+        except (
+            Exception
+        ):  # noqa: BLE001 - stale token still errors upstream with the login hint
             return None
         updated = dict(session)
         updated.update(

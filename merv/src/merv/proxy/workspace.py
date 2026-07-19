@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from merv.shared.project_dirs import resolve_project_state_dir
-
-from .kernel.utils import safe_experiment_dirname
+from merv.shared.path_utils import safe_experiment_dirname
 
 
 class LocalWorkspace:
@@ -49,7 +48,9 @@ class LocalWorkspace:
             return str(path)
 
 
-def local_experiment_dir(*, repo_root: Path, experiment_id: str, name: str = "") -> Path:
+def local_experiment_dir(
+    *, repo_root: Path, experiment_id: str, name: str = ""
+) -> Path:
     """The experiment's one local folder.
 
     ``experiments/<name>/`` holds everything the experiment is: plan, code,
@@ -59,7 +60,11 @@ def local_experiment_dir(*, repo_root: Path, experiment_id: str, name: str = "")
     back into this folder over SSH and upload heavy files to durable storage
     before releasing the VM.
     """
-    return repo_root / "experiments" / safe_experiment_dirname(name.strip() or experiment_id)
+    return (
+        repo_root
+        / "experiments"
+        / safe_experiment_dirname(name.strip() or experiment_id)
+    )
 
 
 def local_sessions_dir(

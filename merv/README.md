@@ -15,9 +15,11 @@ and size-capped evidence bytes.
 git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
 ```
 
-That is the whole Python install — the proxy runs on bare `python3` (3.11+),
+That is the whole Python install — the source-launched `merv-mcp` proxy runs on
+bare `python3` 3.9+,
 with no pip packages. The launcher uses a POSIX shell; sandbox SSH and explicit
-output pulls also use the system OpenSSH client and `rsync`. Then:
+output pulls also use the system OpenSSH client and `rsync`. The `merv-client`
+CLI, `merv-http`, the brain, and backend tests remain Python 3.11+. Then:
 
 1. Register the plugin in your client — per-client steps in
    [docs/CLIENTS.md](docs/CLIENTS.md).

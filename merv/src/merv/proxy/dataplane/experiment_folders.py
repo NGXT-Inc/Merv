@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..kernel.utils import ValidationError
+from merv.shared.errors import ValidationError
+
 from ..workspace import local_experiment_dir
 
 

@@ -46,10 +46,11 @@ operational credentials.
 
 ## Install
 
-Prerequisites for every client are `python3` 3.11+ and a POSIX shell. No `pip`
-install or local brain is required; the proxy talks to the hosted brain by
-default. Sandbox SSH and output-pull workflows additionally use the system
-OpenSSH client and `rsync`. For Codex, Gemini CLI, and OpenCode, see
+The source-launched `merv-mcp` proxy requires `python3` 3.9+ and a POSIX shell;
+no `pip` install or local brain is required, and it talks to the hosted brain by
+default. The `merv-client` CLI, `merv-http`, and brain remain Python 3.11+.
+Sandbox SSH and output-pull workflows additionally use the system OpenSSH
+client and `rsync`. For Codex, Gemini CLI, and OpenCode, see
 [merv/docs/CLIENTS.md](merv/docs/CLIENTS.md).
 
 ### Claude Code
@@ -70,7 +71,8 @@ git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
 mkdir -p ~/.cursor/plugins/local
 rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' \
   ~/Merv/merv/ ~/.cursor/plugins/local/merv/
-# Optional but recommended if `python3` on PATH is older than 3.11:
+# Optional only for merv-client/merv-http when `python3` is older than 3.11;
+# merv-mcp itself runs on Python 3.9+:
 python3.11 -m venv ~/.cursor/plugins/local/merv/.venv
 ```
 

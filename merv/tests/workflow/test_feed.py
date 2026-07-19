@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.feed import feed_policy
-from merv.brain.feed.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
-from merv.brain.feed.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
+from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
+from merv.shared.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from merv.brain.feed.feed import POST_TEXT_MAX, REACTION_KINDS
 from merv.brain.feed.feed_unfurl import UnfurlError, extract_card, unfurl
 from merv.brain.transport.http_api import create_fastapi_app
@@ -87,15 +87,23 @@ class FeedServiceTest(unittest.TestCase):
     # -- identity -----------------------------------------------------------
 
     def test_register_is_idempotent_per_session(self) -> None:
-        first = self.call("feed.register", project_id=self.pid, handle="Nova-7", session_id="s1")
+        first = self.call(
+            "feed.register", project_id=self.pid, handle="Nova-7", session_id="s1"
+        )
         self.assertTrue(first["created"])
-        again = self.call("feed.register", project_id=self.pid, handle="Nova-7", session_id="s1")
+        again = self.call(
+            "feed.register", project_id=self.pid, handle="Nova-7", session_id="s1"
+        )
         self.assertFalse(again["created"])
 
     def test_handle_collision_across_sessions_rejected(self) -> None:
-        self.call("feed.register", project_id=self.pid, handle="Nova-7", session_id="s1")
+        self.call(
+            "feed.register", project_id=self.pid, handle="Nova-7", session_id="s1"
+        )
         with self.assertRaises(ValidationError):
-            self.call("feed.register", project_id=self.pid, handle="Nova-7", session_id="s2")
+            self.call(
+                "feed.register", project_id=self.pid, handle="Nova-7", session_id="s2"
+            )
 
     def test_post_requires_registered_handle(self) -> None:
         with self.assertRaises(ValidationError):
@@ -113,7 +121,12 @@ class FeedServiceTest(unittest.TestCase):
     def test_char_cap_enforced(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         with self.assertRaises(ValidationError):
-            self.call("feed.post", project_id=self.pid, handle="Nova-7", text="x" * (POST_TEXT_MAX + 1))
+            self.call(
+                "feed.post",
+                project_id=self.pid,
+                handle="Nova-7",
+                text="x" * (POST_TEXT_MAX + 1),
+            )
 
     def test_empty_text_rejected(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
@@ -123,9 +136,17 @@ class FeedServiceTest(unittest.TestCase):
     def test_image_captured_and_served(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         (self.repo / "plot.png").write_bytes(_PNG)
-        result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="plot", image_path="plot.png")
+        result = self.call(
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="plot",
+            image_path="plot.png",
+        )
         self.assertTrue(result["post"]["has_image"])
-        data, ctype = self.app.feed.get_image(project_id=self.pid, post_id=result["post"]["id"])
+        data, ctype = self.app.feed.get_image(
+            project_id=self.pid, post_id=result["post"]["id"]
+        )
         self.assertEqual(data, _PNG)
         self.assertEqual(ctype, "image/png")
 
@@ -149,9 +170,17 @@ class FeedServiceTest(unittest.TestCase):
     def test_svg_image_captured_and_served(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         (self.repo / "chart.svg").write_bytes(_SVG)
-        result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="vec", image_path="chart.svg")
+        result = self.call(
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="vec",
+            image_path="chart.svg",
+        )
         self.assertTrue(result["post"]["has_image"])
-        data, ctype = self.app.feed.get_image(project_id=self.pid, post_id=result["post"]["id"])
+        data, ctype = self.app.feed.get_image(
+            project_id=self.pid, post_id=result["post"]["id"]
+        )
         self.assertEqual(data, _SVG)
         self.assertEqual(ctype, "image/svg+xml")
 
@@ -184,7 +213,13 @@ class FeedServiceTest(unittest.TestCase):
     def test_missing_image_rejected(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         with self.assertRaises(ValidationError):
-            self.call("feed.post", project_id=self.pid, handle="Nova-7", text="x", image_path="nope.png")
+            self.call(
+                "feed.post",
+                project_id=self.pid,
+                handle="Nova-7",
+                text="x",
+                image_path="nope.png",
+            )
 
     def test_feed_post_preflights_before_reading_image(self) -> None:
         with self.assertRaisesRegex(ValidationError, "not registered"):
@@ -200,7 +235,11 @@ class FeedServiceTest(unittest.TestCase):
         # An unreachable/disallowed URL must NOT fail the post (PRD edge case).
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="see", url="http://127.0.0.1/secret"
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="see",
+            url="http://127.0.0.1/secret",
         )
         preview = result["post"]["link_preview"]
         self.assertTrue(preview and preview.get("error"))
@@ -209,10 +248,18 @@ class FeedServiceTest(unittest.TestCase):
         # javascript:/data: are attacker-shaped, not degradable — the post
         # survives but nothing that could become an href is persisted.
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        for url in ("javascript:alert(1)", "data:text/html,<script>1</script>", "file:///etc/passwd"):
+        for url in (
+            "javascript:alert(1)",
+            "data:text/html,<script>1</script>",
+            "file:///etc/passwd",
+        ):
             with self.subTest(url=url):
                 result = self.call(
-                    "feed.post", project_id=self.pid, handle="Nova-7", text="see", url=url
+                    "feed.post",
+                    project_id=self.pid,
+                    handle="Nova-7",
+                    text="see",
+                    url=url,
                 )
                 post = result["post"]
                 self.assertIsNone(post["link_url"])
@@ -222,7 +269,11 @@ class FeedServiceTest(unittest.TestCase):
     def test_post_kind_persists_and_lists(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="ruled out", kind="kill"
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="ruled out",
+            kind="kill",
         )
         self.assertEqual(result["post"]["kind"], "kill")
         posts = self.call("feed.list", project_id=self.pid)["posts"]
@@ -261,20 +312,32 @@ class FeedServiceTest(unittest.TestCase):
         FeedService(store=self.app.store, blobs=self.app.feed.blobs)
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call(
-            "feed.post", project_id=self.pid, handle="Nova-7", text="still fine", kind="finding"
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="still fine",
+            kind="finding",
         )
         self.assertEqual(result["post"]["kind"], "finding")
 
     def test_post_view_does_not_leak_blob_hash(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         (self.repo / "p.png").write_bytes(_PNG)
-        result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="x", image_path="p.png")
+        result = self.call(
+            "feed.post",
+            project_id=self.pid,
+            handle="Nova-7",
+            text="x",
+            image_path="p.png",
+        )
         self.assertNotIn("image_sha256", result["post"])
 
     def test_every_post_view_carries_a_reactions_map(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call("feed.post", project_id=self.pid, handle="Nova-7", text="hi")
-        self.assertEqual(result["post"]["reactions"], {k: False for k in REACTION_KINDS})
+        self.assertEqual(
+            result["post"]["reactions"], {k: False for k in REACTION_KINDS}
+        )
 
     # -- reactions ------------------------------------------------------------
 
@@ -519,7 +582,10 @@ class FeedServiceTest(unittest.TestCase):
 
     def test_nudge_fires_on_real_activity(self) -> None:
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
-        orig_events, orig_hours = feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS
+        orig_events, orig_hours = (
+            feed_policy.NUDGE_AFTER_EVENTS,
+            feed_policy.NUDGE_AFTER_HOURS,
+        )
         feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = 1, 0.0
         try:
             self.call("claim.create", project_id=self.pid, statement="a claim")
@@ -528,7 +594,10 @@ class FeedServiceTest(unittest.TestCase):
             self.assertIsNotNone(nudge)
             self.assertTrue(nudge["should_post"])
         finally:
-            feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = orig_events, orig_hours
+            feed_policy.NUDGE_AFTER_EVENTS, feed_policy.NUDGE_AFTER_HOURS = (
+                orig_events,
+                orig_hours,
+            )
 
 
 class FeedEmbedWrapTest(unittest.TestCase):
@@ -543,7 +612,11 @@ class FeedEmbedWrapTest(unittest.TestCase):
         wrapped = wrap_embed_html(doc)
         head_start = wrapped.lower().index("<head")
         head_close = wrapped.index(">", head_start) + 1
-        self.assertTrue(wrapped[head_close:].startswith('<meta http-equiv="Content-Security-Policy"'))
+        self.assertTrue(
+            wrapped[head_close:].startswith(
+                '<meta http-equiv="Content-Security-Policy"'
+            )
+        )
         self.assertIn("<title>t</title>", wrapped)
 
     def test_wrapped_csp_forbids_scripts_by_default_src(self) -> None:
@@ -555,7 +628,11 @@ class FeedEmbedWrapTest(unittest.TestCase):
         self.assertTrue(wrapped.lower().startswith("<!doctype html>"))
         head_start = wrapped.lower().index("<head>")
         head_close = head_start + len("<head>")
-        self.assertTrue(wrapped[head_close:].startswith('<meta http-equiv="Content-Security-Policy"'))
+        self.assertTrue(
+            wrapped[head_close:].startswith(
+                '<meta http-equiv="Content-Security-Policy"'
+            )
+        )
         self.assertIn("<header>title bar</header>", wrapped)
 
 
@@ -628,9 +705,7 @@ class FeedHttpTest(unittest.TestCase):
         )["post"]["id"]
         response = self.client.get(f"/api/projects/{self.pid}/feed/{post_id}/embed")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.headers["content-type"], "text/html; charset=utf-8"
-        )
+        self.assertEqual(response.headers["content-type"], "text/html; charset=utf-8")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         csp = response.headers["content-security-policy"]
         self.assertIn("sandbox allow-scripts", csp)
@@ -667,9 +742,13 @@ _BLOG_HTML = b"""
 
 class FeedUnfurlCardTest(unittest.TestCase):
     def test_paper_card_from_citation_meta(self) -> None:
-        card = extract_card("https://arxiv.org/abs/1608.03983", "text/html", _ARXIV_HTML)
+        card = extract_card(
+            "https://arxiv.org/abs/1608.03983", "text/html", _ARXIV_HTML
+        )
         self.assertEqual(card["kind"], "paper")
-        self.assertEqual(card["title"], "SGDR: Stochastic Gradient Descent with Warm Restarts")
+        self.assertEqual(
+            card["title"], "SGDR: Stochastic Gradient Descent with Warm Restarts"
+        )
         self.assertEqual(card["authors"], ["Loshchilov, Ilya", "Hutter, Frank"])
         self.assertEqual(card["year"], "2016")
         self.assertTrue(card["trusted"])
@@ -681,7 +760,9 @@ class FeedUnfurlCardTest(unittest.TestCase):
         self.assertFalse(card["trusted"])
 
     def test_repo_card_by_host(self) -> None:
-        card = extract_card("https://github.com/huggingface/peft", "text/html", _REPO_HTML)
+        card = extract_card(
+            "https://github.com/huggingface/peft", "text/html", _REPO_HTML
+        )
         self.assertEqual(card["kind"], "repo")
         self.assertEqual(card["authors"], [])
         self.assertEqual(card["year"], "")
@@ -692,15 +773,22 @@ class FeedUnfurlCardTest(unittest.TestCase):
         self.assertEqual(card["title"], "Some post")
 
     def test_non_html_is_minimal_page_card(self) -> None:
-        card = extract_card("https://example.com/paper.pdf", "application/pdf", b"%PDF-1.5")
+        card = extract_card(
+            "https://example.com/paper.pdf", "application/pdf", b"%PDF-1.5"
+        )
         self.assertEqual(card["kind"], "page")
         self.assertEqual(card["title"], "")
         self.assertEqual(card["authors"], [])
 
     def test_author_list_is_capped(self) -> None:
-        many = b"<html><head><meta name='citation_title' content='T'/>" + b"".join(
-            f"<meta name='citation_author' content='Author {i}'/>".encode() for i in range(30)
-        ) + b"</head></html>"
+        many = (
+            b"<html><head><meta name='citation_title' content='T'/>"
+            + b"".join(
+                f"<meta name='citation_author' content='Author {i}'/>".encode()
+                for i in range(30)
+            )
+            + b"</head></html>"
+        )
         card = extract_card("https://arxiv.org/abs/x", "text/html", many)
         self.assertEqual(len(card["authors"]), 10)
 
@@ -765,9 +853,7 @@ class FeedUnfurlArxivPdfTest(unittest.TestCase):
             fetched.append(url)
             return (url, "text/html", self._ABS_HTML)
 
-        with unittest.mock.patch(
-            "merv.brain.feed.feed_unfurl.safe_fetch", fake_fetch
-        ):
+        with unittest.mock.patch("merv.brain.feed.feed_unfurl.safe_fetch", fake_fetch):
             card = unfurl("https://arxiv.org/abs/2106.09685")
         self.assertEqual(fetched, ["https://arxiv.org/abs/2106.09685"])
         self.assertEqual(card["url"], "https://arxiv.org/abs/2106.09685")
@@ -787,14 +873,18 @@ class FeedNoteForTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.pid = self.app.call_tool("project", {"action": "create", "name": "Feed Note Test"})["id"]
+        self.pid = self.app.call_tool(
+            "project", {"action": "create", "name": "Feed Note Test"}
+        )["id"]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
     def test_returns_a_note_for_an_unmentioned_entity(self) -> None:
         note = self.app.feed.feed_note_for(
-            project_id=self.pid, entity_id="exp_unmentioned", event="experiment_complete"
+            project_id=self.pid,
+            entity_id="exp_unmentioned",
+            event="experiment_complete",
         )
         self.assertIsNotNone(note)
         self.assertIn("exp_unmentioned", note)
@@ -838,7 +928,9 @@ class FeedNoteForTest(unittest.TestCase):
         # a mention of exp_12 (the "_" wildcarding one arbitrary character).
         self.app.feed.register(handle="Nova-7", project_id=self.pid)
         self.app.feed.post(
-            handle="Nova-7", project_id=self.pid, text="expX12 is a different experiment"
+            handle="Nova-7",
+            project_id=self.pid,
+            text="expX12 is a different experiment",
         )
         note = self.app.feed.feed_note_for(
             project_id=self.pid, entity_id="exp_12", event="experiment_complete"
@@ -878,7 +970,9 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.pid = self.call("project", action="create", name="Feed Note Transition Test")["id"]
+        self.pid = self.call(
+            "project", action="create", name="Feed Note Transition Test"
+        )["id"]
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -886,7 +980,9 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
     def call(self, tool_name: str, **kwargs):
         return self.app.call_tool(tool_name, kwargs)
 
-    def _write_and_associate(self, *, exp_id: str, path: str, role: str, body: str) -> None:
+    def _write_and_associate(
+        self, *, exp_id: str, path: str, role: str, body: str
+    ) -> None:
         (self.repo / path).write_text(body)
         self.call(
             "resource.register",
@@ -926,7 +1022,9 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
             project_id=self.pid,
             intent="Feed note attach-point coverage.",
         )["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=_VALID_PLAN)
+        self._write_and_associate(
+            exp_id=exp_id, path="plan.md", role="plan", body=_VALID_PLAN
+        )
         self.call(
             "experiment.transition",
             project_id=self.pid,
@@ -949,8 +1047,12 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
         self._write_and_associate(
             exp_id=exp_id, path="results.json", role="result", body='{"metric": 1}\n'
         )
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=_VALID_REPORT)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=_VALID_GRAPH)
+        self._write_and_associate(
+            exp_id=exp_id, path="report.md", role="report", body=_VALID_REPORT
+        )
+        self._write_and_associate(
+            exp_id=exp_id, path="graph.json", role="graph", body=_VALID_GRAPH
+        )
         self.call(
             "experiment.transition",
             project_id=self.pid,

@@ -1,15 +1,13 @@
 """Proxy-local execution for split-mode data-plane tools.
 
 The MCP proxy runs on the user's machine, so it can safely perform the local
-file reads and validation required by the current architecture. Static imports
-stay stdlib-only; backend data-plane helpers are imported lazily inside
-methods so the proxy package's import discipline remains unchanged.
+file reads and validation required by the current architecture. Proxy-local and
+shared helpers are imported lazily inside methods to keep startup light.
 """
 
 from __future__ import annotations
 
 import base64
-import importlib
 import mimetypes
 import uuid
 from pathlib import Path
@@ -17,7 +15,7 @@ from typing import Any, Callable, Optional
 
 
 RSYNC_PULL_OUTPUTS_HINT = (
-    'rsync -az --itemize-changes --no-links --no-devices --no-specials '
+    "rsync -az --itemize-changes --no-links --no-devices --no-specials "
     '-e "ssh -i <key_path> -p <port> -o StrictHostKeyChecking=no '
     '-o UserKnownHostsFile=/dev/null" '
     "<user>@<host>:<remote-path> <local-destination>"
@@ -123,6 +121,8 @@ class LocalDataPlane:
         return {"local_dir": local_dir}
 
     def _pull_sandbox_outputs(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        from .dataplane.sandbox_outputs import pull_sandbox_outputs
+
         args = dict(arguments)
         project_id = self._project_id()
         sandbox_args = {
@@ -139,8 +139,12 @@ class LocalDataPlane:
             sandbox["ssh"] = ssh
         if "local_experiment_dir" not in sandbox:
             sandbox = dict(sandbox)
-            experiment_id = str(sandbox.get("experiment_id") or args.get("experiment_id") or "")
-            sandbox_uid = str(sandbox.get("sandbox_uid") or args.get("sandbox_uid") or "")
+            experiment_id = str(
+                sandbox.get("experiment_id") or args.get("experiment_id") or ""
+            )
+            sandbox_uid = str(
+                sandbox.get("sandbox_uid") or args.get("sandbox_uid") or ""
+            )
             if experiment_id or sandbox_uid:
                 sandbox["local_experiment_dir"] = str(
                     self._local_experiment_dir(
@@ -152,10 +156,6 @@ class LocalDataPlane:
                         ),
                     )
                 )
-        pull_sandbox_outputs = _import_attr(
-            "merv.brain.dataplane.sandbox_outputs",
-            "pull_sandbox_outputs",
-        )
         result = pull_sandbox_outputs(
             repo_root=self.repo_root,
             sandbox=sandbox,
@@ -184,16 +184,21 @@ class LocalDataPlane:
             "/api/data-plane/feed/validate-post",
             {
                 key: payload[key]
-                for key in ("project_id", "handle", "text", "ref", "kind", "in_reply_to")
+                for key in (
+                    "project_id",
+                    "handle",
+                    "text",
+                    "ref",
+                    "kind",
+                    "in_reply_to",
+                )
                 if key in payload
             },
         )
         image_path = str(arguments.get("image_path") or "")
         html_path = str(arguments.get("html_path") or "")
         if image_path and html_path:
-            raise LocalDataPlaneError(
-                "a post may carry an image or an embed, not both"
-            )
+            raise LocalDataPlaneError("a post may carry an image or an embed, not both")
         if image_path:
             payload["image"] = self._feed_image_payload(image_path=image_path)
         if html_path:
@@ -201,16 +206,22 @@ class LocalDataPlane:
         return self._control_api_post("/api/data-plane/feed/post", payload)
 
     def _feed_image_payload(self, *, image_path: str) -> dict[str, Any]:
-        reader_cls = _import_attr("merv.brain.dataplane.feed_images", "LocalFeedImageReader")
-        image = reader_cls(repo_root=self.repo_root).read_image(path=image_path)
+        from .dataplane.feed_images import LocalFeedImageReader
+
+        image = LocalFeedImageReader(repo_root=self.repo_root).read_image(
+            path=image_path
+        )
         return {
             "path": str(image["path"]),
             "data_b64": base64.b64encode(image["data"]).decode("ascii"),
         }
 
     def _feed_embed_payload(self, *, html_path: str) -> dict[str, Any]:
-        reader_cls = _import_attr("merv.brain.dataplane.feed_embeds", "LocalFeedEmbedReader")
-        embed = reader_cls(repo_root=self.repo_root).read_embed(path=html_path)
+        from .dataplane.feed_embeds import LocalFeedEmbedReader
+
+        embed = LocalFeedEmbedReader(repo_root=self.repo_root).read_embed(
+            path=html_path
+        )
         return {
             "path": str(embed["path"]),
             "data_b64": base64.b64encode(embed["data"]).decode("ascii"),
@@ -259,47 +270,22 @@ class LocalDataPlane:
         }
 
     def _validate_register_intent(self, arguments: dict[str, Any]) -> None:
-        """Enforce resource.register modes without requiring brain packages.
+        """Enforce the shared resource.register mode/trio invariants."""
+        from merv.shared.tool_validation import validate_resource_register_mode
 
-        Pydantic supplies the full contract check when installed; the small
-        mode/trio invariant remains identical on a bare-Python client.
-        """
         try:
-            input_cls = _import_attr(
-                "merv.brain.tools.contracts", "ResourceRegisterInput"
+            validate_resource_register_mode(
+                path=arguments.get("path"),
+                paths=arguments.get("paths"),
+                resource_id=arguments.get("resource_id"),
+                target_type=arguments.get("target_type"),
+                target_id=arguments.get("target_id"),
+                role=arguments.get("role"),
             )
-        except ImportError:
-            sources = [
-                arguments.get("path") is not None,
-                arguments.get("paths") is not None,
-                arguments.get("resource_id") is not None,
-            ]
-            if sum(sources) != 1:
-                raise LocalDataPlaneError(
-                    "provide exactly one of 'path', 'paths', or 'resource_id'"
-                )
-            trio = [
-                arguments.get("target_type") is not None,
-                arguments.get("target_id") is not None,
-                arguments.get("role") is not None,
-            ]
-            if any(trio) and not all(trio):
-                raise LocalDataPlaneError(
-                    "target_type, target_id, and role must be provided together"
-                )
-            if arguments.get("resource_id") is not None and not all(trio):
-                raise LocalDataPlaneError(
-                    "resource_id association mode requires target_type, "
-                    "target_id, and role"
-                )
-            return
-        payload = dict(arguments)
-        payload.setdefault("project_id", self._project_id())
-        input_cls.model_validate(payload)
+        except ValueError as exc:
+            raise LocalDataPlaneError(str(exc)) from exc
 
-    def _register_resource_files(
-        self, *, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _register_resource_files(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
         project_id = self._project_id()
         kind = str(arguments.get("kind") or "other")
         title = str(arguments.get("title") or "")
@@ -334,6 +320,8 @@ class LocalDataPlane:
         )
 
     def _associate_resource(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        from .dataplane.resource_artifacts import LocalResourceArtifactReader
+
         project_id = self._project_id()
         resource_id = self._required_arg(arguments, "resource_id")
         role = self._required_arg(arguments, "role")
@@ -359,13 +347,9 @@ class LocalDataPlane:
             created_by=str(resource.get("created_by") or "codex"),
         )
         payload: dict[str, Any] = {**intent}
-        reader_cls = _import_attr(
-            "merv.brain.dataplane.resource_artifacts",
-            "LocalResourceArtifactReader",
-        )
-        artifact = reader_cls(repo_root=self.repo_root).read_for_association(
-            path=path, role=role
-        )
+        artifact = LocalResourceArtifactReader(
+            repo_root=self.repo_root
+        ).read_for_association(path=path, role=role)
         content_bytes = artifact.get("content_bytes")
         if content_bytes is not None:
             payload["blob"] = {
@@ -393,6 +377,8 @@ class LocalDataPlane:
     def _materialize_experiment_folders(
         self, *, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        from .dataplane.experiment_folders import materialize_experiment_folders
+
         project_id = self._project_id()
         experiment_id = str(arguments.get("experiment_id") or "").strip()
         status = arguments.get("status", "planned")
@@ -416,23 +402,19 @@ class LocalDataPlane:
                 if isinstance(experiment, dict)
                 and (status is None or experiment.get("status") == status)
             ]
-        materialize = _import_attr(
-            "merv.brain.dataplane.experiment_folders",
-            "materialize_experiment_folders",
+        return materialize_experiment_folders(
+            repo_root=self.repo_root, experiments=experiments
         )
-        return materialize(repo_root=self.repo_root, experiments=experiments)
 
     def _upload_storage_file(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        from merv.shared.file_transfer import file_digest, upload_file_to_target
+
         project_id = self._project_id()
         file_path = self._resolve_local_path(path=self._required_arg(arguments, "path"))
         if not file_path.exists():
             raise LocalDataPlaneError(f"storage upload file not found: {file_path}")
         if not file_path.is_file():
             raise LocalDataPlaneError(f"storage upload path is not a file: {file_path}")
-        file_digest = _import_attr("merv.brain.object_storage.file_transfer", "file_digest")
-        upload_file_to_target = _import_attr(
-            "merv.brain.object_storage.file_transfer", "upload_file_to_target"
-        )
         sha256, size_bytes = file_digest(file_path)
         content_type = (
             str(arguments.get("content_type") or "")
@@ -447,7 +429,9 @@ class LocalDataPlane:
             "sha256": sha256,
             "size_bytes": size_bytes,
             "content_type": content_type,
-            "producing_experiment_id": str(arguments.get("producing_experiment_id") or ""),
+            "producing_experiment_id": str(
+                arguments.get("producing_experiment_id") or ""
+            ),
             "producing_run": str(arguments.get("producing_run") or ""),
             "source_uri": str(arguments.get("source_uri") or ""),
             "notes": str(arguments.get("notes") or ""),
@@ -482,6 +466,8 @@ class LocalDataPlane:
         return result
 
     def _download_storage_file(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
+        from merv.shared.file_transfer import download_target_to_file, file_digest
+
         project_id = self._project_id()
         target = self._resolve_local_path(path=self._required_arg(arguments, "path"))
         if target.exists() and not bool(arguments.get("overwrite")):
@@ -501,10 +487,6 @@ class LocalDataPlane:
         obj = resolved["object"]
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f".{target.name}.tmp-{uuid.uuid4().hex}")
-        file_digest = _import_attr("merv.brain.object_storage.file_transfer", "file_digest")
-        download_target_to_file = _import_attr(
-            "merv.brain.object_storage.file_transfer", "download_target_to_file"
-        )
         try:
             download_target_to_file(download=resolved["download"], path=tmp)
             sha256, size_bytes = file_digest(tmp)
@@ -540,11 +522,9 @@ class LocalDataPlane:
         title: str,
         created_by: str,
     ) -> dict[str, Any]:
-        observer_cls = _import_attr(
-            "merv.brain.dataplane.resource_observer",
-            "LocalResourceObserver",
-        )
-        observation = observer_cls(repo_root=self.repo_root).observe_file(
+        from .dataplane.resource_observer import LocalResourceObserver
+
+        observation = LocalResourceObserver(repo_root=self.repo_root).observe_file(
             path=path,
             kind=kind,
             title=title,
@@ -573,7 +553,8 @@ class LocalDataPlane:
         return str(value)
 
     def _resolve_local_path(self, *, path: str) -> Path:
-        resolve_repo_path = _import_attr("merv.brain.dataplane.repo_paths", "resolve_repo_path")
+        from .dataplane.repo_paths import resolve_repo_path
+
         _rel, full = resolve_repo_path(repo_root=self.repo_root, path=path)
         return full
 
@@ -584,29 +565,21 @@ class LocalDataPlane:
             return path.name
 
     def _local_experiment_dir(self, *, experiment_id: str, name: str = "") -> Path:
-        local_experiment_dir = _import_attr("merv.brain.workspace", "local_experiment_dir")
+        from .workspace import local_experiment_dir
+
         return local_experiment_dir(
             repo_root=self.repo_root, experiment_id=experiment_id, name=name
         )
 
     def _validate_sandbox_request(self, payload: dict[str, Any]) -> None:
-        # Local pre-validation is a convenience: on bare-python machines
-        # without pydantic, skip it — the brain re-validates the payload.
+        from merv.shared.tool_validation import validate_openssh_public_key
+
         try:
-            input_cls = _import_attr("merv.brain.tools.contracts", "SandboxRequestInput")
-        except ImportError:
-            return
-        input_cls.model_validate(payload)
+            validate_openssh_public_key(str(payload.get("public_key") or ""))
+        except ValueError as exc:
+            raise LocalDataPlaneError(str(exc)) from exc
 
     def _storage_guidance(self) -> str:
-        return str(
-            _import_attr(
-                "merv.brain.object_storage.storage_guidance",
-                "STORAGE_RULE_OF_THUMB",
-            )
-        )
+        from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
 
-
-def _import_attr(module_name: str, attr: str) -> Any:
-    module = importlib.import_module(module_name)
-    return getattr(module, attr)
+        return str(STORAGE_RULE_OF_THUMB)

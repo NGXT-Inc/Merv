@@ -27,7 +27,16 @@ FEED = "feed"
 MLFLOW = "mlflow"
 SURFACE = "surface"
 
-MODULES = (KERNEL, RESEARCH_CORE, ARTIFACTS, OBJECT_STORAGE, SANDBOX, FEED, MLFLOW, SURFACE)
+MODULES = (
+    KERNEL,
+    RESEARCH_CORE,
+    ARTIFACTS,
+    OBJECT_STORAGE,
+    SANDBOX,
+    FEED,
+    MLFLOW,
+    SURFACE,
+)
 
 # Directory-level assignments (deepest matching prefix wins; FILE_MODULES wins
 # over both). Paths are brain-relative posix.
@@ -43,7 +52,6 @@ PACKAGE_MODULES = {
     "transport": SURFACE,
     "composition": SURFACE,
     "control": SURFACE,
-    "dataplane": SURFACE,
     # cross-module glue services (auth/cleanup/identity/permissions) awaiting
     # the surface sub-foldering tranche.
     "services": SURFACE,
@@ -59,7 +67,6 @@ FILE_MODULES = {
     "config.py": SURFACE,
     "client_cli.py": SURFACE,
     "observability.py": SURFACE,
-    "workspace.py": SURFACE,
 }
 
 # The import law: kernel imports only kernel; each module imports itself +
@@ -113,16 +120,12 @@ TABLE_OWNERS = {
     "feed_authors": FEED,
     "post_reactions": FEED,
 }
-SQL_TABLE_REF = re.compile(
-    r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\b", re.IGNORECASE
-)
+SQL_TABLE_REF = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\b", re.IGNORECASE)
 
 
 def _backend_files() -> list[Path]:
     return sorted(
-        path
-        for path in BACKEND_ROOT.rglob("*.py")
-        if "__pycache__" not in path.parts
+        path for path in BACKEND_ROOT.rglob("*.py") if "__pycache__" not in path.parts
     )
 
 
@@ -142,7 +145,11 @@ def _dotted_index() -> dict[str, str]:
     index: dict[str, str] = {}
     for path in _backend_files():
         rel = path.relative_to(BACKEND_ROOT)
-        parts = rel.parent.parts if rel.name == "__init__.py" else (*rel.parent.parts, rel.stem)
+        parts = (
+            rel.parent.parts
+            if rel.name == "__init__.py"
+            else (*rel.parent.parts, rel.stem)
+        )
         index[".".join(("merv", "brain", *parts))] = rel.as_posix()
     return index
 
@@ -210,10 +217,15 @@ class ModuleBoundaryTest(unittest.TestCase):
     def test_classification_tables_carry_no_stale_paths(self) -> None:
         for rel in sorted(FILE_MODULES):
             with self.subTest(file=rel):
-                self.assertTrue((BACKEND_ROOT / rel).is_file(), f"stale FILE_MODULES entry: {rel}")
+                self.assertTrue(
+                    (BACKEND_ROOT / rel).is_file(), f"stale FILE_MODULES entry: {rel}"
+                )
         for prefix in sorted(PACKAGE_MODULES):
             with self.subTest(package=prefix):
-                self.assertTrue((BACKEND_ROOT / prefix).is_dir(), f"stale PACKAGE_MODULES entry: {prefix}")
+                self.assertTrue(
+                    (BACKEND_ROOT / prefix).is_dir(),
+                    f"stale PACKAGE_MODULES entry: {prefix}",
+                )
 
     def test_no_new_module_boundary_violations(self) -> None:
         new = sorted(_current_violations() - GRANDFATHERED)
@@ -240,9 +252,7 @@ class ModuleBoundaryTest(unittest.TestCase):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if not (
-                    isinstance(node, ast.Constant) and isinstance(node.value, str)
-                ):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
                     continue
                 for match in SQL_TABLE_REF.finditer(node.value):
                     owner = TABLE_OWNERS.get(match.group(1).lower())

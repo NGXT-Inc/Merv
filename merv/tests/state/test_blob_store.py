@@ -10,7 +10,7 @@ from pathlib import Path
 from tests.support.brain import TestBrain
 from merv.brain.research_core.domain.artifacts import MAX_REPORT_BYTES
 from merv.brain.research_core.domain.graph_lint import MAX_GRAPH_BYTES
-from merv.brain.artifacts.roles import GATED_ROLE_BYTE_CAPS, GATED_ROLES
+from merv.shared.artifact_roles import GATED_ROLE_BYTE_CAPS, GATED_ROLES
 from merv.brain.object_storage.blobs import LocalDirBlobStore
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 from tests.fakes import FakeBlobStore
@@ -198,7 +198,9 @@ class AssociateByteCaptureTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.project_id = self.call("project", action="create", name="Blob Capture")["id"]
+        self.project_id = self.call("project", action="create", name="Blob Capture")[
+            "id"
+        ]
         self.exp_id = self.call(
             "experiment.create",
             name="exp-1",
@@ -272,7 +274,9 @@ class AssociateByteCaptureTest(unittest.TestCase):
         )
         self.assertEqual(resource["associations"], [])
 
-    def test_invalid_association_intent_preflights_before_reading_artifact(self) -> None:
+    def test_invalid_association_intent_preflights_before_reading_artifact(
+        self,
+    ) -> None:
         path = self.repo / "plan.md"
         path.write_text("valid enough to register\n")
         resource = self.call(
@@ -297,14 +301,13 @@ class AssociateByteCaptureTest(unittest.TestCase):
         first = self._associate(path="plan.md", role="plan")
         (self.repo / "plan.md").write_text("v2 — edited after first associate\n")
         second = self._associate(path="plan.md", role="plan")
-        self.assertNotEqual(
-            first["current_version_id"], second["current_version_id"]
-        )
+        self.assertNotEqual(first["current_version_id"], second["current_version_id"])
         for version in (first, second):
             sha = version["current_version"]["content_sha256"]
             self.assertIsNotNone(
                 self.app.blobs.stat(namespace=self.project_id, sha256=sha)
             )
+
 
 if __name__ == "__main__":
     unittest.main()
