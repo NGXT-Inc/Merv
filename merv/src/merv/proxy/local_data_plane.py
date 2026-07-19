@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -502,10 +503,8 @@ class LocalDataPlane:
                 )
             tmp.replace(target)
         finally:
-            try:
+            with suppress(FileNotFoundError):
                 tmp.unlink()
-            except FileNotFoundError:
-                pass
         return {
             "object": obj,
             "path": str(target),

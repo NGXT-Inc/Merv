@@ -23,6 +23,7 @@ import json
 import sys
 import time
 import traceback
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -763,13 +764,11 @@ class HttpProxyMcpServer:
         self._session_cache = updated
         path = self.config.client_config_path
         if path is not None:
-            try:
+            with suppress(OSError):  # in-memory session still carries this proxy process
                 tmp = path.with_suffix(".tmp")
                 tmp.write_text(json.dumps(updated), encoding="utf-8")
                 tmp.chmod(0o600)
                 tmp.replace(path)
-            except OSError:
-                pass  # in-memory session still carries this proxy process
         return updated
 
     def _send(self, *, req: Request, timeout: float) -> dict[str, Any]:
@@ -801,10 +800,8 @@ class HttpProxyMcpServer:
 
     def _error_from_http(self, *, exc: urllib_error.HTTPError) -> _UpstreamError:
         raw = b""
-        try:
+        with suppress(Exception):
             raw = exc.read() or b""
-        except Exception:  # noqa: BLE001
-            pass
         try:
             body = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
