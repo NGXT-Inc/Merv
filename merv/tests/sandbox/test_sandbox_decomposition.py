@@ -35,9 +35,9 @@ from backend.services.sandbox.sandbox_provisioner import SandboxProvisioner
 from backend.services.sandbox.sandbox_registry import SandboxRegistry
 from backend.services.sandbox.sandboxes import SandboxService
 from backend.utils import ValidationError
-from tests.paths import SERVICES_ROOT
+from tests.paths import BACKEND_ROOT
 
-FACADE = SERVICES_ROOT / "sandbox" / "sandboxes.py"
+FACADE = BACKEND_ROOT / "sandbox" / "sandboxes.py"
 
 
 def _import_modules(path: Path) -> set[str]:
@@ -245,7 +245,7 @@ for name in (
         raise SystemExit(f"{name} loaded")
 """
         env = dict(os.environ)
-        env["PYTHONPATH"] = str(FACADE.parents[3])
+        env["PYTHONPATH"] = str(FACADE.parents[2])
         subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
     def test_service_type_hints_resolve_without_data_plane_worker(self) -> None:

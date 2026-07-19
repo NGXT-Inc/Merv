@@ -29,6 +29,10 @@ def _source(name: str) -> str:
     return (SERVICES / name).read_text(encoding="utf-8")
 
 
+def _sandbox_source(name: str) -> str:
+    return (BACKEND_ROOT / "sandbox" / name).read_text(encoding="utf-8")
+
+
 def _api_app_source() -> str:
     return HTTP_API_APP.read_text(encoding="utf-8")
 
@@ -417,26 +421,26 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_sandbox_lifecycle_workers_use_ports_not_concrete_services(self) -> None:
         self.assertNotIn(
             "experiments",
-            _import_segments(SERVICES / "sandbox" / "sandbox_provisioner.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_provisioner.py"),
         )
         self.assertNotIn(
             "sandbox_mgmt_keys",
-            _import_segments(SERVICES / "sandbox" / "sandboxes.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "sandboxes.py"),
         )
         self.assertFalse((SERVICES / "sandbox_mgmt_keys.py").exists())
-        self.assertNotIn("class QuotaAdmission", _source("sandbox/sandboxes.py"))
+        self.assertNotIn("class QuotaAdmission", _sandbox_source("sandboxes.py"))
         self.assertNotIn(
-            "class ControlPlaneView", _source("sandbox/sandbox_daemons.py")
+            "class ControlPlaneView", _sandbox_source("sandbox_daemons.py")
         )
         self.assertNotIn(
-            "class SyncSessionIssuer", _source("sandbox/sandbox_provisioner.py")
+            "class SyncSessionIssuer", _sandbox_source("sandbox_provisioner.py")
         )
-        daemon_imports = _import_segments(SERVICES / "sandbox" / "sandbox_daemons.py")
+        daemon_imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_daemons.py")
         self.assertNotIn("experiments", daemon_imports)
         self.assertNotIn("sandbox_provisioner", daemon_imports)
 
     def test_auto_sync_poller_is_removed(self) -> None:
-        local_source = _source("sandbox/sandbox_daemons.py")
+        local_source = _sandbox_source("sandbox_daemons.py")
         http_source = _api_package_source()
         api_source = (UI_SRC / "api.js").read_text(encoding="utf-8")
         components = UI_SRC / "components"
@@ -715,10 +719,10 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_modal_integer_env_parsing_uses_shared_helper(self) -> None:
         source = (
-            BACKEND_ROOT / "execution" / "backends" / "modal" / "config.py"
+            BACKEND_ROOT / "sandbox" / "execution" / "backends" / "modal" / "config.py"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("from ....env import env_int", source)
+        self.assertIn("from .....env import env_int", source)
         self.assertNotIn("def _env_int", source)
         self.assertNotIn("def _env_non_negative_int", source)
         self.assertNotIn("_positive_int(os.environ.get", source)
@@ -804,7 +808,7 @@ class ServiceLayoutTest(unittest.TestCase):
         for path in (
             ARTIFACTS_ROOT / "pinned.py",
             ARTIFACTS_ROOT / "resources.py",
-            SERVICES / "sandbox" / "sandboxes.py",
+            BACKEND_ROOT / "sandbox" / "sandboxes.py",
         ):
             with self.subTest(module=path.name):
                 source = path.read_text(encoding="utf-8")

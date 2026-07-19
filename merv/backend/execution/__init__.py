@@ -1,162 +1,44 @@
-"""Sandbox backend factory and compatibility exports.
+"""Transitional shim — moved to backend.sandbox.execution; deleted at de-shim.
 
-The backend port lives in ``backend.sandbox.sandbox_backend``. Backend implementations
-and their factory live under this execution package.
+The sys.modules alias covers package-level access; the meta-path finder
+resolves old-path submodule imports (backend.execution.backends.lambda_labs,
+...) to the SAME canonical backend.sandbox.execution module objects, so no
+consumer needs an edit and module identity is preserved.
 """
 
-from __future__ import annotations
+import importlib
+import importlib.util
+import sys
 
-from pathlib import Path
-from typing import Any, Callable
+from ..sandbox import execution as _moved
 
-from ..env import env_value
-from ..sandbox.sandbox_backend import (
-    SANDBOX_STATES,
-    BackendCapabilities,
-    BackendPermissionError,
-    BackendUnavailableError,
-    BackendValidationError,
-    CapacityUnavailableError,
-    ExecutionBackendError,
-    OnCreated,
-    OnPhase,
-    ProvisionedSandbox,
-    SandboxBackend,
-    SandboxBackendBase,
-    SandboxRequest,
-)
+_OLD = __name__
+_NEW = _moved.__name__
 
 
-ActivityHook = Callable[[str, dict[str, Any]], None]
+class _AliasLoader:
+    """Swap the freshly created alias module for the canonical one."""
 
-# Accepted spellings -> canonical backend name (the BackendCapabilities.name
-# and the id prefix in multiplexed deployments).
-BACKEND_ALIASES: dict[str, str] = {
-    "lambda": "lambda_labs",
-    "lambdalabs": "lambda_labs",
-    "thunder": "thunder_compute",
-    "thundercompute": "thunder_compute",
-    "datacrunch": "verda",
-    "voltagepark": "voltage_park",
-}
+    def __init__(self, target: str) -> None:
+        self._target = target
 
+    def create_module(self, spec):
+        return None  # default fresh module; replaced in exec_module
 
-def _canonical_backend_name(name: str) -> str:
-    lowered = name.strip().lower()
-    return BACKEND_ALIASES.get(lowered, lowered)
+    def exec_module(self, module) -> None:
+        sys.modules[module.__name__] = importlib.import_module(self._target)
 
 
-def _build_named_backend(
-    *,
-    name: str,
-    repo_root: Path,
-    activity: ActivityHook | None = None,
-) -> SandboxBackend:
-    if name == "fake":
-        from .backends.fake import FakeSandboxBackend
+class _AliasFinder:
+    """Meta-path finder mapping old dotted names onto the moved package."""
 
-        return FakeSandboxBackend()
-    if name == "modal":
-        from .backends.modal import build_modal_sandbox_backend
-
-        return build_modal_sandbox_backend(
-            repo_root=repo_root,
-            activity=activity,
+    def find_spec(self, fullname, path=None, target=None):
+        if not fullname.startswith(_OLD + "."):
+            return None
+        return importlib.util.spec_from_loader(
+            fullname, _AliasLoader(_NEW + fullname[len(_OLD) :])
         )
-    if name == "thunder_compute":
-        from .backends.thunder_compute import build_thunder_compute_sandbox_backend
-
-        return build_thunder_compute_sandbox_backend(repo_root=repo_root)
-    if name == "lambda_labs":
-        from .backends.lambda_labs import build_lambda_labs_sandbox_backend
-
-        return build_lambda_labs_sandbox_backend(repo_root=repo_root)
-    if name == "hyperstack":
-        from .backends.hyperstack import build_hyperstack_sandbox_backend
-
-        return build_hyperstack_sandbox_backend(repo_root=repo_root)
-    if name == "digitalocean":
-        from .backends.digitalocean import build_digitalocean_sandbox_backend
-
-        return build_digitalocean_sandbox_backend(repo_root=repo_root)
-    if name == "verda":
-        from .backends.verda import build_verda_sandbox_backend
-
-        return build_verda_sandbox_backend(repo_root=repo_root)
-    if name == "voltage_park":
-        from .backends.voltage_park import build_voltage_park_sandbox_backend
-
-        return build_voltage_park_sandbox_backend(repo_root=repo_root)
-    if name == "tensordock":
-        from .backends.tensordock import build_tensordock_sandbox_backend
-
-        return build_tensordock_sandbox_backend(repo_root=repo_root)
-    raise BackendUnavailableError(f"unknown execution backend: {name}")
 
 
-def build_sandbox_backend(
-    *,
-    repo_root: Path,
-    name: str | None = None,
-    activity: ActivityHook | None = None,
-) -> SandboxBackend:
-    """Select and construct the configured sandbox backend(s).
-
-    Backend name comes from (in order): `name=` arg,
-    `MERV_EXECUTION_BACKEND` env (legacy `RESEARCH_PLUGIN_EXECUTION_BACKEND`),
-    or "lambda_labs" by default. `MERV_EXECUTION_BACKENDS` (comma-separated,
-    legacy `RESEARCH_PLUGIN_EXECUTION_BACKENDS`) configures several providers
-    at once behind one MultiplexingSandboxBackend; the single-name env then
-    selects the default among them. One configured backend keeps today's
-    direct, prefix-free path.
-    """
-    if name is not None:
-        return _build_named_backend(
-            name=_canonical_backend_name(name), repo_root=repo_root, activity=activity
-        )
-    configured = list(
-        dict.fromkeys(  # de-dupe, keep configured order
-            _canonical_backend_name(part)
-            for part in (env_value("MERV_EXECUTION_BACKENDS") or "").split(",")
-            if part.strip()
-        )
-    )
-    single = _canonical_backend_name(env_value("MERV_EXECUTION_BACKEND") or "")
-    if len(configured) <= 1:
-        return _build_named_backend(
-            name=configured[0] if configured else (single or "lambda_labs"),
-            repo_root=repo_root,
-            activity=activity,
-        )
-    from .multiplexer import MultiplexingSandboxBackend
-
-    backends = {
-        backend_name: _build_named_backend(
-            name=backend_name, repo_root=repo_root, activity=activity
-        )
-        for backend_name in configured
-    }
-    default = single if single in backends else configured[0]
-    return MultiplexingSandboxBackend(
-        backends=backends, default=default, aliases=BACKEND_ALIASES
-    )
-
-
-__all__ = [
-    "ActivityHook",
-    "BACKEND_ALIASES",
-    "BackendCapabilities",
-    "BackendPermissionError",
-    "BackendUnavailableError",
-    "BackendValidationError",
-    "CapacityUnavailableError",
-    "ExecutionBackendError",
-    "OnCreated",
-    "OnPhase",
-    "ProvisionedSandbox",
-    "SANDBOX_STATES",
-    "SandboxBackend",
-    "SandboxBackendBase",
-    "SandboxRequest",
-    "build_sandbox_backend",
-]
+sys.meta_path.insert(0, _AliasFinder())
+sys.modules[__name__] = _moved
