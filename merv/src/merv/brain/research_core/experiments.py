@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from typing import Any
 
@@ -613,8 +614,7 @@ class ExperimentService:
         return labels.get(role, f"{role} review passed")
 
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
                 "SELECT id FROM experiments WHERE project_id = ? ORDER BY created_at, id",
@@ -625,8 +625,6 @@ class ExperimentService:
                     self.get_state(experiment_id=row["id"], conn=conn) for row in rows
                 ]
             }
-        finally:
-            conn.close()
 
     def transition(
         self,
@@ -1036,8 +1034,7 @@ class ExperimentService:
         passes through start_running exactly once (retry_running and
         send_back_to_running keep the experiment running), so the latest
         start_running event belongs to the current attempt."""
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 """
                 SELECT payload_json, created_at FROM events
@@ -1047,8 +1044,6 @@ class ExperimentService:
                 """,
                 (experiment_id,),
             ).fetchall()
-        finally:
-            conn.close()
         for row in rows:
             try:
                 payload = json.loads(str(row["payload_json"] or "{}"))

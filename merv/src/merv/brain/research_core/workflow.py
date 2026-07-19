@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from typing import Any
 
 from merv.shared.artifact_roles import (
@@ -250,8 +251,7 @@ class WorkflowService:
     def _resolve_scope(
         self, *, project_id: str | None, experiment_id: str | None
     ) -> tuple[str, str | None]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(
                 conn=conn,
                 project_id=project_id,
@@ -263,8 +263,6 @@ class WorkflowService:
                 ).fetchone()
                 experiment_id = row["id"] if row else None
             return project_id, experiment_id
-        finally:
-            conn.close()
 
     def _workflow_for(self, *, conn, experiment: dict[str, Any]) -> dict[str, Any]:
         """Guidance derived from the same GATE_TABLE that enforces transitions.

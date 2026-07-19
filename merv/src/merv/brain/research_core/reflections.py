@@ -12,6 +12,7 @@ design.
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from typing import Any
 
@@ -287,8 +288,7 @@ class ReflectionService:
                 conn.close()
 
     def list_reflections(self, *, project_id: str | None = None) -> dict[str, Any]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
                 "SELECT id FROM reflections WHERE project_id = ? ORDER BY created_at, id",
@@ -299,13 +299,10 @@ class ReflectionService:
                     self.get_state(reflection_id=row["id"], conn=conn) for row in rows
                 ]
             }
-        finally:
-            conn.close()
 
     def overview(self, *, project_id: str | None = None) -> dict[str, Any]:
         """All waves plus the current reflection signal for project UI views."""
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             rows = conn.execute(
                 "SELECT id FROM reflections WHERE project_id = ? ORDER BY created_at, id",
@@ -324,8 +321,6 @@ class ReflectionService:
                 "latest_published": published,
                 "signal": signal,
             }
-        finally:
-            conn.close()
 
     def project_logic_graph_selection(self, *, project_id: str) -> dict[str, Any]:
         """Select the current project graph wave and reflection signal.
@@ -335,8 +330,7 @@ class ReflectionService:
         submitted one yet. The transport layer owns response shaping; this
         service owns the record reads and selection policy.
         """
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             signal = self.reflection_signal(project_id=project_id, conn=conn)
             reflection = self.open_reflection(conn=conn, project_id=project_id)
@@ -352,8 +346,6 @@ class ReflectionService:
                 "reflection": reflection,
                 "graph_resource": graph_resource,
             }
-        finally:
-            conn.close()
 
     def open_reflection(self, *, conn, project_id: str) -> dict[str, Any] | None:
         """The one non-terminal wave for the project, fully hydrated, or None."""

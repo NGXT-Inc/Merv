@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -487,8 +488,7 @@ class ReviewService:
     def status(
         self, *, target_type: str, target_id: str, project_id: str | None = None
     ) -> dict[str, Any]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             requests = conn.execute(
                 """
@@ -508,12 +508,9 @@ class ReviewService:
                 "requests": [self._with_snapshot(row=row) for row in requests],
                 "reviews": [self._hydrate_review(row=row) for row in reviews],
             }
-        finally:
-            conn.close()
 
     def queue(self, *, project_id: str | None = None) -> dict[str, Any]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             req_rows = conn.execute(
                 """
@@ -539,8 +536,6 @@ class ReviewService:
                 "requests": [self._with_snapshot(row=row) for row in req_rows],
                 "reviews": [self._with_snapshot(row=row) for row in review_rows],
             }
-        finally:
-            conn.close()
 
     def open_requests_for_target(
         self,
@@ -551,8 +546,7 @@ class ReviewService:
     ) -> list[dict[str, Any]]:
         if not statuses:
             return []
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             placeholders = ", ".join("?" for _ in statuses)
             rows = conn.execute(
@@ -566,14 +560,11 @@ class ReviewService:
                 (project_id, experiment_id, *statuses),
             ).fetchall()
             return [row_to_dict(row=row) or {} for row in rows]
-        finally:
-            conn.close()
 
     def assert_request_in_project(
         self, *, project_id: str | None, review_request_id: Any
     ) -> None:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if not review_request_id:
                 raise ValidationError("review_request_id is required")
@@ -585,27 +576,21 @@ class ReviewService:
                 raise NotFoundError(
                     f"review request not found in project {project_id}: {review_request_id}"
                 )
-        finally:
-            conn.close()
 
     def request_project_id(self, *, review_request_id: Any) -> str | None:
         if not review_request_id:
             return None
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             row = conn.execute(
                 "SELECT project_id FROM review_requests WHERE id = ?",
                 (str(review_request_id),),
             ).fetchone()
             return str(row["project_id"]) if row else None
-        finally:
-            conn.close()
 
     def assert_session_in_project(
         self, *, project_id: str | None, review_session_id: Any
     ) -> None:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if not review_session_id:
                 raise ValidationError("review_session_id is required")
@@ -622,8 +607,6 @@ class ReviewService:
                 raise NotFoundError(
                     f"review session not found in project {project_id}: {review_session_id}"
                 )
-        finally:
-            conn.close()
 
     def gate_state(
         self, *, conn, target_type: str, target_id: str, role: str
