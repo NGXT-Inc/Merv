@@ -53,14 +53,23 @@ inspect paths under a checkout.
 
 | Component | Modules | Why proxy-side |
 |---|---|---|
-| Resource observation | `dataplane/resource_observer.py`, `resource_validation.py`, `resource_artifacts.py` | Reads repo files, hashes bytes, captures gated artifacts. |
-| Experiment folders | `dataplane/experiment_folders.py` | Creates `experiments/<name>/` in the checkout. |
-| Feed attachments | `dataplane/feed_images.py`, `dataplane/feed_embeds.py` | Reads local images and HTML embeds submitted with feed posts. |
-| Resource paths | `dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
-| Storage transfer | `object_storage/file_transfer.py`, called by `src/merv/proxy/local_data_plane.py` | Hashes and transfers local checkout files through presigned object-store URLs. |
-| Sandbox output pulls | `dataplane/sandbox_outputs.py`, lazy-imported by `src/merv/proxy/local_data_plane.py` | Runs safe `rsync` from the sandbox into the local experiment folder. |
+| Resource observation | `src/merv/proxy/dataplane/resource_observer.py`, `src/merv/proxy/dataplane/resource_artifacts.py` | Reads repo files, hashes bytes, captures gated artifacts. |
+| Experiment folders | `src/merv/proxy/dataplane/experiment_folders.py`, `src/merv/proxy/workspace.py` | Creates `experiments/<name>/` in the checkout. |
+| Feed attachments | `src/merv/proxy/dataplane/feed_images.py`, `src/merv/proxy/dataplane/feed_embeds.py` | Reads local images and HTML embeds submitted with feed posts. |
+| Resource paths | `src/merv/proxy/dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
+| Storage transfer and guidance | `src/merv/shared/file_transfer.py`, `src/merv/shared/storage_guidance.py`, called by `src/merv/proxy/local_data_plane.py` | Hashes and transfers local checkout files through presigned object-store URLs while sharing stable guidance with the brain. |
+| Sandbox output pulls | `src/merv/proxy/dataplane/sandbox_outputs.py` | Runs safe `rsync` from the sandbox into the local experiment folder. |
 | Project links | `src/merv/proxy/project_links.py` | Maps checkout folders to brain project ids in `project_links.sqlite`. |
 | Caller SSH custody | client/proxy environment | `sandbox.request` requires caller `public_key`; the caller owns the private key and supplies its path only for local rsync operations. |
+
+The proxy has a hard zero-brain-import invariant, for both ordinary and dynamic
+imports. It may import only the standard library, `merv.proxy`, and
+dependency-free `merv.shared`; shared code imports neither plane. Stable wire
+shape checks such as OpenSSH public-key and resource-register mode validation
+are shared, while authoritative artifact and workflow policy validation occurs
+on brain submission endpoints before any mutation. The former proxy-side
+`resource_validation.py` helper was deleted because it had no production
+consumer.
 
 ## Tool split
 
@@ -82,7 +91,7 @@ facts or bytes to the brain:
 `sandbox.pull_outputs` is proxy-local in every deployment. It asks the brain for
 the current sandbox record, uses the caller's private key path supplied by the
 client/proxy side, and reuses the safe rsync logic from
-`dataplane/sandbox_outputs.py`. Heavy artifacts should still go through durable
+`src/merv/proxy/dataplane/sandbox_outputs.py`. Heavy artifacts should still go through durable
 storage tools instead of being copied into the repo.
 
 ## Sandbox key custody

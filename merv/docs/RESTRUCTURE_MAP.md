@@ -25,14 +25,16 @@
   `kernel/env.py` logger is back on `__name__`; packaging targets `src/`
   (packages.find where=src, console scripts, proxy package-data, src-pathed
   bin wrappers and Dockerfile).
+- **T7 data-plane ownership — executed.** Checkout-local dataplane modules and
+  `workspace.py` are proxy-owned, two-sided pure helpers are under
+  `merv.shared`, the proxy has no brain import, and the orphan
+  `resource_validation.py` was deleted rather than moved.
 - **Remaining:**
-  1. **Surface tranche** — fold the surface strays (`tools/`, `transport/`,
-     `composition/`, `control/`, `services/`, `config.py`, `client_cli.py`,
-     `workspace.py`, `observability.py`) into `brain/surface/`, and execute
-     the `dataplane/` → proxy move per the map below.
-  2. **Boundary decision** — ratify (or reject) the dataplane-ownership edge
-     the surface tranche implies before moving it.
-  3. **Final doc sweep** — refresh `MODULE_BOUNDARIES.md` /
+  1. **Surface tranche** — fold the remaining surface strays (`tools/`,
+     `transport/`, `composition/`, `control/`, `services/`, `config.py`,
+     `client_cli.py`, `observability.py`) into `brain/surface/`. T6 must not
+     include `workspace.py`; T7 already owns it.
+  2. **Final doc sweep** — refresh `MODULE_BOUNDARIES.md` /
      `CONTROL_DATA_PLANE_SPLIT.md` physical-path tables to the end state,
      sweep stale test method names, then delete this file and
      `RESTRUCTURE_DESHIM_INVENTORY.md`.
@@ -294,7 +296,19 @@ are `merv/backend`-relative unless prefixed `merv/`.
 - `backend/mlflow/metrics.py` → *(stays)*
 - `backend/mlflow/tracking.py` → *(stays)*
 
-### surface — 57 files, 57 move
+### data plane — T7-owned, executed
+- `src/merv/brain/workspace.py` → `src/merv/proxy/workspace.py`
+- `src/merv/brain/dataplane/__init__.py` → `src/merv/proxy/dataplane/__init__.py`
+- `src/merv/brain/dataplane/experiment_folders.py` → `src/merv/proxy/dataplane/experiment_folders.py`
+- `src/merv/brain/dataplane/feed_embeds.py` → `src/merv/proxy/dataplane/feed_embeds.py`
+- `src/merv/brain/dataplane/feed_images.py` → `src/merv/proxy/dataplane/feed_images.py`
+- `src/merv/brain/dataplane/repo_paths.py` → `src/merv/proxy/dataplane/repo_paths.py`
+- `src/merv/brain/dataplane/resource_artifacts.py` → `src/merv/proxy/dataplane/resource_artifacts.py`
+- `src/merv/brain/dataplane/resource_observer.py` → `src/merv/proxy/dataplane/resource_observer.py`
+- `src/merv/brain/dataplane/resource_validation.py` → **deleted** (no production consumer; brain submission endpoints remain authoritative)
+- `src/merv/brain/dataplane/sandbox_outputs.py` → `src/merv/proxy/dataplane/sandbox_outputs.py`
+
+### surface — 47 files, 47 move
 - `backend/client_cli.py` → `backend/surface/client_cli.py`
 - `backend/composition/__init__.py` → `backend/surface/composition/__init__.py`
 - `backend/composition/brain_dirs.py` → `backend/surface/composition/brain_dirs.py`
@@ -305,15 +319,6 @@ are `merv/backend`-relative unless prefixed `merv/`.
 - `backend/control/control_client.py` → `backend/surface/control/control_client.py`
 - `backend/control/control_runtime.py` → `backend/surface/control/control_runtime.py`
 - `backend/control/record_core.py` → `backend/surface/control/record_core.py`
-- `backend/dataplane/__init__.py` → `merv/mcp_server/dataplane/__init__.py`
-- `backend/dataplane/experiment_folders.py` → `merv/mcp_server/dataplane/experiment_folders.py`
-- `backend/dataplane/feed_embeds.py` → `merv/mcp_server/dataplane/feed_embeds.py`
-- `backend/dataplane/feed_images.py` → `merv/mcp_server/dataplane/feed_images.py`
-- `backend/dataplane/repo_paths.py` → `merv/mcp_server/dataplane/repo_paths.py`
-- `backend/dataplane/resource_artifacts.py` → `merv/mcp_server/dataplane/resource_artifacts.py`
-- `backend/dataplane/resource_observer.py` → `merv/mcp_server/dataplane/resource_observer.py`
-- `backend/dataplane/resource_validation.py` → `merv/mcp_server/dataplane/resource_validation.py`
-- `backend/dataplane/sandbox_outputs.py` → `merv/mcp_server/dataplane/sandbox_outputs.py`
 - `backend/observability.py` → `backend/surface/observability.py`
 - `backend/services/__init__.py` → `backend/surface/__init__.py`
 - `backend/services/auth.py` → `backend/surface/auth.py`
@@ -351,4 +356,3 @@ are `merv/backend`-relative unless prefixed `merv/`.
 - `backend/transport/http_policy.py` → `backend/surface/transport/http_policy.py`
 - `backend/transport/http_server.py` → `backend/surface/transport/http_server.py`
 - `backend/transport/mcp_http.py` → `backend/surface/transport/mcp_http.py`
-- `backend/workspace.py` → `backend/surface/workspace.py`

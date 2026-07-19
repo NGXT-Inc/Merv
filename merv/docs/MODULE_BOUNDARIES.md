@@ -1,11 +1,12 @@
 # Module Boundaries
 
-Implemented shape: a modular monolith — one kernel, five modules plus the
-MLflow extension, and a surface that composes them.
+Implemented brain shape: a modular monolith — one kernel, five modules plus the
+MLflow extension, and a surface that composes them. The local proxy and pure
+shared layer sit outside this brain-only module law.
 
 ```
                     ┌───────────────────────── SURFACE ─────────────────────────┐
-                    │  tools/ transport/ composition/ control/ dataplane/       │
+                    │  tools/ transport/ composition/ control/                  │
                     │  config client_cli  (imports anything)                    │
                     └───────┬──────────┬──────────┬─────────┬─────────┬─────────┘
                             ▼          ▼          ▼         ▼         ▼
@@ -27,18 +28,30 @@ MLflow extension, and a surface that composes them.
   - `mlflow -> research_core`: the extension reads experiment records.
 - surface imports anything. **Nothing imports surface.**
 
+Across planes, the reverse boundary is equally strict: brain code may import
+pure `merv.shared` contracts but never `merv.proxy`; proxy code may import only
+the standard library, `merv.proxy`, and `merv.shared`; shared code imports only
+the standard library and itself, never either plane.
+
 ## Module → package mapping
 
 | Module         | Backend code                                                                |
 |----------------|-----------------------------------------------------------------------------|
 | kernel         | `kernel/state/*` (incl. `tool_call_stats`), `kernel/ports/*` (incl. the `AdmissionRequest` contract in `ports/quota_admission`), `kernel/{utils,env,version,secret_tokens}` |
 | research_core  | `research_core/*` (workflow/experiments/claims/reviews/reflections/projects services + views, `graph_refs`, `reflection_tools`), `research_core/domain/*` |
-| artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, roles, markdown_images, figure_view, resource_selection) |
-| object_storage | `object_storage/*` (incl. `storage_guidance`) |
+| artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, figure_view, resource_selection) |
+| object_storage | `object_storage/*` (blob/object-store adapters and ledger service) |
 | sandbox        | `sandbox/*` (incl. the `mgmt_keys`/`managed_mgmt_keys` custody adapters, `sandbox_paths`, `ssh_keys`, `transcript_cache`, `quotas`), `sandbox/execution/*` |
-| feed           | `feed/*` (feed, feed_unfurl, feed_images, feed_embeds, feed_policy)          |
+| feed           | `feed/*` (feed, feed_unfurl, feed_policy)                                   |
 | mlflow         | `mlflow/*` (extension, incl. its own env config in `mlflow/config`)          |
-| surface        | `tools/*`, `transport/*`, `composition/*`, `control/*`, `dataplane/*`, `config`, `client_cli`, glue services (`permissions`, `identity`, `cleanup`), `workspace`, `observability` |
+| surface        | `tools/*`, `transport/*`, `composition/*`, `control/*`, `config`, `client_cli`, glue services (`permissions`, `identity`, `cleanup`), `observability` |
+
+Outside the brain modular-monolith classifier:
+
+| Layer | Code |
+|---|---|
+| local proxy | `src/merv/proxy/*`, including `dataplane/*` and `workspace.py` |
+| pure shared | `src/merv/shared/*`, including errors, path/wire/tool contracts, storage helpers, feed media, artifact roles, and markdown parsing |
 
 The authoritative, file-exact table is `FILE_MODULES`/`PACKAGE_MODULES` in
 `tests/structure/test_module_boundaries.py`.

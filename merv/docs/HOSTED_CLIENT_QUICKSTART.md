@@ -9,10 +9,13 @@ access and caller SSH keys local.
 git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
 ```
 
-The stdio proxy runs on bare `python3` 3.11+ and needs no pip install. Its
+The source-launched `merv-mcp` stdio proxy runs on bare `python3` 3.9+ and needs
+no pip install. Its
 launcher requires a POSIX shell; sandbox SSH and explicit output pulls use the
-system OpenSSH client and `rsync`. A project environment is needed only when
-running a localhost brain or the backend test suite.
+system OpenSSH client and `rsync`. The `merv-client` login CLI used below,
+`merv-http`, the brain, and backend tests remain Python 3.11+; a project
+environment is needed only for those surfaces when 3.11+ is not already
+available.
 
 ## Authenticate this machine
 

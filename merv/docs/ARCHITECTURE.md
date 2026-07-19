@@ -89,10 +89,17 @@ the local data plane in every deployment and owns:
 - feed image and local HTML-embed reads;
 - checkout-to-project links in `project_links.sqlite`.
 
-The proxy's startup, JSON-RPC loop, routing, and checked-in tool catalog run on
-Python 3.11+ using only the standard library. Data-tool implementations are
-loaded lazily when invoked, so listing tools and reaching the hosted brain do not
-require a local package installation.
+The source-launched `merv-mcp` proxy, including its data-tool implementations,
+runs on Python 3.9+ using only the standard library. It has no static or dynamic
+imports of `merv.brain`; listing tools and reaching the hosted brain require no
+local package installation. The `merv-client` CLI, `merv-http`, the brain, and
+the distributable wheel retain their Python 3.11+ floor.
+
+Pure two-sided contracts live in `merv.shared`: error identities, path naming,
+resource-observation wire records, narrow tool-shape validation, storage
+transfer/guidance, feed-media primitives, artifact roles, and markdown-image
+parsing. Workflow policy, Pydantic models, service composition, and mutation
+authority remain brain-owned.
 
 The proxy resolves one brain URL in this order:
 
@@ -142,9 +149,13 @@ diagnostic view and is not part of durable research state.
 
 ## Tool routing
 
-The central registry in `src/merv/brain/tools/contracts.py` assigns every tool to one
-plane. Control tools run in the brain. These checkout-sensitive tools run in the
-proxy and submit validated facts or bytes to the brain:
+The brain registry in `src/merv/brain/tools/contracts.py` remains the generator
+and source of truth for tool schemas and plane assignments. The proxy never
+imports it at runtime: its sole runtime registry is the checked-in
+`src/merv/proxy/_tool_catalog.json`, whose byte-for-byte parity is enforced by
+the catalog generator and tests. Control tools run in the brain. These
+checkout-sensitive tools run in the proxy and submit validated facts or bytes
+to the brain:
 
 - `experiment.materialize_folders`;
 - `resource.register`;
@@ -161,7 +172,8 @@ The merged `project` tool is special:
 - `action="create"` creates a brain project without linking the checkout.
 
 The brain rejects `repo_root` context and direct calls to data-plane tools. This
-keeps the privacy boundary enforceable rather than conventional.
+keeps the privacy boundary enforceable rather than conventional. Conversely,
+the brain never imports `merv.proxy`, and `merv.shared` imports neither plane.
 
 ## Workflow architecture
 
