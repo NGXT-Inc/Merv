@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from ...mlflow import (
@@ -302,7 +303,7 @@ def _finalize_plugin_mlflow_run(
         or run_status in MLFLOW_TERMINAL_RUN_STATUSES
     ):
         return state
-    try:
+    with suppress(Exception):  # MLflow must never block workflow state
         finalized = mlflow_tracking.finalize_run(
             project_id=project_id,
             experiment_id=experiment_id,
@@ -318,8 +319,6 @@ def _finalize_plugin_mlflow_run(
                 run=readback,
                 event_type="experiment.mlflow_run_refreshed",
             )
-    except Exception:  # noqa: BLE001 - MLflow must never block workflow state
-        pass
     return state
 
 
