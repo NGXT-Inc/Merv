@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from .._config import _load_env_text
 from .....kernel.env import env_int, env_raw, env_value
 from ....sandbox_backend import BackendValidationError
 from ...sync_dirs import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT, SESSIONS_DIRNAME
@@ -174,15 +174,7 @@ def load_modal_env_file() -> None:
         path = Path(__file__).resolve().parents[7] / ".env"
         if not path.exists():
             return
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key and key not in os.environ:
-            os.environ[key] = value
+    _load_env_text(path.read_text())
 
 
 def _env_str(name: str, default: str) -> str:

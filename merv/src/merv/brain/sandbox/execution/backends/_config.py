@@ -1,9 +1,23 @@
-"""Configuration validators shared by VM provider backends."""
+"""Configuration helpers shared by sandbox provider backends."""
 
 from __future__ import annotations
 
+import os
+
 from ...sandbox_backend import BackendValidationError
 from ..sync_dirs import SESSIONS_DIRNAME
+
+
+def _load_env_text(text: str) -> None:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _absolute_posix_path(value: str, *, field: str) -> str:
