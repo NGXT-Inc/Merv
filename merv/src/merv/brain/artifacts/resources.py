@@ -341,7 +341,7 @@ class ResourceService:
                 raise NotFoundError(
                     f"resource not found in project {project_id}: {resource_id}"
                 )
-            target_project_id = self._ensure_target_exists(
+            target_project_id = self._targets().project_id_for(
                 conn=conn,
                 target_type=target_type,
                 target_id=target_id,
@@ -350,7 +350,7 @@ class ResourceService:
                 raise NotFoundError(
                     f"{target_type} not found in project {project_id}: {target_id}"
                 )
-            attempt_index = self._association_attempt_index(
+            attempt_index = self._targets().attempt_index_for(
                 conn=conn,
                 target_type=target_type,
                 target_id=target_id,
@@ -730,20 +730,6 @@ class ResourceService:
                 "content_sha256 must be a lowercase sha256 hex digest"
             )
 
-    def _ensure_target_exists(
-        self, *, conn: Connection, target_type: str, target_id: str
-    ) -> str | None:
-        return self._targets().project_id_for(
-            conn=conn, target_type=target_type, target_id=target_id
-        )
-
-    def _association_attempt_index(
-        self, *, conn: Connection, target_type: str, target_id: str
-    ) -> int:
-        return self._targets().attempt_index_for(
-            conn=conn, target_type=target_type, target_id=target_id
-        )
-
     def _targets(self) -> Any:
         if self.association_targets is None:
             raise RuntimeError(
@@ -1065,7 +1051,7 @@ class ResourceService:
         target_id: str,
         role: str,
     ) -> dict[str, Any]:
-        target_project_id = self._ensure_target_exists(
+        target_project_id = self._targets().project_id_for(
             conn=conn,
             target_type=target_type,
             target_id=target_id,
@@ -1074,7 +1060,7 @@ class ResourceService:
             raise NotFoundError(
                 f"{target_type} not found in project {project_id}: {target_id}"
             )
-        attempt_index = self._association_attempt_index(
+        attempt_index = self._targets().attempt_index_for(
             conn=conn,
             target_type=target_type,
             target_id=target_id,
