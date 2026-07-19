@@ -292,9 +292,12 @@ class SandboxBackendBase:
         return None
 
     def _selection_catalog(
-        self, *, reason: str, regions: list[str], options: list[dict[str, Any]]
+        self, *, reason: str, options: list[dict[str, Any]],
+        regions: list[str] | None = None,
     ) -> dict[str, Any]:
         """The common envelope for fixed bundled-hardware selections."""
+        if regions is None:
+            regions = sorted({r for option in options for r in option.get("regions", [])})
         return {
             "provider": self.capabilities.name,
             "selection_required": self.capabilities.requires_hardware_selection,

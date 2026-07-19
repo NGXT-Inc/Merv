@@ -231,7 +231,6 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
         options = to_agent_options(
             self.client.list_sizes(), gpu=gpu, region=region, only_available=True
         )
-        regions = sorted({r for option in options for r in option.get("regions", [])})
         reason = (
             "DigitalOcean GPU droplets bundle GPU, CPU, and RAM into fixed size "
             "slugs; pick one instance_type. Destroyed droplets stop billing — "
@@ -245,7 +244,6 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
             )
         return self._selection_catalog(
             reason=reason,
-            regions=regions,
             options=options,
         )
 

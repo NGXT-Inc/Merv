@@ -225,14 +225,12 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
             region=region,
             only_available=True,
         )
-        regions = sorted({r for option in options for r in option.get("regions", [])})
         return self._selection_catalog(
             reason=(
                 "Voltage Park sells fixed instant-deploy presets (H100 SXM5 "
                 "machines in 1/2/4/8-GPU shapes); pick one options[].instance_type "
                 "(a preset id)."
             ),
-            regions=regions,
             options=options,
         )
 

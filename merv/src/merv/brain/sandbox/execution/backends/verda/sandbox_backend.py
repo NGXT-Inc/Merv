@@ -237,14 +237,12 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
             region=region,
             only_available=True,
         )
-        regions = sorted({r for option in options for r in option.get("regions", [])})
         return self._selection_catalog(
             reason=(
                 "Verda (DataCrunch) bundles GPU, CPU, and RAM into fixed instance "
                 "types; pick one instance_type. Billing rounds up to 10-minute "
                 "increments."
             ),
-            regions=regions,
             options=options,
         )
 

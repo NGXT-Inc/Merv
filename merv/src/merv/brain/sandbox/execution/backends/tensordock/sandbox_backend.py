@@ -239,7 +239,6 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
         options = to_agent_options(
             self.client.list_locations(), gpu=gpu, region=region, only_available=True
         )
-        regions = sorted({r for option in options for r in option.get("regions", [])})
         return self._selection_catalog(
             reason=(
                 "TensorDock composes machines per host; these options are "
@@ -247,7 +246,6 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
                 "100GB storage) at locations that support DEDICATED public IPs. "
                 "Billing is per-second against the prepaid balance."
             ),
-            regions=regions,
             options=options,
         )
 
