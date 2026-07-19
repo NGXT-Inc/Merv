@@ -7,7 +7,6 @@ developer shell with the tools agents expect.
 
 from __future__ import annotations
 
-import shlex
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,7 +16,7 @@ from ...bootstrap_tools import (
     BASELINE_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
 )
-from ...vm_bootstrap import build_bootstrap_core
+from ...vm_bootstrap import build_standard_user_data
 from ....sandbox_backend import (
     BackendUnavailableError,
     BackendCapabilities,
@@ -379,55 +378,17 @@ def build_user_data(
     management_public_key: str = "",
     tokens: Mapping[str, str] | None = None,
 ) -> str:
-    apt_packages = " ".join(shlex.quote(pkg) for pkg in LAMBDA_APT_PACKAGES)
-    python_packages = " ".join(shlex.quote(pkg) for pkg in ML_PYTHON_PACKAGES)
-    # Install the MLflow client one-at-a-time, only when missing, and with
-    # --ignore-installed. The image ships Debian-owned Python packages without
-    # RECORD files; pip cannot uninstall those, so dependency upgrades that touch
-    # one can abort the whole install. --ignore-installed installs fresh copies
-    # into /usr/local (which shadows Debian dist-packages on sys.path) and never
-    # calls uninstall. uv is skipped here: `uv pip install --system` refuses
-    # PEP 668 externally-managed interpreters outright.
-    mlflow_package = shlex.quote("mlflow==2.18.0")
-    bootstrap_core = build_bootstrap_core(
+    _ = tokens  # Compatibility input; credentials are delivered post-boot.
+    return build_standard_user_data(
         public_key=public_key,
         experiment_id=experiment_id,
         workdir=workdir,
         sessions_dir=sessions_dir,
         sandbox_data_dir=sandbox_data_dir,
         management_public_key=management_public_key,
-        tokens=tokens,
+        apt_packages=LAMBDA_APT_PACKAGES,
+        python_packages=ML_PYTHON_PACKAGES,
     )
-    return f"""#!/usr/bin/env bash
-set -euxo pipefail
-export DEBIAN_FRONTEND=noninteractive
-
-{bootstrap_core}
-# === Phase 2: heavy toolchain install (the VM is already usable by here) ===
-apt-get update
-apt-get install -y --no-install-recommends {apt_packages}
-ln -sf /usr/bin/fdfind /usr/local/bin/fd || true
-python3 -m pip install --break-system-packages --upgrade pip uv || python3 -m pip install --user --upgrade pip uv || true
-if [ -x /root/.local/bin/uv ]; then
-  install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
-fi
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh || true
-  if [ -x /root/.local/bin/uv ]; then
-    install -m 0755 /root/.local/bin/uv /usr/local/bin/uv
-  fi
-fi
-install_with_uv_or_pip() {{
-  if command -v uv >/dev/null 2>&1; then
-    uv pip install --system "$@" || python3 -m pip install --break-system-packages "$@"
-  else
-    python3 -m pip install --break-system-packages "$@"
-  fi
-}}
-python3 -c 'import mlflow' >/dev/null 2>&1 || python3 -m pip install --break-system-packages --ignore-installed {mlflow_package} || echo "[merv] mlflow install failed" >> /opt/merv/bootstrap.log
-install_with_uv_or_pip torch torchvision torchaudio || true
-install_with_uv_or_pip {python_packages} || true
-"""
 
 
 def build_lambda_labs_sandbox_backend(*, repo_root: Path | None = None, **_kwargs: Any) -> LambdaLabsSandboxBackend:
