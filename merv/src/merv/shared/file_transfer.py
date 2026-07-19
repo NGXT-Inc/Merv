@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import url2pathname, urlopen
 
-from ..kernel.utils import ValidationError
+from .errors import ValidationError
 
 
 def file_digest(path: Path) -> tuple[str, int]:
@@ -118,7 +118,9 @@ def put_presigned_url(
             conn.request("PUT", request_target, body=body, headers=headers)
             response = conn.getresponse()
             response_body = response.read(4096)
-            response_headers = {key.lower(): value for key, value in response.getheaders()}
+            response_headers = {
+                key.lower(): value for key, value in response.getheaders()
+            }
             if response.status < 200 or response.status >= 300:
                 detail = response_body.decode("utf-8", errors="replace").strip()
                 raise ValidationError(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from ...artifacts.markdown_images import markdown_image_links
+from merv.shared.markdown_images import markdown_image_links
 
 
 # --- Plan schema (PRD-style) -------------------------------------------------
@@ -55,9 +55,7 @@ def _normalize_heading(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
-def _sections_missing(
-    text: str, required: tuple[tuple[str, str], ...]
-) -> list[str]:
+def _sections_missing(text: str, required: tuple[tuple[str, str], ...]) -> list[str]:
     """Return the canonical names of REQUIRED sections that are absent or
     empty. A section counts as present when its heading exists and the body
     beneath it — up to the next same-or-higher-level heading — contains
@@ -77,7 +75,7 @@ def _sections_missing(
             continue
         level, body_start = headings[idx][1], headings[idx][3]
         body_end = len(text)
-        for nxt_start, nxt_level, _, _ in headings[idx + 1:]:
+        for nxt_start, nxt_level, _, _ in headings[idx + 1 :]:
             if nxt_level <= level:
                 body_end = nxt_start
                 break

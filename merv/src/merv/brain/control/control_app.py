@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
+
 from ..tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     available_tool_names,
@@ -15,7 +17,6 @@ from .control_runtime import (
     ControlSandboxWorker,
     ControlToolCallSink,
 )
-from ..object_storage.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 from ..observability import StructuredLogger
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from .record_core import build_experiment_attachment_check, build_record_core

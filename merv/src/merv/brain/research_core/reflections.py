@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
+
 from .domain.experiment_names import validate_experiment_name
 from .domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -48,14 +50,18 @@ from .domain.reflection_gates import (
     REFLECTION_TERMINAL_STATUSES,
     allowed_reflection_transitions_for,
 )
-from ..artifacts.roles import PROJECT_GRAPH_ROLES
 from .domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
 from ..kernel.ports.reflection_writers import (
     ReflectionClaimWriter,
     ReflectionExperimentWriter,
 )
 from ..artifacts.pinned import PinnedStore, resubmit_hint
-from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
+from ..kernel.state.store import (
+    BaseStateStore,
+    next_created_seq,
+    row_to_dict,
+    rows_to_dicts,
+)
 from ..kernel.utils import NotFoundError, WorkflowError, new_id, now_iso
 from .review_gate import review_gate_state
 
@@ -194,7 +200,9 @@ class ReflectionService:
             conn = self.store.connect()
         try:
             if owns_conn:
-                project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+                project_id = self.store.require_project_id(
+                    conn=conn, project_id=project_id
+                )
             row = conn.execute(
                 "SELECT * FROM reflections WHERE id = ?", (reflection_id,)
             ).fetchone()
@@ -277,7 +285,6 @@ class ReflectionService:
         finally:
             if owns_conn:
                 conn.close()
-
 
     def list_reflections(self, *, project_id: str | None = None) -> dict[str, Any]:
         conn = self.store.connect()
@@ -387,7 +394,9 @@ class ReflectionService:
             roles=PROJECT_GRAPH_ROLES,
         )
 
-    def _project_graph_diff(self, *, conn, reflection: dict[str, Any]) -> dict[str, Any]:
+    def _project_graph_diff(
+        self, *, conn, reflection: dict[str, Any]
+    ) -> dict[str, Any]:
         current_resource = self._project_graph_resource(reflection=reflection)
         current_version_id = str(
             (
@@ -435,7 +444,9 @@ class ReflectionService:
         current_graph, current_problems = self._load_graph_for_diff(
             conn=conn,
             version_id=current_version_id,
-            role=str((current_resource or {}).get("association_role") or "project_graph"),
+            role=str(
+                (current_resource or {}).get("association_role") or "project_graph"
+            ),
             what="current project logic graph",
         )
         problems = [*base_problems, *current_problems]
@@ -583,7 +594,9 @@ class ReflectionService:
 
         if forward.review is not None:
             review = forward.review
-            snapshot_id = review_snapshot_id(target_type="reflection", target=reflection)
+            snapshot_id = review_snapshot_id(
+                target_type="reflection", target=reflection
+            )
             gate_state = review_gate_state(
                 conn=conn,
                 project_id=str(reflection["project_id"]),
@@ -599,8 +612,8 @@ class ReflectionService:
                 role=review.role,
                 target_snapshot_id=snapshot_id,
             )
-            review_status = "passed" if passed else self._review_gate_status(
-                request=request
+            review_status = (
+                "passed" if passed else self._review_gate_status(request=request)
             )
             item = {
                 "id": f"review:{review.role}",
@@ -611,9 +624,7 @@ class ReflectionService:
                 "status": review_status,
                 "gate": status,
                 "action": (
-                    review.pass_action
-                    if passed
-                    else f"launch_{review.action_name}er"
+                    review.pass_action if passed else f"launch_{review.action_name}er"
                 ),
                 "skill": review.skill,
             }
@@ -691,7 +702,9 @@ class ReflectionService:
                     (
                         next_status,
                         now,
-                        self._current_graph_version_id(conn=conn, reflection=reflection),
+                        self._current_graph_version_id(
+                            conn=conn, reflection=reflection
+                        ),
                         now,
                         reflection_id,
                     ),
@@ -896,7 +909,9 @@ class ReflectionService:
             path=str(row["path"]),
         )
 
-    def _current_change_spec(self, *, conn, reflection: dict[str, Any]) -> dict[str, Any]:
+    def _current_change_spec(
+        self, *, conn, reflection: dict[str, Any]
+    ) -> dict[str, Any]:
         row = self._current_role_row(
             conn=conn, reflection_id=reflection["id"], role="change_spec"
         )
@@ -950,7 +965,9 @@ class ReflectionService:
         return row is not None
 
     def _non_terminal_experiments(self, *, conn, project_id: str) -> list[str]:
-        terminal = ", ".join(f"'{status}'" for status in sorted(EXPERIMENT_TERMINAL_STATUSES))
+        terminal = ", ".join(
+            f"'{status}'" for status in sorted(EXPERIMENT_TERMINAL_STATUSES)
+        )
         rows = conn.execute(
             f"""
             SELECT name, id FROM experiments
@@ -1065,10 +1082,7 @@ class ReflectionService:
         for proposal in experiments:
             name = validate_experiment_name(str(proposal.get("name") or ""))
             intent = str(proposal.get("intent") or "").strip()
-            claim_ids = [
-                key_to_claim_id.get(ref, ref)
-                for ref in claim_refs(proposal)
-            ]
+            claim_ids = [key_to_claim_id.get(ref, ref) for ref in claim_refs(proposal)]
             proposal_key = str(proposal.get("key") or "").strip()
             experiment_id = self.experiment_writer.create_from_reflection(
                 conn=conn,
@@ -1127,7 +1141,9 @@ class ReflectionService:
             (reflection_id, *roles, reflection_id, *roles),
         ).fetchone()
 
-    def _current_graph_version_id(self, *, conn, reflection: dict[str, Any]) -> str | None:
+    def _current_graph_version_id(
+        self, *, conn, reflection: dict[str, Any]
+    ) -> str | None:
         row = self._current_role_row_for_roles(
             conn=conn, reflection_id=reflection["id"], roles=PROJECT_GRAPH_ROLES
         )
@@ -1153,7 +1169,9 @@ class ReflectionService:
             role=role,
         )
 
-    def _review_gate_state(self, *, conn, reflection_id: str, role: str) -> dict[str, Any]:
+    def _review_gate_state(
+        self, *, conn, reflection_id: str, role: str
+    ) -> dict[str, Any]:
         row = conn.execute(
             "SELECT project_id FROM reflections WHERE id = ?", (reflection_id,)
         ).fetchone()
@@ -1163,7 +1181,9 @@ class ReflectionService:
             target_type="reflection",
             target_id=reflection_id,
             role=role,
-            snapshot_id=self._target_snapshot_id(conn=conn, reflection_id=reflection_id),
+            snapshot_id=self._target_snapshot_id(
+                conn=conn, reflection_id=reflection_id
+            ),
         )
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:
@@ -1175,7 +1195,9 @@ class ReflectionService:
 
     # ---- review return routing ----
 
-    def send_back_to_reflecting(self, *, conn, reflection_id: str, revision_context: str) -> None:
+    def send_back_to_reflecting(
+        self, *, conn, reflection_id: str, revision_context: str
+    ) -> None:
         """Rejection back to the fan-out: the attempt bumps, so every roster
         lens must submit a fresh reflection before synthesizing again."""
         row = self._require_in_review(conn=conn, reflection_id=reflection_id)
@@ -1197,7 +1219,9 @@ class ReflectionService:
             payload={"revision_context": revision_context},
         )
 
-    def send_back_to_synthesizing(self, *, conn, reflection_id: str, revision_context: str) -> None:
+    def send_back_to_synthesizing(
+        self, *, conn, reflection_id: str, revision_context: str
+    ) -> None:
         """Rejection back to reflection-artifact revision only: the reflections stand, so the
         attempt is NOT bumped — the orchestrator revises the project graph
         reflection document, and/or change spec and resubmits."""
@@ -1243,9 +1267,7 @@ class ReflectionService:
             conn = self.store.connect()
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            terminal = ", ".join(
-                f"'{s}'" for s in sorted(EXPERIMENT_TERMINAL_STATUSES)
-            )
+            terminal = ", ".join(f"'{s}'" for s in sorted(EXPERIMENT_TERMINAL_STATUSES))
             current_terminal = {
                 str(row["id"]): str(row["status"])
                 for row in conn.execute(

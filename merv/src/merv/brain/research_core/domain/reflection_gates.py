@@ -33,7 +33,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...artifacts.roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_ROLE
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_ROLE
+
 from .gates import ForwardTransition, ReviewRequirement, RoleRequirement
 
 

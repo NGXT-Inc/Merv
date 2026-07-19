@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from merv.shared.artifact_roles import RESOURCE_ROLES, RESOURCE_TARGET_TYPES
+from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
+from merv.shared.tool_validation import (
+    validate_openssh_public_key,
+    validate_resource_register_mode,
+)
 
 from ..config import storage_feature_enabled
-from ..object_storage.storage_guidance import STORAGE_RULE_OF_THUMB
-from ..artifacts.roles import RESOURCE_ROLES, RESOURCE_TARGET_TYPES
 from ..research_core.domain.vocabulary import REVIEW_VERDICT_VALUES
 
 
@@ -117,9 +121,7 @@ class ProjectInput(ContractModel):
                 )
         elif self.action == "create":
             if len(self.name) < 3:
-                raise ValueError(
-                    "action=create requires name (at least 3 characters)"
-                )
+                raise ValueError("action=create requires name (at least 3 characters)")
         elif self.action == "connect":
             if not self.project_id and not self.name:
                 raise ValueError(
@@ -172,24 +174,52 @@ class ClaimListInput(ProjectScopedInput):
 
 class ClaimUpdateInput(ProjectScopedInput):
     claim_id: str
-    status: Literal[
-        "draft", "active", "supported", "weakened", "contradicted", "abandoned"
-    ] | None = None
+    status: (
+        Literal["draft", "active", "supported", "weakened", "contradicted", "abandoned"]
+        | None
+    ) = None
     confidence: Literal["low", "medium", "high"] | None = None
 
 
 class ExperimentCreateInput(ProjectScopedInput):
-    name: str = Field(default="", description="REQUIRED. Short folder-safe name, unique within the project — it becomes the experiment folder experiments/<name>/. Letters, digits, '.', '_', '-' only; 3-48 characters. The project supplies the shared context, so name the contrast: lead with what distinguishes this experiment from its siblings and do not repeat the project topic (next to 'released_adapters', prefer 'scratch_training' over 'lora_glue_scratch'). See the siblings — including terminal ones you should not recreate — via the project tool with action=\"overview\".")
-    intent: str = Field(default="", description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.")
+    name: str = Field(
+        default="",
+        description="REQUIRED. Short folder-safe name, unique within the project — it becomes the experiment folder experiments/<name>/. Letters, digits, '.', '_', '-' only; 3-48 characters. The project supplies the shared context, so name the contrast: lead with what distinguishes this experiment from its siblings and do not repeat the project topic (next to 'released_adapters', prefer 'scratch_training' over 'lora_glue_scratch'). See the siblings — including terminal ones you should not recreate — via the project tool with action=\"overview\".",
+    )
+    intent: str = Field(
+        default="",
+        description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.",
+    )
     tested_claim_ids: list[str] | str | None = Field(default_factory=list)
-    claim_id: str | None = Field(default=None, description="Alias for a single tested claim id.")
-    claim_ids: list[str] | str | None = Field(default=None, description="Alias for tested_claim_ids.")
-    title: str = Field(default="", description="Deprecated; back-compat fallback for intent. Put design detail in plan.md.")
-    hypothesis: str = Field(default="", description="Deprecated; put the hypothesis in plan.md's 'Objective & hypothesis' section.")
-    design: str = Field(default="", description="Deprecated; put the method in plan.md's 'Method' section.")
-    success_criteria: str = Field(default="", description="Deprecated; put success criteria in plan.md's 'Evaluation' section.")
-    risks: str = Field(default="", description="Deprecated; put risks in plan.md's 'Risks & confounders' section.")
-    status: Literal["planned"] = Field(default="planned", description="Create always starts planned.")
+    claim_id: str | None = Field(
+        default=None, description="Alias for a single tested claim id."
+    )
+    claim_ids: list[str] | str | None = Field(
+        default=None, description="Alias for tested_claim_ids."
+    )
+    title: str = Field(
+        default="",
+        description="Deprecated; back-compat fallback for intent. Put design detail in plan.md.",
+    )
+    hypothesis: str = Field(
+        default="",
+        description="Deprecated; put the hypothesis in plan.md's 'Objective & hypothesis' section.",
+    )
+    design: str = Field(
+        default="",
+        description="Deprecated; put the method in plan.md's 'Method' section.",
+    )
+    success_criteria: str = Field(
+        default="",
+        description="Deprecated; put success criteria in plan.md's 'Evaluation' section.",
+    )
+    risks: str = Field(
+        default="",
+        description="Deprecated; put risks in plan.md's 'Risks & confounders' section.",
+    )
+    status: Literal["planned"] = Field(
+        default="planned", description="Create always starts planned."
+    )
 
 
 class ExperimentListInput(ProjectScopedInput):
@@ -212,16 +242,19 @@ class ExperimentMaterializeFoldersInput(ProjectScopedInput):
             "experiment's folder regardless of status."
         ),
     )
-    status: Literal[
-        "planned",
-        "design_review",
-        "ready_to_run",
-        "running",
-        "experiment_review",
-        "complete",
-        "failed",
-        "abandoned",
-    ] | None = Field(
+    status: (
+        Literal[
+            "planned",
+            "design_review",
+            "ready_to_run",
+            "running",
+            "experiment_review",
+            "complete",
+            "failed",
+            "abandoned",
+        ]
+        | None
+    ) = Field(
         default="planned",
         description=(
             "When experiment_id is omitted, materialize experiments with this "
@@ -341,7 +374,8 @@ class ReflectionTransitionInput(ProjectScopedInput):
 
 class ResourceRegisterInput(ProjectScopedInput):
     path: str | None = Field(
-        default=None, description="Repo-relative file path for a single file to register."
+        default=None,
+        description="Repo-relative file path for a single file to register.",
     )
     paths: list[str] | None = Field(
         default=None,
@@ -371,7 +405,8 @@ class ResourceRegisterInput(ProjectScopedInput):
         json_schema_extra={"enum": sorted(RESOURCE_TARGET_TYPES)},
     )
     target_id: str | None = Field(
-        default=None, description="Id of the claim, experiment, review, or attempt to associate to."
+        default=None,
+        description="Id of the claim, experiment, review, or attempt to associate to.",
     )
     role: str | None = Field(
         default=None,
@@ -381,28 +416,14 @@ class ResourceRegisterInput(ProjectScopedInput):
 
     @model_validator(mode="after")
     def _check_modes(self) -> "ResourceRegisterInput":
-        sources = [
-            self.path is not None,
-            self.paths is not None,
-            self.resource_id is not None,
-        ]
-        if sum(sources) != 1:
-            raise ValueError(
-                "provide exactly one of 'path', 'paths', or 'resource_id'"
-            )
-        trio_present = [
-            self.target_type is not None,
-            self.target_id is not None,
-            self.role is not None,
-        ]
-        if any(trio_present) and not all(trio_present):
-            raise ValueError(
-                "target_type, target_id, and role must be provided together"
-            )
-        if self.resource_id is not None and not all(trio_present):
-            raise ValueError(
-                "resource_id association mode requires target_type, target_id, and role"
-            )
+        validate_resource_register_mode(
+            path=self.path,
+            paths=self.paths,
+            resource_id=self.resource_id,
+            target_type=self.target_type,
+            target_id=self.target_id,
+            role=self.role,
+        )
         return self
 
 
@@ -426,10 +447,12 @@ class ResourceFindInput(ProjectScopedInput):
         ),
     )
     kind: str | None = Field(
-        default=None, description="List filter: one resource kind (e.g. 'dataset', 'code')."
+        default=None,
+        description="List filter: one resource kind (e.g. 'dataset', 'code').",
     )
     experiment_id: str | None = Field(
-        default=None, description="List filter: only resources associated with this experiment."
+        default=None,
+        description="List filter: only resources associated with this experiment.",
     )
     missing: bool | None = Field(
         default=None,
@@ -445,10 +468,14 @@ class ResourceFindInput(ProjectScopedInput):
         ),
     )
     limit: int | None = Field(
-        default=None, ge=1, description="List mode: max resources to return (page size)."
+        default=None,
+        ge=1,
+        description="List mode: max resources to return (page size).",
     )
     offset: int = Field(
-        default=0, ge=0, description="List mode: number of resources to skip (pagination)."
+        default=0,
+        ge=0,
+        description="List mode: number of resources to skip (pagination).",
     )
 
 
@@ -506,8 +533,7 @@ class StorageFindInput(ProjectScopedInput):
     # List-mode filters (former storage.list).
     kind: Literal["dataset", "model", "other"] | None = None
     status: (
-        Literal["uploading", "completing", "available", "expired", "deleted"]
-        | None
+        Literal["uploading", "completing", "available", "expired", "deleted"] | None
     ) = None
     include_expired: bool = False
     limit: int | None = Field(default=None, ge=1)
@@ -519,17 +545,14 @@ class StorageFindInput(ProjectScopedInput):
         if self.object_id and self.name:
             raise ValueError("provide at most one of object_id or name")
         if self.version is not None and not (self.object_id or self.name):
-            raise ValueError(
-                "version selects a resolve target; pass object_id or name"
-            )
+            raise ValueError("version selects a resolve target; pass object_id or name")
         return self
 
 
 class StorageDownloadFileInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Repo-relative destination path ('..' and absolute paths are "
-            "rejected)."
+            "Repo-relative destination path ('..' and absolute paths are " "rejected)."
         )
     )
     object_id: str | None = None
@@ -627,42 +650,6 @@ class ReviewStatusInput(ProjectScopedInput):
     target_id: str
 
 
-_PUBLIC_KEY_PREFIXES = (
-    "ssh-ed25519 ",
-    "ssh-rsa ",
-    "ecdsa-sha2-nistp256 ",
-    "ecdsa-sha2-nistp384 ",
-    "ecdsa-sha2-nistp521 ",
-    "sk-ssh-ed25519@openssh.com ",
-    "sk-ecdsa-sha2-nistp256@openssh.com ",
-)
-
-
-def _validate_openssh_public_key(value: str | None) -> str | None:
-    if value is None:
-        return None
-    key = value.strip()
-    if not key:
-        return None
-    lowered = key.lower()
-    if "private key" in lowered or key.startswith("-----BEGIN "):
-        raise ValueError(
-            "public_key must be an OpenSSH public key, not private-key material"
-        )
-    if "\n" in key or "\r" in key:
-        raise ValueError("public_key must be a single line")
-    if len(key) < 40 or len(key) > 8192:
-        raise ValueError("public_key length is outside the accepted OpenSSH range")
-    if not key.startswith(_PUBLIC_KEY_PREFIXES):
-        raise ValueError(
-            "public_key must start with a supported OpenSSH public key type"
-        )
-    parts = key.split()
-    if len(parts) < 2:
-        raise ValueError("public_key must include key type and base64 payload")
-    return key
-
-
 class SandboxRequestInput(ProjectScopedInput):
     experiment_id: str | None = Field(
         default=None,
@@ -742,7 +729,7 @@ class SandboxRequestInput(ProjectScopedInput):
     @field_validator("public_key")
     @classmethod
     def _public_key_shape(cls, value: str | None) -> str | None:
-        return _validate_openssh_public_key(value)
+        return validate_openssh_public_key(value)
 
 
 class SandboxOptionsInput(ProjectScopedInput):
@@ -963,7 +950,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
     "claim.create": ToolContract(
         input_model=ClaimCreateInput,
         description=(
-            "Create a claim. Check the project tool with action=\"overview\" "
+            'Create a claim. Check the project tool with action="overview" '
             "first so you do not recreate a settled or abandoned claim."
         ),
     ),
@@ -1514,6 +1501,7 @@ PROJECT_SCOPED_TOOL_NAMES = {
     for name, contract in TOOL_CONTRACTS.items()
     if issubclass(contract.input_model, ProjectScopedInput)
 }
+
 
 def tool_plane(name: str) -> ToolPlane:
     return TOOL_PLANE_REGISTRY[name]

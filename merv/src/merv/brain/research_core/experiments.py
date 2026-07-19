@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from merv.shared.artifact_roles import EXHIBIT_ROLE
+from merv.shared.markdown_images import markdown_image_links
+
 from .domain.artifacts import plan_sections_missing, report_problems
 from .domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -27,9 +30,7 @@ from .domain.workflow_gates import (
     TERMINAL_STATUSES,
     allowed_transitions_for,
 )
-from ..artifacts.markdown_images import markdown_image_links
 from ..artifacts.pinned import PinnedStore
-from ..artifacts.roles import EXHIBIT_ROLE
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
@@ -72,9 +73,13 @@ class ExperimentService:
         **extra: Any,
     ) -> dict[str, Any]:
         if extra:
-            raise ValidationError(f"unexpected experiment.create fields: {', '.join(sorted(extra))}")
+            raise ValidationError(
+                f"unexpected experiment.create fields: {', '.join(sorted(extra))}"
+            )
         if status and status != "planned":
-            raise ValidationError("experiment.create only supports status='planned'; use experiment.transition for workflow changes")
+            raise ValidationError(
+                "experiment.create only supports status='planned'; use experiment.transition for workflow changes"
+            )
         intent = compose_experiment_intent(
             intent=intent,
             title=title,
@@ -107,7 +112,13 @@ class ExperimentService:
                     "— choose a new name"
                 )
             for claim_id in tested_claim_ids or []:
-                if conn.execute("SELECT id FROM claims WHERE id = ? AND project_id = ?", (claim_id, project_id)).fetchone() is None:
+                if (
+                    conn.execute(
+                        "SELECT id FROM claims WHERE id = ? AND project_id = ?",
+                        (claim_id, project_id),
+                    ).fetchone()
+                    is None
+                ):
                     raise NotFoundError(f"claim not found: {claim_id}")
             experiment_id = new_id(prefix="exp")
             now = now_iso()
@@ -133,7 +144,9 @@ class ExperimentService:
                 payload={"name": name, "intent": intent},
             )
             state = self.get_state(experiment_id=experiment_id, conn=conn)
-            state["folder"] = experiment_folder_rel(experiment_id=experiment_id, name=name)
+            state["folder"] = experiment_folder_rel(
+                experiment_id=experiment_id, name=name
+            )
             state["folder_guidance"] = (
                 f"Use {state['folder']} as the experiment's one local folder. "
                 "Data-plane actions create it on demand; work in it from the "
@@ -164,7 +177,9 @@ class ExperimentService:
                 active_experiment_cap_reached_message(active_count=active_count)
             )
 
-    def _reject_reflection_blocked_experiment_create(self, *, conn, project_id: str) -> None:
+    def _reject_reflection_blocked_experiment_create(
+        self, *, conn, project_id: str
+    ) -> None:
         debt, published_id = self._terminal_experiments_since_last_reflection(
             conn=conn, project_id=project_id
         )
@@ -262,19 +277,27 @@ class ExperimentService:
         covered = covered_terminal_ids(corpus)
         return len(current_terminal - covered), str(published["id"])
 
-    def get_state(self, *, experiment_id: str, project_id: str | None = None, conn=None) -> dict[str, Any]:
+    def get_state(
+        self, *, experiment_id: str, project_id: str | None = None, conn=None
+    ) -> dict[str, Any]:
         owns_conn = conn is None
         if conn is None:
             conn = self.store.connect()
         try:
             if owns_conn:
-                project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
+                project_id = self.store.require_project_id(
+                    conn=conn, project_id=project_id
+                )
+            row = conn.execute(
+                "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
+            ).fetchone()
             if row is None:
                 raise NotFoundError(f"experiment not found: {experiment_id}")
             data = row_to_dict(row=row) or {}
             if project_id is not None and data["project_id"] != project_id:
-                raise NotFoundError(f"experiment not found in project {project_id}: {experiment_id}")
+                raise NotFoundError(
+                    f"experiment not found in project {project_id}: {experiment_id}"
+                )
             claim_rows = conn.execute(
                 """
                 SELECT c.*
@@ -299,7 +322,9 @@ class ExperimentService:
             ).fetchall()
             data["resources"] = rows_to_dicts(rows=resource_rows)
             data["current_attempt_resources"] = [
-                res for res in data["resources"] if res.get("association_attempt_index") == data["attempt_index"]
+                res
+                for res in data["resources"]
+                if res.get("association_attempt_index") == data["attempt_index"]
             ]
             data["storage_objects"] = (
                 self.storage_objects_reader(
@@ -324,7 +349,9 @@ class ExperimentService:
                 review["findings"] = json.loads(review.pop("findings_json", "[]"))
                 review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
             data["reviews"] = reviews
-            data["allowed_transitions"] = allowed_transitions_for(str(data.get("status", "")))
+            data["allowed_transitions"] = allowed_transitions_for(
+                str(data.get("status", ""))
+            )
             data["gate_checklist"] = self._gate_checklist(conn=conn, experiment=data)
             data["claim_update_suggestions"] = self._claim_update_suggestions(
                 experiment=data
@@ -334,7 +361,9 @@ class ExperimentService:
             if owns_conn:
                 conn.close()
 
-    def _mlflow_run_from_row(self, *, experiment: dict[str, Any]) -> dict[str, Any] | None:
+    def _mlflow_run_from_row(
+        self, *, experiment: dict[str, Any]
+    ) -> dict[str, Any] | None:
         run_id = str(experiment.get("mlflow_run_id") or "")
         error = str(experiment.get("mlflow_run_error") or "")
         if not run_id and not error:
@@ -548,7 +577,9 @@ class ExperimentService:
 
         if forward.review is not None:
             review = forward.review
-            snapshot_id = review_snapshot_id(target_type="experiment", target=experiment)
+            snapshot_id = review_snapshot_id(
+                target_type="experiment", target=experiment
+            )
             gate_state = review_gate_state(
                 conn=conn,
                 project_id=str(experiment["project_id"]),
@@ -564,7 +595,9 @@ class ExperimentService:
                 role=review.role,
                 target_snapshot_id=snapshot_id,
             )
-            review_status = "passed" if passed else self._review_gate_status(request=request)
+            review_status = (
+                "passed" if passed else self._review_gate_status(request=request)
+            )
             item = {
                 "id": f"review:{review.role}",
                 "kind": "review",
@@ -573,7 +606,9 @@ class ExperimentService:
                 "satisfied": passed,
                 "status": review_status,
                 "gate": status,
-                "action": review.pass_action if passed else f"launch_{review.action_name}er",
+                "action": (
+                    review.pass_action if passed else f"launch_{review.action_name}er"
+                ),
                 "skill": review.skill,
             }
             if gate_state.get("blocked_reason"):
@@ -643,7 +678,11 @@ class ExperimentService:
                 "SELECT id FROM experiments WHERE project_id = ? ORDER BY created_at, id",
                 (project_id,),
             ).fetchall()
-            return {"experiments": [self.get_state(experiment_id=row["id"], conn=conn) for row in rows]}
+            return {
+                "experiments": [
+                    self.get_state(experiment_id=row["id"], conn=conn) for row in rows
+                ]
+            }
         finally:
             conn.close()
 
@@ -657,7 +696,9 @@ class ExperimentService:
     ) -> dict[str, Any]:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            experiment = self.get_state(experiment_id=experiment_id, project_id=project_id, conn=conn)
+            experiment = self.get_state(
+                experiment_id=experiment_id, project_id=project_id, conn=conn
+            )
             status = experiment["status"]
             next_status = self._next_status(
                 conn=conn,
@@ -669,7 +710,12 @@ class ExperimentService:
             if transition == "complete":
                 conn.execute(
                     "UPDATE experiments SET status = ?, conclusion = ?, updated_at = ? WHERE id = ?",
-                    (next_status, self._conclusion_from_evidence(evidence), now, experiment_id),
+                    (
+                        next_status,
+                        self._conclusion_from_evidence(evidence),
+                        now,
+                        experiment_id,
+                    ),
                 )
             elif transition == "retry_running":
                 revision_context = self._retry_running_context(
@@ -691,7 +737,12 @@ class ExperimentService:
                 event_type="experiment.transitioned",
                 target_type="experiment",
                 target_id=experiment_id,
-                payload={"from": status, "to": next_status, "transition": transition, "evidence": evidence or {}},
+                payload={
+                    "from": status,
+                    "to": next_status,
+                    "transition": transition,
+                    "evidence": evidence or {},
+                },
             )
             return self.get_state(experiment_id=experiment_id, conn=conn)
 
@@ -727,8 +778,12 @@ class ExperimentService:
         context = " ".join(parts)
         return f"{previous}\n\n{context}".strip() if previous else context
 
-    def send_back_to_planned(self, *, conn, experiment_id: str, revision_context: str) -> None:
-        row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
+    def send_back_to_planned(
+        self, *, conn, experiment_id: str, revision_context: str
+    ) -> None:
+        row = conn.execute(
+            "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()
         if row is None:
             raise NotFoundError(f"experiment not found: {experiment_id}")
         if row["status"] not in {"design_review", "experiment_review"}:
@@ -764,12 +819,16 @@ class ExperimentService:
             },
         )
 
-    def send_back_to_running(self, *, conn, experiment_id: str, revision_context: str) -> None:
+    def send_back_to_running(
+        self, *, conn, experiment_id: str, revision_context: str
+    ) -> None:
         """Reject an executed attempt back to execution: the approved plan and
         its attempt-scoped resources stay valid, so attempt_index is NOT bumped
         — only execution and/or the conclusion must be redone before results
         are resubmitted."""
-        row = conn.execute("SELECT * FROM experiments WHERE id = ?", (experiment_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM experiments WHERE id = ?", (experiment_id,)
+        ).fetchone()
         if row is None:
             raise NotFoundError(f"experiment not found: {experiment_id}")
         if row["status"] != "experiment_review":
@@ -791,7 +850,9 @@ class ExperimentService:
             payload={"revision_context": revision_context},
         )
 
-    def _next_status(self, *, conn, experiment_id: str, status: str, transition: str) -> str:
+    def _next_status(
+        self, *, conn, experiment_id: str, status: str, transition: str
+    ) -> str:
         forward = GATE_TABLE.get(status)
         requirement_states: list[RequirementState] = []
         review_state: ReviewState | None = None
@@ -940,8 +1001,7 @@ class ExperimentService:
         ]
         if problems:
             raise WorkflowError(
-                "experiment plan is not ready for design review: "
-                + "; ".join(problems)
+                "experiment plan is not ready for design review: " + "; ".join(problems)
             )
 
     def _validate_results_report(self, *, conn, experiment_id: str) -> None:
@@ -1008,9 +1068,7 @@ class ExperimentService:
                 "see skills/research-workflow/graph-template.md."
             )
 
-    def exhibit_association(
-        self, *, conn, experiment_id: str
-    ) -> dict[str, Any] | None:
+    def exhibit_association(self, *, conn, experiment_id: str) -> dict[str, Any] | None:
         """The current attempt's pinned system metrics exhibit, if any:
         {path, version_id, resource_id}. The exhibit is system-authored (the
         tool layer pins it at submit_results), so its presence — not any
@@ -1079,7 +1137,9 @@ class ExperimentService:
                 payload=verdict,
             )
 
-    def _review_gate_state(self, *, conn, experiment_id: str, role: str) -> dict[str, Any]:
+    def _review_gate_state(
+        self, *, conn, experiment_id: str, role: str
+    ) -> dict[str, Any]:
         row = conn.execute(
             "SELECT project_id FROM experiments WHERE id = ?", (experiment_id,)
         ).fetchone()
@@ -1089,7 +1149,9 @@ class ExperimentService:
             target_type="experiment",
             target_id=experiment_id,
             role=role,
-            snapshot_id=self._target_snapshot_id(conn=conn, experiment_id=experiment_id),
+            snapshot_id=self._target_snapshot_id(
+                conn=conn, experiment_id=experiment_id
+            ),
         )
 
     def target_snapshot_id(self, *, conn, experiment_id: str) -> str:

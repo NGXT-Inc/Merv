@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
+
 from .domain.reflection_policy import covered_terminal_ids
-from ..artifacts.roles import PROJECT_GRAPH_ROLES
 from .domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
 from .projects import ProjectService
 from .reflections import ReflectionService
@@ -45,7 +46,9 @@ class ProjectOverviewService:
         conn = self.store.connect()
         try:
             latest = self.reflections.latest_published(conn=conn, project_id=project_id)
-            open_wave = self.reflections.open_reflection(conn=conn, project_id=project_id)
+            open_wave = self.reflections.open_reflection(
+                conn=conn, project_id=project_id
+            )
             experiments = rows_to_dicts(
                 rows=conn.execute(
                     """
@@ -123,7 +126,9 @@ class ProjectOverviewService:
             exp for exp in experiments if str(exp.get("status")) in terminal_statuses
         ]
         active_experiments = [
-            exp for exp in experiments if str(exp.get("status")) not in terminal_statuses
+            exp
+            for exp in experiments
+            if str(exp.get("status")) not in terminal_statuses
         ]
         covered_ids = covered_terminal_ids((latest or {}).get("corpus"))
         experiments_since_reflection = [
@@ -163,7 +168,9 @@ class ProjectOverviewService:
                 "reflection_doc_resource_id": (
                     reflection_doc.get("resource_id") if reflection_doc else None
                 ),
-                "project_graph_resource_id": graph.get("resource_id") if graph else None,
+                "project_graph_resource_id": (
+                    graph.get("resource_id") if graph else None
+                ),
             }
 
         covered_count = len(

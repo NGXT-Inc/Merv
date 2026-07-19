@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from merv.shared.project_dirs import PROJECT_STATE_DIR_NAMES
-
-from ..kernel.utils import ValidationError
+from merv.shared.errors import ValidationError
 
 
 def repo_relative_path(*, path: str, subject: str = "path") -> str:

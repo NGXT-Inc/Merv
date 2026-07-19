@@ -19,14 +19,24 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from . import feed_policy
-from .feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type, wrap_embed_html
-from .feed_images import (
+from merv.shared.feed_embeds import (
+    MAX_FEED_EMBED_BYTES,
+    sniff_html_type,
+    wrap_embed_html,
+)
+from merv.shared.feed_images import (
     MAX_FEED_IMAGE_BYTES,
     SERVEABLE_IMAGE_TYPES,
     sniff_image_type,
 )
-from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict, rows_to_dicts
+
+from . import feed_policy
+from ..kernel.state.store import (
+    BaseStateStore,
+    next_created_seq,
+    row_to_dict,
+    rows_to_dicts,
+)
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso, parse_iso
 from .feed_unfurl import UnfurlError, fetch_preview_image, unfurl
 
@@ -124,9 +134,7 @@ def _validate_handle(handle: str) -> str:
         raise ValidationError("handle must be 2-40 characters")
     allowed = set(" -_.")
     if not all(ch.isalnum() or ch in allowed for ch in handle):
-        raise ValidationError(
-            "handle may use letters, digits, spaces, and - _ . only"
-        )
+        raise ValidationError("handle may use letters, digits, spaces, and - _ . only")
     return handle
 
 
@@ -147,7 +155,9 @@ class FeedService:
         # IF NOT EXISTS for columns.
         try:
             with self.store.transaction() as conn:
-                conn.execute("ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT ''"
+                )
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -407,9 +417,7 @@ class FeedService:
                 data=html_bytes,
             )
         elif html_path:
-            raise ValidationError(
-                "embed bytes are required when html_path is provided"
-            )
+            raise ValidationError("embed bytes are required when html_path is provided")
 
         link_url = ""
         link_preview: dict[str, Any] = {}
@@ -469,7 +477,9 @@ class FeedService:
                     "ref": ref,
                 },
             )
-            row = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
             return {"post": self._post_view(row_to_dict(row=row) or {}, conn=conn)}
 
     def researcher_reply(
@@ -815,7 +825,9 @@ class FeedService:
             "link_url": item.get("link_url") or None,
             "link_preview": clean_preview,
             "reactions": self._reactions_for_post(
-                conn=conn, project_id=str(item.get("project_id") or ""), post_id=str(item.get("id") or "")
+                conn=conn,
+                project_id=str(item.get("project_id") or ""),
+                post_id=str(item.get("id") or ""),
             ),
             "created_at": item.get("created_at"),
             "created_seq": item.get("created_seq"),
@@ -891,9 +903,7 @@ class FeedService:
                 else f"{events} things have happened since your last feed post"
             )
         else:
-            reason = (
-                f"{events} things have happened and there are no feed posts yet"
-            )
+            reason = f"{events} things have happened and there are no feed posts yet"
         return {
             "should_post": True,
             "hint": (
@@ -972,9 +982,7 @@ def _escape_like(value: str) -> str:
     search too permissive. ``LIKE ... ESCAPE '\\'`` is portable across both
     the SQLite and Postgres dialects (unlike SQLite-only ``instr``).
     """
-    return (
-        value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    )
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _hours_since(iso_ts: str | None) -> float | None:

@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..feed.feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type
-from ..kernel.utils import ValidationError
+from merv.shared.errors import ValidationError
+from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type
+
 from .repo_paths import resolve_repo_path
 
 

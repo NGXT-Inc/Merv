@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from merv.shared.artifact_roles import EXHIBIT_ROLE
+
 from ..research_core.domain.paths import experiment_folder_rel
 from ..mlflow import (
     METRICS_EXHIBIT_FILENAME,
@@ -20,7 +22,6 @@ from ..mlflow import (
     exhibit_bytes,
     mlflow_experiment_name,
 )
-from ..artifacts.roles import EXHIBIT_ROLE
 from ..kernel.utils import WorkflowError
 
 
@@ -84,7 +85,9 @@ def _should_pin(*, exhibit: dict[str, Any], state: dict[str, Any]) -> bool:
     mlflow_block = exhibit["mlflow"]
     run = state.get("mlflow_run") or {}
     return bool(
-        mlflow_block["configured"] and not mlflow_block["available"] and run.get("run_id")
+        mlflow_block["configured"]
+        and not mlflow_block["available"]
+        and run.get("run_id")
     )
 
 

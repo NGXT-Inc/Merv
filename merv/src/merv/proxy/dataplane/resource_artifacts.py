@@ -7,14 +7,15 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ..artifacts.markdown_images import (
+from merv.shared.artifact_roles import GATED_ROLE_BYTE_CAPS, metric_result_capture_cap
+from merv.shared.errors import NotFoundError, ValidationError
+from merv.shared.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
     markdown_image_links,
     markdown_image_targets,
 )
-from ..artifacts.roles import GATED_ROLE_BYTE_CAPS, metric_result_capture_cap
-from ..kernel.utils import NotFoundError, ValidationError
+
 from .repo_paths import resolve_repo_path
 
 

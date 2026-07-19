@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..artifacts.roles import (
+from merv.shared.artifact_roles import (
     LEGACY_PROJECT_GRAPH_ROLE,
     LEGACY_PROPOSALS_ROLE,
     LEGACY_REFLECTION_DOC_ROLE,
@@ -13,6 +13,7 @@ from ..artifacts.roles import (
     RESOURCE_ROLES,
     RESOURCE_TARGET_TYPES,
 )
+
 from ..research_core.domain.vocabulary import REVIEW_ROLES, REVIEW_VERDICTS
 from ..kernel.utils import PermissionDeniedError, ValidationError
 
@@ -62,9 +63,16 @@ class PermissionService:
             allowed = sorted(RESOURCE_ROLES)
             raise ValidationError(
                 f"unknown resource role: {role}. Allowed roles: {', '.join(allowed)}",
-                details={"allowed_resource_roles": allowed, "recommended_result_role": "result"},
+                details={
+                    "allowed_resource_roles": allowed,
+                    "recommended_result_role": "result",
+                },
             )
 
-    def reject_reviewer_mutation(self, *, tool_name: str, review_session_id: str | None) -> None:
+    def reject_reviewer_mutation(
+        self, *, tool_name: str, review_session_id: str | None
+    ) -> None:
         if review_session_id and tool_name != "review.submit":
-            raise PermissionDeniedError("review sessions are read-only except review.submit")
+            raise PermissionDeniedError(
+                "review sessions are read-only except review.submit"
+            )

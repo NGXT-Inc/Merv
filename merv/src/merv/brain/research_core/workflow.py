@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..artifacts.roles import (
+from merv.shared.artifact_roles import (
     PROJECT_GRAPH_ROLE,
     PROJECT_GRAPH_ROLES,
     REFLECTION_LENS_DOC_ROLE,
     RESOURCE_ROLES,
 )
+
 from .domain.gates import ReviewRequirement, RoleRequirement
 from .domain.paths import experiment_folder_rel
 from .domain.reflection_policy import (
@@ -68,7 +69,9 @@ class WorkflowService:
         # Composition-injected storage guidance block (object_storage prose).
         # The workflow embeds the dict it is handed instead of importing the
         # storage module; compositions pass storage_guidance(enabled=...).
-        self.storage_guidance = dict(storage_guidance or {"enabled": self.storage_enabled})
+        self.storage_guidance = dict(
+            storage_guidance or {"enabled": self.storage_enabled}
+        )
 
     def status_and_next(
         self, *, project_id: str | None = None, experiment_id: str | None = None
@@ -107,7 +110,9 @@ class WorkflowService:
                 else None
             )
             sandboxes = (
-                self.sandboxes.sandboxes_for_experiment(conn=conn, experiment_id=experiment_id)
+                self.sandboxes.sandboxes_for_experiment(
+                    conn=conn, experiment_id=experiment_id
+                )
                 if experiment_id
                 else []
             )
@@ -120,9 +125,7 @@ class WorkflowService:
                     allowed=["claim.create", "experiment.create"],
                 )
             )
-            idle = all(
-                str(row["status"]) in TERMINAL_STATUSES for row in exp_rows
-            )
+            idle = all(str(row["status"]) in TERMINAL_STATUSES for row in exp_rows)
             reflection = self._project_reflection(
                 conn=conn, project_id=project_id, idle=idle
             )
@@ -188,7 +191,9 @@ class WorkflowService:
             experiments_by_id = {
                 experiment["id"]: experiment for experiment in experiments
             }
-            sandboxes = self.sandboxes.sandboxes_for_project(conn=conn, project_id=project_id)
+            sandboxes = self.sandboxes.sandboxes_for_project(
+                conn=conn, project_id=project_id
+            )
             active_processes = self._sort_active_processes(
                 processes=[
                     self._process_view(
@@ -338,7 +343,11 @@ class WorkflowService:
             gate=forward.ready_gate,
             action=forward.ready_action,
             allowed=list(forward.ready_allowed),
-            revision=experiment.get("revision_context", "") if status != "ready_to_run" else "",
+            revision=(
+                experiment.get("revision_context", "")
+                if status != "ready_to_run"
+                else ""
+            ),
         )
 
     def _requirement_gate(
@@ -511,7 +520,9 @@ class WorkflowService:
         """
         open_wave = self.reflections.open_reflection(conn=conn, project_id=project_id)
         if open_wave is not None:
-            signal = self.reflections.reflection_signal(project_id=project_id, conn=conn)
+            signal = self.reflections.reflection_signal(
+                project_id=project_id, conn=conn
+            )
             workflow = self._reflection_workflow_for(conn=conn, reflection=open_wave)
             if signal.get("experiment_create_blocked"):
                 workflow = self._with_experiment_create_block(
@@ -652,7 +663,9 @@ class WorkflowService:
             "blocked_actions": blocked,
         }
 
-    def _reflection_workflow_for(self, *, conn, reflection: dict[str, Any]) -> dict[str, Any]:
+    def _reflection_workflow_for(
+        self, *, conn, reflection: dict[str, Any]
+    ) -> dict[str, Any]:
         """Guidance for a reflection wave, derived from REFLECTION_GATE_TABLE —
         the same walk as _workflow_for, with the roster-coverage requirement
         reported per missing lens."""
@@ -695,11 +708,13 @@ class WorkflowService:
             if not res.get("missing")
         }
         for requirement in forward.requirements:
-            if requirement.role in roles or (
-                requirement.role == "reflection_doc" and "synthesis_doc" in roles
-            ) or (
-                requirement.role == PROJECT_GRAPH_ROLE
-                and bool(set(PROJECT_GRAPH_ROLES) & roles)
+            if (
+                requirement.role in roles
+                or (requirement.role == "reflection_doc" and "synthesis_doc" in roles)
+                or (
+                    requirement.role == PROJECT_GRAPH_ROLE
+                    and bool(set(PROJECT_GRAPH_ROLES) & roles)
+                )
             ):
                 continue
             return self._next(

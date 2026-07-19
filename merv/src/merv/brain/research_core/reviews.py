@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
+
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.utils import (
     NotFoundError,
@@ -17,10 +19,6 @@ from ..kernel.utils import (
     parse_iso,
 )
 from ..artifacts.pinned import PinnedStore
-from ..artifacts.roles import (
-    EXHIBIT_ROLE,
-    GATED_ROLES,
-)
 from .domain.review_gates import (
     expected_review_gate_role,
     is_review_gate_exempt,
@@ -82,9 +80,13 @@ class ReviewService:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if target_type == "experiment":
-                target = self.experiments.get_state(experiment_id=target_id, project_id=project_id, conn=conn)
+                target = self.experiments.get_state(
+                    experiment_id=target_id, project_id=project_id, conn=conn
+                )
             else:
-                target = self.reflections.get_state(reflection_id=target_id, project_id=project_id, conn=conn)
+                target = self.reflections.get_state(
+                    reflection_id=target_id, project_id=project_id, conn=conn
+                )
             self._validate_role_matches_gate(
                 target_type=target_type, target_status=target["status"], role=role
             )
@@ -114,7 +116,9 @@ class ReviewService:
             # plan Phase 7). review.start resolves by hashing the presented token.
             capability = mint_secret(prefix="rp_", nbytes=24)
             expires_at = format_iso(datetime.now(UTC) + timedelta(hours=1))
-            snapshot_id = self._target_snapshot_id(conn=conn, target_type=target_type, target_id=target_id)
+            snapshot_id = self._target_snapshot_id(
+                conn=conn, target_type=target_type, target_id=target_id
+            )
             conn.execute(
                 """
                 INSERT INTO review_requests (
@@ -188,7 +192,9 @@ class ReviewService:
                 "verified"
             )
         with self.store.transaction() as conn:
-            req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (review_request_id,)).fetchone()
+            req = conn.execute(
+                "SELECT * FROM review_requests WHERE id = ?", (review_request_id,)
+            ).fetchone()
             if req is None:
                 raise NotFoundError(f"review request not found: {review_request_id}")
             if tenant_id is not None:
@@ -198,13 +204,21 @@ class ReviewService:
                 if owner is None or str(owner["tenant_id"]) != tenant_id:
                     # Same shape as an unknown request: do not confirm the
                     # target exists to a foreign tenant.
-                    raise NotFoundError(f"review request not found: {review_request_id}")
+                    raise NotFoundError(
+                        f"review request not found: {review_request_id}"
+                    )
             self._validate_request_open(req=req, capability=reviewer_capability)
             if caller_session_id == req["producer_session_id"]:
-                raise PermissionDeniedError("reviewer session must differ from producer session")
-            snapshot_now = self._target_snapshot_id(conn=conn, target_type=req["target_type"], target_id=req["target_id"])
+                raise PermissionDeniedError(
+                    "reviewer session must differ from producer session"
+                )
+            snapshot_now = self._target_snapshot_id(
+                conn=conn, target_type=req["target_type"], target_id=req["target_id"]
+            )
             if snapshot_now != req["target_snapshot_id"]:
-                raise PermissionDeniedError("target changed after review capability was issued")
+                raise PermissionDeniedError(
+                    "target changed after review capability was issued"
+                )
             session_id = new_id(prefix="rvs")
             # caller_session_id is mandatory, so every new session is verified;
             # 'attested_agent_review' survives only on legacy rows.
@@ -227,14 +241,21 @@ class ReviewService:
                     now_iso(),
                 ),
             )
-            conn.execute("UPDATE review_requests SET status = 'started' WHERE id = ?", (review_request_id,))
+            conn.execute(
+                "UPDATE review_requests SET status = 'started' WHERE id = ?",
+                (review_request_id,),
+            )
             self.store.record_event(
                 conn=conn,
                 project_id=req["project_id"],
                 event_type="review.started",
                 target_type=req["target_type"],
                 target_id=req["target_id"],
-                payload={"role": req["role"], "request_id": review_request_id, "session_id": session_id},
+                payload={
+                    "role": req["role"],
+                    "request_id": review_request_id,
+                    "session_id": session_id,
+                },
             )
             return {
                 "review_session_id": session_id,
@@ -242,7 +263,13 @@ class ReviewService:
                 "target_type": req["target_type"],
                 "target_id": req["target_id"],
                 "independence": independence,
-                "read_scope": ["claim", "experiment", "reflection", "resource", "review"],
+                "read_scope": [
+                    "claim",
+                    "experiment",
+                    "reflection",
+                    "resource",
+                    "review",
+                ],
                 # The reviewer grades the SUBMITTED artifacts — the bytes
                 # pinned at associate — not whatever the working tree holds
                 # now. Hydrated here so a reviewer never has to trust disk.
@@ -259,7 +286,9 @@ class ReviewService:
         """The target's current-attempt gated-role artifacts, with content."""
         if self.pinned is None:
             return []
-        table = {"experiment": "experiments", "reflection": "reflections"}.get(target_type)
+        table = {"experiment": "experiments", "reflection": "reflections"}.get(
+            target_type
+        )
         if table is None:
             return []
         attempt = conn.execute(
@@ -304,7 +333,9 @@ class ReviewService:
                 )
             except Exception:  # noqa: BLE001 — hydration is best-effort
                 entry["content"] = None
-                entry["note"] = "submitted content unavailable; ask the producer to re-associate"
+                entry["note"] = (
+                    "submitted content unavailable; ask the producer to re-associate"
+                )
             artifacts.append(entry)
         artifacts.reverse()
         return artifacts
@@ -326,14 +357,20 @@ class ReviewService:
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
         with self.store.transaction() as conn:
-            session = conn.execute("SELECT * FROM review_sessions WHERE id = ?", (review_session_id,)).fetchone()
+            session = conn.execute(
+                "SELECT * FROM review_sessions WHERE id = ?", (review_session_id,)
+            ).fetchone()
             if session is None:
                 raise NotFoundError(f"review session not found: {review_session_id}")
             if session["status"] == "submitted":
                 raise PermissionDeniedError("review session already submitted")
-            req = conn.execute("SELECT * FROM review_requests WHERE id = ?", (session["request_id"],)).fetchone()
+            req = conn.execute(
+                "SELECT * FROM review_requests WHERE id = ?", (session["request_id"],)
+            ).fetchone()
             if req is None:
-                raise NotFoundError(f"review request not found: {session['request_id']}")
+                raise NotFoundError(
+                    f"review request not found: {session['request_id']}"
+                )
             if req["status"] != "started":
                 raise PermissionDeniedError(
                     "review request is no longer open (superseded by a fresh "
@@ -351,7 +388,10 @@ class ReviewService:
                     "longer applies — request a fresh review"
                 )
             return_to = self._validate_return_to(
-                target_type=req["target_type"], role=req["role"], verdict=verdict, return_to=return_to
+                target_type=req["target_type"],
+                role=req["role"],
+                verdict=verdict,
+                return_to=return_to,
             )
             review_id = new_id(prefix="rev")
             conn.execute(
@@ -382,8 +422,14 @@ class ReviewService:
                     next_created_seq(conn=conn, table="reviews"),
                 ),
             )
-            conn.execute("UPDATE review_sessions SET status = 'submitted' WHERE id = ?", (review_session_id,))
-            conn.execute("UPDATE review_requests SET status = 'submitted' WHERE id = ?", (req["id"],))
+            conn.execute(
+                "UPDATE review_sessions SET status = 'submitted' WHERE id = ?",
+                (review_session_id,),
+            )
+            conn.execute(
+                "UPDATE review_requests SET status = 'submitted' WHERE id = ?",
+                (req["id"],),
+            )
             self.store.record_event(
                 conn=conn,
                 project_id=req["project_id"],
@@ -433,10 +479,14 @@ class ReviewService:
                             reflection_id=req["target_id"],
                             revision_context=revision_context,
                         )
-            review = conn.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
+            review = conn.execute(
+                "SELECT * FROM reviews WHERE id = ?", (review_id,)
+            ).fetchone()
             return self._hydrate_review(row=review)
 
-    def status(self, *, target_type: str, target_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def status(
+        self, *, target_type: str, target_id: str, project_id: str | None = None
+    ) -> dict[str, Any]:
         conn = self.store.connect()
         try:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -575,7 +625,9 @@ class ReviewService:
         finally:
             conn.close()
 
-    def gate_state(self, *, conn, target_type: str, target_id: str, role: str) -> dict[str, Any]:
+    def gate_state(
+        self, *, conn, target_type: str, target_id: str, role: str
+    ) -> dict[str, Any]:
         """review_gate_state for the target's current pinned snapshot."""
         table = "experiments" if target_type == "experiment" else "reflections"
         row = conn.execute(
@@ -592,10 +644,19 @@ class ReviewService:
             ),
         )
 
-    def has_open_request(self, *, conn, target_type: str, target_id: str, role: str) -> bool:
-        return self.open_request(conn=conn, target_type=target_type, target_id=target_id, role=role) is not None
+    def has_open_request(
+        self, *, conn, target_type: str, target_id: str, role: str
+    ) -> bool:
+        return (
+            self.open_request(
+                conn=conn, target_type=target_type, target_id=target_id, role=role
+            )
+            is not None
+        )
 
-    def open_request(self, *, conn, target_type: str, target_id: str, role: str) -> dict[str, Any] | None:
+    def open_request(
+        self, *, conn, target_type: str, target_id: str, role: str
+    ) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT id, target_type, target_id, role, status, target_snapshot_id,
@@ -612,7 +673,9 @@ class ReviewService:
 
     def _with_snapshot(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
+        data["target_snapshot"] = self.snapshot_from_id(
+            snapshot_id=data.get("target_snapshot_id", "")
+        )
         if "status" in data and "expires_at" in data:
             data["recovery"] = self._request_recovery(request=data)
         return data
@@ -674,7 +737,9 @@ class ReviewService:
             target_status=target_status,
         )
         if expected is None:
-            raise PermissionDeniedError(f"{target_type} is not currently awaiting {role}")
+            raise PermissionDeniedError(
+                f"{target_type} is not currently awaiting {role}"
+            )
         if role != expected:
             raise PermissionDeniedError(f"active gate requires {expected}, not {role}")
 
@@ -691,7 +756,9 @@ class ReviewService:
 
     def _hydrate_request(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
-        data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
+        data["target_snapshot"] = self.snapshot_from_id(
+            snapshot_id=data.get("target_snapshot_id", "")
+        )
         data["recovery"] = self._request_recovery(request=data)
         return data
 
@@ -728,5 +795,7 @@ class ReviewService:
         data = row_to_dict(row=row) or {}
         data["findings"] = json.loads(data.pop("findings_json", "[]"))
         data["evidence"] = json.loads(data.pop("evidence_json", "{}"))
-        data["target_snapshot"] = self.snapshot_from_id(snapshot_id=data.get("target_snapshot_id", ""))
+        data["target_snapshot"] = self.snapshot_from_id(
+            snapshot_id=data.get("target_snapshot_id", "")
+        )
         return data

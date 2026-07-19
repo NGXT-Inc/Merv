@@ -13,9 +13,9 @@ authors = [{ name = "RapidReview" }]
 keywords = ["research", "ml", "mcp", "experiments"]
 # Base deps are the common HTTP surface, needed only to run a brain. The stdio
 # proxy runs on bare python3 with no installs: static imports are pinned by
-# ProxyStdlibOnlyTest (tests/structure/test_plane_layout.py), and the lazy
-# contracts import falls back to the checked-in
-# src/merv/proxy/_tool_catalog.json, kept fresh and driven pydantic-free by
+# ProxyStdlibOnlyTest (tests/structure/test_plane_layout.py), and the checked-in
+# src/merv/proxy/_tool_catalog.json is its sole runtime registry, kept fresh and
+# driven without pydantic or brain imports by
 # tests/surface/test_static_tool_catalog.py.
 # Provider SDKs (Modal) and Postgres/object-store deps live in the extras.
 dependencies = [

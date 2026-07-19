@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..feed.feed_images import MAX_FEED_IMAGE_BYTES
-from ..kernel.utils import ValidationError
+from merv.shared.errors import ValidationError
+from merv.shared.feed_images import MAX_FEED_IMAGE_BYTES
+
 from .repo_paths import resolve_repo_path
 
 
