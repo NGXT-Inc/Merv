@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.mlflow import CentralMlflowService
-from merv.brain.transport.http_api import ResearchHttpApi, create_fastapi_app
+from merv.brain.surface.transport.http_api import ResearchHttpApi, create_fastapi_app
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.utils import ContentUnavailableError
 from merv.proxy.time_utils import now_iso

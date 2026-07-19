@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.tools.contracts import MCP_HIDDEN_TOOL_NAMES
+from merv.brain.surface.tools.contracts import MCP_HIDDEN_TOOL_NAMES
 from merv.brain.kernel.utils import ValidationError
 
 

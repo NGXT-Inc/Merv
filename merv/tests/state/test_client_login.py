@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from merv.brain.client_cli import configure_client, main
+from merv.client.cli import configure_client, main
 from merv.proxy.proxy import HttpProxyMcpServer, ProxyConfig
 
 
@@ -41,9 +41,9 @@ class DeviceFlowLoginTest(unittest.TestCase):
                 ),
             ]
             with (
-                mock.patch("merv.brain.client_cli.urllib.request.urlopen", side_effect=responses) as opened,
-                mock.patch("merv.brain.client_cli.webbrowser.open", return_value=True) as browser,
-                mock.patch("merv.brain.client_cli.time.sleep"),
+                mock.patch("merv.client.cli.urllib.request.urlopen", side_effect=responses) as opened,
+                mock.patch("merv.client.cli.webbrowser.open", return_value=True) as browser,
+                mock.patch("merv.client.cli.time.sleep"),
                 mock.patch("sys.stdout", new=io.StringIO()) as out,
             ):
                 code = main(["--config", str(config_path), "login", "--control-url", "https://brain.example"])
@@ -63,7 +63,7 @@ class DeviceFlowLoginTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "client.json"
             with (
-                mock.patch("merv.brain.client_cli.webbrowser.open") as browser,
+                mock.patch("merv.client.cli.webbrowser.open") as browser,
                 mock.patch("sys.stdout", new=io.StringIO()),
             ):
                 code = main(["--config", str(config_path), "login", "--api-key", "rr_sk_x"])

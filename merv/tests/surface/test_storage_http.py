@@ -13,12 +13,12 @@ from fastapi.testclient import TestClient
 
 from tests.fakes import FakeObjectStore
 from tests.support.brain import TestBrain
-from merv.brain.composition import build_local_server
-from merv.brain.config import STORAGE_PROVIDER_ENV_VAR
+from merv.brain.surface.composition import build_local_server
+from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.object_storage.service import StorageLedgerService
-from merv.brain.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.kernel.utils import ValidationError
 
 

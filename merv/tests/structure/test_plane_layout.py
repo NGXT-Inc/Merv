@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from typing import Protocol, get_type_hints
 
-from merv.brain.tools.contracts import (
+from merv.brain.surface.tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
     TOOL_CONTRACTS,
@@ -37,8 +37,15 @@ from tests.paths import (
     RESEARCH_CORE_ROOT,
     SERVICES_ROOT,
     SHARED_ROOT,
+    SURFACE_ROOT,
 )
 
+
+# The four cross-module glue services, flat in surface/ since the fold.
+GLUE_SERVICE_FILES = tuple(
+    SERVICES_ROOT / name
+    for name in ("auth.py", "cleanup.py", "identity.py", "permissions.py")
+)
 
 # Record halves that must be servable from a cloud control plane: no local
 # processes, no conn machinery, no dataplane worker.
@@ -52,8 +59,8 @@ CONTROL_MODULES = (
     *PORT_MODULES,
     BACKEND_ROOT / "sandbox" / "sandbox_backend.py",
     BACKEND_ROOT / "sandbox" / "sandbox_paths.py",
-    BACKEND_ROOT / "tools" / "tool_facade.py",
-    BACKEND_ROOT / "tools" / "tool_handlers.py",
+    SURFACE_ROOT / "tools" / "tool_facade.py",
+    SURFACE_ROOT / "tools" / "tool_handlers.py",
     RESEARCH_CORE_ROOT / "projects.py",
     RESEARCH_CORE_ROOT / "claims.py",
     RESEARCH_CORE_ROOT / "experiments.py",
@@ -68,10 +75,10 @@ CONTROL_MODULES = (
     FEED_ROOT / "feed.py",
     FEED_ROOT / "feed_policy.py",
     BACKEND_ROOT / "sandbox" / "sandbox_metrics.py",
-    BACKEND_ROOT / "control" / "record_core.py",
-    BACKEND_ROOT / "control" / "control_app.py",
-    BACKEND_ROOT / "control" / "control_runtime.py",
-    BACKEND_ROOT / "control" / "control_client.py",
+    SURFACE_ROOT / "control" / "record_core.py",
+    SURFACE_ROOT / "control" / "control_app.py",
+    SURFACE_ROOT / "control" / "control_runtime.py",
+    SURFACE_ROOT / "control" / "control_client.py",
     BACKEND_ROOT / "kernel" / "state" / "store.py",
     BACKEND_ROOT / "kernel" / "state" / "dialects.py",
     BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py",
@@ -355,7 +362,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
         )
 
     def test_http_data_plane_features_point_at_data_plane_tools(self) -> None:
-        from merv.brain.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
+        from merv.brain.surface.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
 
         self.assertEqual(
             HTTP_DATA_PLANE_FEATURE_TO_TOOL,
@@ -381,7 +388,7 @@ class ToolPlanePartitionTest(unittest.TestCase):
             DATA_PLANE_TOOL_NAMES | {"sandbox.get", "sandbox.health"},
         )
         self.assertIn("_STATIC_CATALOG_PATH", source)
-        self.assertNotIn("merv.brain.tools.contracts", source)
+        self.assertNotIn("merv.brain.surface.tools.contracts", source)
         self.assertIn("_LOCAL_ENRICHED_CONTROL_TOOLS", source)
         self.assertTrue(
             DATA_PLANE_TOOL_NAMES
@@ -442,7 +449,7 @@ load("subprocess")
         ]
         for path in sorted(
             (
-                *SERVICES_ROOT.rglob("*.py"),
+                *GLUE_SERVICE_FILES,
                 *RESEARCH_CORE_ROOT.rglob("*.py"),
                 *FEED_ROOT.rglob("*.py"),
                 *sandbox_record_modules,
@@ -467,12 +474,12 @@ load("subprocess")
                 )
 
     def test_tool_dispatcher_uses_narrow_permission_policy(self) -> None:
-        from merv.brain.tools.tool_facade import ToolDispatcher, ToolPermissionPolicy
+        from merv.brain.surface.tools.tool_facade import ToolDispatcher, ToolPermissionPolicy
 
         hints = get_type_hints(ToolDispatcher.__init__)
         self.assertIs(hints["permissions"], ToolPermissionPolicy)
         self.assertIn(Protocol, ToolPermissionPolicy.__mro__)
-        path = BACKEND_ROOT / "tools" / "tool_facade.py"
+        path = SURFACE_ROOT / "tools" / "tool_facade.py"
         source = path.read_text(encoding="utf-8")
         self.assertNotIn("permissions: Any", source)
         self.assertEqual(
@@ -748,6 +755,7 @@ if loaded:
             "app.py",
             "local_runtime.py",
             "composition/local_mode.py",
+            "surface/composition/local_mode.py",
             "dataplane/worker.py",
             "dataplane/tasks.py",
             "dataplane/state.py",
@@ -760,10 +768,10 @@ if loaded:
                 self.assertFalse((BACKEND_ROOT / rel).exists())
 
     def test_control_app_uses_record_core_builder_for_record_services(self) -> None:
-        app_source = (BACKEND_ROOT / "control" / "control_app.py").read_text(
+        app_source = (SURFACE_ROOT / "control" / "control_app.py").read_text(
             encoding="utf-8"
         )
-        record_source = (BACKEND_ROOT / "control" / "record_core.py").read_text(
+        record_source = (SURFACE_ROOT / "control" / "record_core.py").read_text(
             encoding="utf-8"
         )
 
@@ -790,11 +798,11 @@ if loaded:
             "execution",
         ):
             self.assertNotIn(
-                forbidden, _import_segments(BACKEND_ROOT / "control" / "record_core.py")
+                forbidden, _import_segments(SURFACE_ROOT / "control" / "record_core.py")
             )
 
     def test_control_app_does_not_build_local_runtime(self) -> None:
-        source = (BACKEND_ROOT / "control" / "control_app.py").read_text(
+        source = (SURFACE_ROOT / "control" / "control_app.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("class ControlApp:", source)
@@ -820,7 +828,7 @@ if loaded:
             self.assertNotIn(forbidden, source)
 
     def test_control_mode_builds_control_app_not_local_app(self) -> None:
-        path = BACKEND_ROOT / "composition" / "control_mode.py"
+        path = SURFACE_ROOT / "composition" / "control_mode.py"
         source = path.read_text(encoding="utf-8")
         imports = _import_segments(path)
         self.assertIn("from ..control.control_app import ControlApp", source)
@@ -840,7 +848,7 @@ if loaded:
         # not services/.
         self.assertFalse((SERVICES_ROOT / "sandbox_mgmt_keys.py").exists())
         service_modules = (
-            *SERVICES_ROOT.rglob("*.py"),
+            *GLUE_SERVICE_FILES,
             *RESEARCH_CORE_ROOT.rglob("*.py"),
             *FEED_ROOT.rglob("*.py"),
             *(
@@ -859,7 +867,7 @@ if loaded:
         self.assertNotIn("services", imports)
         self.assertIn(
             "LocalMgmtKeyStore",
-            (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+            (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
                 encoding="utf-8"
             ),
         )
@@ -882,7 +890,7 @@ if loaded:
         # Importing the unified brain must never cross into the client plane.
         code = """
 import sys
-import merv.brain.control.control_app
+import merv.brain.surface.control.control_app
 loaded = sorted(
     name for name in sys.modules
     if name == "merv.proxy" or name.startswith("merv.proxy.")
@@ -954,6 +962,21 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                         external,
                         f"{path.name} imports non-stdlib modules: {sorted(external)}",
                     )
+
+    def test_client_package_performs_no_brain_imports(self) -> None:
+        # The login CLI ships in the slim client bundle: like the proxy, its
+        # closure must stay merv.shared + stdlib — never merv.brain.
+        from tests.paths import CLIENT_ROOT
+
+        for path in sorted(CLIENT_ROOT.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            targets = _all_import_targets(path, package="merv.client", root=CLIENT_ROOT)
+            offenders = {
+                t for t in targets if t == "merv.brain" or t.startswith("merv.brain.")
+            }
+            with self.subTest(module=path.relative_to(CLIENT_ROOT).as_posix()):
+                self.assertFalse(offenders, f"merv.client imports brain: {sorted(offenders)}")
 
     def test_proxy_performs_no_brain_imports_static_or_dynamic(self) -> None:
         targets: set[str] = set()

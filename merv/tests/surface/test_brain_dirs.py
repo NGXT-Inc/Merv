@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from merv.brain.composition import control_mode
-from merv.brain.composition.brain_dirs import (
+from merv.brain.surface.composition import control_mode
+from merv.brain.surface.composition.brain_dirs import (
     resolve_brain_state_root,
     resolve_local_brain_staging,
 )

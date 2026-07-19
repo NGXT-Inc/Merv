@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from merv.brain.control.control_runtime import ControlTaskChannel
+from merv.brain.surface.control.control_runtime import ControlTaskChannel
 from merv.brain.kernel.utils import ValidationError
 
 

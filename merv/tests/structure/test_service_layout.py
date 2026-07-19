@@ -17,24 +17,30 @@ from tests.paths import (
     PROXY_ROOT,
     RESEARCH_CORE_ROOT,
     SERVICES_ROOT,
+    SURFACE_ROOT,
 )
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
+
+GLUE_SERVICE_FILES = tuple(
+    SERVICES_ROOT / name
+    for name in ("auth.py", "cleanup.py", "identity.py", "permissions.py")
+)
 RESEARCH_CORE = RESEARCH_CORE_ROOT
 RESEARCH_CORE_DOMAIN = RESEARCH_CORE / "domain"
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
-    BACKEND_ROOT / "transport" / "admin_http.py",
-    BACKEND_ROOT / "transport" / "data_plane_http.py",
-    BACKEND_ROOT / "transport" / "feed_http.py",
-    BACKEND_ROOT / "transport" / "http_api.py",
-    BACKEND_ROOT / "transport" / "mcp_http.py",
-    *sorted((BACKEND_ROOT / "transport" / "api").glob("*.py")),
+    SURFACE_ROOT / "transport" / "admin_http.py",
+    SURFACE_ROOT / "transport" / "data_plane_http.py",
+    SURFACE_ROOT / "transport" / "feed_http.py",
+    SURFACE_ROOT / "transport" / "http_api.py",
+    SURFACE_ROOT / "transport" / "mcp_http.py",
+    *sorted((SURFACE_ROOT / "transport" / "api").glob("*.py")),
 )
-HTTP_API_APP = BACKEND_ROOT / "transport" / "api" / "app.py"
-HTTP_API_VIEWS = BACKEND_ROOT / "transport" / "api" / "views.py"
-HTTP_API_PACKAGE = BACKEND_ROOT / "transport" / "api"
+HTTP_API_APP = SURFACE_ROOT / "transport" / "api" / "app.py"
+HTTP_API_VIEWS = SURFACE_ROOT / "transport" / "api" / "views.py"
+HTTP_API_PACKAGE = SURFACE_ROOT / "transport" / "api"
 
 
 def _source(name: str) -> str:
@@ -333,7 +339,7 @@ class ServiceLayoutTest(unittest.TestCase):
         )
 
     def test_http_policy_is_fastapi_free(self) -> None:
-        imports = _import_module_names(BACKEND_ROOT / "transport" / "http_policy.py")
+        imports = _import_module_names(SURFACE_ROOT / "transport" / "http_policy.py")
 
         self.assertEqual(imports, {"dataclasses"})
 
@@ -820,7 +826,7 @@ class ServiceLayoutTest(unittest.TestCase):
         ]
         for path in sorted(
             (
-                *SERVICES.rglob("*.py"),
+                *GLUE_SERVICE_FILES,
                 *RESEARCH_CORE.rglob("*.py"),
                 *FEED_ROOT.rglob("*.py"),
                 *sandbox_record_modules,
@@ -913,7 +919,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self,
     ) -> None:
         source = _api_app_source()
-        contracts_source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(
+        contracts_source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(
             encoding="utf-8"
         )
 
@@ -935,7 +941,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_http_surface_policy_keeps_mode_decisions_named(self) -> None:
         source = _api_app_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+        policy_source = (SURFACE_ROOT / "transport" / "http_policy.py").read_text(
             encoding="utf-8"
         )
 
@@ -944,7 +950,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn(
             "surface = surface_policy or HttpSurfacePolicy.for_surface(", source
         )
-        control_source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+        control_source = (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("surface_policy=surface", control_source)
@@ -998,10 +1004,10 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
         source = _api_app_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+        policy_source = (SURFACE_ROOT / "transport" / "http_policy.py").read_text(
             encoding="utf-8"
         )
-        from merv.brain.transport.http_policy import HOSTED_CONTROL_TOOL_POLICIES
+        from merv.brain.surface.transport.http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
         self.assertEqual(
             set(HOSTED_CONTROL_TOOL_POLICIES),
@@ -1030,10 +1036,10 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_http_data_plane_capabilities_use_policy_table(self) -> None:
         source = _api_app_source()
         route_source = _api_package_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+        policy_source = (SURFACE_ROOT / "transport" / "http_policy.py").read_text(
             encoding="utf-8"
         )
-        from merv.brain.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
+        from merv.brain.surface.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
 
         self.assertEqual(
             HTTP_DATA_PLANE_FEATURE_TO_TOOL,
@@ -1057,12 +1063,12 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_admin_http_routes_are_lifted_out_of_main_factory(self) -> None:
         source = _api_app_source()
-        admin_source = (BACKEND_ROOT / "transport" / "admin_http.py").read_text(
+        admin_source = (SURFACE_ROOT / "transport" / "admin_http.py").read_text(
             encoding="utf-8"
         )
 
         self.assertEqual(
-            _import_module_names(BACKEND_ROOT / "transport" / "admin_http.py"),
+            _import_module_names(SURFACE_ROOT / "transport" / "admin_http.py"),
             {"typing", "observability"},
         )
         self.assertIn("register_admin_routes(", source)
@@ -1080,12 +1086,12 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_mcp_http_routes_are_shared_by_local_and_control(self) -> None:
         source = _api_app_source()
-        mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(
+        mcp_source = (SURFACE_ROOT / "transport" / "mcp_http.py").read_text(
             encoding="utf-8"
         )
 
         self.assertEqual(
-            _import_module_names(BACKEND_ROOT / "transport" / "mcp_http.py"),
+            _import_module_names(SURFACE_ROOT / "transport" / "mcp_http.py"),
             {
                 "collections.abc",
                 "json",
@@ -1112,11 +1118,11 @@ class ServiceLayoutTest(unittest.TestCase):
     ) -> None:
         source = _api_app_source()
         data_plane_source = (
-            BACKEND_ROOT / "transport" / "data_plane_http.py"
+            SURFACE_ROOT / "transport" / "data_plane_http.py"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(
-            _import_module_names(BACKEND_ROOT / "transport" / "data_plane_http.py"),
+            _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py"),
             {
                 "base64",
                 "binascii",
@@ -1292,7 +1298,7 @@ class ServiceLayoutTest(unittest.TestCase):
                     )
 
     def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
-        from merv.brain.tools.contracts import ReviewSubmitInput
+        from merv.brain.surface.tools.contracts import ReviewSubmitInput
         from merv.brain.research_core.domain.vocabulary import (
             REVIEW_VERDICT_VALUES,
             REVIEW_VERDICTS,
@@ -1303,7 +1309,7 @@ class ServiceLayoutTest(unittest.TestCase):
             set(ReviewSubmitInput.model_fields["verdict"].annotation.__args__),
             set(REVIEW_VERDICT_VALUES),
         )
-        source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
+        source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
         self.assertIn("REVIEW_VERDICT_VALUES", source)
         self.assertIn("verdict: Literal[*REVIEW_VERDICT_VALUES]", source)
         self.assertNotIn('verdict: Literal["pass", "needs_changes", "fail"]', source)
@@ -1358,7 +1364,7 @@ class ServiceLayoutTest(unittest.TestCase):
             LOCAL_CLIENT_ID,
             LOCAL_TENANT_ID,
         )
-        from merv.brain.services.identity import LOCAL_PRINCIPAL
+        from merv.brain.surface.identity import LOCAL_PRINCIPAL
 
         self.assertEqual(LOCAL_TENANT_ID, "local")
         self.assertEqual(LOCAL_CLIENT_ID, "local")

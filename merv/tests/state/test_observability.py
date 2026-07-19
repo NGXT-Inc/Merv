@@ -15,7 +15,7 @@ from pathlib import Path
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.observability import StructuredLogger, TenantCounters
+from merv.brain.surface.observability import StructuredLogger, TenantCounters
 
 
 class StructuredLoggerTest(unittest.TestCase):

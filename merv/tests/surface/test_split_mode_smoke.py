@@ -12,9 +12,9 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.control.control_runtime import ControlTaskChannel
+from merv.brain.surface.control.control_runtime import ControlTaskChannel
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.shared.errors import ValidationError
 from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 from merv.proxy.project_links import ProjectLinks

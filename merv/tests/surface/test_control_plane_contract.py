@@ -26,10 +26,10 @@ from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
-from merv.brain.control.control_client import HttpControlPlaneClient
+from merv.brain.surface.control.control_client import HttpControlPlaneClient
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.tools.contracts import DATA_PLANE_TOOL_NAMES
-from merv.brain.transport.http_server import make_http_server
+from merv.brain.surface.tools.contracts import DATA_PLANE_TOOL_NAMES
+from merv.brain.surface.transport.http_server import make_http_server
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 

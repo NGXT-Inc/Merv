@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from merv.brain.tools.contracts import STORAGE_TOOL_NAMES, TOOL_CONTRACTS
+from merv.brain.surface.tools.contracts import STORAGE_TOOL_NAMES, TOOL_CONTRACTS
 from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 from merv.proxy.proxy import (
     _STATIC_CATALOG_PATH,

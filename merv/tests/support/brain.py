@@ -9,11 +9,11 @@ from fastapi.testclient import TestClient
 
 from merv.shared.project_dirs import PROJECT_STATE_DIR_NAMES
 
-from merv.brain.composition import build_local_server
+from merv.brain.surface.composition import build_local_server
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
-from merv.brain.tools.contracts import (
+from merv.brain.surface.tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     available_tool_names,
     static_tool_catalog,
