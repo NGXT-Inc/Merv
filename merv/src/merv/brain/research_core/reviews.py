@@ -505,7 +505,7 @@ class ReviewService:
                 (project_id, target_type, target_id),
             ).fetchall()
             return {
-                "requests": [self._hydrate_request(row=row) for row in requests],
+                "requests": [self._with_snapshot(row=row) for row in requests],
                 "reviews": [self._hydrate_review(row=row) for row in reviews],
             }
         finally:
@@ -753,14 +753,6 @@ class ReviewService:
                 conn=conn, reflection_id=target_id
             )
         return f"{target_type}:{target_id}"
-
-    def _hydrate_request(self, *, row) -> dict[str, Any]:
-        data = row_to_dict(row=row) or {}
-        data["target_snapshot"] = self.snapshot_from_id(
-            snapshot_id=data.get("target_snapshot_id", "")
-        )
-        data["recovery"] = self._request_recovery(request=data)
-        return data
 
     def _request_recovery(self, *, request: dict[str, Any]) -> dict[str, Any]:
         status = str(request.get("status") or "")
