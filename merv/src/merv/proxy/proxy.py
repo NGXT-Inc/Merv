@@ -26,7 +26,7 @@ import traceback
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, TextIO
+from typing import Any, TextIO
 from urllib.parse import urlsplit
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
@@ -686,9 +686,7 @@ class HttpProxyMcpServer:
 
     def _http_get(self, *, url: str, is_cloud: bool) -> dict[str, Any]:
         req = Request(url, method="GET", headers=self._headers(is_cloud=is_cloud))
-        return self._send(
-            req=req, is_cloud=is_cloud, timeout=self.config.timeout_seconds
-        )
+        return self._send(req=req, timeout=self.config.timeout_seconds)
 
     def _http_post(
         self,
@@ -702,9 +700,7 @@ class HttpProxyMcpServer:
         req = Request(
             url, data=data, method="POST", headers=self._headers(is_cloud=is_cloud)
         )
-        return self._send(
-            req=req, is_cloud=is_cloud, timeout=timeout or self.config.timeout_seconds
-        )
+        return self._send(req=req, timeout=timeout or self.config.timeout_seconds)
 
     def _headers(self, *, is_cloud: bool) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -783,12 +779,12 @@ class HttpProxyMcpServer:
                 pass  # in-memory session still carries this proxy process
         return updated
 
-    def _send(self, *, req: Request, is_cloud: bool, timeout: float) -> dict[str, Any]:
+    def _send(self, *, req: Request, timeout: float) -> dict[str, Any]:
         try:
             with urlopen(req, timeout=timeout) as response:
                 body_bytes = response.read()
         except urllib_error.HTTPError as exc:
-            raise self._error_from_http(exc=exc, is_cloud=is_cloud) from exc
+            raise self._error_from_http(exc=exc) from exc
         except urllib_error.URLError as exc:
             if _is_loopback_url(self.config.control_url):
                 raise _UpstreamError(
@@ -810,9 +806,7 @@ class HttpProxyMcpServer:
                 details={"body": body_bytes[:512].decode("utf-8", errors="replace")},
             ) from exc
 
-    def _error_from_http(
-        self, *, exc: urllib_error.HTTPError, is_cloud: bool
-    ) -> _UpstreamError:
+    def _error_from_http(self, *, exc: urllib_error.HTTPError) -> _UpstreamError:
         raw = b""
         try:
             raw = exc.read() or b""

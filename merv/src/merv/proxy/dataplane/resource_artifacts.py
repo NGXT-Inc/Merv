@@ -83,28 +83,6 @@ class LocalResourceArtifactReader:
             "figures": [],
         }
 
-    def read_for_backfill(self, *, path: str, role: str) -> dict[str, Any] | None:
-        if role not in GATED_ROLE_BYTE_CAPS:
-            return None
-        try:
-            rel_path, file_path = self._resolve_file(path=path)
-            data = file_path.read_bytes()
-        except (OSError, NotFoundError, ValidationError):
-            return None
-        figures: list[dict[str, Any]] = []
-        if role in MARKDOWN_FIGURE_ROLES:
-            try:
-                figures = self.submitted_figures(
-                    markdown_rel_path=rel_path,
-                    markdown_text=data.decode("utf-8", errors="replace"),
-                )
-            except ValidationError:
-                figures = []
-        return {
-            "content_bytes": data,
-            "figures": figures,
-        }
-
     def _resolve_file(self, *, path: str) -> tuple[str, Path]:
         rel_path, file_path = resolve_repo_path(
             repo_root=self.repo_root, path=path, subject="resource path"
