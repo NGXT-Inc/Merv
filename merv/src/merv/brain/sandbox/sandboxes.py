@@ -300,11 +300,11 @@ class SandboxService:
         #    availability menu and let it pick — exactly the "here's what we have,
         #    pick one" flow. Configurable backends (Modal) skip this entirely.
         if caps.requires_hardware_selection and not instance_type:
-            return self._needs_selection_view(
+            catalog = self._hardware_catalog(gpu=gpu, region=region)
+            return sandbox_views.needs_selection_view(
                 experiment_id=experiment_id,
                 project_id=project_id,
-                gpu=gpu,
-                region=region,
+                catalog=catalog,
             )
 
         # 2b) Cost-governance admission (cloud plan Phase 7). The choke point for
@@ -1253,6 +1253,7 @@ class SandboxService:
         include_data_plane_enrichment: bool,
         use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
+        row = self._with_active_experiment_ids(row=row)
         view = (
             self._agent_view(
                 row=row,
@@ -1283,7 +1284,6 @@ class SandboxService:
         return view
 
     def _agent_facts(self, *, row: dict[str, Any], reused: bool | None) -> dict[str, Any]:
-        row = self._with_active_experiment_ids(row=row)
         return sandbox_views.agent_row_facts(
             row=row,
             env_info=self._sandbox_environment(),
@@ -1301,15 +1301,9 @@ class SandboxService:
         # Provider-portable row facts are a pure projection. A composition may
         # add local conveniences, but the current agent topology relies only on
         # SSH facts; caller key paths and checkout folders remain proxy-local.
-        row = self._with_active_experiment_ids(row=row)
         sandbox_uid = str(row.get("sandbox_uid") or "")
         view_name = f"sandbox-{sandbox_uid[:12]}"
-        facts = sandbox_views.agent_row_facts(
-            row=row,
-            env_info=self._sandbox_environment(),
-            reused=reused,
-            storage_enabled=self.storage_enabled,
-        )
+        facts = self._agent_facts(row=row, reused=reused)
         enrichment = self.worker.sandbox_enrichment(
             row=row,
             name=view_name,
@@ -1355,19 +1349,6 @@ class SandboxService:
         if not out.get("experiment_id") and active:
             out["experiment_id"] = active[0]
         return out
-
-    def _needs_selection_view(
-        self,
-        *,
-        experiment_id: str,
-        project_id: str,
-        gpu: str | None,
-        region: str | None,
-    ) -> dict[str, Any]:
-        catalog = self._hardware_catalog(gpu=gpu, region=region)
-        return sandbox_views.needs_selection_view(
-            experiment_id=experiment_id, project_id=project_id, catalog=catalog
-        )
 
     # ---------- backend introspection ----------
 
