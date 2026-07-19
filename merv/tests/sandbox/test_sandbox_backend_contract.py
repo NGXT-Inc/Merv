@@ -24,7 +24,7 @@ from merv.brain.sandbox.sandbox_backend import (
     TranscriptTail,
 )
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
-from tests.paths import BACKEND_ROOT, SERVICES_ROOT
+from tests.paths import BACKEND_ROOT, SERVICES_ROOT, SURFACE_ROOT
 
 
 BACKEND_METHODS = (
