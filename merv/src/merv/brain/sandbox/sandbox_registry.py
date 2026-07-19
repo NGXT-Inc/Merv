@@ -835,25 +835,6 @@ class SandboxRegistry:
             (sandbox_uid, experiment_id, attached_at, sandbox_uid, experiment_id),
         )
 
-    def _close_attachment(
-        self,
-        *,
-        conn: Any,
-        sandbox_uid: str,
-        experiment_id: str,
-        detached_at: str,
-    ) -> None:
-        if not sandbox_uid or not experiment_id:
-            return
-        conn.execute(
-            """
-            UPDATE sandbox_attachments
-            SET detached_at = ?
-            WHERE sandbox_uid = ? AND experiment_id = ? AND detached_at IS NULL
-            """,
-            (detached_at, sandbox_uid, experiment_id),
-        )
-
     def _close_all_attachments(
         self, *, conn: Any, sandbox_uid: str, detached_at: str
     ) -> None:
