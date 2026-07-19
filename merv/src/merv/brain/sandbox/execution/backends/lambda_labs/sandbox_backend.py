@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from .._values import _int_or_zero
 from ...bootstrap_tools import (
     BASELINE_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
@@ -438,13 +439,6 @@ def _sandbox_name(experiment_id: str) -> str:
 def _call(cb: Any, *args: Any) -> None:
     if cb is not None:
         cb(*args)
-
-
-def _int_or_zero(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 def build_lambda_labs_sandbox_backend(*, repo_root: Path | None = None, **_kwargs: Any) -> LambdaLabsSandboxBackend:

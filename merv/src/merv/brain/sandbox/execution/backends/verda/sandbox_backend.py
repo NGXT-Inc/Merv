@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .._values import _float_or_zero
 from ...bootstrap_tools import BASELINE_APT_PACKAGES, ML_PYTHON_PACKAGES
 from ...vm_bootstrap import build_standard_user_data
 from ....sandbox_backend import (
@@ -356,13 +357,6 @@ def _sandbox_name(experiment_id: str) -> str:
 def _call(cb: Any, *args: Any) -> None:
     if cb is not None:
         cb(*args)
-
-
-def _float_or_zero(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def build_verda_sandbox_backend(
