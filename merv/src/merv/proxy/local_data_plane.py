@@ -424,7 +424,7 @@ class LocalDataPlane:
         payload = {
             "project_id": project_id,
             "name": str(arguments.get("name") or "")
-            or self._default_storage_name(path=file_path),
+            or file_path.relative_to(self.repo_root).as_posix(),
             "kind": self._required_arg(arguments, "kind"),
             "sha256": sha256,
             "size_bytes": size_bytes,
@@ -557,12 +557,6 @@ class LocalDataPlane:
 
         _rel, full = resolve_repo_path(repo_root=self.repo_root, path=path)
         return full
-
-    def _default_storage_name(self, *, path: Path) -> str:
-        try:
-            return path.resolve().relative_to(self.repo_root.resolve()).as_posix()
-        except ValueError:
-            return path.name
 
     def _local_experiment_dir(self, *, experiment_id: str, name: str = "") -> Path:
         from .workspace import local_experiment_dir
