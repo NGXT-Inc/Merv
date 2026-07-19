@@ -351,29 +351,21 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
         last_error = ""
         while time.monotonic() < deadline:
             self._notify(on_phase, "bootstrapping", "waiting for management ssh")
-            result = self._ssh_mgmt(
-                host=host,
-                port=port,
-                key_path=key_path,
-                remote_command="test -x /opt/merv/rec.sh && true",
+            # Rebuild each attempt so the injected runner sees the retry cadence.
+            result = self._ssh_runner(
+                ssh_command(
+                    host=host,
+                    port=port,
+                    user=MGMT_SSH_USER,
+                    key_path=key_path,
+                    remote_command="test -x /opt/merv/rec.sh && true",
+                )
             )
             if result.returncode == 0:
                 return
             last_error = stderr_detail(result)
             time.sleep(self.config.poll_interval_seconds)
         raise BackendUnavailableError(f"Thunder management SSH never became ready: {last_error}")
-
-    def _ssh_mgmt(
-        self, *, host: str, port: int, key_path: str, remote_command: str
-    ) -> subprocess.CompletedProcess[str]:
-        command = ssh_command(
-            host=host,
-            port=port,
-            user=MGMT_SSH_USER,
-            key_path=key_path,
-            remote_command=remote_command,
-        )
-        return self._ssh_runner(command)
 
 
 def build_thunder_bootstrap_script(
