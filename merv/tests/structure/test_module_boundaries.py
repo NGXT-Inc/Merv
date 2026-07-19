@@ -35,7 +35,8 @@ PACKAGE_MODULES = {
     "kernel": KERNEL,
     "state": KERNEL,  # transitional shim package for backend.kernel.state
     "ports": KERNEL,  # transitional shim package for backend.kernel.ports
-    "domain": RESEARCH_CORE,
+    "research_core": RESEARCH_CORE,
+    "domain": RESEARCH_CORE,  # remaining sibling-owned files + transitional shims
     "artifacts": ARTIFACTS,
     "storage": OBJECT_STORAGE,
     "services/sandbox": SANDBOX,
