@@ -875,8 +875,13 @@ class ResearchHttpApi:
         component renders. `extra_base` injects endpoint-specific fields (the
         project-current endpoint adds the staleness `signal`)."""
         base: dict[str, Any] = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
+        # Prefer the current-attempt association, with prior-attempt fallback.
         chosen = graph_resource or (
-            self._reflection_graph_resource(reflection=reflection)
+            preferred_associated_resource(
+                resources=reflection.get("resources", []),
+                attempt=reflection.get("attempt_index"),
+                roles=PROJECT_GRAPH_ROLES,
+            )
             if reflection
             else None
         )
@@ -946,19 +951,6 @@ class ResearchHttpApi:
         version → blob), or None when nothing was submitted."""
         return self.app.resources.submitted_text_for_version(
             version_id=resource.get("association_version_id")
-        )
-
-    def _reflection_graph_resource(
-        self, *, reflection: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        """The reflection's graph association — current attempt preferred, with
-        the prior-attempt fallback the experiment endpoint also uses."""
-        if reflection is None:
-            return None
-        return preferred_associated_resource(
-            resources=reflection.get("resources", []),
-            attempt=reflection.get("attempt_index"),
-            roles=PROJECT_GRAPH_ROLES,
         )
 
     def _experiment_view_model(self, *, exp: dict[str, Any]) -> dict[str, Any]:
