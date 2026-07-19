@@ -7,7 +7,6 @@ developer shell with the tools agents expect.
 
 from __future__ import annotations
 
-import re
 import shlex
 import time
 from pathlib import Path
@@ -30,7 +29,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, summarize_instance_types, to_agent_options
 from .client import LambdaCloudClient
 from .config import LambdaSandboxConfig
@@ -429,11 +428,6 @@ python3 -c 'import mlflow' >/dev/null 2>&1 || python3 -m pip install --break-sys
 install_with_uv_or_pip torch torchvision torchaudio || true
 install_with_uv_or_pip {python_packages} || true
 """
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_lambda_labs_sandbox_backend(*, repo_root: Path | None = None, **_kwargs: Any) -> LambdaLabsSandboxBackend:

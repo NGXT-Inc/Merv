@@ -13,7 +13,6 @@ forward mapping internal port 22 when the VM detail reports one.
 from __future__ import annotations
 
 import base64
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, to_agent_options
 from .client import VoltageParkClient
 from .config import VoltageParkSandboxConfig
@@ -328,11 +327,6 @@ def _vm_hourly_rate(vm: dict[str, Any]) -> float:
         return float(pricing.get("total_associated_per_hr") or 0.0)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_voltage_park_sandbox_backend(

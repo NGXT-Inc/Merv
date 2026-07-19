@@ -9,7 +9,6 @@ SSH never becomes reachable. Billing is per-minute while the VM exists
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name
 from .catalog import find_option, to_agent_options
 from .client import HyperstackClient
 from .config import HyperstackSandboxConfig
@@ -340,8 +339,7 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
 
 
 def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:50]  # Hyperstack caps VM names at 50 chars
+    return _vm_name(experiment_id, max_length=50)  # Hyperstack caps VM names at 50 chars
 
 
 def build_hyperstack_sandbox_backend(

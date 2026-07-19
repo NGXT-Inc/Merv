@@ -8,7 +8,6 @@ Billing rounds UP to 10-minute increments.
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, to_agent_options
 from .client import VerdaClient
 from .config import VerdaSandboxConfig
@@ -347,11 +346,6 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
                         deleter(str(resource["id"]))
                     except Exception:  # noqa: BLE001
                         pass
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_verda_sandbox_backend(

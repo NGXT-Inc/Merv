@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import time
 from typing import Any, Mapping
@@ -19,6 +20,11 @@ from ..vm_ssh import (
     write_secrets_via_mgmt_ssh,
 )
 from ...sandbox_backend import BackendUnavailableError, SandboxBackendBase, TranscriptTail
+
+
+def _vm_name(experiment_id: str, *, max_length: int = 60) -> str:
+    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
+    return f"rp-{safe or 'exp'}"[:max_length]
 
 
 class VmSshSandboxBackend(SandboxBackendBase):

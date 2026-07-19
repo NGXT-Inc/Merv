@@ -10,7 +10,6 @@ the provision-time price quote is the recorded rate, refined by the live
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -29,7 +28,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import deploy_shape, find_option, parse_instance_type, to_agent_options
 from .client import TensorDockClient
 from .config import TensorDockSandboxConfig
@@ -332,11 +331,6 @@ def _ssh_endpoint(instance: dict[str, Any]) -> tuple[str, int]:
             if external:
                 return host, external
     return host, 22
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_tensordock_sandbox_backend(

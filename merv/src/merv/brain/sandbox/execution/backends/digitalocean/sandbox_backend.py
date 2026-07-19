@@ -9,7 +9,6 @@ access for the account, and the default image is the AI/ML-ready Ubuntu
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,7 @@ from ....sandbox_backend import (
     SandboxRequest,
 )
 from ...sync_dirs import remote_experiment_dir, remote_root_of, remote_sessions_dir
-from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
+from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, to_agent_options
 from .client import DigitalOceanClient
 from .config import DigitalOceanSandboxConfig
@@ -360,11 +359,6 @@ def _public_ipv4(droplet: dict[str, Any]) -> str:
         if isinstance(entry, dict) and entry.get("type") == "public":
             return str(entry.get("ip_address") or "")
     return ""
-
-
-def _sandbox_name(experiment_id: str) -> str:
-    safe = re.sub(r"[^a-z0-9]+", "-", experiment_id.lower()).strip("-")
-    return f"rp-{safe or 'exp'}"[:60]
 
 
 def build_digitalocean_sandbox_backend(
