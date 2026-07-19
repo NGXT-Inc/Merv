@@ -187,11 +187,7 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
         return True
 
     def health(self) -> dict[str, Any]:
-        try:
-            self.client.list_specs()
-            return {"ok": True, "backend": "thunder_compute"}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "backend": "thunder_compute", "error": str(exc)}
+        return self._probe_health(lambda: self.client.list_specs())
 
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None

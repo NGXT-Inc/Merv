@@ -205,11 +205,7 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
         return True
 
     def health(self) -> dict:
-        try:
-            self.client.list_instance_types()
-            return {"ok": True, "backend": "verda"}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "backend": "verda", "error": str(exc)}
+        return self._probe_health(lambda: self.client.list_instance_types())
 
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = ""

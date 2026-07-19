@@ -257,6 +257,13 @@ class SandboxBackendBase:
         if callback is not None:
             callback(*args)
 
+    def _probe_health(self, probe: Callable[[], Any]) -> dict[str, Any]:
+        try:
+            probe()
+            return {"ok": True, "backend": self.capabilities.name}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "backend": self.capabilities.name, "error": str(exc)}
+
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
         """Single-provider default: one backend serves every request."""
         _ = provider
