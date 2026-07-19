@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, suppress
 import argparse
 import datetime as dt
 import json
@@ -162,10 +162,8 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout: float = 10.0) -> d
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = ""
-        try:
+        with suppress(Exception):
             body = json.loads(exc.read().decode("utf-8")).get("detail", "")
-        except Exception:  # noqa: BLE001
-            pass
         raise ClientError(body or f"HTTP {exc.code} from {url}") from exc
     except urllib.error.URLError as exc:
         raise ClientError(f"brain unreachable at {url}: {exc.reason}") from exc
