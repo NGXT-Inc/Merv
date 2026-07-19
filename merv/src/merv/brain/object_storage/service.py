@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import mimetypes
 from datetime import datetime
 from pathlib import Path
@@ -379,8 +380,7 @@ class StorageLedgerService:
             self._validate_kind(kind)
         if status is not None:
             self._validate_status(status)
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             where = ["project_id = ?"]
             params: list[Any] = [project_id]
@@ -425,12 +425,9 @@ class StorageLedgerService:
                 "compact": bool(compact),
                 "guidance": storage_guidance(enabled=True),
             }
-        finally:
-            conn.close()
 
     def get_object(self, *, project_id: str | None, object_id: str) -> dict[str, Any]:
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             return {
                 "object": self._hydrate(
@@ -439,8 +436,6 @@ class StorageLedgerService:
                     )
                 )
             }
-        finally:
-            conn.close()
 
     def resolve(
         self,
