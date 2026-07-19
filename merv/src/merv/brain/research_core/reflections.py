@@ -63,7 +63,7 @@ from ..kernel.state.store import (
     rows_to_dicts,
 )
 from ..kernel.utils import NotFoundError, WorkflowError, new_id, now_iso
-from .review_gate import review_gate_state
+from .review_gate import _review_checklist_item, review_gate_state
 
 
 class ReflectionService:
@@ -594,46 +594,16 @@ class ReflectionService:
 
         if forward.review is not None:
             review = forward.review
-            snapshot_id = review_snapshot_id(
-                target_type="reflection", target=reflection
+            items.append(
+                _review_checklist_item(
+                    conn=conn,
+                    status=status,
+                    target_type="reflection",
+                    target=reflection,
+                    review=review,
+                    label=reflection_gate_review_label(role=review.role),
+                )
             )
-            gate_state = review_gate_state(
-                conn=conn,
-                project_id=str(reflection["project_id"]),
-                target_type="reflection",
-                target_id=str(reflection["id"]),
-                role=review.role,
-                snapshot_id=snapshot_id,
-            )
-            passed = gate_state["satisfied"]
-            request = self._latest_review_request(
-                conn=conn,
-                reflection_id=str(reflection["id"]),
-                role=review.role,
-                target_snapshot_id=snapshot_id,
-            )
-            review_status = (
-                "passed" if passed else self._review_gate_status(request=request)
-            )
-            item = {
-                "id": f"review:{review.role}",
-                "kind": "review",
-                "role": review.role,
-                "label": reflection_gate_review_label(role=review.role),
-                "satisfied": passed,
-                "status": review_status,
-                "gate": status,
-                "action": (
-                    review.pass_action if passed else f"launch_{review.action_name}er"
-                ),
-                "skill": review.skill,
-            }
-            if gate_state.get("blocked_reason"):
-                item["problems"] = [gate_state["blocked_reason"]]
-            if request is not None:
-                item["request_id"] = request["id"]
-                item["expires_at"] = request["expires_at"]
-            items.append(item)
 
         return {
             "status": status,
@@ -642,34 +612,6 @@ class ReflectionService:
             "ready": all(bool(item.get("satisfied")) for item in items),
             "items": items,
         }
-
-    def _latest_review_request(
-        self,
-        *,
-        conn,
-        reflection_id: str,
-        role: str,
-        target_snapshot_id: str,
-    ) -> dict[str, Any] | None:
-        row = conn.execute(
-            """
-            SELECT id, status, expires_at
-            FROM review_requests
-            WHERE target_type = 'reflection' AND target_id = ? AND role = ?
-              AND target_snapshot_id = ?
-            ORDER BY created_seq DESC
-            LIMIT 1
-            """,
-            (reflection_id, role, target_snapshot_id),
-        ).fetchone()
-        return row_to_dict(row=row)
-
-    def _review_gate_status(self, *, request: dict[str, Any] | None) -> str:
-        if request is None:
-            return "pending"
-        if request.get("status") in {"requested", "started"}:
-            return str(request["status"])
-        return "pending"
 
     # ---- transitions ----
 
