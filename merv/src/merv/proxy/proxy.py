@@ -351,7 +351,7 @@ class HttpProxyMcpServer:
         return self._result_dict(body=body)
 
     def _call_control_api(
-        self, *, path: str, payload: dict[str, Any]
+        self, path: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         return self._http_post(
             url=f"{self._require_control_url()}{path}",
@@ -597,9 +597,7 @@ class HttpProxyMcpServer:
             self._local_data_plane = LocalDataPlane(
                 repo_root=self.config.repo_root,
                 project_id_resolver=self._resolve_project_id,
-                control_api_post=lambda path, payload: self._call_control_api(
-                    path=path, payload=payload
-                ),
+                control_api_post=self._call_control_api,
                 control_tool_call=lambda tool, args: self._call_cloud(
                     name=tool, arguments=args
                 ),
