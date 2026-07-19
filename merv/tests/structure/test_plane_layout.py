@@ -966,14 +966,121 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
     def test_proxy_does_not_require_datetime_utc_alias(self) -> None:
         # Codex may launch the stdio proxy with Apple CLT Python 3.9.
         # datetime.UTC was added in 3.11, so proxy modules must use
-        # datetime.timezone.utc instead.
-        for path in sorted(PROXY_ROOT.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            with self.subTest(module=path.relative_to(PROXY_ROOT).as_posix()):
-                source = path.read_text(encoding="utf-8")
-                self.assertNotIn("from datetime import UTC", source)
-                self.assertNotIn("datetime.UTC", source)
+        # datetime.timezone.utc instead. merv.shared is statically imported by
+        # the proxy, so it lives under the same floor.
+        for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            for path in sorted(root.rglob("*.py")):
+                if "__pycache__" in path.parts:
+                    continue
+                with self.subTest(module=f"{package}:{path.relative_to(root).as_posix()}"):
+                    source = path.read_text(encoding="utf-8")
+                    self.assertNotIn("from datetime import UTC", source)
+                    self.assertNotIn("datetime.UTC", source)
+
+    def test_proxy_avoids_runtime_pep604_unions(self) -> None:
+        # Same Apple CLT Python 3.9 target as the datetime.UTC pin: `X | Y`
+        # on types raises TypeError at runtime before 3.10. Annotations are
+        # safe only under the lazy-annotations future import; runtime
+        # positions (type aliases, defaults) must spell typing.Optional.
+        # The static net is the unambiguous None-operand shape — set/dict/int
+        # `|` stays legal — and the system-python import test below is the
+        # authoritative backstop for anything it cannot see.
+        for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            for path in sorted(root.rglob("*.py")):
+                if "__pycache__" in path.parts:
+                    continue
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                lazy_annotations = any(
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "__future__"
+                    and any(alias.name == "annotations" for alias in node.names)
+                    for node in tree.body
+                )
+                annotation_unions: set[int] = set()
+                for node in ast.walk(tree):
+                    anns: list[ast.expr] = []
+                    if isinstance(node, ast.AnnAssign):
+                        anns.append(node.annotation)
+                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if node.returns is not None:
+                            anns.append(node.returns)
+                    elif isinstance(node, ast.arg) and node.annotation is not None:
+                        anns.append(node.annotation)
+                    for ann in anns:
+                        annotation_unions.update(
+                            id(sub)
+                            for sub in ast.walk(ann)
+                            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr)
+                        )
+                violations: list[str] = []
+                for node in ast.walk(tree):
+                    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)):
+                        continue
+                    if id(node) in annotation_unions:
+                        if not lazy_annotations:
+                            violations.append(
+                                f"line {node.lineno}: annotation union needs "
+                                "`from __future__ import annotations`"
+                            )
+                    elif any(
+                        isinstance(side, ast.Constant) and side.value is None
+                        for side in (node.left, node.right)
+                    ):
+                        violations.append(
+                            f"line {node.lineno}: runtime `X | None` union — "
+                            "use typing.Optional"
+                        )
+                with self.subTest(module=f"{package}:{path.relative_to(root).as_posix()}"):
+                    self.assertFalse(violations, "; ".join(violations))
+
+    def test_proxy_tree_imports_under_system_python(self) -> None:
+        # The authoritative floor check: on macOS dev machines /usr/bin/python3
+        # is Apple CLT 3.9 — the very interpreter agent clients launch the
+        # proxy with. When a pre-3.11 system python exists, prove every
+        # merv.proxy and merv.shared module imports under it. (__main__ is
+        # included: its entrypoint sits behind an import guard.)
+        interpreter = Path("/usr/bin/python3")
+        if not interpreter.exists():
+            self.skipTest("no system python3 to test against")
+        probe = subprocess.run(
+            [str(interpreter), "-c", "import sys; print(*sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode != 0:
+            self.skipTest("system python3 is not runnable (CLT stub)")
+        version = tuple(int(part) for part in probe.stdout.split())
+        if version >= (3, 11):
+            self.skipTest(f"system python3 is {version[0]}.{version[1]}; not below the packaged floor")
+        modules: list[str] = []
+        for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            for path in sorted(root.rglob("*.py")):
+                if "__pycache__" in path.parts:
+                    continue
+                parts = [p for p in path.relative_to(root).with_suffix("").parts if p != "__init__"]
+                modules.append(".".join((package, *parts)))
+        code = (
+            "import importlib, sys\n"
+            f"failures = []\n"
+            f"for name in {sorted(modules)!r}:\n"
+            "    try:\n"
+            "        importlib.import_module(name)\n"
+            "    except Exception as exc:\n"
+            "        failures.append(name + ': ' + repr(exc))\n"
+            "sys.exit('\\n'.join(failures) if failures else 0)\n"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(IMPORT_ROOT)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        result = subprocess.run(
+            [str(interpreter), "-c", code], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"proxy tree failed to import under system python "
+            f"{version[0]}.{version[1]}:\n{result.stderr}",
+        )
 
 
 if __name__ == "__main__":

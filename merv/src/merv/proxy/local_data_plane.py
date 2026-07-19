@@ -13,7 +13,7 @@ import importlib
 import mimetypes
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 RSYNC_PULL_OUTPUTS_HINT = (
@@ -26,7 +26,9 @@ RSYNC_PULL_OUTPUTS_HINT = (
 
 ControlApiPost = Callable[[str, dict[str, Any]], dict[str, Any]]
 ControlToolCall = Callable[[str, dict[str, Any]], dict[str, Any]]
-ProjectIdResolver = Callable[[], str | None]
+# Runtime-evaluated alias: typing.Optional, not `str | None` — the proxy must
+# import under Apple CLT Python 3.9, where PEP 604 unions raise at runtime.
+ProjectIdResolver = Callable[[], Optional[str]]
 
 
 class LocalDataPlaneError(Exception):
