@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -466,11 +467,8 @@ class SandboxService:
         sandbox_uid = sandbox_uid.strip()
         if not sandbox_uid:
             raise ValidationError("sandbox.attach requires sandbox_uid")
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-        finally:
-            conn.close()
         try:
             source_row = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
         except NotFoundError as exc:
