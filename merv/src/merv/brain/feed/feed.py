@@ -14,6 +14,7 @@ UI consumes and the soft posting nudge surfaced through ``workflow``.
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import urllib.parse
 from pathlib import Path
@@ -626,8 +627,7 @@ class FeedService:
     ) -> dict[str, Any]:
         """Reverse-chronological posts, cursor-paginated by ``created_seq``."""
         limit = max(1, min(int(limit), 100))
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             params: list[Any] = [project_id]
             where = "project_id = ?"
@@ -672,20 +672,15 @@ class FeedService:
                 if attention:
                     result["researcher_attention"] = attention
             return result
-        finally:
-            conn.close()
 
     def get_embed(self, *, project_id: str, post_id: str) -> str:
         """Return the CSP-wrapped HTML document for a post's embed."""
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT embed_sha256 FROM posts WHERE id = ? AND project_id = ?",
                 (post_id, project_id),
             ).fetchone()
-        finally:
-            conn.close()
         if row is None or not row["embed_sha256"]:
             raise NotFoundError(f"no embed for post: {post_id}")
         data = self.blobs.get(namespace=project_id, sha256=str(row["embed_sha256"]))
@@ -693,15 +688,12 @@ class FeedService:
 
     def get_image(self, *, project_id: str, post_id: str) -> tuple[bytes, str]:
         """Return (bytes, content_type) for a post's image, for the HTTP route."""
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT image_sha256, image_content_type FROM posts WHERE id = ? AND project_id = ?",
                 (post_id, project_id),
             ).fetchone()
-        finally:
-            conn.close()
         if row is None or not row["image_sha256"]:
             raise NotFoundError(f"no image for post: {post_id}")
         data = self.blobs.get(namespace=project_id, sha256=str(row["image_sha256"]))
@@ -709,15 +701,12 @@ class FeedService:
 
     def get_link_image(self, *, project_id: str, post_id: str) -> tuple[bytes, str]:
         """Return (bytes, content_type) for a post's re-hosted link thumbnail."""
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             row = conn.execute(
                 "SELECT link_preview_json FROM posts WHERE id = ? AND project_id = ?",
                 (post_id, project_id),
             ).fetchone()
-        finally:
-            conn.close()
         sha = ""
         ctype = ""
         if row is not None:
@@ -925,15 +914,12 @@ class FeedService:
         entity_id = (entity_id or "").strip()
         if not project_id or not entity_id:
             return None
-        conn = self.store.connect()
-        try:
+        with closing(self.store.connect()) as conn:
             mentioned = conn.execute(
                 "SELECT 1 FROM posts WHERE project_id = ? "
                 "AND (ref = ? OR text LIKE ? ESCAPE '\\') LIMIT 1",
                 (project_id, entity_id, f"%{_escape_like(entity_id)}%"),
             ).fetchone()
-        finally:
-            conn.close()
         if mentioned is not None:
             return None
         phrase = _FEED_NOTE_PHRASES.get(
