@@ -90,7 +90,7 @@ def _parser() -> argparse.ArgumentParser:
         "connect",
         help="Configure/login and optionally link the current folder.",
     )
-    _add_control_args(connect, required=False)
+    _add_control_args(connect)
     connect.add_argument("--project-id", help="Existing hosted project id to link.")
     connect.add_argument("--repo", default=".", help="Local repo folder to link (default: cwd).")
     connect.set_defaults(func=_cmd_connect)
@@ -115,7 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_control_args(parser: argparse.ArgumentParser, *, required: bool = True) -> None:
+def _add_control_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--control-url",
         required=False,
@@ -140,7 +140,6 @@ def _add_control_args(parser: argparse.ArgumentParser, *, required: bool = True)
 
 def _cmd_configure(args: argparse.Namespace) -> int:
     config_path = _config_path(args)
-    existing = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
     config = configure_client(
         config_path=config_path,
         control_url=args.control_url or HOSTED_CONTROL_URL,
@@ -399,19 +398,6 @@ def _config_path(args: argparse.Namespace) -> Path:
     if getattr(args, "config", None):
         return Path(args.config).expanduser().resolve()
     return resolve_client_config_path()
-
-
-def _require_config(config_path: Path) -> dict[str, str]:
-    config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
-    missing = [key for key in ("control_url",) if not config.get(key)]
-    if missing:
-        raise ClientError(
-            "machine is not configured; run "
-            "merv-client configure --control-url ..."
-        )
-    state_dir = str(_state_dir(config_path=config_path, config=config))
-    config.setdefault("daemon_state_dir", state_dir)
-    return config
 
 
 def _ensure_default_config(config_path: Path) -> dict[str, str]:
