@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Mapping
@@ -464,7 +465,9 @@ class CentralMlflowService:
         )
         if found:
             return found
-        try:
+        # A concurrent creator may have won the race. Search once more before
+        # letting the caller report the failure.
+        with suppress(httpx.HTTPError):
             response = client.post(
                 f"{base}/api/2.0/mlflow/experiments/create",
                 json={"name": experiment_name},
@@ -473,10 +476,6 @@ class CentralMlflowService:
             created = str(response.json().get("experiment_id") or "")
             if created:
                 return created
-        except httpx.HTTPError:
-            # A concurrent creator may have won the race. Search once more
-            # before letting the caller report the failure.
-            pass
         found = self._find_mlflow_experiment_id(
             client=client,
             base=base,
