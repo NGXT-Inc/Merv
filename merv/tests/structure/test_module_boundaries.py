@@ -38,7 +38,8 @@ PACKAGE_MODULES = {
     "research_core": RESEARCH_CORE,
     "domain": RESEARCH_CORE,  # remaining sibling-owned files + transitional shims
     "artifacts": ARTIFACTS,
-    "storage": OBJECT_STORAGE,
+    "object_storage": OBJECT_STORAGE,
+    "storage": OBJECT_STORAGE,  # transitional shim package over object_storage
     "services/sandbox": SANDBOX,
     "sandbox": SANDBOX,
     "execution": SANDBOX,
@@ -63,7 +64,7 @@ FILE_MODULES = {
     # secret_tokens is a pure-stdlib token helper imported by kernel/state/store.py
     # (kernel) and services/reviews.py — it must live at the kernel floor.
     "secret_tokens.py": KERNEL,
-    # object_storage: blob adapters live under storage/ (PACKAGE_MODULES).
+    # object_storage: transitional shim over object_storage/storage_guidance.py.
     "domain/storage_guidance.py": OBJECT_STORAGE,
     # research_core: workflow/claims/experiments/reviews/reflection services.
     "services/workflow.py": RESEARCH_CORE,
