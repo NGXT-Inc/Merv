@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 from tests.support.brain import TestBrain
-from merv.brain.control.control_runtime import ControlSandboxWorker, ControlTaskChannel
+from merv.brain.surface.control.control_runtime import ControlSandboxWorker, ControlTaskChannel
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
 from merv.brain.sandbox.sandbox_heartbeat import (

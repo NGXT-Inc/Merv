@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.transport.http_api import create_fastapi_app
-from merv.brain.transport.http_policy import HttpSurfacePolicy
+from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.proxy.project_links import ProjectLinks
 from merv.proxy.proxy import HttpProxyMcpServer, ProxyConfig
 

@@ -48,13 +48,9 @@ PACKAGE_MODULES = {
     "sandbox": SANDBOX,
     "feed": FEED,
     "mlflow": MLFLOW,
-    "tools": SURFACE,
-    "transport": SURFACE,
-    "composition": SURFACE,
-    "control": SURFACE,
-    # cross-module glue services (auth/cleanup/identity/permissions) awaiting
-    # the surface sub-foldering tranche.
-    "services": SURFACE,
+    # One physical surface package: tools/, transport/, composition/,
+    # control/, the glue services, config, and observability live under it.
+    "surface": SURFACE,
 }
 
 # File-level assignments and overrides. Every brain .py file must resolve to
@@ -63,10 +59,6 @@ PACKAGE_MODULES = {
 FILE_MODULES = {
     # kernel: package root docstring/version shell.
     "__init__.py": KERNEL,
-    # surface: composition/transport strays awaiting the surface tranche.
-    "config.py": SURFACE,
-    "client_cli.py": SURFACE,
-    "observability.py": SURFACE,
 }
 
 # The import law: kernel imports only kernel; each module imports itself +

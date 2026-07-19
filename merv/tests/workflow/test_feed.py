@@ -17,8 +17,8 @@ from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
 from merv.shared.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from merv.brain.feed.feed import POST_TEXT_MAX, REACTION_KINDS
 from merv.brain.feed.feed_unfurl import UnfurlError, extract_card, unfurl
-from merv.brain.transport.http_api import create_fastapi_app
-from merv.brain.transport.feed_http import _image_headers
+from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.feed_http import _image_headers
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 
 # Minimal valid 1x1 PNG.

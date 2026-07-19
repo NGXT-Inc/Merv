@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.client_cli import link_repo, list_links, route_repo, unlink_repo
+from merv.client.cli import link_repo, list_links, route_repo, unlink_repo
 from merv.proxy.proxy import HttpProxyMcpServer, ProxyConfig
 
 

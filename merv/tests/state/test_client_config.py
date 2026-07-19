@@ -9,12 +9,12 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from merv.brain.client_cli import (
+from merv.client.cli import (
     HOSTED_CONTROL_URL,
     configure_client,
     main,
 )
-from merv.brain.config import (
+from merv.brain.surface.config import (
     CLIENT_CONFIG_ENV_VAR,
     CONTROL_URL_ENV_VAR,
     read_client_config,
@@ -82,7 +82,7 @@ class ClientConfigTest(unittest.TestCase):
             config_path = Path(tmp) / "client.json"
             repo = Path(tmp) / "repo"
             repo.mkdir()
-            with patch("merv.brain.client_cli.link_repo", return_value={"linked": True}) as link:
+            with patch("merv.client.cli.link_repo", return_value={"linked": True}) as link:
                 with redirect_stdout(io.StringIO()):
                     code = main(
                         [

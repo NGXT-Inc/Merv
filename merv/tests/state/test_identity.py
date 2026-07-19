@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from merv.brain.config import ALLOWED_ORIGINS_ENV_VAR, resolve_allowed_origins
-from merv.brain.services.identity import LOCAL_PRINCIPAL, Principal
+from merv.brain.surface.config import ALLOWED_ORIGINS_ENV_VAR, resolve_allowed_origins
+from merv.brain.surface.identity import LOCAL_PRINCIPAL, Principal
 from merv.brain.kernel.utils import ValidationError
 
 

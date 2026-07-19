@@ -18,7 +18,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from merv.brain.tools.tool_handlers import build_control_tool_handlers
+from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
 
 
 class _Unused:

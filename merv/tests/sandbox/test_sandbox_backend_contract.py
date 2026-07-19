@@ -138,8 +138,8 @@ class SandboxBackendContractTest(unittest.TestCase):
                 self.assertNotIn("getattr(caps", source)
 
         for path in (
-            BACKEND_ROOT / "control" / "control_app.py",
-            BACKEND_ROOT / "composition" / "control_mode.py",
+            SURFACE_ROOT / "control" / "control_app.py",
+            SURFACE_ROOT / "composition" / "control_mode.py",
         ):
             with self.subTest(path=path.name):
                 source = path.read_text(encoding="utf-8")
@@ -194,8 +194,8 @@ class SandboxBackendContractTest(unittest.TestCase):
 
     def test_control_composition_forces_the_expiry_reaper(self) -> None:
         # The control composition (not the sandbox module) must compute the
-        # force flag — the daemons no longer import merv.brain.config.
-        control_source = (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+        # force flag — the daemons no longer import merv.brain.surface.config.
+        control_source = (SURFACE_ROOT / "composition" / "control_mode.py").read_text(
             encoding="utf-8"
         )
         self.assertIn("force_expiry_reaper=True", control_source)

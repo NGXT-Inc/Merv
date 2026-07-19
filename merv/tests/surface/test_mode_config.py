@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.config import (
+from merv.brain.surface.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
     Mode,
@@ -22,8 +22,8 @@ from merv.brain.config import (
     storage_feature_enabled,
 )
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.transport.http_api import create_fastapi_app
-from merv.brain.transport.http_policy import HttpSurfacePolicy
+from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.kernel.utils import ValidationError
 
 
@@ -519,7 +519,7 @@ class ModeCompositionTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_control_server_builds_private_surface_and_data_plane_submission(self) -> None:
-        from merv.brain.composition import build_control_server
+        from merv.brain.surface.composition import build_control_server
 
         server = build_control_server(
             repo_root=self.repo,
@@ -534,7 +534,7 @@ class ModeCompositionTest(unittest.TestCase):
         self.assertEqual(client.get("/api/projects").status_code, 200)
 
     def test_daemon_builder_is_removed(self) -> None:
-        import merv.brain.composition as composition
+        import merv.brain.surface.composition as composition
 
         self.assertFalse(hasattr(composition, "build_daemon_server"))
 

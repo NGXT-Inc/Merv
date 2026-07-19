@@ -39,7 +39,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.config import build_state_store, resolve_db_url
+from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state.dialects import PostgresStateStore, translate_schema_to_postgres
 from merv.brain.kernel.state.store import (

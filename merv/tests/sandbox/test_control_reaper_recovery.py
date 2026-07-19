@@ -15,8 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.composition.control_mode import build_control_app
-from merv.brain.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
+from merv.brain.surface.composition.control_mode import build_control_app
+from merv.brain.surface.config import MGMT_KEY_PATH_ENV_VAR, MGMT_PUBLIC_KEY_ENV_VAR
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 

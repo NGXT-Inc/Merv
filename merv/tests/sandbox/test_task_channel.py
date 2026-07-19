@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.control.control_runtime import ControlTaskChannel
+from merv.brain.surface.control.control_runtime import ControlTaskChannel
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.utils import ValidationError
 

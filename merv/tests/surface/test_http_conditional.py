@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_api import create_fastapi_app
 
 
 class ConditionalRequestTestBase(unittest.TestCase):
