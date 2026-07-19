@@ -34,7 +34,9 @@ class _ControlHarness:
         response.raise_for_status()
         return response.json()
 
-    def http_post(self, *, url: str, payload: dict, is_cloud: bool, timeout=None) -> dict:  # noqa: ANN001, ARG002
+    def http_post(
+        self, *, url: str, payload: dict, is_cloud: bool, timeout=None
+    ) -> dict:  # noqa: ANN001, ARG002
         response = self.client.post(urlsplit(url).path, json=payload)
         response.raise_for_status()
         return response.json()
@@ -83,7 +85,9 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         return response["result"]["structuredContent"]
 
     def test_tools_list_merges_cloud_and_proxy_local_catalogs(self) -> None:
-        response = self.proxy.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        response = self.proxy.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
         names = {tool["name"] for tool in response["result"]["tools"]}
 
         self.assertIn("claim.create", names)
@@ -100,7 +104,9 @@ class SplitProxyLocalDataTest(unittest.TestCase):
                 # hidden repo context.
                 self.assertIn("project_id", tool["inputSchema"]["properties"])
             else:
-                self.assertNotIn("project_id", tool["inputSchema"].get("properties", {}))
+                self.assertNotIn(
+                    "project_id", tool["inputSchema"].get("properties", {})
+                )
 
     def test_control_tool_routes_to_cloud_with_project_id(self) -> None:
         claim = self._call(
@@ -117,7 +123,9 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         # experiment must both appear, unlike the active-only workflow view.
         claim = self._call("claim.create", {"statement": "Overview claim."})
         self._call("claim.update", {"claim_id": claim["id"], "status": "abandoned"})
-        exp = self._call("experiment.create", {"name": "dead-end", "intent": "terminal"})
+        exp = self._call(
+            "experiment.create", {"name": "dead-end", "intent": "terminal"}
+        )
         self._call(
             "experiment.transition",
             {"experiment_id": exp["id"], "transition": "abandon"},
@@ -153,7 +161,9 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertFalse(current["exists"])
         self.assertIn('action="connect"', current["hint"])
 
-    def test_data_tool_reads_local_file_and_submits_observation_to_control(self) -> None:
+    def test_data_tool_reads_local_file_and_submits_observation_to_control(
+        self,
+    ) -> None:
         (self.repo / "note.txt").write_text("hello from proxy-local data plane\n")
 
         resource = self._call("resource.register", {"path": "note.txt"})
@@ -172,7 +182,9 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertTrue(health["control_plane"]["reachable"])
         self.assertTrue(health["control_plane"]["configured"])
 
-    def test_cloud_outage_surfaces_brain_not_running_on_control_submission(self) -> None:
+    def test_cloud_outage_surfaces_brain_not_running_on_control_submission(
+        self,
+    ) -> None:
         broken = HttpProxyMcpServer(
             config=ProxyConfig(
                 repo_root=self.repo,
@@ -207,7 +219,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         with (
             patch.object(self.proxy, "_call_cloud", side_effect=fake_cloud),
             patch(
-                "merv.brain.dataplane.sandbox_outputs.pull_sandbox_outputs",
+                "merv.proxy.dataplane.sandbox_outputs.pull_sandbox_outputs",
                 return_value={"ok": True, "copied": []},
             ) as pull,
         ):
@@ -301,9 +313,7 @@ class ProjectConnectToolTest(unittest.TestCase):
         self.assertEqual(self._brain_project_count(), before + 1)
         self.assertEqual(self.proxy._resolve_project_id(), result["project"]["id"])
         # The link is live for the rest of the session: action=current flips.
-        current = self.proxy._call_tool(
-            name="project", arguments={"action": "current"}
-        )
+        current = self.proxy._call_tool(name="project", arguments={"action": "current"})
         self.assertTrue(current["exists"])
         self.assertEqual(current["project"]["id"], result["project"]["id"])
 
@@ -323,7 +333,9 @@ class ProjectConnectToolTest(unittest.TestCase):
         again = self._connect({"project_id": self.seeded_project["id"]})
         self.assertTrue(again["linked"])
 
-        relinked = self._connect({"name": "Replacement", "summary": "", "overwrite": True})
+        relinked = self._connect(
+            {"name": "Replacement", "summary": "", "overwrite": True}
+        )
         self.assertTrue(relinked["created"])
         self.assertEqual(self.proxy._resolve_project_id(), relinked["project"]["id"])
 
@@ -365,7 +377,13 @@ class LocalEnrichedControlMergeTest(unittest.TestCase):
             )
 
         self.assertIn("local_experiment_dir", merged)
-        for key in ("command", "raw_command", "key_path", "local_dir", "local_sync_dir"):
+        for key in (
+            "command",
+            "raw_command",
+            "key_path",
+            "local_dir",
+            "local_sync_dir",
+        ):
             self.assertNotIn(key, merged)
         self.assertNotIn("command", merged["ssh"])
         self.assertNotIn("raw_command", merged["ssh"])

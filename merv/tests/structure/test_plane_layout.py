@@ -52,7 +52,6 @@ CONTROL_MODULES = (
     *PORT_MODULES,
     BACKEND_ROOT / "sandbox" / "sandbox_backend.py",
     BACKEND_ROOT / "sandbox" / "sandbox_paths.py",
-    BACKEND_ROOT / "object_storage" / "storage_guidance.py",
     BACKEND_ROOT / "tools" / "tool_facade.py",
     BACKEND_ROOT / "tools" / "tool_handlers.py",
     RESEARCH_CORE_ROOT / "projects.py",
@@ -68,8 +67,6 @@ CONTROL_MODULES = (
     RESEARCH_CORE_ROOT / "reflection_tools.py",
     FEED_ROOT / "feed.py",
     FEED_ROOT / "feed_policy.py",
-    FEED_ROOT / "feed_images.py",
-    FEED_ROOT / "feed_embeds.py",
     BACKEND_ROOT / "sandbox" / "sandbox_metrics.py",
     BACKEND_ROOT / "control" / "record_core.py",
     BACKEND_ROOT / "control" / "control_app.py",
@@ -83,6 +80,7 @@ CONTROL_MODULES = (
 # Module names (any dotted segment) control modules may never import.
 CONTROL_FORBIDDEN_SEGMENTS = {
     "dataplane",
+    "proxy",
     "sandbox_conn",
     "subprocess",
     "workspace",
@@ -124,32 +122,12 @@ def _import_segments(path: Path) -> set[str]:
     return segments
 
 
-def _top_level_import_segments(path: Path) -> set[str]:
-    """Every dotted segment imported from module-top-level import statements."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    segments: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                segments.update(alias.name.split("."))
-        elif isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
-                continue
-            if node.module:
-                segments.update(node.module.split("."))
-            for alias in node.names:
-                segments.update(alias.name.split("."))
-    return segments
-
-
 def _class_method_names(path: Path, class_name: str) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             return {
-                item.name
-                for item in node.body
-                if isinstance(item, ast.FunctionDef)
+                item.name for item in node.body if isinstance(item, ast.FunctionDef)
             }
     raise AssertionError(f"{class_name} not found in {path}")
 
@@ -189,6 +167,46 @@ def _literal_args(node: ast.Call) -> list[str]:
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             values.append(arg.value)
     return values
+
+
+def _all_import_targets(path: Path, *, package: str, root: Path) -> set[str]:
+    """Resolve ordinary imports plus literal dynamic-import targets."""
+    rel = path.relative_to(root)
+    file_package = (*package.split("."), *rel.parent.parts)
+    targets: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            targets.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if node.level:
+                base_parts = file_package[: len(file_package) - (node.level - 1)]
+                base = ".".join(base_parts)
+                if node.module:
+                    base = f"{base}.{node.module}"
+            elif node.module:
+                base = node.module
+            else:
+                continue
+            targets.add(base)
+            targets.update(
+                f"{base}.{alias.name}" for alias in node.names if alias.name != "*"
+            )
+        elif isinstance(node, ast.Call) and node.args:
+            func = node.func
+            is_import_module = (
+                isinstance(func, ast.Attribute) and func.attr == "import_module"
+            )
+            is_import_attr = isinstance(func, ast.Name) and func.id == "_import_attr"
+            first = node.args[0]
+            if (
+                (is_import_module or is_import_attr)
+                and isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+            ):
+                targets.add(first.value)
+    return targets
 
 
 def _process_spawn_references(path: Path) -> set[str]:
@@ -238,7 +256,9 @@ def _process_spawn_references(path: Path) -> set[str]:
                 references.add(name)
             if name == "__import__" and "subprocess" in _literal_args(node):
                 references.add("__import__('subprocess')")
-            if name == "importlib.import_module" and "subprocess" in _literal_args(node):
+            if name == "importlib.import_module" and "subprocess" in _literal_args(
+                node
+            ):
                 references.add("importlib.import_module('subprocess')")
     return references
 
@@ -344,14 +364,24 @@ class ToolPlanePartitionTest(unittest.TestCase):
                 "resource_association": "resource.register",
             },
         )
-        self.assertLessEqual(set(HTTP_DATA_PLANE_FEATURE_TO_TOOL.values()), DATA_PLANE_TOOL_NAMES)
+        self.assertLessEqual(
+            set(HTTP_DATA_PLANE_FEATURE_TO_TOOL.values()), DATA_PLANE_TOOL_NAMES
+        )
 
     def test_proxy_local_data_plane_dispatches_contract_plane_sets(self) -> None:
         proxy = PROXY_ROOT / "proxy.py"
         local_data_plane = PROXY_ROOT / "local_data_plane.py"
         source = proxy.read_text(encoding="utf-8")
 
-        self.assertIn("DATA_PLANE_TOOL_NAMES", source)
+        catalog = json.loads(
+            (PROXY_ROOT / "_tool_catalog.json").read_text(encoding="utf-8")
+        )["tools"]
+        self.assertEqual(
+            {tool["name"] for tool in catalog},
+            DATA_PLANE_TOOL_NAMES | {"sandbox.get", "sandbox.health"},
+        )
+        self.assertIn("_STATIC_CATALOG_PATH", source)
+        self.assertNotIn("merv.brain.tools.contracts", source)
         self.assertIn("_LOCAL_ENRICHED_CONTROL_TOOLS", source)
         self.assertTrue(
             DATA_PLANE_TOOL_NAMES
@@ -464,7 +494,9 @@ load("subprocess")
     def test_state_store_knows_no_repo_root(self) -> None:
         # The record store is a records-only component (plan §3.1): local
         # paths belong to LocalWorkspace / the DataPlaneWorker.
-        source = (BACKEND_ROOT / "kernel" / "state" / "store.py").read_text(encoding="utf-8")
+        source = (BACKEND_ROOT / "kernel" / "state" / "store.py").read_text(
+            encoding="utf-8"
+        )
         self.assertNotIn("repo_root", source)
 
     def test_sandbox_views_do_not_import_execution(self) -> None:
@@ -502,8 +534,12 @@ load("subprocess")
         # never reach into the record store.
         for name in ("activity.py", "tool_calls.py"):
             with self.subTest(module=name):
-                source = (BACKEND_ROOT / "kernel" / "state" / name).read_text(encoding="utf-8")
-                self.assertNotIn("store", _imports(BACKEND_ROOT / "kernel" / "state" / name))
+                source = (BACKEND_ROOT / "kernel" / "state" / name).read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn(
+                    "store", _imports(BACKEND_ROOT / "kernel" / "state" / name)
+                )
                 self.assertNotIn("StateStore", source)
 
     def test_services_package_init_is_import_light(self) -> None:
@@ -528,42 +564,20 @@ load("subprocess")
         code = """
 import sys
 import merv.brain.sandbox.sandbox_support
-for name in (
-	    "merv.brain.sandbox.sandboxes",
-	    "merv.brain.workspace",
-):
-    if name in sys.modules:
-        raise SystemExit(f"{name} loaded")
+loaded = sorted(
+    name for name in sys.modules
+    if name == "merv.proxy" or name.startswith("merv.proxy.")
+)
+if loaded:
+    raise SystemExit("brain import loaded proxy modules: " + ", ".join(loaded))
 """
         env = dict(os.environ)
         env["PYTHONPATH"] = str(IMPORT_ROOT)
         subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
-    def test_dataplane_package_init_is_import_light(self) -> None:
-        # Importing the dataplane helper package should not pull in workspace
-        # or service modules.
-        imports = _top_level_import_segments(BACKEND_ROOT / "dataplane" / "__init__.py")
-        for forbidden in ("worker", "workspace"):
-            self.assertNotIn(forbidden, imports)
-        code = """
-import sys
-import merv.brain.dataplane
-for name in (
-    "merv.brain.workspace",
-):
-    if name in sys.modules:
-        raise SystemExit(f"{name} loaded")
-"""
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(IMPORT_ROOT)
-        subprocess.run([sys.executable, "-c", code], check=True, env=env)
-
-    def test_dataplane_modules_do_not_import_services(self) -> None:
-        # The data plane executes contracts minted by control services; it
-        # should not import those services to learn the contract shape.
-        for path in sorted((BACKEND_ROOT / "dataplane").glob("*.py")):
-            with self.subTest(module=path.name):
-                self.assertNotIn("services", _import_segments(path))
+    def test_brain_checkout_modules_are_absent(self) -> None:
+        self.assertFalse((BACKEND_ROOT / "dataplane").exists())
+        self.assertFalse((BACKEND_ROOT / "workspace.py").exists())
 
     def test_project_overview_uses_direct_concrete_collaborators(self) -> None:
         # The project tool's current action has one consumer and one
@@ -574,7 +588,9 @@ for name in (
         self.assertIn("projects", imports)
         self.assertIn("reflections", imports)
         self.assertNotIn("project_readers", imports)
-        source = (RESEARCH_CORE_ROOT / "project_overview.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE_ROOT / "project_overview.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("projects: ProjectService", source)
         self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ProjectCurrentReader", source)
@@ -641,9 +657,7 @@ for name in (
         self.assertNotIn("def register_file(", source)
         self.assertNotIn("class ResourceObserver", source)
         self.assertNotIn("class ResourceAssociationPolicy", source)
-        proxy_source = (PROXY_ROOT / "local_data_plane.py").read_text(
-            encoding="utf-8"
-        )
+        proxy_source = (PROXY_ROOT / "local_data_plane.py").read_text(encoding="utf-8")
         self.assertIn('name == "resource.register"', proxy_source)
         self.assertIn("LocalResourceObserver", proxy_source)
         self.assertIn("observe_file(", proxy_source)
@@ -655,7 +669,9 @@ for name in (
         imports = _import_segments(RESEARCH_CORE_ROOT / "reflection_tools.py")
         self.assertIn("reflections", imports)
         self.assertNotIn("reflection_waves", imports)
-        source = (RESEARCH_CORE_ROOT / "reflection_tools.py").read_text(encoding="utf-8")
+        source = (RESEARCH_CORE_ROOT / "reflection_tools.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("reflections: ReflectionService", source)
         self.assertNotIn("class ReflectionWaveStore", source)
         from merv.brain.research_core.reflection_tools import ReflectionToolService
@@ -692,7 +708,9 @@ for name in (
                 and isinstance(node.args[1], ast.Constant)
                 and node.args[1].value == "reflections"
             ):
-                self.fail("reflection_tools must not dynamically access self.reflections")
+                self.fail(
+                    "reflection_tools must not dynamically access self.reflections"
+                )
             if not isinstance(node, ast.Attribute):
                 continue
             if isinstance(node.value, ast.Name) and node.value.id == "self":
@@ -742,8 +760,12 @@ for name in (
                 self.assertFalse((BACKEND_ROOT / rel).exists())
 
     def test_control_app_uses_record_core_builder_for_record_services(self) -> None:
-        app_source = (BACKEND_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
-        record_source = (BACKEND_ROOT / "control" / "record_core.py").read_text(encoding="utf-8")
+        app_source = (BACKEND_ROOT / "control" / "control_app.py").read_text(
+            encoding="utf-8"
+        )
+        record_source = (BACKEND_ROOT / "control" / "record_core.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("self.record_core = build_record_core", app_source)
         for service_ctor in (
@@ -767,10 +789,14 @@ for name in (
             "workspace",
             "execution",
         ):
-            self.assertNotIn(forbidden, _import_segments(BACKEND_ROOT / "control" / "record_core.py"))
+            self.assertNotIn(
+                forbidden, _import_segments(BACKEND_ROOT / "control" / "record_core.py")
+            )
 
     def test_control_app_does_not_build_local_runtime(self) -> None:
-        source = (BACKEND_ROOT / "control" / "control_app.py").read_text(encoding="utf-8")
+        source = (BACKEND_ROOT / "control" / "control_app.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("class ControlApp:", source)
         self.assertIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
@@ -831,7 +857,12 @@ for name in (
         self.assertIn("ssh_keys", imports)
         self.assertNotIn("subprocess", imports)
         self.assertNotIn("services", imports)
-        self.assertIn("LocalMgmtKeyStore", (BACKEND_ROOT / "composition" / "control_mode.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            "LocalMgmtKeyStore",
+            (BACKEND_ROOT / "composition" / "control_mode.py").read_text(
+                encoding="utf-8"
+            ),
+        )
         self.assertNotIn(
             "subprocess",
             _import_segments(BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py"),
@@ -848,17 +879,16 @@ for name in (
         self.assertNotIn("ssh-keygen", path.read_text(encoding="utf-8"))
 
     def test_control_app_import_keeps_local_io_modules_unloaded(self) -> None:
-        # Importing the unified brain should not pull in local workspace or
-        # data-plane worker machinery.
+        # Importing the unified brain must never cross into the client plane.
         code = """
 import sys
 import merv.brain.control.control_app
-for name in (
-    "merv.brain.workspace",
-    "merv.brain.sandbox.mgmt_keys",
-):
-    if name in sys.modules:
-        raise SystemExit(f"{name} loaded")
+loaded = sorted(
+    name for name in sys.modules
+    if name == "merv.proxy" or name.startswith("merv.proxy.")
+)
+if loaded:
+    raise SystemExit("brain import loaded proxy modules: " + ", ".join(loaded))
 """
         env = dict(os.environ)
         env["PYTHONPATH"] = str(IMPORT_ROOT)
@@ -881,8 +911,12 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
     def test_proxy_imports_only_stdlib(self) -> None:
         import sys
 
-        allowed_prefixes = ("merv.proxy", "merv.shared")
         for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            allowed_prefixes = (
+                ("merv.proxy", "merv.shared")
+                if package == "merv.proxy"
+                else ("merv.shared",)
+            )
             for path in sorted(root.rglob("*.py")):
                 if "__pycache__" in path.parts:
                     continue
@@ -900,7 +934,9 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                         if node.level:
                             # Resolve relative imports against the owning package.
                             pkg_parts = file_pkg.split(".")
-                            base = ".".join(pkg_parts[: len(pkg_parts) - (node.level - 1)])
+                            base = ".".join(
+                                pkg_parts[: len(pkg_parts) - (node.level - 1)]
+                            )
                             names.add(f"{base}.{node.module}" if node.module else base)
                         elif node.module:
                             names.add(node.module)
@@ -919,36 +955,125 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                         f"{path.name} imports non-stdlib modules: {sorted(external)}",
                     )
 
-    def test_proxy_dynamic_imports_stay_in_brain(self) -> None:
-        # Static imports are pinned above, but the proxy also lazy-imports
-        # brain modules by string (importlib.import_module / _import_attr).
-        # Pin every dynamic target to the brain package so a third-party
-        # module can never sneak in through the dynamic path — and remember:
-        # any new dynamic target must either be pydantic-free or sit behind an
-        # ImportError fallback (tests/surface/test_static_tool_catalog.py
-        # drives the proxy with pydantic blocked to prove it).
+    def test_proxy_performs_no_brain_imports_static_or_dynamic(self) -> None:
         targets: set[str] = set()
-        for path in sorted(PROXY_ROOT.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.Call) or not node.args:
-                    continue
-                func = node.func
-                is_import_module = (
-                    isinstance(func, ast.Attribute) and func.attr == "import_module"
+        for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            for path in sorted(root.rglob("*.py")):
+                if "__pycache__" not in path.parts:
+                    targets.update(
+                        _all_import_targets(path, package=package, root=root)
+                    )
+        brain_targets = sorted(
+            target
+            for target in targets
+            if target == "merv.brain" or target.startswith("merv.brain.")
+        )
+        self.assertFalse(brain_targets, f"client plane imports brain: {brain_targets}")
+
+    def test_brain_performs_no_proxy_imports_static_or_dynamic(self) -> None:
+        targets: set[str] = set()
+        for path in sorted(BACKEND_ROOT.rglob("*.py")):
+            if "__pycache__" not in path.parts:
+                targets.update(
+                    _all_import_targets(path, package="merv.brain", root=BACKEND_ROOT)
                 )
-                is_import_attr = isinstance(func, ast.Name) and func.id == "_import_attr"
-                first = node.args[0]
-                if (is_import_module or is_import_attr) and isinstance(first, ast.Constant):
-                    targets.add(str(first.value))
-        self.assertTrue(targets, "expected the proxy's lazy brain imports to be found")
-        for target in sorted(targets):
-            self.assertTrue(
-                target.startswith("merv.brain."),
-                f"dynamic import of {target!r} — the proxy may lazy-import "
-                "only merv.brain modules",
-            )
+        proxy_targets = sorted(
+            target
+            for target in targets
+            if target == "merv.proxy" or target.startswith("merv.proxy.")
+        )
+        self.assertFalse(proxy_targets, f"brain imports proxy: {proxy_targets}")
+
+    def test_proxy_and_shared_runtime_closure_excludes_brain(self) -> None:
+        modules: list[str] = []
+        for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
+            for path in sorted(root.rglob("*.py")):
+                if "__pycache__" in path.parts:
+                    continue
+                parts = [
+                    part
+                    for part in path.relative_to(root).with_suffix("").parts
+                    if part != "__init__"
+                ]
+                modules.append(".".join((package, *parts)))
+        code = f"""
+import importlib
+import sys
+import tempfile
+from pathlib import Path
+
+class BlockBrain:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "merv.brain" or fullname.startswith("merv.brain."):
+            raise ImportError("blocked brain import: " + fullname)
+        return None
+
+sys.meta_path.insert(0, BlockBrain())
+for name in {sorted(modules)!r}:
+    importlib.import_module(name)
+from merv.proxy.proxy import HttpProxyMcpServer, ProxyConfig
+with tempfile.TemporaryDirectory() as tmp:
+    server = HttpProxyMcpServer(
+        config=ProxyConfig(repo_root=Path(tmp), control_url="http://127.0.0.1:1")
+    )
+    initialized = server.handle({{"jsonrpc": "2.0", "id": 1, "method": "initialize"}})
+    listed = server.handle({{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}})
+    assert initialized and "result" in initialized, initialized
+    assert listed and "result" in listed and listed["result"]["tools"], listed
+loaded = sorted(
+    name for name in sys.modules
+    if name == "merv.brain" or name.startswith("merv.brain.")
+)
+if loaded:
+    raise SystemExit("brain modules loaded: " + ", ".join(loaded))
+"""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(IMPORT_ROOT)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_no_stale_moved_module_paths_in_executable_tree(self) -> None:
+        forbidden = (
+            "merv.brain." + "dataplane",
+            "merv.brain." + "workspace",
+            "merv.brain.object_storage." + "file_transfer",
+            "merv.brain.object_storage." + "storage_guidance",
+            "merv.brain.feed." + "feed_embeds",
+            "merv.brain.feed." + "feed_images",
+            "merv.brain.artifacts." + "markdown_images",
+            "merv.brain.artifacts." + "roles",
+            "merv/brain/" + "dataplane",
+            "merv/brain/" + "workspace.py",
+            "merv/brain/object_storage/" + "file_transfer.py",
+            "merv/brain/object_storage/" + "storage_guidance.py",
+            "merv/brain/feed/" + "feed_embeds.py",
+            "merv/brain/feed/" + "feed_images.py",
+            "merv/brain/artifacts/" + "markdown_images.py",
+            "merv/brain/artifacts/" + "roles.py",
+        )
+        roots = (
+            IMPORT_ROOT,
+            IMPORT_ROOT.parent / "tests",
+            IMPORT_ROOT.parent / "scripts",
+        )
+        stale: list[str] = []
+        for root in roots:
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                for target in forbidden:
+                    if target in source:
+                        stale.append(
+                            f"{path.relative_to(IMPORT_ROOT.parent)}: {target}"
+                        )
+        self.assertFalse(stale, "stale moved paths: " + ", ".join(stale))
 
     def test_proxy_ships_the_static_tool_catalog(self) -> None:
         # The bare-python fallback for tools/list: the file must ship with the
@@ -972,7 +1097,9 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
             for path in sorted(root.rglob("*.py")):
                 if "__pycache__" in path.parts:
                     continue
-                with self.subTest(module=f"{package}:{path.relative_to(root).as_posix()}"):
+                with self.subTest(
+                    module=f"{package}:{path.relative_to(root).as_posix()}"
+                ):
                     source = path.read_text(encoding="utf-8")
                     self.assertNotIn("from datetime import UTC", source)
                     self.assertNotIn("datetime.UTC", source)
@@ -1010,11 +1137,14 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                         annotation_unions.update(
                             id(sub)
                             for sub in ast.walk(ann)
-                            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr)
+                            if isinstance(sub, ast.BinOp)
+                            and isinstance(sub.op, ast.BitOr)
                         )
                 violations: list[str] = []
                 for node in ast.walk(tree):
-                    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)):
+                    if not (
+                        isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)
+                    ):
                         continue
                     if id(node) in annotation_unions:
                         if not lazy_annotations:
@@ -1030,7 +1160,9 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
                             f"line {node.lineno}: runtime `X | None` union — "
                             "use typing.Optional"
                         )
-                with self.subTest(module=f"{package}:{path.relative_to(root).as_posix()}"):
+                with self.subTest(
+                    module=f"{package}:{path.relative_to(root).as_posix()}"
+                ):
                     self.assertFalse(violations, "; ".join(violations))
 
     def test_proxy_tree_imports_under_system_python(self) -> None:
@@ -1051,13 +1183,19 @@ class ProxyStdlibOnlyTest(unittest.TestCase):
             self.skipTest("system python3 is not runnable (CLT stub)")
         version = tuple(int(part) for part in probe.stdout.split())
         if version >= (3, 11):
-            self.skipTest(f"system python3 is {version[0]}.{version[1]}; not below the packaged floor")
+            self.skipTest(
+                f"system python3 is {version[0]}.{version[1]}; not below the packaged floor"
+            )
         modules: list[str] = []
         for package, root in (("merv.proxy", PROXY_ROOT), ("merv.shared", SHARED_ROOT)):
             for path in sorted(root.rglob("*.py")):
                 if "__pycache__" in path.parts:
                     continue
-                parts = [p for p in path.relative_to(root).with_suffix("").parts if p != "__init__"]
+                parts = [
+                    p
+                    for p in path.relative_to(root).with_suffix("").parts
+                    if p != "__init__"
+                ]
                 modules.append(".".join((package, *parts)))
         code = (
             "import importlib, sys\n"

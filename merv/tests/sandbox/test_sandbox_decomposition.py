@@ -81,9 +81,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertFalse(hasattr(service.registry, "on_terminal"))
         # The one inversion left: the lifecycle's provisioning-job probe.
         self.assertIsNotNone(service.lifecycle.job_probe)
-        self.assertEqual(
-            service.lifecycle.job_probe, service.provisioner.job_is_live
-        )
+        self.assertEqual(service.lifecycle.job_probe, service.provisioner.job_is_live)
         # All collaborators share the one registry (single writer of rows) and
         # the one lifecycle (single owner of transitions).
         self.assertIs(service.lifecycle.registry, service.registry)
@@ -110,9 +108,11 @@ class SandboxDecompositionTest(unittest.TestCase):
             self.assertNotIn("registry.mark_terminated", source, module)
             self.assertNotIn("registry.mark_failed", source, module)
             self.assertNotIn("backend.terminate", source, module)
-            self.assertNotIn("cleanup_orphan(", source.replace(
-                "lifecycle.cleanup_orphan(", ""
-            ), module)
+            self.assertNotIn(
+                "cleanup_orphan(",
+                source.replace("lifecycle.cleanup_orphan(", ""),
+                module,
+            )
 
     def test_facade_wires_the_task_seam(self) -> None:
         # One channel carries explicit control signals for endpoint refresh and
@@ -232,17 +232,16 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertNotIn("INSERT INTO sandboxes", source)
         self.assertEqual(source.count("SELECT * FROM sandboxes"), 1)
 
-    def test_facade_import_does_not_load_data_plane_task_machinery(self) -> None:
+    def test_facade_import_does_not_load_proxy_modules(self) -> None:
         code = """
 import sys
 import merv.brain.sandbox.sandboxes
-for name in (
-    "merv.brain.dataplane.tasks",
-	    "merv.brain.dataplane.worker",
-	    "merv.brain.workspace",
-):
-    if name in sys.modules:
-        raise SystemExit(f"{name} loaded")
+loaded = sorted(
+    name for name in sys.modules
+    if name == "merv.proxy" or name.startswith("merv.proxy.")
+)
+if loaded:
+    raise SystemExit("brain import loaded proxy modules: " + ", ".join(loaded))
 """
         env = dict(os.environ)
         env["PYTHONPATH"] = str(IMPORT_ROOT)

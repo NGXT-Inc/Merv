@@ -7,7 +7,17 @@ from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
 from typing import Any, Protocol, get_type_hints, is_typeddict
 
-from tests.paths import ARTIFACTS_ROOT, BACKEND_ROOT, DOMAIN_ROOT, FEED_ROOT, PLUGIN_ROOT, PORTS_ROOT, RESEARCH_CORE_ROOT, SERVICES_ROOT
+from tests.paths import (
+    ARTIFACTS_ROOT,
+    BACKEND_ROOT,
+    DOMAIN_ROOT,
+    FEED_ROOT,
+    PLUGIN_ROOT,
+    PORTS_ROOT,
+    PROXY_ROOT,
+    RESEARCH_CORE_ROOT,
+    SERVICES_ROOT,
+)
 
 ROOT = PLUGIN_ROOT
 SERVICES = SERVICES_ROOT
@@ -63,7 +73,9 @@ def _import_modules(name: str) -> set[str]:
 
 
 def _rc_import_modules(name: str) -> set[str]:
-    return {module.split(".", 1)[0] for module in _import_module_names(RESEARCH_CORE / name)}
+    return {
+        module.split(".", 1)[0] for module in _import_module_names(RESEARCH_CORE / name)
+    }
 
 
 def _import_module_names(path: Path) -> set[str]:
@@ -101,9 +113,7 @@ def _class_method_names(path: Path, class_name: str) -> set[str]:
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             return {
-                item.name
-                for item in node.body
-                if isinstance(item, ast.FunctionDef)
+                item.name for item in node.body if isinstance(item, ast.FunctionDef)
             }
     raise AssertionError(f"{class_name} not found in {path}")
 
@@ -137,9 +147,7 @@ def _strict_self_collaborator_call_names(
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value == collaborator
         ):
-            raise AssertionError(
-                f"must not dynamically access self.{collaborator}"
-            )
+            raise AssertionError(f"must not dynamically access self.{collaborator}")
         if not isinstance(node, ast.Attribute):
             continue
         if isinstance(node.value, ast.Name) and node.value.id == "self":
@@ -243,7 +251,9 @@ class ServiceLayoutTest(unittest.TestCase):
         source = _rc_source("experiments.py")
 
         self.assertNotIn("def slim_experiment_state", source)
-        self.assertNotIn("experiment_views", _import_segments(RESEARCH_CORE / "experiments.py"))
+        self.assertNotIn(
+            "experiment_views", _import_segments(RESEARCH_CORE / "experiments.py")
+        )
         self.assertNotIn("def get_state_agent", source)
         self.assertNotIn("def list_experiments_agent", source)
         self.assertNotIn("def report_problems", source)
@@ -313,7 +323,7 @@ class ServiceLayoutTest(unittest.TestCase):
         # caller's business (submission capture).
         self.assertEqual(
             _import_module_names(RESEARCH_CORE_DOMAIN / "artifacts.py"),
-            {"re", "collections.abc", "artifacts.markdown_images"},
+            {"re", "collections.abc", "merv.shared.markdown_images"},
         )
 
     def test_resource_selection_is_artifacts_leaf_module(self) -> None:
@@ -332,7 +342,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"dataclasses", "typing"},
             "review_policy.py": {"typing"},
-            "resource_records.py": {"typing"},
+            "resource_records.py": {"typing", "merv.shared.resource_records"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
             "reflection_writers.py": {"typing"},
@@ -379,7 +389,11 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertIn(Protocol, reader.__mro__)
         resource_record_path = PORTS_ROOT / "resource_records.py"
         resource_record_source = resource_record_path.read_text(encoding="utf-8")
-        self.assertIn("class ResourceObservation", resource_record_source)
+        self.assertNotIn("class ResourceObservation", resource_record_source)
+        self.assertIn(
+            "from merv.shared.resource_records import ResourceObservation",
+            resource_record_source,
+        )
         self.assertIn("class ResourceObserver", resource_record_source)
         self.assertIn("class ResourceAssociationPolicy", resource_record_source)
         self.assertEqual(
@@ -390,9 +404,17 @@ class ServiceLayoutTest(unittest.TestCase):
             _class_method_names(resource_record_path, "ResourceAssociationPolicy"),
             {"validate_resource_association"},
         )
-        from merv.brain.kernel.ports.resource_records import ResourceObservation, ResourceObserver
+        from merv.brain.kernel.ports.resource_records import (
+            ResourceObservation,
+            ResourceObserver,
+        )
+        from merv.shared.resource_records import (
+            ResourceObservation as SharedResourceObservation,
+        )
 
         self.assertTrue(is_typeddict(ResourceObservation))
+        self.assertIs(ResourceObservation, SharedResourceObservation)
+        self.assertEqual(ResourceObservation.__module__, "merv.shared.resource_records")
         self.assertEqual(
             set(get_type_hints(ResourceObservation)),
             {
@@ -445,7 +467,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn(
             "class SyncSessionIssuer", _sandbox_source("sandbox_provisioner.py")
         )
-        daemon_imports = _import_segments(BACKEND_ROOT / "sandbox" / "sandbox_daemons.py")
+        daemon_imports = _import_segments(
+            BACKEND_ROOT / "sandbox" / "sandbox_daemons.py"
+        )
         self.assertNotIn("experiments", daemon_imports)
         self.assertNotIn("sandbox_provisioner", daemon_imports)
 
@@ -548,7 +572,9 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("experiment-design-review rejections cannot return_to", source)
 
     def test_review_gate_policy_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / "review_gates.py"), set())
+        self.assertEqual(
+            _import_module_names(RESEARCH_CORE_DOMAIN / "review_gates.py"), set()
+        )
         imports = _import_module_names(RESEARCH_CORE / "reviews.py")
         source = _rc_source("reviews.py")
 
@@ -645,7 +671,9 @@ class ServiceLayoutTest(unittest.TestCase):
         get_type_hints(ReflectionToolService.create)
 
     def test_graph_lint_is_domain_leaf_module(self) -> None:
-        self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / "graph_lint.py"), {"json"})
+        self.assertEqual(
+            _import_module_names(RESEARCH_CORE_DOMAIN / "graph_lint.py"), {"json"}
+        )
 
     def test_domain_modules_do_not_import_backend_layers(self) -> None:
         for path in sorted(DOMAIN_ROOT.glob("*.py")):
@@ -665,22 +693,63 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_utils_stays_free_of_local_path_guards(self) -> None:
         path = BACKEND_ROOT / "kernel" / "utils.py"
-        self.assertEqual(_import_module_names(path), {"datetime", "uuid"})
+        self.assertEqual(
+            _import_module_names(path),
+            {"datetime", "uuid", "merv.shared.errors", "merv.shared.path_utils"},
+        )
         source = path.read_text(encoding="utf-8")
         self.assertNotIn("resolve_repo_relative_file", source)
         self.assertNotIn("pathlib", source)
         self.assertNotIn("os.path", source)
 
-        repo_paths = BACKEND_ROOT / "dataplane" / "repo_paths.py"
+        repo_paths = PROXY_ROOT / "dataplane" / "repo_paths.py"
         # merv.shared.project_dirs is the stdlib-only single owner
         # of the checkout state-dir names the guard excludes.
         self.assertEqual(
             _import_module_names(repo_paths),
-            {"pathlib", "typing", "kernel.utils", "merv.shared.project_dirs"},
+            {
+                "pathlib",
+                "typing",
+                "merv.shared.errors",
+                "merv.shared.project_dirs",
+            },
         )
         repo_path_source = repo_paths.read_text(encoding="utf-8")
         self.assertIn("def resolve_repo_path", repo_path_source)
         self.assertIn("def repo_relative_path", repo_path_source)
+
+    def test_kernel_error_reexports_preserve_shared_identity(self) -> None:
+        from merv.brain.kernel import utils as kernel_utils
+        from merv.shared import errors as shared_errors
+
+        for name in (
+            "ResearchPluginError",
+            "NotFoundError",
+            "PermissionDeniedError",
+            "ValidationError",
+            "WorkflowError",
+            "ContentUnavailableError",
+            "DataPlaneRequiredError",
+        ):
+            with self.subTest(error=name):
+                self.assertIs(getattr(kernel_utils, name), getattr(shared_errors, name))
+
+    def test_kernel_path_helper_reexport_preserves_shared_identity(self) -> None:
+        from merv.brain.kernel.utils import safe_experiment_dirname as kernel_helper
+        from merv.shared.path_utils import safe_experiment_dirname as shared_helper
+
+        self.assertIs(kernel_helper, shared_helper)
+
+    def test_resource_observation_port_reexport_preserves_shared_identity(self) -> None:
+        from merv.brain.kernel.ports.resource_records import (
+            ResourceObservation as PortObservation,
+        )
+        from merv.shared.resource_records import (
+            ResourceObservation as SharedObservation,
+        )
+
+        self.assertIs(PortObservation, SharedObservation)
+        self.assertEqual(PortObservation.__module__, "merv.shared.resource_records")
 
     def test_iso_parsing_is_single_sourced(self) -> None:
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
@@ -718,10 +787,14 @@ class ServiceLayoutTest(unittest.TestCase):
             with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
                 self.assertNotIn("def env_flag", source)
                 self.assertNotIn("def env_float", source)
-                self.assertNotIn("RESEARCH_PLUGIN_ACTIVITY_STDERR\", \"\").lower()", source)
-                self.assertNotIn("RESEARCH_PLUGIN_SANDBOX_REAPER\", \"1\").lower()", source)
                 self.assertNotIn(
-                    "RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC\", \"1\").lower()",
+                    'RESEARCH_PLUGIN_ACTIVITY_STDERR", "").lower()', source
+                )
+                self.assertNotIn(
+                    'RESEARCH_PLUGIN_SANDBOX_REAPER", "1").lower()', source
+                )
+                self.assertNotIn(
+                    'RESEARCH_PLUGIN_SANDBOX_AUTO_RSYNC", "1").lower()',
                     source,
                 )
 
@@ -801,17 +874,17 @@ class ServiceLayoutTest(unittest.TestCase):
                         )
 
     def test_store_contract_uses_neutral_connection_types(self) -> None:
-        source = (BACKEND_ROOT / "kernel" / "state" / "store.py").read_text(encoding="utf-8")
+        source = (BACKEND_ROOT / "kernel" / "state" / "store.py").read_text(
+            encoding="utf-8"
+        )
         base_source = source[
-            source.index("class BaseStateStore:"):source.index("class StateStore(")
+            source.index("class BaseStateStore:") : source.index("class StateStore(")
         ]
         self.assertIn("class Row(Protocol)", source)
         self.assertIn("class ResultCursor(Protocol)", source)
         self.assertIn("class Connection(Protocol)", source)
         self.assertIn("def connect(self) -> Connection:", base_source)
-        self.assertIn(
-            "def transaction(self) -> Iterator[Connection]:", base_source
-        )
+        self.assertIn("def transaction(self) -> Iterator[Connection]:", base_source)
         self.assertIn("parameters: Sequence[Any] = ()", source)
         self.assertIn("def __enter__(self) -> Connection:", source)
         self.assertIn("tb: TracebackType | None", source)
@@ -836,9 +909,13 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn("sqlite3.Row", source)
                 self.assertNotIn("import sqlite3", source)
 
-    def test_transport_uses_contract_capabilities_for_sandbox_lifecycle_specials(self) -> None:
+    def test_transport_uses_contract_capabilities_for_sandbox_lifecycle_specials(
+        self,
+    ) -> None:
         source = _api_app_source()
-        contracts_source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
+        contracts_source = (BACKEND_ROOT / "tools" / "contracts.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn('name == "sandbox.get"', source)
         self.assertNotIn('name != "sandbox.get"', source)
@@ -858,7 +935,9 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_http_surface_policy_keeps_mode_decisions_named(self) -> None:
         source = _api_app_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
+        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("class _HttpSurfacePolicy", source)
         self.assertIn("surface_policy: HttpSurfacePolicy | None = None", source)
@@ -919,7 +998,9 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_hosted_tool_call_metadata_uses_policy_table(self) -> None:
         source = _api_app_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
+        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+            encoding="utf-8"
+        )
         from merv.brain.transport.http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
         self.assertEqual(
@@ -939,7 +1020,9 @@ class ServiceLayoutTest(unittest.TestCase):
             "review.start",
         ):
             self.assertIn(f'"{tool_name}": HostedToolPolicy', policy_source)
-            self.assertNotIn(f'if surface.hosted_control and name == "{tool_name}"', source)
+            self.assertNotIn(
+                f'if surface.hosted_control and name == "{tool_name}"', source
+            )
         self.assertIn("telemetry_from_review_request=True", policy_source)
         self.assertIn("api.app.reviews.request_project_id(", source)
         self.assertNotIn("SELECT project_id FROM review_requests", source)
@@ -947,7 +1030,9 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_http_data_plane_capabilities_use_policy_table(self) -> None:
         source = _api_app_source()
         route_source = _api_package_source()
-        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(encoding="utf-8")
+        policy_source = (BACKEND_ROOT / "transport" / "http_policy.py").read_text(
+            encoding="utf-8"
+        )
         from merv.brain.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
 
         self.assertEqual(
@@ -972,7 +1057,9 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_admin_http_routes_are_lifted_out_of_main_factory(self) -> None:
         source = _api_app_source()
-        admin_source = (BACKEND_ROOT / "transport" / "admin_http.py").read_text(encoding="utf-8")
+        admin_source = (BACKEND_ROOT / "transport" / "admin_http.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "admin_http.py"),
@@ -993,11 +1080,20 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_mcp_http_routes_are_shared_by_local_and_control(self) -> None:
         source = _api_app_source()
-        mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(encoding="utf-8")
+        mcp_source = (BACKEND_ROOT / "transport" / "mcp_http.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "mcp_http.py"),
-            {"collections.abc", "json", "typing", "fastapi", "fastapi.concurrency", "kernel.utils"},
+            {
+                "collections.abc",
+                "json",
+                "typing",
+                "fastapi",
+                "fastapi.concurrency",
+                "kernel.utils",
+            },
         )
         self.assertIn("register_mcp_routes(", source)
         self.assertNotIn('@http.get("/mcp/tools")', source)
@@ -1011,9 +1107,13 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("arguments must be an object", mcp_source)
         self.assertIn("context must be an object", mcp_source)
 
-    def test_control_data_plane_http_routes_are_lifted_out_of_main_factory(self) -> None:
+    def test_control_data_plane_http_routes_are_lifted_out_of_main_factory(
+        self,
+    ) -> None:
         source = _api_app_source()
-        data_plane_source = (BACKEND_ROOT / "transport" / "data_plane_http.py").read_text(encoding="utf-8")
+        data_plane_source = (
+            BACKEND_ROOT / "transport" / "data_plane_http.py"
+        ).read_text(encoding="utf-8")
 
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "transport" / "data_plane_http.py"),
@@ -1024,8 +1124,8 @@ class ServiceLayoutTest(unittest.TestCase):
                 "typing",
                 "fastapi",
                 "feed.feed",
-                "tools.contracts",
                 "kernel.utils",
+                "merv.shared.tool_validation",
             },
         )
         self.assertIn("register_data_plane_routes(", source)
@@ -1193,7 +1293,10 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_review_verdict_contract_uses_domain_vocabulary(self) -> None:
         from merv.brain.tools.contracts import ReviewSubmitInput
-        from merv.brain.research_core.domain.vocabulary import REVIEW_VERDICT_VALUES, REVIEW_VERDICTS
+        from merv.brain.research_core.domain.vocabulary import (
+            REVIEW_VERDICT_VALUES,
+            REVIEW_VERDICTS,
+        )
 
         self.assertEqual(REVIEW_VERDICTS, frozenset(REVIEW_VERDICT_VALUES))
         self.assertEqual(
@@ -1211,14 +1314,18 @@ class ServiceLayoutTest(unittest.TestCase):
         # role vocabulary from its artifacts owner), but never services.
         expected = {
             "workflow_gates.py": {"gates", "vocabulary", "typing"},
-            "reflection_gates.py": {"gates", "artifacts.roles", "typing"},
+            "reflection_gates.py": {"gates", "merv.shared.artifact_roles", "typing"},
         }
         for name, imports in expected.items():
             with self.subTest(module=name):
-                self.assertEqual(_import_module_names(RESEARCH_CORE_DOMAIN / name), imports)
+                self.assertEqual(
+                    _import_module_names(RESEARCH_CORE_DOMAIN / name), imports
+                )
 
     def test_reflection_service_uses_experiment_name_leaf(self) -> None:
-        self.assertNotIn("experiments", _import_segments(RESEARCH_CORE / "reflections.py"))
+        self.assertNotIn(
+            "experiments", _import_segments(RESEARCH_CORE / "reflections.py")
+        )
         source = _rc_source("reflections.py")
         self.assertIn("experiment_writer: ReflectionExperimentWriter", source)
         self.assertNotIn("INSERT INTO experiments", source)
@@ -1227,7 +1334,9 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_reflection_service_uses_claim_vocabulary(self) -> None:
         self.assertNotIn("claims", _import_segments(RESEARCH_CORE / "reflections.py"))
         source = _rc_source("reflections.py")
-        self.assertIn("reflection_writers", _import_segments(RESEARCH_CORE / "reflections.py"))
+        self.assertIn(
+            "reflection_writers", _import_segments(RESEARCH_CORE / "reflections.py")
+        )
         self.assertIn("claims: ReflectionClaimWriter", source)
         self.assertNotIn("INSERT INTO claims", source)
         self.assertNotIn("UPDATE claims", source)
@@ -1240,10 +1349,15 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_status_views_use_domain_vocabulary(self) -> None:
         for name in ("project_overview.py", "workflow_views.py", "reflections.py"):
             with self.subTest(module=name):
-                self.assertNotIn("workflow_gates", _import_segments(RESEARCH_CORE / name))
+                self.assertNotIn(
+                    "workflow_gates", _import_segments(RESEARCH_CORE / name)
+                )
 
     def test_identity_constants_are_domain_vocabulary(self) -> None:
-        from merv.brain.research_core.domain.vocabulary import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
+        from merv.brain.research_core.domain.vocabulary import (
+            LOCAL_CLIENT_ID,
+            LOCAL_TENANT_ID,
+        )
         from merv.brain.services.identity import LOCAL_PRINCIPAL
 
         self.assertEqual(LOCAL_TENANT_ID, "local")
@@ -1285,9 +1399,7 @@ class ServiceLayoutTest(unittest.TestCase):
                     f"{path.name} must source tokens from kernel/secret_tokens.py",
                 )
 
-        for path in (
-            RESEARCH_CORE / "reviews.py",
-        ):
+        for path in (RESEARCH_CORE / "reviews.py",):
             with self.subTest(module=path.relative_to(BACKEND_ROOT).as_posix()):
                 self.assertNotIn("hmac", _import_module_names(path))
                 self.assertNotIn("compare_digest(", path.read_text(encoding="utf-8"))

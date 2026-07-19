@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.dataplane.sandbox_outputs import pull_sandbox_outputs
+from merv.proxy.dataplane.sandbox_outputs import pull_sandbox_outputs
 from merv.brain.kernel.utils import ValidationError
 
 
@@ -87,7 +87,9 @@ class SandboxOutputPullTest(unittest.TestCase):
             self.assertIn("--no-links", call)
         self.assertTrue((self.repo / "experiments" / "exp-one" / "report.md").exists())
         self.assertTrue(
-            (self.repo / "experiments" / "exp-one" / "results" / "metrics.json").exists()
+            (
+                self.repo / "experiments" / "exp-one" / "results" / "metrics.json"
+            ).exists()
         )
 
     def test_existing_differing_file_is_kept_and_reported_stale(self) -> None:

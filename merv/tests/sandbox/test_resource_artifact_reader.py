@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from merv.brain.dataplane.resource_artifacts import LocalResourceArtifactReader
-from merv.brain.artifacts.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
-from merv.brain.artifacts.roles import GATED_ROLE_BYTE_CAPS
+from merv.proxy.dataplane.resource_artifacts import LocalResourceArtifactReader
+from merv.shared.artifact_roles import GATED_ROLE_BYTE_CAPS
+from merv.shared.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 
 
