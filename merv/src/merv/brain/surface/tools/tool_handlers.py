@@ -210,30 +210,6 @@ def _with_mlflow_if_visible(
     return state
 
 
-def _create_and_record_mlflow_run(
-    *,
-    experiments: Any,
-    mlflow_tracking: Any,
-    state: dict[str, Any],
-    project_id: str,
-    experiment_id: str,
-) -> dict[str, Any]:
-    attempt_index = int(state.get("attempt_index") or 1)
-    run = mlflow_tracking.create_run(
-        project_id=project_id,
-        experiment_id=experiment_id,
-        attempt_index=attempt_index,
-        run_name=f"{experiment_id}-attempt-{attempt_index}",
-    )
-    if not (run.get("run_id") or run.get("error")):
-        return state
-    return experiments.record_mlflow_run(
-        project_id=project_id,
-        experiment_id=experiment_id,
-        run=run,
-    )
-
-
 def _ensure_mlflow_run(
     *,
     experiments: Any,
@@ -254,12 +230,19 @@ def _ensure_mlflow_run(
         or persisted_status not in MLFLOW_TERMINAL_RUN_STATUSES
     ):
         return state
-    return _create_and_record_mlflow_run(
-        experiments=experiments,
-        mlflow_tracking=mlflow_tracking,
-        state=state,
+    attempt_index = int(state.get("attempt_index") or 1)
+    run = mlflow_tracking.create_run(
         project_id=project_id,
         experiment_id=experiment_id,
+        attempt_index=attempt_index,
+        run_name=f"{experiment_id}-attempt-{attempt_index}",
+    )
+    if not (run.get("run_id") or run.get("error")):
+        return state
+    return experiments.record_mlflow_run(
+        project_id=project_id,
+        experiment_id=experiment_id,
+        run=run,
     )
 
 
