@@ -42,6 +42,7 @@ PACKAGE_MODULES = {
     "services/sandbox": SANDBOX,
     "sandbox": SANDBOX,
     "execution": SANDBOX,
+    "feed": FEED,
     "mlflow": MLFLOW,
     "tools": SURFACE,
     "transport": SURFACE,
@@ -84,12 +85,6 @@ FILE_MODULES = {
     "domain/sandbox_paths.py": SANDBOX,
     # ssh_keys generates sandbox ssh keypairs (sandbox_conn + mgmt keys).
     "ssh_keys.py": SANDBOX,
-    # feed: services plus feed's own domain policy files.
-    "services/feed.py": FEED,
-    "services/feed_unfurl.py": FEED,
-    "domain/feed_images.py": FEED,
-    "domain/feed_embeds.py": FEED,
-    "domain/feed_policy.py": FEED,
     # surface: composition/transport strays and cross-module glue services.
     "services/__init__.py": SURFACE,  # import-free shell (test_plane_layout)
     "services/auth.py": SURFACE,  # Supabase verifier, composed only hosted-side

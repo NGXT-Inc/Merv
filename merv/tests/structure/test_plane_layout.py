@@ -30,6 +30,7 @@ from tests.paths import (
     ARTIFACTS_ROOT,
     BACKEND_ROOT,
     DOMAIN_ROOT,
+    FEED_ROOT,
     PLUGIN_ROOT,
     PORTS_ROOT,
     SERVICES_ROOT,
@@ -61,7 +62,10 @@ CONTROL_MODULES = (
     SERVICES_ROOT / "permissions.py",
     SERVICES_ROOT / "project_overview.py",
     SERVICES_ROOT / "reflection_tools.py",
-    SERVICES_ROOT / "feed.py",
+    FEED_ROOT / "feed.py",
+    FEED_ROOT / "feed_policy.py",
+    FEED_ROOT / "feed_images.py",
+    FEED_ROOT / "feed_embeds.py",
     BACKEND_ROOT / "sandbox" / "sandbox_metrics.py",
     BACKEND_ROOT / "control" / "record_core.py",
     BACKEND_ROOT / "control" / "control_app.py",
@@ -395,7 +399,7 @@ load("subprocess")
                     self.assertTrue(_imports_management_key_adapter(path))
 
     def test_only_sandbox_io_modules_spawn_processes(self) -> None:
-        for path in sorted(SERVICES_ROOT.rglob("*.py")):
+        for path in sorted((*SERVICES_ROOT.rglob("*.py"), *FEED_ROOT.rglob("*.py"))):
             with self.subTest(module=path.name):
                 self.assertFalse(
                     _process_spawn_references(path),

@@ -15,7 +15,7 @@ from pathlib import Path
 import uvicorn
 
 from backend.composition import build_local_server
-from backend.domain import feed_policy
+from backend.feed import feed_policy
 from backend.execution.backends.fake import FakeSandboxBackend
 from backend.state import StateStore
 from backend.storage.blobs import LocalDirBlobStore

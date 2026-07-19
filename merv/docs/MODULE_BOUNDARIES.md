@@ -36,7 +36,7 @@ MLflow extension, and a surface that composes them.
 | artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, roles, markdown_images, figure_view, resource_selection) |
 | object_storage | `storage/*`, `domain/storage_guidance`                                       |
 | sandbox        | `services/sandbox/*`, `sandbox/*` (incl. the `mgmt_keys`/`managed_mgmt_keys` custody adapters), `execution/*`, `services/{transcript_cache,quotas}`, `domain/sandbox_paths`, `ssh_keys` |
-| feed           | `services/{feed,feed_unfurl}`, `domain/{feed_images,feed_embeds,feed_policy}` |
+| feed           | `feed/*` (feed, feed_unfurl, feed_images, feed_embeds, feed_policy)          |
 | mlflow         | `mlflow/*` (extension, incl. its own env config in `mlflow/config`)          |
 | surface        | `tools/*`, `transport/*`, `composition/*`, `control/*`, `dataplane/*`, `config`, `client_cli`, glue services (`permissions`, `identity`, `cleanup`), `workspace`, `observability` |
 

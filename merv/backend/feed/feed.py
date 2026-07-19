@@ -19,9 +19,9 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from ..domain import feed_policy
-from ..domain.feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type, wrap_embed_html
-from ..domain.feed_images import (
+from . import feed_policy
+from .feed_embeds import MAX_FEED_EMBED_BYTES, sniff_html_type, wrap_embed_html
+from .feed_images import (
     MAX_FEED_IMAGE_BYTES,
     SERVEABLE_IMAGE_TYPES,
     sniff_image_type,

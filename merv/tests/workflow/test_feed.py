@@ -12,11 +12,11 @@ from pathlib import Path as _P
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from backend.domain import feed_policy
-from backend.domain.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
-from backend.domain.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
-from backend.services.feed import POST_TEXT_MAX, REACTION_KINDS
-from backend.services.feed_unfurl import UnfurlError, extract_card, unfurl
+from backend.feed import feed_policy
+from backend.feed.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
+from backend.feed.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
+from backend.feed.feed import POST_TEXT_MAX, REACTION_KINDS
+from backend.feed.feed_unfurl import UnfurlError, extract_card, unfurl
 from backend.transport.http_api import create_fastapi_app
 from backend.transport.feed_http import _image_headers
 from backend.utils import NotFoundError, ValidationError
@@ -256,7 +256,7 @@ class FeedServiceTest(unittest.TestCase):
 
     def test_kind_column_migration_is_idempotent(self) -> None:
         # Rebuilding the service on an existing DB must survive the ALTER.
-        from backend.services.feed import FeedService
+        from backend.feed.feed import FeedService
 
         FeedService(store=self.app.store, blobs=self.app.feed.blobs)
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
@@ -748,7 +748,7 @@ class FeedUnfurlArxivPdfTest(unittest.TestCase):
 
             with self.subTest(url=pdf_url):
                 with unittest.mock.patch(
-                    "backend.services.feed_unfurl.safe_fetch", fake_fetch
+                    "backend.feed.feed_unfurl.safe_fetch", fake_fetch
                 ):
                     card = unfurl(pdf_url)
                 self.assertEqual(fetched, [f"https://arxiv.org/abs/{arxiv_id}"])
@@ -766,7 +766,7 @@ class FeedUnfurlArxivPdfTest(unittest.TestCase):
             return (url, "text/html", self._ABS_HTML)
 
         with unittest.mock.patch(
-            "backend.services.feed_unfurl.safe_fetch", fake_fetch
+            "backend.feed.feed_unfurl.safe_fetch", fake_fetch
         ):
             card = unfurl("https://arxiv.org/abs/2106.09685")
         self.assertEqual(fetched, ["https://arxiv.org/abs/2106.09685"])

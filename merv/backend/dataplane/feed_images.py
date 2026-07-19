@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..domain.feed_images import MAX_FEED_IMAGE_BYTES
+from ..feed.feed_images import MAX_FEED_IMAGE_BYTES
 from ..utils import ValidationError
 from .repo_paths import resolve_repo_path
 
