@@ -291,6 +291,20 @@ class SandboxBackendBase:
         """Unsupported default: no refreshed SSH endpoint is available."""
         return None
 
+    def _selection_catalog(
+        self, *, reason: str, regions: list[str], options: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """The common envelope for fixed bundled-hardware selections."""
+        return {
+            "provider": self.capabilities.name,
+            "selection_required": self.capabilities.requires_hardware_selection,
+            "select_with": "instance_type",
+            "reason": reason,
+            "regions": regions,
+            "count": len(options),
+            "options": options,
+        }
+
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any] | None:

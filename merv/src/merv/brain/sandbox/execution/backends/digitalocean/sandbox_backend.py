@@ -243,15 +243,11 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
                 "usually needs a one-time unlock — request it in the DigitalOcean "
                 "console under Create > GPU Droplets."
             )
-        return {
-            "provider": "digitalocean",
-            "selection_required": True,
-            "select_with": "instance_type",
-            "reason": reason,
-            "regions": regions,
-            "count": len(options),
-            "options": options,
-        }
+        return self._selection_catalog(
+            reason=reason,
+            regions=regions,
+            options=options,
+        )
 
     def _resolve_placement(
         self, *, size: str, region: str, requested_gpu: str | None

@@ -203,18 +203,14 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
             gpu=gpu,
         )
         options = summary["instance_types"]
-        return {
-            "provider": "thunder_compute",
-            "selection_required": True,
-            "select_with": "instance_type",
-            "reason": (
+        return self._selection_catalog(
+            reason=(
                 "Thunder Compute exposes fixed GPU specs by instance_type; pick "
                 "one option rather than cpu/memory. Region selection is not exposed."
             ),
-            "regions": [],
-            "count": len(options),
-            "options": options,
-        }
+            regions=[],
+            options=options,
+        )
 
     def find_sandbox_id(
         self, *, experiment_id: str, sandbox_uid: str = ""

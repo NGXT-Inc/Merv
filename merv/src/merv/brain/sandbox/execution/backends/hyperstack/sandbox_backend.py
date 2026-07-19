@@ -252,18 +252,14 @@ class HyperstackSandboxBackend(VmSshSandboxBackend):
             only_available=True,
         )
         regions = sorted({r for option in options for r in option.get("regions", [])})
-        return {
-            "provider": "hyperstack",
-            "selection_required": True,
-            "select_with": "instance_type",
-            "reason": (
+        return self._selection_catalog(
+            reason=(
                 "Hyperstack bundles GPU, CPU, and RAM into fixed flavors; pick one "
                 "instance_type. Billing is per-minute while the VM exists."
             ),
-            "regions": regions,
-            "count": len(options),
-            "options": options,
-        }
+            regions=regions,
+            options=options,
+        )
 
     def _resolve_flavor(
         self, *, flavor_name: str, requested_gpu: str | None

@@ -237,18 +237,14 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             only_available=True,
         )
         options = to_agent_options(summary)
-        return {
-            "provider": "lambda_labs",
-            "selection_required": True,
-            "select_with": "instance_type",
-            "reason": (
+        return self._selection_catalog(
+            reason=(
                 "Lambda Labs bundles GPU, CPU, and RAM into fixed machine types; "
                 "pick one instance_type rather than cpu/memory."
             ),
-            "regions": summary["regions"],
-            "count": len(options),
-            "options": options,
-        }
+            regions=summary["regions"],
+            options=options,
+        )
 
     def _resolve_placement(
         self, *, instance_type: str, region: str, requested_gpu: str | None

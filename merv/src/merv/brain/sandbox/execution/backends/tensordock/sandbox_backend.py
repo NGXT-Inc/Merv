@@ -240,20 +240,16 @@ class TensorDockSandboxBackend(VmSshSandboxBackend):
             self.client.list_locations(), gpu=gpu, region=region, only_available=True
         )
         regions = sorted({r for option in options for r in option.get("regions", [])})
-        return {
-            "provider": "tensordock",
-            "selection_required": True,
-            "select_with": "instance_type",
-            "reason": (
+        return self._selection_catalog(
+            reason=(
                 "TensorDock composes machines per host; these options are "
                 "synthesized GPU shapes (count x model with default vCPU/RAM/"
                 "100GB storage) at locations that support DEDICATED public IPs. "
                 "Billing is per-second against the prepaid balance."
             ),
-            "regions": regions,
-            "count": len(options),
-            "options": options,
-        }
+            regions=regions,
+            options=options,
+        )
 
     def _resolve_option(
         self, *, instance_type: str, region: str, requested_gpu: str | None
