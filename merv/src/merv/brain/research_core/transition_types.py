@@ -22,6 +22,7 @@ class ExperimentState(TypedDict, total=False):
     id: str
     project_id: str
     name: str
+    intent: str
     status: str
     attempt_index: int
     mlflow_run: PersistedRunState | None
@@ -40,13 +41,19 @@ class SlimExperimentState(ExperimentState, total=False):
 
 
 @dataclass(frozen=True, slots=True)
-class CommittedExperimentTransition:
+class CommittedExperimentUpdate:
     state: ExperimentState
     event: StoredEvent
 
 
+CommittedExperimentTransition = CommittedExperimentUpdate
+CommittedTrackingRunRefresh = CommittedExperimentUpdate
+
+
 __all__ = [
     "CommittedExperimentTransition",
+    "CommittedExperimentUpdate",
+    "CommittedTrackingRunRefresh",
     "ExhibitVerdict",
     "ExperimentState",
     "PersistedRunState",

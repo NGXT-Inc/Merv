@@ -181,7 +181,6 @@ LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
         ("surface/permissions.py", "research_core/domain/vocabulary.py"),
         ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
         ("surface/tools/contracts.py", "surface/config.py"),
-        ("surface/tools/tool_handlers.py", "mlflow/__init__.py"),
         ("surface/transport/api/views.py", "artifacts/figure_view.py"),
         ("surface/transport/api/views.py", "artifacts/resource_selection.py"),
         ("surface/transport/api/views.py", "mlflow/__init__.py"),

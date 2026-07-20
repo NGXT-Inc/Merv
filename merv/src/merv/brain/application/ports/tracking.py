@@ -59,6 +59,9 @@ class TrackingContextPayload(TypedDict, total=False):
     experiment_name: str
     env: dict[str, str]
     note: str
+    project_id: str
+    experiment_namespace_prefix: str
+    experiments: list[dict[str, str]]
 
 
 @runtime_checkable
@@ -134,6 +137,10 @@ class ExperimentTracking(Protocol):
         include_credentials: bool = False,
     ) -> TrackingContext: ...
 
+    def project_context(
+        self, *, project_id: str, include_credentials: bool = False
+    ) -> TrackingContextPayload: ...
+
     def create_run(
         self,
         *,
@@ -149,7 +156,7 @@ class ExperimentTracking(Protocol):
         project_id: str,
         experiment_id: str,
         run_id: str,
-        status: str,
+        status: str | None,
         wait_seconds: float,
     ) -> FinalizeRunResult: ...
 

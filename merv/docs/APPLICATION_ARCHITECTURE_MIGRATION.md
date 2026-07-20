@@ -703,6 +703,26 @@ the compatibility wrapper at 15 lines or fewer and the former 1,022-line
 Surface orchestration at 902 lines or fewer. The implemented counts are 40,850
 brain lines, a 13-line MLflow compatibility wrapper, and 549 Surface lines.
 
+### Tracking follow-up slice
+
+The follow-up migrates `mlflow.context`, `experiment.get_state`, and
+`mlflow.finalize_run` into application-owned query/command objects. Surface now
+registers thin bound delegates and no longer imports MLflow for tool handling;
+the corresponding exact layer exception was deleted. Research returns the
+exact stored `experiment.mlflow_run_refreshed` event with canonical readback
+state, and the command dispatches that event synchronously to the late Feed
+advisory after assembling the response. An explicit foreign-run finalize keeps
+its historical response/advisory without fabricating a ledger event or changing
+canonical identity.
+
+This slice removes 164 lines from `tool_handlers.py` (549 to 385) but adds a
+240-line typed application boundary plus the smallest tracking-port, Research
+facade, response DTOs, and event-return plumbing. Production therefore grows
+honestly by 147 lines (40,850 to 40,997). The branch proposes a tightly bounded
+41,000 ceiling for independent re-ratification and tightens the Surface ratchet
+from 902 to 400. Characterization covers exact responses, credential audience,
+failures, foreign runs, durable event identity, and direct/MCP ledger parity.
+
 ## Verification gates
 
 The following compatibility matrix is mandatory, not illustrative:
@@ -785,9 +805,9 @@ cross-module import inventory, and a clean worktree/commit audit close the work.
 - no physical relocation of MLflow/object-storage files merely for taxonomy;
 - no migration of unrelated Surface orchestration in this slice.
 
-Next use cases should be selected from `mlflow.finalize_run`, review completion,
-sandbox lifecycle, and resource registration. Each migrated use case may add the
-smallest new facade verb/port operation it actually needs.
+Next use cases should be selected from review completion, sandbox lifecycle,
+resource registration, and composite UI queries. Each migrated use case may add
+the smallest new facade verb/port operation it actually needs.
 
 ## Adversarial review disposition
 

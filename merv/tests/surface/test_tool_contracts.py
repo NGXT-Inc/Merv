@@ -60,7 +60,6 @@ def _handler_targets() -> dict[str, Any]:
     return {
         "workflow": target,
         "projects": target,
-        "project_overview": target,
         "claims": target,
         "experiments": target,
         "reflection_tools": target,
@@ -68,10 +67,11 @@ def _handler_targets() -> dict[str, Any]:
         "storage": target,
         "reviews": target,
         "sandboxes": target,
-        "mlflow_tracking": target,
         "feed": target,
         "experiment_transition": target,
         "experiment_exhibit": target,
+        "tracking_context": target,
+        "tracking_finalize": target,
     }
 
 

@@ -132,7 +132,7 @@ class CentralMlflowService:
 
     def project_context(
         self, *, project_id: str, include_credentials: bool = False
-    ) -> dict[str, object]:
+    ) -> TrackingContextPayload:
         """Project-scoped MLflow navigation context for agents.
 
         This does not query MLflow. It gives agents the endpoint and namespace
@@ -143,7 +143,7 @@ class CentralMlflowService:
             env["MLFLOW_TRACKING_URI"] = self.tracking_uri
         env.update(self._credential_env(include_credentials=include_credentials))
         configured = bool(self.tracking_uri)
-        result: dict[str, object] = {
+        result: TrackingContextPayload = {
             "configured": configured,
             "mode": self.mode or ("external" if configured else "unconfigured"),
             "tracking_uri": self.tracking_uri,

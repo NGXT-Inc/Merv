@@ -32,13 +32,17 @@ from .domain.workflow_gates import (
     allowed_transitions_for,
 )
 from ..artifacts.pinned import PinnedStore
+from ..kernel.events import StoredEvent
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
 from ..kernel.utils import now_iso
 from .review_gate import _review_checklist_item, review_gate_state
 from .storage_objects import StorageObjectsReader
-from .transition_types import CommittedExperimentTransition
+from .transition_types import (
+    CommittedExperimentTransition,
+    CommittedTrackingRunRefresh,
+)
 
 
 class ExperimentService:
@@ -390,7 +394,13 @@ class ExperimentService:
         experiment_id: str,
         run: dict[str, Any],
         event_type: str | None = None,
-    ) -> dict[str, Any]:
+        return_event: bool = False,
+    ) -> dict[str, Any] | CommittedTrackingRunRefresh:
+        def result(
+            state: dict[str, Any], event: StoredEvent
+        ) -> dict[str, Any] | CommittedTrackingRunRefresh:
+            return CommittedTrackingRunRefresh(state, event) if return_event else state
+
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             existing = self.get_state(
@@ -415,7 +425,7 @@ class ExperimentService:
                     "UPDATE experiments SET mlflow_run_error = ?, updated_at = ? WHERE id = ?",
                     (error, now, experiment_id),
                 )
-                self.store.record_event(
+                event = self.store.record_event(
                     conn=conn,
                     project_id=project_id,
                     event_type=event_type or "experiment.mlflow_run_unavailable",
@@ -427,7 +437,8 @@ class ExperimentService:
                         "previous_run_id": str(existing.get("mlflow_run_id") or ""),
                     },
                 )
-                return self.get_state(experiment_id=experiment_id, conn=conn)
+                state = self.get_state(experiment_id=experiment_id, conn=conn)
+                return result(state, event)
             conn.execute(
                 """
                 UPDATE experiments
@@ -451,7 +462,7 @@ class ExperimentService:
                     experiment_id,
                 ),
             )
-            self.store.record_event(
+            event = self.store.record_event(
                 conn=conn,
                 project_id=project_id,
                 event_type=(
@@ -472,7 +483,8 @@ class ExperimentService:
                     "previous_run_id": existing.get("mlflow_run_id") or "",
                 },
             )
-            return self.get_state(experiment_id=experiment_id, conn=conn)
+            state = self.get_state(experiment_id=experiment_id, conn=conn)
+            return result(state, event)
 
     def _claim_update_suggestions(
         self, *, experiment: dict[str, Any]

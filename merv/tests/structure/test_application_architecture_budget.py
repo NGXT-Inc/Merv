@@ -10,18 +10,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BRAIN = ROOT / "src" / "merv" / "brain"
 BASELINE_BRAIN_LOC = 39_924
-MAX_BRAIN_LOC = 40_860
+PRE_TRACKING_SLICE_LOC = 40_850
+MAX_BRAIN_LOC = 41_000
 BASELINE_SURFACE_ORCHESTRATION_LOC = 1_022
+PRE_TRACKING_SURFACE_LOC = 549
 
 
 class ApplicationArchitectureBudgetTest(unittest.TestCase):
-    def test_adversarially_reratified_brain_loc_ceiling(self) -> None:
+    def test_brain_loc_ceiling(self) -> None:
         current = sum(
             len(path.read_text(encoding="utf-8").splitlines())
             for path in BRAIN.rglob("*.py")
         )
         self.assertLessEqual(current, MAX_BRAIN_LOC)
-        self.assertEqual(MAX_BRAIN_LOC - BASELINE_BRAIN_LOC, 936)
+        self.assertEqual(MAX_BRAIN_LOC - PRE_TRACKING_SLICE_LOC, 150)
+        self.assertEqual(MAX_BRAIN_LOC - BASELINE_BRAIN_LOC, 1_076)
 
     def test_surface_orchestration_shrank_by_at_least_120_lines(self) -> None:
         current = len(
@@ -29,7 +32,8 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
             .read_text(encoding="utf-8")
             .splitlines()
         )
-        self.assertLessEqual(current, BASELINE_SURFACE_ORCHESTRATION_LOC - 120)
+        self.assertLessEqual(current, PRE_TRACKING_SURFACE_LOC - 149)
+        self.assertLessEqual(current, BASELINE_SURFACE_ORCHESTRATION_LOC - 622)
         self.assertFalse((BRAIN / "surface/tools/exhibits.py").exists())
 
     def test_mlflow_compatibility_wrapper_is_import_only(self) -> None:

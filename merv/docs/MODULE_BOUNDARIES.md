@@ -105,6 +105,14 @@ MLflow. `CentralMlflowService` implements it. The port distinguishes logging,
 control, and readback capabilities so tracking-only and server-only deployments
 retain their current behavior.
 
+`mlflow.context`, `experiment.get_state`, and `mlflow.finalize_run` enter through
+application-owned query/command objects. Surface registers their bound methods
+and does no tracking policy or persistence coordination. A canonical finalize
+returns its exact `experiment.mlflow_run_refreshed` event from Research and
+synchronously dispatches the Feed advisory after response assembly. Finalizing
+an explicit foreign run keeps the old advisory response but writes no event and
+never changes the experiment's canonical run identity.
+
 Artifacts, Feed, cleanup, and storage-ledger policy depend on narrow blob/object
 ports owned by Kernel. Local and S3 implementations remain under
 `object_storage` as replaceable adapters. Old import paths may re-export the

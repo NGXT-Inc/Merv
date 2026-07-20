@@ -5,39 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from ...application.experiments.tracking_presentation import (
-    tracking_connection,
-    tracking_context_response,
-    with_tracking_if_visible,
-)
-from ...mlflow import mlflow_experiment_name
 from ...research_core.experiment_views import slim_experiment_state
 from ...kernel.utils import ValidationError
-
-def _attach_feed_note(
-    result: dict[str, Any],
-    *,
-    feed: Any,
-    project_id: str,
-    entity_id: str,
-    event: str,
-) -> None:
-    """Attach an optional ``feed_note`` advisory to ``result`` in place.
-
-    Never raises: a feed hiccup (a bad connection, a schema surprise, ...)
-    must not break the workflow transition, review check, or MLflow call
-    whose response this rides on. Absent rather than null when there is
-    nothing to say, matching how every other optional response field in this
-    module (``mlflow``, ``metrics_exhibit``, ...) is attached.
-    """
-    try:
-        note = feed.feed_note_for(
-            project_id=project_id, entity_id=entity_id, event=event
-        )
-    except Exception:  # noqa: BLE001 - advisory only, must never block
-        note = None
-    if note is not None:
-        result["feed_note"] = note
 
 
 def _experiment_list_agent(
@@ -51,37 +20,10 @@ def _experiment_list_agent(
     }
 
 
-def _mlflow_project_connection(
-    *, mlflow_tracking: Any, project_id: str, experiments: Any
-) -> dict[str, Any]:
-    """Project-level MLflow connection and namespace map for direct API reads."""
-    if mlflow_tracking is None or not project_id:
-        return {"configured": False}
-    block = dict(
-        mlflow_tracking.project_context(project_id=project_id, include_credentials=True)
-    )
-    listed = experiments.list_experiments(project_id=project_id)["experiments"]
-    block["experiments"] = [
-        {
-            "experiment_id": exp.get("id"),
-            "name": exp.get("name") or exp.get("id"),
-            "status": exp.get("status") or "",
-            "intent": exp.get("intent") or "",
-            "mlflow_experiment_name": mlflow_experiment_name(
-                project_id=project_id, experiment_id=str(exp.get("id") or "")
-            ),
-        }
-        for exp in listed
-        if exp.get("id")
-    ]
-    return block
-
-
 def build_control_tool_handlers(
     *,
     workflow: Any,
     projects: Any,
-    project_overview: Any,
     claims: Any,
     experiments: Any,
     reflection_tools: Any,
@@ -89,31 +31,17 @@ def build_control_tool_handlers(
     storage: Any | None,
     reviews: Any,
     sandboxes: Any,
-    mlflow_tracking: Any,
     feed: Any,
     experiment_transition: Any,
     experiment_exhibit: Any,
+    tracking_context: Any,
+    tracking_finalize: Any,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Map control-plane tool names to service methods.
 
     This is intentionally a thin registry: composition supplies the services,
     and ToolDispatcher verifies the final name set against TOOL_CONTRACTS.
     """
-    def experiment_get_state_agent(
-        *, experiment_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        full = experiments.get_state(
-            experiment_id=experiment_id, project_id=project_id
-        )
-        slim = slim_experiment_state(full)
-        return with_tracking_if_visible(
-            state=slim,
-            tracking=mlflow_tracking,
-            project_id=str(full.get("project_id") or project_id or ""),
-            experiment_id=experiment_id,
-            include_credentials=True,
-        )
-
     def experiment_list_agent(
         *, project_id: str | None = None
     ) -> dict[str, Any]:
@@ -133,101 +61,6 @@ def build_control_tool_handlers(
             project_id=project_id,
             include_tracking_credentials=True,
         )
-
-    def mlflow_context_agent(
-        *, project_id: str, experiment_id: str | None = None
-    ) -> dict[str, Any]:
-        if not experiment_id:
-            block = _mlflow_project_connection(
-                mlflow_tracking=mlflow_tracking,
-                project_id=project_id,
-                experiments=experiments,
-            )
-            return tracking_context_response(
-                project_id=project_id,
-                experiment_id=None,
-                tracking=block,
-            )
-        state = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
-        resolved_project_id = str(state.get("project_id") or project_id or "")
-        block = tracking_connection(
-            tracking=mlflow_tracking,
-            project_id=resolved_project_id,
-            experiment_id=experiment_id,
-            include_credentials=True,
-            run=state.get("mlflow_run"),
-        )
-        return tracking_context_response(
-            project_id=resolved_project_id,
-            experiment_id=experiment_id,
-            tracking=block,
-        )
-
-    def mlflow_finalize_run_agent(
-        *,
-        project_id: str,
-        experiment_id: str,
-        run_id: str | None = None,
-        status: str | None = "FINISHED",
-        wait_seconds: float = 2.0,
-    ) -> dict[str, Any]:
-        state = experiments.get_state(experiment_id=experiment_id, project_id=project_id)
-        resolved_project_id = str(state.get("project_id") or project_id or "")
-        existing_run = state.get("mlflow_run") or {}
-        resolved_run_id = str(run_id or existing_run.get("run_id") or "")
-        if mlflow_tracking is None:
-            return {
-                "project_id": resolved_project_id,
-                "experiment_id": experiment_id,
-                "configured": False,
-                "run_id": resolved_run_id,
-                "error": "MLflow tracking is not configured on this backend.",
-            }
-        result = mlflow_tracking.finalize_run(
-            project_id=resolved_project_id,
-            experiment_id=experiment_id,
-            run_id=resolved_run_id,
-            status=status,
-            wait_seconds=wait_seconds,
-        )
-        run = result.get("run")
-        refreshed_state = state
-        persisted_run_id = str(existing_run.get("run_id") or "")
-        # Only refresh the experiment's canonical run block for the run it
-        # actually owns — finalizing an explicit foreign run_id must not
-        # repoint the persisted identity.
-        if (
-            isinstance(run, dict)
-            and run.get("run_id")
-            and (not persisted_run_id or str(run.get("run_id")) == persisted_run_id)
-        ):
-            refreshed_state = experiments.record_mlflow_run(
-                project_id=resolved_project_id,
-                experiment_id=experiment_id,
-                run=run,
-                event_type="experiment.mlflow_run_refreshed",
-            )
-        slim = slim_experiment_state(refreshed_state)
-        slim = with_tracking_if_visible(
-            state=slim,
-            tracking=mlflow_tracking,
-            project_id=resolved_project_id,
-            experiment_id=experiment_id,
-            include_credentials=True,
-        )
-        out = dict(result)
-        out["project_id"] = resolved_project_id
-        out["experiment_id"] = experiment_id
-        out["experiment"] = slim
-        if isinstance(run, dict) and run.get("run_id"):
-            _attach_feed_note(
-                out,
-                feed=feed,
-                project_id=resolved_project_id,
-                entity_id=experiment_id,
-                event="mlflow_run_finalized",
-            )
-        return out
 
     def resource_find(
         *,
@@ -285,13 +118,16 @@ def build_control_tool_handlers(
             except Exception:  # noqa: BLE001 - advisory only, must never block
                 resolved_project_id = ""
             if resolved_project_id:
-                _attach_feed_note(
-                    result,
-                    feed=feed,
-                    project_id=resolved_project_id,
-                    entity_id=target_id,
-                    event="experiment_review_verdict",
-                )
+                try:
+                    note = feed.feed_note_for(
+                        project_id=resolved_project_id,
+                        entity_id=target_id,
+                        event="experiment_review_verdict",
+                    )
+                except Exception:  # advisory only, must never block
+                    note = None
+                if note is not None:
+                    result["feed_note"] = note
         return result
 
     def project_control(
@@ -345,11 +181,11 @@ def build_control_tool_handlers(
         "claim.update": claims.update,
         "experiment.create": experiments.create,
         "experiment.list": experiment_list_agent,
-        "experiment.get_state": experiment_get_state_agent,
+        "experiment.get_state": tracking_context.experiment,
         "experiment.transition": experiment_transition_agent,
         "experiment.exhibit": experiment_exhibit.preview,
-        "mlflow.context": mlflow_context_agent,
-        "mlflow.finalize_run": mlflow_finalize_run_agent,
+        "mlflow.context": tracking_context.execute,
+        "mlflow.finalize_run": tracking_finalize.execute,
         "reflection.create": reflection_tools.create,
         "reflection.get": reflection_tools.get,
         "reflection.list": reflection_tools.list,
@@ -436,7 +272,6 @@ def build_local_tool_handlers(
     *,
     workflow: Any,
     projects: Any,
-    project_overview: Any,
     claims: Any,
     experiments: Any,
     reflection_tools: Any,
@@ -444,10 +279,11 @@ def build_local_tool_handlers(
     storage: Any | None,
     reviews: Any,
     sandboxes: Any,
-    mlflow_tracking: Any,
     feed: Any,
     experiment_transition: Any,
     experiment_exhibit: Any,
+    tracking_context: Any,
+    tracking_finalize: Any,
     resource_register_file: Callable[..., dict[str, Any]],
     experiment_materialize_folders: Callable[..., dict[str, Any]],
     # Data-plane local IO: required — there is no control-plane fallback.
@@ -508,7 +344,6 @@ def build_local_tool_handlers(
     handlers = build_control_tool_handlers(
         workflow=workflow,
         projects=projects,
-        project_overview=project_overview,
         claims=claims,
         experiments=experiments,
         reflection_tools=reflection_tools,
@@ -516,10 +351,11 @@ def build_local_tool_handlers(
         storage=storage,
         reviews=reviews,
         sandboxes=sandboxes,
-        mlflow_tracking=mlflow_tracking,
         feed=feed,
         experiment_transition=experiment_transition,
         experiment_exhibit=experiment_exhibit,
+        tracking_context=tracking_context,
+        tracking_finalize=tracking_finalize,
     )
     handlers.update(
         {

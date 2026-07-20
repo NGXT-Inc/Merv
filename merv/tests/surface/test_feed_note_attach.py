@@ -1,13 +1,8 @@
-"""Remaining SURFACE-layer wiring for the event-carried feed_note advisory.
+"""Remaining Surface wiring for the review-status feed advisory.
 
-feed.py owns the posts table and the dedupe decision (feed_note_for); this
-module owns *attaching* that note to the responses of tools an agent already
-calls for other reasons — mlflow.finalize_run and review.status. These are
-lightweight stub-based unit tests of that wiring in
-src/merv/brain/surface/tools/tool_handlers.py: they build the handler dict
-directly (the same helper tests/surface/test_tool_contracts.py uses) with tiny
-recording stubs, so verdict/finalize branching and the "never raise" contract
-can be checked without a full review/MLflow stack.
+Tracking finalization now lives in Application and is covered by
+tests/application/test_tracking_commands.py. This module characterizes the
+still-unmigrated review.status attachment without a full review stack.
 """
 
 from __future__ import annotations
@@ -104,44 +99,6 @@ class _BoomExperiments:
         raise RuntimeError("boom")
 
 
-class _StubMlflowTracking:
-    def __init__(
-        self, *, finalize_result: dict[str, Any], raises: bool = False
-    ) -> None:
-        self._finalize_result = finalize_result
-        self.raises = raises
-        self.finalize_calls: list[dict[str, Any]] = []
-
-    def context(
-        self, *, project_id: str, experiment_id: str, include_credentials: bool = False
-    ) -> Any:
-        class _Ctx:
-            def to_dict(self_inner) -> dict[str, Any]:
-                return {"configured": True}
-
-        return _Ctx()
-
-    def finalize_run(
-        self,
-        *,
-        project_id: str,
-        experiment_id: str,
-        run_id: str,
-        status: str | None = "FINISHED",
-        wait_seconds: float = 2.0,
-    ) -> dict[str, Any]:
-        self.finalize_calls.append({
-            "project_id": project_id,
-            "experiment_id": experiment_id,
-            "run_id": run_id,
-            "status": status,
-            "wait_seconds": wait_seconds,
-        })
-        if self.raises:
-            raise RuntimeError("mlflow down")
-        return dict(self._finalize_result)
-
-
 class _StubReviews:
     def __init__(self, *, result: dict[str, Any]) -> None:
         self._result = result
@@ -159,7 +116,6 @@ def _target(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "workflow": _Unused(),
         "projects": _Unused(),
-        "project_overview": _Unused(),
         "claims": _Unused(),
         "experiments": _Unused(),
         "reflection_tools": _Unused(),
@@ -167,61 +123,14 @@ def _target(**overrides: Any) -> dict[str, Any]:
         "storage": None,
         "reviews": _Unused(),
         "sandboxes": _Unused(),
-        "mlflow_tracking": _Unused(),
         "feed": _Unused(),
         "experiment_transition": _Unused(),
         "experiment_exhibit": _Unused(),
+        "tracking_context": _Unused(),
+        "tracking_finalize": _Unused(),
     }
     base.update(overrides)
     return base
-
-
-class MlflowFinalizeRunFeedNoteTest(unittest.TestCase):
-    def test_attaches_note_when_a_run_is_finalized(self) -> None:
-        experiments = _StubExperiments(
-            state={
-                "id": "exp_6",
-                "project_id": "proj_1",
-                "status": "experiment_review",
-                "mlflow_run": {},
-            }
-        )
-        mlflow_tracking = _StubMlflowTracking(
-            finalize_result={"run": {"run_id": "run_1", "status": "FINISHED"}}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=mlflow_tracking)
-        )
-        result = handlers["mlflow.finalize_run"](project_id="proj_1", experiment_id="exp_6")
-        self.assertIn("feed_note", result)
-        self.assertEqual(feed.calls[-1]["event"], "mlflow_run_finalized")
-        self.assertEqual(feed.calls[-1]["entity_id"], "exp_6")
-
-    def test_no_note_when_mlflow_is_not_configured(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_7", "project_id": "proj_1", "status": "running"}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["mlflow.finalize_run"](project_id="proj_1", experiment_id="exp_7")
-        self.assertNotIn("feed_note", result)
-        self.assertEqual(feed.calls, [])
-
-    def test_no_note_when_finalize_returns_no_run(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_8", "project_id": "proj_1", "status": "running"}
-        )
-        mlflow_tracking = _StubMlflowTracking(finalize_result={"error": "boom"})
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=mlflow_tracking)
-        )
-        result = handlers["mlflow.finalize_run"](project_id="proj_1", experiment_id="exp_8")
-        self.assertNotIn("feed_note", result)
-        self.assertEqual(feed.calls, [])
 
 
 class ReviewStatusFeedNoteTest(unittest.TestCase):
@@ -235,7 +144,7 @@ class ReviewStatusFeedNoteTest(unittest.TestCase):
         feed = _StubFeed()
         handlers = build_control_tool_handlers(
             **_target(
-                experiments=experiments, reviews=reviews, feed=feed, mlflow_tracking=None
+                experiments=experiments, reviews=reviews, feed=feed
             )
         )
         result = handlers["review.status"](
@@ -261,7 +170,7 @@ class ReviewStatusFeedNoteTest(unittest.TestCase):
         feed = _StubFeed()
         handlers = build_control_tool_handlers(
             **_target(
-                experiments=experiments, reviews=reviews, feed=feed, mlflow_tracking=None
+                experiments=experiments, reviews=reviews, feed=feed
             )
         )
         result = handlers["review.status"](
@@ -276,7 +185,7 @@ class ReviewStatusFeedNoteTest(unittest.TestCase):
         )
         feed = _StubFeed()
         handlers = build_control_tool_handlers(
-            **_target(reviews=reviews, feed=feed, mlflow_tracking=None)
+            **_target(reviews=reviews, feed=feed)
         )
         result = handlers["review.status"](
             target_type="reflection", target_id="syn_1", project_id="proj_1"
@@ -294,7 +203,6 @@ class ReviewStatusFeedNoteTest(unittest.TestCase):
                 experiments=_BoomExperiments(),
                 reviews=reviews,
                 feed=feed,
-                mlflow_tracking=None,
             )
         )
         result = handlers["review.status"](

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -701,6 +702,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertIs(self.app.feed_api._feed, self.app.feed)
         self.assertIs(self.app.transition_experiment.research, self.app.research_core)
         self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)
+        self.assertIs(self.app.tracking_context.research, self.app.research_core)
+        self.assertIs(self.app.finalize_tracking_run.research, self.app.research_core)
+        self.assertIs(
+            self.app.tools._tools["mlflow.context"].handler.__self__,
+            self.app.tracking_context,
+        )
+        self.assertIs(
+            self.app.tools._tools["mlflow.finalize_run"].handler.__self__,
+            self.app.finalize_tracking_run,
+        )
 
     def test_attempt_revision_and_retry_rotate_the_mlflow_run(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Rotate Project"})
@@ -812,6 +823,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "terminal": True,
             "run": {"run_id": "run_other", "status": "FINISHED"},
         }
+        with self.app.store.connect() as conn:
+            refreshes_before = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM events WHERE target_id = ? "
+                    "AND type = 'experiment.mlflow_run_refreshed'",
+                    (exp_id,),
+                ).fetchone()["count"]
+            )
         with patch.object(CentralMlflowService, "finalize_run", return_value=finalized):
             self.app.call_tool(
                 "mlflow.finalize_run",
@@ -821,6 +840,118 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "experiment.get_state", {"project_id": project_id, "experiment_id": exp_id}
         )
         self.assertEqual(state["mlflow_run"]["run_id"], "run_mine")
+        with self.app.store.connect() as conn:
+            refreshes_after = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM events WHERE target_id = ? "
+                    "AND type = 'experiment.mlflow_run_refreshed'",
+                    (exp_id,),
+                ).fetchone()["count"]
+            )
+        self.assertEqual(refreshes_after, refreshes_before)
+
+    def test_direct_and_mcp_finalize_share_response_and_ledger_semantics(self) -> None:
+        project_id = self.request(
+            "POST", "/api/projects", {"name": "MLflow Finalize Delivery"}
+        )["id"]
+        experiment_ids = [
+            self.request(
+                "POST",
+                f"/api/projects/{project_id}/experiments",
+                {"name": f"finalize-{index}", "intent": "Compare delivery"},
+            )["id"]
+            for index in range(2)
+        ]
+        self.configure_mlflow(
+            CentralMlflowService(
+                mode="external",
+                tracking_uri="https://mlflow.test",
+                server_uri="http://mlflow.internal:5000",
+            )
+        )
+        with self.app.store.transaction() as conn:
+            for index, experiment_id in enumerate(experiment_ids):
+                conn.execute(
+                    "UPDATE experiments SET status = 'running', mlflow_run_id = ?, "
+                    "mlflow_run_status = 'RUNNING' WHERE id = ?",
+                    (f"run_{index}", experiment_id),
+                )
+
+        def finalized(**kwargs):
+            return {
+                "configured": True,
+                "terminal": True,
+                "run": {"run_id": kwargs["run_id"], "status": "FINISHED"},
+            }
+
+        def cursor() -> int:
+            with self.app.store.connect() as conn:
+                return int(
+                    conn.execute("SELECT COALESCE(MAX(id), 0) AS id FROM events")
+                    .fetchone()["id"]
+                )
+
+        with patch.object(CentralMlflowService, "finalize_run", side_effect=finalized):
+            first_cursor = cursor()
+            direct = self.app.call_tool(
+                "mlflow.finalize_run",
+                {"project_id": project_id, "experiment_id": experiment_ids[0]},
+            )
+            second_cursor = cursor()
+            response = self.client.post(
+                "/mcp/call",
+                json={
+                    "name": "mlflow.finalize_run",
+                    "arguments": {
+                        "project_id": project_id,
+                        "experiment_id": experiment_ids[1],
+                    },
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            mcp = response.json()["result"]
+
+        def normalized(result):
+            value = deepcopy(result)
+            value["experiment_id"] = "exp"
+            value["run"]["run_id"] = "run"
+            value["experiment"]["id"] = "exp"
+            value["experiment"]["name"] = "name"
+            value["experiment"]["created_at"] = "time"
+            value["experiment"]["updated_at"] = "time"
+            value["experiment"]["mlflow_run"]["run_id"] = "run"
+            value["experiment"]["mlflow_run"]["created_at"] = "time"
+            value["experiment"]["mlflow"]["run"]["run_id"] = "run"
+            value["experiment"]["mlflow"]["run"]["created_at"] = "time"
+            value["experiment"]["mlflow"]["experiment_name"] = "tracking-name"
+            value["experiment"]["mlflow"]["env"]["MLFLOW_EXPERIMENT_NAME"] = "tracking-name"
+            value["experiment"]["mlflow"]["env"]["RP_EXPERIMENT_ID"] = "exp"
+            value["experiment"]["mlflow"]["env"]["MLFLOW_RUN_ID"] = "run"
+            value["experiment"]["mlflow"]["env"]["RP_MLFLOW_RUN_ID"] = "run"
+            value["feed_note"] = "note"
+            return value
+
+        self.assertEqual(
+            normalized(direct),
+            normalized(mcp),
+        )
+        with self.app.store.connect() as conn:
+            direct_rows = conn.execute(
+                "SELECT type, target_id FROM events WHERE id > ? AND id <= ? ORDER BY id",
+                (first_cursor, second_cursor),
+            ).fetchall()
+            mcp_rows = conn.execute(
+                "SELECT type, target_id FROM events WHERE id > ? ORDER BY id",
+                (second_cursor,),
+            ).fetchall()
+        self.assertEqual(
+            [(row["type"], row["target_id"]) for row in direct_rows],
+            [("experiment.mlflow_run_refreshed", experiment_ids[0])],
+        )
+        self.assertEqual(
+            [(row["type"], row["target_id"]) for row in mcp_rows],
+            [("experiment.mlflow_run_refreshed", experiment_ids[1])],
+        )
 
     def test_server_only_mlflow_does_not_advertise_agent_tracking(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Server Project"})

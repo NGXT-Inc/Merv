@@ -10,6 +10,7 @@ from typing import Any
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
 from ...application.experiments.exhibits import ExperimentExhibits
+from ...application.experiments.tracking import FinalizeTrackingRun, GetTrackingContext
 from ...application.experiments.transition import TransitionExperiment
 from ...artifacts.facade import ArtifactsFacade
 from ...feed.facade import FeedFacade
@@ -99,6 +100,14 @@ class ControlApp:
             tracking=self.mlflow_tracking,
             exhibits=self.experiment_exhibits,
         )
+        self.tracking_context = GetTrackingContext(
+            research=self.research_core, tracking=self.mlflow_tracking
+        )
+        self.finalize_tracking_run = FinalizeTrackingRun(
+            research=self.research_core,
+            feed=self.feed_api,
+            tracking=self.mlflow_tracking,
+        )
 
         self.sandboxes = SandboxService(
             store=self.store,
@@ -133,7 +142,6 @@ class ControlApp:
             handlers=build_control_tool_handlers(
                 workflow=self.workflow,
                 projects=self.projects,
-                project_overview=self.project_overview,
                 claims=self.claims,
                 experiments=self.experiments,
                 reflection_tools=self.reflection_tools,
@@ -141,10 +149,11 @@ class ControlApp:
                 storage=self.storage,
                 reviews=self.reviews,
                 sandboxes=self.sandboxes,
-                mlflow_tracking=self.mlflow_tracking,
                 feed=self.feed,
                 experiment_transition=self.transition_experiment,
                 experiment_exhibit=self.experiment_exhibits,
+                tracking_context=self.tracking_context,
+                tracking_finalize=self.finalize_tracking_run,
             ),
             permissions=self.permissions,
             activity=self.activity,

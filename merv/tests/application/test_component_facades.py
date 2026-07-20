@@ -12,6 +12,7 @@ from merv.brain.feed.facade import Feed, FeedFacade
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import (
     CommittedExperimentTransition,
+    CommittedTrackingRunRefresh,
     ResearchCore,
     ResearchCoreFacade,
 )
@@ -21,13 +22,13 @@ from merv.brain.research_core.transition_types import (
 )
 
 
-def _committed(state):
+def _committed(state, *, event_type="experiment.transitioned"):
     return CommittedExperimentTransition(
         state=state,
         event=StoredEvent(
             id=7,
             project_id="proj_1",
-            type="experiment.transitioned",
+            type=event_type,
             target_type="experiment",
             target_id="exp_1",
             payload=freeze_json_object({"transition": "start_running"}),
@@ -53,12 +54,20 @@ class RecordingExperimentService:
         self.calls.append(("get_state", kwargs))
         return self.state
 
+    def list_experiments(self, **kwargs):
+        self.calls.append(("list_experiments", kwargs))
+        return {"experiments": [self.state]}
+
     def transition_with_event(self, **kwargs):
         self.calls.append(("transition_with_event", kwargs))
         return self.committed
 
     def record_mlflow_run(self, **kwargs):
         self.calls.append(("record_mlflow_run", kwargs))
+        if kwargs.get("return_event"):
+            return _committed(
+                self.state, event_type="experiment.mlflow_run_refreshed"
+            )
         return self.state
 
     def record_exhibit_verdict(self, **kwargs):
@@ -106,11 +115,20 @@ class RecordingResearchCoreFake:
     def experiment_state(self, **kwargs):
         return {"id": kwargs["experiment_id"]}
 
+    def project_experiments(self, **kwargs):
+        return []
+
     def transition_experiment(self, **kwargs):
         return _committed({"id": kwargs["experiment_id"]})
 
     def record_tracking_run(self, **kwargs):
         return {"id": kwargs["experiment_id"], "mlflow_run": kwargs["run"]}
+
+    def refresh_tracking_run(self, **kwargs):
+        return _committed(
+            {"id": kwargs["experiment_id"], "mlflow_run": kwargs["run"]},
+            event_type="experiment.mlflow_run_refreshed",
+        )
 
     def record_exhibit_verdict(self, **kwargs):
         return None
@@ -181,6 +199,7 @@ class ComponentFacadeTest(unittest.TestCase):
             facade.experiment_state(experiment_id="exp_1", project_id="proj_1"),
             service.state,
         )
+        self.assertEqual(facade.project_experiments(project_id="proj_1"), [service.state])
         self.assertIs(
             facade.transition_experiment(
                 experiment_id="exp_1",
@@ -200,6 +219,11 @@ class ComponentFacadeTest(unittest.TestCase):
             ),
             service.state,
         )
+        refreshed = facade.refresh_tracking_run(
+            project_id="proj_1", experiment_id="exp_1", run=run
+        )
+        self.assertIsInstance(refreshed, CommittedTrackingRunRefresh)
+        self.assertEqual(refreshed.event.type, "experiment.mlflow_run_refreshed")
         verdict = {"runs_found": 1, "pinned": True}
         self.assertIsNone(
             facade.record_exhibit_verdict(
@@ -244,6 +268,7 @@ class ComponentFacadeTest(unittest.TestCase):
             service.calls,
             [
                 ("get_state", {"experiment_id": "exp_1", "project_id": "proj_1"}),
+                ("list_experiments", {"project_id": "proj_1"}),
                 (
                     "transition_with_event",
                     {
@@ -260,6 +285,16 @@ class ComponentFacadeTest(unittest.TestCase):
                         "experiment_id": "exp_1",
                         "run": run,
                         "event_type": "experiment.mlflow_run_refreshed",
+                    },
+                ),
+                (
+                    "record_mlflow_run",
+                    {
+                        "project_id": "proj_1",
+                        "experiment_id": "exp_1",
+                        "run": run,
+                        "event_type": "experiment.mlflow_run_refreshed",
+                        "return_event": True,
                     },
                 ),
                 (

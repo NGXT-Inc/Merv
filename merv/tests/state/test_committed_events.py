@@ -11,6 +11,7 @@ from pathlib import Path
 from merv.brain.application.events import EventDispatcher, EventReaction
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.experiments import ExperimentService
+from merv.brain.research_core.facade import ResearchCoreFacade
 
 
 class CommittedEventTest(unittest.TestCase):
@@ -141,6 +142,40 @@ class CommittedEventTest(unittest.TestCase):
         )
         self.assertIsInstance(legacy_state, dict)
         self.assertEqual(legacy_state["status"], "abandoned")
+
+    def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
+        experiments = ExperimentService(store=self.store)
+        research = ResearchCoreFacade(experiments)
+        created = experiments.create(
+            project_id=self.project_id, name="tracking-event", intent="test"
+        )
+        run = {
+            "run_id": "run_1",
+            "run_name": "owned",
+            "status": "FINISHED",
+            "artifact_uri": "s3://tracking/run_1",
+            "created_at": "2026-07-19T18:00:00Z",
+        }
+
+        committed = research.refresh_tracking_run(
+            project_id=self.project_id,
+            experiment_id=created["id"],
+            run=run,
+        )
+
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM events WHERE id = ?", (committed.event.id,)
+            ).fetchone()
+        assert row is not None
+        self.assertEqual(committed.event.type, "experiment.mlflow_run_refreshed")
+        self.assertEqual(committed.event.target_id, created["id"])
+        self.assertEqual(committed.event.created_at, str(row["created_at"]))
+        self.assertEqual(
+            dict(committed.event.payload), json.loads(str(row["payload_json"]))
+        )
+        self.assertEqual(committed.state["mlflow_run"]["run_id"], "run_1")
+        self.assertEqual(committed.state["mlflow_run"]["status"], "FINISHED")
 
     def test_event_insert_failure_rolls_back_state_and_event_together(self) -> None:
         experiments = ExperimentService(store=self.store)

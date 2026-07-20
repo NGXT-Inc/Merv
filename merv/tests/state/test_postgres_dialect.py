@@ -51,6 +51,8 @@ from merv.brain.kernel.state.store import (
     next_created_seq,
 )
 from merv.brain.kernel.utils import ValidationError, now_iso
+from merv.brain.research_core.experiments import ExperimentService
+from merv.brain.research_core.facade import ResearchCoreFacade
 from tests.surface.test_control_plane_contract import (
     ClientHarness,
     ControlPlaneContractScenarios,
@@ -676,6 +678,33 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         self.assertEqual(event.payload["z"], (2, {"nested": True}))
         with self.assertRaises(TypeError):
             event.payload["z"][1]["nested"] = False
+
+    def test_tracking_refresh_returns_exact_persisted_postgres_event(self) -> None:
+        project_id = self._seed_project()
+        experiments = ExperimentService(store=self.store)
+        created = experiments.create(
+            project_id=project_id, name="tracking-refresh", intent="postgres"
+        )
+
+        committed = ResearchCoreFacade(experiments).refresh_tracking_run(
+            project_id=project_id,
+            experiment_id=created["id"],
+            run={"run_id": "run_pg", "status": "FINISHED"},
+        )
+
+        conn = self.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM events WHERE id = ?", (committed.event.id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(str(row["type"]), "experiment.mlflow_run_refreshed")
+        self.assertEqual(str(row["target_id"]), created["id"])
+        self.assertEqual(str(row["created_at"]), committed.event.created_at)
+        self.assertEqual(committed.state["mlflow_run"]["run_id"], "run_pg")
 
     def test_created_seq_orders_versions_and_associations(self) -> None:
         project_id = self._seed_project()

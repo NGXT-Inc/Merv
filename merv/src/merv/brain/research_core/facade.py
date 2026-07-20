@@ -9,6 +9,7 @@ from .experiment_views import slim_experiment_state
 from .experiments import ExperimentService
 from .transition_types import (
     CommittedExperimentTransition,
+    CommittedTrackingRunRefresh,
     ExhibitVerdict,
     ExperimentState,
     PersistedRunState,
@@ -21,6 +22,8 @@ class ResearchCore(Protocol):
     def experiment_state(
         self, *, experiment_id: str, project_id: str | None = None
     ) -> ExperimentState: ...
+
+    def project_experiments(self, *, project_id: str) -> list[ExperimentState]: ...
 
     def transition_experiment(
         self,
@@ -39,6 +42,14 @@ class ResearchCore(Protocol):
         run: PersistedRunState,
         event_type: str | None = None,
     ) -> ExperimentState: ...
+
+    def refresh_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: PersistedRunState,
+    ) -> CommittedTrackingRunRefresh: ...
 
     def record_exhibit_verdict(
         self,
@@ -71,6 +82,12 @@ class ResearchCoreFacade:
             self._experiments.get_state(
                 experiment_id=experiment_id, project_id=project_id
             ),
+        )
+
+    def project_experiments(self, *, project_id: str) -> list[ExperimentState]:
+        return cast(
+            list[ExperimentState],
+            self._experiments.list_experiments(project_id=project_id)["experiments"],
         )
 
     def transition_experiment(
@@ -106,6 +123,24 @@ class ResearchCoreFacade:
             ),
         )
 
+    def refresh_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: PersistedRunState,
+    ) -> CommittedTrackingRunRefresh:
+        return cast(
+            CommittedTrackingRunRefresh,
+            self._experiments.record_mlflow_run(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                run=run,
+                event_type="experiment.mlflow_run_refreshed",
+                return_event=True,
+            ),
+        )
+
     def record_exhibit_verdict(
         self,
         *,
@@ -133,6 +168,7 @@ class ResearchCoreFacade:
 
 __all__ = [
     "CommittedExperimentTransition",
+    "CommittedTrackingRunRefresh",
     "ExhibitVerdict",
     "ExperimentState",
     "PersistedRunState",

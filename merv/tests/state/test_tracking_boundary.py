@@ -16,6 +16,7 @@ from merv.brain.application.ports.tracking import (
     TRACKING_CAPABILITY_TRUTH_TABLE,
     TrackingCapabilities,
     TrackingContext,
+    TrackingContextPayload,
 )
 from merv.brain.mlflow.tracking import CentralMlflowService
 
@@ -39,6 +40,10 @@ class TrackingBoundaryTest(unittest.TestCase):
         self.assertIs(
             get_type_hints(CentralMlflowService.finalize_run)["return"],
             FinalizeRunResult,
+        )
+        self.assertIs(
+            get_type_hints(CentralMlflowService.project_context)["return"],
+            TrackingContextPayload,
         )
         self.assertIs(
             get_type_hints(CentralMlflowService.results_metrics)["return"],
