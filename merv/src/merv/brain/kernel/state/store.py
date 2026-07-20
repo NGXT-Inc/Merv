@@ -18,6 +18,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Protocol
 
+from ..events import StoredEvent, freeze_json_object
 from ..secret_tokens import hash_secret
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
@@ -1127,13 +1128,35 @@ class BaseStateStore:
         target_type: str = "",
         target_id: str = "",
         payload: dict[str, Any] | None = None,
-    ) -> None:
-        conn.execute(
+    ) -> StoredEvent:
+        created_at = now_iso()
+        payload_json = json.dumps(payload or {}, sort_keys=True)
+        row = conn.execute(
             """
             INSERT INTO events (project_id, type, target_type, target_id, payload_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
-            (project_id, event_type, target_type, target_id, json.dumps(payload or {}, sort_keys=True), now_iso()),
+            (
+                project_id,
+                event_type,
+                target_type,
+                target_id,
+                payload_json,
+                created_at,
+            ),
+        ).fetchone()
+        if row is None:  # pragma: no cover - both supported dialects return it
+            raise RuntimeError("event insert did not return an id")
+        canonical_payload = json.loads(payload_json)
+        return StoredEvent(
+            id=int(row["id"]),
+            project_id=project_id,
+            type=event_type,
+            target_type=target_type,
+            target_id=target_id,
+            payload=freeze_json_object(canonical_payload),
+            created_at=created_at,
         )
 
     def events_since(

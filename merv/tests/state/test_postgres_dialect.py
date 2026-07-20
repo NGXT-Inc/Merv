@@ -28,6 +28,7 @@ a control plane actually serves them.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import socket
@@ -77,7 +78,18 @@ def _docker_available() -> bool:
         return False
 
 
+REQUIRE_POSTGRES_TESTS = os.environ.get("MERV_REQUIRE_POSTGRES_TESTS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 HAVE_DOCKER = _docker_available()
+if REQUIRE_POSTGRES_TESTS and not HAVE_DOCKER:
+    raise RuntimeError(
+        "MERV_REQUIRE_POSTGRES_TESTS is enabled but a working Docker daemon "
+        "is unavailable"
+    )
 
 
 def _free_port() -> int:
@@ -123,6 +135,8 @@ def setUpModule() -> None:
         except psycopg.Error:
             if time.monotonic() > deadline:
                 subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+                if REQUIRE_POSTGRES_TESTS:
+                    raise RuntimeError("required postgres container never became ready")
                 raise unittest.SkipTest("postgres container never became ready")
             time.sleep(0.5)
     _dsn = dsn
@@ -624,6 +638,40 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         self.assertEqual([e["payload"]["index"] for e in events], [2, 1, 0])
         ids = [int(e["id"]) for e in events]
         self.assertEqual(ids, sorted(ids, reverse=True))
+
+    def test_record_event_returns_exact_persisted_postgres_row(self) -> None:
+        project_id = self._seed_project()
+        with self.store.transaction() as conn:
+            event = self.store.record_event(
+                conn=conn,
+                project_id=project_id,
+                event_type="postgres.returned",
+                target_type="test",
+                target_id="target_pg",
+                payload={"z": [2, {"nested": True}], "a": 1},
+            )
+
+        conn = self.store.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM events WHERE id = ?", (event.id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(str(row["project_id"]), event.project_id)
+        self.assertEqual(str(row["type"]), event.type)
+        self.assertEqual(str(row["target_type"]), event.target_type)
+        self.assertEqual(str(row["target_id"]), event.target_id)
+        self.assertEqual(str(row["created_at"]), event.created_at)
+        self.assertEqual(
+            str(row["payload_json"]),
+            '{"a": 1, "z": [2, {"nested": true}]}',
+        )
+        self.assertEqual(event.payload["z"], (2, {"nested": True}))
+        with self.assertRaises(TypeError):
+            event.payload["z"][1]["nested"] = False
 
     def test_created_seq_orders_versions_and_associations(self) -> None:
         project_id = self._seed_project()

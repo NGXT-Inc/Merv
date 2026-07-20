@@ -1,83 +1,136 @@
 # Module Boundaries
 
-Implemented brain shape: a modular monolith — one kernel, five modules plus the
-MLflow extension, and a surface that composes them. The local proxy and pure
-shared layer sit outside this brain-only module law.
+The brain is a modular monolith. Two independent classifications describe it:
 
+- a **component** says which capability owns a file;
+- a **layer** says what architectural job that file performs.
+
+This distinction is intentional. Research, Artifacts, Sandbox, and Feed are
+business components. MLflow is an outbound tracking integration, and concrete
+object storage is outbound infrastructure. A provider driver can therefore be
+adapter-layer code owned by Sandbox; a folder name does not make an adapter a
+business authority.
+
+```text
+                       bootstrap / composition
+                    /          |             \
+                   v           v              v
+              delivery --> application <-- adapters
+                                  |
+                                  v
+                         component facades/ports
+                                  |
+                                  v
+                                kernel
 ```
-                    ┌───────────────────────── SURFACE ─────────────────────────┐
-                    │  surface/: tools/ transport/ composition/ control/        │
-                    │  config observability glue  (imports anything)            │
-                    └───────┬──────────┬──────────┬─────────┬─────────┬─────────┘
-                            ▼          ▼          ▼         ▼         ▼
-   MLFLOW ──────▶ RESEARCH_CORE   ARTIFACTS   OBJECT_   SANDBOX     FEED
- (extension)          │    │          │       STORAGE                │
-                      │    └─────────▶│          ▲                   │
-                      │   (allowance) └─────────▶│◀──────────────────┘
-                      ▼                    (allowances)
-                    KERNEL   (db/transactions/events/ids — imports only itself)
-```
 
-## Import law
+The local proxy and pure shared packages sit outside this brain-only law.
 
-- kernel imports only kernel.
-- Each module imports only itself + kernel, plus these ratified allowances:
-  - `research_core -> artifacts`: workflow gates judge pinned artifact bytes.
-  - `artifacts -> object_storage` and `feed -> object_storage`: resource
-    versions and feed images persist their bytes through the blob stores.
-  - `mlflow -> research_core`: the extension reads experiment records.
-- surface imports anything. **Nothing imports surface.**
+## Component law
 
-Across planes, the reverse boundary is equally strict: brain code may import
-pure `merv.shared` contracts but never `merv.proxy`; proxy code may import only
-the standard library, `merv.proxy`, and `merv.shared`; shared code imports only
-the standard library and itself, never either plane.
+Every `src/merv/brain/**/*.py` file has exactly one component. Deepest-prefix
+classification plus file overrides handles mixed packages.
 
-## Module → package mapping
+| Component | Physical code today | Meaning |
+|---|---|---|
+| Kernel | `kernel/**` | shared contracts, state floor, IDs, events, utilities |
+| Research | `research_core/**` | experiment/review/reflection/project authority |
+| Artifacts | `artifacts/**` | resources, associations, pinned evidence |
+| Sandbox | `sandbox/**` | lifecycle and provider-driver capability |
+| Feed | `feed/**` | feed records and advisory policy |
+| Application | `application/**` | cross-component commands and reactions |
+| Tracking integration | `mlflow/**` | MLflow implementation of tracking ports |
+| Storage | `object_storage/**` | byte/object adapters plus the legacy ledger service |
+| Surface | `surface/**` | HTTP/MCP delivery and the co-located composition root |
 
-| Module         | Backend code                                                                |
-|----------------|-----------------------------------------------------------------------------|
-| kernel         | `kernel/state/*` (incl. `tool_call_stats`), `kernel/ports/*` (incl. the `AdmissionRequest` contract in `ports/quota_admission`), `kernel/{utils,env,version,secret_tokens}` |
-| research_core  | `research_core/*` (workflow/experiments/claims/reviews/reflections/projects services + views, `graph_refs`, `reflection_tools`), `research_core/domain/*` |
-| artifacts      | `artifacts/*` (resources, pinned + PinnedStore facade, figure_view, resource_selection) |
-| object_storage | `object_storage/*` (blob/object-store adapters and ledger service) |
-| sandbox        | `sandbox/*` (incl. the `mgmt_keys`/`managed_mgmt_keys` custody adapters, `sandbox_paths`, `ssh_keys`, `transcript_cache`, `quotas`), `sandbox/execution/*` |
-| feed           | `feed/*` (feed, feed_unfurl, feed_policy)                                   |
-| mlflow         | `mlflow/*` (extension, incl. its own env config in `mlflow/config`)          |
-| surface        | `surface/*` — one physical package: `surface/{tools,transport,composition,control}/*`, glue services (`auth`, `permissions`, `identity`, `cleanup`), `surface/config`, `surface/observability` |
+The exact component import matrix is:
 
-Outside the brain modular-monolith classifier:
-
-| Layer | Code |
+| Importer | May import |
 |---|---|
-| local proxy | `src/merv/proxy/*`, including `dataplane/*` and `workspace.py` |
-| pure shared | `src/merv/shared/*`, including errors, path/wire/tool contracts, storage helpers, feed media, artifact roles, and markdown parsing |
-| login CLI | `src/merv/client/*` — ships in the slim plugin bundle; imports only stdlib + `merv.shared`, never `merv.brain` |
+| Kernel | Kernel |
+| Research | Research, Artifacts, Kernel |
+| Artifacts | Artifacts, Kernel |
+| Sandbox | Sandbox, Kernel |
+| Feed | Feed, Kernel |
+| Application | Application, Research, Artifacts, Feed, Kernel |
+| Tracking integration | Tracking integration, Application, Kernel |
+| Storage | Storage, Kernel |
+| Surface | any component; its independent layer classification still applies |
 
-The authoritative, file-exact table is `FILE_MODULES`/`PACKAGE_MODULES` in
-`tests/structure/test_module_boundaries.py`.
+Application code enters a business component only through its declared
+`facade.py` or `ports/**` entrypoint. This is the executable form of “one stable
+public facade”; it prevents a new use case from depending on internal services.
+Sandbox's stable component facade remains deliberately deferred until a narrow
+sandbox use case reveals its real contract.
 
-## How the ratchet works
+## Layer law
 
-`tests/structure/test_module_boundaries.py` AST-scans every import (top-level
-and function-local) in backend production code, maps importer and imported
-file to modules, and checks the edge against the law above. `GRANDFATHERED` is
-empty: every import follows the law, and any new cross-module import fails
-immediately. New backend files must be classified in the same test before they
-can land.
+The initial layer mapping is deliberately honest about mixed directories:
 
-Two module-content rules ride along with the import law:
+| Layer | Representative paths |
+|---|---|
+| foundation | `kernel/**` |
+| port | `kernel/ports/**`, `application/ports/**`, `sandbox/sandbox_backend.py` |
+| domain | `research_core/domain/**`, pure artifact/feed policy files |
+| application | component services, `application/**`, legacy Surface orchestration still being migrated |
+| adapter | `mlflow/**`, concrete storage/blob code, sandbox provider drivers, client/runtime adapters |
+| delivery | ordinary `surface/**` HTTP/MCP/auth/serialization code |
+| bootstrap | Surface composition/config/control wiring, the HTTP process launcher, sandbox driver registration |
 
-- **SQL ownership:** module SQL may name only tables owned by that module, the
-  kernel, or an allowed dependency. This is enforced by
-  `test_module_sql_respects_table_ownership`; attachment ids therefore remain
-  opaque inside the sandbox module, while the surface injects research-core
-  existence/scope checks.
-- **Provider neutrality:** sandbox services do not dispatch on provider-name
-  literals. Provider differences are expressed as `BackendCapabilities` flags
-  and the typed `SandboxDriver`/`SandboxManagementTransport` contracts, then
-  implemented under `sandbox/execution/backends/<provider>/`. Lazy provider
-  descriptors are the sole composition registry; services never import it.
-  This is enforced by
-  `test_services_do_not_dispatch_on_provider_name_literals` and the shared
-  offline driver conformance tests.
+`object_storage/service.py` is a notable override: it owns versioning, TTL,
+deduplication, lifecycle events, concurrency, and reclamation policy, so it is
+Storage-component **application** code, not a provider adapter. Its physical
+move is deferred. Conversely, `object_storage/{blobs,s3_blobs,s3_object_store}`
+are adapters implementing kernel-owned storage ports.
+
+Imports must point inward:
+
+- foundation -> foundation;
+- port -> port/foundation;
+- domain -> domain/port/foundation;
+- application -> application/domain/port/foundation;
+- adapter -> adapter/application/domain/port/foundation;
+- delivery -> delivery/application/port/foundation;
+- bootstrap -> any layer.
+
+Nothing except bootstrap may import bootstrap, and no non-delivery layer may
+import delivery. `LAYER_EXCEPTIONS` contains exact importer/target pairs for
+unrelated legacy Surface seams plus the named Feed-to-unfurl seam. It contains
+no wildcard. Fixed pairs must be deleted, while new pairs fail immediately.
+
+## Ports and adapters
+
+Research/application workflows depend on an `ExperimentTracking` port, not on
+MLflow. `CentralMlflowService` implements it. The port distinguishes logging,
+control, and readback capabilities so tracking-only and server-only deployments
+retain their current behavior.
+
+Artifacts, Feed, cleanup, and storage-ledger policy depend on narrow blob/object
+ports owned by Kernel. Local and S3 implementations remain under
+`object_storage` as replaceable adapters. Old import paths may re-export the
+same symbols for compatibility, but do not own their definitions.
+
+These are dependency changes, not service extraction: everything still runs in
+one brain process and shares the existing transaction/event ledger.
+
+## Cross-plane law
+
+Brain code may import pure `merv.shared` contracts but never `merv.proxy`.
+Proxy code may import only the standard library, `merv.proxy`, and
+`merv.shared`. Shared code imports only the standard library and itself. The
+login client ships in the slim bundle and imports only the standard library and
+`merv.shared`, never `merv.brain`.
+
+## Executable ratchets
+
+`tests/structure/test_module_boundaries.py` AST-scans top-level and
+function-local imports, classifies every brain file twice, enforces both laws,
+checks component-owned SQL, and rejects stale table entries and stale exception
+pairs. SQL may name only tables owned by the file's component, Kernel tables,
+or tables behind a ratified component dependency.
+
+Sandbox provider neutrality is enforced separately: services do not dispatch
+on provider-name literals. Capability flags and the typed `SandboxDriver` /
+`SandboxManagementTransport` contracts express provider differences; lazy
+provider descriptors form the composition registry; the shared offline driver
+conformance suite applies to every registered implementation.

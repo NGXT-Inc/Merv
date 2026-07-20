@@ -1,12 +1,10 @@
-"""Module-boundary lints for the modular-monolith transition.
+"""Executable component and layer laws for the brain modular monolith.
 
-docs/MODULE_BOUNDARIES.md defines the target: a KERNEL, five modules
-(RESEARCH_CORE, ARTIFACTS, OBJECT_STORAGE, SANDBOX, FEED) plus the MLFLOW
-extension, and a SURFACE that composes them. Every brain production file is
-assigned to exactly one module, imports (including function-local ones — the
-codebase uses them to break cycles) may only follow the allowed edges, and
-today's violations are frozen in GRANDFATHERED as a monotonically shrinking
-baseline: new violations fail immediately, fixed ones must be deleted.
+``docs/MODULE_BOUNDARIES.md`` is the human-readable decision record.  Every
+brain production file is independently classified by capability ownership
+(component) and architectural role (layer).  Imports, including function-local
+imports, must satisfy *both* laws.  Transitional layer violations are frozen as
+exact file pairs: new violations fail and repaired pairs must be removed.
 """
 
 from __future__ import annotations
@@ -25,6 +23,7 @@ OBJECT_STORAGE = "object_storage"
 SANDBOX = "sandbox"
 FEED = "feed"
 MLFLOW = "mlflow"
+APPLICATION_COMPONENT = "application"
 SURFACE = "surface"
 
 MODULES = (
@@ -35,12 +34,13 @@ MODULES = (
     SANDBOX,
     FEED,
     MLFLOW,
+    APPLICATION_COMPONENT,
     SURFACE,
 )
 
-# Directory-level assignments (deepest matching prefix wins; FILE_MODULES wins
-# over both). Paths are brain-relative posix.
-PACKAGE_MODULES = {
+# Directory-level component assignments (deepest matching prefix wins;
+# FILE_COMPONENTS wins over all prefixes). Paths are brain-relative posix.
+PACKAGE_COMPONENTS = {
     "kernel": KERNEL,
     "research_core": RESEARCH_CORE,
     "artifacts": ARTIFACTS,
@@ -48,39 +48,147 @@ PACKAGE_MODULES = {
     "sandbox": SANDBOX,
     "feed": FEED,
     "mlflow": MLFLOW,
-    # One physical surface package: tools/, transport/, composition/,
-    # control/, the glue services, config, and observability live under it.
+    "application": APPLICATION_COMPONENT,
     "surface": SURFACE,
 }
 
-# File-level assignments and overrides. Every brain .py file must resolve to
-# a module through this table or PACKAGE_MODULES — unknown files fail
-# test_every_backend_file_is_classified.
-FILE_MODULES = {
+# File-level component overrides.
+FILE_COMPONENTS = {
     # kernel: package root docstring/version shell.
     "__init__.py": KERNEL,
 }
 
-# The import law: kernel imports only kernel; each module imports itself +
-# kernel; surface imports anything; NOTHING imports surface. Plus three
-# ratified module-to-module allowances (see docs/MODULE_BOUNDARIES.md).
-ALLOWED_EDGES = (
-    {(module, module) for module in MODULES}
-    | {(module, KERNEL) for module in MODULES}
-    | {(SURFACE, module) for module in MODULES}
+# Component answers "which capability owns this file?"  MLflow and concrete
+# object storage are integrations, while cross-component coordination belongs
+# to Application.  Surface is the outer delivery/composition component.
+ALLOWED_COMPONENT_EDGES = (
+    {(KERNEL, KERNEL)}
+    | {(RESEARCH_CORE, dependency) for dependency in (RESEARCH_CORE, ARTIFACTS, KERNEL)}
+    | {(ARTIFACTS, dependency) for dependency in (ARTIFACTS, KERNEL)}
+    | {(SANDBOX, dependency) for dependency in (SANDBOX, KERNEL)}
+    | {(FEED, dependency) for dependency in (FEED, KERNEL)}
     | {
-        (RESEARCH_CORE, ARTIFACTS),  # workflow gates judge pinned bytes
-        (ARTIFACTS, OBJECT_STORAGE),  # resource versions persist blobs
-        (FEED, OBJECT_STORAGE),  # feed images persist blobs
-        (MLFLOW, RESEARCH_CORE),  # extension reads experiment records
+        (APPLICATION_COMPONENT, dependency)
+        for dependency in (
+            APPLICATION_COMPONENT,
+            RESEARCH_CORE,
+            ARTIFACTS,
+            FEED,
+            KERNEL,
+        )
     }
+    | {(MLFLOW, dependency) for dependency in (MLFLOW, APPLICATION_COMPONENT, KERNEL)}
+    | {(OBJECT_STORAGE, dependency) for dependency in (OBJECT_STORAGE, KERNEL)}
+    | {(SURFACE, dependency) for dependency in MODULES}
 )
 
-# Frozen baseline of violating (importer_file, imported_file) pairs.
-# This list may only shrink: a fixed edge must be deleted here, and no new
-# edge may be added. Move the code, not the line. Phase 4a drove it to ZERO —
-# every import now follows the law above; keep it that way.
-GRANDFATHERED: frozenset[tuple[str, str]] = frozenset()
+# Layer is independent of component ownership. A provider driver can therefore
+# be an adapter in the Sandbox component, and StorageLedgerService can remain
+# application policy in the Storage component until a later physical move.
+FOUNDATION = "foundation"
+PORT = "port"
+DOMAIN = "domain"
+APPLICATION_LAYER = "application"
+ADAPTER = "adapter"
+DELIVERY = "delivery"
+BOOTSTRAP = "bootstrap"
+
+LAYERS = (
+    FOUNDATION,
+    PORT,
+    DOMAIN,
+    APPLICATION_LAYER,
+    ADAPTER,
+    DELIVERY,
+    BOOTSTRAP,
+)
+
+PACKAGE_LAYERS = {
+    "kernel": FOUNDATION,
+    "kernel/ports": PORT,
+    "research_core": APPLICATION_LAYER,
+    "research_core/domain": DOMAIN,
+    "artifacts": APPLICATION_LAYER,
+    "feed": APPLICATION_LAYER,
+    "sandbox": APPLICATION_LAYER,
+    "sandbox/execution/backends": ADAPTER,
+    "mlflow": ADAPTER,
+    "object_storage": ADAPTER,
+    "application": APPLICATION_LAYER,
+    "application/ports": PORT,
+    "surface": DELIVERY,
+    "surface/composition": BOOTSTRAP,
+}
+
+FILE_LAYERS = {
+    "__init__.py": FOUNDATION,
+    "kernel/state/dialects.py": ADAPTER,
+    "artifacts/figure_view.py": DOMAIN,
+    "artifacts/resource_selection.py": DOMAIN,
+    "feed/feed_policy.py": DOMAIN,
+    "feed/feed_unfurl.py": ADAPTER,
+    "sandbox/sandbox_backend.py": PORT,
+    "sandbox/execution/multiplexer.py": ADAPTER,
+    "sandbox/execution/vm_ssh.py": ADAPTER,
+    "sandbox/execution/__init__.py": BOOTSTRAP,
+    "sandbox/execution/driver_registry.py": BOOTSTRAP,
+    "sandbox/managed_mgmt_keys.py": ADAPTER,
+    "sandbox/mgmt_keys.py": ADAPTER,
+    "sandbox/ssh_keys.py": ADAPTER,
+    "object_storage/service.py": APPLICATION_LAYER,
+    "surface/config.py": BOOTSTRAP,
+    "surface/transport/http_server.py": BOOTSTRAP,
+    "surface/control/control_app.py": BOOTSTRAP,
+    "surface/control/record_core.py": BOOTSTRAP,
+    "surface/control/control_client.py": ADAPTER,
+    "surface/control/control_runtime.py": ADAPTER,
+    "surface/cleanup.py": APPLICATION_LAYER,
+    "surface/tools/exhibits.py": APPLICATION_LAYER,
+    "surface/tools/tool_handlers.py": APPLICATION_LAYER,
+}
+
+ALLOWED_LAYER_EDGES = (
+    {(FOUNDATION, FOUNDATION)}
+    | {(PORT, dependency) for dependency in (PORT, FOUNDATION)}
+    | {(DOMAIN, dependency) for dependency in (DOMAIN, PORT, FOUNDATION)}
+    | {
+        (APPLICATION_LAYER, dependency)
+        for dependency in (APPLICATION_LAYER, DOMAIN, PORT, FOUNDATION)
+    }
+    | {
+        (ADAPTER, dependency)
+        for dependency in (ADAPTER, APPLICATION_LAYER, DOMAIN, PORT, FOUNDATION)
+    }
+    | {
+        (DELIVERY, dependency)
+        for dependency in (DELIVERY, APPLICATION_LAYER, PORT, FOUNDATION)
+    }
+    | {(BOOTSTRAP, dependency) for dependency in LAYERS}
+)
+
+# Exact-pair compatibility ledger for unrelated Surface work that has not yet
+# moved inward. This may only shrink. Experiment-transition/exhibit pairs are
+# deliberately absent from the final ledger.
+LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Feed still constructs its network adapter instead of receiving a
+        # LinkUnfurlPort. This is the one named component-internal exception.
+        ("feed/feed.py", "feed/feed_unfurl.py"),
+        # Unrelated legacy Surface entrypoints. Move these dependencies inward
+        # use case by use case; never broaden them to directory wildcards.
+        ("surface/auth.py", "research_core/domain/vocabulary.py"),
+        ("surface/identity.py", "research_core/domain/vocabulary.py"),
+        ("surface/observability.py", "surface/config.py"),
+        ("surface/permissions.py", "research_core/domain/vocabulary.py"),
+        ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
+        ("surface/tools/contracts.py", "surface/config.py"),
+        ("surface/tools/tool_handlers.py", "mlflow/__init__.py"),
+        ("surface/transport/api/views.py", "artifacts/figure_view.py"),
+        ("surface/transport/api/views.py", "artifacts/resource_selection.py"),
+        ("surface/transport/api/views.py", "mlflow/__init__.py"),
+        ("surface/transport/api/views.py", "research_core/domain/graph_lint.py"),
+    }
+)
 
 
 # SQL follows the import law (conformance scan, post-phase-6): a module's SQL
@@ -121,15 +229,32 @@ def _backend_files() -> list[Path]:
     )
 
 
-def _classify(rel: str) -> str | None:
-    if rel in FILE_MODULES:
-        return FILE_MODULES[rel]
+def _classify_from(
+    rel: str,
+    *,
+    packages: dict[str, str],
+    files: dict[str, str],
+) -> str | None:
+    if rel in files:
+        return files[rel]
     parts = rel.split("/")
     for depth in range(len(parts) - 1, 0, -1):
         prefix = "/".join(parts[:depth])
-        if prefix in PACKAGE_MODULES:
-            return PACKAGE_MODULES[prefix]
+        if prefix in packages:
+            return packages[prefix]
     return None
+
+
+def _component(rel: str) -> str | None:
+    return _classify_from(
+        rel,
+        packages=PACKAGE_COMPONENTS,
+        files=FILE_COMPONENTS,
+    )
+
+
+def _layer(rel: str) -> str | None:
+    return _classify_from(rel, packages=PACKAGE_LAYERS, files=FILE_LAYERS)
 
 
 def _dotted_index() -> dict[str, str]:
@@ -179,53 +304,94 @@ def _import_targets(path: Path, dotted: dict[str, str]) -> set[str]:
     return targets
 
 
-def _current_violations() -> set[tuple[str, str]]:
+def _import_pairs() -> set[tuple[str, str]]:
     dotted = _dotted_index()
-    violations: set[tuple[str, str]] = set()
+    imports: set[tuple[str, str]] = set()
     for path in _backend_files():
         rel = path.relative_to(BACKEND_ROOT).as_posix()
-        importer = _classify(rel)
         for target in _import_targets(path, dotted):
             if target == rel:
                 continue
-            if (importer, _classify(target)) not in ALLOWED_EDGES:
-                violations.add((rel, target))
-    return violations
+            imports.add((rel, target))
+    return imports
+
+
+def _component_violations() -> set[tuple[str, str]]:
+    return {
+        (importer, target)
+        for importer, target in _import_pairs()
+        if (_component(importer), _component(target)) not in ALLOWED_COMPONENT_EDGES
+    }
+
+
+def _layer_violations() -> set[tuple[str, str]]:
+    return {
+        (importer, target)
+        for importer, target in _import_pairs()
+        if (_layer(importer), _layer(target)) not in ALLOWED_LAYER_EDGES
+    }
 
 
 class ModuleBoundaryTest(unittest.TestCase):
-    def test_every_backend_file_is_classified(self) -> None:
-        unclassified = sorted(
-            rel
-            for path in _backend_files()
-            if _classify(rel := path.relative_to(BACKEND_ROOT).as_posix()) is None
-        )
-        self.assertFalse(
-            unclassified,
-            "new brain files must be assigned a module in "
-            f"tests/structure/test_module_boundaries.py: {unclassified}",
-        )
+    def test_every_backend_file_is_classified_by_component_and_layer(self) -> None:
+        for label, classifier in (("component", _component), ("layer", _layer)):
+            with self.subTest(classification=label):
+                unclassified = sorted(
+                    rel
+                    for path in _backend_files()
+                    if classifier(
+                        rel := path.relative_to(BACKEND_ROOT).as_posix()
+                    )
+                    is None
+                )
+                self.assertFalse(
+                    unclassified,
+                    f"new brain files must be assigned a {label} in "
+                    "tests/structure/test_module_boundaries.py: "
+                    f"{unclassified}",
+                )
 
     def test_classification_tables_carry_no_stale_paths(self) -> None:
-        for rel in sorted(FILE_MODULES):
-            with self.subTest(file=rel):
-                self.assertTrue(
-                    (BACKEND_ROOT / rel).is_file(), f"stale FILE_MODULES entry: {rel}"
-                )
-        for prefix in sorted(PACKAGE_MODULES):
-            with self.subTest(package=prefix):
-                self.assertTrue(
-                    (BACKEND_ROOT / prefix).is_dir(),
-                    f"stale PACKAGE_MODULES entry: {prefix}",
-                )
+        for table_name, paths in (
+            ("FILE_COMPONENTS", FILE_COMPONENTS),
+            ("FILE_LAYERS", FILE_LAYERS),
+        ):
+            for rel in sorted(paths):
+                with self.subTest(table=table_name, file=rel):
+                    self.assertTrue(
+                        (BACKEND_ROOT / rel).is_file(),
+                        f"stale {table_name} entry: {rel}",
+                    )
+        for table_name, paths in (
+            ("PACKAGE_COMPONENTS", PACKAGE_COMPONENTS),
+            ("PACKAGE_LAYERS", PACKAGE_LAYERS),
+        ):
+            for prefix in sorted(paths):
+                with self.subTest(table=table_name, package=prefix):
+                    self.assertTrue(
+                        (BACKEND_ROOT / prefix).is_dir(),
+                        f"stale {table_name} entry: {prefix}",
+                    )
 
-    def test_no_new_module_boundary_violations(self) -> None:
-        new = sorted(_current_violations() - GRANDFATHERED)
+    def test_component_import_law(self) -> None:
+        violations = sorted(_component_violations())
+        self.assertFalse(
+            violations,
+            "component-boundary violation (see docs/MODULE_BOUNDARIES.md): "
+            + ", ".join(
+                f"{importer} -> {target} "
+                f"[{_component(importer)} -> {_component(target)}]"
+                for importer, target in violations
+            ),
+        )
+
+    def test_no_new_layer_boundary_violations(self) -> None:
+        new = sorted(_layer_violations() - LAYER_EXCEPTIONS)
         self.assertFalse(
             new,
-            "new module-boundary violation (see docs/MODULE_BOUNDARIES.md): "
+            "new layer-boundary violation (see docs/MODULE_BOUNDARIES.md): "
             + ", ".join(
-                f"{importer} -> {target} [{_classify(importer)} -> {_classify(target)}]"
+                f"{importer} -> {target} [{_layer(importer)} -> {_layer(target)}]"
                 for importer, target in new
             ),
         )
@@ -239,7 +405,7 @@ class ModuleBoundaryTest(unittest.TestCase):
         offenders: list[str] = []
         for path in _backend_files():
             rel = path.relative_to(BACKEND_ROOT).as_posix()
-            module = _classify(rel)
+            module = _component(rel)
             if module in (None, KERNEL, SURFACE):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -250,7 +416,7 @@ class ModuleBoundaryTest(unittest.TestCase):
                     owner = TABLE_OWNERS.get(match.group(1).lower())
                     if owner is None or owner == module:
                         continue
-                    if (module, owner) not in ALLOWED_EDGES:
+                    if (module, owner) not in ALLOWED_COMPONENT_EDGES:
                         offenders.append(
                             f"{rel}:{node.lineno} ({module} SQL names "
                             f"{owner} table {match.group(1)})"
@@ -262,12 +428,33 @@ class ModuleBoundaryTest(unittest.TestCase):
             + ", ".join(sorted(set(offenders))),
         )
 
-    def test_grandfathered_baseline_only_shrinks(self) -> None:
-        stale = sorted(GRANDFATHERED - _current_violations())
+    def test_layer_exception_baseline_only_shrinks(self) -> None:
+        stale = sorted(LAYER_EXCEPTIONS - _layer_violations())
         self.assertFalse(
             stale,
-            "stale baseline entry — boundary improved, DELETE this line to ratchet: "
+            "stale layer exception — boundary improved, DELETE this pair: "
             + ", ".join(f"{importer} -> {target}" for importer, target in stale),
+        )
+
+    def test_application_uses_declared_component_entrypoints(self) -> None:
+        """Cross-component application imports use a facade or explicit port."""
+        offenders: list[str] = []
+        public_components = (RESEARCH_CORE, ARTIFACTS, FEED)
+        for importer, target in sorted(_import_pairs()):
+            if _component(importer) != APPLICATION_COMPONENT:
+                continue
+            target_component = _component(target)
+            if target_component not in public_components:
+                continue
+            root = target_component + "/"
+            relative_target = target.removeprefix(root)
+            if relative_target == "facade.py" or relative_target.startswith("ports/"):
+                continue
+            offenders.append(f"{importer} -> {target}")
+        self.assertFalse(
+            offenders,
+            "application code must enter business components through facade.py "
+            "or ports/**: " + ", ".join(offenders),
         )
 
 

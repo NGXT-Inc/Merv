@@ -7,9 +7,12 @@ import json
 import math
 from typing import Any
 
+from ..kernel.ports.blob_store import validate_blob_keys
 from ..kernel.ports.object_store import ObjectStat
-from .blobs import _validate_keys
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
+
+
+_validate_keys = validate_blob_keys
 
 
 _UPLOAD_PREFIX = ".uploads/"

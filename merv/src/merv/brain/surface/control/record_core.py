@@ -20,7 +20,7 @@ from ...research_core.reflection_tools import ReflectionToolService
 from ...research_core.reviews import ReviewService
 from ...research_core.reflections import ReflectionService
 from ...kernel.state import BaseStateStore
-from ...object_storage.blobs import BlobStore
+from ...kernel.ports.blob_store import EvidenceBlobStore
 from ...object_storage.service import objects_for_experiment
 from ...kernel.utils import NotFoundError
 
@@ -41,7 +41,7 @@ class RecordCore:
     feed: FeedService
 
 
-def build_record_core(*, store: BaseStateStore, blobs: BlobStore) -> RecordCore:
+def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> RecordCore:
     """Build record services without workspace, worker, or execution objects."""
     permissions = PermissionService()
     quotas = QuotaService(store=store)

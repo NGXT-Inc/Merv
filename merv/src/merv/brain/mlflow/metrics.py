@@ -7,9 +7,13 @@ from typing import Any
 
 import httpx
 
+from ..application.ports.tracking import MAX_TRACKING_SNAPSHOT_RUNS
+
 # Extraction bounds: the archive is a results record, not a full MLflow mirror.
 MAX_EXPERIMENTS = 20
-MAX_RUNS = 50
+# Compatibility name retained for existing callers.  The bound itself is an
+# application contract because exhibits disclose it to readers.
+MAX_RUNS = MAX_TRACKING_SNAPSHOT_RUNS
 MAX_METRIC_KEYS = 100
 MAX_HISTORY_POINTS = 1000
 MAX_EXPERIMENT_SCAN = 1000

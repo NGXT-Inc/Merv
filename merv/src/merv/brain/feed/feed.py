@@ -32,6 +32,7 @@ from merv.shared.feed_images import (
 )
 
 from . import feed_policy
+from ..kernel.ports.blob_store import EvidenceBlobStore
 from ..kernel.state.store import (
     BaseStateStore,
     next_created_seq,
@@ -140,7 +141,7 @@ def _validate_handle(handle: str) -> str:
 
 
 class FeedService:
-    def __init__(self, *, store: BaseStateStore, blobs: Any) -> None:
+    def __init__(self, *, store: BaseStateStore, blobs: EvidenceBlobStore) -> None:
         self.store = store
         self.blobs = blobs
         self._ensure_schema()

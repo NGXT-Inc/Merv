@@ -15,8 +15,8 @@ from merv.shared.file_transfer import (
 )
 from merv.shared.storage_guidance import storage_guidance
 
+from ..kernel.ports.blob_store import validate_blob_keys
 from ..kernel.ports.object_store import ObjectStore
-from .blobs import _validate_keys
 from ..kernel.state.store import (
     BaseStateStore,
     Connection,
@@ -87,7 +87,7 @@ class StorageLedgerService:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             namespace = self._namespace(project_id=project_id)
-            _validate_keys(namespace=namespace, sha256=sha256)
+            validate_blob_keys(namespace=namespace, sha256=sha256)
             existing = conn.execute(
                 """
                 SELECT *

@@ -21,92 +21,23 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
 
+from ..kernel.ports.blob_store import (
+    BlobDownloadTarget,
+    BlobStat,
+    BlobStore,
+    BlobTransferStore,
+    BlobUploadTarget,
+    EvidenceBlobStore,
+    ExpiringBlobStore,
+    validate_blob_keys,
+)
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
-
-_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-
-
-@dataclass(frozen=True)
-class BlobStat:
-    sha256: str
-    namespace: str
-    size_bytes: int
-    content_type: str
-    created_at: str
-    expires_at: str | None
-
-
-class BlobStore(Protocol):
-    """Content-addressed, namespace-scoped byte storage."""
-
-    def put(
-        self,
-        *,
-        namespace: str,
-        data: bytes,
-        content_type: str = "application/octet-stream",
-        expires_at: str | None = None,
-    ) -> str:
-        """Store ``data``; returns its sha256 hex key. Idempotent: re-putting
-        identical bytes is a no-op (an existing blob's expiry is only ever
-        extended, never shortened)."""
-        ...
-
-    def get(self, *, namespace: str, sha256: str) -> bytes:
-        """Return the blob's bytes; raises NotFoundError when absent."""
-        ...
-
-    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
-        """Mint a read URL for an existing blob. Returns ``{url}``.
-
-        Local mode returns a ``file://`` URL; S3 returns a presigned HTTPS GET.
-        """
-        ...
-
-    def stat(self, *, namespace: str, sha256: str) -> BlobStat | None: ...
-
-    def delete(self, *, namespace: str, sha256: str) -> bool: ...
-
-    def presign_put(
-        self,
-        *,
-        namespace: str,
-        max_size_bytes: int,
-        expires_at: str | None = None,
-        content_type: str = "application/octet-stream",
-    ) -> dict[str, Any]:
-        """Mint a single-use upload target for bytes produced off-process.
-
-        Returns ``{upload_id, url, max_size_bytes, expires_at}``; the producer
-        PUTs to ``url``, then the control plane calls ``finalize_put``.
-        """
-        ...
-
-    def finalize_put(self, *, upload_id: str) -> BlobStat:
-        """Land a completed upload in the content-addressed store: enforce
-        the size cap, hash the bytes, consume the single-use target. Raises
-        NotFoundError for an unknown/already-consumed upload or one that
-        received no bytes."""
-        ...
-
-    def sweep_expired(self, *, now: str | None = None) -> int:
-        """Delete blobs whose ``expires_at`` is past ``now``; returns count."""
-        ...
-
-
-def _validate_keys(*, namespace: str, sha256: str | None = None) -> None:
-    if not namespace or not _NAMESPACE_RE.match(namespace):
-        raise ValidationError(f"invalid blob namespace: {namespace!r}")
-    if sha256 is not None and not _SHA256_RE.match(sha256):
-        raise ValidationError(f"invalid blob key (expected sha256 hex): {sha256!r}")
+# Historical private import retained as the exact kernel-owned function object.
+_validate_keys = validate_blob_keys
 
 
 class LocalDirBlobStore:
@@ -157,7 +88,9 @@ class LocalDirBlobStore:
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
         return blob_path.read_bytes()
 
-    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
+    def presign_get(
+        self, *, namespace: str, sha256: str
+    ) -> BlobDownloadTarget:
         _validate_keys(namespace=namespace, sha256=sha256)
         blob_path = self._blob_path(namespace=namespace, sha256=sha256)
         if not blob_path.exists():
@@ -197,7 +130,7 @@ class LocalDirBlobStore:
         max_size_bytes: int,
         expires_at: str | None = None,
         content_type: str = "application/octet-stream",
-    ) -> dict[str, Any]:
+    ) -> BlobUploadTarget:
         """Single-use upload target backed by a local staging file.
 
         The returned ``url`` is a ``file://`` path the producer can write
@@ -306,3 +239,15 @@ class LocalDirBlobStore:
         if expires_at is None or str(expires_at) > str(current):
             meta["expires_at"] = expires_at
             meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
+
+
+__all__ = [
+    "BlobDownloadTarget",
+    "BlobStat",
+    "BlobStore",
+    "BlobTransferStore",
+    "BlobUploadTarget",
+    "EvidenceBlobStore",
+    "ExpiringBlobStore",
+    "LocalDirBlobStore",
+]

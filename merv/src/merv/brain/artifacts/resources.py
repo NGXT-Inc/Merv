@@ -29,7 +29,7 @@ from ..kernel.utils import (
     now_iso,
 )
 from ..kernel.ports.resource_records import ResourceAssociationPolicy
-from ..object_storage.blobs import BlobStore
+from ..kernel.ports.blob_store import EvidenceBlobStore
 from ..kernel.state.store import (
     BaseStateStore,
     Connection,
@@ -49,7 +49,7 @@ class ResourceService:
         *,
         store: BaseStateStore,
         permissions: ResourceAssociationPolicy,
-        blobs: BlobStore | None = None,
+        blobs: EvidenceBlobStore | None = None,
         association_targets: Any = None,
     ) -> None:
         self.store = store

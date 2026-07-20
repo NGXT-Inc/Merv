@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from ..kernel.ports.blob_store import ExpiringBlobStore
 from ..sandbox.sandbox_support import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
 from ..kernel.utils import format_iso
 
@@ -59,7 +60,7 @@ class CleanupService:
         self,
         *,
         sandboxes: Any,
-        blobs: Any,
+        blobs: ExpiringBlobStore,
         storage: Any | None = None,
         stale_provision_deadline_seconds: float = DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
     ) -> None:

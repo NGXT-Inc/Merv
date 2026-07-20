@@ -40,6 +40,7 @@ from .brain_dirs import resolve_brain_state_root, resolve_local_brain_staging
 from ..control.control_app import ControlApp
 from ..control.control_runtime import ControlTaskChannel
 from ...kernel.env import env_bool, env_value
+from ...kernel.ports.blob_store import BlobStore
 from ...sandbox.execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
@@ -97,7 +98,7 @@ def build_control_app(
     env: Mapping[str, str] | None = None,
     execution_backend: Any | None = None,
     store: Any | None = None,
-    blobs: Any | None = None,
+    blobs: BlobStore | None = None,
     storage: Any = _UNSET,
     task_channel: Any | None = None,
     mgmt_keys: Any | None = None,
@@ -231,7 +232,7 @@ def build_local_server(
     allowed_origins: list[str] | None = None,
     execution_backend: Any | None = None,
     store: Any | None = None,
-    blobs: Any | None = None,
+    blobs: BlobStore | None = None,
     storage: Any = _UNSET,
     task_channel: Any | None = None,
     mgmt_keys: Any | None = None,

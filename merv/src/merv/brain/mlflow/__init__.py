@@ -1,8 +1,8 @@
-"""MLflow tracking integration.
+"""MLflow experiment-tracking adapter and compatibility exports.
 
-This package contains the Merv facade around real MLflow services:
-agent-facing tracking context, backend metric snapshots, and the local managed
-server wrapper.
+Application-owned tracking policy is re-exported from its historical paths;
+endpoint configuration, REST snapshots, and the local managed server remain
+concrete MLflow integration mechanics here.
 """
 
 from .exhibit import (

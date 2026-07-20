@@ -14,7 +14,7 @@ or live content.
 
 from __future__ import annotations
 
-from ..object_storage.blobs import BlobStore
+from ..kernel.ports.blob_store import EvidenceBlobStore
 from ..kernel.state.store import Connection
 from ..kernel.utils import NotFoundError, WorkflowError
 
@@ -29,7 +29,7 @@ def resubmit_hint(*, role: str, path: str) -> str:
 def pinned_artifact_text(
     *,
     conn: Connection,
-    blobs: BlobStore,
+    blobs: EvidenceBlobStore,
     target_type: str,
     target_id: str,
     role: str,
@@ -78,7 +78,7 @@ def pinned_artifact_text(
 def pinned_text_for_version(
     *,
     conn: Connection,
-    blobs: BlobStore,
+    blobs: EvidenceBlobStore,
     version_id: str,
     what: str,
     role: str,
@@ -118,7 +118,7 @@ class PinnedStore:
     reads those gates and reviewer hydration need.
     """
 
-    def __init__(self, *, blobs: BlobStore) -> None:
+    def __init__(self, *, blobs: EvidenceBlobStore) -> None:
         self._blobs = blobs
 
     def artifact_text(

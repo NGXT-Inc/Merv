@@ -37,6 +37,8 @@ from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
 from ..kernel.utils import now_iso
 from .review_gate import _review_checklist_item, review_gate_state
+from .storage_objects import StorageObjectsReader
+from .transition_types import CommittedExperimentTransition
 
 
 class ExperimentService:
@@ -45,7 +47,7 @@ class ExperimentService:
         *,
         store: BaseStateStore,
         pinned: PinnedStore | None = None,
-        storage_objects_reader: Any = None,
+        storage_objects_reader: StorageObjectsReader | None = None,
     ) -> None:
         self.store = store
         # Gate lints read submitted (pinned) bytes from here, never the
@@ -634,6 +636,24 @@ class ExperimentService:
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
+        committed = self.transition_with_event(
+            experiment_id=experiment_id,
+            transition=transition,
+            evidence=evidence,
+            project_id=project_id,
+        )
+        return committed.state
+
+    def transition_with_event(
+        self,
+        *,
+        experiment_id: str,
+        transition: str,
+        evidence: dict[str, Any] | None = None,
+        project_id: str | None = None,
+    ) -> CommittedExperimentTransition:
+        """Transition atomically and expose its exact event after commit."""
+
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             experiment = self.get_state(
@@ -671,7 +691,7 @@ class ExperimentService:
                     "UPDATE experiments SET status = ?, updated_at = ? WHERE id = ?",
                     (next_status, now, experiment_id),
                 )
-            self.store.record_event(
+            event = self.store.record_event(
                 conn=conn,
                 project_id=experiment["project_id"],
                 event_type="experiment.transitioned",
@@ -684,7 +704,8 @@ class ExperimentService:
                     "evidence": evidence or {},
                 },
             )
-            return self.get_state(experiment_id=experiment_id, conn=conn)
+            state = self.get_state(experiment_id=experiment_id, conn=conn)
+            return CommittedExperimentTransition(state=state, event=event)
 
     def _conclusion_from_evidence(self, evidence: dict[str, Any] | None) -> str:
         """Derive the durable conclusion text persisted when an experiment

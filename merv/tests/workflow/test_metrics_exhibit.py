@@ -17,7 +17,12 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.mlflow.exhibit import WINDOW_SKEW_MS, build_metrics_exhibit, exhibit_bytes
+from merv.brain.application.experiments.metrics_exhibit import (
+    WINDOW_SKEW_MS,
+    build_metrics_exhibit,
+    exhibit_bytes,
+)
+from merv.brain.application.ports.tracking import TrackingCapabilities
 from merv.brain.mlflow.metrics import MAX_METRIC_KEYS, MAX_RUNS
 from merv.brain.mlflow.tracking import MlflowTrackingContext
 from merv.brain.kernel.utils import ValidationError, WorkflowError
@@ -171,6 +176,9 @@ class FakeMlflowTracking:
 
     def create_run(self, **_: object) -> dict:
         return {"created": True, "configured": True, "run_id": "run-plugin", "run_name": "plugin", "status": "RUNNING"}
+
+    def capabilities(self) -> TrackingCapabilities:
+        return TrackingCapabilities(logging=True, control=True, readback=True)
 
     def results_metrics(self, *, project_id: str, experiment_id: str) -> dict:
         if not self.available:

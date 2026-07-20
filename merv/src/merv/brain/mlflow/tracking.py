@@ -1,4 +1,4 @@
-"""Centralized MLflow tracking context for experiment agents."""
+"""MLflow adapter for the application-owned experiment-tracking port."""
 
 from __future__ import annotations
 
@@ -11,6 +11,22 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ..application.experiments.tracking_policy import (
+    MLFLOW_NAMESPACE_PREFIX,
+    MLFLOW_STATE_STATUSES,
+    MLFLOW_TERMINAL_RUN_STATUSES,
+    mlflow_experiment_name,
+    mlflow_visible_for_status,
+)
+from ..application.ports.tracking import (
+    CreateRunResult,
+    FinalizeRunResult,
+    MetricsSnapshot,
+    TrackingCapabilities,
+    TrackingContextPayload,
+    TrackingRun,
+    capabilities_for_configuration,
+)
 from .metrics import (
     MlflowSnapshotError,
     search_mlflow_experiments,
@@ -26,26 +42,6 @@ from .config import (
 )
 
 
-# Namespace prefix for every Merv-created MLflow experiment. Pre-rename
-# servers hold `rp/...` names; scripts/migrate_mlflow_namespace.py renames
-# them in place at deploy.
-MLFLOW_NAMESPACE_PREFIX = "merv"
-
-
-def mlflow_experiment_name(*, project_id: str, experiment_id: str) -> str:
-    """Stable MLflow namespace for one Merv experiment."""
-    return f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/{experiment_id}"
-
-
-MLFLOW_STATE_STATUSES = frozenset({"running", "experiment_review", "complete", "failed"})
-MLFLOW_TERMINAL_RUN_STATUSES = frozenset({"FINISHED", "FAILED", "KILLED"})
-
-
-def mlflow_visible_for_status(status: object) -> bool:
-    """Whether experiment state should carry the MLflow context block."""
-    return str(status or "") in MLFLOW_STATE_STATUSES
-
-
 @dataclass(frozen=True)
 class MlflowTrackingContext:
     """The agent-facing MLflow block for one experiment."""
@@ -58,8 +54,8 @@ class MlflowTrackingContext:
     env: dict[str, str]
     note: str = ""
 
-    def to_dict(self) -> dict[str, object]:
-        result: dict[str, object] = {
+    def to_dict(self) -> TrackingContextPayload:
+        result: TrackingContextPayload = {
             "configured": self.configured,
             "mode": self.mode,
             "tracking_uri": self.tracking_uri,
@@ -73,11 +69,11 @@ class MlflowTrackingContext:
 
 
 class CentralMlflowService:
-    """Backend-owned MLflow naming and endpoint policy.
+    """MLflow-backed implementation of the experiment-tracking contract.
 
-    This service intentionally does not inspect sandbox providers. It answers
-    the only question agents should need: which MLflow endpoint and namespace
-    should this quantitative run use?
+    Application policy owns naming, visibility, terminal states, and exhibit
+    shape.  This adapter owns MLflow endpoint configuration and REST mechanics.
+    It intentionally does not inspect sandbox providers.
     """
 
     def __init__(
@@ -126,6 +122,13 @@ class CentralMlflowService:
             "MLFLOW_TRACKING_USERNAME": MLFLOW_AGENT_USERNAME,
             "MLFLOW_TRACKING_PASSWORD": self.agent_key,
         }
+
+    def capabilities(self) -> TrackingCapabilities:
+        """Report logging, backend control, and readback independently."""
+        return capabilities_for_configuration(
+            logging=bool(self.tracking_uri),
+            control=bool(self._control_uri),
+        )
 
     def project_context(
         self, *, project_id: str, include_credentials: bool = False
@@ -202,7 +205,7 @@ class CentralMlflowService:
         experiment_id: str,
         attempt_index: int = 1,
         run_name: str = "",
-    ) -> dict[str, object]:
+    ) -> CreateRunResult:
         """Best-effort control-plane creation of the initial MLflow run.
 
         The backend uses ``MERV_MLFLOW_SERVER_URI`` for this write.
@@ -212,7 +215,7 @@ class CentralMlflowService:
         """
         context = self.context(project_id=project_id, experiment_id=experiment_id)
         name = run_name.strip() or f"{experiment_id}-attempt-{attempt_index}"
-        result: dict[str, object] = {
+        result: CreateRunResult = {
             "created": False,
             "configured": context.configured,
             "control_configured": bool(self._control_uri),
@@ -286,7 +289,7 @@ class CentralMlflowService:
         run_id: str,
         status: str | None = "FINISHED",
         wait_seconds: float = 2.0,
-    ) -> dict[str, object]:
+    ) -> FinalizeRunResult:
         """Finalize a run through MLflow REST, then read it back.
 
         This gives agents one canonical post-execution call: set the terminal
@@ -297,7 +300,7 @@ class CentralMlflowService:
         context = self.context(project_id=project_id, experiment_id=experiment_id)
         run_id = run_id.strip()
         normalized_status = str(status or "").strip().upper()
-        result: dict[str, object] = {
+        result: FinalizeRunResult = {
             "configured": bool(self.server_uri or self.tracking_uri),
             "control_configured": bool(self._control_uri),
             "experiment_name": context.experiment_name,
@@ -388,7 +391,7 @@ class CentralMlflowService:
                                     f"{self._redacted(exc)}"
                                 ),
                             }
-                run: dict[str, object] = {}
+                run: TrackingRun = {}
                 # Poll until the run reads back terminal or the deadline hits —
                 # in readback-only mode (status=null) just as much as after an
                 # update, since the stale immediate RUNNING readback is exactly
@@ -429,7 +432,7 @@ class CentralMlflowService:
 
     def _read_run(
         self, *, client: httpx.Client, base: str, run_id: str
-    ) -> dict[str, object]:
+    ) -> TrackingRun:
         response = client.get(
             f"{base}/api/2.0/mlflow/runs/get",
             params={"run_id": run_id},
@@ -438,7 +441,7 @@ class CentralMlflowService:
         run = response.json().get("run") or {}
         info = run.get("info") or {}
         mlflow_experiment_id = str(info.get("experiment_id") or "")
-        record: dict[str, object] = {
+        record: TrackingRun = {
             "run_id": str(info.get("run_id") or info.get("run_uuid") or run_id),
             "run_name": str(info.get("run_name") or ""),
             "status": str(info.get("status") or ""),
@@ -536,7 +539,7 @@ class CentralMlflowService:
         project_id: str,
         experiment_id: str,
         include_history: bool = True,
-    ) -> dict[str, object]:
+    ) -> MetricsSnapshot:
         """Read experiment metrics from the centralized MLflow server."""
         context = self.context(project_id=project_id, experiment_id=experiment_id)
         read_uri = self.server_uri or context.tracking_uri
@@ -562,7 +565,7 @@ class CentralMlflowService:
             }
         portable = dict(snapshot)
         portable.pop("base_url", None)
-        result = {
+        result: MetricsSnapshot = {
             "experiment_id": experiment_id,
             "available": True,
             **portable,

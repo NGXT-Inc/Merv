@@ -23,6 +23,7 @@ from merv.shared.client_config import (
 )
 
 from ..kernel.env import env_value
+from ..kernel.ports.blob_store import BlobStore
 from ..kernel.utils import ValidationError
 
 if TYPE_CHECKING:  # the store import stays lazy at runtime (see build_state_store)
@@ -225,7 +226,7 @@ def resolve_ui_base_url(env: Mapping[str, str] | None = None) -> str:
 
 def build_blob_store(
     *, default_root: Path, env: Mapping[str, str] | None = None
-):
+) -> BlobStore:
     """The submitted-byte BlobStore selected by configuration.
 
     A bucket name selects ``S3BlobStore`` (boto3 imported only on that branch,

@@ -15,14 +15,16 @@ from typing import Any
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 
-from ...research_core.domain.paths import experiment_folder_rel
-from ...mlflow import (
+from ...application.experiments.metrics_exhibit import (
     METRICS_EXHIBIT_FILENAME,
     build_metrics_exhibit,
     exhibit_bytes,
+)
+from ...application.experiments.tracking_policy import (
     mlflow_experiment_name,
 )
 from ...kernel.utils import WorkflowError
+from ...research_core.domain.paths import experiment_folder_rel
 
 
 def exhibit_rel_path(*, experiment_id: str, name: str) -> str:
@@ -47,10 +49,7 @@ def generate_metrics_exhibit(
     snapshot = None
     configured = False
     if mlflow_tracking is not None:
-        configured = bool(
-            getattr(mlflow_tracking, "server_uri", "")
-            or getattr(mlflow_tracking, "tracking_uri", "")
-        )
+        configured = mlflow_tracking.capabilities().readback
         if configured:
             snapshot = mlflow_tracking.results_metrics(
                 project_id=project_id, experiment_id=experiment_id

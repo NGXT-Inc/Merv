@@ -23,8 +23,17 @@ import hashlib
 import json
 from typing import Any
 
+from ..kernel.ports.blob_store import (
+    BlobDownloadTarget,
+    BlobStat,
+    BlobUploadTarget,
+    validate_blob_keys,
+)
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
-from .blobs import BlobStat, _validate_keys
+
+
+# Preserve the historical module attribute while keeping validation inward.
+_validate_keys = validate_blob_keys
 
 
 _UPLOAD_PREFIX = ".uploads/"
@@ -93,7 +102,9 @@ class S3BlobStore:
             raise
         return obj["Body"].read()
 
-    def presign_get(self, *, namespace: str, sha256: str) -> dict[str, Any]:
+    def presign_get(
+        self, *, namespace: str, sha256: str
+    ) -> BlobDownloadTarget:
         _validate_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         if self._head(key=key) is None:
@@ -137,7 +148,7 @@ class S3BlobStore:
         max_size_bytes: int,
         expires_at: str | None = None,
         content_type: str = "application/octet-stream",
-    ) -> dict[str, Any]:
+    ) -> BlobUploadTarget:
         _validate_keys(namespace=namespace)
         upload_id = new_id(prefix="upload")
         staging_key = f"{_UPLOAD_PREFIX}{upload_id}"
