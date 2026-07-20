@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from pydantic import ValidationError as PydanticValidationError
@@ -54,7 +55,7 @@ class _PermissionTarget:
         return None
 
 
-def _handler_targets() -> dict[str, _HandlerTarget]:
+def _handler_targets() -> dict[str, Any]:
     target = _HandlerTarget()
     return {
         "workflow": target,
@@ -69,6 +70,8 @@ def _handler_targets() -> dict[str, _HandlerTarget]:
         "sandboxes": target,
         "mlflow_tracking": target,
         "feed": target,
+        "experiment_transition": target,
+        "experiment_exhibit": target,
     }
 
 

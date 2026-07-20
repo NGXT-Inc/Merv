@@ -9,6 +9,11 @@ from typing import Any
 
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
+from ...application.experiments.exhibits import ExperimentExhibits
+from ...application.experiments.transition import TransitionExperiment
+from ...artifacts.facade import ArtifactsFacade
+from ...feed.facade import FeedFacade
+from ...research_core.facade import ResearchCoreFacade
 from ..tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     available_tool_names,
@@ -77,6 +82,24 @@ class ControlApp:
         self.reviews = self.record_core.reviews
         self.feed = self.record_core.feed
 
+        # Stable component entrypoints used by cross-component application
+        # commands. Legacy aliases above remain for unmigrated delivery paths.
+        self.research_core = ResearchCoreFacade(self.experiments)
+        self.artifacts = ArtifactsFacade(self.resources)
+        self.feed_api = FeedFacade(self.feed)
+        self.experiment_exhibits = ExperimentExhibits(
+            research=self.research_core,
+            artifacts=self.artifacts,
+            tracking=self.mlflow_tracking,
+        )
+        self.transition_experiment = TransitionExperiment(
+            research=self.research_core,
+            artifacts=self.artifacts,
+            feed=self.feed_api,
+            tracking=self.mlflow_tracking,
+            exhibits=self.experiment_exhibits,
+        )
+
         self.sandboxes = SandboxService(
             store=self.store,
             sandbox_backend=self.execution_backend,
@@ -120,6 +143,8 @@ class ControlApp:
                 sandboxes=self.sandboxes,
                 mlflow_tracking=self.mlflow_tracking,
                 feed=self.feed,
+                experiment_transition=self.transition_experiment,
+                experiment_exhibit=self.experiment_exhibits,
             ),
             permissions=self.permissions,
             activity=self.activity,

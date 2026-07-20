@@ -1,0 +1,350 @@
+from __future__ import annotations
+
+import unittest
+
+from merv.brain.artifacts.facade import Artifacts, ArtifactsFacade
+from merv.brain.feed.facade import Feed, FeedFacade
+from merv.brain.kernel.events import StoredEvent, freeze_json_object
+from merv.brain.research_core.facade import (
+    CommittedExperimentTransition,
+    ResearchCore,
+    ResearchCoreFacade,
+)
+from merv.brain.research_core.transition_types import (
+    CommittedExperimentTransition as OwnedCommittedTransition,
+)
+
+
+def _committed(state):
+    return CommittedExperimentTransition(
+        state=state,
+        event=StoredEvent(
+            id=7,
+            project_id="proj_1",
+            type="experiment.transitioned",
+            target_type="experiment",
+            target_id="exp_1",
+            payload=freeze_json_object({"transition": "start_running"}),
+            created_at="2026-07-19T12:00:00Z",
+        ),
+    )
+
+
+class RecordingExperimentService:
+    def __init__(self) -> None:
+        self.calls = []
+        self.state = {
+            "id": "exp_1",
+            "project_id": "proj_1",
+            "name": "First Run",
+            "status": "running",
+            "attempt_index": 2,
+            "mlflow_run": None,
+        }
+        self.committed = _committed(self.state)
+
+    def get_state(self, **kwargs):
+        self.calls.append(("get_state", kwargs))
+        return self.state
+
+    def transition_with_event(self, **kwargs):
+        self.calls.append(("transition_with_event", kwargs))
+        return self.committed
+
+    def record_mlflow_run(self, **kwargs):
+        self.calls.append(("record_mlflow_run", kwargs))
+        return self.state
+
+    def record_exhibit_verdict(self, **kwargs):
+        self.calls.append(("record_exhibit_verdict", kwargs))
+
+    def attempt_started_running_at(self, **kwargs):
+        self.calls.append(("attempt_started_running_at", kwargs))
+        return "2026-07-19T11:00:00Z"
+
+
+class RecordingResourcesService:
+    def __init__(self) -> None:
+        self.calls = []
+        self.sources = [
+            {
+                "path": "experiments/first/results.json",
+                "version_id": "rver_1",
+                "sha256": "abc",
+                "observed_at": "2026-07-19T11:30:00Z",
+                "data": {"accuracy": 0.8},
+            }
+        ]
+
+    def metric_file_sources(self, **kwargs):
+        self.calls.append(("metric_file_sources", kwargs))
+        return self.sources
+
+    def pin_system_artifact(self, **kwargs):
+        self.calls.append(("pin_system_artifact", kwargs))
+        return {"association": "internal result intentionally hidden"}
+
+
+class RecordingFeedService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def feed_note_for(self, **kwargs):
+        self.calls.append(("feed_note_for", kwargs))
+        return "Share the result."
+
+
+class RecordingResearchCoreFake:
+    """Application tests can replace Research without importing its internals."""
+
+    def experiment_state(self, **kwargs):
+        return {"id": kwargs["experiment_id"]}
+
+    def transition_experiment(self, **kwargs):
+        return _committed({"id": kwargs["experiment_id"]})
+
+    def record_tracking_run(self, **kwargs):
+        return {"id": kwargs["experiment_id"], "mlflow_run": kwargs["run"]}
+
+    def record_exhibit_verdict(self, **kwargs):
+        return None
+
+    def attempt_started_running_at(self, **kwargs):
+        return None
+
+    def exhibit_path(self, **kwargs):
+        return f"experiments/fake/{kwargs['filename']}"
+
+    def present_experiment(self, state):
+        return state
+
+
+class RecordingArtifactsFake:
+    def metric_file_sources(self, **kwargs):
+        return []
+
+    def pin_system_artifact(self, **kwargs):
+        return None
+
+
+class RecordingFeedFake:
+    def transition_advisory(self, **kwargs):
+        return None
+
+
+class ComponentFacadeTest(unittest.TestCase):
+    def test_structural_contracts_accept_isolated_application_fakes(self) -> None:
+        research = RecordingResearchCoreFake()
+        artifacts = RecordingArtifactsFake()
+        feed = RecordingFeedFake()
+
+        self.assertIsInstance(research, ResearchCore)
+        self.assertIsInstance(artifacts, Artifacts)
+        self.assertIsInstance(feed, Feed)
+        self.assertEqual(
+            research.experiment_state(experiment_id="exp_fake"),
+            {"id": "exp_fake"},
+        )
+        self.assertEqual(
+            research.exhibit_path(
+                experiment_id="exp_fake", name="Fake", filename="exhibit.json"
+            ),
+            "experiments/fake/exhibit.json",
+        )
+        self.assertEqual(
+            artifacts.metric_file_sources(
+                experiment_id="exp_fake", attempt_index=1
+            ),
+            [],
+        )
+        self.assertIsNone(
+            feed.transition_advisory(
+                project_id="proj_fake",
+                experiment_id="exp_fake",
+                event="experiment_complete",
+            )
+        )
+
+    def test_research_facade_delegates_to_the_exact_experiment_service(self) -> None:
+        service = RecordingExperimentService()
+        facade = ResearchCoreFacade(service)
+
+        self.assertIs(facade._experiments, service)
+        self.assertIsInstance(facade, ResearchCore)
+        self.assertIs(
+            facade.experiment_state(experiment_id="exp_1", project_id="proj_1"),
+            service.state,
+        )
+        self.assertIs(
+            facade.transition_experiment(
+                experiment_id="exp_1",
+                transition="start_running",
+                evidence={"note": "go"},
+                project_id="proj_1",
+            ),
+            service.committed,
+        )
+        run = {"run_id": "run_1", "status": "RUNNING"}
+        self.assertIs(
+            facade.record_tracking_run(
+                project_id="proj_1",
+                experiment_id="exp_1",
+                run=run,
+                event_type="experiment.mlflow_run_refreshed",
+            ),
+            service.state,
+        )
+        verdict = {"runs_found": 1, "pinned": True}
+        self.assertIsNone(
+            facade.record_exhibit_verdict(
+                experiment_id="exp_1", project_id="proj_1", verdict=verdict
+            )
+        )
+        self.assertEqual(
+            facade.attempt_started_running_at(experiment_id="exp_1"),
+            "2026-07-19T11:00:00Z",
+        )
+        self.assertEqual(
+            facade.exhibit_path(
+                experiment_id="exp_1",
+                name="First Run",
+                filename="metrics_exhibit.json",
+            ),
+            "experiments/First_Run/metrics_exhibit.json",
+        )
+        self.assertEqual(
+            facade.present_experiment(service.state),
+            {
+                "id": "exp_1",
+                "name": "First Run",
+                "status": "running",
+                "attempt_index": 2,
+                "intent": None,
+                "conclusion": None,
+                "revision_context": None,
+                "created_at": None,
+                "updated_at": None,
+                "allowed_transitions": [],
+                "gate_checklist": {},
+                "mlflow_run": None,
+                "claim_update_suggestions": [],
+                "tested_claims": [],
+                "current_attempt_resources": [],
+                "storage_objects": [],
+                "reviews": [],
+            },
+        )
+        self.assertEqual(
+            service.calls,
+            [
+                ("get_state", {"experiment_id": "exp_1", "project_id": "proj_1"}),
+                (
+                    "transition_with_event",
+                    {
+                        "experiment_id": "exp_1",
+                        "transition": "start_running",
+                        "evidence": {"note": "go"},
+                        "project_id": "proj_1",
+                    },
+                ),
+                (
+                    "record_mlflow_run",
+                    {
+                        "project_id": "proj_1",
+                        "experiment_id": "exp_1",
+                        "run": run,
+                        "event_type": "experiment.mlflow_run_refreshed",
+                    },
+                ),
+                (
+                    "record_exhibit_verdict",
+                    {
+                        "experiment_id": "exp_1",
+                        "project_id": "proj_1",
+                        "verdict": verdict,
+                    },
+                ),
+                ("attempt_started_running_at", {"experiment_id": "exp_1"}),
+            ],
+        )
+
+    def test_artifacts_facade_normalizes_only_the_experiment_target(self) -> None:
+        service = RecordingResourcesService()
+        facade = ArtifactsFacade(service)
+
+        self.assertIs(facade._resources, service)
+        self.assertIsInstance(facade, Artifacts)
+        self.assertIs(
+            facade.metric_file_sources(experiment_id="exp_1", attempt_index=2),
+            service.sources,
+        )
+        self.assertIsNone(
+            facade.pin_system_artifact(
+                path="experiments/First_Run/metrics_exhibit.json",
+                experiment_id="exp_1",
+                role="exhibit",
+                content_bytes=b"{}",
+                content_type="application/json",
+                title="Metrics exhibit",
+                kind="result",
+                project_id="proj_1",
+            )
+        )
+        self.assertEqual(
+            service.calls,
+            [
+                (
+                    "metric_file_sources",
+                    {"target_id": "exp_1", "attempt_index": 2},
+                ),
+                (
+                    "pin_system_artifact",
+                    {
+                        "path": "experiments/First_Run/metrics_exhibit.json",
+                        "target_type": "experiment",
+                        "target_id": "exp_1",
+                        "role": "exhibit",
+                        "content_bytes": b"{}",
+                        "content_type": "application/json",
+                        "title": "Metrics exhibit",
+                        "kind": "result",
+                        "project_id": "proj_1",
+                    },
+                ),
+            ],
+        )
+
+    def test_feed_facade_normalizes_only_the_experiment_identity(self) -> None:
+        service = RecordingFeedService()
+        facade = FeedFacade(service)
+
+        self.assertIs(facade._feed, service)
+        self.assertIsInstance(facade, Feed)
+        self.assertEqual(
+            facade.transition_advisory(
+                project_id="proj_1",
+                experiment_id="exp_1",
+                event="experiment_complete",
+            ),
+            "Share the result.",
+        )
+        self.assertEqual(
+            service.calls,
+            [
+                (
+                    "feed_note_for",
+                    {
+                        "project_id": "proj_1",
+                        "entity_id": "exp_1",
+                        "event": "experiment_complete",
+                    },
+                )
+            ],
+        )
+
+    def test_committed_transition_is_the_research_owned_identity(self) -> None:
+        self.assertIs(CommittedExperimentTransition, OwnedCommittedTransition)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -143,7 +143,6 @@ FILE_LAYERS = {
     "surface/control/control_client.py": ADAPTER,
     "surface/control/control_runtime.py": ADAPTER,
     "surface/cleanup.py": APPLICATION_LAYER,
-    "surface/tools/exhibits.py": APPLICATION_LAYER,
     "surface/tools/tool_handlers.py": APPLICATION_LAYER,
 }
 

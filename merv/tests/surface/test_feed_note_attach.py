@@ -1,16 +1,13 @@
-"""SURFACE-layer wiring for the event-carried feed_note advisory.
+"""Remaining SURFACE-layer wiring for the event-carried feed_note advisory.
 
 feed.py owns the posts table and the dedupe decision (feed_note_for); this
 module owns *attaching* that note to the responses of tools an agent already
-calls for other reasons — experiment.transition (into a terminal state),
-mlflow.finalize_run, and review.status. These are lightweight stub-based unit
-tests of that wiring in src/merv/brain/surface/tools/tool_handlers.py: they build the
-handler dict directly (the same helper tests/surface/test_tool_contracts.py
-uses) with tiny recording stubs, so the terminal-status/verdict/finalize
-branching and the "never raise" contract can be checked without a full
-gate/review/MLflow stack. The real end-to-end path (a genuine experiment
-driven to `complete` through the actual services) is covered separately in
-tests/workflow/test_feed.py.
+calls for other reasons — mlflow.finalize_run and review.status. These are
+lightweight stub-based unit tests of that wiring in
+src/merv/brain/surface/tools/tool_handlers.py: they build the handler dict
+directly (the same helper tests/surface/test_tool_contracts.py uses) with tiny
+recording stubs, so verdict/finalize branching and the "never raise" contract
+can be checked without a full review/MLflow stack.
 """
 
 from __future__ import annotations
@@ -69,9 +66,7 @@ def _fallback_handler(**_kwargs: Any) -> dict[str, Any]:
 
 
 class _StubExperiments:
-    """get_state/transition/record_mlflow_run all just hand back the fixed
-    state this test configured — enough shape for slim_experiment_state and
-    the terminal-status branch in experiment_transition_agent."""
+    """State and run persistence needed by remaining Surface attach points."""
 
     def __init__(self, *, state: dict[str, Any]) -> None:
         self.state = state
@@ -81,16 +76,6 @@ class _StubExperiments:
 
     def get_state(
         self, *, experiment_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        return dict(self.state)
-
-    def transition(
-        self,
-        *,
-        experiment_id: str,
-        transition: str,
-        evidence: dict[str, Any] | None = None,
-        project_id: str | None = None,
     ) -> dict[str, Any]:
         return dict(self.state)
 
@@ -184,183 +169,11 @@ def _target(**overrides: Any) -> dict[str, Any]:
         "sandboxes": _Unused(),
         "mlflow_tracking": _Unused(),
         "feed": _Unused(),
+        "experiment_transition": _Unused(),
+        "experiment_exhibit": _Unused(),
     }
     base.update(overrides)
     return base
-
-
-class ExperimentTransitionFeedNoteTest(unittest.TestCase):
-    def test_attaches_note_on_transition_into_complete(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_1", "project_id": "proj_1", "status": "complete"}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["experiment.transition"](
-            experiment_id="exp_1", transition="complete", project_id="proj_1"
-        )
-        self.assertEqual(result["feed_note"], "exp_1 just had an update (experiment_complete).")
-        self.assertEqual(
-            feed.calls[-1],
-            {"project_id": "proj_1", "entity_id": "exp_1", "event": "experiment_complete"},
-        )
-
-    def test_attaches_note_on_transition_into_abandoned(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_2", "project_id": "proj_1", "status": "abandoned"}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["experiment.transition"](
-            experiment_id="exp_2", transition="abandon", project_id="proj_1"
-        )
-        self.assertIn("feed_note", result)
-        self.assertEqual(feed.calls[-1]["event"], "experiment_abandoned")
-
-    def test_attaches_note_on_transition_into_failed(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_3", "project_id": "proj_1", "status": "failed"}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["experiment.transition"](
-            experiment_id="exp_3", transition="mark_failed", project_id="proj_1"
-        )
-        self.assertIn("feed_note", result)
-        self.assertEqual(feed.calls[-1]["event"], "experiment_failed")
-
-    def test_no_note_on_a_non_terminal_transition(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_4", "project_id": "proj_1", "status": "running"}
-        )
-        feed = _StubFeed()
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["experiment.transition"](
-            experiment_id="exp_4", transition="start_running", project_id="proj_1"
-        )
-        self.assertNotIn("feed_note", result)
-        self.assertEqual(feed.calls, [])
-
-    def test_feed_hiccup_never_breaks_the_transition_response(self) -> None:
-        experiments = _StubExperiments(
-            state={"id": "exp_5", "project_id": "proj_1", "status": "complete"}
-        )
-        feed = _StubFeed(raises=True)
-        handlers = build_control_tool_handlers(
-            **_target(experiments=experiments, feed=feed, mlflow_tracking=None)
-        )
-        result = handlers["experiment.transition"](
-            experiment_id="exp_5", transition="complete", project_id="proj_1"
-        )
-        self.assertEqual(result["status"], "complete")
-        self.assertNotIn("feed_note", result)
-
-
-class ExperimentTransitionMlflowFinalizeTest(unittest.TestCase):
-    def test_terminal_transitions_finalize_the_plugin_run_with_mapped_status(self) -> None:
-        cases = (
-            ("submit_results", "experiment_review", "FINISHED"),
-            ("complete", "complete", "FINISHED"),
-            ("abandon", "abandoned", "KILLED"),
-            ("mark_failed", "failed", "FAILED"),
-        )
-        for transition, experiment_status, mlflow_status in cases:
-            with self.subTest(transition=transition):
-                experiments = _StubExperiments(state={
-                    "id": "exp_1",
-                    "project_id": "proj_1",
-                    "status": experiment_status,
-                    "mlflow_run": {
-                        "run_id": "run_1",
-                        "status": "RUNNING",
-                        "created_by_plugin": True,
-                    },
-                })
-                mlflow = _StubMlflowTracking(finalize_result={
-                    "run": {"run_id": "run_1", "status": mlflow_status}
-                })
-                handlers = build_control_tool_handlers(**_target(
-                    experiments=experiments,
-                    mlflow_tracking=mlflow,
-                    feed=_StubFeed(muted={"exp_1"}),
-                ))
-
-                result = handlers["experiment.transition"](
-                    experiment_id="exp_1",
-                    transition=transition,
-                    project_id="proj_1",
-                )
-
-                self.assertEqual(mlflow.finalize_calls[0]["status"], mlflow_status)
-                self.assertEqual(mlflow.finalize_calls[0]["run_id"], "run_1")
-                self.assertEqual(mlflow.finalize_calls[0]["wait_seconds"], 0.0)
-                self.assertEqual(result["mlflow_run"]["status"], mlflow_status)
-
-    def test_mlflow_finalize_error_never_blocks_terminal_transition(self) -> None:
-        experiments = _StubExperiments(state={
-            "id": "exp_1",
-            "project_id": "proj_1",
-            "status": "failed",
-            "mlflow_run": {
-                "run_id": "run_1",
-                "status": "RUNNING",
-                "created_by_plugin": True,
-            },
-        })
-        mlflow = _StubMlflowTracking(finalize_result={}, raises=True)
-        handlers = build_control_tool_handlers(**_target(
-            experiments=experiments,
-            mlflow_tracking=mlflow,
-            feed=_StubFeed(muted={"exp_1"}),
-        ))
-
-        result = handlers["experiment.transition"](
-            experiment_id="exp_1",
-            transition="mark_failed",
-            project_id="proj_1",
-        )
-
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(len(mlflow.finalize_calls), 1)
-
-    def test_non_plugin_and_already_terminal_runs_are_not_finalized(self) -> None:
-        for created_by_plugin, status in ((False, "RUNNING"), (True, "FAILED")):
-            with self.subTest(
-                created_by_plugin=created_by_plugin, status=status
-            ):
-                experiments = _StubExperiments(state={
-                    "id": "exp_1",
-                    "project_id": "proj_1",
-                    "status": "complete",
-                    "mlflow_run": {
-                        "run_id": "run_1",
-                        "status": status,
-                        "created_by_plugin": created_by_plugin,
-                    },
-                })
-                mlflow = _StubMlflowTracking(finalize_result={})
-                handlers = build_control_tool_handlers(**_target(
-                    experiments=experiments,
-                    mlflow_tracking=mlflow,
-                    feed=_StubFeed(muted={"exp_1"}),
-                ))
-
-                result = handlers["experiment.transition"](
-                    experiment_id="exp_1",
-                    transition="complete",
-                    project_id="proj_1",
-                )
-
-                self.assertEqual(result["mlflow_run"]["status"], status)
-                self.assertEqual(mlflow.finalize_calls, [])
 
 
 class MlflowFinalizeRunFeedNoteTest(unittest.TestCase):

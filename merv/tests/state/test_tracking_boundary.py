@@ -7,6 +7,7 @@ import merv.brain.mlflow as legacy_package
 import merv.brain.mlflow.exhibit as legacy_exhibit
 import merv.brain.mlflow.tracking as legacy_tracking
 from merv.brain.application.experiments import metrics_exhibit, tracking_policy
+from merv.brain.application.experiments.exhibits import ExperimentExhibits
 from merv.brain.application.ports.tracking import (
     CreateRunResult,
     ExperimentTracking,
@@ -17,7 +18,6 @@ from merv.brain.application.ports.tracking import (
     TrackingContext,
 )
 from merv.brain.mlflow.tracking import CentralMlflowService
-from merv.brain.surface.tools.exhibits import generate_metrics_exhibit
 
 
 class TrackingBoundaryTest(unittest.TestCase):
@@ -114,15 +114,16 @@ class TrackingBoundaryTest(unittest.TestCase):
         class Resources:
             @staticmethod
             def metric_file_sources(
-                *, target_id: str, attempt_index: int
+                *, experiment_id: str, attempt_index: int
             ) -> list[dict[str, object]]:
                 return []
 
         tracking = TrackingWithoutPublicUris()
-        exhibit = generate_metrics_exhibit(
-            experiments=Experiments(),
-            resources=Resources(),
-            mlflow_tracking=tracking,
+        exhibit = ExperimentExhibits(
+            research=Experiments(),  # type: ignore[arg-type]
+            artifacts=Resources(),  # type: ignore[arg-type]
+            tracking=tracking,  # type: ignore[arg-type]
+        ).generate(
             state={
                 "project_id": "proj",
                 "id": "exp",

@@ -640,6 +640,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             )
 
         with patch.object(
+            self.app.transition_experiment,
+            "execute",
+            wraps=self.app.transition_experiment.execute,
+        ) as execute, patch.object(
             CentralMlflowService,
             "create_run",
             return_value={"created": False, "configured": True},
@@ -663,6 +667,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 {"transition": "start_running"},
             )
 
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["include_tracking_credentials"] for call in execute.call_args_list],
+            [True, True],
+        )
+
         for result in (mcp_result, rest_result):
             self.assertEqual(
                 result["mlflow"]["env"]["MLFLOW_TRACKING_PASSWORD"],
@@ -684,6 +694,13 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertNotIn("rr_sk_agent", json.dumps(tool_call_details, sort_keys=True))
         self.assertIn("[redacted]", activity_text)
         self.assertIn("[redacted]", json.dumps(tool_call_details, sort_keys=True))
+
+    def test_application_facades_share_the_composed_service_instances(self) -> None:
+        self.assertIs(self.app.research_core._experiments, self.app.experiments)
+        self.assertIs(self.app.artifacts._resources, self.app.resources)
+        self.assertIs(self.app.feed_api._feed, self.app.feed)
+        self.assertIs(self.app.transition_experiment.research, self.app.research_core)
+        self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)
 
     def test_attempt_revision_and_retry_rotate_the_mlflow_run(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "ML Rotate Project"})
