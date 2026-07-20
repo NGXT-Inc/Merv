@@ -190,20 +190,24 @@ def _schema_without_sandbox_tenant() -> str:
 
 def _schema_with_legacy_sandbox_identity() -> str:
     """SCHEMA as it stood before the decoupling refactor: sandboxes keyed by
-    experiment_id, with no sandbox_uid column and no sandbox_attachments table."""
+    experiment_id, before tables whose foreign keys require sandbox_uid."""
     legacy = re.sub(
         r"CREATE TABLE IF NOT EXISTS sandboxes \(\n"
         r"\s*sandbox_uid TEXT PRIMARY KEY,\n",
         "CREATE TABLE IF NOT EXISTS sandboxes (\n  experiment_id TEXT PRIMARY KEY,\n",
         SCHEMA,
     )
-    legacy = re.sub(
-        r"CREATE TABLE IF NOT EXISTS sandbox_attachments \(.*?\n\);\n",
-        "",
-        legacy,
-        flags=re.DOTALL,
-    )
-    if legacy == SCHEMA or "CREATE TABLE IF NOT EXISTS sandbox_attachments" in legacy:
+    for table in ("sandbox_attachments", "sandbox_runs"):
+        legacy = re.sub(
+            rf"CREATE TABLE IF NOT EXISTS {table} \(.*?\n\);\n",
+            "",
+            legacy,
+            flags=re.DOTALL,
+        )
+    if legacy == SCHEMA or any(
+        f"CREATE TABLE IF NOT EXISTS {table}" in legacy
+        for table in ("sandbox_attachments", "sandbox_runs")
+    ):
         raise AssertionError("failed to build the legacy sandbox-identity schema")
     return legacy
 
