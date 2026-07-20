@@ -46,7 +46,11 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/figure")
     def experiment_figure(project_id: str, experiment_id: str) -> dict[str, Any]:
         # Derived graph for the figure canvas; UI-only read, no agent tool.
-        return api.experiment_figure(project_id=project_id, experiment_id=experiment_id)
+        return api._present(
+            api.app.experiment_figure_query(
+                project_id=project_id, experiment_id=experiment_id
+            )
+        )
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/graph")
     def experiment_logic_graph(project_id: str, experiment_id: str) -> dict[str, Any]:
@@ -59,13 +63,13 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/results/metrics")
     def experiment_results_metrics(project_id: str, experiment_id: str) -> dict[str, Any]:
-        return api.results_metrics_view(
+        return api.app.mlflow_overview_query.experiment_metrics(
             project_id=project_id, experiment_id=experiment_id
         )
 
     @api_router.get("/api/projects/{project_id}/mlflow")
     def project_mlflow(project_id: str) -> dict[str, Any]:
-        return api.mlflow_overview_view(project_id=project_id)
+        return api._present(api.app.mlflow_overview_query(project_id=project_id))
 
 
     return api_router

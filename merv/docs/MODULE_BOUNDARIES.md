@@ -38,7 +38,7 @@ classification plus file overrides handles mixed packages.
 | Artifacts | `artifacts/**` | resources, associations, pinned evidence |
 | Sandbox | `sandbox/**` | lifecycle and provider-driver capability |
 | Feed | `feed/**` | feed records and advisory policy |
-| Application | `application/**` | cross-component commands and reactions |
+| Application | `application/**` | cross-component commands, reactions, and composite reads |
 | Tracking integration | `mlflow/**` | MLflow implementation of tracking ports |
 | Storage | `object_storage/**` | byte/object adapters plus the legacy ledger service |
 | Surface | `surface/**` | HTTP/MCP delivery and the co-located composition root |
@@ -135,6 +135,11 @@ verdict reminder deliberately runs later, when the producer reads
 reads are allowed and handlers must be repeat-safe. Any future asynchronous
 delivery needs durable checkpoints keyed by `(event_id, phase, handler_name)`,
 plus an external-side-effect idempotency policy, before a worker is introduced.
+
+Composite UI reads follow the same rule. `application/queries.py` assembles the
+project home, tracking overview, and experiment figure through narrow callable
+ports; Surface retains authentication, conditional HTTP caching, local-field
+redaction, and serialization only.
 
 ## Cross-plane law
 

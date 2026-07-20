@@ -8,12 +8,9 @@ from typing import Any
 
 from merv.shared.artifact_roles import GATED_ROLES, PROJECT_GRAPH_ROLES
 
-from .... import __version__
-from ....artifacts.figure_view import build_experiment_figure
 from ....artifacts.resource_selection import preferred_associated_resource
 from ....research_core.domain.graph_lint import MAX_GRAPH_NODES, graph_problems
-from ....mlflow import mlflow_experiment_name, mlflow_visible_for_status
-from ....sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
+from ....application.experiments.tracking_policy import mlflow_visible_for_status
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import (
     ContentUnavailableError,
@@ -120,9 +117,6 @@ class ResearchHttpApi:
             return [cls._strip_local_data_plane(item) for item in value]
         return value
 
-    def health(self) -> dict[str, Any]:
-        return {"ok": True, "version": __version__}
-
     def activity(
         self,
         limit: int,
@@ -210,67 +204,6 @@ class ResearchHttpApi:
             raise NotFoundError(f"tool call not found: {call_id}")
         return self._present(record)
 
-    def tool_calls_clear(
-        self,
-        *,
-        project_ids: set[str] | list[str] | tuple[str, ...] | None = None,
-    ) -> dict[str, Any]:
-        return self.app.tool_calls.clear(project_ids=project_ids)
-
-    def home(self, project_id: str) -> dict[str, Any]:
-        # The UI needs the rich shape (project-wide claims/experiments); the
-        # slimmed `workflow.status_and_next` tool is for the agent only, so call
-        # the service method directly here.
-        status = self.app.workflow.status_and_next(project_id=project_id)
-        resources = self.call_tool(
-            name="resource.find", arguments={"project_id": project_id}
-        )["resources"]
-        reviews = self.review_queue(project_id=project_id)
-        events = self.events(project_id=project_id, limit=25)["events"]
-        claims = status["project"]["active_claims"]
-        experiments = [
-            # Full shape for the UI; the experiment.get_state tool stays slim for the agent.
-            self.app.experiments.get_state(
-                experiment_id=exp["id"], project_id=project_id
-            )
-            for exp in status["project"]["active_experiments"]
-        ]
-        active_work = self.app.workflow.active_work(project_id=project_id)
-        active_experiments = active_work["active_experiments"]
-        active_processes = active_work["active_processes"]
-        active_experiment = active_experiments[0] if active_experiments else None
-        workflow = (
-            active_experiment.get("workflow")
-            if active_experiment
-            else status["workflow"]
-        )
-        return self._present(
-            {
-                "project": status["project"],
-                "claims": claims,
-                "experiments": experiments,
-                "active_experiments": active_experiments,
-                "active_processes": active_processes,
-                "resources": resources,
-                "reviews": reviews,
-                "pending_change_sets": [],
-                "recent_events": events,
-                "stats": {
-                    "claims": len(claims),
-                    "experiments": len(experiments),
-                    "active_experiments": len(active_experiments),
-                    "active_processes": len(active_processes),
-                    "resources": len(resources),
-                    "open_reviews": len(reviews["requests"]),
-                },
-                "workflow": workflow,
-                "active_experiment": active_experiment,
-                # Central, cross-experiment MLflow endpoint so the UI can offer a
-                # project-level entry point.
-                "mlflow": self.app.mlflow_tracking.health(),
-            }
-        )
-
     def experiments_view(self, project_id: str) -> dict[str, Any]:
         # Full per-experiment state for the UI; the experiment.list tool stays slim.
         experiments = self.app.experiments.list_experiments(project_id=project_id)[
@@ -293,9 +226,6 @@ class ResearchHttpApi:
         for resource in resources:
             by_kind.setdefault(resource.get("kind", "other"), []).append(resource)
         return {"resources": resources, "tree": by_kind}
-
-    def review_queue(self, project_id: str) -> dict[str, Any]:
-        return self.app.reviews.queue(project_id=project_id)
 
     def start_review(
         self,
@@ -324,9 +254,6 @@ class ResearchHttpApi:
             project_id=project_id, review_session_id=body.get("review_session_id")
         )
         return self.call_tool(name="review.submit", arguments=body)
-
-    def events(self, project_id: str, limit: int = 100) -> dict[str, Any]:
-        return self.app.store.recent_events(project_id=project_id, limit=limit)
 
     def get_claim(self, project_id: str, claim_id: str) -> dict[str, Any]:
         claims = self.call_tool(
@@ -652,125 +579,6 @@ class ResearchHttpApi:
             experiment_id=experiment_id or "",
             project_id=project_id,
             sandbox_uid=sandbox_uid,
-        )
-
-    def results_metrics_view(
-        self, *, project_id: str, experiment_id: str
-    ) -> dict[str, Any]:
-        """Centralized MLflow metrics for one experiment."""
-        return self.app.mlflow_tracking.results_metrics(
-            experiment_id=experiment_id, project_id=project_id
-        )
-
-    def mlflow_overview_view(self, *, project_id: str) -> dict[str, Any]:
-        """Project-wide MLflow context for the UI.
-
-        Agents should use mlflow.context and MLflow's native APIs for
-        analysis. This view keeps the project-scoped dashboard operational when
-        the central MLflow UI spans multiple projects.
-        """
-        health = self.app.mlflow_tracking.health()
-        experiments = self.app.experiments.list_experiments(project_id=project_id)[
-            "experiments"
-        ]
-        unreachable = health.get("reachable") is False
-        items: list[dict[str, Any]] = []
-        for exp in experiments:
-            eid = str(exp.get("id") or "")
-            if not eid:
-                continue
-            # results_metrics owns the deep-link (namespace→#/experiments/<id>).
-            metrics = (
-                {
-                    "experiment_id": eid,
-                    "available": False,
-                    "source": "mlflow",
-                    "hint": "MLflow unreachable.",
-                }
-                if unreachable
-                else self.app.mlflow_tracking.results_metrics(
-                    experiment_id=eid,
-                    project_id=project_id,
-                    include_history=False,
-                )
-            )
-            items.append(
-                {
-                    "experiment_id": eid,
-                    "name": exp.get("name") or eid,
-                    "status": exp.get("status") or "",
-                    "intent": exp.get("intent") or "",
-                    "mlflow_experiment_name": mlflow_experiment_name(
-                        project_id=project_id, experiment_id=eid
-                    ),
-                    "dashboard_experiment_url": (
-                        metrics.get("dashboard_experiment_url", "")
-                        if isinstance(metrics, dict)
-                        else ""
-                    ),
-                    "metrics": metrics,
-                }
-            )
-        expected_names = {str(item["mlflow_experiment_name"]) for item in items}
-        namespace_experiments = (
-            []
-            if unreachable
-            else self.app.mlflow_tracking.namespace_experiments(project_id=project_id)
-        )
-        unmapped = [
-            experiment
-            for experiment in namespace_experiments
-            if str(experiment.get("name") or "") not in expected_names
-        ]
-        return self._present(
-            {
-                "mlflow": health,
-                "experiments": items,
-                "unmapped_mlflow_experiments": unmapped,
-            }
-        )
-
-    def sandbox_health_view(self) -> dict[str, Any]:
-        return self.app.sandboxes.backend_health()
-
-    def experiment_figure(
-        self, *, project_id: str, experiment_id: str
-    ) -> dict[str, Any]:
-        """Derived figure graph for the UI canvas (no agent-authored overlay yet)."""
-        experiment = self.app.experiments.get_state(
-            experiment_id=experiment_id, project_id=project_id
-        )
-        review_attempts = {
-            str(review.get("id")): int(
-                self.app.reviews.snapshot_from_id(
-                    snapshot_id=str(review.get("target_snapshot_id") or "")
-                ).get("attempt_index")
-                or 0
-            )
-            for review in experiment.get("reviews", [])
-        }
-        sandbox_row = self.app.sandboxes.get_row(
-            experiment_id=experiment_id, project_id=project_id
-        )
-        sandbox = (
-            self.app.sandboxes.row_view(row=sandbox_row)
-            if sandbox_row is not None
-            else None
-        )
-        return self._present(
-            build_experiment_figure(
-                experiment=experiment,
-                review_attempts=review_attempts,
-                open_review_requests=self.app.reviews.open_requests_for_target(
-                    project_id=project_id, experiment_id=experiment_id
-                ),
-                sandbox=sandbox,
-                # Liveness verdict stays with the sandbox module's vocabulary.
-                sandbox_active=bool(
-                    sandbox
-                    and str(sandbox.get("status") or "") in ACTIVE_SANDBOX_STATUSES
-                ),
-            ),
         )
 
     def experiment_logic_graph(

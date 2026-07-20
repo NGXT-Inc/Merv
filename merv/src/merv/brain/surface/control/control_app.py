@@ -10,6 +10,7 @@ from typing import Any
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
 from ...application.events import EventDispatcher
+from ...application.queries import ExperimentFigureQuery, HomeQuery, MlflowOverviewQuery
 from ...application.experiments.exhibits import ExperimentExhibits
 from ...application.experiments.tracking import FinalizeTrackingRun, GetTrackingContext
 from ...application.experiments.reactions import ExperimentReactions
@@ -32,6 +33,7 @@ from ...kernel.ports.mgmt_keys import MgmtKeyStore
 from ...kernel.ports.blob_store import EvidenceBlobStore
 from .record_core import build_experiment_attachment_check, build_record_core
 from ...sandbox.sandbox_backend import SandboxBackend
+from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ...mlflow import CentralMlflowService
 from ...sandbox.sandboxes import SandboxService
 from ...object_storage.service import StorageLedgerService
@@ -151,6 +153,27 @@ class ControlApp:
             reflections=self.reflection_waves,
             storage_enabled=self.storage is not None,
             storage_guidance=storage_guidance(enabled=self.storage is not None),
+        )
+        self.home_query = HomeQuery(
+            experiments=self.experiments.list_experiments,
+            resources=self.resources.list_resources,
+            status_and_next=self.workflow.status_and_next,
+            active_work=self.workflow.active_work,
+            review_queue=self.reviews.queue,
+            recent_events=self.store.recent_events,
+            health=self.mlflow_tracking.health,
+        )
+        self.mlflow_overview_query = MlflowOverviewQuery(
+            experiments=self.experiments.list_experiments,
+            tracking=self.mlflow_tracking,
+        )
+        self.experiment_figure_query = ExperimentFigureQuery(
+            experiment_state=self.research_core.experiment_state,
+            review_snapshot=self.reviews.snapshot_from_id,
+            open_reviews=self.reviews.open_requests_for_target,
+            sandbox_row=self.sandboxes.get_row,
+            sandbox_view=self.sandboxes.row_view,
+            sandbox_status_active=ACTIVE_SANDBOX_STATUSES.__contains__,
         )
         control_tool_names = set(CONTROL_PLANE_TOOL_NAMES)
         control_tool_names &= available_tool_names(storage_enabled=self.storage is not None)

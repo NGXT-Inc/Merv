@@ -181,9 +181,7 @@ LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
         ("surface/permissions.py", "research_core/domain/vocabulary.py"),
         ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
         ("surface/tools/contracts.py", "surface/config.py"),
-        ("surface/transport/api/views.py", "artifacts/figure_view.py"),
         ("surface/transport/api/views.py", "artifacts/resource_selection.py"),
-        ("surface/transport/api/views.py", "mlflow/__init__.py"),
         ("surface/transport/api/views.py", "research_core/domain/graph_lint.py"),
     }
 )
@@ -454,6 +452,33 @@ class ModuleBoundaryTest(unittest.TestCase):
             "application code must enter business components through facade.py "
             "or ports/**: " + ", ".join(offenders),
         )
+
+    def test_composite_reads_are_application_owned_and_surface_delegates(self) -> None:
+        queries = (BACKEND_ROOT / "application/queries.py").read_text(encoding="utf-8")
+        control = (BACKEND_ROOT / "surface/control/control_app.py").read_text(
+            encoding="utf-8"
+        )
+        views = (BACKEND_ROOT / "surface/transport/api/views.py").read_text(
+            encoding="utf-8"
+        )
+        routes = "\n".join(
+            (BACKEND_ROOT / f"surface/transport/api/{name}.py").read_text(
+                encoding="utf-8"
+            )
+            for name in ("experiments", "projects")
+        )
+        for query in ("HomeQuery", "MlflowOverviewQuery", "ExperimentFigureQuery"):
+            with self.subTest(query=query):
+                self.assertIn(f"class {query}:", queries)
+                self.assertIn(query, control)
+        for escaped_policy in (
+            "build_experiment_figure",
+            "mlflow_experiment_name",
+            "ACTIVE_SANDBOX_STATUSES",
+        ):
+            self.assertNotIn(escaped_policy, views)
+        for delegate in ("home_query(", "mlflow_overview_query(", "experiment_figure_query("):
+            self.assertIn(delegate, routes)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     @api_router.get("/api/projects/{project_id}/reviews")
     def reviews(project_id: str, target_type: str = "experiment", target_id: str | None = None) -> dict[str, Any]:
         if not target_id:
-            return api.review_queue(project_id=project_id)
+            return api.app.reviews.queue(project_id=project_id)
         return api.call_tool(name="review.status", arguments={"project_id": project_id, "target_type": target_type, "target_id": target_id})
 
     @api_router.post("/api/projects/{project_id}/reviews/request", status_code=201)

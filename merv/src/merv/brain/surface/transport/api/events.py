@@ -26,7 +26,9 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         return conditional_json_from_signal(
             request,
             signal_parts=("events", project_id, effective_limit, signal),
-            payload=lambda: api.events(project_id=project_id, limit=limit),
+            payload=lambda: api.app.store.recent_events(
+                project_id=project_id, limit=limit
+            ),
         )
 
     @api_router.get("/api/projects/{project_id}/events/stream")

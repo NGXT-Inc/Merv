@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
+from .... import __version__
 from ....kernel.version import meta
 
 from .context import ApiRouteContext
@@ -19,7 +20,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     def health() -> dict[str, Any]:
         # Surface hygiene: /health is liveness only and never exposes host
         # paths or local data-plane details.
-        return api.health()
+        return {"ok": True, "version": __version__}
 
     @api_router.get("/api/meta")
     def server_meta() -> dict[str, Any]:
@@ -98,7 +99,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
-        return api.tool_calls_clear(project_ids=None)
+        return api.app.tool_calls.clear(project_ids=None)
 
 
     return api_router

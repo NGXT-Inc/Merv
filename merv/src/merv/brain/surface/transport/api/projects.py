@@ -83,13 +83,13 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
                 store.project_event_signal(project_id=project_id),
                 store.project_sandbox_signal(project_id=project_id),
                 json.dumps(
-                    api.app.mlflow_tracking.health(),
+                    api.app.home_query.health(),
                     sort_keys=True,
                     separators=(",", ":"),
                     default=str,
                 ),
             ),
-            payload=lambda: api.home(project_id=project_id),
+            payload=lambda: api._present(api.app.home_query(project_id=project_id)),
         )
 
     @api_router.get("/api/projects/{project_id}/status")

@@ -49,6 +49,12 @@ class RecordingTracking:
     def capabilities(self) -> TrackingCapabilities:
         return TrackingCapabilities(logging=True, control=True, readback=True)
 
+    def health(self) -> dict[str, object]:
+        return {"configured": True, "reachable": True}
+
+    def namespace_experiments(self, *, project_id: str) -> list[dict[str, object]]:
+        return []
+
     def context(
         self,
         *,
@@ -152,8 +158,13 @@ class RecordingTracking:
         }
 
     def results_metrics(
-        self, *, project_id: str, experiment_id: str
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        include_history: bool = True,
     ) -> dict[str, Any]:
+        _ = include_history
         self.results_calls += 1
         return {
             "available": True,

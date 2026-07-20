@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
+from .figure_view import build_experiment_figure
 from .resources import ResourceService
 
 
@@ -78,4 +79,4 @@ class ArtifactsFacade:
         )
 
 
-__all__ = ["Artifacts", "ArtifactsFacade", "MetricFileSource"]
+__all__ = ["Artifacts", "ArtifactsFacade", "MetricFileSource", "build_experiment_figure"]

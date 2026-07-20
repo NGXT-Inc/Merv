@@ -40,7 +40,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
-        return api.sandbox_health_view()
+        return api.app.sandboxes.backend_health()
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")
     def get_sandbox(

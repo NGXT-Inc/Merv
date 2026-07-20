@@ -294,8 +294,8 @@ Capability truth table (and required contract test):
 | both URIs | true | true | true | full creation, update, and readback |
 
 Project-wide MLflow browsing, health, and namespace discovery do not belong in
-this command port. They form a separate narrow query/diagnostic protocol when
-that Surface path migrates; composition may use a protocol composed from both.
+this command port. The follow-on Surface migration therefore defines a separate
+narrow `TrackingOverview` query protocol in the application query module.
 
 Pure exhibit construction and visibility/naming policy move from the MLflow
 adapter into application-owned code. MLflow keeps compatibility re-exports so
