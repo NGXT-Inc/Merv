@@ -15,16 +15,13 @@ import sys
 from typing import Any
 
 from .config import Mode, resolve_mode
-from ..kernel.state.activity import SENSITIVE_KEYS
+from ..kernel.state.activity import redact_sensitive
 from ..kernel.utils import parse_iso
 
 
 def _redact(fields: dict[str, Any]) -> dict[str, Any]:
-    """Drop/redact any sensitive field before it reaches stdout."""
-    return {
-        key: ("[redacted]" if key in SENSITIVE_KEYS else value)
-        for key, value in fields.items()
-    }
+    """Recursively redact sensitive fields before they reach stdout."""
+    return redact_sensitive(value=fields)
 
 
 class StructuredLogger:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 
@@ -91,7 +91,7 @@ class TransitionExperiment:
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
         include_tracking_credentials: bool = False,
-    ) -> dict[str, Any]:
+    ) -> TransitionResponse:
         exhibit = None
         if transition == "submit_results":
             before = self.research.experiment_state(
@@ -111,7 +111,7 @@ class TransitionExperiment:
         )
         state = reacted.state
         resolved_project_id = str(state.get("project_id") or project_id or "")
-        response = dict(self.research.present_experiment(state))
+        response = cast(TransitionResponse, dict(self.research.present_experiment(state)))
         with_tracking_if_visible(
             state=response,
             tracking=self.tracking,
@@ -174,21 +174,15 @@ class TransitionExperiment:
         self, context: EventContext[ExperimentState]
     ) -> EventReaction[ExperimentState]:
         transition = str(context.event.payload.get("transition") or "")
+        state = context.state
         if transition in ("start_running", "retry_running"):
-            return EventReaction(
-                state=self._ensure_tracking_run(
-                    state=context.state,
-                    replace_terminal=transition == "retry_running",
-                )
+            state = self._ensure_tracking_run(
+                state=state,
+                replace_terminal=transition == "retry_running",
             )
-        requested = _FINAL_TRACKING_STATUS.get(transition)
-        return EventReaction(
-            state=(
-                self._finalize_tracking_run(state=context.state, status=requested)
-                if requested
-                else context.state
-            )
-        )
+        elif requested := _FINAL_TRACKING_STATUS.get(transition):
+            state = self._finalize_tracking_run(state=state, status=requested)
+        return EventReaction(state=state)
 
     def _ensure_tracking_run(
         self, *, state: ExperimentState, replace_terminal: bool
@@ -305,7 +299,7 @@ def _persisted_run(run: dict[str, Any]) -> PersistedRunState:
     persisted = {key: run[key] for key in _RUN_FIELDS if key in run}
     if "created" in run:
         persisted["created_by_plugin"] = bool(run["created"])
-    return persisted  # type: ignore[return-value]
+    return cast(PersistedRunState, persisted)
 
 
 __all__ = ["TransitionExperiment", "TransitionResponse"]

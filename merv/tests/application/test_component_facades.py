@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from typing import get_type_hints
 
+from merv.brain.application.experiments.transition import (
+    TransitionExperiment,
+    TransitionResponse,
+)
 from merv.brain.artifacts.facade import Artifacts, ArtifactsFacade
 from merv.brain.feed.facade import Feed, FeedFacade
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
@@ -12,6 +17,7 @@ from merv.brain.research_core.facade import (
 )
 from merv.brain.research_core.transition_types import (
     CommittedExperimentTransition as OwnedCommittedTransition,
+    ExperimentState,
 )
 
 
@@ -344,6 +350,12 @@ class ComponentFacadeTest(unittest.TestCase):
 
     def test_committed_transition_is_the_research_owned_identity(self) -> None:
         self.assertIs(CommittedExperimentTransition, OwnedCommittedTransition)
+        self.assertIs(
+            get_type_hints(CommittedExperimentTransition)["state"], ExperimentState
+        )
+        self.assertIs(
+            get_type_hints(TransitionExperiment.execute)["return"], TransitionResponse
+        )
 
 
 if __name__ == "__main__":

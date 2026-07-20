@@ -1,7 +1,7 @@
 # Application Architecture Migration
 
-Status: ratified. Independent adversarial review returned **GO**; implementation
-may proceed under the constraints and gates below.
+Status: implemented and verified. Independent adversarial reviews returned
+**GO** for both the revised plan and the final implementation.
 
 ## Decision and scope
 
@@ -198,8 +198,6 @@ class TrackingContextPayload(TypedDict, total=False):
     note: str
 
 class TrackingContext(Protocol):
-    configured: bool
-    experiment_name: str
     def to_dict(self) -> TrackingContextPayload: ...
 
 class TrackingRun(TypedDict, total=False):
@@ -208,32 +206,27 @@ class TrackingRun(TypedDict, total=False):
     status: str
     artifact_uri: str
     created_at: str
-    ended_at: str
     created_by_plugin: bool
     error: str
 
 class CreateRunResult(TypedDict, total=False):
     created: bool
-    configured: bool
-    control_configured: bool
-    experiment_name: str
     run_id: str
     run_name: str
     status: str
     artifact_uri: str
     created_at: str
+    created_by_plugin: bool
     error: str
-    note: str
 
 class FinalizeRunResult(TypedDict, total=False):
-    configured: bool
-    control_configured: bool
-    run_id: str
-    requested_status: str | None
-    terminal: bool
     run: TrackingRun
-    error: str
-    note: str
+
+class TrackingMetric(TypedDict, total=False):
+    last: float | None
+    step: object
+    min: float
+    max: float
 
 class TrackingSnapshotRun(TypedDict, total=False):
     run_id: str
@@ -243,18 +236,15 @@ class TrackingSnapshotRun(TypedDict, total=False):
     end_time: int
     params: dict[str, object]
     tags: dict[str, str]
-    metrics: dict[str, dict[str, object]]
+    metrics: dict[str, TrackingMetric]
     metrics_capped_at: int
 
 class TrackingExperimentSnapshot(TypedDict, total=False):
-    experiment_id: str
     name: str
     runs: list[TrackingSnapshotRun]
 
 class MetricsSnapshot(TypedDict, total=False):
     available: bool
-    source: str
-    experiment_id: str
     experiments: list[TrackingExperimentSnapshot]
 
 class ExperimentTracking(Protocol):
@@ -280,11 +270,13 @@ class ExperimentTracking(Protocol):
     ) -> MetricsSnapshot: ...
 ```
 
-`TrackingContext` is a small protocol exposing `configured`,
-`experiment_name`, and `to_dict() -> TrackingContextPayload`. The snapshot
-module also defines typed experiment/run/metric records down to the fields the
-exhibit builder reads; unknown adapter fields remain allowed. These types are
-internal contracts, not new wire models. `TrackingCapabilities` distinguishes
+`TrackingContext` promises only `to_dict() -> TrackingContextPayload`; the
+application does not inspect adapter object attributes. Command and snapshot
+DTOs likewise promise only fields the application actually reads. MLflow may
+return richer dictionaries to preserve its existing direct Surface responses,
+but those extra fields are adapter output, not requirements placed on every
+tracking implementation. These types are internal contracts, not new wire
+models. `TrackingCapabilities` distinguishes
 agent logging, control-plane mutation, and readback configuration. That
 distinction preserves the current server-only/read-only modes that a single
 `configured` boolean would accidentally collapse. `CentralMlflowService`
@@ -694,6 +686,23 @@ Each batch must be independently testable and committed in the isolated
      a new adversarial ratification rather than an explanation after the fact;
    - run all gates below.
 
+### LOC gate re-ratification
+
+The original absolute ceiling was 40,224 brain lines (the 39,924 baseline plus
+300). Implementation showed that ceiling contradicted the already-ratified
+seams: the tracking port (227 lines), three typed facades (286), and explicit
+stored-event/dispatcher/committed-transition values (152) alone add 665 gross
+lines before storage ports or persistence plumbing.
+
+An independent compactness audit identified 106 architecture-preserving lines
+and rejected comment removal, formatting compression, facade weakening, and
+test deletion. After those reductions, a second independent adversarial review
+re-ratified an absolute ceiling of **40,860** (+936) with only narrow headroom.
+The executable gate in `scripts/verify_application_architecture.sh` also keeps
+the compatibility wrapper at 15 lines or fewer and the former 1,022-line
+Surface orchestration at 902 lines or fewer. The implemented counts are 40,850
+brain lines, a 13-line MLflow compatibility wrapper, and 549 Surface lines.
+
 ## Verification gates
 
 The following compatibility matrix is mandatory, not illustrative:
@@ -803,3 +812,8 @@ Initial verdict: **NO-GO**, with all findings incorporated for re-review:
 
 Final re-review verdict: **GO**. No contradictory or unimplementable
 requirements remained after the revisions above.
+
+Implementation re-review verdict: **GO**. The final tree meets the re-ratified
+LOC and Surface/wrapper ratchets, preserves the proxy catalog, passes the
+fail-closed Postgres gate, and proves equivalent REST/MCP responses plus exact,
+non-recursive start/submit/complete ledger effects.

@@ -28,17 +28,10 @@ from ..kernel.ports.blob_store import (
     BlobDownloadTarget,
     BlobStat,
     BlobStore,
-    BlobTransferStore,
     BlobUploadTarget,
-    EvidenceBlobStore,
-    ExpiringBlobStore,
     validate_blob_keys,
 )
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
-
-# Historical private import retained as the exact kernel-owned function object.
-_validate_keys = validate_blob_keys
-
 
 class LocalDirBlobStore:
     """Blob store rooted at a local directory (local-mode implementation).
@@ -59,7 +52,7 @@ class LocalDirBlobStore:
         content_type: str = "application/octet-stream",
         expires_at: str | None = None,
     ) -> str:
-        _validate_keys(namespace=namespace)
+        validate_blob_keys(namespace=namespace)
         sha = hashlib.sha256(data).hexdigest()
         blob_path = self._blob_path(namespace=namespace, sha256=sha)
         meta_path = self._meta_path(namespace=namespace, sha256=sha)
@@ -82,7 +75,7 @@ class LocalDirBlobStore:
         return sha
 
     def get(self, *, namespace: str, sha256: str) -> bytes:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         blob_path = self._blob_path(namespace=namespace, sha256=sha256)
         if not blob_path.exists():
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
@@ -91,14 +84,14 @@ class LocalDirBlobStore:
     def presign_get(
         self, *, namespace: str, sha256: str
     ) -> BlobDownloadTarget:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         blob_path = self._blob_path(namespace=namespace, sha256=sha256)
         if not blob_path.exists():
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
         return {"url": blob_path.resolve().as_uri()}
 
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         meta_path = self._meta_path(namespace=namespace, sha256=sha256)
         blob_path = self._blob_path(namespace=namespace, sha256=sha256)
         if not blob_path.exists() or not meta_path.exists():
@@ -114,7 +107,7 @@ class LocalDirBlobStore:
         )
 
     def delete(self, *, namespace: str, sha256: str) -> bool:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         blob_path = self._blob_path(namespace=namespace, sha256=sha256)
         meta_path = self._meta_path(namespace=namespace, sha256=sha256)
         existed = blob_path.exists()
@@ -140,7 +133,7 @@ class LocalDirBlobStore:
         real single-use HTTPS PUT URL behind these same verbs. The contract
         bites in ``finalize_put``: size cap, single use, content addressing.
         """
-        _validate_keys(namespace=namespace)
+        validate_blob_keys(namespace=namespace)
         upload_id = new_id(prefix="upload")
         staging = self._staging_path(upload_id=upload_id)
         staging.parent.mkdir(parents=True, exist_ok=True)
@@ -245,9 +238,6 @@ __all__ = [
     "BlobDownloadTarget",
     "BlobStat",
     "BlobStore",
-    "BlobTransferStore",
     "BlobUploadTarget",
-    "EvidenceBlobStore",
-    "ExpiringBlobStore",
     "LocalDirBlobStore",
 ]

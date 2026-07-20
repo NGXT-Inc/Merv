@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,33 @@ class ObjectStat:
     size_bytes: int
     content_type: str
     created_at: str
+
+
+class UploadPart(TypedDict):
+    part_number: int
+    url: str
+
+
+class _UploadIdentity(TypedDict):
+    upload_id: str
+
+
+class UploadTarget(_UploadIdentity, total=False):
+    """Adapter-minted target for a single or multipart heavy-object upload."""
+
+    url: str
+    parts: list[UploadPart]
+    part_size: int
+    size_bytes: int
+    content_type: str
+    checksum_sha256: str
+    expires_in: int
+
+
+class DownloadTarget(TypedDict):
+    """Adapter-minted target for downloading a heavy object."""
+
+    url: str
 
 
 class ObjectStore(Protocol):
@@ -26,7 +53,7 @@ class ObjectStore(Protocol):
         size_bytes: int,
         content_type: str = "application/octet-stream",
         expires_in: int,
-    ) -> dict[str, Any]:
+    ) -> UploadTarget:
         ...
 
     def complete_upload(
@@ -36,7 +63,7 @@ class ObjectStore(Protocol):
 
     def presign_download(
         self, *, namespace: str, sha256: str, expires_in: int
-    ) -> dict[str, Any]:
+    ) -> DownloadTarget:
         ...
 
     def stat(self, *, namespace: str, sha256: str) -> ObjectStat | None: ...
@@ -44,4 +71,4 @@ class ObjectStore(Protocol):
     def delete(self, *, namespace: str, sha256: str) -> bool: ...
 
 
-__all__ = ["ObjectStat", "ObjectStore"]
+__all__ = ["DownloadTarget", "ObjectStat", "ObjectStore", "UploadPart", "UploadTarget"]

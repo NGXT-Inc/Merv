@@ -256,11 +256,14 @@ proof that two separate models reasoned independently.
 
 ## Code boundaries
 
-The brain is a modular monolith with kernel, research-core, artifacts,
-object-storage, sandbox, feed, MLflow, and surface modules. The exact file
-classification and allowed dependency edges live in
-`tests/structure/test_module_boundaries.py`; the test currently permits no
-grandfathered violations.
+The brain is a modular monolith. Research, Artifacts, Sandbox, and Feed are
+business components; the Application component coordinates use cases across
+their narrow facades. MLflow is an outbound tracking adapter, concrete object
+storage is infrastructure, Surface delivers HTTP/MCP, and Kernel is the shared
+dependency floor. Every file is classified independently by component
+ownership and architectural layer. The exact mappings, import laws, and
+shrinking file-pair exception ledger live in
+`tests/structure/test_module_boundaries.py`.
 
 Additional structure tests enforce:
 

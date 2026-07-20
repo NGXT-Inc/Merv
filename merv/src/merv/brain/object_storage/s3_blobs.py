@@ -31,11 +31,6 @@ from ..kernel.ports.blob_store import (
 )
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
-
-# Preserve the historical module attribute while keeping validation inward.
-_validate_keys = validate_blob_keys
-
-
 _UPLOAD_PREFIX = ".uploads/"
 
 
@@ -68,7 +63,7 @@ class S3BlobStore:
         content_type: str = "application/octet-stream",
         expires_at: str | None = None,
     ) -> str:
-        _validate_keys(namespace=namespace)
+        validate_blob_keys(namespace=namespace)
         sha = hashlib.sha256(data).hexdigest()
         key = self._key(namespace=namespace, sha256=sha)
         existing = self._head(key=key)
@@ -90,7 +85,7 @@ class S3BlobStore:
         return sha
 
     def get(self, *, namespace: str, sha256: str) -> bytes:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         try:
             obj = self._s3.get_object(Bucket=self.bucket, Key=key)
@@ -105,7 +100,7 @@ class S3BlobStore:
     def presign_get(
         self, *, namespace: str, sha256: str
     ) -> BlobDownloadTarget:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         if self._head(key=key) is None:
             raise NotFoundError(f"blob not found: {namespace}/{sha256}")
@@ -118,7 +113,7 @@ class S3BlobStore:
         }
 
     def stat(self, *, namespace: str, sha256: str) -> BlobStat | None:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         head = self._head(key=self._key(namespace=namespace, sha256=sha256))
         if head is None:
             return None
@@ -133,7 +128,7 @@ class S3BlobStore:
         )
 
     def delete(self, *, namespace: str, sha256: str) -> bool:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         existed = self._head(key=key) is not None
         self._s3.delete_object(Bucket=self.bucket, Key=key)
@@ -149,7 +144,7 @@ class S3BlobStore:
         expires_at: str | None = None,
         content_type: str = "application/octet-stream",
     ) -> BlobUploadTarget:
-        _validate_keys(namespace=namespace)
+        validate_blob_keys(namespace=namespace)
         upload_id = new_id(prefix="upload")
         staging_key = f"{_UPLOAD_PREFIX}{upload_id}"
         # Stash the finalize parameters in a sidecar so finalize_put is

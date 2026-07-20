@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Final, Mapping, Protocol, TypedDict, runtime_checkable
+from typing import Final, Protocol, TypedDict, runtime_checkable
 
 
 # The application deliberately bounds a metrics exhibit rather than treating
@@ -33,22 +33,13 @@ class TrackingCapabilities:
     readback: bool
 
 
-TRACKING_CAPABILITY_TRUTH_TABLE: Final[
-    Mapping[tuple[bool, bool], TrackingCapabilities]
-] = MappingProxyType(
+TRACKING_CAPABILITY_TRUTH_TABLE: Final = MappingProxyType(
     {
-        (False, False): TrackingCapabilities(
-            logging=False, control=False, readback=False
-        ),
-        (True, False): TrackingCapabilities(
-            logging=True, control=False, readback=True
-        ),
-        (False, True): TrackingCapabilities(
-            logging=False, control=True, readback=True
-        ),
-        (True, True): TrackingCapabilities(
-            logging=True, control=True, readback=True
-        ),
+        (logging, control): TrackingCapabilities(
+            logging=logging, control=control, readback=logging or control
+        )
+        for logging in (False, True)
+        for control in (False, True)
     }
 )
 
@@ -72,12 +63,6 @@ class TrackingContextPayload(TypedDict, total=False):
 
 @runtime_checkable
 class TrackingContext(Protocol):
-    @property
-    def configured(self) -> bool: ...
-
-    @property
-    def experiment_name(self) -> str: ...
-
     def to_dict(self) -> TrackingContextPayload: ...
 
 
@@ -87,56 +72,28 @@ class TrackingRun(TypedDict, total=False):
     status: str
     artifact_uri: str
     created_at: str
-    ended_at: str
     created_by_plugin: bool
-    experiment_id: str
-    dashboard_run_url: str
     error: str
 
 
 class CreateRunResult(TypedDict, total=False):
     created: bool
-    configured: bool
-    control_configured: bool
-    experiment_name: str
-    experiment_id: str
     run_id: str
     run_name: str
     status: str
     artifact_uri: str
     created_at: str
-    dashboard_run_url: str
+    created_by_plugin: bool
     error: str
-    note: str
-
-
-class TrackingRunUpdate(TypedDict, total=False):
-    attempted: bool
-    status: str | None
-    applied: bool
-    skipped_already_terminal: str
-    error: str
-    note: str
 
 
 class FinalizeRunResult(TypedDict, total=False):
-    configured: bool
-    control_configured: bool
-    experiment_name: str
-    run_id: str
-    requested_status: str | None
-    update: TrackingRunUpdate
-    readback_attempts: int
-    terminal: bool
     run: TrackingRun
-    error: str
-    note: str
 
 
 class TrackingMetric(TypedDict, total=False):
     last: float | None
     step: object
-    timestamp: object
     min: float
     max: float
 
@@ -150,24 +107,17 @@ class TrackingSnapshotRun(TypedDict, total=False):
     params: dict[str, object]
     tags: dict[str, str]
     metrics: dict[str, TrackingMetric]
-    history: dict[str, list[list[object]]]
     metrics_capped_at: int
 
 
 class TrackingExperimentSnapshot(TypedDict, total=False):
-    experiment_id: str
     name: str
-    last_update_time: object
     runs: list[TrackingSnapshotRun]
 
 
 class MetricsSnapshot(TypedDict, total=False):
     available: bool
-    source: str
-    experiment_id: str
     experiments: list[TrackingExperimentSnapshot]
-    dashboard_experiment_url: str
-    hint: str
 
 
 @runtime_checkable
@@ -221,7 +171,6 @@ __all__ = [
     "TrackingExperimentSnapshot",
     "TrackingMetric",
     "TrackingRun",
-    "TrackingRunUpdate",
     "TrackingSnapshotRun",
     "capabilities_for_configuration",
 ]

@@ -18,6 +18,7 @@ from merv.brain.kernel.ports.blob_store import (
     ExpiringBlobStore,
     validate_blob_keys,
 )
+from merv.brain.kernel.ports.object_store import DownloadTarget, ObjectStore, UploadTarget
 from merv.brain.kernel.state.store import Connection
 from merv.brain.kernel.utils import ValidationError
 from merv.brain.object_storage import blobs as local_adapter
@@ -56,16 +57,10 @@ class SubmittedBlobPortTest(unittest.TestCase):
     def test_old_adapter_imports_are_identity_preserving(self) -> None:
         self.assertIs(local_adapter.BlobStat, BlobStat)
         self.assertIs(local_adapter.BlobStore, BlobStore)
-        self.assertIs(local_adapter.EvidenceBlobStore, EvidenceBlobStore)
-        self.assertIs(local_adapter.ExpiringBlobStore, ExpiringBlobStore)
-        self.assertIs(local_adapter.BlobTransferStore, BlobTransferStore)
         self.assertIs(local_adapter.BlobUploadTarget, BlobUploadTarget)
         self.assertIs(local_adapter.BlobDownloadTarget, BlobDownloadTarget)
-        self.assertIs(local_adapter._validate_keys, validate_blob_keys)
 
         self.assertIs(s3_adapter.BlobStat, BlobStat)
-        self.assertIs(s3_adapter._validate_keys, validate_blob_keys)
-        self.assertIs(heavy_s3_adapter._validate_keys, validate_blob_keys)
 
     def test_capabilities_are_narrow_and_transfer_targets_are_typed(self) -> None:
         evidence_methods = {
@@ -96,6 +91,22 @@ class SubmittedBlobPortTest(unittest.TestCase):
             {"upload_id", "url", "max_size_bytes", "expires_at"},
         )
         self.assertEqual(set(BlobDownloadTarget.__required_keys__), {"url"})
+
+
+class HeavyObjectPortTest(unittest.TestCase):
+    def test_transfer_targets_are_typed_without_changing_wire_shapes(self) -> None:
+        self.assertTrue(is_typeddict(UploadTarget))
+        self.assertTrue(is_typeddict(DownloadTarget))
+        self.assertEqual(set(UploadTarget.__required_keys__), {"upload_id"})
+        self.assertEqual(set(DownloadTarget.__required_keys__), {"url"})
+        hints = get_type_hints(ObjectStore)
+        self.assertEqual(hints, {})
+        self.assertIs(
+            get_type_hints(ObjectStore.presign_upload)["return"], UploadTarget
+        )
+        self.assertIs(
+            get_type_hints(ObjectStore.presign_download)["return"], DownloadTarget
+        )
 
     def test_validation_is_kernel_owned_and_behavior_compatible(self) -> None:
         validate_blob_keys(namespace="proj_valid-1", sha256="a" * 64)

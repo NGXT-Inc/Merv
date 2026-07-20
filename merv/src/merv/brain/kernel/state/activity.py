@@ -362,6 +362,8 @@ def redact_sensitive(*, value: Any) -> Any:
         }
     if isinstance(value, list):
         return [redact_sensitive(value=item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_sensitive(value=item) for item in value)
     return value
 
 

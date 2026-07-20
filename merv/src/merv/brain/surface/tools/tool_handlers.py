@@ -6,15 +6,11 @@ from collections.abc import Callable
 from typing import Any
 
 from ...application.experiments.tracking_presentation import (
-    attach_tracking_run,
     tracking_connection,
     tracking_context_response,
     with_tracking_if_visible,
 )
-from ...mlflow import (
-    mlflow_experiment_name,
-    mlflow_visible_for_status,
-)
+from ...mlflow import mlflow_experiment_name
 from ...research_core.experiment_views import slim_experiment_state
 from ...kernel.utils import ValidationError
 
@@ -138,14 +134,6 @@ def build_control_tool_handlers(
             include_tracking_credentials=True,
         )
 
-    def experiment_exhibit_agent(
-        *, experiment_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        return experiment_exhibit.preview(
-            experiment_id=experiment_id,
-            project_id=project_id,
-        )
-
     def mlflow_context_agent(
         *, project_id: str, experiment_id: str | None = None
     ) -> dict[str, Any]:
@@ -167,8 +155,8 @@ def build_control_tool_handlers(
             project_id=resolved_project_id,
             experiment_id=experiment_id,
             include_credentials=True,
+            run=state.get("mlflow_run"),
         )
-        block = attach_tracking_run(block, state.get("mlflow_run"))
         return tracking_context_response(
             project_id=resolved_project_id,
             experiment_id=experiment_id,
@@ -220,14 +208,13 @@ def build_control_tool_handlers(
                 event_type="experiment.mlflow_run_refreshed",
             )
         slim = slim_experiment_state(refreshed_state)
-        if mlflow_visible_for_status(slim.get("status")):
-            slim = with_tracking_if_visible(
-                state=slim,
-                tracking=mlflow_tracking,
-                project_id=resolved_project_id,
-                experiment_id=experiment_id,
-                include_credentials=True,
-            )
+        slim = with_tracking_if_visible(
+            state=slim,
+            tracking=mlflow_tracking,
+            project_id=resolved_project_id,
+            experiment_id=experiment_id,
+            include_credentials=True,
+        )
         out = dict(result)
         out["project_id"] = resolved_project_id
         out["experiment_id"] = experiment_id
@@ -360,7 +347,7 @@ def build_control_tool_handlers(
         "experiment.list": experiment_list_agent,
         "experiment.get_state": experiment_get_state_agent,
         "experiment.transition": experiment_transition_agent,
-        "experiment.exhibit": experiment_exhibit_agent,
+        "experiment.exhibit": experiment_exhibit.preview,
         "mlflow.context": mlflow_context_agent,
         "mlflow.finalize_run": mlflow_finalize_run_agent,
         "reflection.create": reflection_tools.create,

@@ -14,21 +14,19 @@ def tracking_connection(
     project_id: str,
     experiment_id: str,
     include_credentials: bool,
+    run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if tracking is None or not project_id or not experiment_id:
-        return {"configured": False}
-    return dict(
-        tracking.context(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            include_credentials=include_credentials,
-        ).to_dict()
+    block = (
+        {"configured": False}
+        if tracking is None or not project_id or not experiment_id
+        else dict(
+            tracking.context(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                include_credentials=include_credentials,
+            ).to_dict()
+        )
     )
-
-
-def attach_tracking_run(
-    block: dict[str, Any], run: dict[str, Any] | None
-) -> dict[str, Any]:
     if not run:
         return block
     result = {**block, "run": run}
@@ -87,14 +85,12 @@ def with_tracking_if_visible(
 ) -> dict[str, Any]:
     if not mlflow_visible_for_status(state.get("status")):
         return state
-    block = attach_tracking_run(
-        tracking_connection(
-            tracking=tracking,
-            project_id=project_id,
-            experiment_id=experiment_id,
-            include_credentials=include_credentials,
-        ),
-        state.get("mlflow_run"),
+    block = tracking_connection(
+        tracking=tracking,
+        project_id=project_id,
+        experiment_id=experiment_id,
+        include_credentials=include_credentials,
+        run=state.get("mlflow_run"),
     )
     state["mlflow"] = block
     state["mlflow_guidance"] = tracking_guidance(block)
@@ -102,7 +98,6 @@ def with_tracking_if_visible(
 
 
 __all__ = [
-    "attach_tracking_run",
     "tracking_connection",
     "tracking_context_response",
     "tracking_guidance",

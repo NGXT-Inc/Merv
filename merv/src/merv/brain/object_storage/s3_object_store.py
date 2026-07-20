@@ -8,11 +8,8 @@ import math
 from typing import Any
 
 from ..kernel.ports.blob_store import validate_blob_keys
-from ..kernel.ports.object_store import ObjectStat
+from ..kernel.ports.object_store import DownloadTarget, ObjectStat, UploadTarget
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
-
-
-_validate_keys = validate_blob_keys
 
 
 _UPLOAD_PREFIX = ".uploads/"
@@ -62,8 +59,8 @@ class S3CompatibleObjectStore:
         size_bytes: int,
         content_type: str = "application/octet-stream",
         expires_in: int,
-    ) -> dict[str, Any]:
-        _validate_keys(namespace=namespace, sha256=sha256)
+    ) -> UploadTarget:
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         upload_id = new_id(prefix="upload")
         key = self._key(namespace=namespace, sha256=sha256)
         checksum = _sha256_b64(sha256)
@@ -185,8 +182,8 @@ class S3CompatibleObjectStore:
 
     def presign_download(
         self, *, namespace: str, sha256: str, expires_in: int
-    ) -> dict[str, Any]:
-        _validate_keys(namespace=namespace, sha256=sha256)
+    ) -> DownloadTarget:
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         if self._head(key=key) is None:
             raise NotFoundError(f"object not found: {namespace}/{sha256}")
@@ -199,7 +196,7 @@ class S3CompatibleObjectStore:
         }
 
     def stat(self, *, namespace: str, sha256: str) -> ObjectStat | None:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         head = self._head(key=self._key(namespace=namespace, sha256=sha256))
         if head is None:
             return None
@@ -213,7 +210,7 @@ class S3CompatibleObjectStore:
         )
 
     def delete(self, *, namespace: str, sha256: str) -> bool:
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         key = self._key(namespace=namespace, sha256=sha256)
         existed = self._head(key=key) is not None
         self._s3.delete_object(Bucket=self.bucket, Key=key)

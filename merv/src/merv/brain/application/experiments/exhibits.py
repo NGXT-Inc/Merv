@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from ...artifacts.facade import Artifacts
 from ...kernel.utils import WorkflowError
@@ -12,7 +12,6 @@ from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, build_metrics_exhibit
 from .tracking_policy import mlflow_experiment_name
 
 
-@runtime_checkable
 class ExhibitBuilder(Protocol):
     def generate(self, *, state: ExperimentState) -> dict[str, object]: ...
 

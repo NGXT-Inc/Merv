@@ -2,48 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict, cast, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from .domain.paths import experiment_folder_rel
 from .experiment_views import slim_experiment_state
 from .experiments import ExperimentService
-from .transition_types import CommittedExperimentTransition
-
-
-class PersistedRunState(TypedDict, total=False):
-    run_id: str | None
-    run_name: str
-    status: str
-    artifact_uri: str
-    created_at: str | None
-    created_by_plugin: bool
-    error: str
-
-
-class ExperimentState(TypedDict, total=False):
-    id: str
-    project_id: str
-    name: str
-    status: str
-    attempt_index: int
-    mlflow_run: PersistedRunState | None
-
-
-class ExhibitVerdict(TypedDict, total=False):
-    runs_found: int
-    result_files: int
-    attempt_index: int
-    mlflow: dict[str, object]
-    pinned: bool
-
-
-class SlimExperimentState(TypedDict, total=False):
-    id: str
-    project_id: str
-    name: str
-    status: str
-    attempt_index: int
-    mlflow_run: PersistedRunState | None
+from .transition_types import (
+    CommittedExperimentTransition,
+    ExhibitVerdict,
+    ExperimentState,
+    PersistedRunState,
+    SlimExperimentState,
+)
 
 
 @runtime_checkable

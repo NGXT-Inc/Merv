@@ -55,15 +55,23 @@ class StructuredLoggerTest(unittest.TestCase):
             capability="super-secret-token",
             reviewer_capability="another-secret",
             MLFLOW_TRACKING_PASSWORD="rr_sk_agent",
+            nested={
+                "items": ({"MLFLOW_TRACKING_PASSWORD": "nested-secret"},)
+            },
         )
         out = stream.getvalue()
         self.assertNotIn("super-secret-token", out)
         self.assertNotIn("another-secret", out)
         self.assertNotIn("rr_sk_agent", out)
+        self.assertNotIn("nested-secret", out)
         record = json.loads(out.splitlines()[0])
         self.assertEqual(record["capability"], "[redacted]")
         self.assertEqual(record["reviewer_capability"], "[redacted]")
         self.assertEqual(record["MLFLOW_TRACKING_PASSWORD"], "[redacted]")
+        self.assertEqual(
+            record["nested"]["items"][0]["MLFLOW_TRACKING_PASSWORD"],
+            "[redacted]",
+        )
 
     def test_status_zero_is_kept_even_when_falsey(self) -> None:
         # status is always present (the empty-field prune exempts it).

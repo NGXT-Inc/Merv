@@ -216,10 +216,10 @@ class FakeObjectStore:
         import tempfile
         from pathlib import Path as _Path
 
-        from merv.brain.object_storage.blobs import _validate_keys
+        from merv.brain.kernel.ports.blob_store import validate_blob_keys
         from merv.brain.kernel.utils import new_id, now_iso
 
-        _validate_keys(namespace=namespace, sha256=sha256)
+        validate_blob_keys(namespace=namespace, sha256=sha256)
         if self._staging_dir is None:
             self._staging_dir = tempfile.mkdtemp(prefix="fake-object-uploads-")
         upload_id = new_id(prefix="upload")

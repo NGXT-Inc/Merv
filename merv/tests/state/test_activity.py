@@ -27,6 +27,7 @@ class CapResultTest(unittest.TestCase):
                 "capability": "rp_nested",
                 "env": {"MLFLOW_TRACKING_PASSWORD": "rr_sk_agent"},
             },
+            "tuple": ({"MLFLOW_TRACKING_PASSWORD": "tuple-secret"},),
         }
         self.assertEqual(
             cap_result(value=value),
@@ -36,6 +37,7 @@ class CapResultTest(unittest.TestCase):
                     "capability": "[redacted]",
                     "env": {"MLFLOW_TRACKING_PASSWORD": "[redacted]"},
                 },
+                "tuple": ({"MLFLOW_TRACKING_PASSWORD": "[redacted]"},),
             },
         )
         self.assertNotIn("repo_root", cap_result(value=value))
