@@ -581,10 +581,18 @@ reads may dispatch the same event ID and return the same read-only advisory
 until an actual Feed post suppresses it. No event, acknowledgement, or cursor
 row is appended by the read.
 
-`ControlApp` owns the single reaction-registry instance and injects it into both
-application use cases. `ExperimentReactions` binds transition tracking,
-terminal Feed, and review-verdict Feed handlers once during composition. Use
-cases no longer construct or register private handler sets.
+The third subscription is `experiment.mlflow_run_refreshed` in the
+`post_response` phase. Canonical `mlflow.finalize_run` dispatches the exact event
+returned with Research's persisted readback, then attaches the advisory outcome.
+The explicit foreign-run compatibility path intentionally remains a direct
+best-effort advisory: it cannot dispatch because it writes no event and must not
+fabricate one.
+
+`ControlApp` owns the single reaction-registry instance and injects it into
+`TransitionExperiment`, `ReadReviewStatus`, and `FinalizeTrackingRun`.
+`ExperimentReactions` binds transition tracking, terminal Feed,
+tracking-finalization Feed, and review-verdict Feed handlers once during
+composition. Use cases no longer construct or register private handler sets.
 
 Exhibit generation is not an event reaction: it must remain a synchronous
 prerequisite before `submit_results`, because the workflow gate validates the
@@ -722,16 +730,23 @@ lines before storage ports or persistence plumbing.
 An independent compactness audit identified 106 architecture-preserving lines
 and rejected comment removal, formatting compression, facade weakening, and
 test deletion. After those reductions, a second independent adversarial review
-re-ratified an absolute ceiling of **40,860** (+936) with only narrow headroom.
-The initial executable gate in `scripts/verify_application_architecture.sh` kept
-the compatibility wrapper at 15 lines or fewer and the former 1,022-line
-Surface orchestration at 902 lines or fewer. The review/reaction follow-up
-lowers the implemented counts to 40,843 brain lines, a 13-line MLflow
-compatibility wrapper, and 399 Surface handler lines. It also removes the
-uncalled `build_local_tool_handlers` factory; live local composition uses the
+re-ratified an absolute ceiling of **40,860** (+936) for the initial migration.
+The tracking follow-up then added an explicit typed command/query boundary and
+exact refresh-event return. Its isolated branch temporarily raised the ceiling
+to 41,000, but the combined integration did not accept that re-ratification.
+Instead, a whole-tree reachability audit removed an equal amount of stranded
+backfill, reflection-lint, request-helper, HTTP-helper, activity-producer, and
+contract-projection code whose callers or routes had already been retired.
+
+After integrating tracking, the shared reaction registry, and the composite
+query slice, the implemented tree is **40,845 brain lines**, five below the
+pre-tracking tree. The MLflow
+compatibility wrapper remains 13 lines, `tool_handlers.py` is 232 lines (down
+from 1,022 before the migration), and `views.py` is 763 lines. The uncalled
+`build_local_tool_handlers` factory is gone; live local composition uses the
 Control dispatcher plus proxy-owned `LocalDataPlane`, as its split-mode tests
-already prove. The executable brain ceiling is consequently tightened to
-40,850 rather than spending the recovered headroom.
+prove. Executable ratchets enforce the 40,850 brain ceiling and the 232-line
+Surface-handler ceiling.
 
 ### Tracking follow-up slice
 
@@ -745,13 +760,13 @@ advisory after assembling the response. An explicit foreign-run finalize keeps
 its historical response/advisory without fabricating a ledger event or changing
 canonical identity.
 
-This slice removes 164 lines from `tool_handlers.py` (549 to 385) but adds a
-240-line typed application boundary plus the smallest tracking-port, Research
-facade, response DTOs, and event-return plumbing. Production therefore grows
-honestly by 147 lines (40,850 to 40,997). The branch proposes a tightly bounded
-41,000 ceiling for independent re-ratification and tightens the Surface ratchet
-from 902 to 400. Characterization covers exact responses, credential audience,
-failures, foreign runs, durable event identity, and direct/MCP ledger parity.
+The standalone tracking slice removed 164 lines from `tool_handlers.py` but
+added a 240-line typed application boundary plus the smallest tracking-port,
+Research facade, response DTOs, and event-return plumbing. Combined integration
+then removed the obsolete local factory, shared reaction registration through
+composition, and moved composite reads inward. Characterization covers exact
+responses, credential audience, failures, foreign runs, durable event identity,
+and direct/MCP ledger parity.
 
 ## Verification gates
 
@@ -835,9 +850,10 @@ cross-module import inventory, and a clean worktree/commit audit close the work.
 - no physical relocation of MLflow/object-storage files merely for taxonomy;
 - no migration of unrelated Surface orchestration in this slice.
 
-Next use cases should be selected from review completion, sandbox lifecycle,
-resource registration, and composite UI queries. Each migrated use case may add
-the smallest new facade verb/port operation it actually needs.
+No additional use case is required to close this migration. Remaining exact
+layer exceptions, a future Sandbox facade, and any further resource or UI work
+are optional targeted improvements; each should begin only when a concrete use
+case justifies the smallest new facade verb or port operation.
 
 ## Adversarial review disposition
 

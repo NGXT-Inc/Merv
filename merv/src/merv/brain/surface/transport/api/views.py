@@ -10,12 +10,10 @@ from merv.shared.artifact_roles import GATED_ROLES, PROJECT_GRAPH_ROLES
 
 from ....artifacts.resource_selection import preferred_associated_resource
 from ....research_core.domain.graph_lint import MAX_GRAPH_NODES, graph_problems
-from ....application.experiments.tracking_policy import mlflow_visible_for_status
 from ....kernel.state.activity import effective_source, is_event_ok
 from ....kernel.utils import (
     ContentUnavailableError,
     NotFoundError,
-    ValidationError,
     WorkflowError,
 )
 
@@ -82,28 +80,11 @@ class ResearchHttpApi:
     def experiment_state_view(
         self, *, project_id: str, experiment_id: str
     ) -> dict[str, Any]:
-        state = self.app.experiments.get_state(
-            experiment_id=experiment_id,
+        detail = self.app.tracking_context.experiment_detail(
             project_id=project_id,
+            experiment_id=experiment_id,
         )
-        if not mlflow_visible_for_status(state.get("status")):
-            return self._present(state)
-        enriched = dict(state)
-        mlflow = self.app.mlflow_tracking.context(
-            project_id=project_id,
-            experiment_id=experiment_id,
-        ).to_dict()
-        run = state.get("mlflow_run")
-        if isinstance(run, dict):
-            mlflow["run"] = run
-            run_id = str(run.get("run_id") or "")
-            if run_id:
-                env = dict(mlflow.get("env") or {})
-                env["MLFLOW_RUN_ID"] = run_id
-                env["RP_MLFLOW_RUN_ID"] = run_id
-                mlflow["env"] = env
-        enriched["mlflow"] = mlflow
-        return self._present(enriched)
+        return self._present(detail)
 
     @classmethod
     def _strip_local_data_plane(cls, value: Any) -> Any:
@@ -481,23 +462,6 @@ class ResearchHttpApi:
                 "name": name,
                 "intent": intent,
                 "tested_claim_ids": claim_ids,
-            },
-        )
-
-    def register_resource(
-        self, project_id: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        path = body.get("path")
-        if not path:
-            raise ValidationError("resource creation requires a repo-relative path")
-        return self.call_tool(
-            name="resource.register",
-            arguments={
-                "project_id": project_id,
-                "path": path,
-                "kind": body.get("kind", "other"),
-                "title": body.get("title", ""),
-                "created_by": body.get("created_by", "ui"),
             },
         )
 

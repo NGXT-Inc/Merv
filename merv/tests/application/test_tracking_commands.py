@@ -6,6 +6,7 @@ from typing import Any, get_type_hints
 from unittest.mock import patch
 
 from merv.brain.application.experiments.tracking import (
+    ExperimentDetailResponse,
     FinalizeTrackingResponse,
     FinalizeTrackingRun,
     GetTrackingContext,
@@ -191,6 +192,10 @@ class TrackingContextQueryTest(unittest.TestCase):
             get_type_hints(FinalizeTrackingRun.execute)["return"],
             FinalizeTrackingResponse,
         )
+        self.assertIs(
+            get_type_hints(GetTrackingContext.experiment_detail)["return"],
+            ExperimentDetailResponse,
+        )
 
     def test_project_context_uses_port_and_research_namespace_map(self) -> None:
         order: list[str] = []
@@ -255,6 +260,40 @@ class TrackingContextQueryTest(unittest.TestCase):
 
         self.assertEqual(result["mlflow"], {"configured": False})
         self.assertEqual(order, [])
+
+    def test_http_detail_uses_application_tracking_policy_without_credentials(self) -> None:
+        order: list[str] = []
+        research = RecordingResearch(order)
+        tracking = RecordingTracking(order)
+
+        result = GetTrackingContext(
+            research=research, tracking=tracking
+        ).experiment_detail(experiment_id=EXPERIMENT_ID, project_id=PROJECT_ID)
+
+        self.assertEqual(result["mlflow"]["run"]["run_id"], "run_mine")
+        self.assertEqual(result["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_mine")
+        self.assertEqual(
+            tracking.context_calls,
+            [
+                {
+                    "project_id": PROJECT_ID,
+                    "experiment_id": EXPERIMENT_ID,
+                    "include_credentials": False,
+                }
+            ],
+        )
+
+    def test_http_detail_hides_tracking_for_planned_experiment(self) -> None:
+        order: list[str] = []
+        research = RecordingResearch(order, state={**_state(), "status": "planned"})
+        tracking = RecordingTracking(order)
+
+        result = GetTrackingContext(
+            research=research, tracking=tracking
+        ).experiment_detail(experiment_id=EXPERIMENT_ID, project_id=PROJECT_ID)
+
+        self.assertNotIn("mlflow", result)
+        self.assertEqual(tracking.context_calls, [])
 
 
 class FinalizeTrackingRunTest(unittest.TestCase):

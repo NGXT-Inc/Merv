@@ -17,7 +17,7 @@ from ..ports.tracking import (
     FinalizeRunResult,
     TrackingContextPayload,
 )
-from .tracking_policy import mlflow_experiment_name
+from .tracking_policy import mlflow_experiment_name, mlflow_visible_for_status
 from .tracking_presentation import (
     tracking_connection,
     tracking_context_response,
@@ -41,6 +41,10 @@ class FinalizeTrackingResponse(FinalizeRunResult, total=False):
     run_id: str
     error: str
     feed_note: str
+
+
+class ExperimentDetailResponse(ExperimentState, total=False):
+    mlflow: dict[str, Any]
 
 
 class GetTrackingContext:
@@ -122,6 +126,23 @@ class GetTrackingContext:
                 include_credentials=True,
             ),
         )
+
+    def experiment_detail(
+        self, *, experiment_id: str, project_id: str | None = None
+    ) -> ExperimentDetailResponse:
+        state = self.research.experiment_state(
+            experiment_id=experiment_id, project_id=project_id
+        )
+        response = cast(ExperimentDetailResponse, dict(state))
+        if mlflow_visible_for_status(state.get("status")):
+            response["mlflow"] = tracking_connection(
+                tracking=self.tracking,
+                project_id=str(state.get("project_id") or project_id or ""),
+                experiment_id=experiment_id,
+                include_credentials=False,
+                run=state.get("mlflow_run"),
+            )
+        return response
 
 
 class FinalizeTrackingRun:
@@ -223,6 +244,7 @@ class FinalizeTrackingRun:
 
 
 __all__ = [
+    "ExperimentDetailResponse",
     "FinalizeTrackingResponse",
     "FinalizeTrackingRun",
     "GetTrackingContext",

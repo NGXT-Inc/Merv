@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 

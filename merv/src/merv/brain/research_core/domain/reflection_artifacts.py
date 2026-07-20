@@ -78,14 +78,6 @@ def reflection_doc_review_problems(
     return problems
 
 
-def reflection_lens_doc_problems(text: str) -> list[str]:
-    # The roster gate rejects empty lens reflections; the byte cap is
-    # enforced generically for all gated roles.
-    if not text.strip():
-        return ["reflection lens document is empty"]
-    return []
-
-
 def validate_reflection_roster(*, lenses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Envelope check for a reflection roster."""
     contract = (
@@ -426,25 +418,6 @@ def decision_problems(
                 continue
             if claim_exists is not None and not claim_exists(ref):
                 problems.append(f"{label} references unknown claim or claim key: {ref}")
-
-
-def change_spec_structure_problems(text: str) -> list[str]:
-    """Structure-only lint for preflight; the gate layers DB-backed checks
-    (claim existence, taken names, active caps) on the same builders."""
-    if not text.strip():
-        return ["change spec is empty"]
-    try:
-        spec = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return [f"change spec is not valid JSON: {exc}"]
-    if not isinstance(spec, dict):
-        return ["change spec must be a JSON object"]
-    problems: list[str] = []
-    if spec.get("version") != CHANGE_SPEC_SCHEMA_VERSION:
-        problems.append(f"version must be {CHANGE_SPEC_SCHEMA_VERSION}")
-    claim_keys = claim_change_problems(spec, problems=problems)
-    decision_problems(spec, problems=problems, claim_keys=claim_keys)
-    return problems
 
 
 def parse_change_spec(

@@ -28,7 +28,7 @@ class TrackingOverview(Protocol):
 class HomeQuery:
     """Assemble the project home read model without a delivery dependency."""
 
-    experiments: RecordQuery
+    experiment_state: RecordQuery
     resources: RecordQuery
     status_and_next: RecordQuery
     active_work: RecordQuery
@@ -42,7 +42,12 @@ class HomeQuery:
         reviews = self.review_queue(project_id=project_id)
         events = self.recent_events(project_id=project_id, limit=25)["events"]
         claims = status["project"]["active_claims"]
-        experiments = self.experiments(project_id=project_id)["experiments"]
+        experiments = [
+            self.experiment_state(
+                experiment_id=experiment["id"], project_id=project_id
+            )
+            for experiment in status["project"]["active_experiments"]
+        ]
         work = self.active_work(project_id=project_id)
         active_experiments = work["active_experiments"]
         active_processes = work["active_processes"]

@@ -1492,10 +1492,6 @@ def available_tool_names(*, storage_enabled: bool | None = None) -> set[str]:
     return names
 
 
-TOOL_INPUT_MODELS: dict[str, type[ContractModel]] = {
-    name: contract.input_model for name, contract in TOOL_CONTRACTS.items()
-}
-
 PROJECT_SCOPED_TOOL_NAMES = {
     name
     for name, contract in TOOL_CONTRACTS.items()

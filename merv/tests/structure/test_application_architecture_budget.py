@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BRAIN = ROOT / "src" / "merv" / "brain"
 BASELINE_BRAIN_LOC = 39_924
 PRE_TRACKING_SLICE_LOC = 40_850
-MAX_BRAIN_LOC = 41_000
+MAX_BRAIN_LOC = 40_850
 BASELINE_SURFACE_ORCHESTRATION_LOC = 1_022
 PRE_TRACKING_SURFACE_LOC = 549
 MAX_SURFACE_ORCHESTRATION_LOC = 232
@@ -24,8 +24,8 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
             for path in BRAIN.rglob("*.py")
         )
         self.assertLessEqual(current, MAX_BRAIN_LOC)
-        self.assertEqual(MAX_BRAIN_LOC - PRE_TRACKING_SLICE_LOC, 150)
-        self.assertEqual(MAX_BRAIN_LOC - BASELINE_BRAIN_LOC, 1_076)
+        self.assertEqual(MAX_BRAIN_LOC - PRE_TRACKING_SLICE_LOC, 0)
+        self.assertEqual(MAX_BRAIN_LOC - BASELINE_BRAIN_LOC, 926)
 
     def test_surface_orchestration_shrank_by_at_least_120_lines(self) -> None:
         current = len(
@@ -64,6 +64,15 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         transition = (BRAIN / "application/experiments/transition.py").read_text(
             encoding="utf-8"
         )
+        tracking = (BRAIN / "application/experiments/tracking.py").read_text(
+            encoding="utf-8"
+        )
+        reactions = (BRAIN / "application/experiments/reactions.py").read_text(
+            encoding="utf-8"
+        )
+        views = (BRAIN / "surface/transport/api/views.py").read_text(
+            encoding="utf-8"
+        )
         composition = (BRAIN / "surface/control/control_app.py").read_text(
             encoding="utf-8"
         )
@@ -74,9 +83,17 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, handlers)
         self.assertIn('"review.status": review_status.execute', handlers)
-        self.assertNotIn("EventDispatcher()", transition)
-        self.assertNotIn(".register(", transition)
+        for use_case in (transition, tracking):
+            self.assertNotIn("EventDispatcher()", use_case)
+            self.assertNotIn(".register(", use_case)
+        self.assertIn(
+            '("experiment.mlflow_run_refreshed", "post_response")', reactions
+        )
         self.assertIn("self.reaction_registry = EventDispatcher()", composition)
+        self.assertEqual(composition.count("dispatcher=self.reaction_registry"), 3)
+        self.assertNotIn("self.app.mlflow_tracking", views)
+        self.assertNotIn("mlflow_visible_for_status", views)
+        self.assertIn("self.app.tracking_context.experiment_detail", views)
 
 
 if __name__ == "__main__":

@@ -159,15 +159,8 @@ class ActivityLogger:
         )
 
     def http_request(self, *, method: str, path: str, status: int, duration_ms: int) -> None:
-        self.emit(
-            event_type="http.request",
-            payload={
-                "method": method,
-                "path": path,
-                "status": status,
-                "duration_ms": duration_ms,
-            },
-        )
+        payload = dict(method=method, path=path, status=status, duration_ms=duration_ms)
+        self.emit(event_type="http.request", payload=payload)
 
     def exception(
         self,

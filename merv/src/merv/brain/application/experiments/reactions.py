@@ -50,27 +50,18 @@ class ExperimentReactions:
             name="tracking",
             handler=self.tracking_run,
         )
-        registry.register(
-            event_type="experiment.transitioned",
-            phase="post_response",
-            name="feed",
-            handler=self.feed_advisory,
-            failure="advisory",
-        )
-        registry.register(
-            event_type="review.submitted",
-            phase="producer_read",
-            name="feed",
-            handler=self.feed_advisory,
-            failure="advisory",
-        )
-        registry.register(
-            event_type="experiment.mlflow_run_refreshed",
-            phase="post_response",
-            name="feed",
-            handler=self.feed_advisory,
-            failure="advisory",
-        )
+        for event_type, phase in (
+            ("experiment.transitioned", "post_response"),
+            ("review.submitted", "producer_read"),
+            ("experiment.mlflow_run_refreshed", "post_response"),
+        ):
+            registry.register(
+                event_type=event_type,
+                phase=phase,
+                name="feed",
+                handler=self.feed_advisory,
+                failure="advisory",
+            )
 
     def tracking_run(
         self, context: EventContext[ExperimentState]

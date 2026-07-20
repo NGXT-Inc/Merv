@@ -1,6 +1,6 @@
 """Shared project-reflection thresholds."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 # The project gets an advisory nudge before it gets a hard workflow block. Keep
@@ -24,13 +24,6 @@ def covered_terminal_ids(corpus: Mapping[str, object] | None) -> set[str]:
         for exp in entries
         if isinstance(exp, Mapping)
     }
-
-
-def terminal_drift_count(
-    *, current_terminal_ids: Iterable[str], corpus: Mapping[str, object] | None
-) -> int:
-    """Count of current terminal experiments not yet covered by the corpus."""
-    return len(set(current_terminal_ids) - covered_terminal_ids(corpus))
 
 
 def reflection_signal_state(

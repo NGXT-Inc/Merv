@@ -10,11 +10,11 @@ from typing import Any
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
 from ...application.events import EventDispatcher
-from ...application.queries import ExperimentFigureQuery, HomeQuery, MlflowOverviewQuery
 from ...application.experiments.exhibits import ExperimentExhibits
-from ...application.experiments.tracking import FinalizeTrackingRun, GetTrackingContext
 from ...application.experiments.reactions import ExperimentReactions
+from ...application.experiments.tracking import FinalizeTrackingRun, GetTrackingContext
 from ...application.experiments.transition import TransitionExperiment
+from ...application.queries import ExperimentFigureQuery, HomeQuery, MlflowOverviewQuery
 from ...application.reviews import ReadReviewStatus
 from ...artifacts.facade import ArtifactsFacade
 from ...feed.facade import FeedFacade
@@ -155,13 +155,13 @@ class ControlApp:
             storage_guidance=storage_guidance(enabled=self.storage is not None),
         )
         self.home_query = HomeQuery(
-            experiments=self.experiments.list_experiments,
+            experiment_state=self.experiments.get_state,
             resources=self.resources.list_resources,
             status_and_next=self.workflow.status_and_next,
             active_work=self.workflow.active_work,
             review_queue=self.reviews.queue,
             recent_events=self.store.recent_events,
-            health=self.mlflow_tracking.health,
+            health=lambda: self.mlflow_tracking.health(),
         )
         self.mlflow_overview_query = MlflowOverviewQuery(
             experiments=self.experiments.list_experiments,

@@ -129,17 +129,23 @@ worker, replay loop, or second event stream. Fatal handlers stop a phase and
 propagate. Advisory handlers, currently Feed reminders, yield no outcome when
 they fail and cannot break the primary command or query.
 
-Transition reactions run immediately after their committed command. The review
-verdict reminder deliberately runs later, when the producer reads
-`review.status`, but uses the existing `review.submitted` event ID. Repeated
-reads are allowed and handlers must be repeat-safe. Any future asynchronous
-delivery needs durable checkpoints keyed by `(event_id, phase, handler_name)`,
-plus an external-side-effect idempotency policy, before a worker is introduced.
+Transition reactions run immediately after their committed command. Canonical
+tracking finalization dispatches its exact `experiment.mlflow_run_refreshed`
+event after response assembly. The explicit foreign-run compatibility path has
+no durable event and therefore calls its advisory directly. The review verdict
+reminder deliberately runs later, when the producer reads `review.status`, but
+uses the existing `review.submitted` event ID. Repeated reads are allowed and
+handlers must be repeat-safe. Any future asynchronous delivery needs durable
+checkpoints keyed by `(event_id, phase, handler_name)`, plus an external-side-
+effect idempotency policy, before a worker is introduced.
 
-Composite UI reads follow the same rule. `application/queries.py` assembles the
-project home, tracking overview, and experiment figure through narrow callable
-ports; Surface retains authentication, conditional HTTP caching, local-field
-redaction, and serialization only.
+## Composite query model
+
+The selected composite UI reads likewise belong to Application.
+`application/queries.py` assembles the project home, tracking overview, and
+experiment figure through narrow callable ports; Surface retains
+authentication, conditional HTTP caching, local-field redaction, and
+serialization only.
 
 ## Cross-plane law
 

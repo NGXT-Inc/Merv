@@ -55,7 +55,7 @@ class ApplicationQueryTest(unittest.TestCase):
         experiment = {"id": "exp_1", "name": "Test", "status": "running"}
         active = {**experiment, "workflow": {"next_action": "retain_results"}}
         status = RecordingQuery({"project": project, "workflow": {"next_action": "fallback"}})
-        experiments = RecordingQuery({"experiments": [experiment]})
+        experiment_state = RecordingQuery(experiment)
         resources = RecordingQuery({"resources": [{"id": "res_1"}]})
         reviews = RecordingQuery({"requests": [{"id": "rr_1"}], "reviews": []})
         events = RecordingQuery({"events": [{"id": 9}]})
@@ -63,7 +63,7 @@ class ApplicationQueryTest(unittest.TestCase):
             {"active_experiments": [active], "active_processes": [{"id": "sbx_1"}]}
         )
         query = HomeQuery(
-            experiments=experiments,
+            experiment_state=experiment_state,
             resources=resources,
             status_and_next=status,
             active_work=work,
@@ -100,8 +100,55 @@ class ApplicationQueryTest(unittest.TestCase):
             },
         )
         self.assertEqual(status.calls, [{"project_id": "proj_1"}])
-        self.assertEqual(experiments.calls, [{"project_id": "proj_1"}])
+        self.assertEqual(
+            experiment_state.calls,
+            [{"experiment_id": "exp_1", "project_id": "proj_1"}],
+        )
         self.assertEqual(events.calls, [{"project_id": "proj_1", "limit": 25}])
+
+    def test_home_hydrates_only_active_experiments_in_status_order(self) -> None:
+        project = {
+            "id": "proj_1",
+            "active_claims": [],
+            "active_experiments": [{"id": "exp_2"}, {"id": "exp_1"}],
+        }
+        states = {
+            "exp_1": {"id": "exp_1", "status": "planned"},
+            "exp_2": {"id": "exp_2", "status": "running"},
+            "exp_done": {"id": "exp_done", "status": "complete"},
+        }
+        calls = []
+
+        def experiment_state(**kwargs):
+            calls.append(kwargs)
+            return states[kwargs["experiment_id"]]
+
+        query = HomeQuery(
+            experiment_state=experiment_state,
+            resources=RecordingQuery({"resources": []}),
+            status_and_next=RecordingQuery(
+                {"project": project, "workflow": {"next_action": "fallback"}}
+            ),
+            active_work=RecordingQuery(
+                {"active_experiments": [], "active_processes": []}
+            ),
+            review_queue=RecordingQuery({"requests": [], "reviews": []}),
+            recent_events=RecordingQuery({"events": []}),
+            health=lambda: {"configured": False},
+        )
+
+        result = query(project_id="proj_1")
+
+        self.assertEqual(result["experiments"], [states["exp_2"], states["exp_1"]])
+        self.assertEqual(result["stats"]["experiments"], 2)
+        self.assertNotIn(states["exp_done"], result["experiments"])
+        self.assertEqual(
+            calls,
+            [
+                {"experiment_id": "exp_2", "project_id": "proj_1"},
+                {"experiment_id": "exp_1", "project_id": "proj_1"},
+            ],
+        )
 
     def test_mlflow_overview_preserves_mapping_and_history_policy(self) -> None:
         tracking = RecordingTracking()

@@ -151,11 +151,12 @@ for the research timeline. Recent tool-call traffic is a bounded in-memory
 diagnostic view and is not part of durable research state.
 
 Application workflows can synchronously react to an exact committed event
-through a composition-owned registry. Transition tracking and Feed guidance use
-this path. Producer-facing review guidance correlates `review.status` with the
-existing `review.submitted` event; it does not append a second event. Fatal and
-advisory registrations are explicit, and there is no background event worker
-or delivery checkpoint yet.
+through a composition-owned registry. Transition tracking, canonical tracking
+finalization guidance, and terminal Feed guidance use this path.
+Producer-facing review guidance correlates `review.status` with the existing
+`review.submitted` event; it does not append a second event. Fatal and advisory
+registrations are explicit, and there is no background event worker or delivery
+checkpoint yet.
 
 ## Tool routing
 

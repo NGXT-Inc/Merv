@@ -659,16 +659,6 @@ class ReviewService:
             ),
         )
 
-    def has_open_request(
-        self, *, conn, target_type: str, target_id: str, role: str
-    ) -> bool:
-        return (
-            self.open_request(
-                conn=conn, target_type=target_type, target_id=target_id, role=role
-            )
-            is not None
-        )
-
     def open_request(
         self, *, conn, target_type: str, target_id: str, role: str
     ) -> dict[str, Any] | None:
