@@ -16,11 +16,16 @@ from merv.brain.sandbox.execution.backends.tensordock.config import (
 from merv.brain.sandbox.execution.backends.tensordock.sandbox_backend import (
     TensorDockSandboxBackend,
 )
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
+)
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
 )
 
 
@@ -209,6 +214,13 @@ class TensorDockLivenessTest(unittest.TestCase):
 
 
 class TensorDockCatalogTest(unittest.TestCase):
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend = _backend(FakeTensorDockClient())
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("tensordock")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
+
     def test_options_filter_on_dedicated_ip_capability(self) -> None:
         options = to_agent_options(LOCATIONS)
 

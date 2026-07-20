@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
 SANDBOX_STATES = ("provisioning", "running", "terminated", "failed", "unknown")
@@ -141,8 +141,82 @@ class BackendCapabilities:
     configurable_resources: bool = True
 
 
-class SandboxBackend(Protocol):
+@runtime_checkable
+class SandboxManagementTransport(Protocol):
+    """Provider-side operational channel for a provisioned sandbox.
+
+    VM drivers normally implement this over the dedicated management SSH key.
+    Managed runtimes such as Modal implement it with provider-native exec APIs.
+    Keeping the transport explicit lets a driver remain honest about that
+    difference without forcing every provider into ``VmSshSandboxBackend``.
+    """
+
+    def read_transcript(
+        self,
+        *,
+        sandbox_id: str,
+        experiment_id: str,
+        volume_name: str,
+        workdir: str,
+        tail: int | None = None,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> TranscriptTail: ...
+
+    def sample_metrics(
+        self,
+        *,
+        sandbox_id: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> dict[str, Any] | None:
+        """Optionally sample live usage; unsupported transports return None."""
+        ...
+
+    def read_runs(
+        self,
+        *,
+        sandbox_id: str,
+        workdir: str,
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        ssh_user: str = "",
+        key_path: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """Read parsed ``merv_run`` receipts.
+
+        ``[]`` means the transport answered and no runs exist; ``None`` means
+        unsupported or unreachable — "no news", never "no runs".
+        """
+        ...
+
+    def write_secrets(
+        self,
+        *,
+        sandbox_id: str,
+        secrets: Mapping[str, str],
+        ssh_host: str = "",
+        ssh_port: int = 0,
+        key_path: str = "",
+    ) -> bool:
+        """Deliver post-boot secrets without exposing them to agent APIs."""
+        ...
+
+
+@runtime_checkable
+class SandboxDriver(Protocol):
+    """Small provider contract: catalog, lifecycle, and management channel."""
+
     capabilities: BackendCapabilities
+
+    @property
+    def management_transport(self) -> SandboxManagementTransport:
+        """Operational channel used for transcripts, metrics, runs, and secrets."""
+        ...
 
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
         """Capabilities of the backend that would serve ``provider``.
@@ -164,62 +238,30 @@ class SandboxBackend(Protocol):
 
     def terminate(self, *, sandbox_id: str) -> bool: ...
 
-    def read_transcript(
-        self,
-        *,
-        sandbox_id: str,
-        experiment_id: str,
-        volume_name: str,
-        workdir: str,
-        tail: int | None = None,
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        ssh_user: str = "",
-        key_path: str = "",
-    ) -> TranscriptTail: ...
-
-    def sandbox_environment(self) -> dict: ...
-
-    def health(self) -> dict: ...
-
-    def sample_metrics(
-        self,
-        *,
-        sandbox_id: str,
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        ssh_user: str = "",
-        key_path: str = "",
-    ) -> dict[str, Any] | None:
-        """Optionally sample live sandbox usage. Unsupported backends return None."""
-        ...
-
-    def read_runs(
-        self,
-        *,
-        sandbox_id: str,
-        workdir: str,
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        ssh_user: str = "",
-        key_path: str = "",
-    ) -> list[dict[str, Any]] | None:
-        """Optionally list merv_run receipts under workdir/.runs.
-
-        Returns parsed run records ([] when no runs exist); None means
-        unsupported or unreachable — "no news", never "no runs".
-        """
-        ...
-
     def refresh_ssh_endpoint(self, *, sandbox_id: str) -> tuple[str, int] | None:
-        """Optionally refresh a live SSH endpoint. Unsupported backends return None."""
+        """Refresh a live endpoint; None means unsupported or no live endpoint."""
         ...
 
     def hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
     ) -> dict[str, Any] | None:
-        """Optionally return requestable hardware. Unsupported backends return None."""
+        """Return requestable hardware, or None when no catalog is available."""
         ...
+
+
+@runtime_checkable
+class SandboxBackend(SandboxDriver, SandboxManagementTransport, Protocol):
+    """Compatibility port consumed by existing provider-neutral services.
+
+    The stable driver contract exposes ``management_transport`` explicitly.
+    Existing services still call the flattened management methods on this
+    compatibility protocol; ``SandboxBackendBase`` makes the backend itself
+    that transport, so current providers need no behavioral adapter.
+    """
+
+    def sandbox_environment(self) -> dict: ...
+
+    def health(self) -> dict: ...
 
     def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
         """Optionally find an orphan sandbox by experiment. Unsupported backends return None."""
@@ -227,18 +269,6 @@ class SandboxBackend(Protocol):
 
     def sandbox_secrets(self) -> dict[str, str]:
         """Optionally return post-boot secrets for the backend."""
-        ...
-
-    def write_secrets(
-        self,
-        *,
-        sandbox_id: str,
-        secrets: Mapping[str, str],
-        ssh_host: str = "",
-        ssh_port: int = 0,
-        key_path: str = "",
-    ) -> bool:
-        """Optionally deliver provider credentials post-boot."""
         ...
 
     def shutdown(self) -> None:
@@ -250,6 +280,11 @@ class SandboxBackendBase:
     """Sentinel defaults for optional SandboxBackend operations."""
 
     capabilities: BackendCapabilities
+
+    @property
+    def management_transport(self) -> SandboxManagementTransport:
+        """Compatibility adapter: current backends carry their own transport."""
+        return self
 
     @staticmethod
     def _notify(callback: Callable[..., None] | None, *args: Any) -> None:
@@ -359,6 +394,8 @@ __all__ = [
     "SANDBOX_STATES",
     "SandboxBackend",
     "SandboxBackendBase",
+    "SandboxDriver",
+    "SandboxManagementTransport",
     "SandboxRequest",
     "TranscriptTail",
 ]

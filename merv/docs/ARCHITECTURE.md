@@ -135,7 +135,10 @@ root selects adapters and wires the modular monolith:
   backend used in tests. `RESEARCH_PLUGIN_EXECUTION_BACKENDS` (comma-separated)
   runs several at once behind one multiplexer that routes per-request by
   provider and prefixes sandbox ids with their owner (see
-  [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md));
+  [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md)). A lazy driver registry is the
+  runtime provider inventory: composition resolves one descriptor per selected
+  name and imports only its factory. VM drivers share a management-SSH base;
+  Modal remains a separate managed-container/provider-exec driver;
 - MLflow: an explicitly configured centralized tracking service.
 
 Research records live in the brain's selected record store. The only durable

@@ -1,8 +1,11 @@
 # Modal Sandbox Backend
 
-Modal is one implementation of the provider-neutral `SandboxBackend` contract.
-The agent-facing lifecycle is shared with Lambda Labs and Thunder Compute; only
-procurement mechanics and capability flags vary by provider.
+Modal is the explicit non-VM implementation of the provider-neutral
+`SandboxDriver` contract. Its registry descriptor identifies it as a
+`managed_container` using provider-native exec for the
+`SandboxManagementTransport`; it does not inherit `VmSshSandboxBackend`. The
+flattened `SandboxBackend` compatibility surface keeps the agent-facing
+lifecycle shared with the VM drivers.
 
 ## Architecture and ownership
 

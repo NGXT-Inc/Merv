@@ -1,6 +1,6 @@
 # Sandbox compute providers
 
-The sandbox module provisions one SSH-reachable VM per request through a
+The sandbox module provisions one SSH-reachable runtime per request through a
 provider-neutral `SandboxBackend` port. One provider is configured with
 `MERV_EXECUTION_BACKEND` (default `lambda_labs`); a fleet is
 configured with `MERV_EXECUTION_BACKENDS` (comma-separated), which
@@ -20,11 +20,68 @@ unroutable: operations on them fail loudly instead of guessing (a wrong
 provider answering "not found" would strand a billing VM behind a terminated
 row). Terminate a provider's sandboxes before dropping it from the list.
 
-All VM providers share the same bootstrap: cloud-init authorizes the caller's
-public key and the control plane's management key, installs the `rec.sh`
-transcript wrapper + `merv_run`, and then installs the heavy ML toolchain in a
-second phase. Secrets (HF_TOKEN) are pushed post-boot over the management SSH
-channel, never embedded in provider user_data.
+All VM providers share the same bootstrap outcome: authorize the caller's
+public key and the control plane's management key, install the `rec.sh`
+transcript wrapper + `merv_run`, and then install the heavy ML toolchain in a
+second phase. Each isolated driver chooses cloud-init or a post-create SSH
+bootstrap according to its provider API. Secrets (HF_TOKEN) are pushed
+post-boot over the management SSH channel, never embedded in provider
+user_data.
+
+## Driver platform
+
+Provider composition is registry-driven. `SandboxDriver` is the small stable
+contract for capabilities, hardware discovery, acquire, liveness, endpoint
+refresh, and termination. It exposes a `SandboxManagementTransport` for the
+operational paths that read transcripts, usage metrics, and `merv_run`
+receipts or deliver post-boot secrets. `SandboxBackend` remains the flattened
+compatibility facade consumed by existing services.
+
+`sandbox/execution/driver_registry.py` holds lightweight descriptors and a
+runtime inventory exposed by `sandbox_driver_inventory()`. Descriptors contain
+an import string rather than an imported factory, so listing providers does not
+load their configuration, credentials, implementation modules, or optional
+SDKs. Composition imports and builds only the selected providers. Aliases,
+provider kind, and management-transport kind are registered alongside the
+factory; there is no provider-name dispatch chain in the factory or services.
+
+The two real driver shapes stay explicit:
+
+- VM drivers share `VmSshSandboxBackend`; management operations use the
+  control-owned management SSH principal.
+- Modal is a `managed_container` driver with a provider-exec management
+  transport. It does not inherit the VM base and its composable GPU/CPU/memory
+  catalog is not forced into fixed VM SKUs.
+
+To add a provider, implement its isolated package under
+`sandbox/execution/backends/<provider>/`, expose one lazy builder, register one
+`SandboxDriverDescriptor`, and run the shared surface/catalog conformance
+assertions plus provider-specific fake-client lifecycle tests. The reusable
+offline lifecycle/management scenario can be adopted by supplying its fixture
+hooks; the in-memory driver exercises that full scenario. The descriptor name,
+backend capability name, persisted provider value, and multiplexed id prefix
+must agree.
+
+During the service migration, registered builders return a
+`SandboxBackend`-compatible facade even though the formal driver and management
+transport contracts are smaller. `SandboxBackendBase` supplies the default
+self-transport adapter, so an existing provider can adopt the driver platform
+without changing its operational behavior; a future service migration can
+remove that compatibility requirement from registry factories.
+
+| Driver | Kind | Management transport | Aliases |
+|---|---|---|---|
+| `lambda_labs` | VM | management SSH | `lambda`, `lambdalabs` |
+| `thunder_compute` | VM | management SSH | `thunder`, `thundercompute` |
+| `modal` | managed container | provider exec | — |
+| `hyperstack` | VM | management SSH | — |
+| `digitalocean` | VM | management SSH | — |
+| `verda` | VM | management SSH | `datacrunch` |
+| `voltage_park` | VM | management SSH | `voltagepark` |
+| `tensordock` | VM | management SSH | — |
+
+The in-memory `fake` driver is also registered for deterministic tests, but is
+not a production provider.
 
 ## Lambda Labs (`lambda_labs`)
 

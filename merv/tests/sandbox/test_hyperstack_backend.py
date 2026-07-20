@@ -14,11 +14,16 @@ from merv.brain.sandbox.execution.backends.hyperstack.sandbox_backend import (
     SSH_INGRESS_RULES,
     HyperstackSandboxBackend,
 )
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
+)
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
 )
 
 
@@ -223,6 +228,13 @@ class HyperstackLivenessTest(unittest.TestCase):
 
 
 class HyperstackCatalogTest(unittest.TestCase):
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend = _backend(FakeHyperstackClient())
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("hyperstack")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
+
     def test_options_join_pricebook_and_filter_stock(self) -> None:
         options = to_agent_options(FLAVOR_GROUPS, PRICEBOOK)
 

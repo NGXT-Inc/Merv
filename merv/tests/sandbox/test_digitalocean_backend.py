@@ -13,11 +13,16 @@ from merv.brain.sandbox.execution.backends.digitalocean.config import (
 from merv.brain.sandbox.execution.backends.digitalocean.sandbox_backend import (
     DigitalOceanSandboxBackend,
 )
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
+)
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
 )
 
 
@@ -219,6 +224,13 @@ class DigitalOceanLivenessTest(unittest.TestCase):
 
 
 class DigitalOceanCatalogTest(unittest.TestCase):
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend = _backend(FakeDigitalOceanClient())
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("digitalocean")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
+
     def test_options_offer_only_available_gpu_sizes(self) -> None:
         options = to_agent_options(SIZES)
 

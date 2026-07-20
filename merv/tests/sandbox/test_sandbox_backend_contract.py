@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import ast
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from merv.brain.sandbox.execution.backends.digitalocean import DigitalOceanSandboxBackend
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.execution.backends.hyperstack import HyperstackSandboxBackend
-from merv.brain.sandbox.execution.backends.lambda_labs import LambdaLabsSandboxBackend
-from merv.brain.sandbox.execution.backends.modal.sandbox_backend import ModalSandboxBackend
-from merv.brain.sandbox.execution.backends.tensordock import TensorDockSandboxBackend
-from merv.brain.sandbox.execution.backends.thunder_compute import ThunderComputeSandboxBackend
-from merv.brain.sandbox.execution.backends.verda import VerdaSandboxBackend
-from merv.brain.sandbox.execution.backends.voltage_park import VoltageParkSandboxBackend
+from merv.brain.sandbox.execution.driver_registry import (
+    SANDBOX_DRIVER_REGISTRY,
+    sandbox_driver_inventory,
+)
 from merv.brain.sandbox.execution.multiplexer import MultiplexingSandboxBackend
 from merv.brain.sandbox.sandbox_backend import (
     BackendCapabilities,
@@ -26,6 +24,16 @@ from merv.brain.sandbox.sandbox_backend import (
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
 from tests.paths import BACKEND_ROOT, SERVICES_ROOT, SURFACE_ROOT
 
+SANDBOX_ROOT = BACKEND_ROOT / "sandbox"
+
+
+def _provider_neutral_sandbox_sources():
+    return (
+        path
+        for path in SANDBOX_ROOT.rglob("*.py")
+        if "execution" not in path.relative_to(SANDBOX_ROOT).parts
+    )
+
 
 BACKEND_METHODS = (
     "acquire",
@@ -36,6 +44,7 @@ BACKEND_METHODS = (
     "sandbox_environment",
     "health",
     "sample_metrics",
+    "read_runs",
     "refresh_ssh_endpoint",
     "hardware_catalog",
     "find_sandbox_id",
@@ -99,18 +108,19 @@ class SandboxBackendContractTest(unittest.TestCase):
         )
 
     def test_backend_classes_expose_full_contract_surface(self) -> None:
-        for backend_cls in (
-            ModalSandboxBackend,
-            LambdaLabsSandboxBackend,
-            ThunderComputeSandboxBackend,
-            HyperstackSandboxBackend,
-            DigitalOceanSandboxBackend,
-            VerdaSandboxBackend,
-            VoltageParkSandboxBackend,
-            TensorDockSandboxBackend,
-            MultiplexingSandboxBackend,
-            FakeSandboxBackend,
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MERV_MODE": "control"}, clear=False
         ):
+            backend_classes = [
+                type(
+                    SANDBOX_DRIVER_REGISTRY.build(
+                        name=descriptor.name, repo_root=Path(tmp)
+                    )
+                )
+                for descriptor in sandbox_driver_inventory()
+            ]
+        backend_classes.append(MultiplexingSandboxBackend)
+        for backend_cls in backend_classes:
             with self.subTest(backend=backend_cls.__name__):
                 for method in BACKEND_METHODS:
                     self.assertTrue(
@@ -123,14 +133,20 @@ class SandboxBackendContractTest(unittest.TestCase):
 
         # Single-provider default: one backend serves every request.
         self.assertIs(backend.capabilities_for(provider="anything"), backend.capabilities)
+        self.assertIs(backend.management_transport, backend)
         self.assertIsNone(backend.sample_metrics(sandbox_id="sb"))
+        self.assertIsNone(backend.read_runs(sandbox_id="sb", workdir="/workspace"))
         self.assertIsNone(backend.refresh_ssh_endpoint(sandbox_id="sb"))
         self.assertIsNone(backend.hardware_catalog())
         self.assertIsNone(backend.find_sandbox_id(experiment_id="exp"))
+        self.assertEqual(backend.sandbox_secrets(), {})
+        self.assertFalse(
+            backend.write_secrets(sandbox_id="sb", secrets={"TOKEN": "value"})
+        )
         self.assertIsNone(backend.shutdown())
 
     def test_services_do_not_probe_backend_optional_methods(self) -> None:
-        for path in SERVICES_ROOT.rglob("*.py"):
+        for path in (*SERVICES_ROOT.rglob("*.py"), *_provider_neutral_sandbox_sources()):
             source = path.read_text(encoding="utf-8")
             with self.subTest(path=path.name):
                 self.assertNotIn("getattr(self.backend", source)
@@ -206,16 +222,11 @@ class SandboxBackendContractTest(unittest.TestCase):
 
     def test_services_do_not_dispatch_on_provider_name_literals(self) -> None:
         provider_names = {
-            "modal",
-            "lambda_labs",
-            "thunder_compute",
-            "hyperstack",
-            "digitalocean",
-            "verda",
-            "voltage_park",
-            "tensordock",
+            descriptor.name
+            for descriptor in sandbox_driver_inventory()
+            if not descriptor.test_only
         }
-        for path in SERVICES_ROOT.rglob("*.py"):
+        for path in (*SERVICES_ROOT.rglob("*.py"), *_provider_neutral_sandbox_sources()):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             string_literals = {
                 node.value

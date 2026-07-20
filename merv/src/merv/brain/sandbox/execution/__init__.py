@@ -7,7 +7,6 @@ and their factory live under this execution package.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
 
 from ...kernel.env import env_value
 from ..sandbox_backend import (
@@ -23,27 +22,30 @@ from ..sandbox_backend import (
     ProvisionedSandbox,
     SandboxBackend,
     SandboxBackendBase,
+    SandboxDriver,
+    SandboxManagementTransport,
     SandboxRequest,
+)
+from .driver_registry import (
+    DEFAULT_SANDBOX_DRIVER,
+    SANDBOX_DRIVER_REGISTRY,
+    ActivityHook,
+    ManagementTransportKind,
+    SandboxDriverDescriptor,
+    SandboxDriverFactory,
+    SandboxDriverKind,
+    SandboxDriverRegistry,
+    register_sandbox_driver,
+    sandbox_driver_inventory,
 )
 
 
-ActivityHook = Callable[[str, dict[str, Any]], None]
-
-# Accepted spellings -> canonical backend name (the BackendCapabilities.name
-# and the id prefix in multiplexed deployments).
-BACKEND_ALIASES: dict[str, str] = {
-    "lambda": "lambda_labs",
-    "lambdalabs": "lambda_labs",
-    "thunder": "thunder_compute",
-    "thundercompute": "thunder_compute",
-    "datacrunch": "verda",
-    "voltagepark": "voltage_park",
-}
+# Compatibility export: aliases now come from each registered descriptor.
+BACKEND_ALIASES = SANDBOX_DRIVER_REGISTRY.aliases
 
 
 def _canonical_backend_name(name: str) -> str:
-    lowered = name.strip().lower()
-    return BACKEND_ALIASES.get(lowered, lowered)
+    return SANDBOX_DRIVER_REGISTRY.canonical_name(name)
 
 
 def _build_named_backend(
@@ -52,46 +54,11 @@ def _build_named_backend(
     repo_root: Path,
     activity: ActivityHook | None = None,
 ) -> SandboxBackend:
-    if name == "fake":
-        from .backends.fake import FakeSandboxBackend
-
-        return FakeSandboxBackend()
-    if name == "modal":
-        from .backends.modal import build_modal_sandbox_backend
-
-        return build_modal_sandbox_backend(
-            repo_root=repo_root,
-            activity=activity,
-        )
-    if name == "thunder_compute":
-        from .backends.thunder_compute import build_thunder_compute_sandbox_backend
-
-        return build_thunder_compute_sandbox_backend(repo_root=repo_root)
-    if name == "lambda_labs":
-        from .backends.lambda_labs import build_lambda_labs_sandbox_backend
-
-        return build_lambda_labs_sandbox_backend(repo_root=repo_root)
-    if name == "hyperstack":
-        from .backends.hyperstack import build_hyperstack_sandbox_backend
-
-        return build_hyperstack_sandbox_backend(repo_root=repo_root)
-    if name == "digitalocean":
-        from .backends.digitalocean import build_digitalocean_sandbox_backend
-
-        return build_digitalocean_sandbox_backend(repo_root=repo_root)
-    if name == "verda":
-        from .backends.verda import build_verda_sandbox_backend
-
-        return build_verda_sandbox_backend(repo_root=repo_root)
-    if name == "voltage_park":
-        from .backends.voltage_park import build_voltage_park_sandbox_backend
-
-        return build_voltage_park_sandbox_backend(repo_root=repo_root)
-    if name == "tensordock":
-        from .backends.tensordock import build_tensordock_sandbox_backend
-
-        return build_tensordock_sandbox_backend(repo_root=repo_root)
-    raise BackendUnavailableError(f"unknown execution backend: {name}")
+    return SANDBOX_DRIVER_REGISTRY.build(
+        name=name,
+        repo_root=repo_root,
+        activity=activity,
+    )
 
 
 def build_sandbox_backend(
@@ -124,7 +91,7 @@ def build_sandbox_backend(
     single = _canonical_backend_name(env_value("MERV_EXECUTION_BACKEND") or "")
     if len(configured) <= 1:
         return _build_named_backend(
-            name=configured[0] if configured else (single or "lambda_labs"),
+            name=configured[0] if configured else (single or DEFAULT_SANDBOX_DRIVER),
             repo_root=repo_root,
             activity=activity,
         )
@@ -145,6 +112,7 @@ def build_sandbox_backend(
 __all__ = [
     "ActivityHook",
     "BACKEND_ALIASES",
+    "DEFAULT_SANDBOX_DRIVER",
     "BackendCapabilities",
     "BackendPermissionError",
     "BackendUnavailableError",
@@ -154,9 +122,19 @@ __all__ = [
     "OnCreated",
     "OnPhase",
     "ProvisionedSandbox",
+    "SANDBOX_DRIVER_REGISTRY",
     "SANDBOX_STATES",
     "SandboxBackend",
     "SandboxBackendBase",
+    "SandboxDriver",
+    "SandboxDriverDescriptor",
+    "SandboxDriverFactory",
+    "SandboxDriverKind",
+    "SandboxDriverRegistry",
+    "SandboxManagementTransport",
     "SandboxRequest",
     "build_sandbox_backend",
+    "ManagementTransportKind",
+    "register_sandbox_driver",
+    "sandbox_driver_inventory",
 ]

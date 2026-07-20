@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
+from typing import Any
 
 from ...run_receipts import parse_runs_listing
 from ...sync_dirs import (
@@ -81,6 +83,7 @@ class FakeSandboxBackend(SandboxBackendBase):
         self.endpoints: dict[str, tuple[str, int]] = {}
         self.phases: list[tuple[str, str]] = []
         self.healthy = True
+        self.liveness_unavailable = False
         # async-path knobs
         self.gate: threading.Event | None = None
         self.fail_after_create = False
@@ -193,6 +196,8 @@ class FakeSandboxBackend(SandboxBackendBase):
         return None
 
     def is_alive(self, *, sandbox_id: str) -> bool:
+        if self.liveness_unavailable:
+            raise BackendUnavailableError("fake provider liveness unavailable")
         return bool(self.alive.get(sandbox_id, False))
 
     def terminate(self, *, sandbox_id: str) -> bool:
@@ -326,3 +331,13 @@ class FakeSandboxBackend(SandboxBackendBase):
 
     def append_transcript(self, *, experiment_id: str, text: str) -> None:
         self.transcripts[experiment_id] = self.transcripts.get(experiment_id, "") + text
+
+
+def build_fake_sandbox_backend(
+    *, repo_root: Path | None = None, **_kwargs: Any
+) -> FakeSandboxBackend:
+    """Registry factory for the deterministic offline/test driver."""
+    return FakeSandboxBackend()
+
+
+__all__ = ["FakeSandboxBackend", "build_fake_sandbox_backend"]

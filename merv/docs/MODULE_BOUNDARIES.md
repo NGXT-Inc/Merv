@@ -75,5 +75,9 @@ Two module-content rules ride along with the import law:
   existence/scope checks.
 - **Provider neutrality:** sandbox services do not dispatch on provider-name
   literals. Provider differences are expressed as `BackendCapabilities` flags
-  and implemented under `sandbox/execution/backends/<provider>/`, enforced by
-  `test_services_do_not_dispatch_on_provider_name_literals`.
+  and the typed `SandboxDriver`/`SandboxManagementTransport` contracts, then
+  implemented under `sandbox/execution/backends/<provider>/`. Lazy provider
+  descriptors are the sole composition registry; services never import it.
+  This is enforced by
+  `test_services_do_not_dispatch_on_provider_name_literals` and the shared
+  offline driver conformance tests.

@@ -14,11 +14,16 @@ from merv.brain.sandbox.execution.backends.voltage_park.config import (
 from merv.brain.sandbox.execution.backends.voltage_park.sandbox_backend import (
     VoltageParkSandboxBackend,
 )
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     CapacityUnavailableError,
     SandboxRequest,
+)
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
 )
 
 
@@ -222,6 +227,13 @@ class VoltageParkLivenessTest(unittest.TestCase):
 
 
 class VoltageParkCatalogTest(unittest.TestCase):
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend = _backend(FakeVoltageParkClient())
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("voltage_park")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
+
     def test_options_exclude_windows_and_sold_out_presets(self) -> None:
         options = to_agent_options(LOCATIONS)
 

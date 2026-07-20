@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.sandbox.execution import build_sandbox_backend
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.execution.backends.thunder_compute.catalog import summarize_specs
 from merv.brain.sandbox.execution.backends.thunder_compute.config import (
     ThunderCloudConfig,
@@ -24,6 +25,10 @@ from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     BackendValidationError,
     SandboxRequest,
+)
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
 )
 
 
@@ -224,6 +229,13 @@ class ThunderBackendTest(unittest.TestCase):
         }
         kwargs.update(overrides)
         return SandboxRequest(**kwargs)
+
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend, _, _, _ = self._backend()
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("thunder_compute")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_build_sandbox_backend_accepts_thunder_aliases(self) -> None:
         with patch.dict(os.environ, {"RESEARCH_PLUGIN_EXECUTION_BACKEND": "thunder"}, clear=True):

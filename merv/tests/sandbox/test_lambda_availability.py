@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.sandbox.execution import build_sandbox_backend
+from merv.brain.sandbox.execution.driver_registry import SANDBOX_DRIVER_REGISTRY
 from merv.brain.sandbox.execution.backends.lambda_labs.catalog import summarize_instance_types
 from merv.brain.sandbox.execution.backends.lambda_labs.config import LambdaCloudConfig
 from merv.brain.sandbox.execution.backends.lambda_labs.sandbox_backend import (
@@ -22,6 +23,10 @@ from merv.brain.sandbox.execution.vm_bootstrap import MGMT_SSH_USER, REC_SCRIPT
 from merv.brain.sandbox.execution.vm_ssh import TRANSCRIPT_TAIL_DEFAULT
 from merv.brain.sandbox.sandbox_backend import BackendUnavailableError, BackendValidationError
 from merv.brain.sandbox.sandbox_backend import SandboxRequest, TranscriptTail
+from tests.sandbox.driver_conformance import (
+    assert_catalog_envelope,
+    assert_driver_surface,
+)
 
 
 INSTANCE_TYPES = {
@@ -336,6 +341,13 @@ class LambdaSelectionTest(unittest.TestCase):
             **config_kwargs,
         )
         return LambdaLabsSandboxBackend(config=config, client=client), client  # type: ignore[return-value]
+
+    def test_shared_driver_contract_with_injected_client(self) -> None:
+        backend, _ = self._backend()
+        descriptor = SANDBOX_DRIVER_REGISTRY.descriptor("lambda_labs")
+
+        assert_driver_surface(self, descriptor=descriptor, backend=backend)
+        assert_catalog_envelope(self, descriptor=descriptor, backend=backend)
 
     def test_hardware_catalog_lists_available_cheapest_first(self) -> None:
         backend, _ = self._backend()
