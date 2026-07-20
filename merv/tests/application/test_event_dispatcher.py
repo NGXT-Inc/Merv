@@ -120,6 +120,49 @@ class EventDispatcherTest(unittest.TestCase):
             )
         self.assertEqual(calls, ["first", "explode"])
 
+    def test_advisory_error_is_dropped_and_later_handler_runs(self) -> None:
+        dispatcher = EventDispatcher()
+        calls: list[str] = []
+
+        def advisory(_context):
+            calls.append("advisory")
+            raise RuntimeError("optional integration unavailable")
+
+        def final(context):
+            calls.append("final")
+            return EventReaction(state=context.state, value="kept")
+
+        dispatcher.register(
+            event_type="experiment.transitioned",
+            phase="post_response",
+            name="advisory",
+            handler=advisory,
+            failure="advisory",
+        )
+        dispatcher.register(
+            event_type="experiment.transitioned",
+            phase="post_response",
+            name="final",
+            handler=final,
+        )
+
+        result = dispatcher.dispatch(
+            event=_event(), phase="post_response", state={"status": "complete"}
+        )
+
+        self.assertEqual(calls, ["advisory", "final"])
+        self.assertEqual(dict(result.outcomes), {"final": "kept"})
+
+    def test_unknown_failure_mode_is_rejected_at_composition(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown reaction failure mode"):
+            EventDispatcher().register(
+                event_type="experiment.transitioned",
+                phase="post_commit",
+                name="bad",
+                handler=lambda context: EventReaction(state=context.state),
+                failure="ignored",  # type: ignore[arg-type]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

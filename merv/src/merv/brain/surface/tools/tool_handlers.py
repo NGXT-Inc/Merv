@@ -36,6 +36,7 @@ def build_control_tool_handlers(
     experiment_exhibit: Any,
     tracking_context: Any,
     tracking_finalize: Any,
+    review_status: Any,
 ) -> dict[str, Callable[..., dict[str, Any]]]:
     """Map control-plane tool names to service methods.
 
@@ -92,43 +93,6 @@ def build_control_tool_handlers(
             offset=offset,
             project_id=project_id,
         )
-
-    def review_status_agent(
-        *, target_type: str, target_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        """Wraps reviews.status so the PRODUCER side — not the reviewer, who
-        already saw the verdict at review.submit — gets the feed_note. review.status
-        is hidden from the agent tools/list (agents poll workflow.status_and_next,
-        whose review_gate re-reports the verdict), so this feed_note now rides the
-        REST/UI review reads keyed to "the experiment under review". Only fires once
-        a verdict actually exists (a bare pending-request check has nothing
-        story-worthy to say yet)."""
-        result = reviews.status(
-            target_type=target_type, target_id=target_id, project_id=project_id
-        )
-        if target_type == "experiment" and result.get("reviews"):
-            try:
-                resolved_project_id = str(
-                    experiments.get_state(
-                        experiment_id=target_id, project_id=project_id
-                    ).get("project_id")
-                    or project_id
-                    or ""
-                )
-            except Exception:  # noqa: BLE001 - advisory only, must never block
-                resolved_project_id = ""
-            if resolved_project_id:
-                try:
-                    note = feed.feed_note_for(
-                        project_id=resolved_project_id,
-                        entity_id=target_id,
-                        event="experiment_review_verdict",
-                    )
-                except Exception:  # advisory only, must never block
-                    note = None
-                if note is not None:
-                    result["feed_note"] = note
-        return result
 
     def project_control(
         *,
@@ -195,7 +159,7 @@ def build_control_tool_handlers(
         "review.request": reviews.request,
         "review.start": reviews.start,
         "review.submit": reviews.submit,
-        "review.status": review_status_agent,
+        "review.status": review_status.execute,
         "sandbox.options": sandboxes.options,
         "sandbox.get": sandboxes.get,
         "sandbox.list": sandboxes.list_sandboxes,
@@ -263,123 +227,6 @@ def build_control_tool_handlers(
                 "storage.complete_upload": storage.complete_upload,
                 "storage.find": storage_find,
                 "storage.object": storage_object,
-            }
-        )
-    return handlers
-
-
-def build_local_tool_handlers(
-    *,
-    workflow: Any,
-    projects: Any,
-    claims: Any,
-    experiments: Any,
-    reflection_tools: Any,
-    resources: Any,
-    storage: Any | None,
-    reviews: Any,
-    sandboxes: Any,
-    feed: Any,
-    experiment_transition: Any,
-    experiment_exhibit: Any,
-    tracking_context: Any,
-    tracking_finalize: Any,
-    resource_register_file: Callable[..., dict[str, Any]],
-    experiment_materialize_folders: Callable[..., dict[str, Any]],
-    # Data-plane local IO: required — there is no control-plane fallback.
-    sandbox_pull_outputs: Callable[..., dict[str, Any]],
-    resource_associate: Callable[..., dict[str, Any]] | None = None,
-    feed_post: Callable[..., dict[str, Any]] | None = None,
-    storage_upload_file: Callable[..., dict[str, Any]] | None = None,
-    storage_download_file: Callable[..., dict[str, Any]] | None = None,
-) -> dict[str, Callable[..., dict[str, Any]]]:
-    """Map all local-mode tool names to service methods."""
-    def resource_register(
-        *,
-        path: str | None = None,
-        paths: list[str] | None = None,
-        resource_id: str | None = None,
-        kind: str = "other",
-        title: str = "",
-        created_by: str = "codex",
-        target_type: str | None = None,
-        target_id: str | None = None,
-        role: str | None = None,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Register file(s) and optionally associate, composing the same
-        register_file / associate callables the two old tools used."""
-        associate = (
-            resource_associate if resource_associate is not None else resources.associate
-        )
-
-        def _associate(rid: str) -> dict[str, Any]:
-            return associate(
-                project_id=project_id,
-                resource_id=rid,
-                target_type=target_type,
-                target_id=target_id,
-                role=role,
-            )
-
-        has_target = None not in (target_type, target_id, role)
-        if resource_id is not None:
-            return _associate(resource_id)
-        registered = resource_register_file(
-            project_id=project_id,
-            path=path,
-            paths=paths,
-            kind=kind,
-            title=title,
-            created_by=created_by,
-        )
-        if not has_target:
-            return registered
-        batch = registered.get("resources")
-        if isinstance(batch, list):
-            associations = [_associate(str(res.get("id"))) for res in batch]
-            return {"resources": batch, "associations": associations, "count": len(batch)}
-        return {"resource": registered, "association": _associate(str(registered.get("id")))}
-
-    handlers = build_control_tool_handlers(
-        workflow=workflow,
-        projects=projects,
-        claims=claims,
-        experiments=experiments,
-        reflection_tools=reflection_tools,
-        resources=resources,
-        storage=storage,
-        reviews=reviews,
-        sandboxes=sandboxes,
-        feed=feed,
-        experiment_transition=experiment_transition,
-        experiment_exhibit=experiment_exhibit,
-        tracking_context=tracking_context,
-        tracking_finalize=tracking_finalize,
-    )
-    handlers.update(
-        {
-            "resource.register": resource_register,
-            "experiment.materialize_folders": experiment_materialize_folders,
-            "sandbox.request": sandboxes.request,
-            "sandbox.attach": sandboxes.attach,
-            "sandbox.pull_outputs": sandbox_pull_outputs,
-            "feed.post": feed_post if feed_post is not None else feed.post,
-        }
-    )
-    if storage is not None:
-        handlers.update(
-            {
-                "storage.upload_file": (
-                    storage_upload_file
-                    if storage_upload_file is not None
-                    else storage.upload_file
-                ),
-                "storage.download_file": (
-                    storage_download_file
-                    if storage_download_file is not None
-                    else storage.download_file
-                ),
             }
         )
     return handlers

@@ -14,6 +14,7 @@ PRE_TRACKING_SLICE_LOC = 40_850
 MAX_BRAIN_LOC = 41_000
 BASELINE_SURFACE_ORCHESTRATION_LOC = 1_022
 PRE_TRACKING_SURFACE_LOC = 549
+MAX_SURFACE_ORCHESTRATION_LOC = 232
 
 
 class ApplicationArchitectureBudgetTest(unittest.TestCase):
@@ -32,8 +33,12 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
             .read_text(encoding="utf-8")
             .splitlines()
         )
-        self.assertLessEqual(current, PRE_TRACKING_SURFACE_LOC - 149)
-        self.assertLessEqual(current, BASELINE_SURFACE_ORCHESTRATION_LOC - 622)
+        self.assertLessEqual(current, MAX_SURFACE_ORCHESTRATION_LOC)
+        self.assertEqual(PRE_TRACKING_SURFACE_LOC - MAX_SURFACE_ORCHESTRATION_LOC, 317)
+        self.assertEqual(
+            BASELINE_SURFACE_ORCHESTRATION_LOC - MAX_SURFACE_ORCHESTRATION_LOC,
+            790,
+        )
         self.assertFalse((BRAIN / "surface/tools/exhibits.py").exists())
 
     def test_mlflow_compatibility_wrapper_is_import_only(self) -> None:
@@ -53,6 +58,25 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
             ),
             "compatibility wrapper may contain only its docstring and imports",
         )
+
+    def test_review_and_reaction_orchestration_stays_out_of_surface(self) -> None:
+        handlers = (BRAIN / "surface/tools/tool_handlers.py").read_text(encoding="utf-8")
+        transition = (BRAIN / "application/experiments/transition.py").read_text(
+            encoding="utf-8"
+        )
+        composition = (BRAIN / "surface/control/control_app.py").read_text(
+            encoding="utf-8"
+        )
+        for removed in (
+            "def review_status_agent",
+            "experiment_review_verdict",
+            "build_local_tool_handlers",
+        ):
+            self.assertNotIn(removed, handlers)
+        self.assertIn('"review.status": review_status.execute', handlers)
+        self.assertNotIn("EventDispatcher()", transition)
+        self.assertNotIn(".register(", transition)
+        self.assertIn("self.reaction_registry = EventDispatcher()", composition)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
+from ..kernel.events import StoredEvent
 from .domain.paths import experiment_folder_rel
 from .experiment_views import slim_experiment_state
 from .experiments import ExperimentService
@@ -64,6 +65,17 @@ class ResearchCore(Protocol):
     def exhibit_path(self, *, experiment_id: str, name: str, filename: str) -> str: ...
 
     def present_experiment(self, state: ExperimentState) -> SlimExperimentState: ...
+
+
+@runtime_checkable
+class ResearchReviews(Protocol):
+    def status(
+        self, *, target_type: str, target_id: str, project_id: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def latest_submitted_event(
+        self, *, target_type: str, target_id: str, project_id: str | None = None
+    ) -> StoredEvent | None: ...
 
 
 class ResearchCoreFacade:
@@ -174,5 +186,6 @@ __all__ = [
     "PersistedRunState",
     "ResearchCore",
     "ResearchCoreFacade",
+    "ResearchReviews",
     "SlimExperimentState",
 ]

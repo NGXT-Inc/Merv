@@ -9,9 +9,12 @@ from typing import Any
 
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
+from ...application.events import EventDispatcher
 from ...application.experiments.exhibits import ExperimentExhibits
 from ...application.experiments.tracking import FinalizeTrackingRun, GetTrackingContext
+from ...application.experiments.reactions import ExperimentReactions
 from ...application.experiments.transition import TransitionExperiment
+from ...application.reviews import ReadReviewStatus
 from ...artifacts.facade import ArtifactsFacade
 from ...feed.facade import FeedFacade
 from ...research_core.facade import ResearchCoreFacade
@@ -93,12 +96,24 @@ class ControlApp:
             artifacts=self.artifacts,
             tracking=self.mlflow_tracking,
         )
+        self.reaction_registry = EventDispatcher()
+        self.experiment_reactions = ExperimentReactions(
+            research=self.research_core,
+            feed=self.feed_api,
+            tracking=self.mlflow_tracking,
+        )
+        self.experiment_reactions.bind(self.reaction_registry)
         self.transition_experiment = TransitionExperiment(
             research=self.research_core,
             artifacts=self.artifacts,
-            feed=self.feed_api,
             tracking=self.mlflow_tracking,
             exhibits=self.experiment_exhibits,
+            dispatcher=self.reaction_registry,
+        )
+        self.read_review_status = ReadReviewStatus(
+            research=self.research_core,
+            reviews=self.reviews,
+            dispatcher=self.reaction_registry,
         )
         self.tracking_context = GetTrackingContext(
             research=self.research_core, tracking=self.mlflow_tracking
@@ -107,6 +122,7 @@ class ControlApp:
             research=self.research_core,
             feed=self.feed_api,
             tracking=self.mlflow_tracking,
+            dispatcher=self.reaction_registry,
         )
 
         self.sandboxes = SandboxService(
@@ -154,6 +170,7 @@ class ControlApp:
                 experiment_exhibit=self.experiment_exhibits,
                 tracking_context=self.tracking_context,
                 tracking_finalize=self.finalize_tracking_run,
+                review_status=self.read_review_status,
             ),
             permissions=self.permissions,
             activity=self.activity,

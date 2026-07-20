@@ -15,6 +15,7 @@ from merv.brain.research_core.facade import (
     CommittedTrackingRunRefresh,
     ResearchCore,
     ResearchCoreFacade,
+    ResearchReviews,
 )
 from merv.brain.research_core.transition_types import (
     CommittedExperimentTransition as OwnedCommittedTransition,
@@ -151,6 +152,14 @@ class RecordingArtifactsFake:
         return None
 
 
+class RecordingResearchReviewsFake:
+    def status(self, **_kwargs):
+        return {"requests": [], "reviews": []}
+
+    def latest_submitted_event(self, **_kwargs):
+        return None
+
+
 class RecordingFeedFake:
     def transition_advisory(self, **kwargs):
         return None
@@ -161,10 +170,12 @@ class ComponentFacadeTest(unittest.TestCase):
         research = RecordingResearchCoreFake()
         artifacts = RecordingArtifactsFake()
         feed = RecordingFeedFake()
+        reviews = RecordingResearchReviewsFake()
 
         self.assertIsInstance(research, ResearchCore)
         self.assertIsInstance(artifacts, Artifacts)
         self.assertIsInstance(feed, Feed)
+        self.assertIsInstance(reviews, ResearchReviews)
         self.assertEqual(
             research.experiment_state(experiment_id="exp_fake"),
             {"id": "exp_fake"},

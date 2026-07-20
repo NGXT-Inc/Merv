@@ -7,7 +7,7 @@ catalog_expected=45e46fac9ea0a4d97fa12d1fc9b111e1088f862992288ffca01a735b70ee242
 brain_loc_baseline=39924
 tracking_slice_baseline=40850
 brain_loc_max=41000
-surface_orchestration_max=400
+surface_orchestration_max=232
 
 cd "$verify_dir"
 brain_loc=$(find src/merv/brain -name '*.py' | xargs wc -l | tail -1 | awk '{print $1}')

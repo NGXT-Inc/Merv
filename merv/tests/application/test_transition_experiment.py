@@ -5,6 +5,8 @@ import unittest
 from copy import deepcopy
 from typing import Any
 
+from merv.brain.application.events import EventDispatcher
+from merv.brain.application.experiments.reactions import ExperimentReactions
 from merv.brain.application.experiments.transition import TransitionExperiment
 from merv.brain.application.ports.tracking import TrackingCapabilities
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
@@ -433,12 +435,16 @@ def _use_case(
     tracking: RecordingTracking | None,
     exhibits: RecordingExhibits,
 ) -> TransitionExperiment:
+    dispatcher = EventDispatcher()
+    ExperimentReactions(
+        research=research, feed=feed, tracking=tracking
+    ).bind(dispatcher)
     return TransitionExperiment(
         research=research,
         artifacts=artifacts,
-        feed=feed,
         tracking=tracking,
         exhibits=exhibits,
+        dispatcher=dispatcher,
     )
 
 

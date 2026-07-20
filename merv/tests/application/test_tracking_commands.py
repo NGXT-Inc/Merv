@@ -11,6 +11,8 @@ from merv.brain.application.experiments.tracking import (
     GetTrackingContext,
     TrackingContextResponse,
 )
+from merv.brain.application.events import EventDispatcher
+from merv.brain.application.experiments.reactions import ExperimentReactions
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import CommittedTrackingRunRefresh
 
@@ -263,7 +265,16 @@ class FinalizeTrackingRunTest(unittest.TestCase):
         tracking: RecordingTracking | None,
         feed: RecordingFeed,
     ) -> FinalizeTrackingRun:
-        return FinalizeTrackingRun(research=research, tracking=tracking, feed=feed)
+        dispatcher = EventDispatcher()
+        ExperimentReactions(
+            research=research, tracking=tracking, feed=feed
+        ).bind(dispatcher)
+        return FinalizeTrackingRun(
+            research=research,
+            tracking=tracking,
+            feed=feed,
+            dispatcher=dispatcher,
+        )
 
     def test_unconfigured_response_remains_exact(self) -> None:
         order: list[str] = []

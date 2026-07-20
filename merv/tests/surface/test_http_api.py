@@ -163,7 +163,44 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             f"/api/projects/{project_id}/reviews/submit",
             {"review_session_id": session["review_session_id"], "verdict": "pass", "synopsis": synopsis},
         )
-        status = self.request("GET", f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}")
+        conn = self.app._store.connect()
+        try:
+            cursor = int(conn.execute("SELECT MAX(id) AS id FROM events").fetchone()["id"])
+        finally:
+            conn.close()
+        with patch.object(
+            self.app.reaction_registry,
+            "dispatch",
+            wraps=self.app.reaction_registry.dispatch,
+        ) as dispatch:
+            tool_status = self.app.call_tool(
+                "review.status",
+                {"project_id": project_id, "target_type": "experiment", "target_id": exp_id},
+            )
+            status = self.request("GET", f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}")
+        self.assertEqual(status, tool_status)
+        self.assertIn("feed_note", status)
+        review_dispatches = [
+            call.kwargs for call in dispatch.call_args_list
+            if call.kwargs["event"].type == "review.submitted"
+        ]
+        self.assertEqual(len(review_dispatches), 2)
+        self.assertEqual(
+            [(call["event"].id, call["phase"]) for call in review_dispatches],
+            [(cursor, "producer_read"), (cursor, "producer_read")],
+        )
+        self.assertEqual(
+            review_dispatches[0]["event"].payload["review_id"],
+            status["reviews"][0]["id"],
+        )
+        conn = self.app._store.connect()
+        try:
+            self.assertEqual(
+                int(conn.execute("SELECT MAX(id) AS id FROM events").fetchone()["id"]),
+                cursor,
+            )
+        finally:
+            conn.close()
         self.assertEqual(status["reviews"][0]["synopsis"], synopsis)
         queue = self.request("GET", f"/api/projects/{project_id}/reviews")
         self.assertEqual(queue["reviews"][0]["synopsis"], synopsis)

@@ -37,7 +37,8 @@ from merv.brain.surface.tools.contracts import (
 )
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
-from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers, build_local_tool_handlers
+from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
+from merv.proxy.local_data_plane import LocalDataPlane
 
 
 class _HandlerTarget:
@@ -72,6 +73,7 @@ def _handler_targets() -> dict[str, Any]:
         "experiment_exhibit": target,
         "tracking_context": target,
         "tracking_finalize": target,
+        "review_status": target,
     }
 
 
@@ -102,6 +104,15 @@ class ToolContractRegistryTest(unittest.TestCase):
                 continue
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
+
+    def test_live_local_split_composes_control_and_proxy_data_planes(self) -> None:
+        control = set(self.app._app.tools._tools)
+        available = available_tool_names(storage_enabled=False)
+        data = DATA_PLANE_TOOL_NAMES & available
+        self.assertEqual(control, CONTROL_PLANE_TOOL_NAMES & available)
+        self.assertIsInstance(self.app._data_plane, LocalDataPlane)
+        self.assertEqual(control | data, available)
+        self.assertFalse(control & data)
 
     def test_static_catalog_matches_app_list_tools(self) -> None:
         # The static catalog is what the router serves without instantiating an
@@ -381,17 +392,6 @@ class ToolDispatcherTest(unittest.TestCase):
 
 
 class ToolHandlerRegistryTest(unittest.TestCase):
-    def test_local_handlers_cover_every_contract(self) -> None:
-        target = _HandlerTarget()
-        handlers = build_local_tool_handlers(
-            **_handler_targets(),
-            resource_register_file=target.register_file,
-            experiment_materialize_folders=target.materialize_folders,
-            sandbox_pull_outputs=target.pull_outputs,
-        )
-
-        self.assertEqual(set(handlers), set(TOOL_CONTRACTS))
-
     def test_control_handlers_exclude_data_plane_tools(self) -> None:
         handlers = build_control_tool_handlers(**_handler_targets())
 

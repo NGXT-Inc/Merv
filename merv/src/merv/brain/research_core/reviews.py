@@ -10,6 +10,7 @@ from typing import Any
 from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
+from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.utils import (
     NotFoundError,
     PermissionDeniedError,
@@ -511,6 +512,34 @@ class ReviewService:
                 "requests": [self._with_snapshot(row=row) for row in requests],
                 "reviews": [self._hydrate_review(row=row) for row in reviews],
             }
+
+    def latest_submitted_event(
+        self, *, target_type: str, target_id: str, project_id: str | None = None
+    ) -> StoredEvent | None:
+        """Return the durable event for the newest verdict without appending one."""
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            row = conn.execute(
+                """
+                SELECT id, project_id, type, target_type, target_id, payload_json, created_at
+                FROM events
+                WHERE project_id = ? AND type = 'review.submitted'
+                  AND target_type = ? AND target_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (project_id, target_type, target_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return StoredEvent(
+            id=int(row["id"]),
+            project_id=str(row["project_id"]),
+            type=str(row["type"]),
+            target_type=str(row["target_type"]),
+            target_id=str(row["target_id"]),
+            payload=freeze_json_object(json.loads(str(row["payload_json"]))),
+            created_at=str(row["created_at"]),
+        )
 
     def queue(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:

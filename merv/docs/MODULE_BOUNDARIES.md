@@ -121,6 +121,21 @@ same symbols for compatibility, but do not own their definitions.
 These are dependency changes, not service extraction: everything still runs in
 one brain process and shares the existing transaction/event ledger.
 
+## Synchronous reaction model
+
+The composition root owns one in-process reaction registry. Application use
+cases dispatch exact durable event values explicitly; there is no ledger scan,
+worker, replay loop, or second event stream. Fatal handlers stop a phase and
+propagate. Advisory handlers, currently Feed reminders, yield no outcome when
+they fail and cannot break the primary command or query.
+
+Transition reactions run immediately after their committed command. The review
+verdict reminder deliberately runs later, when the producer reads
+`review.status`, but uses the existing `review.submitted` event ID. Repeated
+reads are allowed and handlers must be repeat-safe. Any future asynchronous
+delivery needs durable checkpoints keyed by `(event_id, phase, handler_name)`,
+plus an external-side-effect idempotency policy, before a worker is introduced.
+
 ## Cross-plane law
 
 Brain code may import pure `merv.shared` contracts but never `merv.proxy`.

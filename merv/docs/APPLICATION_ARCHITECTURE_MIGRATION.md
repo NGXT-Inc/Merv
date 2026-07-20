@@ -21,8 +21,9 @@ Adopt these classifications as architectural facts:
   business module.
 - `kernel` remains the dependency floor.
 
-This migration establishes the boundary with one complete vertical slice:
-`experiment.transition`. It preserves all public routes, tool schemas,
+This migration establishes the boundary with two complete vertical slices:
+`experiment.transition` and the producer-facing `review.status` advisory. It
+preserves all public routes, tool schemas,
 responses, event rows, transaction cuts, and best-effort failure behavior.
 The only intentional behavior change is redacting the already-returned MLflow
 password from internal telemetry; public responses remain unchanged.
@@ -500,7 +501,8 @@ continues returning only state. The event becomes observable to application
 code only after the service method exits and its transaction commits.
 
 An application `EventDispatcher` has explicit registration by event type,
-reaction phase, and stable handler name. It dispatches an immutable command
+reaction phase, stable handler name, and `fatal` or `advisory` failure mode. It
+dispatches an immutable command
 context containing the exact committed event plus the state snapshot threaded
 through the command. It is a small synchronous registry/sequencer (maximum 100
 production lines), not a bus framework. For this slice:
@@ -510,7 +512,7 @@ production lines), not a bus framework. For this slice:
 - it never runs from inside `record_event` or a database transaction;
 - handlers run in deterministic registration order within an explicitly
   selected phase;
-- duplicate handler names are rejected;
+- duplicate handler names and unknown failure modes are rejected;
 - an unknown event/phase is a no-op that returns the input state and no
   outcomes;
 - dispatch adds no acknowledgement/retry rows to the public ledger;
@@ -519,12 +521,18 @@ production lines), not a bus framework. For this slice:
 - the dispatcher returns the final threaded state and named outcomes so the use
   case can assemble the same immediate response as today without a new read.
 
-The generic dispatcher does not silently swallow programming errors. Reaction
-handlers own their failure policy because parity differs by reaction: feed and
-terminal tracking finalization catch all failures; start/retry tracking relies
-on the adapter's normalized remote-error result but may still surface a failure
-to persist that result, exactly as today. An uncaught handler error propagates
-immediately and stops that phase; later phases/handlers do not run.
+Fatal failures propagate immediately and stop their phase. Advisory failures
+produce no outcome and later handlers continue. Feed registrations are
+advisory; start/retry tracking is fatal because failure to persist a normalized
+adapter result already surfaced to the caller. Terminal tracking retains its
+existing internal best-effort suppression.
+
+The registry stores no delivery state or deduplication. The review Feed handler
+is repeat-safe because producer reads can recur. Tracking reactions are not
+automatically replayed and are not assumed idempotent across a remote call plus
+local persistence. The stable key for any future durable delivery is
+`(event.id, phase, handler_name)`. In-memory “already delivered” state is
+forbidden: it would break repeated producer reads and disappear on restart.
 
 This is deliberately not a durable asynchronous outbox processor. A crash
 after commit can skip these best-effort reactions today and can still do so
@@ -538,9 +546,9 @@ does not replay, but any future replay/redispatch design must assume that the
 external call can have happened and supply an idempotency strategy before it is
 enabled.
 
-Only the `experiment.transitioned` event returned by this command is dispatched.
-Events appended by `record_tracking_run` are not recursively dispatched; there
-is no automatic ledger scanner in this slice.
+Transition commands dispatch only the exact `experiment.transitioned` event
+they return. Events appended by `record_tracking_run` are not recursively
+dispatched; there is no automatic ledger scanner.
 
 The first handlers subscribe to `experiment.transitioned`:
 
@@ -560,6 +568,23 @@ queried and attached. “Feed first, MLflow next” describes migration order, n
 runtime execution order. This timing matters: a context-serialization failure
 must prevent the feed call, and a concurrent feed post during response assembly
 must still suppress the advisory as it does today.
+
+The second subscription is `review.submitted` in the `producer_read` phase.
+`ReadReviewStatus` first performs the canonical status read. Only when an
+experiment verdict exists does it resolve the experiment and look up the exact
+newest durable `review.submitted` event for that target, then synchronously
+dispatch the Feed advisory before returning. This preserves the original
+producer-facing timing: the reviewer sees its verdict at submit, while the
+producer receives the optional note when reading status. Status failures remain
+fatal; project/event correlation and Feed failures remain advisory. Repeated
+reads may dispatch the same event ID and return the same read-only advisory
+until an actual Feed post suppresses it. No event, acknowledgement, or cursor
+row is appended by the read.
+
+`ControlApp` owns the single reaction-registry instance and injects it into both
+application use cases. `ExperimentReactions` binds transition tracking,
+terminal Feed, and review-verdict Feed handlers once during composition. Use
+cases no longer construct or register private handler sets.
 
 Exhibit generation is not an event reaction: it must remain a synchronous
 prerequisite before `submit_results`, because the workflow gate validates the
@@ -698,10 +723,15 @@ An independent compactness audit identified 106 architecture-preserving lines
 and rejected comment removal, formatting compression, facade weakening, and
 test deletion. After those reductions, a second independent adversarial review
 re-ratified an absolute ceiling of **40,860** (+936) with only narrow headroom.
-The executable gate in `scripts/verify_application_architecture.sh` also keeps
+The initial executable gate in `scripts/verify_application_architecture.sh` kept
 the compatibility wrapper at 15 lines or fewer and the former 1,022-line
-Surface orchestration at 902 lines or fewer. The implemented counts are 40,850
-brain lines, a 13-line MLflow compatibility wrapper, and 549 Surface lines.
+Surface orchestration at 902 lines or fewer. The review/reaction follow-up
+lowers the implemented counts to 40,843 brain lines, a 13-line MLflow
+compatibility wrapper, and 399 Surface handler lines. It also removes the
+uncalled `build_local_tool_handlers` factory; live local composition uses the
+Control dispatcher plus proxy-owned `LocalDataPlane`, as its split-mode tests
+already prove. The executable brain ceiling is consequently tightened to
+40,850 rather than spending the recovered headroom.
 
 ### Tracking follow-up slice
 

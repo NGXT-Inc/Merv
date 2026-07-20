@@ -11,7 +11,7 @@ from ...research_core.facade import (
     ResearchCore,
     SlimExperimentState,
 )
-from ..events import EventContext, EventDispatcher, EventReaction
+from ..events import EventDispatcher
 from ..ports.tracking import (
     ExperimentTracking,
     FinalizeRunResult,
@@ -133,15 +133,10 @@ class FinalizeTrackingRun:
         research: ResearchCore,
         feed: Feed,
         tracking: ExperimentTracking | None,
+        dispatcher: EventDispatcher,
     ) -> None:
         self.research, self.feed, self.tracking = research, feed, tracking
-        self.dispatcher = EventDispatcher()
-        self.dispatcher.register(
-            event_type="experiment.mlflow_run_refreshed",
-            phase="post_response",
-            name="feed",
-            handler=self._react_feed,
-        )
+        self.dispatcher = dispatcher
 
     def execute(
         self,
@@ -215,11 +210,6 @@ class FinalizeTrackingRun:
             if isinstance(note, str):
                 response["feed_note"] = note
         return response
-
-    def _react_feed(
-        self, context: EventContext[ExperimentState]
-    ) -> EventReaction[ExperimentState]:
-        return EventReaction(state=context.state, value=self._feed_advisory(context.state))
 
     def _feed_advisory(self, state: ExperimentState) -> str | None:
         try:
