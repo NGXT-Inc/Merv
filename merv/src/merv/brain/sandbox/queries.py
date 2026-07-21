@@ -314,10 +314,10 @@ class SandboxQueryHandler(SandboxHandler):
         )
 
     def sandboxes_for_experiment(
-        self, *, conn, experiment_id: str
+        self, *, conn, project_id: str, experiment_id: str
     ) -> list[dict[str, Any]]:
         rows = self.repository.rows_for_experiment(
-            conn=conn, experiment_id=experiment_id
+            conn=conn, project_id=project_id, experiment_id=experiment_id
         )
         return [self._row_view(row=row, conn=conn) for row in rows]
 

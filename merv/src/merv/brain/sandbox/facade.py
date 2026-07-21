@@ -19,7 +19,7 @@ class SandboxReads(Protocol):
 
 class _SandboxRowReader(Protocol):
     def sandboxes_for_experiment(
-        self, *, conn: Any, experiment_id: str
+        self, *, conn: Any, project_id: str, experiment_id: str
     ) -> list[dict[str, Any]]: ...
 
     def sandboxes_for_project(
@@ -42,7 +42,7 @@ class SandboxReadFacade:
         with self._store.transaction() as conn:
             self._store.require_project_id(conn=conn, project_id=project_id)
             return self._reader.sandboxes_for_experiment(
-                conn=conn, experiment_id=experiment_id
+                conn=conn, project_id=project_id, experiment_id=experiment_id
             )
 
     def for_project(self, *, project_id: str) -> list[dict[str, Any]]:

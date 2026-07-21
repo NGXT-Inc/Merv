@@ -391,7 +391,7 @@ def _resume_active_sandboxes(*, app: ControlApp) -> None:
     Best-effort — a reconcile failure must not block startup or the reaper.
     """
     with suppress(Exception):  # startup must not hinge on recovery
-        had_running = bool(app.sandboxes.registry.list_running_rows())
+        had_running = bool(app.sandbox_runtime.repository.list_running_rows())
         app.sandboxes.reconcile_running_rows()
         if had_running:
             # Kick the resumed reaper once so anything already past its deadline

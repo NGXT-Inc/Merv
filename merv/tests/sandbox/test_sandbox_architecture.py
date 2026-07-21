@@ -10,6 +10,34 @@ from merv.brain.sandbox.sandbox_registry import SandboxRegistry
 
 ROOT = Path(__file__).parents[2] / "src" / "merv" / "brain"
 
+FACADE_INTERNALS = {
+    "_secrets_delivered",
+    "activity_policy",
+    "attachment_check",
+    "backend",
+    "commands",
+    "daemons",
+    "lifecycle",
+    "maintenance",
+    "metrics",
+    "mgmt_keys",
+    "provisioner",
+    "queries",
+    "quotas",
+    "registry",
+    "repository",
+    "runs_ledger",
+    "runtime",
+    "runs_wait_poll_seconds",
+    "store",
+    "storage_enabled",
+    "storage_hint",
+    "tasks",
+    "transcript_cache",
+    "request_wait_seconds",
+    "worker",
+}
+
 
 class SandboxArchitectureTest(unittest.TestCase):
     def test_repository_is_the_compatibility_registry(self) -> None:
@@ -56,6 +84,44 @@ class SandboxArchitectureTest(unittest.TestCase):
                 name.endswith(("sandbox_backend", "sandbox_registry", "state.store"))
                 for name in imported
             )
+        )
+
+    def test_production_does_not_reach_through_sandbox_facade(self) -> None:
+        offenders: list[str] = []
+        for path in ROOT.rglob("*.py"):
+            if path.is_relative_to(ROOT / "sandbox"):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            aliases: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = node.value
+                if not (isinstance(value, ast.Attribute) and value.attr == "sandboxes"):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                aliases.update(
+                    target.id for target in targets if isinstance(target, ast.Name)
+                )
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr in FACADE_INTERNALS
+                    and (
+                        isinstance(node.value, ast.Attribute)
+                        and node.value.attr == "sandboxes"
+                        or isinstance(node.value, ast.Name)
+                        and node.value.id in aliases
+                    )
+                ):
+                    offenders.append(
+                        f"{path.relative_to(ROOT).as_posix()}:{node.lineno} "
+                        f".sandboxes.{node.attr}"
+                    )
+        self.assertFalse(
+            offenders,
+            "use a Sandbox facade method or a composition-owned runtime: "
+            + ", ".join(offenders),
         )
 
 

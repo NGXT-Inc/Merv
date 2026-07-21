@@ -57,11 +57,14 @@ The exact component import matrix is:
 | Storage | Storage, Kernel |
 | Surface | any component; its independent layer classification still applies |
 
-Application code enters a business component only through its declared
+Outside bootstrap, code enters another component only through its declared
 `facade.py` or `ports/**` entrypoint. This is the executable form of “one stable
-public facade”; it prevents a new use case from depending on internal services.
-Workflow reads use `ResearchSnapshots` and `SandboxReads`; Sandbox commands use
-the separately declared `Sandbox` facade.
+public facade”; it prevents a new use case or adapter from depending on internal
+services. Eleven legacy importer/target pairs are frozen exactly and may only
+be deleted. They cover the remaining Research-to-Artifact helpers, three
+Surface vocabulary seams, one data-plane Feed seam, and two MLflow-to-
+Application policy imports. Workflow reads use `ResearchSnapshots` and
+`SandboxReads`; Sandbox commands use the separately declared `Sandbox` facade.
 
 ## Layer law
 
@@ -181,8 +184,37 @@ login client ships in the slim bundle and imports only the standard library and
 `tests/structure/test_module_boundaries.py` AST-scans top-level and
 function-local imports, classifies every brain file twice, enforces both laws,
 checks component-owned SQL, and rejects stale table entries and stale exception
-pairs. SQL may name only tables owned by the file's component, Kernel tables,
-or tables behind a ratified component dependency.
+pairs. Every stable table has an explicit owner; an unclassified new table
+fails closed. SQL may name only tables owned by the file's component, Kernel
+tables, or tables behind a ratified component dependency. The remaining 20
+Research SQL references to Artifact-owned tables have a separate exact counter,
+because the temporary Research-to-Artifacts component edge would otherwise
+hide them. Both that counter and the public-entrypoint exception ledger must
+shrink whenever a seam is repaired.
+
+Application has a zero-exception purity check: it may not import delivery,
+concrete adapters, frameworks, database/network SDKs, environment access, or
+state/config modules or state-store types; accept persistence parameters; open
+connections/transactions; or contain SQL. Non-bootstrap code may not construct
+another component's concrete collaborator. Surface delivery has exact shrinking
+inventories for its 48 remaining whole-app collaborator accesses and 19 whole-
+app acquisitions/carrier sites. This records migration debt without turning it
+into a wildcard permission.
+
+Untyped collaborator declarations are separate from JSON payload debt. The
+exact 76-entry dependency ledger records the remaining Application callable fields,
+Research/Artifacts and Research/Sandbox callback seams, raw Surface tool
+registry collaborators, and whole-app route dependencies. New `Any` or generic
+`Callable` collaborators fail; repaired entries must be removed from the
+ledger.
+
+The 42 public boundary value objects—including exported Application response/event
+values—are discovered by structure tests, normalized to JSON primitives, and
+round-tripped with strict finite-number handling. A complete sample registry
+prevents new DTOs from escaping the test. Untyped fields and non-string mapping
+keys are an exact shrinking debt ledger; the one current serialization debt is
+recorded by exact type, error, and count. Concrete connections, cursors, stores,
+repositories, and services are never permitted in boundary values.
 
 Sandbox provider neutrality is enforced separately: services do not dispatch
 on provider-name literals. Capability flags and the typed `SandboxDriver` /
@@ -198,3 +230,6 @@ runtime owns thread start/shutdown and `SandboxRepository` owns SQL. The pure
 lifecycle reducer translates reconcile, reap, and explicit-release observations
 into terminal event facts and ordered side-effect intents. Provisioner settle
 paths continue to route terminal writes through `SandboxLifecycle` directly.
+Sandbox read queries scope rows by both project and experiment. Production code
+may not reach through `app.sandboxes` to repositories or runtime collaborators;
+bootstrap uses the separately owned runtime when it needs lifecycle internals.

@@ -69,6 +69,41 @@ class WorkflowQueryIntegrationTest(unittest.TestCase):
             [self.experiment_ids[0]],
         )
 
+    def test_sandbox_reads_enforce_project_scope(self) -> None:
+        other_project = self.app.call_tool(
+            "project", {"action": "create", "name": "Other project"}
+        )["id"]
+        other_experiment = self.app.call_tool(
+            "experiment.create",
+            {
+                "project_id": other_project,
+                "name": "other-read",
+                "intent": "Remain private to the other project.",
+            },
+        )["id"]
+        self.app.sandbox_runtime.repository.upsert(
+            experiment_id=other_experiment,
+            sandbox_uid="sb_other_project",
+            project_id=other_project,
+            sandbox_id="provider-other",
+            status="ready",
+        )
+
+        self.assertEqual(
+            len(
+                self.app.sandbox_reads.for_experiment(
+                    project_id=other_project, experiment_id=other_experiment
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.app.sandbox_reads.for_experiment(
+                project_id=self.project_id, experiment_id=other_experiment
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

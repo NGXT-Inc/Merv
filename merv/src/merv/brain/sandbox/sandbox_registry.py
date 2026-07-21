@@ -212,17 +212,17 @@ class SandboxRepository:
             return [self._row_dict(row=row, conn=conn) for row in rows]
 
     def rows_for_experiment(
-        self, *, conn: Any, experiment_id: str
+        self, *, conn: Any, project_id: str, experiment_id: str
     ) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT s.*
             FROM sandboxes s
             JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
-            WHERE a.experiment_id = ? AND a.detached_at IS NULL
+            WHERE a.experiment_id = ? AND s.project_id = ? AND a.detached_at IS NULL
             ORDER BY s.created_seq DESC
             """,
-            (experiment_id,),
+            (experiment_id, project_id),
         ).fetchall()
         return [
             {**(row_to_dict(row=row) or {}), "experiment_id": experiment_id}

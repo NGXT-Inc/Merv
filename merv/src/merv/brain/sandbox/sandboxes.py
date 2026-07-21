@@ -265,10 +265,10 @@ class SandboxFacade:
         )
 
     def sandboxes_for_experiment(
-        self, *, conn, experiment_id: str
+        self, *, conn, project_id: str, experiment_id: str
     ) -> list[dict[str, Any]]:
         return self.queries.sandboxes_for_experiment(
-            conn=conn, experiment_id=experiment_id
+            conn=conn, project_id=project_id, experiment_id=experiment_id
         )
 
     def sandboxes_for_project(self, *, conn, project_id: str) -> list[dict[str, Any]]:

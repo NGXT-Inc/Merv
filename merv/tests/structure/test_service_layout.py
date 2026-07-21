@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from collections import Counter
 from inspect import Parameter, signature as inspect_signature
 from pathlib import Path
 from typing import Any, Protocol, get_type_hints, is_typeddict
@@ -42,6 +43,74 @@ HTTP_API_APP = SURFACE_ROOT / "transport" / "api" / "app.py"
 HTTP_API_GATEWAY = SURFACE_ROOT / "transport" / "api" / "gateway.py"
 HTTP_API_VIEWS = SURFACE_ROOT / "transport" / "api" / "views.py"
 HTTP_API_PACKAGE = SURFACE_ROOT / "transport" / "api"
+
+_CONTROL_APP_SCAN_EXCLUSIONS = {
+    "config.py",
+    "control/control_app.py",
+    "control/record_core.py",
+    "transport/http_server.py",
+}
+CONTROL_APP_SCAN_MODULES = tuple(
+    path
+    for path in sorted(SURFACE_ROOT.rglob("*.py"))
+    if not path.relative_to(SURFACE_ROOT).as_posix().startswith("composition/")
+    and path.relative_to(SURFACE_ROOT).as_posix() not in _CONTROL_APP_SCAN_EXCLUSIONS
+)
+
+# Exact, line-independent debt ledgers for the remaining whole-ControlApp HTTP
+# seams. Counter keys deliberately identify a file and top-level collaborator,
+# not a line number, so harmless formatting does not churn the baseline. Both
+# ledgers are shrinking: a new entry is a regression, while a removed entry
+# fails with an instruction to delete the now-stale baseline debt.
+RAW_CONTROL_APP_ACCESS_BASELINE: Counter[tuple[str, str]] = Counter(
+    {
+        ("transport/api/app.py", "projects"): 1,
+        ("transport/api/events.py", "store"): 3,
+        ("transport/api/gateway.py", "reviews"): 1,
+        ("transport/api/gateway.py", "sandboxes"): 1,
+        ("transport/api/meta.py", "tool_calls"): 1,
+        ("transport/api/projects.py", "projects"): 3,
+        ("transport/api/projects.py", "store"): 1,
+        ("transport/api/resources.py", "resources"): 1,
+        ("transport/api/reviews.py", "reviews"): 3,
+        ("transport/api/sandboxes.py", "store"): 1,
+        ("transport/api/sandboxes.py", "sandboxes"): 1,
+        ("transport/api/storage.py", "storage"): 1,
+        ("transport/api/views.py", "artifacts"): 2,
+        ("transport/api/views.py", "experiments"): 2,
+        ("transport/api/views.py", "resources"): 4,
+        ("transport/api/views.py", "sandboxes"): 5,
+        ("transport/api/views.py", "tool_calls"): 2,
+        ("transport/data_plane_http.py", "feed"): 3,
+        ("transport/data_plane_http.py", "resources"): 4,
+        ("transport/data_plane_http.py", "sandboxes"): 2,
+        ("transport/feed_http.py", "feed"): 6,
+    }
+)
+WHOLE_CONTROL_APP_CARRIER_BASELINE: Counter[tuple[str, str]] = Counter(
+    {
+        ("transport/api/app.py", "ResearchHttpApi(app=app)"): 1,
+        ("transport/api/views.py", "self.app=app"): 1,
+        ("transport/api/app.py", "backend=api.app"): 1,
+        ("transport/api/feed.py", "return ctx.api.app"): 1,
+        ("transport/api/gateway.py", "return self.backend"): 1,
+        ("transport/data_plane_http.py", "app_for_project(...)"): 7,
+        ("transport/feed_http.py", "app_for(...)"): 7,
+    }
+)
+
+_RAW_CONTROL_APP_COLLABORATORS = {
+    "artifacts",
+    "experiments",
+    "feed",
+    "projects",
+    "resources",
+    "reviews",
+    "sandboxes",
+    "storage",
+    "store",
+    "tool_calls",
+}
 
 
 def _source(name: str) -> str:
@@ -218,6 +287,145 @@ def _assigned_names(path: Path) -> set[str]:
         for target in targets:
             collect(target)
     return names
+
+
+def _attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        owner = _attribute_chain(node.value)
+        return (*owner, node.attr) if owner is not None else None
+    return None
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _surface_relative(path: Path) -> str:
+    return path.relative_to(SURFACE_ROOT).as_posix()
+
+
+def _whole_app_locals(tree: ast.AST) -> set[str]:
+    """Names assigned a whole app, including one-hop local aliases."""
+    names: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            if not _is_whole_app_receiver(node.value, local_names=names):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in names:
+                    names.add(target.id)
+                    changed = True
+    return names
+
+
+def _is_whole_app_receiver(node: ast.AST, *, local_names: set[str]) -> bool:
+    chain = _attribute_chain(node)
+    if chain in {
+        ("api", "app"),
+        ("ctx", "api", "app"),
+        ("self", "app"),
+        ("self", "backend"),
+    }:
+        return True
+    if isinstance(node, ast.Name) and node.id in local_names:
+        return True
+    return isinstance(node, ast.Call) and _call_name(node) in {
+        "app_for",
+        "app_for_project",
+    }
+
+
+def _raw_control_app_accesses() -> Counter[tuple[str, str]]:
+    accesses: Counter[tuple[str, str]] = Counter()
+    for path in CONTROL_APP_SCAN_MODULES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        local_names = _whole_app_locals(tree)
+        relative = _surface_relative(path)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in _RAW_CONTROL_APP_COLLABORATORS
+                and _is_whole_app_receiver(node.value, local_names=local_names)
+            ):
+                accesses[(relative, node.attr)] += 1
+    return accesses
+
+
+def _whole_control_app_carriers() -> Counter[tuple[str, str]]:
+    carriers: Counter[tuple[str, str]] = Counter()
+    for path in CONTROL_APP_SCAN_MODULES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        relative = _surface_relative(path)
+        local_names = _whole_app_locals(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                call_name = _call_name(node) or "<call>"
+                if call_name in {"app_for", "app_for_project"}:
+                    carriers[(relative, f"{call_name}(...)")] += 1
+                for keyword in node.keywords:
+                    if not (
+                        _is_whole_app_receiver(
+                            keyword.value, local_names=local_names
+                        )
+                        or isinstance(keyword.value, ast.Name)
+                        and keyword.value.id == "app"
+                    ):
+                        continue
+                    value = ast.unparse(keyword.value)
+                    expression = f"{call_name}({keyword.arg or '**'}={value})"
+                    if call_name == "ToolInvocationGateway":
+                        expression = f"backend={value}"
+                    carriers[(relative, expression)] += 1
+                for argument in node.args:
+                    if _is_whole_app_receiver(argument, local_names=local_names):
+                        carriers[(relative, f"{call_name}({ast.unparse(argument)})")] += 1
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                if any(
+                    _attribute_chain(target) == ("self", "app")
+                    for target in targets
+                ):
+                    carriers[(relative, f"self.app={ast.unparse(node.value)}")] += 1
+                elif _attribute_chain(node.value) in {
+                    ("api", "app"),
+                    ("ctx", "api", "app"),
+                    ("self", "app"),
+                    ("self", "backend"),
+                }:
+                    for target in targets:
+                        carriers[
+                            (relative, f"{ast.unparse(target)}={ast.unparse(node.value)}")
+                        ] += 1
+            elif isinstance(node, ast.Return):
+                chain = _attribute_chain(node.value) if node.value is not None else None
+                if chain in {
+                    ("api", "app"),
+                    ("ctx", "api", "app"),
+                    ("self", "app"),
+                    ("self", "backend"),
+                }:
+                    carriers[(relative, f"return {'.'.join(chain)}")] += 1
+    return carriers
+
+
+def _format_counter(counter: Counter[tuple[str, str]]) -> str:
+    return ", ".join(
+        f"{path}: {name} x{count}"
+        for (path, name), count in sorted(counter.items())
+    )
 
 
 VOCABULARY_NAMES = {
@@ -1193,6 +1401,42 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("sandbox_generations", store[start:end])
         self.assertIn("def tenant_generation_counters", quotas)
         self.assertIn("class TenantCountersQuery", queries)
+
+    def test_surface_raw_control_app_access_baseline_only_shrinks(self) -> None:
+        self.assertEqual(sum(RAW_CONTROL_APP_ACCESS_BASELINE.values()), 48)
+        current = _raw_control_app_accesses()
+        new = current - RAW_CONTROL_APP_ACCESS_BASELINE
+        stale = RAW_CONTROL_APP_ACCESS_BASELINE - current
+        self.assertFalse(
+            new,
+            "new raw ControlApp service/store access reached HTTP delivery; "
+            "inject a narrow facade/use-case callable instead: "
+            + _format_counter(new),
+        )
+        self.assertFalse(
+            stale,
+            "raw ControlApp access debt shrank; delete these stale entries from "
+            "RAW_CONTROL_APP_ACCESS_BASELINE: "
+            + _format_counter(stale),
+        )
+
+    def test_whole_control_app_carrier_baseline_only_shrinks(self) -> None:
+        self.assertEqual(sum(WHOLE_CONTROL_APP_CARRIER_BASELINE.values()), 19)
+        current = _whole_control_app_carriers()
+        new = current - WHOLE_CONTROL_APP_CARRIER_BASELINE
+        stale = WHOLE_CONTROL_APP_CARRIER_BASELINE - current
+        self.assertFalse(
+            new,
+            "new whole-ControlApp carrier reached HTTP delivery; pass narrow "
+            "route/gateway dependencies instead: "
+            + _format_counter(new),
+        )
+        self.assertFalse(
+            stale,
+            "whole-ControlApp carrier debt shrank; delete these stale entries "
+            "from WHOLE_CONTROL_APP_CARRIER_BASELINE: "
+            + _format_counter(stale),
+        )
 
     def test_http_transport_does_not_own_raw_persistence(self) -> None:
         def enclosing_function(

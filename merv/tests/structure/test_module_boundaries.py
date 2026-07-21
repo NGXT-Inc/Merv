@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from tests.paths import BACKEND_ROOT
@@ -183,12 +184,39 @@ LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+# Non-bootstrap code should enter another component through its facade or an
+# explicit port.  These exact legacy pairs are migration work, not permission
+# to add similar dependencies; both new and repaired pairs fail the baseline.
+PUBLIC_ENTRYPOINT_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("mlflow/exhibit.py", "application/experiments/metrics_exhibit.py"),
+        ("mlflow/tracking.py", "application/experiments/tracking_policy.py"),
+        (
+            "research_core/domain/reflection_artifacts.py",
+            "artifacts/resource_selection.py",
+        ),
+        ("research_core/experiments.py", "artifacts/pinned.py"),
+        ("research_core/reflections.py", "artifacts/pinned.py"),
+        ("research_core/reflections.py", "artifacts/resource_selection.py"),
+        ("research_core/reviews.py", "artifacts/pinned.py"),
+        ("surface/auth.py", "research_core/domain/vocabulary.py"),
+        ("surface/identity.py", "research_core/domain/vocabulary.py"),
+        ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
+        ("surface/transport/data_plane_http.py", "feed/feed.py"),
+    }
+)
 
-# SQL follows the import law (conformance scan, post-phase-6): a module's SQL
-# may name its own tables, kernel tables, and tables of modules it is allowed
-# to import. Tables absent here (projects, events, tenants, tool_calls,
-# schema_migrations, *_migrate scratch) are kernel scoping infrastructure.
+
+# SQL follows the import law: a module may name its own tables, Kernel tables,
+# and tables behind ratified component edges. Every stable table is explicit;
+# temporary ``*_migrate`` rebuild tables are ignored by the ownership check.
 TABLE_OWNERS = {
+    "projects": KERNEL,
+    "project_members": KERNEL,
+    "events": KERNEL,
+    "schema_migrations": KERNEL,
+    "tenants": KERNEL,
+    "tool_calls": KERNEL,
     "experiments": RESEARCH_CORE,
     "experiment_claims": RESEARCH_CORE,
     "claims": RESEARCH_CORE,
@@ -214,6 +242,93 @@ TABLE_OWNERS = {
     "post_reactions": FEED,
 }
 SQL_TABLE_REF = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_]+)\b", re.IGNORECASE)
+CREATE_TABLE_REF = re.compile(
+    r"\bCREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_]+)\s*\(",
+    re.IGNORECASE,
+)
+FOREIGN_SQL_TABLE_REF = re.compile(
+    r"\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|REFERENCES)\s+([a-z_]+)\b",
+    re.IGNORECASE,
+)
+
+RESEARCH_ARTIFACT_SQL_BASELINE = Counter(
+    {
+        ("research_core/experiments.py", "_has_resource_role", "resource_associations"): 1,
+        ("research_core/experiments.py", "_validate_plan_sections", "report_figures"): 1,
+        ("research_core/experiments.py", "_validate_results_report", "report_figures"): 1,
+        ("research_core/experiments.py", "exhibit_association", "resource_associations"): 1,
+        ("research_core/experiments.py", "exhibit_association", "resources"): 1,
+        ("research_core/experiments.py", "get_state", "resource_associations"): 1,
+        ("research_core/experiments.py", "get_state", "resources"): 1,
+        ("research_core/graph_refs.py", "<module>", "resources"): 1,
+        ("research_core/graph_refs.py", "_resolve_path_ref", "resources"): 1,
+        ("research_core/reflections.py", "_current_role_row", "resource_associations"): 1,
+        ("research_core/reflections.py", "_current_role_row", "resources"): 1,
+        ("research_core/reflections.py", "_current_role_row_for_roles", "resource_associations"): 1,
+        ("research_core/reflections.py", "_current_role_row_for_roles", "resources"): 1,
+        ("research_core/reflections.py", "_has_resource_role", "resource_associations"): 1,
+        ("research_core/reflections.py", "_validate_reflection_doc", "report_figures"): 1,
+        ("research_core/reflections.py", "get_state", "resource_associations"): 1,
+        ("research_core/reflections.py", "get_state", "resources"): 1,
+        ("research_core/reviews.py", "_submitted_artifacts", "resource_associations"): 1,
+        ("research_core/reviews.py", "_submitted_artifacts", "resource_versions"): 1,
+        ("research_core/reviews.py", "_submitted_artifacts", "resources"): 1,
+    }
+)
+
+APPLICATION_FORBIDDEN_IMPORT_ROOTS = frozenset(
+    {
+        "boto3",
+        "django",
+        "dotenv",
+        "fastapi",
+        "flask",
+        "httpx",
+        "mlflow",
+        "modal",
+        "os",
+        "psycopg",
+        "pydantic",
+        "requests",
+        "socket",
+        "sqlalchemy",
+        "sqlite3",
+        "starlette",
+        "subprocess",
+        "urllib",
+        "uvicorn",
+    }
+)
+APPLICATION_SQL = re.compile(
+    r"\b(?:SELECT\b[\s\S]{0,300}?\bFROM|INSERT\s+INTO|"
+    r"UPDATE\s+[a-z_]+\s+SET|DELETE\s+FROM|"
+    r"(?:CREATE|ALTER|DROP)\s+TABLE)\b",
+    re.IGNORECASE,
+)
+CONCRETE_COLLABORATOR_SUFFIXES = (
+    "Backend",
+    "Client",
+    "Dispatcher",
+    "Facade",
+    "Handler",
+    "Query",
+    "Reader",
+    "Repository",
+    "Runtime",
+    "Service",
+    "Store",
+    "Writer",
+)
+CONCRETE_FACTORY_PREFIXES = ("build_", "create_", "make_")
+CONCRETE_FACTORY_SUFFIXES = tuple(
+    f"_{suffix.lower()}" for suffix in CONCRETE_COLLABORATOR_SUFFIXES
+)
+
+
+def _is_concrete_factory(name: str) -> bool:
+    return name.startswith(CONCRETE_FACTORY_PREFIXES) and name.endswith(
+        CONCRETE_FACTORY_SUFFIXES
+    )
 
 
 def _backend_files() -> list[Path]:
@@ -325,6 +440,220 @@ def _layer_violations() -> set[tuple[str, str]]:
     }
 
 
+def _public_entrypoint_violations() -> set[tuple[str, str]]:
+    violations: set[tuple[str, str]] = set()
+    for importer, target in _import_pairs():
+        importer_component = _component(importer)
+        target_component = _component(target)
+        if (
+            importer_component == target_component
+            or target_component == KERNEL
+            or _layer(importer) == BOOTSTRAP
+        ):
+            continue
+        relative_target = target.removeprefix(f"{target_component}/")
+        if relative_target == "facade.py" or relative_target.startswith("ports/"):
+            continue
+        violations.add((importer, target))
+    return violations
+
+
+def _created_tables() -> set[str]:
+    tables: set[str] = set()
+    for path in _backend_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                tables.update(
+                    match.group(1).lower()
+                    for match in CREATE_TABLE_REF.finditer(node.value)
+                    if not match.group(1).lower().endswith("_migrate")
+                )
+    return tables
+
+
+def _enclosing_function(
+    node: ast.AST, parents: dict[ast.AST, ast.AST]
+) -> str:
+    current = node
+    while current in parents:
+        current = parents[current]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current.name
+    return "<module>"
+
+
+def _research_artifact_sql() -> Counter[tuple[str, str, str]]:
+    references: Counter[tuple[str, str, str]] = Counter()
+    artifact_tables = {
+        table for table, owner in TABLE_OWNERS.items() if owner == ARTIFACTS
+    }
+    for path in sorted((BACKEND_ROOT / RESEARCH_CORE).rglob("*.py")):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            for match in FOREIGN_SQL_TABLE_REF.finditer(node.value):
+                table = match.group(1).lower()
+                if table in artifact_tables:
+                    references[(rel, _enclosing_function(node, parents), table)] += 1
+    return references
+
+
+def _application_purity_violations() -> list[str]:
+    violations: list[str] = []
+    dotted = _dotted_index()
+    for path in sorted((BACKEND_ROOT / APPLICATION_COMPONENT).rglob("*.py")):
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for target in _import_targets(path, dotted):
+            if target.startswith("kernel/state/") or target == "kernel/env.py":
+                violations.append(f"{rel}: imports state/config module {target}")
+            if _component(target) in (SURFACE, MLFLOW, OBJECT_STORAGE) or _layer(
+                target
+            ) == ADAPTER:
+                violations.append(f"{rel}: imports concrete adapter {target}")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                roots = {alias.name.split(".", 1)[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots = {node.module.split(".", 1)[0]}
+            else:
+                roots = set()
+            for root in roots & APPLICATION_FORBIDDEN_IMPORT_ROOTS:
+                violations.append(f"{rel}:{node.lineno}: imports {root}")
+            if isinstance(node, ast.Name) and node.id in {
+                "BaseStateStore",
+                "StateStore",
+            }:
+                violations.append(f"{rel}:{node.lineno}: names {node.id}")
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parameters = (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                )
+                for parameter in parameters:
+                    if parameter.arg in {"conn", "connection", "cursor", "store"}:
+                        violations.append(
+                            f"{rel}:{parameter.lineno}: accepts persistence parameter "
+                            f"{parameter.arg}"
+                        )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"connect", "cursor", "transaction"}
+            ):
+                violations.append(
+                    f"{rel}:{node.lineno}: calls persistence method {node.func.attr}"
+                )
+
+        docstrings = {
+            id(owner.body[0].value)
+            for owner in ast.walk(tree)
+            if isinstance(
+                owner,
+                (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+            )
+            and owner.body
+            and isinstance(owner.body[0], ast.Expr)
+            and isinstance(owner.body[0].value, ast.Constant)
+            and isinstance(owner.body[0].value.value, str)
+        }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+                and APPLICATION_SQL.search(node.value)
+            ):
+                violations.append(f"{rel}:{node.lineno}: contains SQL")
+    return sorted(set(violations))
+
+
+def _cross_component_constructions_outside_bootstrap() -> list[str]:
+    """Find construction of another component's concrete collaborator."""
+    dotted = _dotted_index()
+    violations: list[str] = []
+    for path in _backend_files():
+        rel = path.relative_to(BACKEND_ROOT).as_posix()
+        if _layer(rel) == BOOTSTRAP:
+            continue
+        package = ("merv", "brain", *path.relative_to(BACKEND_ROOT).parent.parts)
+        imported: dict[str, tuple[str, str]] = {}
+        imported_modules: dict[tuple[str, ...], str] = {}
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    target = dotted.get(alias.name)
+                    if target:
+                        prefix = (
+                            (alias.asname,)
+                            if alias.asname
+                            else tuple(alias.name.split("."))
+                        )
+                        imported_modules[prefix] = target
+                continue
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.level:
+                base = ".".join(package[: len(package) - (node.level - 1)])
+                if node.module:
+                    base = f"{base}.{node.module}"
+            elif node.module:
+                base = node.module
+            else:
+                continue
+            target = dotted.get(base)
+            for alias in node.names:
+                candidate = dotted.get(f"{base}.{alias.name}") or target
+                if candidate and (
+                    alias.name.endswith(CONCRETE_COLLABORATOR_SUFFIXES)
+                    or _is_concrete_factory(alias.name)
+                ):
+                    imported[alias.asname or alias.name] = (candidate, alias.name)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id in imported:
+                target, class_name = imported[node.func.id]
+            elif isinstance(node.func, ast.Attribute):
+                chain: list[str] = []
+                current: ast.AST = node.func
+                while isinstance(current, ast.Attribute):
+                    chain.append(current.attr)
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    chain.append(current.id)
+                parts = tuple(reversed(chain))
+                target = ""
+                class_name = parts[-1] if parts else ""
+                for prefix, candidate in imported_modules.items():
+                    if parts[:-1] == prefix:
+                        target = candidate
+                        break
+                if not target or not (
+                    class_name.endswith(CONCRETE_COLLABORATOR_SUFFIXES)
+                    or _is_concrete_factory(class_name)
+                ):
+                    continue
+            else:
+                continue
+            if _component(target) not in {_component(rel), KERNEL}:
+                violations.append(
+                    f"{rel}:{node.lineno} constructs {class_name} from {target}"
+                )
+    return sorted(violations)
+
+
 class ModuleBoundaryTest(unittest.TestCase):
     def test_tool_handler_registry_is_delivery(self) -> None:
         self.assertEqual(_layer("surface/tools/tool_handlers.py"), DELIVERY)
@@ -424,6 +753,25 @@ class ModuleBoundaryTest(unittest.TestCase):
             + ", ".join(sorted(set(offenders))),
         )
 
+    def test_every_stable_table_has_one_explicit_owner(self) -> None:
+        created = _created_tables()
+        unowned = sorted(created - TABLE_OWNERS.keys())
+        stale = sorted(TABLE_OWNERS.keys() - created)
+        self.assertFalse(
+            unowned,
+            "new persistent tables need an explicit component owner: "
+            + ", ".join(unowned),
+        )
+        self.assertFalse(
+            stale,
+            "stale table-owner entries must be deleted: " + ", ".join(stale),
+        )
+        self.assertNotIn(
+            APPLICATION_COMPONENT,
+            TABLE_OWNERS.values(),
+            "Application coordinates components and may not own persistence",
+        )
+
     def test_layer_exception_baseline_only_shrinks(self) -> None:
         stale = sorted(LAYER_EXCEPTIONS - _layer_violations())
         self.assertFalse(
@@ -432,25 +780,51 @@ class ModuleBoundaryTest(unittest.TestCase):
             + ", ".join(f"{importer} -> {target}" for importer, target in stale),
         )
 
-    def test_application_uses_declared_component_entrypoints(self) -> None:
-        """Cross-component application imports use a facade or explicit port."""
-        offenders: list[str] = []
-        public_components = (RESEARCH_CORE, ARTIFACTS, SANDBOX, FEED)
-        for importer, target in sorted(_import_pairs()):
-            if _component(importer) != APPLICATION_COMPONENT:
-                continue
-            target_component = _component(target)
-            if target_component not in public_components:
-                continue
-            root = target_component + "/"
-            relative_target = target.removeprefix(root)
-            if relative_target == "facade.py" or relative_target.startswith("ports/"):
-                continue
-            offenders.append(f"{importer} -> {target}")
+    def test_cross_component_imports_use_public_entrypoints(self) -> None:
+        """All non-bootstrap cross-component imports enter via facade/port."""
+        current = _public_entrypoint_violations()
+        new = sorted(current - PUBLIC_ENTRYPOINT_EXCEPTIONS)
+        stale = sorted(PUBLIC_ENTRYPOINT_EXCEPTIONS - current)
         self.assertFalse(
-            offenders,
-            "application code must enter business components through facade.py "
-            "or ports/**: " + ", ".join(offenders),
+            new,
+            "new cross-component internal import; use facade.py or ports/**: "
+            + ", ".join(f"{source} -> {target}" for source, target in new),
+        )
+        self.assertFalse(
+            stale,
+            "cross-component boundary improved; delete stale baseline pairs: "
+            + ", ".join(f"{source} -> {target}" for source, target in stale),
+        )
+
+    def test_research_artifact_sql_inventory_only_shrinks(self) -> None:
+        current = _research_artifact_sql()
+        new = current - RESEARCH_ARTIFACT_SQL_BASELINE
+        stale = RESEARCH_ARTIFACT_SQL_BASELINE - current
+        self.assertFalse(
+            new,
+            "new Research SQL names Artifact-owned tables: "
+            + ", ".join(f"{key} x{count}" for key, count in sorted(new.items())),
+        )
+        self.assertFalse(
+            stale,
+            "Research/Artifacts SQL boundary improved; lower the baseline: "
+            + ", ".join(f"{key} x{count}" for key, count in sorted(stale.items())),
+        )
+
+    def test_application_layer_has_no_adapter_framework_store_or_sql_access(self) -> None:
+        violations = _application_purity_violations()
+        self.assertFalse(
+            violations,
+            "Application must remain pure orchestration over ports/facades: "
+            + ", ".join(violations),
+        )
+
+    def test_only_bootstrap_constructs_cross_component_collaborators(self) -> None:
+        violations = _cross_component_constructions_outside_bootstrap()
+        self.assertFalse(
+            violations,
+            "construct concrete cross-component collaborators in bootstrap and "
+            "inject a facade/port instead: " + ", ".join(violations),
         )
 
     def test_composite_reads_are_application_owned_and_surface_delegates(self) -> None:
