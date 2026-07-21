@@ -1,8 +1,5 @@
-"""Synchronous reactions to committed events, owned by composition.
-
-Fatal handlers propagate; advisory failures are dropped. The registry stores
-no delivery state or deduplication. Future async delivery must checkpoint
-``(event.id, phase, handler_name)`` rather than create another event identity.
+"""Synchronous committed-event reactions: fatal errors propagate, advisory
+errors drop, and any future replay must checkpoint ``(event.id, phase, handler)``.
 """
 
 from __future__ import annotations
@@ -38,60 +35,91 @@ class DispatchResult(Generic[StateT]):
 
 EventHandler = Callable[[EventContext[Any]], EventReaction[Any]]
 FailureMode = Literal["fatal", "advisory"]
+IdempotencyMode = Literal["repeat_safe", "requires_adapter_key_for_redelivery"]
+_DELIVERY_POLICIES = {
+    ("fatal", "repeat_safe"),
+    ("fatal", "requires_adapter_key_for_redelivery"),
+    ("advisory", "repeat_safe"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class EventCatalogEntry:
+    """One reaction; producer names the method committing state and event."""
+
+    producer: str
+    event_type: str
+    payload_version: int
+    transaction_boundary: str
+    reaction_phase: str
+    handler_identity: str
+    failure: FailureMode
+    idempotency: IdempotencyMode
+
+    def __post_init__(self) -> None:
+        if (
+            not all(value.strip() for value in (
+                self.producer, self.event_type, self.transaction_boundary,
+                self.reaction_phase, self.handler_identity,
+            ))
+            or self.payload_version < 1
+            or (self.failure, self.idempotency) not in _DELIVERY_POLICIES
+        ):
+            raise ValueError("invalid event catalog entry")
 
 
 class EventDispatcher:
     """Explicit ordered registry; no persistence, scanning, replay, or worker."""
 
     def __init__(self) -> None:
-        self._handlers: dict[
-            tuple[str, str], list[tuple[str, EventHandler, FailureMode]]
-        ] = {}
+        self._catalog: tuple[EventCatalogEntry, ...] = ()
+        self._handlers: tuple[tuple[EventCatalogEntry, EventHandler], ...] = ()
 
-    def register(
+    @property
+    def catalog(self) -> tuple[EventCatalogEntry, ...]:
+        return self._catalog
+
+    def bind_catalog(
         self,
+        catalog: tuple[EventCatalogEntry, ...],
         *,
-        event_type: str,
-        phase: str,
-        name: str,
-        handler: EventHandler,
-        failure: FailureMode = "fatal",
+        handlers: Mapping[str, EventHandler],
     ) -> None:
-        key = (event_type.strip(), phase.strip())
-        stable_name = name.strip()
-        if not key[0] or not key[1] or not stable_name:
-            raise ValueError("event_type, phase, and handler name are required")
-        if failure not in ("fatal", "advisory"):
-            raise ValueError(f"unknown reaction failure mode: {failure}")
-        handlers = self._handlers.setdefault(key, [])
-        if any(registered == stable_name for registered, *_rest in handlers):
-            raise ValueError(
-                f"duplicate event handler {stable_name!r} for {key[0]!r}/{key[1]!r}"
-            )
-        handlers.append((stable_name, handler, failure))
+        """Bind a complete catalog or fail before registering any handler."""
+
+        expected = {entry.handler_identity for entry in catalog}
+        if set(handlers) != expected:
+            raise ValueError("event catalog handler mismatch")
+        if self._handlers:
+            raise ValueError("event catalog is already bound")
+        keys = [
+            (entry.event_type, entry.reaction_phase, entry.handler_identity)
+            for entry in catalog
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate event catalog registration")
+        if any(not callable(handler) for handler in handlers.values()):
+            raise TypeError("event catalog handlers must be callable")
+        self._catalog = catalog
+        self._handlers = tuple(
+            (entry, handlers[entry.handler_identity]) for entry in catalog
+        )
 
     def dispatch(
         self, *, event: StoredEvent, phase: str, state: StateT
     ) -> DispatchResult[StateT]:
         current: Any = state
         outcomes: dict[str, object] = {}
-        for name, handler, failure in self._handlers.get((event.type, phase), ()):
+        for entry, handler in self._handlers:
+            if (entry.event_type, entry.reaction_phase) != (event.type, phase):
+                continue
             try:
                 reaction = handler(EventContext(event=event, state=current))
             except Exception:
-                if failure == "advisory":
+                if entry.failure == "advisory":
                     continue
                 raise
             current = reaction.state
             if reaction.value is not None:
-                outcomes[name] = reaction.value
+                outcomes[entry.handler_identity] = reaction.value
         return DispatchResult(state=current, outcomes=MappingProxyType(outcomes))
-
-
-__all__ = [
-    "DispatchResult",
-    "EventContext",
-    "EventDispatcher",
-    "EventReaction",
-    "FailureMode",
-]

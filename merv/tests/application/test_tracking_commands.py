@@ -285,7 +285,7 @@ class TrackingContextQueryTest(unittest.TestCase):
         self.assertEqual(result["mlflow"], {"configured": False})
         self.assertEqual(order, [])
 
-    def test_http_detail_uses_application_tracking_policy_without_credentials(self) -> None:
+    def test_http_detail_uses_tracking_presentation_without_credentials(self) -> None:
         order: list[str] = []
         research = RecordingResearch(order)
         tracking = RecordingTracking(order)

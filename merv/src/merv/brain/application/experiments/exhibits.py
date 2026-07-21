@@ -7,9 +7,8 @@ from typing import Protocol
 from ...artifacts.facade import Artifacts
 from ...kernel.utils import WorkflowError
 from ...research_core.facade import ExperimentState, ResearchCore
-from ..ports.tracking import ExperimentTracking
+from ..ports.tracking import ExperimentTracking, tracking_experiment_name
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, build_metrics_exhibit
-from .tracking_policy import mlflow_experiment_name
 
 
 class ExhibitBuilder(Protocol):
@@ -47,7 +46,7 @@ class ExperimentExhibits:
             project_id=project_id,
             experiment_id=experiment_id,
             attempt_index=attempt_index,
-            experiment_name=mlflow_experiment_name(
+            experiment_name=tracking_experiment_name(
                 project_id=project_id, experiment_id=experiment_id
             ),
             window_started_at=self.research.attempt_started_running_at(

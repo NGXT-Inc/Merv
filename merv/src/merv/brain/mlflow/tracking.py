@@ -11,21 +11,17 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..application.experiments.tracking_policy import (
-    MLFLOW_NAMESPACE_PREFIX,
-    MLFLOW_STATE_STATUSES,
-    MLFLOW_TERMINAL_RUN_STATUSES,
-    mlflow_experiment_name,
-    mlflow_visible_for_status,
-)
 from ..application.ports.tracking import (
     CreateRunResult,
     FinalizeRunResult,
     MetricsSnapshot,
+    TRACKING_NAMESPACE_PREFIX as _TRACKING_NAMESPACE_PREFIX,
+    TRACKING_TERMINAL_RUN_STATUSES as _TRACKING_TERMINAL_RUN_STATUSES,
     TrackingCapabilities,
     TrackingContextPayload,
     TrackingRun,
     capabilities_for_configuration,
+    tracking_experiment_name as _tracking_experiment_name,
 )
 from .metrics import (
     MlflowSnapshotError,
@@ -149,7 +145,7 @@ class CentralMlflowService:
             "tracking_uri": self.tracking_uri,
             "dashboard_url": self.dashboard_url,
             "project_id": project_id,
-            "experiment_namespace_prefix": f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/",
+            "experiment_namespace_prefix": f"{_TRACKING_NAMESPACE_PREFIX}/{project_id}/",
             "env": env,
         }
         if not configured:
@@ -166,7 +162,7 @@ class CentralMlflowService:
         execution_backend: str = "",
         include_credentials: bool = False,
     ) -> MlflowTrackingContext:
-        experiment_name = mlflow_experiment_name(
+        experiment_name = _tracking_experiment_name(
             project_id=project_id, experiment_id=experiment_id
         )
         env: dict[str, str] = {
@@ -310,10 +306,10 @@ class CentralMlflowService:
         if not run_id:
             result["error"] = "MLflow run id is required."
             return result
-        if normalized_status and normalized_status not in MLFLOW_TERMINAL_RUN_STATUSES:
+        if normalized_status and normalized_status not in _TRACKING_TERMINAL_RUN_STATUSES:
             result["error"] = (
                 "MLflow terminal status must be one of: "
-                + ", ".join(sorted(MLFLOW_TERMINAL_RUN_STATUSES))
+                + ", ".join(sorted(_TRACKING_TERMINAL_RUN_STATUSES))
             )
             return result
         read_uri = self.server_uri or self.tracking_uri
@@ -354,7 +350,7 @@ class CentralMlflowService:
                         ).get("status")
                         or ""
                     )
-                    if pre_status in MLFLOW_TERMINAL_RUN_STATUSES:
+                    if pre_status in _TRACKING_TERMINAL_RUN_STATUSES:
                         result["update"] = {
                             "attempted": False,
                             "status": normalized_status,
@@ -401,7 +397,7 @@ class CentralMlflowService:
                     run = self._read_run(client=client, base=read_uri, run_id=run_id)
                     status_seen = str(run.get("status") or "")
                     if (
-                        status_seen in MLFLOW_TERMINAL_RUN_STATUSES
+                        status_seen in _TRACKING_TERMINAL_RUN_STATUSES
                         or time.monotonic() >= deadline
                     ):
                         break
@@ -412,7 +408,9 @@ class CentralMlflowService:
             return result
 
         result["readback_attempts"] = attempts
-        result["terminal"] = str(run.get("status") or "") in MLFLOW_TERMINAL_RUN_STATUSES
+        result["terminal"] = (
+            str(run.get("status") or "") in _TRACKING_TERMINAL_RUN_STATUSES
+        )
         result["run"] = run
         return result
 
@@ -582,7 +580,7 @@ class CentralMlflowService:
             return []
         try:
             experiments = search_mlflow_experiments(
-                read_uri, name_like=f"{MLFLOW_NAMESPACE_PREFIX}/{project_id}/%"
+                read_uri, name_like=f"{_TRACKING_NAMESPACE_PREFIX}/{project_id}/%"
             )
         except MlflowSnapshotError:
             return []

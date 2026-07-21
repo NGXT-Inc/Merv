@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import unittest
 
-from merv.brain.application.events import EventDispatcher, EventReaction
+from merv.brain.application.events import (
+    EventCatalogEntry,
+    EventDispatcher,
+    EventReaction,
+)
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
+
+
+_TRANSITION_PRODUCER = (
+    "merv.brain.research_core.experiments.ExperimentService."
+    "transition_with_event"
+)
 
 
 def _event(*, event_type: str = "experiment.transitioned") -> StoredEvent:
@@ -18,7 +28,107 @@ def _event(*, event_type: str = "experiment.transitioned") -> StoredEvent:
     )
 
 
+def _catalog_entry(
+    *,
+    event_type: str = "experiment.transitioned",
+    phase: str = "post_commit",
+    handler: str = "probe",
+    failure: str = "fatal",
+    idempotency: str = "repeat_safe",
+) -> EventCatalogEntry:
+    return EventCatalogEntry(
+        producer=_TRANSITION_PRODUCER,
+        event_type=event_type,
+        payload_version=1,
+        transaction_boundary=_TRANSITION_PRODUCER,
+        reaction_phase=phase,
+        handler_identity=handler,
+        failure=failure,  # type: ignore[arg-type]
+        idempotency=idempotency,  # type: ignore[arg-type]
+    )
+
+
+def _bind(dispatcher: EventDispatcher, *reactions) -> None:
+    entries = tuple(
+        _catalog_entry(
+            event_type=event_type,
+            phase=phase,
+            handler=name,
+            failure=failure,
+        )
+        for event_type, phase, name, _handler, failure in reactions
+    )
+    dispatcher.bind_catalog(
+        entries,
+        handlers={
+            name: handler
+            for _event, _phase, name, handler, _failure in reactions
+        },
+    )
+
+
 class EventDispatcherTest(unittest.TestCase):
+    def test_catalog_binding_records_the_exact_executable_registration(self) -> None:
+        dispatcher = EventDispatcher()
+        entry = _catalog_entry()
+
+        dispatcher.bind_catalog(
+            (entry,),
+            handlers={"probe": lambda context: EventReaction(state=context.state)},
+        )
+
+        self.assertEqual(dispatcher.catalog, (entry,))
+        state = {"status": "running"}
+        self.assertIs(
+            dispatcher.dispatch(
+                event=_event(), phase="post_commit", state=state
+            ).state,
+            state,
+        )
+
+    def test_catalog_handler_mismatch_fails_before_partial_registration(self) -> None:
+        dispatcher = EventDispatcher()
+        entry = _catalog_entry()
+
+        for handlers in (
+            {},
+            {"probe": lambda context: context, "stale": lambda context: context},
+        ):
+            with self.subTest(handlers=tuple(handlers)):
+                with self.assertRaisesRegex(ValueError, "handler mismatch"):
+                    dispatcher.bind_catalog((entry,), handlers=handlers)
+                self.assertEqual(dispatcher.catalog, ())
+
+    def test_advisory_catalog_entries_must_declare_repeat_safety(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid event catalog entry"):
+            _catalog_entry(
+                failure="advisory",
+                idempotency="requires_adapter_key_for_redelivery",
+            )
+
+    def test_catalog_identity_fields_are_required(self) -> None:
+        for field in (
+            "producer",
+            "event_type",
+            "transaction_boundary",
+            "reaction_phase",
+            "handler_identity",
+        ):
+            with self.subTest(field=field):
+                values: dict[str, object] = {
+                    "producer": _TRANSITION_PRODUCER,
+                    "event_type": "experiment.transitioned",
+                    "payload_version": 1,
+                    "transaction_boundary": _TRANSITION_PRODUCER,
+                    "reaction_phase": "post_commit",
+                    "handler_identity": "probe",
+                    "failure": "fatal",
+                    "idempotency": "repeat_safe",
+                }
+                values[field] = " "
+                with self.assertRaisesRegex(ValueError, "invalid event catalog entry"):
+                    EventCatalogEntry(**values)  # type: ignore[arg-type]
+
     def test_selected_phase_runs_in_registration_order_and_threads_exact_state(self) -> None:
         event = _event()
         initial = {"step": 0}
@@ -38,17 +148,11 @@ class EventDispatcherTest(unittest.TestCase):
         def other_phase(context):  # pragma: no cover - must not be selected
             raise AssertionError(f"unexpected phase for {context.event.type}")
 
-        dispatcher.register(
-            event_type=event.type, phase="post_commit", name="first", handler=first
-        )
-        dispatcher.register(
-            event_type=event.type, phase="post_commit", name="second", handler=second
-        )
-        dispatcher.register(
-            event_type=event.type,
-            phase="post_response",
-            name="other",
-            handler=other_phase,
+        _bind(
+            dispatcher,
+            (event.type, "post_commit", "first", first, "fatal"),
+            (event.type, "post_commit", "second", second, "fatal"),
+            (event.type, "post_response", "other", other_phase, "fatal"),
         )
 
         result = dispatcher.dispatch(event=event, phase="post_commit", state=initial)
@@ -73,20 +177,33 @@ class EventDispatcherTest(unittest.TestCase):
     def test_duplicate_name_for_event_phase_is_rejected(self) -> None:
         dispatcher = EventDispatcher()
         handler = lambda context: EventReaction(state=context.state)
-        dispatcher.register(
-            event_type="experiment.transitioned",
-            phase="post_commit",
-            name="tracking",
-            handler=handler,
+        reaction = (
+            "experiment.transitioned",
+            "post_commit",
+            "tracking",
+            handler,
+            "fatal",
         )
 
-        with self.assertRaisesRegex(ValueError, "duplicate event handler"):
-            dispatcher.register(
-                event_type="experiment.transitioned",
-                phase="post_commit",
-                name="tracking",
-                handler=handler,
-            )
+        with self.assertRaisesRegex(
+            ValueError, "duplicate event catalog registration"
+        ):
+            _bind(dispatcher, reaction, reaction)
+        self.assertEqual(dispatcher.catalog, ())
+
+    def test_catalog_can_only_be_bound_once(self) -> None:
+        dispatcher = EventDispatcher()
+        reaction = (
+            "experiment.transitioned",
+            "post_commit",
+            "tracking",
+            lambda context: EventReaction(state=context.state),
+            "fatal",
+        )
+        _bind(dispatcher, reaction)
+
+        with self.assertRaisesRegex(ValueError, "already bound"):
+            _bind(dispatcher, reaction)
 
     def test_uncaught_error_propagates_and_stops_phase(self) -> None:
         dispatcher = EventDispatcher()
@@ -106,13 +223,17 @@ class EventDispatcherTest(unittest.TestCase):
             calls.append("never")
             return EventReaction(state=context.state)
 
-        for name, handler in (("first", first), ("explode", explode), ("never", never)):
-            dispatcher.register(
-                event_type="experiment.transitioned",
-                phase="post_commit",
-                name=name,
-                handler=handler,
-            )
+        _bind(
+            dispatcher,
+            *(
+                ("experiment.transitioned", "post_commit", name, handler, "fatal")
+                for name, handler in (
+                    ("first", first),
+                    ("explode", explode),
+                    ("never", never),
+                )
+            ),
+        )
 
         with self.assertRaisesRegex(RuntimeError, "reaction failed"):
             dispatcher.dispatch(
@@ -132,18 +253,16 @@ class EventDispatcherTest(unittest.TestCase):
             calls.append("final")
             return EventReaction(state=context.state, value="kept")
 
-        dispatcher.register(
-            event_type="experiment.transitioned",
-            phase="post_response",
-            name="advisory",
-            handler=advisory,
-            failure="advisory",
-        )
-        dispatcher.register(
-            event_type="experiment.transitioned",
-            phase="post_response",
-            name="final",
-            handler=final,
+        _bind(
+            dispatcher,
+            (
+                "experiment.transitioned",
+                "post_response",
+                "advisory",
+                advisory,
+                "advisory",
+            ),
+            ("experiment.transitioned", "post_response", "final", final, "fatal"),
         )
 
         result = dispatcher.dispatch(
@@ -154,12 +273,9 @@ class EventDispatcherTest(unittest.TestCase):
         self.assertEqual(dict(result.outcomes), {"final": "kept"})
 
     def test_unknown_failure_mode_is_rejected_at_composition(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unknown reaction failure mode"):
-            EventDispatcher().register(
-                event_type="experiment.transitioned",
-                phase="post_commit",
-                name="bad",
-                handler=lambda context: EventReaction(state=context.state),
+        with self.assertRaisesRegex(ValueError, "invalid event catalog entry"):
+            _catalog_entry(
+                handler="bad",
                 failure="ignored",  # type: ignore[arg-type]
             )
 

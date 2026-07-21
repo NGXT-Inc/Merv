@@ -3,20 +3,21 @@ from __future__ import annotations
 import unittest
 from typing import get_type_hints
 
-import merv.brain.mlflow as legacy_package
-import merv.brain.mlflow.exhibit as legacy_exhibit
-import merv.brain.mlflow.tracking as legacy_tracking
-from merv.brain.application.experiments import metrics_exhibit, tracking_policy
+import merv.brain.mlflow as mlflow_adapter
+import merv.brain.mlflow.tracking as mlflow_tracking
 from merv.brain.application.experiments.exhibits import ExperimentExhibits
 from merv.brain.application.ports.tracking import (
     CreateRunResult,
     ExperimentTracking,
     FinalizeRunResult,
     MetricsSnapshot,
+    TRACKING_NAMESPACE_PREFIX,
+    TRACKING_TERMINAL_RUN_STATUSES,
     TRACKING_CAPABILITY_TRUTH_TABLE,
     TrackingCapabilities,
     TrackingContext,
     TrackingContextPayload,
+    tracking_experiment_name,
 )
 from merv.brain.mlflow.tracking import CentralMlflowService
 
@@ -140,43 +141,37 @@ class TrackingBoundaryTest(unittest.TestCase):
         self.assertTrue(exhibit["mlflow"]["configured"])
         self.assertTrue(exhibit["mlflow"]["available"])
 
-    def test_legacy_exports_are_the_application_policy_objects(self) -> None:
-        self.assertIs(
-            legacy_exhibit.build_metrics_exhibit,
-            metrics_exhibit.build_metrics_exhibit,
+    def test_tracking_contract_owns_shared_namespace_and_status_vocabulary(self) -> None:
+        self.assertEqual(TRACKING_NAMESPACE_PREFIX, "merv")
+        self.assertEqual(
+            tracking_experiment_name(project_id="proj", experiment_id="exp"),
+            "merv/proj/exp",
         )
-        self.assertIs(legacy_package.build_metrics_exhibit, metrics_exhibit.build_metrics_exhibit)
-        self.assertIs(legacy_exhibit.exhibit_bytes, metrics_exhibit.exhibit_bytes)
-        self.assertIs(legacy_package.exhibit_bytes, metrics_exhibit.exhibit_bytes)
-        self.assertIs(
-            legacy_exhibit.iso_to_epoch_ms,
-            metrics_exhibit.iso_to_epoch_ms,
+        self.assertEqual(
+            TRACKING_TERMINAL_RUN_STATUSES,
+            frozenset({"FINISHED", "FAILED", "KILLED"}),
         )
 
-        self.assertIs(
-            legacy_tracking.mlflow_experiment_name,
-            tracking_policy.mlflow_experiment_name,
+    def test_mlflow_package_exports_only_concrete_adapter_entrypoints(self) -> None:
+        self.assertEqual(
+            mlflow_adapter.__all__,
+            ["CentralMlflowService", "LocalMlflowServer"],
         )
-        self.assertIs(
-            legacy_package.mlflow_experiment_name,
-            tracking_policy.mlflow_experiment_name,
-        )
-        self.assertIs(
-            legacy_tracking.mlflow_visible_for_status,
-            tracking_policy.mlflow_visible_for_status,
-        )
-        self.assertIs(
-            legacy_package.mlflow_visible_for_status,
-            tracking_policy.mlflow_visible_for_status,
-        )
-        self.assertIs(
-            legacy_tracking.MLFLOW_TERMINAL_RUN_STATUSES,
-            tracking_policy.MLFLOW_TERMINAL_RUN_STATUSES,
-        )
-        self.assertIs(
-            legacy_tracking.MLFLOW_STATE_STATUSES,
-            tracking_policy.MLFLOW_STATE_STATUSES,
-        )
+        for compatibility_name in (
+            "build_metrics_exhibit",
+            "exhibit_bytes",
+            "mlflow_experiment_name",
+            "mlflow_visible_for_status",
+            "MLFLOW_NAMESPACE_PREFIX",
+            "MLFLOW_TERMINAL_RUN_STATUSES",
+            "MLFLOW_STATE_STATUSES",
+            "tracking_experiment_name",
+            "TRACKING_NAMESPACE_PREFIX",
+            "TRACKING_TERMINAL_RUN_STATUSES",
+        ):
+            with self.subTest(name=compatibility_name):
+                self.assertFalse(hasattr(mlflow_adapter, compatibility_name))
+                self.assertFalse(hasattr(mlflow_tracking, compatibility_name))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from ..research_core.facade import (
     graph_problems,
     preferred_associated_resource,
 )
-from .experiments.tracking_policy import mlflow_experiment_name
+from .ports.tracking import tracking_experiment_name
 from .experiment_figure import build_experiment_figure
 from .reflection_guidance import present_reflection_signal
 from .reflections import present_reflection_overview, present_reflection_state
@@ -76,7 +76,7 @@ class MlflowOverviewQuery:
                     "name": experiment.get("name") or experiment_id,
                     "status": experiment.get("status") or "",
                     "intent": experiment.get("intent") or "",
-                    "mlflow_experiment_name": mlflow_experiment_name(
+                    "mlflow_experiment_name": tracking_experiment_name(
                         project_id=project_id, experiment_id=experiment_id
                     ),
                     "dashboard_experiment_url": metrics.get("dashboard_experiment_url", ""),

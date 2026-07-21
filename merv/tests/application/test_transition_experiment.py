@@ -786,6 +786,41 @@ class TerminalTrackingTransitionTest(unittest.TestCase):
                 )
                 self.assertEqual(result["mlflow_run"]["status"], tracking_status)
 
+    def test_terminal_tracking_is_repeat_safe_from_its_returned_state(self) -> None:
+        order: list[str] = []
+        event = _event("complete")
+        initial = _state("complete", run=_open_run())
+        persisted = _state(
+            "complete",
+            run={**_open_run(), "status": "FINISHED"},
+            token="persisted-finalization",
+        )
+        research = RecordingResearch(order, persisted=persisted, event=event)
+        tracking = RecordingTracking(
+            order,
+            finalize_result={
+                "configured": True,
+                "terminal": True,
+                "run": {**_open_run(), "status": "FINISHED"},
+            },
+        )
+        dispatcher = EventDispatcher()
+        ExperimentReactions(
+            research=research,
+            feed=RecordingFeed(order),
+            tracking=tracking,
+        ).bind(dispatcher)
+
+        first = dispatcher.dispatch(event=event, phase="post_commit", state=initial)
+        second = dispatcher.dispatch(
+            event=event, phase="post_commit", state=first.state
+        )
+
+        self.assertIs(first.state, persisted)
+        self.assertIs(second.state, persisted)
+        self.assertEqual(len(tracking.finalize_calls), 1)
+        self.assertEqual(len(research.persist_calls), 1)
+
     def test_terminal_adapter_and_persistence_failures_are_suppressed_and_feed_runs(self) -> None:
         failures = ("adapter", "persistence")
         for failure_kind in failures:

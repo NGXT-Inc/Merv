@@ -16,9 +16,9 @@ from ..ports.tracking import (
     ExperimentTracking,
     FinalizeRunResult,
     TrackingContextPayload,
+    tracking_experiment_name,
 )
 from ..ports.storage import ProducedObjectCatalog
-from .tracking_policy import mlflow_experiment_name, mlflow_visible_for_status
 from .presentation import (
     SlimExperimentState,
     rich_experiment_state,
@@ -27,6 +27,7 @@ from .presentation import (
 from .tracking_presentation import (
     tracking_connection,
     tracking_context_response,
+    tracking_visible_for_status,
     with_tracking_if_visible,
 )
 
@@ -100,7 +101,7 @@ class GetTrackingContext:
                     "name": str(state.get("name") or state.get("id") or ""),
                     "status": str(state.get("status") or ""),
                     "intent": str(state.get("intent") or ""),
-                    "mlflow_experiment_name": mlflow_experiment_name(
+                    "mlflow_experiment_name": tracking_experiment_name(
                         project_id=project_id,
                         experiment_id=str(state.get("id") or ""),
                     ),
@@ -172,7 +173,7 @@ class ExperimentDetailQuery:
                 )[experiment_id],
             ),
         )
-        if mlflow_visible_for_status(state.get("status")):
+        if tracking_visible_for_status(state.get("status")):
             response["mlflow"] = tracking_connection(
                 tracking=self.tracking,
                 project_id=resolved_project_id,

@@ -174,17 +174,6 @@ ALLOWED_LAYER_EDGES = (
 # deliberately absent from the final ledger.
 LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset()
 
-# Non-bootstrap code should enter another component through its facade or an
-# explicit port.  These exact legacy pairs are migration work, not permission
-# to add similar dependencies; both new and repaired pairs fail the baseline.
-PUBLIC_ENTRYPOINT_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("mlflow/exhibit.py", "application/experiments/metrics_exhibit.py"),
-        ("mlflow/tracking.py", "application/experiments/tracking_policy.py"),
-    }
-)
-
-
 # SQL follows the import law: a module may name its own tables, Kernel tables,
 # and tables behind ratified component edges. Every stable table is explicit;
 # temporary ``*_migrate`` rebuild tables are ignored by the ownership check.
@@ -846,18 +835,11 @@ class ModuleBoundaryTest(unittest.TestCase):
 
     def test_cross_component_imports_use_public_entrypoints(self) -> None:
         """All non-bootstrap cross-component imports enter via facade/port."""
-        current = _public_entrypoint_violations()
-        new = sorted(current - PUBLIC_ENTRYPOINT_EXCEPTIONS)
-        stale = sorted(PUBLIC_ENTRYPOINT_EXCEPTIONS - current)
+        violations = sorted(_public_entrypoint_violations())
         self.assertFalse(
-            new,
-            "new cross-component internal import; use facade.py or ports/**: "
-            + ", ".join(f"{source} -> {target}" for source, target in new),
-        )
-        self.assertFalse(
-            stale,
-            "cross-component boundary improved; delete stale baseline pairs: "
-            + ", ".join(f"{source} -> {target}" for source, target in stale),
+            violations,
+            "cross-component internal import; use facade.py or ports/**: "
+            + ", ".join(f"{source} -> {target}" for source, target in violations),
         )
 
     def test_research_artifact_sql_inventory_only_shrinks(self) -> None:
@@ -1042,7 +1024,7 @@ def build_router(ctx: ApiRouteContext, *, records: ArtifactRecords):
                 self.assertIn(query, control)
         for escaped_policy in (
             "build_experiment_figure",
-            "mlflow_experiment_name",
+            "tracking_experiment_name",
             "ACTIVE_SANDBOX_STATUSES",
         ):
             self.assertNotIn(escaped_policy, views)

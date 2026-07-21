@@ -8,12 +8,22 @@ from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-from merv.brain.application.events import EventDispatcher, EventReaction
+from merv.brain.application.events import (
+    EventCatalogEntry,
+    EventDispatcher,
+    EventReaction,
+)
 from merv.brain.artifacts.resources import ResourceService
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import ExperimentService
 from merv.brain.research_core.facade import ResearchCoreFacade
+
+
+_TRANSITION_PRODUCER = (
+    "merv.brain.research_core.experiments.ExperimentService."
+    "transition_with_event"
+)
 
 
 class CommittedEventTest(unittest.TestCase):
@@ -130,11 +140,20 @@ class CommittedEventTest(unittest.TestCase):
             })
             return EventReaction(state=context.state, value="readable")
 
-        dispatcher.register(
-            event_type=event.type,
-            phase="post_commit",
-            name="probe",
-            handler=committed_probe,
+        dispatcher.bind_catalog(
+            (
+                EventCatalogEntry(
+                    producer=_TRANSITION_PRODUCER,
+                    event_type=event.type,
+                    payload_version=1,
+                    transaction_boundary=_TRANSITION_PRODUCER,
+                    reaction_phase="post_commit",
+                    handler_identity="probe",
+                    failure="fatal",
+                    idempotency="repeat_safe",
+                ),
+            ),
+            handlers={"probe": committed_probe},
         )
         dispatched = dispatcher.dispatch(event=event, phase="post_commit", state=state)
         self.assertIs(dispatched.state, state)

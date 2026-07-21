@@ -15,7 +15,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, get_args, get_origin, get_type_hints, is_typeddict
 
-from merv.brain.application.events import DispatchResult, EventContext, EventReaction
+from merv.brain.application.events import (
+    DispatchResult,
+    EventCatalogEntry,
+    EventContext,
+    EventReaction,
+)
 from merv.brain.application.experiments.tracking import (
     ExperimentDetailResponse,
     FinalizeTrackingResponse,
@@ -105,6 +110,7 @@ def _boundary_types() -> dict[str, type]:
     """Discover public DTOs in stable entrypoints and their value modules."""
     result: dict[str, type] = {}
     value_modules = {
+        "application/events.py",
         "application/experiments/presentation.py",
         "kernel/events.py",
         "research_core/gate_evaluation.py",
@@ -314,6 +320,19 @@ SAMPLES: dict[type, object] = {
         "feed_note": "Experiment started.",
     },
     StoredEvent: EVENT,
+    EventCatalogEntry: EventCatalogEntry(
+        producer="merv.brain.research_core.experiments.ExperimentService.transition_with_event",
+        event_type="experiment.transitioned",
+        payload_version=1,
+        transaction_boundary=(
+            "merv.brain.research_core.experiments.ExperimentService."
+            "transition_with_event"
+        ),
+        reaction_phase="post_commit",
+        handler_identity="tracking_start",
+        failure="fatal",
+        idempotency="requires_adapter_key_for_redelivery",
+    ),
     EventContext: EventContext(event=EVENT, state={"id": "exp_1"}),
     EventReaction: EventReaction(state={"id": "exp_1"}, value="noted"),
     DispatchResult: DispatchResult(

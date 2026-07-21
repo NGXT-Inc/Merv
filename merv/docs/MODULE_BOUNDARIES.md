@@ -60,9 +60,8 @@ The exact component import matrix is:
 Outside bootstrap, code enters another component only through its declared
 `facade.py` or `ports/**` entrypoint. This is the executable form of “one stable
 public facade”; it prevents a new use case or adapter from depending on internal
-services. Six legacy importer/target pairs are frozen exactly and may only be
-deleted. They cover three Surface vocabulary seams, one data-plane Feed seam,
-and two MLflow-to-Application policy imports. Workflow reads use
+services. The legacy public-entrypoint exception ledger is now empty: every
+cross-component import must enter through a facade or port. Workflow reads use
 `ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
 declared `Sandbox` facade.
 
@@ -104,10 +103,8 @@ Imports must point inward:
 - bootstrap -> any layer.
 
 Nothing except bootstrap may import bootstrap, and no non-delivery layer may
-import delivery. `LAYER_EXCEPTIONS` contains exact importer/target pairs for
-the remaining authentication/configuration/tool-contract seams plus the named
-Feed-to-unfurl seam. It contains no wildcard. Fixed pairs must be deleted, while
-new pairs fail immediately.
+import delivery. `LAYER_EXCEPTIONS` is empty, so every newly detected cross-layer
+edge fails immediately; there is no wildcard or compatibility allowance.
 
 ## Ports and adapters
 
@@ -155,6 +152,12 @@ cases dispatch exact durable event values explicitly; there is no ledger scan,
 worker, replay loop, or second event stream. Fatal handlers stop a phase and
 propagate. Advisory handlers, currently Feed reminders, yield no outcome when
 they fail and cannot break the primary command or query.
+
+The executable catalog is the registry's only registration source. Each entry
+names its producer, payload version, transaction boundary, reaction phase,
+handler, failure mode, and redelivery requirement. Structure tests resolve the
+producer and transaction methods and prove that runtime registrations exactly
+match the catalog.
 
 Transition reactions run immediately after their committed command. Canonical
 tracking finalization dispatches its exact `experiment.mlflow_run_refreshed`
@@ -226,19 +229,16 @@ Application has a zero-exception purity check: it may not import delivery,
 concrete adapters, frameworks, database/network SDKs, environment access, or
 state/config modules or state-store types; accept persistence parameters; open
 connections/transactions; or contain SQL. Non-bootstrap code may not construct
-another component's concrete collaborator. Surface delivery has exact shrinking
-inventories for its 48 remaining whole-app collaborator accesses and 19 whole-
-app acquisitions/carrier sites. This records migration debt without turning it
-into a wildcard permission.
+another component's concrete collaborator. Surface delivery has zero-baseline,
+fail-closed scans for raw implementations, persistence reach-through, and
+whole-app dependency carriers.
 
-Untyped collaborator declarations are separate from JSON payload debt. The
-exact 75-entry dependency ledger records the remaining Application callable
-fields, Research/Sandbox callback seams, raw Surface tool registry
-collaborators, and whole-app route dependencies. New `Any` or generic
-`Callable` collaborators fail; repaired entries must be removed from the
-ledger.
+Untyped collaborator declarations are separate from JSON payload debt. A
+shrinking dependency ledger records the remaining callable seams and injected
+adapter test doubles. New `Any` or generic `Callable` collaborators fail;
+repaired entries must be removed from the ledger.
 
-The 47 public boundary value objects—including exported Application response/event
+Public boundary value objects—including exported Application response/event
 values—are discovered by structure tests, normalized to JSON primitives, and
 round-tripped with strict finite-number handling. A complete sample registry
 prevents new DTOs from escaping the test. Untyped fields and non-string mapping

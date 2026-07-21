@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import unittest
 from pathlib import Path
 
@@ -75,23 +74,8 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         )
         self.assertFalse((BRAIN / "surface/tools/exhibits.py").exists())
 
-    def test_mlflow_compatibility_wrapper_is_import_only(self) -> None:
-        path = BRAIN / "mlflow/exhibit.py"
-        source = path.read_text(encoding="utf-8")
-        self.assertLessEqual(len(source.splitlines()), 15)
-        tree = ast.parse(source, filename=str(path))
-        self.assertTrue(
-            all(
-                isinstance(node, ast.ImportFrom)
-                or (
-                    isinstance(node, ast.Expr)
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)
-                )
-                for node in tree.body
-            ),
-            "compatibility wrapper may contain only its docstring and imports",
-        )
+    def test_mlflow_application_policy_compatibility_wrapper_is_gone(self) -> None:
+        self.assertFalse((BRAIN / "mlflow/exhibit.py").exists())
 
     def test_http_views_stay_delivery_sized(self) -> None:
         current = len(
@@ -143,13 +127,13 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         for use_case in (transition, tracking):
             self.assertNotIn("EventDispatcher()", use_case)
             self.assertNotIn(".register(", use_case)
-        self.assertIn(
-            '("experiment.mlflow_run_refreshed", "post_response")', reactions
-        )
+        self.assertIn("EXPERIMENT_REACTION_CATALOG", reactions)
+        self.assertIn("registry.bind_catalog(", reactions)
+        self.assertNotIn("registry.register(", reactions)
         self.assertIn("self.reaction_registry = EventDispatcher()", composition)
         self.assertEqual(composition.count("dispatcher=self.reaction_registry"), 3)
         self.assertNotIn("self.app.mlflow_tracking", views)
-        self.assertNotIn("mlflow_visible_for_status", views)
+        self.assertNotIn("tracking_visible_for_status", views)
         experiment_routes = (BRAIN / "surface/transport/api/experiments.py").read_text(
             encoding="utf-8"
         )

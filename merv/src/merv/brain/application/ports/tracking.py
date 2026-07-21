@@ -16,6 +16,19 @@ from typing import Final, Protocol, TypedDict, runtime_checkable
 # an external tracking service as an unlimited archive mirror.
 MAX_TRACKING_SNAPSHOT_RUNS: Final = 50
 
+# The tracking contract fixes the external namespace and normalized run-status
+# vocabulary used on both sides of the port.  Concrete adapters own how those
+# values are sent to and read from their tracking product.
+TRACKING_NAMESPACE_PREFIX: Final = "merv"
+TRACKING_TERMINAL_RUN_STATUSES: Final = frozenset(
+    {"FINISHED", "FAILED", "KILLED"}
+)
+
+
+def tracking_experiment_name(*, project_id: str, experiment_id: str) -> str:
+    """Stable external-tracking namespace for one Merv experiment."""
+    return f"{TRACKING_NAMESPACE_PREFIX}/{project_id}/{experiment_id}"
+
 
 @dataclass(frozen=True, slots=True)
 class TrackingCapabilities:
@@ -158,7 +171,9 @@ class ExperimentTracking(Protocol):
         run_id: str,
         status: str | None,
         wait_seconds: float,
-    ) -> FinalizeRunResult: ...
+    ) -> FinalizeRunResult:
+        """Repeated calls for the same run and status must be safe."""
+        ...
 
     def results_metrics(
         self, *, project_id: str, experiment_id: str
@@ -171,6 +186,8 @@ __all__ = [
     "FinalizeRunResult",
     "MAX_TRACKING_SNAPSHOT_RUNS",
     "MetricsSnapshot",
+    "TRACKING_NAMESPACE_PREFIX",
+    "TRACKING_TERMINAL_RUN_STATUSES",
     "TRACKING_CAPABILITY_TRUTH_TABLE",
     "TrackingCapabilities",
     "TrackingContext",
@@ -180,4 +197,5 @@ __all__ = [
     "TrackingRun",
     "TrackingSnapshotRun",
     "capabilities_for_configuration",
+    "tracking_experiment_name",
 ]

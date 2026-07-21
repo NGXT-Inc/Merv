@@ -159,21 +159,11 @@ application layer does not make `storage_objects` an Application-component
 table. The unused Feed -> Storage and MLflow -> Research allowances are
 removed.
 
-Two exact-pair exception sets make the transition honest and monotonic:
-
-- `LAYER_EXCEPTIONS` freezes the remaining delivery/bootstrap deep imports.
-  The Surface owners are `surface/{auth,identity,observability}.py` and
-  `surface/tools/contracts.py`. The implementation records exact
-  importer/target file pairs, not wildcard exemptions; fixed pairs must be
-  deleted and new pairs fail.
-- `feed/feed.py -> feed/feed_unfurl.py` is a named application-to-network-adapter
-  exception. A later Feed use case will introduce and inject `LinkUnfurlPort`.
-
-This slice must remove every exception attributable to experiment-transition
-or exhibit orchestration. A separate structure assertion allows
-`application/**` to import another component only through its declared
-`facade.py` or `ports/**` entrypoint. Existing non-migrated Surface work remains
-visible in the exception ledger rather than being hidden behind fake wrappers.
+Both exact-pair exception ledgers are now empty. Structure assertions require
+`application/**` and every other non-bootstrap component to enter another
+component through its declared `facade.py` or `ports/**` entrypoint. Feed now
+receives a `LinkUnfurlPort`, and Surface vocabulary/configuration seams have
+stable inward-facing homes rather than compatibility exceptions.
 
 ## Ports based on current use
 
@@ -297,9 +287,9 @@ this command port. The follow-on Surface migration therefore defines a separate
 narrow `TrackingOverview` query protocol in the application query module.
 
 Pure exhibit construction and visibility/naming policy move from the MLflow
-adapter into application-owned code. MLflow keeps compatibility re-exports so
-existing callers do not break; tests assert re-exported symbol identity so
-existing monkeypatch targets keep working. REST snapshot mechanics and MLflow
+adapter into application-owned code. The temporary compatibility re-exports
+were removed after their import ratchets reached zero; the MLflow package now
+exports concrete adapter entrypoints only. REST snapshot mechanics and MLflow
 HTTP remain inside the adapter.
 
 ### Storage
@@ -499,19 +489,21 @@ returns both state and the exact `StoredEvent`. The existing `transition()`
 continues returning only state. The event becomes observable to application
 code only after the service method exits and its transaction commits.
 
-An application `EventDispatcher` has explicit registration by event type,
-reaction phase, stable handler name, and `fatal` or `advisory` failure mode. It
-dispatches an immutable command
-context containing the exact committed event plus the state snapshot threaded
-through the command. It is a small synchronous registry/sequencer (maximum 100
-production lines), not a bus framework. For this slice:
+An application `EventDispatcher` binds one executable catalog. Every entry
+records the event-writing producer, payload version, transaction boundary,
+reaction phase, stable handler name, `fatal` or `advisory` failure mode, and
+redelivery requirement. Free-form registration is unavailable. The dispatcher
+passes an immutable context containing the exact committed event plus the state
+snapshot threaded through the command; it is a small synchronous sequencer,
+not a bus framework. For this slice:
 
 - it receives the exact committed event returned by the command;
 - it never scans or appends to the ledger;
 - it never runs from inside `record_event` or a database transaction;
 - handlers run in deterministic registration order within an explicitly
   selected phase;
-- duplicate handler names and unknown failure modes are rejected;
+- duplicate catalog keys, handler mismatches, and invalid delivery policies are
+  rejected before anything is bound;
 - an unknown event/phase is a no-op that returns the input state and no
   outcomes;
 - dispatch adds no acknowledgement/retry rows to the public ledger;
@@ -521,17 +513,21 @@ production lines), not a bus framework. For this slice:
   case can assemble the same immediate response as today without a new read.
 
 Fatal failures propagate immediately and stop their phase. Advisory failures
-produce no outcome and later handlers continue. Feed registrations are
-advisory; start/retry tracking is fatal because failure to persist a normalized
-adapter result already surfaced to the caller. Terminal tracking retains its
-existing internal best-effort suppression.
+produce no outcome and later handlers continue. Feed and terminal-finalization
+reactions are advisory. Start/retry tracking is fatal because failure to persist
+a normalized adapter result already surfaced to the caller. The split makes
+those two tracking policies explicit instead of hiding terminal suppression
+inside a combined handler.
 
-The registry stores no delivery state or deduplication. The review Feed handler
-is repeat-safe because producer reads can recur. Tracking reactions are not
-automatically replayed and are not assumed idempotent across a remote call plus
-local persistence. The stable key for any future durable delivery is
+The registry stores no delivery state or deduplication. Feed reactions are
+repeat-safe because producer reads can recur. Terminal finalization is
+repeat-safe through the tracking-port contract: an adapter must safely accept
+the same run/status again, and MLflow reads terminal state before attempting an
+update. Run creation is explicitly *not* replay-safe today; its catalog entry
+requires an adapter idempotency key before any redelivery feature may include
+it. The stable key for future durable delivery remains
 `(event.id, phase, handler_name)`. In-memory “already delivered” state is
-forbidden: it would break repeated producer reads and disappear on restart.
+forbidden because it would disappear on restart.
 
 This is deliberately not a durable asynchronous outbox processor. A crash
 after commit can skip these best-effort reactions today and can still do so
@@ -659,7 +655,7 @@ payloads, dispatcher outcomes, or test snapshots.
 - start/retry run creation happens after transition commit and can record either
   a run or the existing normalized creation error.
 - terminal tracking finalization never reverses a committed workflow transition
-  and exceptions remain suppressed.
+  and adapter/persistence failures remain advisory.
 - feed failures never break a transition and completion does not publish a post.
 - event names, payloads, counts, and ordering are unchanged.
 - HTTP/MCP response shapes and public credential delivery, tool schemas, route
@@ -712,9 +708,9 @@ Each batch must be independently testable and committed in the isolated
 6. **Verify and compact**
    - remove superseded helpers/imports rather than retaining duplicate paths;
    - require `tool_handlers.py` plus the old Surface exhibit orchestration to
-     shrink by at least 120 production lines, compatibility wrappers to contain
-     no implementation and stay at 15 lines or fewer each, and total brain
-     production growth to stay at or below 300 lines; exceeding a bound requires
+     shrink by at least 120 production lines, delete compatibility wrappers once
+     their import ratchets reach zero, and keep total brain production growth at
+     or below 300 lines; exceeding a bound requires
      a new adversarial ratification rather than an explanation after the fact;
    - run all gates below.
 
@@ -737,15 +733,13 @@ Instead, a whole-tree reachability audit removed an equal amount of stranded
 backfill, reflection-lint, request-helper, HTTP-helper, activity-producer, and
 contract-projection code whose callers or routes had already been retired.
 
-After integrating tracking, the shared reaction registry, and the final
-Surface-ownership slices, the implemented tree is **40,848 brain lines**, two
-below that slice's fixed 40,850 ceiling and three above the branch starting point. The MLflow compatibility wrapper remains 13
-lines, `tool_handlers.py` is 94 lines (down from 1,022 before the migration),
-and `views.py` is 452 lines (down from 763 before the final extraction). The uncalled
-`build_local_tool_handlers` factory is gone; live local composition uses the
-Control dispatcher plus proxy-owned `LocalDataPlane`, as its split-mode tests
-prove. At that checkpoint executable ratchets enforced the 40,850 brain ceiling, a 100-line
-Surface-handler ceiling, and a 470-line HTTP-view ceiling.
+After the subsequent facade, query, and adapter consolidation, the executable
+brain ceiling is **41,700** lines and the Phase 6 candidate remains below it.
+The MLflow compatibility wrapper and policy re-exports are gone;
+`tool_handlers.py` and HTTP views retain their smaller executable ratchets. The
+uncalled `build_local_tool_handlers` factory is gone; live local composition
+uses the Control dispatcher plus proxy-owned `LocalDataPlane`, as its split-mode
+tests prove.
 
 ### Tracking follow-up slice
 
@@ -783,10 +777,9 @@ The completion pass moved the remaining immediately actionable policy inward:
 - Research and Artifacts own their review/resource vocabulary validation;
 - project membership validation/mutation moved from HTTP into `ProjectService`.
 
-Surface no longer carries an application-layer file override. The only
-remaining exact Surface layer exceptions are authentication/configuration and
-tool-contract vocabulary seams; the separate Feed-to-unfurl exception is also
-unchanged. These are explicit future seams, not hidden orchestration paths.
+Surface no longer carries an application-layer file override. Delivery uses
+typed injected dependencies, and both the layer and public-entrypoint exception
+ledgers are empty.
 
 ## Verification gates
 

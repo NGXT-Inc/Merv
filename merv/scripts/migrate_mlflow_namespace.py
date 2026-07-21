@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Rename existing MLflow experiments from the legacy rp/ namespace to merv/.
 
-One-time deploy companion to the MLFLOW_NAMESPACE_PREFIX flip in
-src/merv/brain/mlflow/tracking.py: new experiments are created as merv/<project>/<exp>,
-and this script renames every existing `rp/...` experiment in place over the
-MLflow REST API so name-based lookups keep resolving. Idempotent — a second run
-finds nothing left to rename. `merv/...` name collisions (a re-run after a
-partial rename created the new name) are reported and skipped, never clobbered.
+One-time deploy companion to the TRACKING_NAMESPACE_PREFIX flip in
+src/merv/brain/application/ports/tracking.py: new experiments are created as
+merv/<project>/<exp>, and this script renames every existing `rp/...` experiment
+in place over the MLflow REST API so name-based lookups keep resolving.
+Idempotent — a second run finds nothing left to rename. `merv/...` name
+collisions (a re-run after a partial rename created the new name) are reported
+and skipped, never clobbered.
 
 Usage:
   python3 merv/scripts/migrate_mlflow_namespace.py [--dry-run] [--uri URI]

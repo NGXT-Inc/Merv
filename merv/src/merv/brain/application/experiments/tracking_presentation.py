@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..ports.tracking import ExperimentTracking
-from .tracking_policy import mlflow_visible_for_status
+
+
+def tracking_visible_for_status(status: object) -> bool:
+    """Whether experiment state should carry the tracking context block."""
+    return str(status or "") in (
+        "running", "experiment_review", "complete", "failed"
+    )
 
 
 def tracking_connection(
@@ -83,7 +89,7 @@ def with_tracking_if_visible(
     experiment_id: str,
     include_credentials: bool,
 ) -> dict[str, Any]:
-    if not mlflow_visible_for_status(state.get("status")):
+    if not tracking_visible_for_status(state.get("status")):
         return state
     block = tracking_connection(
         tracking=tracking,
@@ -101,5 +107,6 @@ __all__ = [
     "tracking_connection",
     "tracking_context_response",
     "tracking_guidance",
+    "tracking_visible_for_status",
     "with_tracking_if_visible",
 ]
