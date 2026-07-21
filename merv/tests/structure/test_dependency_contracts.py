@@ -53,7 +53,6 @@ application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
 application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery
 application/workflow.py | ProjectDashboardQuery | health | Callable[[], dict[str, object]]
 application/workflow.py | ProjectDashboardQuery | current | RecordQuery
-artifacts/resources.py | ResourceService.__init__ | association_targets | Any
 sandbox/sandboxes.py | SandboxFacade.__init__ | attachment_check | Callable[..., None] | None
 surface/tools/tool_facade.py | ToolDispatcher.__init__ | handlers | dict[str, Callable[..., dict[str, Any]]]
 surface/tools/tool_facade.py | ToolDispatcher.__init__ | activity | Any

@@ -257,6 +257,149 @@ class AssociateByteCaptureTest(unittest.TestCase):
             b"\x89PNG\r\n\x1a\nplan",
         )
 
+    def test_figure_bytes_cannot_mutate_an_associated_markdown_version(self) -> None:
+        figure = self.repo / "experiments" / "exp-1" / "figures" / "diagram.png"
+        figure.parent.mkdir(parents=True)
+        figure.write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+        markdown = self.repo / "experiments" / "exp-1" / "plan.md"
+        markdown.write_text(
+            "## Summary\nImmutable submitted figure.\n\n"
+            "![architecture](figures/diagram.png)\n\n"
+            "## Objective & hypothesis\nTest immutable evidence.\n\n"
+            "## Evaluation\nSuccess means a review snapshot pins one bundle.\n"
+        )
+        first = self._associate(path="experiments/exp-1/plan.md", role="plan")
+        version_id = first["current_version_id"]
+
+        figure.write_bytes(b"\x89PNG\r\n\x1a\nsecond")
+        with self.assertRaises(ValidationError) as ctx:
+            self._associate(path="experiments/exp-1/plan.md", role="plan")
+
+        self.assertIn("immutable evidence", str(ctx.exception))
+        self.assertEqual(
+            self.app.resources.submitted_figure(
+                version_id=version_id,
+                link_path="figures/diagram.png",
+            ),
+            b"\x89PNG\r\n\x1a\nfirst",
+        )
+
+    def test_figure_cannot_be_added_after_markdown_version_is_associated(self) -> None:
+        markdown = self.repo / "plan.md"
+        markdown.write_text(
+            "## Summary\nImmutable figure membership.\n\n"
+            "![architecture](diagram.png)\n\n"
+            "## Objective & hypothesis\nTest sealed evidence.\n\n"
+            "## Evaluation\nThe submitted bundle stays fixed.\n"
+        )
+        registered = self.call(
+            "resource.register", project_id=self.project_id, path="plan.md"
+        )
+        content = markdown.read_bytes()
+        self.app.resources.associate_observed(
+            resource_id=registered["id"],
+            target_type="experiment",
+            target_id=self.exp_id,
+            role="plan",
+            project_id=self.project_id,
+            content_bytes=content,
+            figures=[],
+        )
+        (self.repo / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\nlate")
+
+        with self.assertRaises(ValidationError) as ctx:
+            self.app.resources.associate_observed(
+                resource_id=registered["id"],
+                target_type="experiment",
+                target_id=self.exp_id,
+                role="plan",
+                project_id=self.project_id,
+                content_bytes=content,
+                figures=[
+                    {
+                        "link_path": "diagram.png",
+                        "data": b"\x89PNG\r\n\x1a\nlate",
+                        "content_type": "image/png",
+                    }
+                ],
+            )
+
+        self.assertIn("immutable evidence", str(ctx.exception))
+        self.assertIsNone(
+            self.app.resources.submitted_figure(
+                version_id=registered["current_version_id"],
+                link_path="diagram.png",
+            )
+        )
+
+    def test_reviving_deleted_markdown_mints_a_new_evidence_bundle(self) -> None:
+        markdown = self.repo / "plan.md"
+        markdown.write_text(
+            "## Summary\nImmutable after deletion.\n\n"
+            "![architecture](diagram.png)\n\n"
+            "## Objective & hypothesis\nTest durable evidence identity.\n\n"
+            "## Evaluation\nRevival must mint a new submitted bundle.\n"
+        )
+        registered = self.call(
+            "resource.register", project_id=self.project_id, path="plan.md"
+        )
+        first = self.app.resources.associate_observed(
+            resource_id=registered["id"],
+            target_type="experiment",
+            target_id=self.exp_id,
+            role="plan",
+            project_id=self.project_id,
+            content_bytes=markdown.read_bytes(),
+            figures=[],
+        )
+        old_version = first["current_version_id"]
+        self.call(
+            "resource.delete",
+            project_id=self.project_id,
+            resource_id=first["id"],
+        )
+        (self.repo / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\nrevived")
+
+        revived = self._associate(path="plan.md", role="plan")
+
+        self.assertEqual(revived["id"], first["id"])
+        self.assertNotEqual(revived["current_version_id"], old_version)
+        self.assertIsNone(
+            self.app.resources.submitted_figure(
+                version_id=old_version, link_path="diagram.png"
+            )
+        )
+        self.assertEqual(
+            self.app.resources.submitted_figure(
+                version_id=revived["current_version_id"],
+                link_path="diagram.png",
+            ),
+            b"\x89PNG\r\n\x1a\nrevived",
+        )
+
+    def test_identical_figure_resubmission_keeps_the_same_evidence(self) -> None:
+        figure = self.repo / "figures" / "same.png"
+        figure.parent.mkdir(parents=True)
+        figure.write_bytes(b"\x89PNG\r\n\x1a\nsame")
+        markdown = self.repo / "plan.md"
+        markdown.write_text(
+            "## Summary\nRepeat-safe figure.\n\n"
+            "![same](figures/same.png)\n\n"
+            "## Objective & hypothesis\nTest idempotence.\n\n"
+            "## Evaluation\nThe mapping remains unchanged.\n"
+        )
+        first = self._associate(path="plan.md", role="plan")
+        second = self._associate(path="plan.md", role="plan")
+
+        self.assertEqual(first["current_version_id"], second["current_version_id"])
+        self.assertEqual(
+            self.app.resources.submitted_figure(
+                version_id=first["current_version_id"],
+                link_path="figures/same.png",
+            ),
+            b"\x89PNG\r\n\x1a\nsame",
+        )
+
     def test_result_role_associate_stores_no_blob(self) -> None:
         content = b"big result payload"
         (self.repo / "out.txt").write_bytes(content)

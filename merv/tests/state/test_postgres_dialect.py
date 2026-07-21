@@ -40,6 +40,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
+from merv.brain.artifacts.resources import ResourceService
 from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.application.queries import TenantCountersQuery
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
@@ -54,6 +55,7 @@ from merv.brain.kernel.state.store import (
 )
 from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.research_core.experiments import ExperimentService
+from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.facade import ResearchCoreFacade
 from tests.surface.test_control_plane_contract import (
     ClientHarness,
@@ -716,7 +718,13 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
 
     def test_tracking_refresh_returns_exact_persisted_postgres_event(self) -> None:
         project_id = self._seed_project()
-        experiments = ExperimentService(store=self.store)
+        experiments = ExperimentService(
+            store=self.store,
+            evidence_reader=ResourceService(
+                store=self.store,
+                association_targets=AssociationTargets(store=self.store),
+            ),
+        )
         created = experiments.create(
             project_id=project_id, name="tracking-refresh", intent="postgres"
         )
@@ -740,6 +748,73 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         self.assertEqual(str(row["target_id"]), created["id"])
         self.assertEqual(str(row["created_at"]), committed.event.created_at)
         self.assertEqual(committed.state["mlflow_run"]["run_id"], "run_pg")
+
+    def test_evidence_reads_inside_writer_transaction(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        repo = Path(tmp.name)
+        app = TestBrain(
+            repo_root=repo,
+            db_path=repo / ".research_plugin" / "unused.sqlite",
+            store=self.store,
+        )
+        try:
+            project_id = app.call_tool(
+                "project", {"action": "create", "name": "Evidence PG"}
+            )["id"]
+            experiment_id = app.call_tool(
+                "experiment.create",
+                {
+                    "project_id": project_id,
+                    "name": "evidence-pg",
+                    "intent": "Read evidence under the writer lock.",
+                },
+            )["id"]
+            (repo / "plan.md").write_text(
+                "## Summary\nPostgres evidence.\n\n"
+                "## Objective & hypothesis\nExercise the seam.\n\n"
+                "## Evaluation\nThe read completes.\n"
+            )
+            app.call_tool(
+                "resource.register",
+                {
+                    "project_id": project_id,
+                    "path": "plan.md",
+                    "target_type": "experiment",
+                    "target_id": experiment_id,
+                    "role": "plan",
+                },
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "rollback outer"):
+                with self.store.transaction() as conn:
+                    conn.execute(
+                        "UPDATE experiments SET revision_context = ? WHERE id = ?",
+                        ("outer postgres write", experiment_id),
+                    )
+                    resources = app.resources.resources_for_target(
+                        target_type="experiment", target_id=experiment_id
+                    )
+                    document = app.resources.submitted_document(
+                        version_id=resources[0].submitted_version_id,
+                        path=resources[0].path,
+                        role="plan",
+                        what="experiment plan",
+                    )
+                    raise RuntimeError("rollback outer")
+            self.assertEqual(resources[0].role, "plan")
+            self.assertIn("Postgres evidence", document.text)
+            conn = self.store.connect()
+            try:
+                row = conn.execute(
+                    "SELECT revision_context FROM experiments WHERE id = ?",
+                    (experiment_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(str(row["revision_context"]), "")
+        finally:
+            app.shutdown()
+            tmp.cleanup()
 
     def test_created_seq_orders_versions_and_associations(self) -> None:
         project_id = self._seed_project()

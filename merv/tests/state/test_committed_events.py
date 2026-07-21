@@ -9,7 +9,9 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from merv.brain.application.events import EventDispatcher, EventReaction
+from merv.brain.artifacts.resources import ResourceService
 from merv.brain.kernel.state.store import StateStore
+from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import ExperimentService
 from merv.brain.research_core.facade import ResearchCoreFacade
 
@@ -18,6 +20,10 @@ class CommittedEventTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
+        self.evidence = ResourceService(
+            store=self.store,
+            association_targets=AssociationTargets(store=self.store),
+        )
         with closing(self.store.connect()) as conn:
             row = conn.execute("SELECT id FROM projects").fetchone()
             assert row is not None
@@ -80,7 +86,9 @@ class CommittedEventTest(unittest.TestCase):
         self.assertEqual(event.payload["z"][0]["nested"], "original")
 
     def test_transition_variant_returns_committed_event_and_legacy_returns_state(self) -> None:
-        experiments = ExperimentService(store=self.store)
+        experiments = ExperimentService(
+            store=self.store, evidence_reader=self.evidence
+        )
         created = experiments.create(
             project_id=self.project_id, name="committed-event", intent="test"
         )
@@ -144,7 +152,9 @@ class CommittedEventTest(unittest.TestCase):
         self.assertEqual(legacy_state["status"], "abandoned")
 
     def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
-        experiments = ExperimentService(store=self.store)
+        experiments = ExperimentService(
+            store=self.store, evidence_reader=self.evidence
+        )
         research = ResearchCoreFacade(experiments)
         created = experiments.create(
             project_id=self.project_id, name="tracking-event", intent="test"
@@ -178,7 +188,9 @@ class CommittedEventTest(unittest.TestCase):
         self.assertEqual(committed.state["mlflow_run"]["status"], "FINISHED")
 
     def test_event_insert_failure_rolls_back_state_and_event_together(self) -> None:
-        experiments = ExperimentService(store=self.store)
+        experiments = ExperimentService(
+            store=self.store, evidence_reader=self.evidence
+        )
         created = experiments.create(
             project_id=self.project_id, name="rollback-event", intent="test"
         )

@@ -99,7 +99,8 @@ The initial layer table is explicit about mixed packages:
 | `research_core/**` | application |
 | `research_core/domain/**` | domain |
 | `artifacts/**` | application |
-| `artifacts/{figure_view,resource_selection}.py` | domain |
+| `artifacts/ports/**` | port |
+| `artifacts/figure_view.py` | domain |
 | `feed/**` | application |
 | `feed/feed_policy.py` | domain |
 | `feed/feed_unfurl.py` | adapter |

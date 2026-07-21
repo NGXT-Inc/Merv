@@ -115,8 +115,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         content = self.request("GET", f"/api/projects/{project_id}/resources/{resource['id']}/content")
         self.assertIn("accuracy", content["content"])
         history = self.request("GET", f"/api/projects/{project_id}/resources/{resource['id']}/history")
-        version_id = history["versions"][0]["id"]
-        self.assertTrue(version_id)
+        deleted_version_id = history["versions"][0]["id"]
+        self.assertTrue(deleted_version_id)
         deleted_resource = self.request("DELETE", f"/api/projects/{project_id}/resources/{resource['id']}")
         self.assertTrue(deleted_resource["deleted"])
         self.assertEqual(self.request("GET", f"/api/projects/{project_id}/resources")["resources"], [])
@@ -131,6 +131,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             f"/api/projects/{project_id}/resources/{resource['id']}/associate",
             {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
         )
+        revived_history = self.request(
+            "GET", f"/api/projects/{project_id}/resources/{resource['id']}/history"
+        )
+        version_id = revived_history["versions"][-1]["id"]
+        self.assertNotEqual(version_id, deleted_version_id)
 
         self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/transition", {"transition": "submit_design"})
         review_request = self.request(
@@ -1245,7 +1250,13 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 {"id": "rev", "kind": "pivot", "label": "Design review passed",
                  "refs": [review["id"]]},
                 {"id": "out", "kind": "outcome", "label": "Accuracy 93%",
-                 "refs": ["results.json", f"{plan['id']}", "notes.md", "ghost.json"]},
+                 "refs": [
+                     "results.json",
+                     f"{plan['id']}",
+                     "res_missing",
+                     "notes.md",
+                     "ghost.json",
+                 ]},
             ],
             "edges": [{"from": "obj", "to": "rev"}, {"from": "rev", "to": "out"}],
         }
@@ -1272,6 +1283,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         # res_ id → the same resource shape.
         self.assertEqual(refs[plan["id"]]["type"], "resource")
         self.assertEqual(refs[plan["id"]]["path"], "plan.md")
+        self.assertEqual(
+            refs["res_missing"], {"type": "unknown", "resolved": False}
+        )
         # rev_ / claim_ / exp_ ids → their records.
         self.assertEqual(refs[review["id"]]["type"], "review")
         self.assertEqual(refs[review["id"]]["verdict"], "pass")

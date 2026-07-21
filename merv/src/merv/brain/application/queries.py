@@ -9,8 +9,13 @@ from typing import Any, Protocol
 
 from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
 
-from ..artifacts.facade import Artifacts, build_experiment_figure, preferred_associated_resource
-from ..research_core.facade import MAX_GRAPH_NODES, ResearchCore, graph_problems
+from ..artifacts.facade import Artifacts, build_experiment_figure
+from ..research_core.facade import (
+    MAX_GRAPH_NODES,
+    ResearchCore,
+    graph_problems,
+    preferred_associated_resource,
+)
 from .experiments.tracking_policy import mlflow_experiment_name
 
 Record = dict[str, Any]

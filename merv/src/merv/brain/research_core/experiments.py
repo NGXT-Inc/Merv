@@ -25,6 +25,10 @@ from .domain.reflection_policy import (
     reflection_create_block_message,
 )
 from .domain.review_snapshot import review_snapshot_id
+from .domain.resource_evidence import (
+    preferred_associated_resource,
+    resource_state_record,
+)
 from .domain.workflow_gates import (
     GATE_TABLE,
     TERMINAL_STATUSES,
@@ -35,7 +39,10 @@ from .gate_evaluation import (
     RequirementEvaluation,
     evaluate_resource_requirement,
 )
-from ..artifacts.pinned import PinnedStore
+from ..artifacts.ports import (
+    EvidenceReader,
+    SubmittedDocument,
+)
 from ..kernel.events import StoredEvent
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
@@ -54,14 +61,11 @@ class ExperimentService:
         self,
         *,
         store: BaseStateStore,
-        pinned: PinnedStore | None = None,
+        evidence_reader: EvidenceReader,
         storage_objects_reader: StorageObjectsReader | None = None,
     ) -> None:
         self.store = store
-        # Gate lints read submitted (pinned) bytes from here, never the
-        # working tree. Optional only for direct construction in tests; the
-        # composition root always injects it.
-        self.pinned = pinned
+        self.evidence_reader = evidence_reader
         # Object-storage-owned query, injected at composition — research_core
         # has no import (or SQL) edge to object_storage.
         self.storage_objects_reader = storage_objects_reader
@@ -327,18 +331,12 @@ class ExperimentService:
                 (experiment_id,),
             ).fetchall()
             data["tested_claims"] = rows_to_dicts(rows=claim_rows)
-            resource_rows = conn.execute(
-                """
-                SELECT r.*, a.role AS association_role, a.attempt_index AS association_attempt_index,
-                       a.version_id AS association_version_id, a.created_seq AS association_rowid
-                FROM resources r
-                JOIN resource_associations a ON a.resource_id = r.id
-                WHERE a.target_type = 'experiment' AND a.target_id = ?
-                ORDER BY a.attempt_index, a.role, r.path
-                """,
-                (experiment_id,),
-            ).fetchall()
-            data["resources"] = rows_to_dicts(rows=resource_rows)
+            data["resources"] = [
+                resource_state_record(evidence)
+                for evidence in self.evidence_reader.resources_for_target(
+                    target_type="experiment", target_id=experiment_id
+                )
+            ]
             data["current_attempt_resources"] = [
                 res
                 for res in data["resources"]
@@ -571,7 +569,7 @@ class ExperimentService:
             if present and requirement.validator:
                 try:
                     self._run_validator(
-                        conn=conn, experiment_id=str(experiment["id"]), name=requirement.validator
+                        experiment=experiment, name=requirement.validator
                     )
                 except WorkflowError as exc:
                     problems = (str(exc),)
@@ -797,52 +795,49 @@ class ExperimentService:
             payload={"revision_context": revision_context},
         )
 
-    def _run_validator(self, *, conn, experiment_id: str, name: str) -> None:
+    def _run_validator(self, *, experiment: dict[str, Any], name: str) -> None:
         """Dispatch a gate-table validator name to its deep-lint implementation."""
         if name == "plan":
-            self._validate_plan_sections(conn=conn, experiment_id=experiment_id)
+            self._validate_plan_sections(experiment=experiment)
         elif name == "report":
-            self._validate_results_report(conn=conn, experiment_id=experiment_id)
+            self._validate_results_report(experiment=experiment)
         elif name == "graph":
-            self._validate_logic_graph(conn=conn, experiment_id=experiment_id)
+            self._validate_logic_graph(experiment=experiment)
 
-    def _pinned_text(
-        self, *, conn, experiment_id: str, role: str, what: str
-    ) -> tuple[str, str, str]:
-        """(text, version_id, path) of the current attempt's submitted artifact.
-
-        Gates lint the bytes pinned at resource.register — never the working
-        tree — so fixing an artifact means fix the file AND re-register it.
-        """
-        if self.pinned is None:
+    def _submitted_document(
+        self, *, experiment: dict[str, Any], role: str, what: str
+    ) -> SubmittedDocument:
+        resource = preferred_associated_resource(
+            resources=[
+                item
+                for item in experiment.get("current_attempt_resources") or []
+                if not item.get("deleted")
+            ],
+            attempt=experiment.get("attempt_index"),
+            roles=(role,),
+        )
+        if resource is None:
             raise WorkflowError(
-                f"{what}: no blob store is configured; gated artifacts cannot be linted"
+                f"no {role!r} resource is associated for the current attempt"
             )
-        attempt = conn.execute(
-            "SELECT attempt_index FROM experiments WHERE id = ?", (experiment_id,)
-        ).fetchone()
-        if attempt is None:
-            raise NotFoundError(f"experiment not found: {experiment_id}")
-        return self.pinned.artifact_text(
-            conn=conn,
-            target_type="experiment",
-            target_id=experiment_id,
+        return self.evidence_reader.submitted_document(
+            version_id=resource.get("association_version_id"),
+            path=str(resource.get("path") or ""),
             role=role,
-            attempt_index=int(attempt["attempt_index"]),
             what=what,
         )
 
-    def _validate_plan_sections(self, *, conn, experiment_id: str) -> None:
+    def _validate_plan_sections(self, *, experiment: dict[str, Any]) -> None:
         """Block submit_design unless the current attempt's SUBMITTED plan fills
         in the required spine and every relative figure link has submitted
         figure content. Lints the bytes pinned at associate; editing the
         live file changes nothing until it is re-associated."""
-        plan_text, version_id, path = self._pinned_text(
-            conn=conn,
-            experiment_id=experiment_id,
+        document = self._submitted_document(
+            experiment=experiment,
             role="plan",
             what="experiment plan",
         )
+        plan_text, path = document.text, document.path
         missing = plan_sections_missing(plan_text)
         if missing:
             raise WorkflowError(
@@ -852,13 +847,7 @@ class ExperimentService:
                 "Objective & hypothesis; Evaluation — then re-associate the plan "
                 "to submit the fix; see skills/research-workflow/plan-template.md."
             )
-        figures = {
-            str(row["link_path"])
-            for row in conn.execute(
-                "SELECT link_path FROM report_figures WHERE report_version_id = ?",
-                (version_id,),
-            ).fetchall()
-        }
+        figures = set(document.figure_links)
         problems = [
             f"figure {link!r} has no submitted content: make sure the file "
             f"exists next to {path} (copy it out first if it was produced "
@@ -871,26 +860,20 @@ class ExperimentService:
                 "experiment plan is not ready for design review: " + "; ".join(problems)
             )
 
-    def _validate_results_report(self, *, conn, experiment_id: str) -> None:
+    def _validate_results_report(self, *, experiment: dict[str, Any]) -> None:
         """Block submit_results unless the current attempt's SUBMITTED report
         passes the report lint — including every relative figure link having
         submitted figure content (captured when the report was associated),
         and a reference to the system metrics exhibit when one is pinned for
         this attempt (quantitative attempts; the tool layer generates and pins
         it before the transition gate runs)."""
-        report_text, version_id, path = self._pinned_text(
-            conn=conn,
-            experiment_id=experiment_id,
+        document = self._submitted_document(
+            experiment=experiment,
             role="report",
             what="results report",
         )
-        figures = {
-            str(row["link_path"]): row
-            for row in conn.execute(
-                "SELECT link_path, sha256 FROM report_figures WHERE report_version_id = ?",
-                (version_id,),
-            ).fetchall()
-        }
+        report_text, path = document.text, document.path
+        figures = set(document.figure_links)
 
         def figure_problem(link: str) -> str | None:
             if link in figures:
@@ -901,7 +884,15 @@ class ExperimentService:
                 "on the sandbox), then re-associate the report to submit it"
             )
 
-        exhibit = self.exhibit_association(conn=conn, experiment_id=experiment_id)
+        exhibit = preferred_associated_resource(
+            resources=[
+                resource
+                for resource in experiment.get("current_attempt_resources") or []
+                if not resource.get("deleted")
+            ],
+            attempt=experiment.get("attempt_index"),
+            roles=(EXHIBIT_ROLE,),
+        )
         problems = report_problems(
             report_text,
             figure_problem=figure_problem,
@@ -915,18 +906,17 @@ class ExperimentService:
                 "see skills/research-workflow/report-template.md."
             )
 
-    def _validate_logic_graph(self, *, conn, experiment_id: str) -> None:
+    def _validate_logic_graph(self, *, experiment: dict[str, Any]) -> None:
         """Block submit_results unless the current attempt's SUBMITTED logic
         graph passes the envelope lint. The lint checks shape only (parses,
         node budget, DAG) — the story itself is the agent's to tell and the
         experiment reviewer's to judge."""
-        graph_text, _, _ = self._pinned_text(
-            conn=conn,
-            experiment_id=experiment_id,
+        document = self._submitted_document(
+            experiment=experiment,
             role="graph",
             what="logic graph",
         )
-        problems = graph_problems(graph_text)
+        problems = graph_problems(document.text)
         if problems:
             raise WorkflowError(
                 "logic graph is not ready for experiment review: "
@@ -934,26 +924,6 @@ class ExperimentService:
                 + ". Fix the file and re-associate it to submit the revision — "
                 "see skills/research-workflow/graph-template.md."
             )
-
-    def exhibit_association(self, *, conn, experiment_id: str) -> dict[str, Any] | None:
-        """The current attempt's pinned system metrics exhibit, if any:
-        {path, version_id, resource_id}. The exhibit is system-authored (the
-        tool layer pins it at submit_results), so its presence — not any
-        agent claim — is what the report gate keys on."""
-        row = conn.execute(
-            """
-            SELECT r.path, a.version_id, a.resource_id
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'experiment' AND a.target_id = ? AND a.role = ?
-              AND a.attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY a.created_seq DESC
-            LIMIT 1
-            """,
-            (experiment_id, EXHIBIT_ROLE, experiment_id),
-        ).fetchone()
-        return row_to_dict(row=row)
 
     def attempt_started_running_at(self, *, experiment_id: str) -> str | None:
         """When the current attempt entered running — the metrics-exhibit

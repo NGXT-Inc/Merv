@@ -8,6 +8,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 from ..kernel.events import StoredEvent
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .domain.paths import experiment_folder_rel
+from .domain.resource_evidence import preferred_associated_resource
 from .domain.vocabulary import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
@@ -292,4 +293,5 @@ __all__ = [
     "ResearchSnapshots",
     "SlimExperimentState",
     "graph_problems",
+    "preferred_associated_resource",
 ]

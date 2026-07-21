@@ -233,6 +233,11 @@ Three storage layers have distinct purposes:
 3. **Heavy-object storage** keeps large datasets, checkpoints, archives, and
    other valuable files that should not live in git.
 
+Artifacts owns resource identities, associations, submitted versions, figure
+membership, and byte retrieval. Research receives those immutable facts through
+the public `EvidenceReader` port, then applies experiment/reflection gate and
+review policy. Research never queries Artifact tables or reads blobs directly.
+
 MLflow is the quantitative run ledger. Plugin state stores the research meaning
 around those runs: claim links, reviewed conclusions, resource references, and
 workflow state.

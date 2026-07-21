@@ -60,11 +60,18 @@ The exact component import matrix is:
 Outside bootstrap, code enters another component only through its declared
 `facade.py` or `ports/**` entrypoint. This is the executable form of “one stable
 public facade”; it prevents a new use case or adapter from depending on internal
-services. Eleven legacy importer/target pairs are frozen exactly and may only
-be deleted. They cover the remaining Research-to-Artifact helpers, three
-Surface vocabulary seams, one data-plane Feed seam, and two MLflow-to-
-Application policy imports. Workflow reads use `ResearchSnapshots` and
-`SandboxReads`; Sandbox commands use the separately declared `Sandbox` facade.
+services. Six legacy importer/target pairs are frozen exactly and may only be
+deleted. They cover three Surface vocabulary seams, one data-plane Feed seam,
+and two MLflow-to-Application policy imports. Workflow reads use
+`ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
+declared `Sandbox` facade.
+
+Research reaches immutable resource evidence only through semantic DTOs on
+`artifacts/ports/EvidenceReader`; it never sees persistence rows, Artifact
+tables, or blob locators. Artifacts resolves association targets through the reverse
+`AssociationTargetResolver` port. Both concrete adapters use read-only store
+connections while the calling command holds the monolith's single-writer lock,
+so the public contracts remain connection-free without weakening consistency.
 
 ## Layer law
 
@@ -73,7 +80,7 @@ The initial layer mapping is deliberately honest about mixed directories:
 | Layer | Representative paths |
 |---|---|
 | foundation | `kernel/**` |
-| port | `kernel/ports/**`, `application/ports/**`, `sandbox/sandbox_backend.py` |
+| port | `kernel/ports/**`, `application/ports/**`, `artifacts/ports/**`, `sandbox/sandbox_backend.py` |
 | domain | `research_core/domain/**`, pure artifact/feed policy files |
 | application | component services and cross-component work under `application/**` |
 | adapter | `mlflow/**`, concrete storage/blob code, sandbox provider drivers, client/runtime adapters |
@@ -195,11 +202,10 @@ function-local imports, classifies every brain file twice, enforces both laws,
 checks component-owned SQL, and rejects stale table entries and stale exception
 pairs. Every stable table has an explicit owner; an unclassified new table
 fails closed. SQL may name only tables owned by the file's component, Kernel
-tables, or tables behind a ratified component dependency. The remaining 18
-Research SQL references to Artifact-owned tables have a separate exact counter,
-because the temporary Research-to-Artifacts component edge would otherwise
-hide them. Both that counter and the public-entrypoint exception ledger must
-shrink whenever a seam is repaired.
+tables, or tables behind a ratified component dependency. Research has a
+zero-entry foreign-Artifact-table counter, so any new direct evidence SQL fails
+immediately. The public-entrypoint exception ledger must shrink whenever a seam
+is repaired.
 
 Application has a zero-exception purity check: it may not import delivery,
 concrete adapters, frameworks, database/network SDKs, environment access, or
@@ -211,13 +217,13 @@ app acquisitions/carrier sites. This records migration debt without turning it
 into a wildcard permission.
 
 Untyped collaborator declarations are separate from JSON payload debt. The
-exact 76-entry dependency ledger records the remaining Application callable fields,
-Research/Artifacts and Research/Sandbox callback seams, raw Surface tool
-registry collaborators, and whole-app route dependencies. New `Any` or generic
+exact 75-entry dependency ledger records the remaining Application callable
+fields, Research/Sandbox callback seams, raw Surface tool registry
+collaborators, and whole-app route dependencies. New `Any` or generic
 `Callable` collaborators fail; repaired entries must be removed from the
 ledger.
 
-The 43 public boundary value objects—including exported Application response/event
+The 47 public boundary value objects—including exported Application response/event
 values—are discovered by structure tests, normalized to JSON primitives, and
 round-tripped with strict finite-number handling. A complete sample registry
 prevents new DTOs from escaping the test. Untyped fields and non-string mapping

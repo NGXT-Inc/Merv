@@ -210,6 +210,45 @@ class WorkflowGateTest(unittest.TestCase):
         )
         self.assertEqual(out["status"], "design_review")
 
+    def test_reassociation_preserves_original_association_order(self) -> None:
+        exp = self.call(
+            "experiment.create",
+            name="association-order",
+            project_id=self.project_id,
+            intent="Keep immutable association ordering.",
+        )
+        self._write_and_associate(
+            exp_id=exp["id"], path="plan-a.md", role="plan", body=VALID_PLAN
+        )
+        self._write_and_associate(
+            exp_id=exp["id"],
+            path="plan-b.md",
+            role="plan",
+            body="## Summary\nIncomplete newer plan.\n",
+        )
+        self._write_and_associate(
+            exp_id=exp["id"],
+            path="plan-a.md",
+            role="plan",
+            body=VALID_PLAN + "\nRe-associated without creating a new association row.\n",
+        )
+
+        state = self.call(
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+        )
+        plan = state["gate_checklist"]["items"][0]
+        self.assertEqual(plan["status"], "invalid")
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.transition",
+                project_id=self.project_id,
+                experiment_id=exp["id"],
+                transition="submit_design",
+            )
+        self.assertEqual(str(ctx.exception), plan["problems"][0])
+
     def test_workflow_surfaces_plan_gate_with_folder_guidance(self) -> None:
         exp = self.call("experiment.create", name="plan-gate", project_id=self.project_id, intent="No plan yet.")
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])

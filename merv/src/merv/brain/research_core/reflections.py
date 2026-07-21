@@ -41,7 +41,11 @@ from .domain.reflection_policy import (
     post_publish_guidance,
     reflection_signal_state,
 )
-from ..artifacts.resource_selection import preferred_associated_resource
+from .domain.resource_evidence import (
+    preferred_associated_resource,
+    resource_state_record,
+)
+from ..artifacts.ports import EvidenceReader, SubmittedDocument
 from .domain.review_snapshot import review_snapshot_id
 from .domain.reflection_gates import (
     REFLECTION_GATE_TABLE,
@@ -59,7 +63,6 @@ from ..kernel.ports.reflection_writers import (
     ReflectionClaimWriter,
     ReflectionExperimentWriter,
 )
-from ..artifacts.pinned import PinnedStore, resubmit_hint
 from ..kernel.state.store import (
     BaseStateStore,
     next_created_seq,
@@ -77,14 +80,12 @@ class ReflectionService:
         store: BaseStateStore,
         claims: ReflectionClaimWriter,
         experiment_writer: ReflectionExperimentWriter,
-        pinned: PinnedStore | None = None,
+        evidence_reader: EvidenceReader,
     ) -> None:
         self.store = store
         self.claims = claims
         self.experiment_writer = experiment_writer
-        # Gate lints read submitted (pinned) bytes from here, never the
-        # working tree (see artifacts/pinned.py).
-        self.pinned = pinned
+        self.evidence_reader = evidence_reader
 
     # ---- create ----
 
@@ -226,18 +227,12 @@ class ReflectionService:
                 )
             data["roster"] = json.loads(str(data.pop("roster_json", "[]")))
             data["corpus"] = json.loads(str(data.pop("corpus_json", "{}")))
-            resource_rows = conn.execute(
-                """
-                SELECT r.*, a.role AS association_role, a.attempt_index AS association_attempt_index,
-                       a.version_id AS association_version_id, a.created_seq AS association_rowid
-                FROM resources r
-                JOIN resource_associations a ON a.resource_id = r.id
-                WHERE a.target_type = 'reflection' AND a.target_id = ?
-                ORDER BY a.attempt_index, a.role, r.path
-                """,
-                (reflection_id,),
-            ).fetchall()
-            data["resources"] = rows_to_dicts(rows=resource_rows)
+            data["resources"] = [
+                resource_state_record(evidence)
+                for evidence in self.evidence_reader.resources_for_target(
+                    target_type="reflection", target_id=reflection_id
+                )
+            ]
             data["current_attempt_resources"] = [
                 res
                 for res in data["resources"]
@@ -507,15 +502,13 @@ class ReflectionService:
     def _load_graph_for_diff(
         self, *, conn, version_id: str, role: str, what: str
     ) -> tuple[dict[str, Any] | None, list[str]]:
-        if self.pinned is None:
-            return None, [f"{what}: no blob store is configured"]
         try:
-            text = self.pinned.text_for_version(
-                conn=conn,
+            text = self.evidence_reader.submitted_document(
                 version_id=version_id,
+                path="",
                 what=what,
                 role=role,
-            )
+            ).text
         except WorkflowError as exc:
             return None, [str(exc)]
         problems = graph_problems(text)
@@ -623,8 +616,7 @@ class ReflectionService:
             for lens in coverage.get("lenses") or []:
                 lens_id, path = str(lens["lens_id"]), str(lens["path"])
                 try:
-                    text = self._pinned_text(
-                        conn=conn,
+                    text = self._submitted_version_text(
                         version_id=lens.get("version_id"),
                         path=path,
                         role=str(lens.get("role") or "reflection_lens_doc"),
@@ -717,7 +709,7 @@ class ReflectionService:
                         next_status,
                         now,
                         self._current_graph_version_id(
-                            conn=conn, reflection=reflection
+                            reflection=reflection
                         ),
                         now,
                         reflection_id,
@@ -747,21 +739,16 @@ class ReflectionService:
             self._validate_change_spec(conn=conn, reflection=reflection)
 
     def _validate_project_graph(self, *, conn, reflection: dict[str, Any]) -> None:
-        row = self._current_role_row_for_roles(
-            conn=conn, reflection_id=reflection["id"], roles=PROJECT_GRAPH_ROLES
+        document = self._submitted_role_document(
+            reflection=reflection,
+            roles=PROJECT_GRAPH_ROLES,
+            what="project logic graph",
         )
-        if row is None:
+        if document is None:
             raise WorkflowError(
                 "a project logic graph resource must be submitted before reflection review"
             )
-        text = self._pinned_text(
-            conn=conn,
-            version_id=row["version_id"],
-            path=str(row["path"]),
-            role=str(row["role"]),
-            what="project logic graph",
-        )
-        problems = graph_problems(text)
+        problems = graph_problems(document.text)
         if problems:
             raise WorkflowError(
                 "project logic graph is not ready for reflection review: "
@@ -771,33 +758,19 @@ class ReflectionService:
             )
 
     def _validate_reflection_doc(self, *, conn, reflection: dict[str, Any]) -> None:
-        row = self._current_role_row_for_roles(
-            conn=conn,
-            reflection_id=reflection["id"],
+        document = self._submitted_role_document(
+            reflection=reflection,
             roles=("reflection_doc", "synthesis_doc"),
+            what="reflection document",
         )
-        if row is None:
+        if document is None:
             raise WorkflowError(
                 "a reflection document resource must be submitted before reflection review"
             )
-        text = self._pinned_text(
-            conn=conn,
-            version_id=row["version_id"],
-            path=str(row["path"]),
-            role=str(row["role"]),
-            what="reflection document",
-        )
-        submitted_images = {
-            str(image["link_path"])
-            for image in conn.execute(
-                "SELECT link_path FROM report_figures WHERE report_version_id = ?",
-                (row["version_id"],),
-            ).fetchall()
-        }
         problems = reflection_doc_review_problems(
-            text=text,
-            submitted_images=submitted_images,
-            path=str(row["path"]),
+            text=document.text,
+            submitted_images=set(document.figure_links),
+            path=document.path,
         )
         if problems:
             raise WorkflowError(
@@ -809,49 +782,39 @@ class ReflectionService:
             )
 
     def _validate_change_spec(self, *, conn, reflection: dict[str, Any]) -> None:
-        row = self._current_role_row(
-            conn=conn, reflection_id=reflection["id"], role="change_spec"
+        document = self._submitted_role_document(
+            reflection=reflection,
+            roles=("change_spec",),
+            what="change spec",
         )
-        if row is None:
+        if document is None:
             raise WorkflowError(
                 "a change spec resource must be submitted before reflection review"
             )
-        text = self._pinned_text(
-            conn=conn,
-            version_id=row["version_id"],
-            path=str(row["path"]),
-            role="change_spec",
-            what="change spec",
-        )
         self._parse_change_spec(
             conn=conn,
             project_id=str(reflection["project_id"]),
-            text=text,
-            path=str(row["path"]),
+            text=document.text,
+            path=document.path,
         )
 
     def _current_change_spec(
         self, *, conn, reflection: dict[str, Any]
     ) -> dict[str, Any]:
-        row = self._current_role_row(
-            conn=conn, reflection_id=reflection["id"], role="change_spec"
+        document = self._submitted_role_document(
+            reflection=reflection,
+            roles=("change_spec",),
+            what="change spec",
         )
-        if row is None:
+        if document is None:
             raise WorkflowError(
                 "a change spec resource must be submitted before publish"
             )
-        text = self._pinned_text(
-            conn=conn,
-            version_id=row["version_id"],
-            path=str(row["path"]),
-            role="change_spec",
-            what="change spec",
-        )
         return self._parse_change_spec(
             conn=conn,
             project_id=str(reflection["project_id"]),
-            text=text,
-            path=str(row["path"]),
+            text=document.text,
+            path=document.path,
         )
 
     def _parse_change_spec(
@@ -1024,71 +987,56 @@ class ReflectionService:
                 (reflection_id, experiment_id, proposal_key, now_iso()),
             )
 
-    def _current_role_row(self, *, conn, reflection_id: str, role: str):
-        return conn.execute(
-            """
-            SELECT r.path, a.version_id
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'reflection' AND a.target_id = ? AND a.role = ?
-              AND a.attempt_index = (SELECT attempt_index FROM reflections WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY a.created_seq DESC
-            LIMIT 1
-            """,
-            (reflection_id, role, reflection_id),
-        ).fetchone()
-
-    def _current_role_row_for_roles(
-        self, *, conn, reflection_id: str, roles: tuple[str, ...]
-    ):
-        placeholders = ",".join("?" * len(roles))
-        order_cases = " ".join(
-            f"WHEN ? THEN {index}" for index, _role in enumerate(roles)
-        )
-        return conn.execute(
-            f"""
-            SELECT r.path, a.role, a.version_id
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            WHERE a.target_type = 'reflection' AND a.target_id = ?
-              AND a.role IN ({placeholders})
-              AND a.attempt_index = (SELECT attempt_index FROM reflections WHERE id = ?)
-              AND r.deleted = 0
-            ORDER BY CASE a.role {order_cases} ELSE {len(roles)} END,
-                     a.created_seq DESC
-            LIMIT 1
-            """,
-            (reflection_id, *roles, reflection_id, *roles),
-        ).fetchone()
-
     def _current_graph_version_id(
-        self, *, conn, reflection: dict[str, Any]
+        self, *, reflection: dict[str, Any]
     ) -> str | None:
-        row = self._current_role_row_for_roles(
-            conn=conn, reflection_id=reflection["id"], roles=PROJECT_GRAPH_ROLES
+        resource = preferred_associated_resource(
+            resources=[
+                item
+                for item in reflection.get("current_attempt_resources") or []
+                if not item.get("deleted")
+            ],
+            attempt=reflection.get("attempt_index"),
+            roles=PROJECT_GRAPH_ROLES,
         )
-        return str(row["version_id"]) if row and row["version_id"] else None
+        version_id = (resource or {}).get("association_version_id")
+        return str(version_id) if version_id else None
 
-    def _pinned_text(
-        self, *, conn, version_id: Any, path: str, role: str, what: str
+    def _submitted_role_document(
+        self,
+        *,
+        reflection: dict[str, Any],
+        roles: tuple[str, ...],
+        what: str,
+    ) -> SubmittedDocument | None:
+        resource = preferred_associated_resource(
+            resources=[
+                item
+                for item in reflection.get("current_attempt_resources") or []
+                if not item.get("deleted")
+            ],
+            attempt=reflection.get("attempt_index"),
+            roles=roles,
+        )
+        if resource is None:
+            return None
+        return self.evidence_reader.submitted_document(
+            version_id=resource.get("association_version_id"),
+            path=str(resource.get("path") or ""),
+            role=str(resource.get("association_role") or roles[0]),
+            what=what,
+        )
+
+    def _submitted_version_text(
+        self, *, version_id: Any, path: str, role: str, what: str
     ) -> str:
         """The submitted bytes of a pinned association, never the working tree."""
-        if self.pinned is None:
-            raise WorkflowError(
-                f"{what}: no blob store is configured; gated artifacts cannot be linted"
-            )
-        if not version_id:
-            raise WorkflowError(
-                f"{what} ({path}) has no pinned version — "
-                + resubmit_hint(role=role, path=path)
-            )
-        return self.pinned.text_for_version(
-            conn=conn,
-            version_id=str(version_id),
+        return self.evidence_reader.submitted_document(
+            version_id=str(version_id) if version_id else None,
+            path=path,
             what=what,
             role=role,
-        )
+        ).text
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:
         return self._target_snapshot_id(conn=conn, reflection_id=reflection_id)

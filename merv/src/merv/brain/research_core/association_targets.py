@@ -6,7 +6,10 @@ research-core tables (import law allows research_core -> artifacts only).
 
 from __future__ import annotations
 
-from ..kernel.state.store import Connection
+from contextlib import closing
+
+from ..artifacts.ports import AssociationTarget
+from ..kernel.state.store import BaseStateStore
 from ..kernel.utils import NotFoundError, ValidationError
 
 _TABLE_BY_TYPE = {
@@ -24,31 +27,24 @@ _ATTEMPT_TABLE_BY_TYPE = {"experiment": "experiments", "reflection": "reflection
 class AssociationTargets:
     """Existence and attempt scoping for association targets (RC-owned SQL)."""
 
-    def project_id_for(
-        self, *, conn: Connection, target_type: str, target_id: str
-    ) -> str | None:
+    def __init__(self, *, store: BaseStateStore) -> None:
+        self.store = store
+
+    def resolve(self, *, target_type: str, target_id: str) -> AssociationTarget:
         if target_type == "attempt":
             # Attempts are implicit in v0.0001.
-            return None
+            return AssociationTarget(project_id=None, attempt_index=0)
         table = _TABLE_BY_TYPE.get(target_type)
         if table is None:
             raise ValidationError(f"unsupported target type: {target_type}")
-        row = conn.execute(
-            f"SELECT id, project_id FROM {table} WHERE id = ?", (target_id,)
-        ).fetchone()
+        attempt = ", attempt_index" if target_type in _ATTEMPT_TABLE_BY_TYPE else ""
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                f"SELECT project_id{attempt} FROM {table} WHERE id = ?", (target_id,)
+            ).fetchone()
         if row is None:
             raise NotFoundError(f"{target_type} not found: {target_id}")
-        return str(row["project_id"])
-
-    def attempt_index_for(
-        self, *, conn: Connection, target_type: str, target_id: str
-    ) -> int:
-        table = _ATTEMPT_TABLE_BY_TYPE.get(target_type)
-        if table is None:
-            return 0
-        row = conn.execute(
-            f"SELECT attempt_index FROM {table} WHERE id = ?", (target_id,)
-        ).fetchone()
-        if row is None:
-            raise NotFoundError(f"{target_type} not found: {target_id}")
-        return int(row["attempt_index"])
+        return AssociationTarget(
+            project_id=str(row["project_id"]),
+            attempt_index=int(row["attempt_index"]) if attempt else 0,
+        )

@@ -111,6 +111,7 @@ PACKAGE_LAYERS = {
     "research_core": APPLICATION_LAYER,
     "research_core/domain": DOMAIN,
     "artifacts": APPLICATION_LAYER,
+    "artifacts/ports": PORT,
     "feed": APPLICATION_LAYER,
     "sandbox": APPLICATION_LAYER,
     "sandbox/execution/backends": ADAPTER,
@@ -127,7 +128,6 @@ FILE_LAYERS = {
     "kernel/state/dialects.py": ADAPTER,
     "artifacts/figure_view.py": DOMAIN,
     "artifacts/association_policy.py": DOMAIN,
-    "artifacts/resource_selection.py": DOMAIN,
     "feed/feed_policy.py": DOMAIN,
     "feed/feed_unfurl.py": ADAPTER,
     "sandbox/sandbox_backend.py": PORT,
@@ -191,14 +191,6 @@ PUBLIC_ENTRYPOINT_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("mlflow/exhibit.py", "application/experiments/metrics_exhibit.py"),
         ("mlflow/tracking.py", "application/experiments/tracking_policy.py"),
-        (
-            "research_core/domain/reflection_artifacts.py",
-            "artifacts/resource_selection.py",
-        ),
-        ("research_core/experiments.py", "artifacts/pinned.py"),
-        ("research_core/reflections.py", "artifacts/pinned.py"),
-        ("research_core/reflections.py", "artifacts/resource_selection.py"),
-        ("research_core/reviews.py", "artifacts/pinned.py"),
         ("surface/auth.py", "research_core/domain/vocabulary.py"),
         ("surface/identity.py", "research_core/domain/vocabulary.py"),
         ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
@@ -251,28 +243,7 @@ FOREIGN_SQL_TABLE_REF = re.compile(
     re.IGNORECASE,
 )
 
-RESEARCH_ARTIFACT_SQL_BASELINE = Counter(
-    {
-        ("research_core/experiments.py", "_validate_plan_sections", "report_figures"): 1,
-        ("research_core/experiments.py", "_validate_results_report", "report_figures"): 1,
-        ("research_core/experiments.py", "exhibit_association", "resource_associations"): 1,
-        ("research_core/experiments.py", "exhibit_association", "resources"): 1,
-        ("research_core/experiments.py", "get_state_with_gate", "resource_associations"): 1,
-        ("research_core/experiments.py", "get_state_with_gate", "resources"): 1,
-        ("research_core/graph_refs.py", "<module>", "resources"): 1,
-        ("research_core/graph_refs.py", "_resolve_path_ref", "resources"): 1,
-        ("research_core/reflections.py", "_current_role_row", "resource_associations"): 1,
-        ("research_core/reflections.py", "_current_role_row", "resources"): 1,
-        ("research_core/reflections.py", "_current_role_row_for_roles", "resource_associations"): 1,
-        ("research_core/reflections.py", "_current_role_row_for_roles", "resources"): 1,
-        ("research_core/reflections.py", "_validate_reflection_doc", "report_figures"): 1,
-        ("research_core/reflections.py", "get_state_with_gate", "resource_associations"): 1,
-        ("research_core/reflections.py", "get_state_with_gate", "resources"): 1,
-        ("research_core/reviews.py", "_submitted_artifacts", "resource_associations"): 1,
-        ("research_core/reviews.py", "_submitted_artifacts", "resource_versions"): 1,
-        ("research_core/reviews.py", "_submitted_artifacts", "resources"): 1,
-    }
-)
+RESEARCH_ARTIFACT_SQL_BASELINE: Counter[tuple[str, str, str]] = Counter()
 
 APPLICATION_FORBIDDEN_IMPORT_ROOTS = frozenset(
     {

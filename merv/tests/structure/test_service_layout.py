@@ -525,10 +525,10 @@ class ServiceLayoutTest(unittest.TestCase):
             {"re", "collections.abc", "merv.shared.markdown_images"},
         )
 
-    def test_resource_selection_is_artifacts_leaf_module(self) -> None:
+    def test_evidence_contract_is_artifacts_port(self) -> None:
         self.assertEqual(
-            _import_module_names(ARTIFACTS_ROOT / "resource_selection.py"),
-            {"typing"},
+            _import_module_names(ARTIFACTS_ROOT / "ports" / "evidence.py"),
+            {"dataclasses", "typing"},
         )
 
     def test_http_policy_is_fastapi_free(self) -> None:
@@ -1069,7 +1069,6 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
         for path in (
-            ARTIFACTS_ROOT / "pinned.py",
             ARTIFACTS_ROOT / "resources.py",
             BACKEND_ROOT / "sandbox" / "sandboxes.py",
         ):
@@ -1516,9 +1515,11 @@ class ServiceLayoutTest(unittest.TestCase):
         source = (RESEARCH_CORE / "graph_refs.py").read_text(encoding="utf-8")
         self.assertIn("class GraphRefType:", source)
         self.assertIn("GRAPH_REF_TYPES: tuple[GraphRefType, ...]", source)
-        self.assertEqual(source.count("GraphRefType("), 5)
+        self.assertEqual(source.count("GraphRefType("), 4)
         self.assertIn("for ref_type in GRAPH_REF_TYPES:", source)
-        for prefix in ("res_", "rev_", "claim_", "exp_", "syn_"):
+        self.assertIn("self.evidence_reader.resolve_resource_reference", source)
+        self.assertIn('if ref.startswith("res_")', source)
+        for prefix in ("rev_", "claim_", "exp_", "syn_"):
             self.assertIn(f'prefix="{prefix}"', source)
             self.assertNotIn(f'if ref.startswith("{prefix}")', source)
             self.assertNotIn(f'elif ref.startswith("{prefix}")', source)

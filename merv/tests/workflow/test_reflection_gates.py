@@ -1082,6 +1082,14 @@ class ReflectionGateTest(unittest.TestCase):
 
     def test_reflection_state_diffs_project_graph_against_previous_publish(self) -> None:
         first_syn_id = self._drive_to_published()
+        # A later association on the published wave must not rewrite its
+        # historical comparison base; publication froze one exact version.
+        self._associate_file(
+            syn_id=first_syn_id,
+            path="project/logic_graph.json",
+            role="project_graph",
+            body=REVISED_PROJECT_GRAPH,
+        )
         second_syn_id = self._drive_to_synthesizing()
         self._associate_file(
             syn_id=second_syn_id,

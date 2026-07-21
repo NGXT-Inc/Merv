@@ -12,10 +12,9 @@ BRAIN = ROOT / "src" / "merv" / "brain"
 BASELINE_BRAIN_LOC = 39_924
 PRE_TRACKING_SLICE_LOC = 40_850
 PRE_CONSOLIDATION_LOC = 40_848
-# Explicit contracts, typed messages, and the pure Sandbox reducer add a small
-# amount of distributed structure while the former orchestration hubs shrink.
-# Keep that cost bounded instead of encouraging unreadable line compression.
-MAX_BRAIN_LOC = 41_389
+# Phase 3's typed Evidence boundary deleted duplicate pinned readers and direct
+# Research/Artifact SQL while reducing the committed 41,389-line brain.
+MAX_BRAIN_LOC = 41_265
 BASELINE_SURFACE_ORCHESTRATION_LOC = 1_022
 PRE_TRACKING_SURFACE_LOC = 549
 MAX_SURFACE_ORCHESTRATION_LOC = 100
@@ -30,8 +29,8 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
             for path in BRAIN.rglob("*.py")
         )
         self.assertLessEqual(current, MAX_BRAIN_LOC)
-        self.assertEqual(MAX_BRAIN_LOC - PRE_CONSOLIDATION_LOC, 541)
-        self.assertEqual(MAX_BRAIN_LOC - PRE_TRACKING_SLICE_LOC, 539)
+        self.assertEqual(MAX_BRAIN_LOC - PRE_CONSOLIDATION_LOC, 417)
+        self.assertEqual(MAX_BRAIN_LOC - PRE_TRACKING_SLICE_LOC, 415)
 
     def test_rewritten_orchestration_hubs_stay_small(self) -> None:
         def lines(relative: str) -> int:

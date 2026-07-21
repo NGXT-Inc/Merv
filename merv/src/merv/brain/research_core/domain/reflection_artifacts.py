@@ -20,7 +20,7 @@ from merv.shared.artifact_roles import (
 )
 from merv.shared.markdown_images import markdown_image_links
 
-from ...artifacts.resource_selection import preferred_associated_resource
+from .resource_evidence import preferred_associated_resource
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,

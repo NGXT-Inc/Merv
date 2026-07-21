@@ -34,6 +34,12 @@ from merv.brain.application.ports.tracking import (
     TrackingSnapshotRun,
 )
 from merv.brain.artifacts.facade import MetricFileSource
+from merv.brain.artifacts.ports import (
+    AssociatedEvidence,
+    AssociationTarget,
+    SubmittedDocument,
+    SubmittedEvidence,
+)
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.kernel.ports.blob_store import (
     BlobDownloadTarget,
@@ -154,6 +160,43 @@ RUN: TrackingRun = {
 # One non-empty sample per discovered value type. TypedDicts are ordinary dicts
 # at runtime; including every declared field makes their nested shapes visible.
 SAMPLES: dict[type, object] = {
+    AssociatedEvidence: AssociatedEvidence(
+        resource_id="res_1",
+        project_id="proj_1",
+        path="experiments/example/report.md",
+        kind="report",
+        title="Report",
+        current_version_id="rver_2",
+        version_token="report.md:1:2:3",
+        modified_time_ns=1,
+        size_bytes=3,
+        observed_at="2026-07-21T12:00:00Z",
+        git_commit=None,
+        is_missing=False,
+        is_deleted=False,
+        created_by="codex",
+        created_at="2026-07-21T12:00:00Z",
+        updated_at="2026-07-21T12:00:00Z",
+        role="report",
+        attempt_index=2,
+        submitted_version_id="rver_1",
+        association_order=7,
+    ),
+    AssociationTarget: AssociationTarget("proj_1", 2),
+    SubmittedDocument: SubmittedDocument(
+        text="# Report",
+        version_id="rver_1",
+        path="experiments/example/report.md",
+        role="report",
+        figure_links=("figures/result.png",),
+    ),
+    SubmittedEvidence: SubmittedEvidence(
+        role="report",
+        path="experiments/example/report.md",
+        version_id="rver_1",
+        association_order=7,
+        content="# Report",
+    ),
     TrackingCapabilities: TrackingCapabilities(True, True, True),
     TrackingContextPayload: {
         "configured": True,

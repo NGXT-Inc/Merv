@@ -8,7 +8,6 @@ from merv.shared.artifact_roles import GATED_ROLES
 
 from ..kernel.utils import NotFoundError, WorkflowError
 from .figure_view import build_experiment_figure
-from .resource_selection import preferred_associated_resource
 from .resources import ResourceService
 
 
@@ -213,4 +212,4 @@ class ArtifactsFacade:
         return None
 
 
-__all__ = ["Artifacts", "ArtifactsFacade", "MetricFileSource", "build_experiment_figure", "preferred_associated_resource"]
+__all__ = ["Artifacts", "ArtifactsFacade", "MetricFileSource", "build_experiment_figure"]

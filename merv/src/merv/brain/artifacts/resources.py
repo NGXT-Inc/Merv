@@ -37,8 +37,20 @@ from ..kernel.state.store import (
     row_to_dict,
     rows_to_dicts,
 )
-from .pinned import pinned_text_for_version as load_pinned_text_for_version
 from .association_policy import validate_resource_association
+from .ports import (
+    AssociatedEvidence,
+    AssociationTargetResolver,
+    SubmittedDocument,
+    SubmittedEvidence,
+)
+
+
+def _resubmit_hint(*, role: str, path: str) -> str:
+    return (
+        f"re-register it (resource.register with role {role!r}) to submit "
+        f"the current content of {path}"
+    )
 
 
 class ResourceService:
@@ -48,15 +60,11 @@ class ResourceService:
         self,
         *,
         store: BaseStateStore,
+        association_targets: AssociationTargetResolver,
         blobs: EvidenceBlobStore | None = None,
-        association_targets: Any = None,
     ) -> None:
         self.store = store
         self.blobs = blobs
-        # Research-core-owned target resolution (existence + attempt scoping),
-        # injected at composition — artifacts must not name research-core
-        # tables. Optional only for direct construction in tests; the
-        # composition root always injects it.
         self.association_targets = association_targets
 
     def record_observation(
@@ -162,6 +170,7 @@ class ResourceService:
                 content_type=content_type or "application/octet-stream",
                 observed_at=observed_at,
                 created_by=created_by,
+                force_new=bool(existing and existing["deleted"]),
             )
             conn.execute(
                 "UPDATE resources SET current_version_id = ? WHERE id = ?",
@@ -335,25 +344,19 @@ class ResourceService:
                 raise NotFoundError(
                     f"resource not found in project {project_id}: {resource_id}"
                 )
-            target_project_id = self._targets().project_id_for(
-                conn=conn,
+            target = self.association_targets.resolve(
                 target_type=target_type,
                 target_id=target_id,
             )
-            if target_project_id is not None and target_project_id != project_id:
+            if target.project_id is not None and target.project_id != project_id:
                 raise NotFoundError(
                     f"{target_type} not found in project {project_id}: {target_id}"
                 )
-            attempt_index = self._targets().attempt_index_for(
-                conn=conn,
-                target_type=target_type,
-                target_id=target_id,
-            )
             return {
                 "ok": True,
                 "resource": self._hydrate_resource(row=resource, conn=conn),
                 "target_type": target_type,
-                "attempt_index": attempt_index,
+                "attempt_index": target.attempt_index,
             }
 
     def list_resources(
@@ -506,14 +509,9 @@ class ResourceService:
             raise WorkflowError(
                 f"{what}: no blob store is configured; submitted content is unavailable"
             )
-        with closing(self.store.connect()) as conn:
-            return load_pinned_text_for_version(
-                conn=conn,
-                blobs=self.blobs,
-                version_id=version_id,
-                what=what,
-                role=role,
-            )
+        return self.submitted_document(
+            version_id=version_id, path="", role=role, what=what
+        ).text
 
     def submitted_text_for_version(self, *, version_id: str | None) -> str | None:
         """Best-effort submitted text for one version, decoded for UI display."""
@@ -560,29 +558,194 @@ class ResourceService:
             return None
 
     def resources_for_target(
-        self, *, conn: Connection, target_type: str, target_id: str
-    ) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            """
-            SELECT r.*, a.role AS association_role, a.attempt_index AS association_attempt_index,
-                   a.version_id AS association_version_id
-            FROM resources r
-            JOIN resource_associations a ON a.resource_id = r.id
-            WHERE a.target_type = ? AND a.target_id = ?
-              AND r.deleted = 0
-            ORDER BY a.attempt_index, a.role, r.path
-            """,
-            (target_type, target_id),
-        ).fetchall()
-        return [
-            self._hydrate_resource(row=row, conn=conn)
-            | {
-                "association_role": row["association_role"],
-                "association_attempt_index": row["association_attempt_index"],
-                "association_version_id": row["association_version_id"],
-            }
+        self, *, target_type: str, target_id: str
+    ) -> tuple[AssociatedEvidence, ...]:
+        """Return stable evidence facts without exposing storage-row names."""
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT r.*, a.role AS association_role,
+                       a.attempt_index AS association_attempt_index,
+                       a.version_id AS association_version_id,
+                       a.created_seq AS association_rowid
+                FROM resources r
+                JOIN resource_associations a ON a.resource_id = r.id
+                WHERE a.target_type = ? AND a.target_id = ?
+                ORDER BY a.attempt_index, a.role, r.path
+                """,
+                (target_type, target_id),
+            ).fetchall()
+        return tuple(
+            AssociatedEvidence(
+                resource_id=str(row["id"]),
+                project_id=str(row["project_id"]),
+                path=str(row["path"]),
+                kind=str(row["kind"]),
+                title=str(row["title"]),
+                current_version_id=(
+                    str(row["current_version_id"])
+                    if row["current_version_id"]
+                    else None
+                ),
+                version_token=str(row["version_token"]),
+                modified_time_ns=int(row["mtime_ns"]),
+                size_bytes=int(row["size_bytes"]),
+                observed_at=str(row["observed_at"]),
+                git_commit=str(row["git_commit"]) if row["git_commit"] else None,
+                is_missing=bool(row["missing"]),
+                is_deleted=bool(row["deleted"]),
+                created_by=str(row["created_by"]),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+                role=str(row["association_role"]),
+                attempt_index=int(row["association_attempt_index"]),
+                submitted_version_id=(
+                    str(row["association_version_id"])
+                    if row["association_version_id"]
+                    else None
+                ),
+                association_order=int(row["association_rowid"]),
+            )
             for row in rows
-        ]
+        )
+
+    def submitted_document(
+        self,
+        *,
+        version_id: str | None,
+        path: str,
+        role: str,
+        what: str,
+    ) -> SubmittedDocument:
+        """Strict submitted text and figure membership for one exact version."""
+        if self.blobs is None:
+            raise WorkflowError(
+                f"{what}: no blob store is configured; gated artifacts cannot be linted"
+            )
+        if not version_id:
+            raise WorkflowError(
+                f"{what} ({path}) has no pinned version — "
+                + _resubmit_hint(role=role, path=path)
+            )
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT project_id, path, content_sha256
+                FROM resource_versions WHERE id = ?
+                """,
+                (str(version_id),),
+            ).fetchone()
+            if row is None:
+                raise WorkflowError(f"{what}: resource version not found: {version_id}")
+            path = str(row["path"])
+            try:
+                data = self.blobs.get(
+                    namespace=str(row["project_id"]),
+                    sha256=str(row["content_sha256"]),
+                )
+            except NotFoundError as exc:
+                raise WorkflowError(
+                    f"{what} ({path}) has no submitted content — "
+                    + _resubmit_hint(role=role, path=path)
+                ) from exc
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise WorkflowError(
+                    f"{what} ({path}) is not valid UTF-8 text"
+                ) from exc
+            figure_links = tuple(
+                str(figure["link_path"])
+                for figure in conn.execute(
+                    """
+                    SELECT link_path FROM report_figures
+                    WHERE report_version_id = ? ORDER BY link_path
+                    """,
+                    (version_id,),
+                ).fetchall()
+            )
+        return SubmittedDocument(
+            text=text,
+            version_id=str(version_id),
+            path=path,
+            role=role,
+            figure_links=figure_links,
+        )
+
+    def submitted_evidence(
+        self,
+        *,
+        target_type: str,
+        target_id: str,
+        attempt_index: int,
+        roles: tuple[str, ...],
+    ) -> tuple[SubmittedEvidence, ...]:
+        """Return all current-attempt submitted text as best-effort facts."""
+        if self.blobs is None or not roles:
+            return ()
+        role_slots = ", ".join("?" for _role in roles)
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT a.role, a.version_id, a.created_seq, r.path,
+                       v.project_id, v.content_sha256
+                FROM resource_associations a
+                JOIN resources r ON r.id = a.resource_id
+                LEFT JOIN resource_versions v ON v.id = a.version_id
+                WHERE a.target_type = ? AND a.target_id = ?
+                  AND a.attempt_index = ? AND r.deleted = 0
+                  AND a.role IN ({role_slots})
+                ORDER BY a.created_seq
+                """,
+                (target_type, target_id, int(attempt_index), *roles),
+            ).fetchall()
+        result: list[SubmittedEvidence] = []
+        for row in rows:
+            content = None
+            try:
+                data = self.blobs.get(
+                    namespace=str(row["project_id"]),
+                    sha256=str(row["content_sha256"]),
+                )
+                content = data.decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - reviewer hydration is best-effort
+                pass
+            result.append(
+                SubmittedEvidence(
+                    role=str(row["role"]),
+                    path=str(row["path"]),
+                    version_id=(
+                        str(row["version_id"]) if row["version_id"] else None
+                    ),
+                    association_order=int(row["created_seq"]),
+                    content=content,
+                )
+            )
+        return tuple(result)
+
+    def resolve_resource_reference(
+        self, *, project_id: str, ref: str
+    ) -> dict[str, Any] | None:
+        """Resolve one resource ID or registered path for a project graph."""
+        by_id = ref.startswith("res_")
+        column = "id" if by_id else "path"
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                f"SELECT id, path, kind, title, missing FROM resources "
+                f"WHERE {column} = ? AND project_id = ? AND deleted = 0",
+                (ref, project_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "type": "resource",
+            "resolved": True,
+            "resource_id": row["id"],
+            "path": row["path"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "missing": bool(row["missing"]),
+        }
 
     _COMPACT_FIELDS = (
         "id",
@@ -646,13 +809,6 @@ class ResourceService:
             raise ValidationError(
                 "content_sha256 must be a lowercase sha256 hex digest"
             )
-
-    def _targets(self) -> Any:
-        if self.association_targets is None:
-            raise RuntimeError(
-                "ResourceService needs association_targets injected at composition"
-            )
-        return self.association_targets
 
     def _capture_submitted_gated_blob(
         self,
@@ -925,7 +1081,29 @@ class ResourceService:
         figures: list[dict[str, Any]],
     ) -> None:
         submitted = {str(figure.get("link_path") or ""): figure for figure in figures}
+        with_links: list[tuple[str, bytes, str, int, bool]] = []
+        existing = {
+            str(row["link_path"]): str(row["sha256"])
+            for row in conn.execute(
+                """
+                SELECT link_path, sha256 FROM report_figures
+                WHERE report_version_id = ?
+                """,
+                (version_id,),
+            ).fetchall()
+        }
+        sealed = (
+            conn.execute(
+                "SELECT 1 FROM resource_associations WHERE version_id = ? LIMIT 1",
+                (version_id,),
+            ).fetchone()
+            is not None
+        )
+        seen: set[str] = set()
         for link in markdown_image_links(markdown_text):
+            if link in seen:
+                continue
+            seen.add(link)
             figure = submitted.get(link)
             if figure is None:
                 continue
@@ -939,22 +1117,41 @@ class ResourceService:
             size = len(data)
             if size > MARKDOWN_FIGURE_MAX_BYTES:
                 continue
-            sha = self.blobs.put(
-                namespace=project_id,
-                data=data,
-                content_type=str(
-                    figure.get("content_type") or "application/octet-stream"
-                ),
+            sha = hashlib.sha256(data).hexdigest()
+            prior_sha = existing.get(link)
+            if prior_sha is not None and prior_sha != sha:
+                raise ValidationError(
+                    f"figure {link!r} cannot replace immutable evidence for "
+                    f"resource version {version_id}; revise the markdown so the "
+                    "document receives a new version before submitting new figure bytes"
+                )
+            if prior_sha is None and sealed:
+                raise ValidationError(
+                    f"figure {link!r} cannot be added to immutable evidence for "
+                    f"resource version {version_id}; revise the markdown so the "
+                    "document receives a new version before submitting the figure"
+                )
+            with_links.append(
+                (
+                    link,
+                    data,
+                    str(figure.get("content_type") or "application/octet-stream"),
+                    size,
+                    prior_sha is None,
+                )
             )
+        for link, data, content_type, size, insert in with_links:
+            stored_sha = self.blobs.put(
+                namespace=project_id, data=data, content_type=content_type
+            )
+            if not insert:
+                continue
             conn.execute(
                 """
                 INSERT INTO report_figures (report_version_id, link_path, sha256, size_bytes, created_at)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(report_version_id, link_path)
-                DO UPDATE SET sha256 = excluded.sha256, size_bytes = excluded.size_bytes,
-                              created_at = excluded.created_at
                 """,
-                (version_id, link, sha, size, now_iso()),
+                (version_id, link, stored_sha, size, now_iso()),
             )
 
     def _associate_version(
@@ -968,20 +1165,15 @@ class ResourceService:
         target_id: str,
         role: str,
     ) -> dict[str, Any]:
-        target_project_id = self._targets().project_id_for(
-            conn=conn,
+        target = self.association_targets.resolve(
             target_type=target_type,
             target_id=target_id,
         )
-        if target_project_id is not None and target_project_id != project_id:
+        if target.project_id is not None and target.project_id != project_id:
             raise NotFoundError(
                 f"{target_type} not found in project {project_id}: {target_id}"
             )
-        attempt_index = self._targets().attempt_index_for(
-            conn=conn,
-            target_type=target_type,
-            target_id=target_id,
-        )
+        attempt_index = target.attempt_index
         assoc_id = new_id(prefix="assoc")
         conn.execute(
             """
@@ -1032,13 +1224,14 @@ class ResourceService:
         content_type: str,
         observed_at: str,
         created_by: str,
+        force_new: bool = False,
     ) -> dict[str, Any]:
         self._validate_content_sha256(content_sha256)
         current = conn.execute(
             "SELECT * FROM resource_versions WHERE id = (SELECT current_version_id FROM resources WHERE id = ?)",
             (resource_id,),
         ).fetchone()
-        if current and current["content_sha256"] == content_sha256:
+        if not force_new and current and current["content_sha256"] == content_sha256:
             return self._hydrate_version(row=current, conn=conn)
 
         version_id = new_id(prefix="rver")

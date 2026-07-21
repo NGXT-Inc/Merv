@@ -9,6 +9,7 @@ from typing import Any
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
+from ..artifacts.ports import EvidenceReader
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.utils import (
@@ -20,7 +21,6 @@ from ..kernel.utils import (
     now_iso,
     parse_iso,
 )
-from ..artifacts.pinned import PinnedStore
 from .domain.review_gates import (
     is_review_gate_exempt,
 )
@@ -55,12 +55,12 @@ class ReviewService:
         store: BaseStateStore,
         experiments: ExperimentService,
         reflections: ReflectionService,
-        pinned: PinnedStore | None = None,
+        evidence_reader: EvidenceReader,
     ) -> None:
         self.store = store
         self.experiments = experiments
         self.reflections = reflections
-        self.pinned = pinned
+        self.evidence_reader = evidence_reader
 
     def request(
         self,
@@ -255,6 +255,7 @@ class ReviewService:
                     "session_id": session_id,
                 },
             )
+            snapshot = snapshot_from_id(snapshot_id=str(req["target_snapshot_id"]))
             return {
                 "review_session_id": session_id,
                 "role": req["role"],
@@ -272,65 +273,38 @@ class ReviewService:
                 # pinned at associate — not whatever the working tree holds
                 # now. Hydrated here so a reviewer never has to trust disk.
                 "submitted_artifacts": self._submitted_artifacts(
-                    conn=conn,
                     target_type=str(req["target_type"]),
                     target_id=str(req["target_id"]),
+                    attempt_index=int(snapshot.get("attempt_index") or 0),
                 ),
             }
 
     def _submitted_artifacts(
-        self, *, conn, target_type: str, target_id: str
+        self, *, target_type: str, target_id: str, attempt_index: int
     ) -> list[dict[str, Any]]:
-        """The target's current-attempt gated-role artifacts, with content."""
-        if self.pinned is None:
-            return []
-        table = {"experiment": "experiments", "reflection": "reflections"}.get(
-            target_type
-        )
-        if table is None:
-            return []
-        attempt = conn.execute(
-            f"SELECT attempt_index FROM {table} WHERE id = ?", (target_id,)
-        ).fetchone()
-        if attempt is None:
-            return []
-        rows = conn.execute(
-            """
-            SELECT a.role, a.version_id, r.path, v.project_id, v.content_sha256
-            FROM resource_associations a
-            JOIN resources r ON r.id = a.resource_id
-            LEFT JOIN resource_versions v ON v.id = a.version_id
-            WHERE a.target_type = ? AND a.target_id = ? AND a.attempt_index = ?
-              AND r.deleted = 0
-            ORDER BY a.created_seq
-            """,
-            (target_type, target_id, int(attempt["attempt_index"])),
-        ).fetchall()
+        """Apply reviewer visibility and advisory-failure policy to evidence."""
         artifacts: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for row in reversed(rows):  # newest association per (role, path) wins
-            role = str(row["role"])
-            # Gated agent artifacts plus the system metrics exhibit: the
-            # exhibit exists only as pinned bytes (no working-tree file), so
-            # hydration is the reviewer's one way to read it.
-            if role not in GATED_ROLES and role != EXHIBIT_ROLE:
+        evidence = self.evidence_reader.submitted_evidence(
+            target_type=target_type,
+            target_id=target_id,
+            attempt_index=attempt_index,
+            roles=tuple(sorted(GATED_ROLES | {EXHIBIT_ROLE})),
+        )
+        for item in reversed(evidence):
+            if item.role not in GATED_ROLES and item.role != EXHIBIT_ROLE:
                 continue
-            key = (role, str(row["path"]))
+            key = (item.role, item.path)
             if key in seen:
                 continue
             seen.add(key)
             entry: dict[str, Any] = {
-                "role": role,
-                "path": str(row["path"]),
-                "version_id": str(row["version_id"]) if row["version_id"] else None,
+                "role": item.role,
+                "path": item.path,
+                "version_id": item.version_id,
+                "content": item.content,
             }
-            try:
-                entry["content"] = self.pinned.submitted_text(
-                    project_id=str(row["project_id"]),
-                    sha256=str(row["content_sha256"]),
-                )
-            except Exception:  # noqa: BLE001 — hydration is best-effort
-                entry["content"] = None
+            if item.content is None:
                 entry["note"] = (
                     "submitted content unavailable; ask the producer to re-associate"
                 )
