@@ -28,7 +28,7 @@ class _ControlHarness:
     def __init__(self, *, app: TestBrain) -> None:
         self.url = "http://control.test"
         self.client = TestClient(
-            create_fastapi_app(app=app), raise_server_exceptions=False
+            create_fastapi_app(app=app.http), raise_server_exceptions=False
         )
 
     def http_get(self, *, url: str, is_cloud: bool) -> dict:  # noqa: ARG002

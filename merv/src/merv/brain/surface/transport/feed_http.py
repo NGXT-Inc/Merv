@@ -4,19 +4,20 @@ The feed owns its routes so it stays a liftable module: nothing in the core UI
 API (`http_api.py`) depends on it, and removing the feed is deleting the feed
 package plus the single ``register_feed_routes`` call in ``create_fastapi_app``.
 
-The registrar takes an ``app_for(project_id)`` resolver (the same per-project
-routing the rest of the API uses) and reads everything off ``app.feed`` — the
-feed service is the only backend surface these routes touch.
+The registrar receives only the public Feed capability, project authorizer,
+and activity sink used by these routes.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import Body, Query, Request
 from fastapi.responses import Response
 
+from ...feed.facade import FeedDelivery
 from ...kernel.utils import ValidationError
+from .api.dependencies import ActivityTelemetry, AuthorizeProject
 
 _TRACK_EVENTS = {"feed_opened", "post_viewed", "link_clicked", "image_viewed"}
 
@@ -68,7 +69,11 @@ def _enrich_post_urls(post: dict[str, Any], project_id: str) -> None:
 
 
 def register_feed_routes(
-    http: Any, *, app_for: Callable[[str, Request], Any]
+    http: Any,
+    *,
+    feed_api: FeedDelivery,
+    authorize_project: AuthorizeProject,
+    activity: ActivityTelemetry,
 ) -> None:
     """Register the feed's `/api/projects/{pid}/feed*` routes onto ``http``."""
 
@@ -79,7 +84,8 @@ def register_feed_routes(
         limit: int = Query(30, ge=1, le=100),
         cursor: int | None = Query(None),
     ) -> dict[str, Any]:
-        result = app_for(project_id, request).feed.list_posts(
+        authorize_project(request, project_id)
+        result = feed_api.list_posts(
             project_id=project_id, limit=limit, before_seq=cursor
         )
         for post in result.get("posts", []):
@@ -95,7 +101,8 @@ def register_feed_routes(
     ) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise ValidationError("reaction body must be a JSON object")
-        result = app_for(project_id, request).feed.set_reaction(
+        authorize_project(request, project_id)
+        result = feed_api.set_reaction(
             project_id=project_id,
             post_id=post_id,
             kind=str(body.get("kind") or ""),
@@ -114,7 +121,8 @@ def register_feed_routes(
     ) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise ValidationError("reply body must be a JSON object")
-        result = app_for(project_id, request).feed.researcher_reply(
+        authorize_project(request, project_id)
+        result = feed_api.researcher_reply(
             project_id=project_id,
             post_id=post_id,
             text=str(body.get("text") or ""),
@@ -125,7 +133,8 @@ def register_feed_routes(
 
     @http.get("/api/projects/{project_id}/feed/{post_id}/image")
     def feed_image(request: Request, project_id: str, post_id: str) -> Response:
-        content, content_type = app_for(project_id, request).feed.get_image(
+        authorize_project(request, project_id)
+        content, content_type = feed_api.get_image(
             project_id=project_id, post_id=post_id
         )
         return Response(
@@ -134,7 +143,8 @@ def register_feed_routes(
 
     @http.get("/api/projects/{project_id}/feed/{post_id}/link-image")
     def feed_link_image(request: Request, project_id: str, post_id: str) -> Response:
-        content, content_type = app_for(project_id, request).feed.get_link_image(
+        authorize_project(request, project_id)
+        content, content_type = feed_api.get_link_image(
             project_id=project_id, post_id=post_id
         )
         return Response(
@@ -143,7 +153,8 @@ def register_feed_routes(
 
     @http.get("/api/projects/{project_id}/feed/{post_id}/embed")
     def feed_embed(request: Request, project_id: str, post_id: str) -> Response:
-        wrapped = app_for(project_id, request).feed.get_embed(
+        authorize_project(request, project_id)
+        wrapped = feed_api.get_embed(
             project_id=project_id, post_id=post_id
         )
         return Response(
@@ -171,7 +182,8 @@ def register_feed_routes(
         # contribute an explicit allowlist of analytics fields and nothing else,
         # so a caller cannot forge tool-call-shaped entries or retarget the
         # record at another tenant's project.
-        app_for(project_id, request).activity.emit(
+        authorize_project(request, project_id)
+        activity.emit(
             event_type=f"feed.{event}",
             payload={
                 "project_id": project_id,

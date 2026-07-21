@@ -26,7 +26,7 @@ class _HttpHarness:
         self.url = url
         self.client = TestClient(
             create_fastapi_app(
-                app=app,
+                app=app.http,
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=False,
                     hosted_control=False,

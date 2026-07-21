@@ -150,20 +150,20 @@ class ApplicationArchitectureBudgetTest(unittest.TestCase):
         self.assertEqual(composition.count("dispatcher=self.reaction_registry"), 3)
         self.assertNotIn("self.app.mlflow_tracking", views)
         self.assertNotIn("mlflow_visible_for_status", views)
-        self.assertIn("self.app.experiment_detail_query(", views)
+        experiment_routes = (BRAIN / "surface/transport/api/experiments.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("present(detail(", experiment_routes)
+        self.assertNotIn("experiment_detail", views)
 
-    def test_tool_operations_receive_narrow_callable_ports(self) -> None:
+    def test_tool_operations_receive_public_component_contracts(self) -> None:
         commands = (BRAIN / "application/tool_commands.py").read_text(encoding="utf-8")
         composition = (BRAIN / "surface/control/control_app.py").read_text(
             encoding="utf-8"
         )
         for raw_service in ("projects: Any", "claims: Any", "resources: Any", "storage: Any"):
             self.assertNotIn(raw_service, commands)
-        for binding in (
-            "project_create=self.projects.create",
-            "claims_list=self.claims.list_claims",
-            "resource_resolve=self.resources.resolve",
-        ):
+        for binding in ("projects=core.projects", "claims=core.claims", "resources=core.resources"):
             self.assertIn(binding, composition)
 
 

@@ -9,12 +9,11 @@ from fastapi import Request
 
 from ...identity import LOCAL_PRINCIPAL
 from ..http_policy import HttpSurfacePolicy
-from .views import ResearchHttpApi
+from .views import present
 
 
 @dataclass(frozen=True)
 class ApiRouteContext:
-    api: ResearchHttpApi
     surface: HttpSurfacePolicy
     route_call_tool: Callable[..., dict[str, Any]]
     # Public auth block for /api/meta (required flag + supabase url/anon key);
@@ -37,4 +36,4 @@ class ApiRouteContext:
             activity_source="http",
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
         )
-        return self.api._present(result)
+        return present(result)

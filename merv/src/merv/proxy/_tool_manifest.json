@@ -355,7 +355,7 @@
       "description": "Create a planned experiment. Requires an intent and a short folder-safe 'name' unique within the project; the name becomes the experiment folder experiments/<name>/.",
       "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "experiments.create",
+      "handlerIdentity": "create_experiment.create",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -504,7 +504,7 @@
       "description": "Get one experiment state. Includes 'allowed_transitions': the transitions available from the current status, each with what it 'requires' (e.g. a registered plan resource, a passing review). Once running or later, includes the central 'mlflow' context and any plugin-created 'mlflow_run' identity for quantitative logging.",
       "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "tracking_context.experiment",
+      "handlerIdentity": "agent_experiment.experiment",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

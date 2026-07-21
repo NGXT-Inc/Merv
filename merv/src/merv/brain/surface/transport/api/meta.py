@@ -10,11 +10,17 @@ from .... import __version__
 from ....kernel.version import meta
 
 from .context import ApiRouteContext
+from .dependencies import ActivityTelemetry, ToolCallTelemetry
+from .views import activity_view, tool_call_detail as select_tool_call_detail
 
 
-def build_router(ctx: ApiRouteContext) -> APIRouter:
+def build_router(
+    ctx: ApiRouteContext,
+    *,
+    activity_log: ActivityTelemetry,
+    tool_calls: ToolCallTelemetry,
+) -> APIRouter:
     api_router = APIRouter()
-    api = ctx.api
     surface = ctx.surface
     @api_router.get("/health")
     def health() -> dict[str, Any]:
@@ -64,7 +70,9 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         source: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
-        return api.activity(limit=limit, source=source, project_id=project_id)
+        return activity_view(
+            activity_log, limit=limit, source=source, project_id=project_id
+        )
 
     # /api/debug/* expose tool-call internals. Hosted control is currently a
     # private operator surface; the real auth system should gate these before
@@ -80,7 +88,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         sort: str = "ts",
         order: str = "desc",
     ) -> dict[str, Any]:
-        return api.tool_call_stats(
+        return tool_calls.stats(
             minutes=minutes,
             source=source,
             status=status,
@@ -92,14 +100,15 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
 
     @api_router.get("/api/debug/tool-calls/{call_id}")
     def tool_call_detail(call_id: int) -> dict[str, Any]:
-        return api.tool_call_detail(
+        return select_tool_call_detail(
+            tool_calls,
             call_id=call_id,
             project_ids=None,
         )
 
     @api_router.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
-        return api.app.tool_calls.clear(project_ids=None)
+        return tool_calls.clear(project_ids=None)
 
 
     return api_router

@@ -91,12 +91,12 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         # Seed a running, already-expired sandbox row directly (the provision
         # handshake is exercised elsewhere; here we test crash recovery of an
         # existing running row). The registry is the cloud's row authority.
-        project_id = app.call_tool("project", {"action": "create", "name": "Cloud Project"})["id"]
-        exp_id = app.call_tool(
+        project_id = app.tools.call_tool("project", {"action": "create", "name": "Cloud Project"})["id"]
+        exp_id = app.tools.call_tool(
             "experiment.create",
             {"project_id": project_id, "name": "reaper-recovery", "intent": "x"},
         )["id"]
-        with app.store.transaction() as conn:
+        with app._store.transaction() as conn:
             conn.execute(
                 "UPDATE experiments SET status = 'running' WHERE id = ?", (exp_id,)
             )
@@ -130,13 +130,13 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         # Reaping no longer mutates experiment status, so wait on the sandbox
         # row itself.
         self._await(
-            lambda: restarted.call_tool(
+            lambda: restarted.tools.call_tool(
                 "sandbox.get",
                 {"project_id": project_id, "sandbox_uid": sandbox_uid},
             )["status"]
             == "terminated"
         )
-        sandbox = restarted.call_tool(
+        sandbox = restarted.tools.call_tool(
             "sandbox.get",
             {"project_id": project_id, "sandbox_uid": sandbox_uid},
         )

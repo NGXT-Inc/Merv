@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..research_core.domain.vocabulary import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
+from ..kernel.identity import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
 
 
 @dataclass(frozen=True)

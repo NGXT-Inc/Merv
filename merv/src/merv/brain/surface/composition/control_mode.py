@@ -141,7 +141,6 @@ def build_control_app(
     _validate_agent_mlflow_requirement(mlflow_tracking=mlflow_tracking, env=env)
     _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
     app = ControlApp(
-        repo_root=staging,
         store=store,
         blobs=blobs,
         storage=storage,
@@ -159,6 +158,7 @@ def build_control_app(
         # The brain holds provider lifecycle responsibility, so this composition
         # forces the expiry reaper on in both deployment presets.
         force_expiry_reaper=True,
+        structured_logging=not local_deployment,
     )
     # A brain restart with live VMs must re-acquire reaping. ControlApp has
     # already started its SandboxRuntime; this reconciles rows left running.
@@ -199,7 +199,7 @@ def build_control_server(
             "%s is empty; browser clients will be blocked by hosted-control CORS",
             ALLOWED_ORIGINS_ENV_VAR,
         )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage)
     auth = SupabaseVerifier.from_env(env)
     _validate_auth_requirement(auth=auth, env=env)
     if auth is None:
@@ -211,7 +211,7 @@ def build_control_server(
             REQUIRE_AUTH_ENV_VAR,
         )
     fastapi_app = create_fastapi_app(
-        app=app,
+        app=app.http,
         allowed_origins=origins,
         cleanup=cleanup,
         tenant_counters=app.tenant_counters_query,
@@ -254,9 +254,9 @@ def build_local_server(
         mlflow_tracking=mlflow_tracking,
         local_deployment=True,
     )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app.blobs, storage=app.storage)
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage)
     fastapi_app = create_fastapi_app(
-        app=app,
+        app=app.http,
         allowed_origins=allowed_origins or [],
         cleanup=cleanup,
         tenant_counters=app.tenant_counters_query,
@@ -391,7 +391,7 @@ def _resume_active_sandboxes(*, app: ControlApp) -> None:
     Best-effort — a reconcile failure must not block startup or the reaper.
     """
     with suppress(Exception):  # startup must not hinge on recovery
-        had_running = bool(app.sandbox_runtime.repository.list_running_rows())
+        had_running = bool(app._sandbox_runtime.repository.list_running_rows())
         app.sandboxes.reconcile_running_rows()
         if had_running:
             # Kick the resumed reaper once so anything already past its deadline

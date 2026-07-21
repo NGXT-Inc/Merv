@@ -12,6 +12,7 @@ from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 from ..artifacts.ports import EvidenceReader
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.events import StoredEvent, freeze_json_object
+from ..kernel.identity import LOCAL_TENANT_ID
 from ..kernel.utils import (
     NotFoundError,
     PermissionDeniedError,
@@ -32,7 +33,6 @@ from .domain.review_returns import (
 from .domain.review_snapshot import review_snapshot_id, snapshot_from_id
 from .domain.review_validation import validate_review_role, validate_review_verdict
 from .domain.synopsis import validate_synopsis
-from .domain.vocabulary import LOCAL_TENANT_ID
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from .experiments import ExperimentService
 from .reflections import ReflectionService

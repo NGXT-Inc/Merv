@@ -132,6 +132,7 @@ FILE_LAYERS = {
     "artifacts/association_policy.py": DOMAIN,
     "feed/feed_policy.py": DOMAIN,
     "feed/feed_unfurl.py": ADAPTER,
+    "feed/ports.py": PORT,
     "sandbox/sandbox_backend.py": PORT,
     "sandbox/execution/multiplexer.py": ADAPTER,
     "sandbox/execution/vm_ssh.py": ADAPTER,
@@ -171,20 +172,7 @@ ALLOWED_LAYER_EDGES = (
 # Exact-pair compatibility ledger for unrelated Surface work that has not yet
 # moved inward. This may only shrink. Experiment-transition/exhibit pairs are
 # deliberately absent from the final ledger.
-LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # Feed still constructs its network adapter instead of receiving a
-        # LinkUnfurlPort. This is the one named component-internal exception.
-        ("feed/feed.py", "feed/feed_unfurl.py"),
-        # Unrelated legacy Surface entrypoints. Move these dependencies inward
-        # use case by use case; never broaden them to directory wildcards.
-        ("surface/auth.py", "research_core/domain/vocabulary.py"),
-        ("surface/identity.py", "research_core/domain/vocabulary.py"),
-        ("surface/observability.py", "surface/config.py"),
-        ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
-        ("surface/tools/contracts.py", "surface/config.py"),
-    }
-)
+LAYER_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset()
 
 # Non-bootstrap code should enter another component through its facade or an
 # explicit port.  These exact legacy pairs are migration work, not permission
@@ -193,10 +181,6 @@ PUBLIC_ENTRYPOINT_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("mlflow/exhibit.py", "application/experiments/metrics_exhibit.py"),
         ("mlflow/tracking.py", "application/experiments/tracking_policy.py"),
-        ("surface/auth.py", "research_core/domain/vocabulary.py"),
-        ("surface/identity.py", "research_core/domain/vocabulary.py"),
-        ("surface/tools/contracts.py", "research_core/domain/vocabulary.py"),
-        ("surface/transport/data_plane_http.py", "feed/feed.py"),
     }
 )
 
@@ -293,6 +277,16 @@ CONCRETE_COLLABORATOR_SUFFIXES = (
 CONCRETE_FACTORY_PREFIXES = ("build_", "create_", "make_")
 CONCRETE_FACTORY_SUFFIXES = tuple(
     f"_{suffix.lower()}" for suffix in CONCRETE_COLLABORATOR_SUFFIXES
+)
+
+DELIVERY_PERSISTENCE_MEMBERS = frozenset(
+    {"store", "_store", "transaction", "connect", "cursor"}
+)
+DELIVERY_DYNAMIC_REACH_THROUGH_MEMBERS = (
+    DELIVERY_PERSISTENCE_MEMBERS | {"__dict__"}
+)
+DELIVERY_WHOLE_DEPENDENCY_CARRIERS = frozenset(
+    {"ControlApp", "HttpDependencies"}
 )
 
 
@@ -549,6 +543,105 @@ def _application_purity_violations() -> list[str]:
     return sorted(set(violations))
 
 
+def _delivery_boundary_violations(
+    source: str, *, relative: str = "<synthetic>"
+) -> list[str]:
+    """Reject raw implementations and persistence reach-through in Delivery.
+
+    This scan is deliberately structural rather than tied to today's routes.
+    Attribute access is rejected at its persistence member, so it still catches
+    values reached through local aliases or arbitrarily deep attribute chains.
+    """
+    tree = ast.parse(source, filename=relative)
+    violations: set[str] = set()
+    raw_aliases: set[str] = set()
+    carrier_aliases = set(DELIVERY_WHOLE_DEPENDENCY_CARRIERS)
+
+    def is_raw_type(name: str) -> bool:
+        return name == "ControlApp" or name.endswith(("Service", "Store"))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        for alias in node.names:
+            bound_name = alias.asname or alias.name
+            if is_raw_type(alias.name):
+                raw_aliases.add(bound_name)
+                violations.add(
+                    f"{relative}:{node.lineno}: imports raw implementation type "
+                    f"{alias.name}"
+                )
+            if alias.name in DELIVERY_WHOLE_DEPENDENCY_CARRIERS:
+                carrier_aliases.add(bound_name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and (
+            is_raw_type(node.id) or node.id in raw_aliases
+        ):
+            violations.add(
+                f"{relative}:{node.lineno}: names raw implementation type {node.id}"
+            )
+        elif isinstance(node, ast.Attribute):
+            if node.attr in DELIVERY_DYNAMIC_REACH_THROUGH_MEMBERS:
+                violations.add(
+                    f"{relative}:{node.lineno}: reaches through to {node.attr}"
+                )
+            elif is_raw_type(node.attr):
+                violations.add(
+                    f"{relative}:{node.lineno}: names raw implementation type "
+                    f"{node.attr}"
+                )
+        elif (
+            isinstance(node, ast.Call)
+            and (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                or isinstance(node.func, ast.Attribute)
+                and node.func.attr == "getattr"
+            )
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in DELIVERY_DYNAMIC_REACH_THROUGH_MEMBERS
+        ):
+            violations.add(
+                f"{relative}:{node.lineno}: dynamically reaches through to "
+                f"{node.args[1].value}"
+            )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != "build_router" and not node.name.startswith("register_"):
+            continue
+        parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        for parameter in parameters:
+            if parameter.annotation is None:
+                continue
+            annotation_names = {
+                child.id
+                for child in ast.walk(parameter.annotation)
+                if isinstance(child, ast.Name)
+            } | {
+                child.attr
+                for child in ast.walk(parameter.annotation)
+                if isinstance(child, ast.Attribute)
+            }
+            if isinstance(parameter.annotation, ast.Constant) and isinstance(
+                parameter.annotation.value, str
+            ):
+                annotation_names.update(
+                    re.findall(r"[A-Za-z_][A-Za-z0-9_]*", parameter.annotation.value)
+                )
+            carriers = sorted(annotation_names & carrier_aliases)
+            if carriers:
+                violations.add(
+                    f"{relative}:{parameter.lineno}: {node.name} receives whole "
+                    f"dependency carrier {carriers[0]}"
+                )
+
+    return sorted(violations)
+
+
 def _cross_component_constructions_outside_bootstrap() -> list[str]:
     """Find construction of another component's concrete collaborator."""
     dotted = _dotted_index()
@@ -790,6 +883,123 @@ class ModuleBoundaryTest(unittest.TestCase):
             + ", ".join(violations),
         )
 
+    def test_delivery_has_no_raw_implementation_or_persistence_access(self) -> None:
+        violations: list[str] = []
+        for path in _backend_files():
+            relative = path.relative_to(BACKEND_ROOT).as_posix()
+            if _layer(relative) != DELIVERY:
+                continue
+            violations.extend(
+                _delivery_boundary_violations(
+                    path.read_text(encoding="utf-8"), relative=relative
+                )
+            )
+        self.assertFalse(
+            violations,
+            "Delivery may use only public facades/use cases and may not reach "
+            "through to persistence or whole-app dependency carriers: "
+            + ", ".join(violations),
+        )
+
+    def test_delivery_boundary_scan_rejects_adversarial_reach_through(self) -> None:
+        cases = {
+            "raw ControlApp": (
+                "from backend import ControlApp as Backend\nvalue: Backend\n",
+                "raw implementation type",
+            ),
+            "raw service": (
+                "from records import ResourceService as Records\nvalue: Records\n",
+                "raw implementation type",
+            ),
+            "raw store": (
+                "from state import BaseStateStore as Database\nvalue: Database\n",
+                "raw implementation type",
+            ),
+            "direct persistence": (
+                "def route(api):\n    return api.store\n",
+                "reaches through to store",
+            ),
+            "private persistence": (
+                "def route(api):\n    return api._store\n",
+                "reaches through to _store",
+            ),
+            "one-hop alias": (
+                "def route(api):\n"
+                "    records = api.resources\n"
+                "    return records.store\n",
+                "reaches through to store",
+            ),
+            "multi-hop alias": (
+                "def route(ctx):\n"
+                "    api = ctx.api\n"
+                "    records = api.resources\n"
+                "    return records.store\n",
+                "reaches through to store",
+            ),
+            "transaction": (
+                "def route(unit):\n    return unit.transaction()\n",
+                "reaches through to transaction",
+            ),
+            "connection": (
+                "def route(database):\n    return database.connect()\n",
+                "reaches through to connect",
+            ),
+            "cursor": (
+                "def route(connection):\n    return connection.cursor()\n",
+                "reaches through to cursor",
+            ),
+            "dynamic getattr": (
+                "def route(api):\n    return getattr(api, 'store')\n",
+                "dynamically reaches through to store",
+            ),
+            "dynamic private getattr": (
+                "def route(api):\n    return getattr(api, '_store')\n",
+                "dynamically reaches through to _store",
+            ),
+            "qualified getattr": (
+                "import builtins\n"
+                "def route(api):\n"
+                "    return builtins.getattr(api, 'transaction')\n",
+                "dynamically reaches through to transaction",
+            ),
+            "introspection": (
+                "def route(api):\n    return api.__dict__['resources']\n",
+                "reaches through to __dict__",
+            ),
+            "ControlApp router carrier": (
+                "def build_router(app: 'ControlApp'):\n    return app\n",
+                "build_router receives whole dependency carrier ControlApp",
+            ),
+            "aliased HTTP router carrier": (
+                "from dependencies import HttpDependencies as Whole\n"
+                "def build_router(dependencies: Whole):\n"
+                "    return dependencies\n",
+                "build_router receives whole dependency carrier Whole",
+            ),
+            "HTTP registrar carrier": (
+                "from dependencies import HttpDependencies\n"
+                "def register_routes(dependencies: HttpDependencies):\n"
+                "    return dependencies\n",
+                "register_routes receives whole dependency carrier HttpDependencies",
+            ),
+        }
+        for name, (source, expected) in cases.items():
+            with self.subTest(case=name):
+                violations = _delivery_boundary_violations(source)
+                self.assertTrue(
+                    any(expected in violation for violation in violations),
+                    f"scanner missed {name}: {violations}",
+                )
+
+    def test_delivery_boundary_scan_allows_narrow_public_dependencies(self) -> None:
+        source = """
+def build_router(ctx: ApiRouteContext, *, records: ArtifactRecords):
+    def route(project_id: str):
+        return records.list(project_id=project_id, cursor_token=None)
+    return route
+"""
+        self.assertEqual(_delivery_boundary_violations(source), [])
+
     def test_only_bootstrap_constructs_cross_component_collaborators(self) -> None:
         violations = _cross_component_constructions_outside_bootstrap()
         self.assertFalse(
@@ -836,7 +1046,7 @@ class ModuleBoundaryTest(unittest.TestCase):
             "ACTIVE_SANDBOX_STATUSES",
         ):
             self.assertNotIn(escaped_policy, views)
-        for delegate in ("home_query(", "mlflow_overview_query(", "experiment_figure_query("):
+        for delegate in ("dashboard(", "tracking(", "figure("):
             self.assertIn(delegate, routes)
 
 

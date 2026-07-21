@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-from contextlib import closing, suppress
-import mimetypes
+from contextlib import closing
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from merv.shared.file_transfer import (
-    download_target_to_file,
-    file_digest,
-    upload_file_to_target,
-)
 from merv.shared.storage_guidance import storage_guidance
 
 from ..kernel.ports.blob_store import validate_blob_keys
@@ -136,120 +129,6 @@ class StorageLedgerService:
             if stat is not None:
                 return {"deduped": True, "object": self._hydrate(row=row)}
             return {"object": self._hydrate(row=row), "upload": upload}
-
-    def upload_file(
-        self,
-        *,
-        project_id: str | None,
-        path: str | Path,
-        name: str,
-        kind: str,
-        content_type: str = "",
-        created_by: str = "codex",
-        producing_experiment_id: str = "",
-        producing_run: str = "",
-        source_uri: str = "",
-        notes: str = "",
-    ) -> dict[str, Any]:
-        """Register, upload, and complete a local file in one call."""
-        file_path = Path(path).expanduser()
-        if not file_path.exists():
-            raise ValidationError(f"storage upload file not found: {file_path}")
-        if not file_path.is_file():
-            raise ValidationError(f"storage upload path is not a file: {file_path}")
-        sha256, size_bytes = file_digest(file_path)
-        resolved_content_type = (
-            content_type
-            or mimetypes.guess_type(str(file_path))[0]
-            or "application/octet-stream"
-        )
-        registered = self.put_object(
-            project_id=project_id,
-            name=name,
-            kind=kind,
-            sha256=sha256,
-            size_bytes=size_bytes,
-            content_type=resolved_content_type,
-            created_by=created_by,
-            producing_experiment_id=producing_experiment_id,
-            producing_run=producing_run,
-            source_uri=source_uri,
-            notes=notes,
-        )
-        result: dict[str, Any] = {
-            key: value for key, value in registered.items() if key != "upload"
-        }
-        result["path"] = str(file_path)
-        result["sha256"] = sha256
-        result["size_bytes"] = size_bytes
-        result["uploaded"] = False
-        upload = registered.get("upload")
-        if not upload:
-            return result
-        completed_parts = upload_file_to_target(
-            upload=upload,
-            file_path=file_path,
-            size_bytes=size_bytes,
-            content_type=resolved_content_type,
-        )
-        completed = self.complete_upload(
-            project_id=project_id,
-            upload_id=str(upload["upload_id"]),
-            parts=completed_parts,
-        )
-        result["object"] = completed
-        result["uploaded"] = True
-        return result
-
-    def download_file(
-        self,
-        *,
-        project_id: str | None,
-        path: str | Path,
-        object_id: str | None = None,
-        name: str | None = None,
-        version: int | None = None,
-        overwrite: bool = False,
-    ) -> dict[str, Any]:
-        """Resolve a storage object and write it to a local file."""
-        target = Path(path).expanduser()
-        if target.exists() and not overwrite:
-            raise ValidationError(
-                f"download target already exists; pass overwrite=true to replace: {target}"
-            )
-        resolved = self.resolve(
-            project_id=project_id,
-            object_id=object_id,
-            name=name,
-            version=version,
-            include_download=True,
-        )
-        obj = resolved["object"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.tmp-{new_id(prefix='download')}")
-        try:
-            download_target_to_file(download=resolved["download"], path=tmp)
-            sha256, size_bytes = file_digest(tmp)
-            if sha256 != str(obj["content_sha256"]):
-                raise ValidationError(
-                    "downloaded storage object checksum mismatch: "
-                    f"{sha256} != {obj['content_sha256']}"
-                )
-            if size_bytes != int(obj["size_bytes"]):
-                raise ValidationError(
-                    "downloaded storage object size mismatch: "
-                    f"{size_bytes} != {obj['size_bytes']} bytes"
-                )
-            tmp.replace(target)
-        finally:
-            with suppress(FileNotFoundError):
-                tmp.unlink()
-        return {
-            "object": obj,
-            "path": str(target),
-            "downloaded": True,
-            "bytes_written": int(obj["size_bytes"]),
-        }
 
     def complete_upload(
         self,

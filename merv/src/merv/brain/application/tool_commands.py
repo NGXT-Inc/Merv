@@ -2,35 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
+from ..artifacts.facade import ArtifactRecords
 from ..kernel.utils import ValidationError
-
-Command = Callable[..., dict[str, Any]]
-
-
-class AgentExperimentList(Protocol):
-    def __call__(
-        self, *, project_id: str | None = None
-    ) -> dict[str, Any]: ...
+from ..research_core.facade import ResearchClaims, ResearchProjects
+from .experiments.queries import ExperimentCollectionQuery
+from .ports.storage import ObjectStorage
 
 
 @dataclass(kw_only=True, slots=True)
 class ControlToolOperations:
-    project_create: Command
-    project_get: Command
-    claims_list: Command
-    list_agent_experiments: AgentExperimentList
-    resource_resolve: Command
-    resources_list: Command
-    storage_resolve: Command | None
-    storage_list: Command | None
-    storage_actions: dict[str, Command]
+    projects: ResearchProjects
+    claims: ResearchClaims
+    experiments: ExperimentCollectionQuery
+    resources: ArtifactRecords
+    storage: ObjectStorage | None
 
     def experiment_list(self, *, project_id: str | None = None) -> dict[str, Any]:
-        return self.list_agent_experiments(project_id=project_id)
+        return self.experiments.agent(project_id=project_id)
 
     def project(
         self,
@@ -44,18 +35,18 @@ class ControlToolOperations:
         user_id: str = "",
     ) -> dict[str, Any]:
         if action == "create":
-            return self.project_create(
+            return self.projects.create(
                 name=name, summary=summary, tenant_id=tenant_id, user_id=user_id
             )
         if action == "overview":
-            project = self.project_get(project_id=project_id)
+            project = self.projects.get(project_id=project_id)
             return {
                 "project": {
                     "id": project["id"],
                     "name": project["name"],
                     "summary": project.get("summary", ""),
                 },
-                "claims": self.claims_list(project_id=project_id)["claims"],
+                "claims": self.claims.list_claims(project_id=project_id)["claims"],
                 "experiments": self.experiment_list(project_id=project_id)["experiments"],
             }
         raise ValidationError(
@@ -79,12 +70,12 @@ class ControlToolOperations:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         if resource_id is not None:
-            return self.resource_resolve(
+            return self.resources.resolve(
                 resource_id=resource_id,
                 include_history=include_history,
                 project_id=project_id,
             )
-        return self.resources_list(
+        return self.resources.list_resources(
             kind=kind,
             experiment_id=experiment_id,
             missing=missing,
@@ -109,16 +100,16 @@ class ControlToolOperations:
         offset: int = 0,
         compact: bool = False,
     ) -> dict[str, Any]:
-        assert self.storage_resolve is not None and self.storage_list is not None
+        assert self.storage is not None
         if object_id or name:
-            return self.storage_resolve(
+            return self.storage.resolve(
                 project_id=project_id,
                 object_id=object_id,
                 name=name,
                 version=version,
                 include_download=include_download,
             )
-        return self.storage_list(
+        return self.storage.list_objects(
             project_id=project_id,
             kind=kind,
             status=status,
@@ -131,7 +122,10 @@ class ControlToolOperations:
     def storage_object(
         self, *, object_id: str, action: str, project_id: str | None = None
     ) -> dict[str, Any]:
-        operation = self.storage_actions.get(action)
-        if operation is None:
+        if self.storage is None or action not in {"pin", "unpin", "renew", "delete"}:
             raise ValidationError(f"unknown storage object action: {action}")
+        operation = {
+            "pin": self.storage.pin, "unpin": self.storage.unpin,
+            "renew": self.storage.renew, "delete": self.storage.delete,
+        }[action]
         return operation(project_id=project_id, object_id=object_id)

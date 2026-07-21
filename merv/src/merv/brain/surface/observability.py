@@ -6,7 +6,6 @@ import json
 import sys
 from typing import Any
 
-from .config import Mode, resolve_mode
 from ..kernel.state.activity import redact_sensitive
 
 
@@ -16,15 +15,13 @@ def _redact(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 class StructuredLogger:
-    """Emits redacted JSON log lines to stdout, in control mode only.
+    """Emit redacted JSON when composition enables logging.
 
-    ``enabled`` defaults to "control mode is on" so
-    local mode never gains stdout noise; tests force it on. ``stream`` is
-    injectable so a test can capture without touching real stdout.
+    ``stream`` is injectable so tests can capture output without touching stdout.
     """
 
     def __init__(self, *, enabled: bool | None = None, stream: Any | None = None) -> None:
-        self.enabled = (resolve_mode() is Mode.CONTROL) if enabled is None else enabled
+        self.enabled = bool(enabled)
         self._stream = stream if stream is not None else sys.stdout
 
     def log(

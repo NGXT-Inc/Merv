@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.mlflow import CentralMlflowService
-from merv.brain.surface.transport.http_api import ResearchHttpApi, create_fastapi_app
+from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.api.views import resource_file
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.utils import ContentUnavailableError
 from merv.proxy.time_utils import now_iso
@@ -55,7 +56,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -741,7 +742,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
     def test_application_facades_share_the_composed_service_instances(self) -> None:
         self.assertIs(self.app.research_core._experiments, self.app.experiments)
         self.assertIs(self.app.artifacts._resources, self.app.resources)
-        self.assertIs(self.app.feed_api._feed, self.app.feed)
+        self.assertTrue(callable(self.app.feed.transition_advisory))
         self.assertIs(self.app.transition_experiment.research, self.app.research_core)
         self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)
         self.assertIs(self.app.tracking_context.research, self.app.research_core)
@@ -1740,7 +1741,7 @@ class ResourceRelFileTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
         project = self.client.post("/api/projects", json={"name": "Rel"}).json()
         self.project_id = project["id"]
         (self.repo / "exp").mkdir()
@@ -1882,7 +1883,7 @@ class DegradedStatesTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app), raise_server_exceptions=False)
+        self.client = TestClient(create_fastapi_app(self.app.http), raise_server_exceptions=False)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -1904,9 +1905,9 @@ class DegradedStatesTest(unittest.TestCase):
         pid, rid = self._result_resource()
         # ...but a hosted/control HTTP presentation has no local data plane to
         # read it from.
-        body = ResearchHttpApi(
-            app=self.app
-        ).resource_content(project_id=pid, resource_id=rid)
+        body = self.app.http.hosted_resource_content(
+            project_id=pid, resource_id=rid
+        )
         self.assertFalse(body["available"])
         self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
         self.assertIsNone(body["content"])
@@ -1923,8 +1924,11 @@ class DegradedStatesTest(unittest.TestCase):
     def test_figure_file_degrades_in_control_mode(self) -> None:
         pid, rid = self._result_resource()
         with self.assertRaises(ContentUnavailableError) as ctx:
-            ResearchHttpApi(app=self.app).resource_file(
-                project_id=pid, resource_id=rid, rel="fig.png"
+            resource_file(
+                self.app.http.artifacts,
+                project_id=pid,
+                resource_id=rid,
+                rel="fig.png",
             )
         self.assertEqual(ctx.exception.error_code, "content_unavailable")
 

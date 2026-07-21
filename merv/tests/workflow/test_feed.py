@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.feed import feed_policy
+from merv.brain.feed.facade import Feed
 from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES, wrap_embed_html
 from merv.shared.feed_images import SERVEABLE_IMAGE_TYPES, sniff_image_type
 from merv.brain.feed.feed import POST_TEXT_MAX, REACTION_KINDS
@@ -309,7 +310,11 @@ class FeedServiceTest(unittest.TestCase):
         # Rebuilding the service on an existing DB must survive the ALTER.
         from merv.brain.feed.feed import FeedService
 
-        FeedService(store=self.app.store, blobs=self.app.feed.blobs)
+        FeedService(
+            store=self.app.store,
+            blobs=self.app.feed.blobs,
+            link_unfurl=self.app.feed.link_unfurl,
+        )
         self.call("feed.register", project_id=self.pid, handle="Nova-7")
         result = self.call(
             "feed.post",
@@ -644,7 +649,7 @@ class FeedHttpTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
         self.pid = self.app.call_tool(
             "project", {"action": "create", "name": "Feed HTTP Test"}
         )["id"]
@@ -889,6 +894,16 @@ class FeedNoteForTest(unittest.TestCase):
         self.assertIsNotNone(note)
         self.assertIn("exp_unmentioned", note)
         self.assertIn("feed-posting skill", note)
+
+    def test_service_implements_the_public_transition_advisory(self) -> None:
+        self.assertIsInstance(self.app.feed, Feed)
+        note = self.app.feed.transition_advisory(
+            project_id=self.pid,
+            experiment_id="exp_public",
+            event="experiment_complete",
+        )
+        self.assertIsNotNone(note)
+        self.assertIn("exp_public", note)
 
     def test_none_when_a_post_ref_names_the_entity(self) -> None:
         self.app.feed.register(handle="Nova-7", project_id=self.pid)

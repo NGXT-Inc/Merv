@@ -474,28 +474,6 @@ class ResourceService:
             if owns_conn:
                 conn.close()
 
-    def history(
-        self, *, resource_id: str, project_id: str | None = None
-    ) -> dict[str, Any]:
-        with closing(self.store.connect()) as conn:
-            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            resource = self.resolve(
-                resource_id=resource_id, project_id=project_id, conn=conn
-            )
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM resource_versions
-                WHERE resource_id = ? AND project_id = ?
-                ORDER BY created_seq
-                """,
-                (resource_id, project_id),
-            ).fetchall()
-            return {
-                "resource": resource,
-                "versions": [self._hydrate_version(row=row, conn=conn) for row in rows],
-            }
-
     def pinned_text_for_version(
         self, *, version_id: str, what: str, role: str = ""
     ) -> str:

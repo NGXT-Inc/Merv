@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .api import ResearchHttpApi, conditional_json, create_fastapi_app
+from .api import conditional_json, create_fastapi_app
 
-__all__ = ["ResearchHttpApi", "conditional_json", "create_fastapi_app"]
+__all__ = ["conditional_json", "create_fastapi_app"]

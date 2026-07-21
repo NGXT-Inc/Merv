@@ -11,32 +11,25 @@ class ControlToolOperationsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.projects = Mock()
         self.claims = Mock()
-        self.list_agent_experiments = Mock()
+        self.experiments = Mock()
         self.resources = Mock()
         self.storage = Mock()
         self.operations = ControlToolOperations(
-            project_create=self.projects.create,
-            project_get=self.projects.get,
-            claims_list=self.claims.list_claims,
-            list_agent_experiments=self.list_agent_experiments,
-            resource_resolve=self.resources.resolve,
-            resources_list=self.resources.list_resources,
-            storage_resolve=self.storage.resolve,
-            storage_list=self.storage.list_objects,
-            storage_actions={
-                action: getattr(self.storage, action)
-                for action in ("pin", "unpin", "renew", "delete")
-            },
+            projects=self.projects,
+            claims=self.claims,
+            experiments=self.experiments,
+            resources=self.resources,
+            storage=self.storage,
         )
 
     def test_experiment_list_preserves_the_slim_projection_and_order(self) -> None:
         projected = {"experiments": [{"id": "exp_2"}, {"id": "exp_1"}]}
-        self.list_agent_experiments.return_value = projected
+        self.experiments.agent.return_value = projected
 
         result = self.operations.experiment_list(project_id="proj_1")
 
         self.assertIs(result, projected)
-        self.list_agent_experiments.assert_called_once_with(project_id="proj_1")
+        self.experiments.agent.assert_called_once_with(project_id="proj_1")
 
     def test_project_create_forwards_only_the_historical_arguments(self) -> None:
         self.projects.create.return_value = {"id": "proj_1"}
@@ -67,7 +60,7 @@ class ControlToolOperationsTest(unittest.TestCase):
             "extra": "hidden",
         }
         self.claims.list_claims.return_value = {"claims": [{"id": "claim_1"}]}
-        self.list_agent_experiments.return_value = {
+        self.experiments.agent.return_value = {
             "experiments": [{"id": "exp_1", "status": "planned"}]
         }
 

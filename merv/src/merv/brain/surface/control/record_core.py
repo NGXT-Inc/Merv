@@ -9,6 +9,7 @@ from ...research_core.association_targets import AssociationTargets
 from ...research_core.claims import ClaimService
 from ...research_core.experiments import ExperimentService
 from ...feed.feed import FeedService
+from ...feed.feed_unfurl import NetworkLinkUnfurl
 from ...research_core.graph_refs import GraphRefResolver
 from ..permissions import PermissionService
 from ...research_core.projects import ProjectService
@@ -62,7 +63,7 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         reflections=reflection_waves,
         evidence_reader=resources,
     )
-    feed = FeedService(store=store, blobs=blobs)
+    feed = FeedService(store=store, blobs=blobs, link_unfurl=NetworkLinkUnfurl())
     return RecordCore(
         permissions=permissions,
         quotas=quotas,

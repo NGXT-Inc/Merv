@@ -13,6 +13,7 @@ from .domain.resource_evidence import preferred_associated_resource
 from .domain.vocabulary import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
+    REVIEW_VERDICT_VALUES,
 )
 from .experiments import ExperimentService
 from .graph_refs import GraphRefResolver
@@ -332,25 +333,40 @@ class ResearchCoreFacade:
         return self._reflections
 
 
-__all__ = [
-    "CommittedExperimentTransition",
-    "CommittedTrackingRunRefresh",
-    "EXPERIMENT_ACTIVE_PROCESS_STATUSES",
-    "EXPERIMENT_TERMINAL_STATUSES",
-    "ExperimentCreateArgs",
-    "ExhibitVerdict",
-    "ExperimentState",
-    "GateEvaluation",
-    "MAX_GRAPH_NODES",
-    "PersistedRunState",
-    "ResearchCore",
-    "ResearchCoreFacade",
-    "ResearchReviews",
-    "ResearchSnapshot",
-    "ResearchSnapshots",
-    "RequirementEvaluation",
-    "experiment_folder_rel",
-    "graph_problems",
-    "infer_claim_status_from_conclusion",
+
+class ResearchProjects(Protocol):
+    def create(self, **kwargs: Any) -> dict[str, Any]: ...
+    def get(self, **kwargs: Any) -> dict[str, Any]: ...
+    def update(self, **kwargs: Any) -> dict[str, Any]: ...
+    def list_projects(self, **kwargs: Any) -> dict[str, Any]: ...
+    def is_member(self, *, project_id: str, user_id: str) -> bool: ...
+    def members(self, *, project_id: str) -> dict[str, Any]: ...
+    def add_member(self, *, project_id: str, user_id: str) -> dict[str, Any]: ...
+    def remove_member(self, *, project_id: str, user_id: str) -> dict[str, Any]: ...
+
+
+class ResearchClaims(Protocol):
+    def create(self, **kwargs: Any) -> dict[str, Any]: ...
+    def list_claims(self, **kwargs: Any) -> dict[str, Any]: ...
+    def update(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class ResearchReviewDelivery(Protocol):
+    def queue(self, *, project_id: str | None = None) -> dict[str, Any]: ...
+    def request_project_id(self, *, review_request_id: Any) -> str | None: ...
+    def assert_request_in_project(self, **kwargs: Any) -> None: ...
+    def assert_session_in_project(self, **kwargs: Any) -> None: ...
+    def request(self, **kwargs: Any) -> dict[str, Any]: ...
+    def start(self, **kwargs: Any) -> dict[str, Any]: ...
+    def submit(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+__all__ = (
+    "CommittedExperimentTransition", "CommittedTrackingRunRefresh", "EXPERIMENT_ACTIVE_PROCESS_STATUSES",
+    "EXPERIMENT_TERMINAL_STATUSES", "ExperimentCreateArgs", "ExhibitVerdict", "ExperimentState",
+    "GateEvaluation", "MAX_GRAPH_NODES", "PersistedRunState", "ResearchClaims", "ResearchCore",
+    "ResearchCoreFacade", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
+    "ResearchSnapshot", "ResearchSnapshots", "REVIEW_VERDICT_VALUES", "RequirementEvaluation",
+    "experiment_folder_rel", "graph_problems", "infer_claim_status_from_conclusion",
     "preferred_associated_resource",
-]
+)

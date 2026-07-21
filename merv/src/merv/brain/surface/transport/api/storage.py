@@ -6,16 +6,12 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from ....application.ports.storage import ObjectStorage
 from ....kernel.utils import NotFoundError
 
-from .context import ApiRouteContext
-
-
-def build_router(ctx: ApiRouteContext) -> APIRouter:
+def build_router(*, storage: ObjectStorage | None) -> APIRouter:
     api_router = APIRouter()
-    api = ctx.api
-    def storage_for_project(project_id: str) -> Any:
-        storage = api.app.storage
+    def storage_for_project(project_id: str) -> ObjectStorage:
         if storage is None:
             raise NotFoundError("storage is not enabled on this backend")
         return storage

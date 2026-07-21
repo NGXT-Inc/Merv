@@ -22,7 +22,7 @@ class ConditionalRequestTestBase(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
         project = self.client.post("/api/projects", json={"name": "Cond", "summary": ""}).json()
         self.project_id = project["id"]
 

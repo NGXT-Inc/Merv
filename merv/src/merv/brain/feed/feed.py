@@ -40,7 +40,7 @@ from ..kernel.state.store import (
     rows_to_dicts,
 )
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso, parse_iso
-from .feed_unfurl import UnfurlError, fetch_preview_image, unfurl
+from .ports import LinkUnfurlError, LinkUnfurlPort
 
 # Hard cap on post text — "old Twitter, not an essay" (Feed_PRD.md open question,
 # resolved to a hard cap). Counted on the stripped string.
@@ -141,9 +141,16 @@ def _validate_handle(handle: str) -> str:
 
 
 class FeedService:
-    def __init__(self, *, store: BaseStateStore, blobs: EvidenceBlobStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: BaseStateStore,
+        blobs: EvidenceBlobStore,
+        link_unfurl: LinkUnfurlPort,
+    ) -> None:
         self.store = store
         self.blobs = blobs
+        self.link_unfurl = link_unfurl
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -164,6 +171,14 @@ class FeedService:
             with suppress(Exception):
                 with self.store.transaction() as conn:
                     conn.execute(statement)
+
+    def transition_advisory(
+        self, *, project_id: str, experiment_id: str, event: str
+    ) -> str | None:
+        """Return the optional Feed nudge associated with a committed transition."""
+        return self.feed_note_for(
+            project_id=project_id, entity_id=experiment_id, event=event
+        )
 
     # -- identity -----------------------------------------------------------
 
@@ -585,8 +600,8 @@ class FeedService:
         if urllib.parse.urlparse(url).scheme.lower() not in ("http", "https"):
             return "", {"url": "", "error": "only http and https links can be embedded"}
         try:
-            card = unfurl(url)
-        except UnfurlError as exc:
+            card = self.link_unfurl.unfurl(url)
+        except LinkUnfurlError as exc:
             return url, {"url": url, "error": str(exc)}
         preview: dict[str, Any] = {
             "url": card["url"],
@@ -600,8 +615,8 @@ class FeedService:
         image_url = card.get("image_url") or ""
         if image_url:
             # A missing/unsafe thumbnail just means a text-only preview card.
-            with suppress(UnfurlError):
-                img_bytes, ctype = fetch_preview_image(image_url)
+            with suppress(LinkUnfurlError):
+                img_bytes, ctype = self.link_unfurl.fetch_preview_image(image_url)
                 normalized = (ctype or "").split(";", 1)[0].strip().lower()
                 # Only re-host raster thumbnails. An external SVG og:image would
                 # otherwise be served same-origin (stored XSS); drop it to a

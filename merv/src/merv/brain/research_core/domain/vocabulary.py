@@ -28,6 +28,3 @@ CLAIM_CONFIDENCES = frozenset({"low", "medium", "high"})
 
 EXPERIMENT_TERMINAL_STATUSES = frozenset({"complete", "failed", "abandoned"})
 EXPERIMENT_ACTIVE_PROCESS_STATUSES = frozenset({"provisioning", "running"})
-
-LOCAL_TENANT_ID = "local"
-LOCAL_CLIENT_ID = "local"

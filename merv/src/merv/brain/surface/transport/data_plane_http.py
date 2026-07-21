@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Callable
 from typing import Any
 
 from fastapi import Body, Request
 from merv.shared.tool_validation import validate_openssh_public_key
+from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES
+from merv.shared.feed_images import MAX_FEED_IMAGE_BYTES
 
-from ...feed.feed import MAX_EMBED_BYTES, MAX_IMAGE_BYTES
+from ...artifacts.facade import ArtifactRecords
+from ...feed.facade import FeedDelivery
 from ...kernel.utils import ValidationError
+from ...sandbox.facade import SandboxFacade
+from .api.dependencies import AuthorizeProject
 
 JsonBody = dict[str, Any] | None
-DataPlaneProjectApp = Callable[[Request, str], Any]
-
 
 def _required_text(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
@@ -49,7 +51,10 @@ def _decode_b64_field(
 def register_data_plane_routes(
     http: Any,
     *,
-    app_for_project: DataPlaneProjectApp,
+    authorize_project: AuthorizeProject,
+    artifacts: ArtifactRecords,
+    feed: FeedDelivery,
+    sandboxes: SandboxFacade,
 ) -> None:
     @http.post("/api/data-plane/resources/validate-association")
     def data_plane_validate_resource_association(
@@ -57,8 +62,8 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        app = app_for_project(request, project_id)
-        return app.resources.validate_association_intent(
+        authorize_project(request, project_id)
+        return artifacts.validate_association_intent(
             project_id=project_id,
             resource_id=_required_text(payload, "resource_id"),
             target_type=_required_text(payload, "target_type"),
@@ -72,8 +77,8 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        app = app_for_project(request, project_id)
-        return app.resources.record_observation(
+        authorize_project(request, project_id)
+        return artifacts.record_observation(
             project_id=project_id,
             path=_required_text(payload, "path"),
             kind=str(payload.get("kind") or "other"),
@@ -92,8 +97,8 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        app = app_for_project(request, project_id)
-        app.resources.validate_association_intent(
+        authorize_project(request, project_id)
+        artifacts.validate_association_intent(
             project_id=project_id,
             resource_id=_required_text(payload, "resource_id"),
             target_type=_required_text(payload, "target_type"),
@@ -122,7 +127,7 @@ def register_data_plane_routes(
                     ),
                 }
             )
-        return app.resources.associate_observed(
+        return artifacts.associate_observed(
             project_id=project_id,
             resource_id=_required_text(payload, "resource_id"),
             target_type=_required_text(payload, "target_type"),
@@ -138,8 +143,8 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        app = app_for_project(request, project_id)
-        return app.feed.validate_post_intent(
+        authorize_project(request, project_id)
+        return feed.validate_post_intent(
             project_id=project_id,
             handle=_required_text(payload, "handle"),
             text=_required_text(payload, "text"),
@@ -158,8 +163,8 @@ def register_data_plane_routes(
         if not public_key:
             raise ValidationError("public_key is required for sandbox.request")
         experiment_id = str(payload.get("experiment_id") or "").strip()
-        app = app_for_project(request, project_id)
-        return app.sandboxes.request_from_data_plane(
+        authorize_project(request, project_id)
+        return sandboxes.request_from_data_plane(
             project_id=project_id,
             experiment_id=experiment_id,
             public_key=public_key,
@@ -182,8 +187,8 @@ def register_data_plane_routes(
         project_id = _required_text(payload, "project_id")
         experiment_id = _required_text(payload, "experiment_id")
         sandbox_uid = _required_text(payload, "sandbox_uid")
-        app = app_for_project(request, project_id)
-        return app.sandboxes.attach_from_data_plane(
+        authorize_project(request, project_id)
+        return sandboxes.attach_from_data_plane(
             project_id=project_id,
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
@@ -196,8 +201,8 @@ def register_data_plane_routes(
     ) -> dict[str, Any]:
         payload = body or {}
         project_id = _required_text(payload, "project_id")
-        app = app_for_project(request, project_id)
-        app.feed.validate_post_intent(
+        authorize_project(request, project_id)
+        feed.validate_post_intent(
             project_id=project_id,
             handle=_required_text(payload, "handle"),
             text=_required_text(payload, "text"),
@@ -214,7 +219,7 @@ def register_data_plane_routes(
             image_bytes = _decode_b64_field(
                 image.get("data_b64"),
                 label="image.data_b64",
-                max_decoded_bytes=MAX_IMAGE_BYTES,
+                max_decoded_bytes=MAX_FEED_IMAGE_BYTES,
             )
         html = payload.get("html")
         html_bytes = None
@@ -226,9 +231,9 @@ def register_data_plane_routes(
             html_bytes = _decode_b64_field(
                 html.get("data_b64"),
                 label="html.data_b64",
-                max_decoded_bytes=MAX_EMBED_BYTES,
+                max_decoded_bytes=MAX_FEED_EMBED_BYTES,
             )
-        return app.feed.post_observed(
+        return feed.post_observed(
             project_id=project_id,
             handle=_required_text(payload, "handle"),
             text=_required_text(payload, "text"),

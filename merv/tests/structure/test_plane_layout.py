@@ -694,7 +694,7 @@ if loaded:
             encoding="utf-8"
         )
 
-        self.assertIn("self.record_core = build_record_core", app_source)
+        self.assertIn("self._record_core = build_record_core", app_source)
         for service_ctor in (
             "ClaimService(",
             "ExperimentService(",
@@ -759,6 +759,16 @@ if loaded:
         self.assertIn("build_local_server", source)
         self.assertIn("CONTROL_COMPAT_REPO_ROOT", source)
         self.assertNotIn("tempfile", _import_segments(path))
+
+    def test_feed_demo_uses_public_control_capabilities(self) -> None:
+        source = (IMPORT_ROOT.parent / "scripts" / "_feed_demo_server.py").read_text(
+            encoding="utf-8"
+        )
+        for removed in ("app.call_tool(", "app.feed.", "app.store."):
+            self.assertNotIn(removed, source)
+        self.assertIn("app.tools, app.http.feed", source)
+        self.assertNotIn("app._store", source)
+        self.assertIn("with store.transaction()", source)
 
     def test_management_key_store_is_adapter_not_service(self) -> None:
         # The service layer depends on the MgmtKeyStore port only. The local

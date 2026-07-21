@@ -34,6 +34,8 @@ import urllib.request
 from html.parser import HTMLParser
 from typing import Any
 
+from .ports import LinkUnfurlError
+
 _USER_AGENT = "merv-feed-unfurl/1.0"
 _DEFAULT_TIMEOUT = 6.0
 _MAX_REDIRECTS = 4
@@ -57,8 +59,8 @@ ALLOWLIST_SUFFIXES = (
 )
 
 
-class UnfurlError(Exception):
-    """A link could not be safely unfurled (validation or fetch failed)."""
+class UnfurlError(LinkUnfurlError):
+    """Compatibility name for a rejected or failed link preview."""
 
 
 def _host_is_public(host: str) -> bool:
@@ -315,3 +317,13 @@ def fetch_preview_image(image_url: str) -> tuple[bytes, str]:
     if not content_type.startswith("image/"):
         raise UnfurlError("preview image is not an image")
     return body, content_type
+
+
+class NetworkLinkUnfurl:
+    """Production adapter for the Feed link-unfurl port."""
+
+    def unfurl(self, url: str) -> dict[str, Any]:
+        return unfurl(url)
+
+    def fetch_preview_image(self, image_url: str) -> tuple[bytes, str]:
+        return fetch_preview_image(image_url)

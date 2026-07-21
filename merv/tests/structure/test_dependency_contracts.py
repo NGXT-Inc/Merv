@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import unittest
 from collections import Counter
 from pathlib import Path
+from types import NoneType
+from typing import get_args, get_type_hints
 
 from tests.paths import BACKEND_ROOT
 
@@ -40,42 +43,12 @@ application/queries.py | TenantCountersQuery | event_count | Callable[..., int]
 application/queries.py | TenantCountersQuery | generation_counters | RecordQuery
 application/queries.py | ComputeCostQuery | project_spend | RecordQuery
 application/queries.py | ComputeCostQuery | experiments | RecordsQuery
-application/tool_commands.py | ControlToolOperations | project_create | Command
-application/tool_commands.py | ControlToolOperations | project_get | Command
-application/tool_commands.py | ControlToolOperations | claims_list | Command
-application/tool_commands.py | ControlToolOperations | resource_resolve | Command
-application/tool_commands.py | ControlToolOperations | resources_list | Command
-application/tool_commands.py | ControlToolOperations | storage_resolve | Command | None
-application/tool_commands.py | ControlToolOperations | storage_list | Command | None
-application/tool_commands.py | ControlToolOperations | storage_actions | dict[str, Command]
 application/workflow.py | ProjectDashboardQuery | resources | RecordQuery
 application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
 application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery
 application/workflow.py | ProjectDashboardQuery | health | Callable[[], dict[str, object]]
 application/workflow.py | ProjectDashboardQuery | current | RecordQuery
 sandbox/sandboxes.py | SandboxFacade.__init__ | attachment_check | Callable[..., None] | None
-surface/tools/tool_facade.py | ToolDispatcher.__init__ | handlers | dict[str, Callable[..., dict[str, Any]]]
-surface/tools/tool_facade.py | ToolDispatcher.__init__ | activity | Any
-surface/tools/tool_facade.py | ToolDispatcher.__init__ | tool_calls | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | workflow | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | projects | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | claims | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | experiments | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | resources | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | storage | Any | None
-surface/tools/tool_handlers.py | build_control_tool_handlers | reviews | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | sandboxes | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | feed | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | experiment_transition | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | experiment_exhibit | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | tracking_context | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | tracking_finalize | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | review_status | Any
-surface/tools/tool_handlers.py | build_control_tool_handlers | operations | Any
-surface/transport/api/gateway.py | ToolInvocationGateway | backend | Any
-surface/transport/api/views.py | ResearchHttpApi.__init__ | app | Any
-surface/transport/data_plane_http.py | register_data_plane_routes | app_for_project | DataPlaneProjectApp
-surface/transport/feed_http.py | register_feed_routes | app_for | Callable[[str, Request], Any]
 kernel/state/dialects.py | PostgresConnection.__init__ | raw | Any
 mlflow/tracking.py | CentralMlflowService.__init__ | health_check | Callable[[], bool] | None
 object_storage/s3_blobs.py | S3BlobStore.__init__ | client | Any | None
@@ -92,12 +65,10 @@ sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | sample_metrics
 sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | reap_row | Callable[..., None]
 sandbox/transcript_cache.py | TranscriptCache.__init__ | clock | Callable[[], float] | None
 surface/observability.py | StructuredLogger.__init__ | stream | Any | None
-surface/tools/tool_facade.py | ToolSpec | handler | Callable[..., dict[str, Any]]
 surface/transport/admin_http.py | register_admin_routes | cleanup | Any | None
 surface/transport/admin_http.py | register_admin_routes | tenant_counters | Any | None
 surface/transport/api/context.py | ApiRouteContext | route_call_tool | Callable[..., dict[str, Any]]
 surface/transport/api/gateway.py | RequestAuthenticator | verifier | Any | None
-surface/transport/api/gateway.py | ProjectAuthorizer | member_lookup | Callable[..., bool]
 surface/transport/api/sdk_auth.py | build_router | verifier | Any
 surface/transport/mcp_http.py | register_mcp_routes | list_tools | ToolCatalog
 surface/transport/mcp_http.py | register_mcp_routes | call_tool | ToolCaller
@@ -206,6 +177,30 @@ def _format(counter: Counter[tuple[str, str, str, str]]) -> str:
 
 
 class DependencyContractTest(unittest.TestCase):
+    def test_control_manifest_methods_exist_on_declared_owner_contracts(self) -> None:
+        from merv.brain.surface.tools.contracts import TOOL_MANIFEST
+        from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
+
+        hints = get_type_hints(build_control_tool_handlers)
+        roots = {
+            contract.handler_identity.split(".", 1)[0]
+            for contract in TOOL_MANIFEST.values()
+            if contract.plane == "control"
+        }
+        parameters = set(inspect.signature(build_control_tool_handlers).parameters)
+        self.assertLessEqual(roots, parameters)
+        for contract in TOOL_MANIFEST.values():
+            if contract.plane != "control":
+                continue
+            root, method = contract.handler_identity.split(".", 1)
+            annotation = hints[root]
+            candidates = tuple(arg for arg in get_args(annotation) if arg is not NoneType)
+            candidates = candidates or (annotation,)
+            self.assertTrue(
+                any(hasattr(candidate, method) for candidate in candidates),
+                f"{contract.handler_identity} is absent from {annotation}",
+            )
+
     def test_untyped_cross_component_dependency_inventory_only_shrinks(self) -> None:
         current = _dependency_type_debt()
         new = current - DEPENDENCY_TYPE_DEBT

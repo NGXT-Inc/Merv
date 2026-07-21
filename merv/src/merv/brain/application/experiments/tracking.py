@@ -123,7 +123,7 @@ class AgentExperimentQuery:
     objects: ProducedObjectCatalog
     tracking: ExperimentTracking | None
 
-    def __call__(
+    def experiment(
         self, *, experiment_id: str, project_id: str | None = None
     ) -> SlimExperimentState:
         state = self.research.experiment_state(
@@ -146,7 +146,6 @@ class AgentExperimentQuery:
                 include_credentials=True,
             ),
         )
-
 
 @dataclass(slots=True)
 class ExperimentDetailQuery:

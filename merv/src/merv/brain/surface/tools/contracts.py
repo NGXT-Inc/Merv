@@ -13,8 +13,7 @@ from merv.shared.tool_validation import (
     validate_resource_register_mode,
 )
 
-from ..config import storage_feature_enabled
-from ...research_core.domain.vocabulary import REVIEW_VERDICT_VALUES
+from ...research_core.facade import REVIEW_VERDICT_VALUES
 
 
 class ContractModel(BaseModel):
@@ -1023,7 +1022,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "experiment.create": ToolContract(
-        handler_identity="experiments.create",
+        handler_identity="create_experiment.create",
         input_model=ExperimentCreateInput,
         description=(
             "Create a planned experiment. Requires an intent and a short "
@@ -1038,7 +1037,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         description="List experiments with state.",
     ),
     "experiment.get_state": ToolContract(
-        handler_identity="tracking_context.experiment",
+        handler_identity="agent_experiment.experiment",
         input_model=ExperimentGetStateInput,
         description=(
             "Get one experiment state. Includes 'allowed_transitions': the "
@@ -1494,15 +1493,14 @@ MCP_HIDDEN_TOOL_NAMES = frozenset(
 )
 
 
-def available_tool_names(*, storage_enabled: bool | None = None) -> set[str]:
+def available_tool_names(*, storage_enabled: bool) -> set[str]:
     """Tool names for the active feature set.
 
     Storage is optional. When it is not configured, the MCP catalog must omit
     storage tools entirely rather than advertising a feature that will fail.
     """
-    enabled = storage_feature_enabled() if storage_enabled is None else storage_enabled
     names = set(TOOL_MANIFEST)
-    if not enabled:
+    if not storage_enabled:
         names -= STORAGE_TOOL_NAMES
     return names
 
@@ -1529,7 +1527,7 @@ DATA_PLANE_TOOL_NAMES = frozenset(
 
 
 def static_tool_catalog(
-    *, tool_names: set[str] | None = None, storage_enabled: bool | None = None
+    *, tool_names: set[str] | None = None, storage_enabled: bool = False
 ) -> list[dict[str, Any]]:
     """The MCP tool catalog, derived purely from contracts.
 

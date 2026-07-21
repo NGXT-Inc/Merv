@@ -36,11 +36,8 @@ def _request(path: str, *, query: str = "", principal=USER) -> Request:
 
 
 class _Backend:
-    def __init__(self, *, review_project_id: str = "proj-a") -> None:
+    def __init__(self) -> None:
         self.calls: list[dict] = []
-        self.reviews = SimpleNamespace(
-            request_project_id=lambda **_kwargs: review_project_id
-        )
 
     def call_tool(self, **kwargs):
         self.calls.append(kwargs)
@@ -55,9 +52,24 @@ class HttpGatewayTest(unittest.TestCase):
             self.lookups.append((project_id, user_id))
             return project_id == "proj-a" and user_id == USER.user_id
 
-        self.projects = ProjectAuthorizer(member_lookup=member_lookup)
+        self.projects = ProjectAuthorizer(
+            projects=SimpleNamespace(is_member=member_lookup)
+        )
         self.surface = HttpSurfacePolicy.for_surface(
             restrict_cors=True, hosted_control=True
+        )
+
+    def gateway(
+        self, backend: _Backend | None = None, *, review_project_id: str = "proj-a"
+    ) -> ToolInvocationGateway:
+        return ToolInvocationGateway(
+            tools=backend or _Backend(),
+            reviews=SimpleNamespace(
+                request_project_id=lambda **_kwargs: review_project_id
+            ),
+            sandboxes=SimpleNamespace(get=lambda **_kwargs: {"ok": True}),
+            surface=self.surface,
+            projects=self.projects,
         )
 
     def test_one_authorizer_covers_path_query_tool_and_data_plane_scopes(self) -> None:
@@ -78,9 +90,7 @@ class HttpGatewayTest(unittest.TestCase):
         )
 
         backend = _Backend()
-        gateway = ToolInvocationGateway(
-            backend=backend, surface=self.surface, projects=self.projects
-        )
+        gateway = self.gateway(backend)
         self.assertEqual(
             gateway.call(
                 name="claim.list", arguments={"project_id": "proj-a"}, principal=USER
@@ -92,14 +102,12 @@ class HttpGatewayTest(unittest.TestCase):
                 name="claim.list", arguments={"project_id": "proj-b"}, principal=USER
             )
         with self.assertRaisesRegex(NotFoundError, "project not found: proj-b"):
-            gateway.app_for_data_plane_project(_request("/api/data-plane/x"), "proj-b")
+            gateway.authorize_data_plane_project(
+                _request("/api/data-plane/x"), "proj-b"
+            )
 
     def test_indirect_review_scope_uses_the_same_membership_boundary(self) -> None:
-        denied_gateway = ToolInvocationGateway(
-            backend=_Backend(review_project_id="proj-b"),
-            surface=self.surface,
-            projects=self.projects,
-        )
+        denied_gateway = self.gateway(review_project_id="proj-b")
         with self.assertRaisesRegex(NotFoundError, "project not found: proj-b"):
             denied_gateway.call(
                 name="review.start",
@@ -108,9 +116,7 @@ class HttpGatewayTest(unittest.TestCase):
             )
 
         backend = _Backend()
-        gateway = ToolInvocationGateway(
-            backend=backend, surface=self.surface, projects=self.projects
-        )
+        gateway = self.gateway(backend)
         gateway.call(
             name="review.start",
             arguments={"review_request_id": "req-1"},
@@ -122,9 +128,7 @@ class HttpGatewayTest(unittest.TestCase):
         self,
     ) -> None:
         backend = _Backend()
-        gateway = ToolInvocationGateway(
-            backend=backend, surface=self.surface, projects=self.projects
-        )
+        gateway = self.gateway(backend)
         gateway.call(name="project.list", principal=USER)
         self.assertEqual(backend.calls[0]["internal_kwargs"], {"user_id": USER.user_id})
 
@@ -132,9 +136,7 @@ class HttpGatewayTest(unittest.TestCase):
         self,
     ) -> None:
         backend = _Backend()
-        gateway = ToolInvocationGateway(
-            backend=backend, surface=self.surface, projects=self.projects
-        )
+        gateway = self.gateway(backend)
         gateway.call(
             name="project",
             arguments={"action": "create", "name": "A project"},

@@ -129,7 +129,7 @@ class LocalModeParityTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -184,7 +184,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
             execution_backend=FakeSandboxBackend(),
         )
         self.client = TestClient(
-            create_fastapi_app(self.app, surface_policy=_hosted_surface()),
+            create_fastapi_app(self.app.http, surface_policy=_hosted_surface()),
             raise_server_exceptions=False,
         )
 
@@ -340,7 +340,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
 
         client = TestClient(
             create_fastapi_app(
-                self.app,
+                self.app.http,
                 surface_policy=_hosted_surface(),
                 cleanup=cleanup,
                 tenant_counters=tenant_counters,
@@ -360,7 +360,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
     def test_data_plane_submission_endpoint_is_private_but_not_token_gated(self) -> None:
         client = TestClient(
             create_fastapi_app(
-                self.app,
+                self.app.http,
                 surface_policy=_hosted_surface(),
             ),
             raise_server_exceptions=False,
@@ -460,11 +460,11 @@ class VersionHandshakeTest(unittest.TestCase):
             execution_backend=FakeSandboxBackend(),
         )
         self.client = TestClient(
-            create_fastapi_app(self.app, surface_policy=_hosted_surface()),
+            create_fastapi_app(self.app.http, surface_policy=_hosted_surface()),
             raise_server_exceptions=False,
         )
         self.local_client = TestClient(
-            create_fastapi_app(self.app), raise_server_exceptions=False
+            create_fastapi_app(self.app.http), raise_server_exceptions=False
         )
 
     def tearDown(self) -> None:

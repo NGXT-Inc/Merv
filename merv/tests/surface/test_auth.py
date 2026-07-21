@@ -154,7 +154,7 @@ class AuthedSurfaceTest(unittest.TestCase):
         )
         self.client = TestClient(
             create_fastapi_app(
-                self.app,
+                self.app.http,
                 allowed_origins=["https://ui.example"],
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
@@ -232,6 +232,41 @@ class AuthedSurfaceTest(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 404, denied.text)
         self.assertEqual(denied.json()["error_code"], "not_found")
+
+    def test_membership_scopes_data_plane_and_feed_boundaries(self) -> None:
+        project_id = self._create_project("Scoped", _bearer(USER_A))
+        observation = {
+            "project_id": project_id,
+            "path": "reports/status.md",
+            "kind": "report",
+            "content_sha256": "0" * 64,
+            "mtime_ns": 1,
+            "ctime_ns": 1,
+            "size_bytes": 1,
+            "content_type": "text/markdown",
+        }
+
+        owner_write = self.client.post(
+            "/api/data-plane/resources/observe",
+            json=observation,
+            headers=_bearer(USER_A),
+        )
+        self.assertEqual(owner_write.status_code, 200, owner_write.text)
+        denied_write = self.client.post(
+            "/api/data-plane/resources/observe",
+            json=observation,
+            headers=_bearer(USER_B),
+        )
+        self.assertEqual(denied_write.status_code, 404, denied_write.text)
+
+        owner_feed = self.client.get(
+            f"/api/projects/{project_id}/feed", headers=_bearer(USER_A)
+        )
+        self.assertEqual(owner_feed.status_code, 200, owner_feed.text)
+        denied_feed = self.client.get(
+            f"/api/projects/{project_id}/feed", headers=_bearer(USER_B)
+        )
+        self.assertEqual(denied_feed.status_code, 404, denied_feed.text)
 
     def test_path_scope_cannot_be_overridden_by_request_body(self) -> None:
         project_a = self._create_project("Alpha", _bearer(USER_A))
@@ -412,7 +447,7 @@ class AuthedSurfaceTest(unittest.TestCase):
         # the env-configured base URL must win over allowed_origins[0].
         client = TestClient(
             create_fastapi_app(
-                self.app,
+                self.app.http,
                 allowed_origins=["https://ui.example"],
                 surface_policy=HttpSurfacePolicy.for_surface(
                     restrict_cors=True, hosted_control=True
@@ -453,7 +488,7 @@ class AuthedSurfaceTest(unittest.TestCase):
             )
             try:
                 client = TestClient(
-                    create_fastapi_app(app), raise_server_exceptions=False
+                    create_fastapi_app(app.http), raise_server_exceptions=False
                 )
                 self.assertEqual(client.post("/api/sdk/auth/session").status_code, 404)
             finally:

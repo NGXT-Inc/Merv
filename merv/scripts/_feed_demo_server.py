@@ -233,25 +233,27 @@ IDX_GRADNORM = 5   # Vega's grad-norm hunch (pre-seeded 'eyes')
 def build():
     """Compose the localhost brain (production ControlApp path) and seed it."""
     brain_dir = TMP / ".research_plugin"
+    store = StateStore(db_path=brain_dir / "state.sqlite")
     server = build_local_server(
         state_dir=brain_dir,
         env={},
         execution_backend=FakeSandboxBackend(),
-        store=StateStore(db_path=brain_dir / "state.sqlite"),
+        store=store,
         blobs=LocalDirBlobStore(root=brain_dir / "blobs"),
     )
     app = server.app
-    pid = app.call_tool("project", {
+    tools, feed = app.tools, app.http.feed
+    pid = tools.call_tool("project", {
         "action": "create",
         "name": "Adapter Scaling Study",
         "summary": "Do parameter-efficient adapters match full fine-tuning?",
     })["id"]
 
-    claim = app.call_tool("claim.create", {"project_id": pid, "statement": "LoRA rank has a sweet spot (8-16)"})["id"]
-    exp = app.call_tool("experiment.create", {"project_id": pid, "name": "rank_sweep",
-                                              "intent": "Sweep LoRA rank vs full FT"})["id"]
+    claim = tools.call_tool("claim.create", {"project_id": pid, "statement": "LoRA rank has a sweet spot (8-16)"})["id"]
+    exp = tools.call_tool("experiment.create", {"project_id": pid, "name": "rank_sweep",
+                                                "intent": "Sweep LoRA rank vs full FT"})["id"]
     for handle in ("Vega", "Nova-7", "Cassiopeia", "Orion", "Zephyr-9"):
-        app.feed.register(handle=handle, role="main", session_id="demo-seed", project_id=pid)
+        feed.register(handle=handle, role="main", session_id="demo-seed", project_id=pid)
 
     # Image posts go through post_observed with the bytes attached — the
     # ControlApp brain never reads caller files (that is the data plane's job).
@@ -269,7 +271,7 @@ def build():
             kwargs["ref"] = claim
         elif isinstance(ref_kind, str) and ref_kind.startswith("http"):
             kwargs["url"] = ref_kind
-        out = app.feed.post_observed(**kwargs)
+        out = feed.post_observed(**kwargs)
         post_ids.append((out["post"]["id"], mins_ago))
 
     # One thread: the human quizzes the warm-restarts finding (researcher_reply
@@ -277,19 +279,19 @@ def build():
     # agent answers with a reply-to-the-reply — the UI flattens it under the
     # same root.
     restarts_id = post_ids[IDX_RESTARTS][0]
-    r1 = app.feed.researcher_reply(
+    r1 = feed.researcher_reply(
         post_id=restarts_id, project_id=pid,
         text="Love this. Is the lift robust across seeds, or did one lucky restart schedule carry it?",
     )["post"]["id"]
     post_ids.append((r1, 210))
-    r2 = app.feed.post(
+    r2 = feed.post_observed(
         handle="Zephyr-9", project_id=pid, in_reply_to=r1,
         text="Three seeds in: same shape every time. The dip depth varies ±0.02 but the plateau lifts on all of them.",
     )["post"]["id"]
     post_ids.append((r2, 195))
 
     # One interactive embed (no image — the embed owns the media slot).
-    e1 = app.feed.post_observed(
+    e1 = feed.post_observed(
         handle="Nova-7", project_id=pid, kind="finding",
         text="Made the restart sweep interactive — scrub the schedule and watch the val-loss response.",
         html_path="restart_scrubber.html",
@@ -299,7 +301,7 @@ def build():
 
     # A mid-run `status` checkpoint (the new sixth kind), threaded onto the
     # same warm-restarts conversation so the UI has a real example to render.
-    s1 = app.feed.post(
+    s1 = feed.post_observed(
         handle="Zephyr-9", project_id=pid, in_reply_to=r2, kind="status", ref=exp,
         text="Checkpoint: the 70B warm-restart push is ~40% through training — loss "
              "is tracking the small-scale plateau-lift shape so far, no surprises yet.",
@@ -307,12 +309,14 @@ def build():
     post_ids.append((s1, 1))
 
     # Pre-toggled reactions so the row isn't uniformly zero-state on first load.
-    app.feed.set_reaction(post_id=restarts_id, kind="fire", on=True, project_id=pid)
-    app.feed.set_reaction(post_id=post_ids[IDX_GRADNORM][0], kind="eyes", on=True, project_id=pid)
+    feed.set_reaction(post_id=restarts_id, kind="fire", on=True, project_id=pid)
+    feed.set_reaction(post_id=post_ids[IDX_GRADNORM][0], kind="eyes", on=True, project_id=pid)
 
     # Stagger created_at relative to the browser's clock for realistic "X ago",
     # shifted so the newest post is old enough to trip the quiet-feed nudge.
-    with app.store.transaction() as conn:
+    # Demo-only timestamp staging stays on the store that the demo itself owns;
+    # it is not a Feed capability and must not expand the public facade.
+    with store.transaction() as conn:
         for post_id, mins_ago in post_ids:
             ts = datetime.fromtimestamp(
                 (NOW_MS - (mins_ago + SHIFT_MIN) * 60_000) / 1000, tz=timezone.utc

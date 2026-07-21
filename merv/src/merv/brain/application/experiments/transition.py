@@ -39,6 +39,19 @@ class TransitionExperiment:
     dispatcher: EventDispatcher
     objects: ProducedObjectCatalog
 
+    def agent(
+        self,
+        *,
+        experiment_id: str,
+        transition: str,
+        evidence: dict[str, Any] | None = None,
+        project_id: str | None = None,
+    ) -> TransitionResponse:
+        return self.execute(
+            experiment_id=experiment_id, transition=transition, evidence=evidence,
+            project_id=project_id, include_tracking_credentials=True,
+        )
+
     def execute(
         self,
         *,

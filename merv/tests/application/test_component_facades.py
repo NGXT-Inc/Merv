@@ -9,7 +9,7 @@ from merv.brain.application.experiments.transition import (
 )
 from merv.brain.application.reflections import ReflectionCommands
 from merv.brain.artifacts.facade import Artifacts, ArtifactsFacade
-from merv.brain.feed.facade import Feed, FeedFacade
+from merv.brain.feed.facade import Feed
 from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import (
     CommittedExperimentTransition,
@@ -108,15 +108,6 @@ class RecordingResourcesService:
     def resolve_resource_reference(self, **kwargs):
         self.calls.append(("resolve_resource_reference", kwargs))
         return {"type": "resource", "resolved": True, "resource_id": "res_1"}
-
-
-class RecordingFeedService:
-    def __init__(self) -> None:
-        self.calls = []
-
-    def feed_note_for(self, **kwargs):
-        self.calls.append(("feed_note_for", kwargs))
-        return "Share the result."
 
 
 class RecordingReflectionService:
@@ -488,34 +479,6 @@ class ComponentFacadeTest(unittest.TestCase):
                     "resolve_resource_reference",
                     {"project_id": "proj_1", "ref": "results.json"},
                 ),
-            ],
-        )
-
-    def test_feed_facade_normalizes_only_the_experiment_identity(self) -> None:
-        service = RecordingFeedService()
-        facade = FeedFacade(service)
-
-        self.assertIs(facade._feed, service)
-        self.assertIsInstance(facade, Feed)
-        self.assertEqual(
-            facade.transition_advisory(
-                project_id="proj_1",
-                experiment_id="exp_1",
-                event="experiment_complete",
-            ),
-            "Share the result.",
-        )
-        self.assertEqual(
-            service.calls,
-            [
-                (
-                    "feed_note_for",
-                    {
-                        "project_id": "proj_1",
-                        "entity_id": "exp_1",
-                        "event": "experiment_complete",
-                    },
-                )
             ],
         )
 

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from ..research_core.domain.vocabulary import LOCAL_TENANT_ID
+from ..kernel.identity import LOCAL_TENANT_ID
 from .identity import Principal
 
 SUPABASE_URL_ENV_VAR = "SUPABASE_URL"

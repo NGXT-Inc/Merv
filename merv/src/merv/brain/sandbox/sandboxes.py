@@ -253,6 +253,10 @@ class SandboxFacade:
     def backend_health(self) -> dict[str, Any]:
         return self.queries.backend_health()
 
+    def project_signal(self, *, project_id: str) -> str:
+        """Stable cache token for project sandbox rows."""
+        return self.store.project_sandbox_signal(project_id=project_id)
+
     def sample_metrics(
         self,
         *,

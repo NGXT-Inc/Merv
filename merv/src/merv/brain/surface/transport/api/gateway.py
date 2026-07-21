@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +24,11 @@ from ....kernel.utils import (
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
 from ...auth import UnauthorizedError
 from ...identity import LOCAL_PRINCIPAL
+from ...observability import StructuredLogger
 from ...tools.contracts import TOOL_MANIFEST
+from ...tools.tool_facade import ToolDispatcher
+from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
+from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, is_local_origin
 from . import sdk_auth
@@ -88,7 +91,7 @@ class RequestAuthenticator:
 class ProjectAuthorizer:
     """The single project-membership boundary for every HTTP entry path."""
 
-    member_lookup: Callable[..., bool]
+    projects: ResearchProjects
     _project_path = re.compile(r"^/api/projects/([^/]+)")
     _query_scoped_prefixes = ("/api/activity", "/api/debug/")
 
@@ -96,15 +99,12 @@ class ProjectAuthorizer:
     def user_id(principal: Any) -> str:
         return str(getattr(principal, "user_id", "") or "")
 
-    def _is_member(self, *, project_id: str, user_id: str) -> bool:
-        return self.member_lookup(project_id=project_id, user_id=user_id)
-
     def require_member(self, *, project_id: str | None, principal: Any) -> None:
         user_id = self.user_id(principal)
         if (
             user_id
             and project_id
-            and not self._is_member(project_id=project_id, user_id=user_id)
+            and not self.projects.is_member(project_id=project_id, user_id=user_id)
         ):
             raise NotFoundError(f"project not found: {project_id}")
 
@@ -122,7 +122,7 @@ class ProjectAuthorizer:
                     },
                     status_code=400,
                 )
-        if project_id and not self._is_member(
+        if project_id and not self.projects.is_member(
             project_id=project_id, user_id=self.user_id(request.state.principal)
         ):
             return JSONResponse(
@@ -136,7 +136,9 @@ class ProjectAuthorizer:
 class ToolInvocationGateway:
     """Apply hosted-tool policy before delegating to application commands."""
 
-    backend: Any
+    tools: ToolDispatcher
+    reviews: ResearchReviewDelivery
+    sandboxes: SandboxFacade
     surface: HttpSurfacePolicy
     projects: ProjectAuthorizer
 
@@ -186,14 +188,14 @@ class ToolInvocationGateway:
         call_kwargs = {"telemetry_project_id": project_scope} if project_scope else {}
         if policy is not None:
             if policy.telemetry_from_review_request:
-                project_id = self.backend.reviews.request_project_id(
+                project_id = self.reviews.request_project_id(
                     review_request_id=arguments.get("review_request_id")
                 )
                 self.projects.require_member(project_id=project_id, principal=principal)
                 if project_scope and project_id != project_scope:
                     raise NotFoundError(f"project not found: {project_scope}")
                 call_kwargs["telemetry_project_id"] = project_id
-            return self.backend.call_tool(
+            return self.tools.call_tool(
                 name=name,
                 arguments=arguments,
                 activity_source=activity_source,
@@ -220,14 +222,14 @@ class ToolInvocationGateway:
                     "invalid tool arguments",
                     details={"tool": name, "errors": exc.errors()},
                 ) from exc
-            return self.backend.sandboxes.get(
+            return self.sandboxes.get(
                 experiment_id=request.experiment_id,
                 project_id=request.project_id,
                 tenant_id=None,
                 sandbox_uid=request.sandbox_uid,
                 include_data_plane_enrichment=False,
             )
-        return self.backend.call_tool(
+        return self.tools.call_tool(
             name=name,
             arguments=arguments,
             activity_source=activity_source,
@@ -250,12 +252,11 @@ class ToolInvocationGateway:
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
         )
 
-    def app_for_data_plane_project(self, request: Request, project_id: str) -> Any:
+    def authorize_data_plane_project(self, request: Request, project_id: str) -> None:
         self.projects.require_member(
             project_id=project_id,
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
         )
-        return self.backend
 
 
 def install_request_middleware(
@@ -287,7 +288,9 @@ def install_request_middleware(
         return denied if denied is not None else await call_next(request)
 
 
-def install_activity_middleware(http: FastAPI, *, structured_logger: Any) -> None:
+def install_activity_middleware(
+    http: FastAPI, *, structured_logger: StructuredLogger
+) -> None:
     @http.middleware("http")
     async def log_http_activity(request: Request, call_next):
         started = monotonic_ms()
@@ -325,9 +328,7 @@ def install_cors(
 
 def install_error_handlers(http: FastAPI) -> None:
     @http.exception_handler(ResearchPluginError)
-    async def research_error_handler(
-        _request: Request, exc: ResearchPluginError
-    ) -> JSONResponse:
+    async def research_error_handler(_request: Request, exc: ResearchPluginError) -> JSONResponse:
         status = (
             404 if isinstance(exc, (NotFoundError, ContentUnavailableError)) else 400
         )

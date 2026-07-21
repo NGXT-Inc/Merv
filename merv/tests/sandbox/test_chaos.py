@@ -150,8 +150,10 @@ class ControlRestartTest(unittest.TestCase):
 
     def test_restart_resumes_then_cleanup_reaps_dead_vm(self) -> None:
         first, _ = self._build()
-        project_id = first.call_tool("project", {"action": "create", "name": "Cloud"})["id"]
-        exp_id = first.call_tool(
+        project_id = first.tools.call_tool(
+            "project", {"action": "create", "name": "Cloud"}
+        )["id"]
+        exp_id = first.tools.call_tool(
             "experiment.create",
             {"project_id": project_id, "name": "exp-x", "intent": "y"},
         )["id"]
@@ -177,7 +179,9 @@ class ControlRestartTest(unittest.TestCase):
         # belt-and-suspenders that finishes the job. Either way the dead VM's row
         # must end up terminated — a control restart orphans nothing (risk 6).
         restarted, _backend = self._build()
-        cleanup = CleanupService(sandboxes=restarted.sandboxes, blobs=restarted.blobs)
+        cleanup = CleanupService(
+            sandboxes=restarted.sandboxes, blobs=restarted._blobs
+        )
         reaped = cleanup.sweep_orphan_vms()
         row = restarted.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(

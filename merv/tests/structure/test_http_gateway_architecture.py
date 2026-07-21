@@ -63,8 +63,8 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("is_project_member", package_source)
-        self.assertEqual(gateway_source.count("self.member_lookup("), 1)
-        self.assertIn("member_lookup=api.app.projects.is_member", APP.read_text())
+        self.assertEqual(gateway_source.count("self.projects.is_member("), 2)
+        self.assertIn("ProjectAuthorizer(projects=api.projects)", APP.read_text())
         self.assertIn("def is_member(", projects_source)
 
     def test_gateway_names_the_three_public_boundaries(self) -> None:
@@ -86,6 +86,56 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("api.call_tool(", source, path.name)
             self.assertNotIn("**(body or {})", source, path.name)
+
+    def test_route_names_cannot_shadow_imports_or_injected_dependencies(self) -> None:
+        conflicts: dict[str, list[str]] = {}
+        for path in API.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            imports = {
+                alias.asname or alias.name.split(".")[0]
+                for node in tree.body
+                if isinstance(node, ast.Import)
+                for alias in node.names
+            } | {
+                alias.asname or alias.name
+                for node in tree.body
+                if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+                if alias.name != "*"
+            }
+            router = next(
+                (
+                    node
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == "build_router"
+                ),
+                None,
+            )
+            if router is None:
+                continue
+            parameters = {
+                argument.arg
+                for argument in (
+                    *router.args.posonlyargs,
+                    *router.args.args,
+                    *router.args.kwonlyargs,
+                )
+            }
+            parameters.update(
+                argument.arg
+                for argument in (router.args.vararg, router.args.kwarg)
+                if argument is not None
+            )
+            nested_names = {
+                node.name
+                for node in router.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            shadowed = sorted(nested_names & (imports | parameters))
+            if shadowed:
+                conflicts[path.name] = shadowed
+        self.assertEqual({}, conflicts)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ apps.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -20,10 +20,23 @@ from ...kernel.utils import ResearchPluginError
 from ...kernel.utils import ValidationError as ToolValidationError
 
 
+class ToolHandler(Protocol):
+    def __call__(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class ToolActivity(Protocol):
+    def tool_ok(self, **kwargs: Any) -> None: ...
+    def tool_error(self, **kwargs: Any) -> None: ...
+
+
+class ToolCallRecorder(Protocol):
+    def record(self, **kwargs: Any) -> None: ...
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     input_model: type[ContractModel]
-    handler: Callable[..., dict[str, Any]]
+    handler: ToolHandler
 
     def call(
         self,
@@ -60,7 +73,7 @@ def _contract_error_message(*, exc: PydanticValidationError) -> str:
 
 def _assert_tool_contracts_match_handlers(
     *,
-    handlers: dict[str, Callable[..., dict[str, Any]]],
+    handlers: dict[str, ToolHandler],
     tool_names: set[str],
 ) -> None:
     handler_names = set(handlers)
@@ -84,10 +97,10 @@ class ToolDispatcher:
     def __init__(
         self,
         *,
-        handlers: dict[str, Callable[..., dict[str, Any]]],
+        handlers: dict[str, ToolHandler],
         permissions: ToolPermissionPolicy,
-        activity: Any,
-        tool_calls: Any,
+        activity: ToolActivity,
+        tool_calls: ToolCallRecorder,
         tool_names: Iterable[str] | None = None,
     ) -> None:
         selected_tool_names = (

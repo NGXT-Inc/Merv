@@ -2,60 +2,60 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from types import SimpleNamespace
-from typing import Any
-
-from ...application.facade import ReflectionCommands
+from ...application.facade import (
+    AgentExperimentQuery,
+    ControlToolOperations,
+    CreateExperiment,
+    ExperimentExhibits,
+    FinalizeTrackingRun,
+    GetTrackingContext,
+    ReadReviewStatus,
+    ReflectionCommands,
+    StatusAndNextQuery,
+    TransitionExperiment,
+)
+from ...application.ports.storage import ObjectStorage
+from ...artifacts.facade import ArtifactRecords
+from ...feed.facade import FeedDelivery
+from ...research_core.facade import ResearchClaims, ResearchProjects, ResearchReviewDelivery
+from ...sandbox.facade import SandboxFacade
 from .contracts import TOOL_MANIFEST, available_tool_names
+from .tool_facade import ToolHandler
 
 
 def build_control_tool_handlers(
     *,
-    workflow: Any,
-    projects: Any,
-    claims: Any,
-    experiments: Any,
+    workflow: StatusAndNextQuery,
+    projects: ResearchProjects,
+    claims: ResearchClaims,
+    create_experiment: CreateExperiment,
     reflection_tools: ReflectionCommands,
-    resources: Any,
-    storage: Any | None,
-    reviews: Any,
-    sandboxes: Any,
-    feed: Any,
-    experiment_transition: Any,
-    experiment_exhibit: Any,
-    tracking_context: Any,
-    tracking_finalize: Any,
-    review_status: Any,
-    operations: Any,
-) -> dict[str, Callable[..., dict[str, Any]]]:
+    resources: ArtifactRecords,
+    storage: ObjectStorage | None,
+    reviews: ResearchReviewDelivery,
+    sandboxes: SandboxFacade,
+    feed: FeedDelivery,
+    experiment_transition: TransitionExperiment,
+    experiment_exhibit: ExperimentExhibits,
+    tracking_context: GetTrackingContext,
+    agent_experiment: AgentExperimentQuery,
+    tracking_finalize: FinalizeTrackingRun,
+    review_status: ReadReviewStatus,
+    operations: ControlToolOperations,
+) -> dict[str, ToolHandler]:
     """Map control-plane tool names to service methods.
 
     This is intentionally a thin registry: composition supplies the services,
     and ToolDispatcher verifies the final name set against TOOL_CONTRACTS.
     """
-    def experiment_transition_agent(
-        *,
-        experiment_id: str,
-        transition: str,
-        evidence: dict[str, Any] | None = None,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        return experiment_transition.execute(
-            experiment_id=experiment_id,
-            transition=transition,
-            evidence=evidence,
-            project_id=project_id,
-            include_tracking_credentials=True,
-        )
-
     owners = {
         "workflow": workflow,
         "operations": operations,
         "projects": projects,
         "claims": claims,
-        "experiments": experiments,
-        "experiment_transition": SimpleNamespace(agent=experiment_transition_agent),
+        "create_experiment": create_experiment,
+        "agent_experiment": agent_experiment,
+        "experiment_transition": experiment_transition,
         "experiment_exhibit": experiment_exhibit,
         "tracking_context": tracking_context,
         "tracking_finalize": tracking_finalize,
@@ -69,7 +69,7 @@ def build_control_tool_handlers(
     if storage is not None:
         owners["storage"] = storage
     available = available_tool_names(storage_enabled=storage is not None)
-    handlers: dict[str, Callable[..., dict[str, Any]]] = {}
+    handlers: dict[str, ToolHandler] = {}
     for name, tool in TOOL_MANIFEST.items():
         if name not in available or tool.plane != "control":
             continue

@@ -56,7 +56,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app,
+                    app=app.http,
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
                         hosted_control=True,
@@ -107,7 +107,7 @@ class ControlAppTest(unittest.TestCase):
             activity = client.get("/api/activity")
             self.assertEqual(activity.status_code, 200, activity.text)
             self.assertGreaterEqual(activity.json()["summary"]["total"], 1)
-            names = {tool["name"] for tool in app.list_tools()}
+            names = {tool["name"] for tool in app.tools.list_tools()}
             self.assertIn("claim.create", names)
             self.assertNotIn("resource.register", names)
 
@@ -122,7 +122,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app,
+                    app=app.http,
                     allowed_origins=["http://localhost:5173"],
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
@@ -171,7 +171,7 @@ class ControlAppTest(unittest.TestCase):
             self.addCleanup(app.shutdown)
             client = TestClient(
                 create_fastapi_app(
-                    app=app,
+                    app=app.http,
                     allowed_origins=["http://localhost:5173"],
                     surface_policy=HttpSurfacePolicy.for_surface(
                         restrict_cors=True,
@@ -277,8 +277,8 @@ class ControlAppTest(unittest.TestCase):
             )
             self.addCleanup(app.shutdown)
 
-            self.assertEqual(app.mlflow_tracking.tracking_uri, "https://mlflow.example.test")
-            self.assertEqual(app.mlflow_tracking.server_uri, "http://mlflow:5000")
+            self.assertEqual(app._tracking.tracking_uri, "https://mlflow.example.test")
+            self.assertEqual(app._tracking.server_uri, "http://mlflow:5000")
             self.assertNotIn("mlflow", app.sandboxes.backend_health())
 
     def test_control_app_can_require_agent_mlflow_tracking_uri(self) -> None:
@@ -347,8 +347,8 @@ class ControlAppTest(unittest.TestCase):
                 execution_backend=FakeSandboxBackend(),
             )
             self.addCleanup(app.shutdown)
-            project_id = app.call_tool("project", {"action": "create", "name": "Control Metrics"})["id"]
-            exp_id = app.call_tool(
+            project_id = app.tools.call_tool("project", {"action": "create", "name": "Control Metrics"})["id"]
+            exp_id = app.tools.call_tool(
                 "experiment.create",
                 {"project_id": project_id, "name": "exp", "intent": "measure"},
             )["id"]
@@ -364,7 +364,7 @@ class ControlAppTest(unittest.TestCase):
                 "merv.brain.mlflow.tracking.snapshot_mlflow",
                 return_value=dict(snapshot),
             ) as capture:
-                result = app.mlflow_tracking.results_metrics(
+                result = app._tracking.results_metrics(
                     experiment_id=exp_id, project_id=project_id
                 )
 
@@ -410,9 +410,7 @@ class ControlAppTest(unittest.TestCase):
                 )
             self.addCleanup(app.shutdown)
 
-            self.assertEqual(
-                app.workspace.repo_root, control_mode.CONTROL_COMPAT_REPO_ROOT
-            )
+            self.assertFalse(hasattr(app, "workspace"))
             self.assertEqual(
                 state_factory.call_args.kwargs["db_path"],
                 control_mode.CONTROL_COMPAT_REPO_ROOT / "state.sqlite",
@@ -520,7 +518,7 @@ class ControlAppTest(unittest.TestCase):
             )
             self.assertEqual(old_proxy.status_code, 426, old_proxy.text)
 
-            acme_project = server.app.projects.create(
+            acme_project = server.app.http.projects.create(
                 name="Acme Hosted", tenant_id="acme"
             )
             data_plane_write = client.post(

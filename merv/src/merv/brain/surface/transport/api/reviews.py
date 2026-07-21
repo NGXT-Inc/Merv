@@ -6,14 +6,16 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Request
 
+from ....research_core.facade import ResearchReviewDelivery
 from .shared import JsonBody, path_scoped_body
 
 from .context import ApiRouteContext
 
 
-def build_router(ctx: ApiRouteContext) -> APIRouter:
+def build_router(
+    ctx: ApiRouteContext, *, review_delivery: ResearchReviewDelivery
+) -> APIRouter:
     api_router = APIRouter()
-    api = ctx.api
 
     @api_router.get("/api/projects/{project_id}/reviews")
     def reviews(
@@ -23,7 +25,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         target_id: str | None = None,
     ) -> dict[str, Any]:
         if not target_id:
-            return api.app.reviews.queue(project_id=project_id)
+            return review_delivery.queue(project_id=project_id)
         return ctx.call_tool(
             request,
             name="review.status",
@@ -51,7 +53,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         body: JsonBody = Body(default=None),
     ) -> dict[str, Any]:
         payload = body or {}
-        api.app.reviews.assert_request_in_project(
+        review_delivery.assert_request_in_project(
             project_id=project_id,
             review_request_id=payload.get("review_request_id"),
         )
@@ -67,7 +69,7 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
         project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
         payload = body or {}
-        api.app.reviews.assert_session_in_project(
+        review_delivery.assert_session_in_project(
             project_id=project_id,
             review_session_id=payload.get("review_session_id"),
         )

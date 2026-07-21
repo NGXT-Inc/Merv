@@ -35,7 +35,7 @@ class StorageHttpApiTest(unittest.TestCase):
             store=store,
             storage=storage,
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
         self.project_id = self._request(
             "POST", "/api/projects", {"name": "Storage HTTP Project"}
         )["id"]
@@ -349,9 +349,9 @@ class StorageCompositionTest(unittest.TestCase):
                 server = build_local_server(state_dir=root)
                 app = server.app
             try:
-                self.assertIsNone(app.storage)
+                self.assertIsNone(app._storage)
                 self.assertFalse(
-                    {tool["name"] for tool in app.list_tools()}
+                    {tool["name"] for tool in app.tools.list_tools()}
                     & {"storage.put_object", "storage.find", "storage.object"}
                 )
             finally:

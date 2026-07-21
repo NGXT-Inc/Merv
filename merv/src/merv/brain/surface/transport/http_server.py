@@ -49,7 +49,7 @@ class UvicornHttpServer:
         selected_port = int(self._socket.getsockname()[1])
         self.server_address = (host, selected_port)
         config = uvicorn.Config(
-            create_fastapi_app(app=app),
+            create_fastapi_app(app=app.http),
             host=host,
             port=selected_port,
             log_level="warning",

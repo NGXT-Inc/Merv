@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
-from .feed import FeedService
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -14,20 +12,18 @@ class Feed(Protocol):
     ) -> str | None: ...
 
 
-class FeedFacade:
-    """Narrow adapter over the already-composed feed service."""
+class FeedDelivery(Protocol):
+    """Public single-component API used by HTTP and the local data plane."""
 
-    __slots__ = ("_feed",)
-
-    def __init__(self, feed: FeedService) -> None:
-        self._feed = feed
-
-    def transition_advisory(
-        self, *, project_id: str, experiment_id: str, event: str
-    ) -> str | None:
-        return self._feed.feed_note_for(
-            project_id=project_id, entity_id=experiment_id, event=event
-        )
+    def register(self, **kwargs: Any) -> dict[str, Any]: ...
+    def validate_post_intent(self, **kwargs: Any) -> dict[str, Any]: ...
+    def post_observed(self, **kwargs: Any) -> dict[str, Any]: ...
+    def list_posts(self, **kwargs: Any) -> dict[str, Any]: ...
+    def set_reaction(self, **kwargs: Any) -> dict[str, Any]: ...
+    def researcher_reply(self, **kwargs: Any) -> dict[str, Any]: ...
+    def get_image(self, **kwargs: Any) -> tuple[bytes, str]: ...
+    def get_link_image(self, **kwargs: Any) -> tuple[bytes, str]: ...
+    def get_embed(self, **kwargs: Any) -> str: ...
 
 
-__all__ = ["Feed", "FeedFacade"]
+__all__ = ["Feed", "FeedDelivery"]

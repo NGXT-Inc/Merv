@@ -68,8 +68,8 @@ class SandboxArchitectureTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("build_sandbox_runtime(", source)
-        self.assertIn("self.sandbox_runtime.start()", source)
-        self.assertIn("self.sandbox_runtime.shutdown()", source)
+        self.assertIn("self._sandbox_runtime.start()", source)
+        self.assertIn("self._sandbox_runtime.shutdown()", source)
 
     def test_lifecycle_reducer_is_pure(self) -> None:
         path = ROOT / "sandbox" / "lifecycle_reducer.py"

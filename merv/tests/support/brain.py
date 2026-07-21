@@ -35,6 +35,15 @@ class TestBrain:
     """
 
     __test__ = False
+    _RECORD_SERVICES = frozenset(
+        {"permissions", "quotas", "projects", "claims", "experiments", "resources",
+         "graph_refs", "reflection_waves", "reviews", "feed"}
+    )
+    _PRIVATE_ALIASES = {
+        "store": "_store", "blobs": "_blobs", "storage": "_storage",
+        "execution_backend": "_execution_backend", "mlflow_tracking": "_tracking",
+        "worker": "_worker", "sandbox_runtime": "_sandbox_runtime",
+    }
 
     def __init__(
         self,
@@ -95,10 +104,12 @@ class TestBrain:
         return self.db_path.parent
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._app, name)
+        if name in self._RECORD_SERVICES:
+            return getattr(self._app._record_core, name)
+        return getattr(self._app, self._PRIVATE_ALIASES.get(name, name))
 
     def current_project(self, *, tenant_id: str | None = None) -> dict[str, Any]:
-        return self._app.current_project(tenant_id=tenant_id)
+        return self._app.project_dashboard_query.current_project(tenant_id=tenant_id)
 
     def list_tools(self) -> list[dict[str, Any]]:
         return static_tool_catalog(
@@ -123,7 +134,7 @@ class TestBrain:
                     return self._data_plane.call_tool(name=name, arguments=args)
                 except LocalDataPlaneError as exc:
                     raise ValidationError(exc.message, details=exc.details) from exc
-        return self._app.call_tool(
+        return self._app.tools.call_tool(
             name=name,
             arguments=args,
             activity_source=activity_source,
@@ -143,13 +154,13 @@ class TestBrain:
     def _resolve_project_id(self) -> str | None:
         if self._active_project_id:
             return self._active_project_id
-        projects = self._app.projects.list_projects()["projects"]
+        projects = self._app.http.projects.list_projects()["projects"]
         if len(projects) == 1:
             return str(projects[0]["id"])
         return None
 
     def _control_tool_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._app.call_tool(name=name, arguments=arguments)
+        return self._app.tools.call_tool(name=name, arguments=arguments)
 
     def _control_api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._client.post(path, json=payload)

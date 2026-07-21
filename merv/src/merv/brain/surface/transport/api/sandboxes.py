@@ -7,14 +7,21 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from ....application.facade import ComputeCostQuery
+from ....sandbox.facade import SandboxFacade
 from .shared import conditional_json_from_signal
 
 from .context import ApiRouteContext
+from .views import present, sandbox_list_view, sandbox_view
 
 
-def build_router(ctx: ApiRouteContext) -> APIRouter:
+def build_router(
+    ctx: ApiRouteContext,
+    *,
+    sandboxes: SandboxFacade,
+    cost_query: ComputeCostQuery,
+) -> APIRouter:
     api_router = APIRouter()
-    api = ctx.api
 
     @api_router.get("/api/projects/{project_id}/sandboxes")
     def list_sandboxes(project_id: str, request: Request) -> Response:
@@ -26,32 +33,35 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
             signal_parts=(
                 "sandboxes",
                 project_id,
-                api.app.store.project_sandbox_signal(project_id=project_id),
+                sandboxes.project_signal(project_id=project_id),
             ),
-            payload=lambda: api.sandbox_list_view(project_id=project_id),
+            payload=lambda: sandbox_list_view(sandboxes, project_id=project_id),
         )
 
     @api_router.get("/api/projects/{project_id}/compute-cost")
     def compute_cost(project_id: str) -> dict[str, Any]:
         # No ETag: open generations bill to now, so the payload moves with the
         # clock even when no row changes.
-        return api.compute_cost_view(project_id=project_id)
+        return present(cost_query(project_id=project_id))
 
     @api_router.get("/api/sandboxes/health")
     def sandbox_health() -> dict[str, Any]:
-        return api.app.sandboxes.backend_health()
+        return sandboxes.backend_health()
 
     @api_router.get("/api/projects/{project_id}/experiments/{experiment_id}/sandbox")
     def get_sandbox(
         project_id: str, experiment_id: str, sandbox_uid: str | None = None
     ) -> dict[str, Any]:
-        return api.sandbox_get_view(
+        return sandbox_view(
+            sandboxes,
             project_id=project_id, experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
 
     @api_router.get("/api/projects/{project_id}/sandboxes/{sandbox_uid}")
     def get_sandbox_by_uid(project_id: str, sandbox_uid: str) -> dict[str, Any]:
-        return api.sandbox_get_view(project_id=project_id, sandbox_uid=sandbox_uid)
+        return sandbox_view(
+            sandboxes, project_id=project_id, sandbox_uid=sandbox_uid
+        )
 
     @api_router.get(
         "/api/projects/{project_id}/experiments/{experiment_id}/sandbox/metrics"
@@ -59,13 +69,15 @@ def build_router(ctx: ApiRouteContext) -> APIRouter:
     def sandbox_metrics(
         project_id: str, experiment_id: str, sandbox_uid: str | None = None
     ) -> dict[str, Any]:
-        return api.sandbox_metrics_view(
+        return sandboxes.sample_metrics(
             project_id=project_id, experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
 
     @api_router.get("/api/projects/{project_id}/sandboxes/{sandbox_uid}/metrics")
     def sandbox_metrics_by_uid(project_id: str, sandbox_uid: str) -> dict[str, Any]:
-        return api.sandbox_metrics_view(project_id=project_id, sandbox_uid=sandbox_uid)
+        return sandboxes.sample_metrics(
+            project_id=project_id, experiment_id="", sandbox_uid=sandbox_uid
+        )
 
     @api_router.get(
         "/api/projects/{project_id}/experiments/{experiment_id}/sandbox/terminal"

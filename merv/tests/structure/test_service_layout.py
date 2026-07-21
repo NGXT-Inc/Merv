@@ -62,41 +62,8 @@ CONTROL_APP_SCAN_MODULES = tuple(
 # not a line number, so harmless formatting does not churn the baseline. Both
 # ledgers are shrinking: a new entry is a regression, while a removed entry
 # fails with an instruction to delete the now-stale baseline debt.
-RAW_CONTROL_APP_ACCESS_BASELINE: Counter[tuple[str, str]] = Counter(
-    {
-        ("transport/api/app.py", "projects"): 1,
-        ("transport/api/events.py", "store"): 3,
-        ("transport/api/gateway.py", "reviews"): 1,
-        ("transport/api/gateway.py", "sandboxes"): 1,
-        ("transport/api/meta.py", "tool_calls"): 1,
-        ("transport/api/projects.py", "projects"): 3,
-        ("transport/api/projects.py", "store"): 1,
-        ("transport/api/resources.py", "resources"): 1,
-        ("transport/api/reviews.py", "reviews"): 3,
-        ("transport/api/sandboxes.py", "store"): 1,
-        ("transport/api/sandboxes.py", "sandboxes"): 1,
-        ("transport/api/storage.py", "storage"): 1,
-        ("transport/api/views.py", "artifacts"): 1,
-        ("transport/api/views.py", "resources"): 3,
-        ("transport/api/views.py", "sandboxes"): 5,
-        ("transport/api/views.py", "tool_calls"): 2,
-        ("transport/data_plane_http.py", "feed"): 3,
-        ("transport/data_plane_http.py", "resources"): 4,
-        ("transport/data_plane_http.py", "sandboxes"): 2,
-        ("transport/feed_http.py", "feed"): 6,
-    }
-)
-WHOLE_CONTROL_APP_CARRIER_BASELINE: Counter[tuple[str, str]] = Counter(
-    {
-        ("transport/api/app.py", "ResearchHttpApi(app=app)"): 1,
-        ("transport/api/views.py", "self.app=app"): 1,
-        ("transport/api/app.py", "backend=api.app"): 1,
-        ("transport/api/feed.py", "return ctx.api.app"): 1,
-        ("transport/api/gateway.py", "return self.backend"): 1,
-        ("transport/data_plane_http.py", "app_for_project(...)"): 7,
-        ("transport/feed_http.py", "app_for(...)"): 7,
-    }
-)
+RAW_CONTROL_APP_ACCESS_BASELINE: Counter[tuple[str, str]] = Counter()
+WHOLE_CONTROL_APP_CARRIER_BASELINE: Counter[tuple[str, str]] = Counter()
 
 _RAW_CONTROL_APP_COLLABORATORS = {
     "artifacts",
@@ -439,8 +406,6 @@ VOCABULARY_NAMES = {
     "LEGACY_REFLECTION_DOC_ROLE",
     "LEGACY_REFLECTION_LENS_DOC_ROLE",
     "LEGACY_RESOURCE_ROLES",
-    "LOCAL_CLIENT_ID",
-    "LOCAL_TENANT_ID",
     "PROJECT_GRAPH_ROLE",
     "PROJECT_GRAPH_ROLES",
     "REFLECTION_LENS_DOC_ROLE",
@@ -720,7 +685,9 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_review_service_owns_vocabulary_validation(self) -> None:
         imports = _import_segments(RESEARCH_CORE / "reviews.py")
         self.assertNotIn("permissions", imports)
-        self.assertNotIn("identity", imports)
+        self.assertIn(
+            "kernel.identity", _import_module_names(RESEARCH_CORE / "reviews.py")
+        )
         self.assertIn("domain", imports)
         self.assertIn("review_validation", imports)
         source = _rc_source("reviews.py")
@@ -1089,10 +1056,10 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("hosted_control_sandbox_lookup=True", contracts_source)
         marker = "if (\n            self.surface.hosted_control\n            and contract is not None\n            and contract.hosted_control_sandbox_lookup"
         start = source.index(marker)
-        end = source.index("return self.backend.call_tool", start)
+        end = source.index("return self.tools.call_tool", start)
         block = source[start:end]
         self.assertIn("tenant_id=None", block)
-        self.assertIn("self.backend.sandboxes.get", block)
+        self.assertIn("self.sandboxes.get", block)
         self.assertIn("include_data_plane_enrichment=False", block)
         self.assertNotIn(".store.transaction", block)
         self.assertNotIn("require_project_id", block)
@@ -1188,7 +1155,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 f'if surface.hosted_control and name == "{tool_name}"', source
             )
         self.assertIn("telemetry_from_review_request=True", policy_source)
-        self.assertIn("self.backend.reviews.request_project_id(", source)
+        self.assertIn("self.reviews.request_project_id(", source)
         self.assertNotIn("SELECT project_id FROM review_requests", source)
 
     def test_http_data_plane_capabilities_use_policy_table(self) -> None:
@@ -1236,7 +1203,7 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn('"/api/admin/tenants/{tenant_id}/counters"', source)
         self.assertNotIn("TenantCounters", source)
         self.assertIn(
-            "tenant_counters=tenant_counters or api.app.tenant_counters_query",
+            "tenant_counters=tenant_counters or api.tenant_counters",
             source,
         )
         self.assertNotIn("app=api.app", source)
@@ -1284,21 +1251,13 @@ class ServiceLayoutTest(unittest.TestCase):
             SURFACE_ROOT / "transport" / "data_plane_http.py"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(
-            _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py"),
-            {
-                "base64",
-                "binascii",
-                "collections.abc",
-                "typing",
-                "fastapi",
-                "feed.feed",
-                "kernel.utils",
-                "merv.shared.tool_validation",
-            },
-        )
+        imports = _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py")
+        self.assertIn("artifacts.facade", imports)
+        self.assertIn("feed.facade", imports)
+        self.assertIn("sandbox.facade", imports)
+        self.assertNotIn("feed.feed", imports)
         self.assertIn("register_data_plane_routes(", source)
-        self.assertIn("app_for_data_plane_project", source)
+        self.assertIn("authorize_data_plane_project", source)
         self.assertNotIn("task_queue=", source)
         self.assertNotIn("def _required_text", source)
         self.assertNotIn("def _decode_b64_field", source)
@@ -1317,60 +1276,33 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertNotIn(route, source)
 
     def test_transport_delegates_resource_content_to_application_query(self) -> None:
-        source = _api_views_source()
-        start = source.index("    def resource_content(")
-        end = source.index("    def resource_file(", start)
-        content = source[start:end]
-
-        self.assertIn("self.app.hosted_resource_content_query", content)
-        self.assertIn("self.app.artifacts.submitted_figure", source)
-        self.assertNotIn("self.app.resources.resolve", content)
-        self.assertNotIn("self.app.artifacts.resource_content", content)
-        self.assertNotIn("self.app.artifacts.select_resource_text", content)
-        self.assertNotIn("self.app.resources.pinned_text_for_version", content)
-        self.assertNotIn("self.app.resources.submitted_text_for_version", content)
-        self.assertNotIn("self.app.resources.submitted_figure", content)
+        routes = (HTTP_API_PACKAGE / "resources.py").read_text(encoding="utf-8")
+        views = _api_views_source()
+        self.assertIn("content_query(", routes)
+        self.assertIn("artifacts.submitted_figure", views)
+        self.assertNotIn("ResourceService", routes)
+        self.assertNotIn("pinned_text_for_version", routes)
         self.assertNotIn(
             "SELECT project_id, content_sha256 FROM resource_versions",
-            source,
+            routes + views,
         )
-        self.assertNotIn("FROM report_figures", source)
-        self.assertNotIn("self.app.blobs.get", source)
+        self.assertNotIn("FROM report_figures", routes + views)
+        self.assertNotIn(".blobs.get", routes + views)
 
     def test_transport_delegates_reflection_views_to_application_query(self) -> None:
-        source = _api_views_source()
-        start = source.index("    def reflections_view(")
-        end = source.index("    def reflection_detail(", start)
-        block = source[start:end]
-
-        self.assertIn("self.app.logic_graph_query.reflections", block)
-        self.assertNotIn("self.app.reflection_waves", block)
-        self.assertNotIn("self.app.store.connect", block)
-        self.assertNotIn("reflection_signal", block)
-        self.assertNotIn("open_reflection", block)
-        self.assertNotIn("latest_published", block)
-
-        start = source.index("    def project_logic_graph(")
-        end = source.index("    def reflection_graph(", start)
-        block = source[start:end]
-
-        self.assertIn("self.app.logic_graph_query.project", block)
-        self.assertNotIn("self.app.reflection_waves", block)
-        self.assertNotIn("self.app.store.connect", block)
-        self.assertNotIn("reflection_signal", block)
-        self.assertNotIn("open_reflection", block)
-        self.assertNotIn("latest_published", block)
-        self.assertNotIn("def _latest_graph_resource", source)
+        source = (HTTP_API_PACKAGE / "reflections.py").read_text(encoding="utf-8")
+        for delegate in ("graphs.reflections", "graphs.project", "graphs.reflection_graph"):
+            self.assertIn(delegate, source)
+        for internal in ("reflection_waves", ".store", "reflection_signal", "open_reflection"):
+            self.assertNotIn(internal, source)
 
     def test_project_member_routes_delegate_policy_to_project_service(self) -> None:
         source = (HTTP_API_PACKAGE / "projects.py").read_text(encoding="utf-8")
 
-        self.assertIn("api.app.projects.members", source)
-        self.assertIn("api.app.projects.add_member", source)
-        self.assertIn("api.app.projects.remove_member", source)
-        self.assertNotIn("api.app.store.add_project_member", source)
-        self.assertNotIn("api.app.store.remove_project_member", source)
-        self.assertNotIn("api.app.store.list_project_members", source)
+        self.assertIn("projects.members", source)
+        self.assertIn("projects.add_member", source)
+        self.assertIn("projects.remove_member", source)
+        self.assertNotIn(".store", source)
 
     def test_sandbox_attachment_validation_is_research_owned(self) -> None:
         record_core = (SURFACE_ROOT / "control" / "record_core.py").read_text(
@@ -1403,40 +1335,12 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("class TenantCountersQuery", queries)
 
     def test_surface_raw_control_app_access_baseline_only_shrinks(self) -> None:
-        self.assertEqual(sum(RAW_CONTROL_APP_ACCESS_BASELINE.values()), 44)
         current = _raw_control_app_accesses()
-        new = current - RAW_CONTROL_APP_ACCESS_BASELINE
-        stale = RAW_CONTROL_APP_ACCESS_BASELINE - current
-        self.assertFalse(
-            new,
-            "new raw ControlApp service/store access reached HTTP delivery; "
-            "inject a narrow facade/use-case callable instead: "
-            + _format_counter(new),
-        )
-        self.assertFalse(
-            stale,
-            "raw ControlApp access debt shrank; delete these stale entries from "
-            "RAW_CONTROL_APP_ACCESS_BASELINE: "
-            + _format_counter(stale),
-        )
+        self.assertEqual(current, RAW_CONTROL_APP_ACCESS_BASELINE)
 
     def test_whole_control_app_carrier_baseline_only_shrinks(self) -> None:
-        self.assertEqual(sum(WHOLE_CONTROL_APP_CARRIER_BASELINE.values()), 19)
         current = _whole_control_app_carriers()
-        new = current - WHOLE_CONTROL_APP_CARRIER_BASELINE
-        stale = WHOLE_CONTROL_APP_CARRIER_BASELINE - current
-        self.assertFalse(
-            new,
-            "new whole-ControlApp carrier reached HTTP delivery; pass narrow "
-            "route/gateway dependencies instead: "
-            + _format_counter(new),
-        )
-        self.assertFalse(
-            stale,
-            "whole-ControlApp carrier debt shrank; delete these stale entries "
-            "from WHOLE_CONTROL_APP_CARRIER_BASELINE: "
-            + _format_counter(stale),
-        )
+        self.assertEqual(current, WHOLE_CONTROL_APP_CARRIER_BASELINE)
 
     def test_http_transport_does_not_own_raw_persistence(self) -> None:
         def enclosing_function(
@@ -1500,10 +1404,10 @@ class ServiceLayoutTest(unittest.TestCase):
                 self.assertEqual(connect_calls, [])
 
     def test_transport_delegates_graph_resolution_to_application_query(self) -> None:
-        source = _api_views_source()
-        self.assertIn("self.app.logic_graph_query.experiment", source)
-        self.assertIn("self.app.logic_graph_query.reflection_graph", source)
-        self.assertNotIn("self.app.graph_refs", source)
+        source = _api_package_source()
+        self.assertIn("graphs.experiment", source)
+        self.assertIn("graphs.reflection_graph", source)
+        self.assertNotIn(".graph_refs", source)
         self.assertNotIn("_resolve_graph_refs", source)
         self.assertNotIn("_resolve_one_graph_ref", source)
         self.assertNotIn("_graph_ref_resource", source)
@@ -1629,26 +1533,16 @@ class ServiceLayoutTest(unittest.TestCase):
                     "workflow_gates", _import_segments(RESEARCH_CORE / name)
                 )
 
-    def test_identity_constants_are_domain_vocabulary(self) -> None:
-        from merv.brain.research_core.domain.vocabulary import (
-            LOCAL_CLIENT_ID,
-            LOCAL_TENANT_ID,
-        )
+    def test_identity_constants_are_foundation_vocabulary(self) -> None:
+        from merv.brain.kernel.identity import LOCAL_CLIENT_ID, LOCAL_TENANT_ID
         from merv.brain.surface.identity import LOCAL_PRINCIPAL
 
         self.assertEqual(LOCAL_TENANT_ID, "local")
         self.assertEqual(LOCAL_CLIENT_ID, "local")
         self.assertEqual(LOCAL_PRINCIPAL.tenant_id, LOCAL_TENANT_ID)
         self.assertEqual(LOCAL_PRINCIPAL.client_id, LOCAL_CLIENT_ID)
-        self.assertFalse(
-            {"LOCAL_TENANT_ID", "LOCAL_CLIENT_ID"}
-            & _assigned_names(SERVICES / "identity.py")
-        )
-        self.assertIn(
-            "research_core.domain.vocabulary",
-            _import_module_names(SERVICES / "identity.py"),
-        )
-        self.assertNotIn("identity", _import_segments(RESEARCH_CORE / "reviews.py"))
+        self.assertIn("kernel.identity", _import_module_names(SERVICES / "identity.py"))
+        self.assertIn("kernel.identity", _import_module_names(RESEARCH_CORE / "reviews.py"))
         self.assertNotIn("services.identity", _rc_source("reviews.py"))
 
     def test_opaque_secret_token_helpers_are_single_sourced(self) -> None:

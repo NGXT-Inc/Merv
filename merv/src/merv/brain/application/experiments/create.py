@@ -15,7 +15,7 @@ class CreateExperiment:
 
     research: ResearchCore
 
-    def __call__(
+    def create(
         self, **kwargs: Unpack[ExperimentCreateArgs]
     ) -> ExperimentState:
         state = self.research.create_experiment(**kwargs)
@@ -33,6 +33,5 @@ class CreateExperiment:
             "storage, before the sandbox is released."
         )
         return rich_experiment_state(state, storage_objects=())
-
 
 __all__ = ["CreateExperiment"]

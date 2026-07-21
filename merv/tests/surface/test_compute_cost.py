@@ -26,7 +26,7 @@ class ComputeCostEndpointTest(unittest.TestCase):
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=FakeSandboxBackend(),
         )
-        self.client = TestClient(create_fastapi_app(self.app))
+        self.client = TestClient(create_fastapi_app(self.app.http))
         self.project_id = self.app.call_tool("project", {"action": "create", "name": "Cost P"})["id"]
 
     def tearDown(self) -> None:

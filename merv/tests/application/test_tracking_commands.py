@@ -217,7 +217,7 @@ class TrackingContextQueryTest(unittest.TestCase):
             ExperimentDetailResponse,
         )
         self.assertEqual(
-            get_type_hints(AgentExperimentQuery.__call__)["return"].__name__,
+            get_type_hints(AgentExperimentQuery.experiment)["return"].__name__,
             "SlimExperimentState",
         )
 
