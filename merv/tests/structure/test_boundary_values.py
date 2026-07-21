@@ -47,7 +47,11 @@ from merv.brain.kernel.ports.object_store import (
     UploadTarget,
 )
 from merv.brain.kernel.ports.quota_admission import AdmissionRequest
-from merv.brain.research_core.facade import ResearchSnapshot, ReviewGateSnapshot
+from merv.brain.research_core.facade import ResearchSnapshot
+from merv.brain.research_core.gate_evaluation import (
+    GateEvaluation,
+    RequirementEvaluation,
+)
 from merv.brain.research_core.transition_types import (
     CommittedExperimentUpdate,
     ExhibitVerdict,
@@ -89,6 +93,7 @@ def _boundary_types() -> dict[str, type]:
     result: dict[str, type] = {}
     value_modules = {
         "kernel/events.py",
+        "research_core/gate_evaluation.py",
         "research_core/transition_types.py",
         "sandbox/messages.py",
     }
@@ -297,10 +302,29 @@ SAMPLES: dict[type, object] = {
     CommittedExperimentUpdate: CommittedExperimentUpdate(
         state={"id": "exp_1", "status": "running"}, event=EVENT
     ),
-    ReviewGateSnapshot: ReviewGateSnapshot(
-        satisfied=True,
-        blocked_reason="",
-        request={"id": "rr_1", "status": "submitted"},
+    RequirementEvaluation: RequirementEvaluation(
+        role="plan",
+        status="valid",
+        blocker_code="",
+        enforcement_error="",
+        problems=(),
+        items=({"id": "resource:plan", "satisfied": True},),
+    ),
+    GateEvaluation: GateEvaluation(
+        subject="experiment",
+        status="planned",
+        transition="submit_design",
+        leads_to="design_review",
+        terminal=False,
+        requirements=(
+            RequirementEvaluation(
+                "plan", "valid", "", "", (), ({"id": "resource:plan"},)
+            ),
+        ),
+        review=None,
+        legal_transitions=(
+            {"transition": "submit_design", "leads_to": "design_review"},
+        ),
     ),
     ResearchSnapshot: ResearchSnapshot(
         project_id="proj_1",
@@ -313,9 +337,16 @@ SAMPLES: dict[type, object] = {
         open_reflection=None,
         latest_published_reflection=None,
         reflection_signal={"needed": False},
-        review_gates={
-            ("experiment", "exp_1", "design_reviewer"): ReviewGateSnapshot(
-                True, "", {"id": "rr_1"}
+        gate_evaluations={
+            "exp_1": GateEvaluation(
+                "experiment",
+                "running",
+                "submit_results",
+                "experiment_review",
+                False,
+                (),
+                None,
+                ({"transition": "submit_results", "leads_to": "experiment_review"},),
             )
         },
         recent_claims=[{"id": "clm_1"}],
@@ -336,14 +367,7 @@ SAMPLES: dict[type, object] = {
 }
 
 
-JSON_ROUNDTRIP_DEBT = Counter(
-    {
-        (
-            "merv.brain.research_core.facade.ResearchSnapshot",
-            "JSON mapping key is tuple, not str",
-        ): 1
-    }
-)
+JSON_ROUNDTRIP_DEBT: Counter[tuple[str, str]] = Counter()
 
 ANNOTATION_DEBT = frozenset(
     {
@@ -360,7 +384,6 @@ ANNOTATION_DEBT = frozenset(
         ),
         ("merv.brain.application.events.EventReaction.value", "object"),
         ("merv.brain.application.events.DispatchResult.outcomes", "object"),
-        ("merv.brain.research_core.facade.ReviewGateSnapshot.request", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.project", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.claims", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.experiments", "Any"),
@@ -369,7 +392,6 @@ ANNOTATION_DEBT = frozenset(
         ("merv.brain.research_core.facade.ResearchSnapshot.open_reflection", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.latest_published_reflection", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.reflection_signal", "Any"),
-        ("merv.brain.research_core.facade.ResearchSnapshot.review_gates", "non-string-key"),
         ("merv.brain.research_core.facade.ResearchSnapshot.recent_claims", "Any"),
         ("merv.brain.research_core.facade.ResearchSnapshot.claim_events_since_reflection", "Any"),
         ("merv.brain.research_core.transition_types.ExhibitVerdict.mlflow", "object"),

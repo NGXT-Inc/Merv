@@ -22,7 +22,6 @@ from ..kernel.utils import (
 )
 from ..artifacts.pinned import PinnedStore
 from .domain.review_gates import (
-    expected_review_gate_role,
     is_review_gate_exempt,
 )
 from .domain.review_handoff import reviewer_handoff_payload
@@ -30,13 +29,12 @@ from .domain.review_returns import (
     resolve_review_return,
     revision_context_for_review_return,
 )
-from .domain.review_snapshot import snapshot_from_id
+from .domain.review_snapshot import review_snapshot_id, snapshot_from_id
 from .domain.review_validation import validate_review_role, validate_review_verdict
 from .domain.synopsis import validate_synopsis
 from .domain.vocabulary import LOCAL_TENANT_ID
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from .experiments import ExperimentService
-from .review_gate import review_gate_state
 from .reflections import ReflectionService
 
 
@@ -80,15 +78,17 @@ class ReviewService:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if target_type == "experiment":
-                target = self.experiments.get_state(
+                target, gate = self.experiments.get_state_with_gate(
                     experiment_id=target_id, project_id=project_id, conn=conn
                 )
             else:
-                target = self.reflections.get_state(
+                target, gate = self.reflections.get_state_with_gate(
                     reflection_id=target_id, project_id=project_id, conn=conn
                 )
             self._validate_role_matches_gate(
-                target_type=target_type, target_status=target["status"], role=role
+                target_type=target_type,
+                expected=None if gate.review is None else gate.review.role,
+                role=role,
             )
             # Refresh is revoke-and-reissue: a new capability for the same gate
             # closes every prior open request, so a lost or stale capability can
@@ -116,9 +116,7 @@ class ReviewService:
             # plan Phase 7). review.start resolves by hashing the presented token.
             capability = mint_secret(prefix="rp_", nbytes=24)
             expires_at = format_iso(datetime.now(UTC) + timedelta(hours=1))
-            snapshot_id = self._target_snapshot_id(
-                conn=conn, target_type=target_type, target_id=target_id
-            )
+            snapshot_id = review_snapshot_id(target_type=target_type, target=target)
             conn.execute(
                 """
                 INSERT INTO review_requests (
@@ -638,42 +636,6 @@ class ReviewService:
                     f"review session not found in project {project_id}: {review_session_id}"
                 )
 
-    def gate_state(
-        self, *, conn, target_type: str, target_id: str, role: str
-    ) -> dict[str, Any]:
-        """review_gate_state for the target's current pinned snapshot."""
-        table = "experiments" if target_type == "experiment" else "reflections"
-        row = conn.execute(
-            f"SELECT project_id FROM {table} WHERE id = ?", (target_id,)
-        ).fetchone()
-        return review_gate_state(
-            conn=conn,
-            project_id=str(row["project_id"]) if row else "",
-            target_type=target_type,
-            target_id=target_id,
-            role=role,
-            snapshot_id=self._target_snapshot_id(
-                conn=conn, target_type=target_type, target_id=target_id
-            ),
-        )
-
-    def open_request(
-        self, *, conn, target_type: str, target_id: str, role: str
-    ) -> dict[str, Any] | None:
-        row = conn.execute(
-            """
-            SELECT id, target_type, target_id, role, status, target_snapshot_id,
-                   producer_session_id, expires_at, created_at
-            FROM review_requests
-            WHERE target_type = ? AND target_id = ? AND role = ?
-              AND status IN ('requested', 'started')
-            ORDER BY created_seq DESC
-            LIMIT 1
-            """,
-            (target_type, target_id, role),
-        ).fetchone()
-        return None if row is None else row_to_dict(row=row)
-
     def _with_snapshot(self, *, row) -> dict[str, Any]:
         data = row_to_dict(row=row) or {}
         data["target_snapshot"] = self.snapshot_from_id(
@@ -718,14 +680,10 @@ class ReviewService:
             raise PermissionDeniedError("reviewer capability expired")
 
     def _validate_role_matches_gate(
-        self, *, target_type: str, target_status: str, role: str
+        self, *, target_type: str, expected: str | None, role: str
     ) -> None:
         if is_review_gate_exempt(role=role):
             return
-        expected = expected_review_gate_role(
-            target_type=target_type,
-            target_status=target_status,
-        )
         if expected is None:
             raise PermissionDeniedError(
                 f"{target_type} is not currently awaiting {role}"

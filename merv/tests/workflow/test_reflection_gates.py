@@ -386,6 +386,30 @@ class ReflectionGateTest(unittest.TestCase):
             )
         self.assertIn("cost", str(ctx.exception))
 
+    def test_non_roster_filename_reports_the_specific_missing_lenses(self) -> None:
+        syn_id = self._create_wave()
+        self._associate_file(
+            syn_id=syn_id,
+            path=f"reflections/{syn_id}/reflections/notes.md",
+            role="reflection_lens_doc",
+            body="loose notes\n",
+        )
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflections",
+            )
+        self.assertEqual(
+            str(ctx.exception),
+            "reflections are missing for lens(es): "
+            + ", ".join(ALL_LENS_IDS)
+            + " — each roster lens must have its own reflection associated "
+            "(role 'reflection_lens_doc') for the current attempt, in a "
+            "file named <lens_id>.md, submitted by its own subagent",
+        )
+
     def test_empty_reflection_blocks_submit(self) -> None:
         # The gate lints the SUBMITTED bytes: a reflection whose associated
         # content is blank blocks the transition (and emptying a live file
@@ -409,6 +433,70 @@ class ReflectionGateTest(unittest.TestCase):
                 transition="submit_reflections",
             )
         self.assertIn("empty", str(ctx.exception))
+
+    def test_blank_lens_is_invalid_in_checklist_transition_and_guidance(self) -> None:
+        syn_id = self._create_wave()
+        for lens_id in ALL_LENS_IDS:
+            if lens_id == "rigor":
+                self._associate_file(
+                    syn_id=syn_id,
+                    path=f"reflections/{syn_id}/reflections/rigor.md",
+                    role="reflection_lens_doc",
+                    body="   \n",
+                )
+            else:
+                self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflections",
+            )
+        transition_error = str(ctx.exception)
+        state = self._state(syn_id)
+        item = {
+            entry["id"]: entry for entry in state["gate_checklist"]["items"]
+        }["reflection_lens:rigor"]
+        workflow = self.call(
+            "workflow.status_and_next", project_id=self.project_id
+        )["project_reflection"]["workflow"]
+
+        self.assertEqual(item["status"], "invalid")
+        self.assertFalse(item["satisfied"])
+        self.assertEqual(item["problems"], [transition_error])
+        self.assertFalse(state["gate_checklist"]["ready"])
+        self.assertNotEqual(workflow["current_gate"], "reflections_complete")
+        self.assertNotIn("reflection.transition", workflow["allowed_actions"])
+        self.assertIn(transition_error, workflow["missing_evidence"])
+
+    def test_every_blank_lens_is_marked_invalid(self) -> None:
+        syn_id = self._create_wave()
+        for lens_id in ALL_LENS_IDS:
+            self._associate_file(
+                syn_id=syn_id,
+                path=f"reflections/{syn_id}/reflections/{lens_id}.md",
+                role="reflection_lens_doc",
+                body="   \n" if lens_id in {"amplify", "avoid"} else f"# {lens_id}\nOK\n",
+            )
+
+        state = self._state(syn_id)
+        items = {
+            item["lens_id"]: item for item in state["gate_checklist"]["items"]
+        }
+        self.assertEqual(items["amplify"]["status"], "invalid")
+        self.assertEqual(items["avoid"]["status"], "invalid")
+        self.assertFalse(items["amplify"]["satisfied"])
+        self.assertFalse(items["avoid"]["satisfied"])
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflections",
+            )
+        self.assertEqual(str(ctx.exception), items["amplify"]["problems"][0])
 
     def test_get_state_reports_reflection_coverage(self) -> None:
         syn_id = self._create_wave()
@@ -554,6 +642,93 @@ class ReflectionGateTest(unittest.TestCase):
         checklist = self._state(syn_id)["gate_checklist"]
         self.assertTrue(checklist["ready"])
         self.assertTrue(all(item["satisfied"] for item in checklist["items"]))
+
+    def test_invalid_reflection_artifacts_block_checklist_transition_and_guidance(self) -> None:
+        invalid_graph = json.dumps(
+            {
+                "version": 1,
+                "nodes": [
+                    {"id": f"n{index}", "label": f"Node {index}"}
+                    for index in range(17)
+                ],
+            }
+        )
+        cases = (
+            ("project_graph", invalid_graph),
+            (
+                "reflection_doc",
+                "# Reflection\n\n## Summary\nMissing the required critical reading.\n",
+            ),
+            ("change_spec", "not JSON\n"),
+        )
+        for role, invalid_body in cases:
+            with self.subTest(role=role):
+                syn_id = self._drive_to_synthesizing()
+                bodies = {
+                    "project_graph": VALID_PROJECT_GRAPH,
+                    "reflection_doc": VALID_REFLECTION_DOC,
+                    "change_spec": VALID_CHANGE_SPEC,
+                }
+                bodies[role] = invalid_body
+                self._associate_reflection_artifacts(
+                    syn_id=syn_id,
+                    graph=bodies["project_graph"],
+                    doc=bodies["reflection_doc"],
+                    change_spec=bodies["change_spec"],
+                )
+                state = self._state(syn_id)
+                item = {
+                    entry["id"]: entry
+                    for entry in state["gate_checklist"]["items"]
+                }[f"resource:{role}"]
+                with self.assertRaises(WorkflowError) as ctx:
+                    self.call(
+                        "reflection.transition",
+                        project_id=self.project_id,
+                        reflection_id=syn_id,
+                        transition="submit_reflection_artifacts",
+                    )
+                transition_error = str(ctx.exception)
+                workflow = self.call(
+                    "workflow.status_and_next", project_id=self.project_id
+                )["project_reflection"]["workflow"]
+                self.call(
+                    "reflection.transition",
+                    project_id=self.project_id,
+                    reflection_id=syn_id,
+                    transition="abandon",
+                )
+
+                self.assertEqual(item["problems"], [transition_error])
+                self.assertFalse(state["gate_checklist"]["ready"])
+                self.assertNotEqual(
+                    workflow["current_gate"], "reflection_review_required"
+                )
+                self.assertNotIn(
+                    "reflection.transition", workflow["allowed_actions"]
+                )
+                self.assertIn(transition_error, workflow["missing_evidence"])
+
+    def test_null_association_version_remains_json_null_in_checklist(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        resource_id = self._associate_file(
+            syn_id=syn_id,
+            path="project/logic_graph.json",
+            role="project_graph",
+            body=VALID_PROJECT_GRAPH,
+        )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE resource_associations SET version_id = NULL "
+                "WHERE resource_id = ? AND target_type = 'reflection' AND target_id = ?",
+                (resource_id, syn_id),
+            )
+
+        state = self._state(syn_id)
+        graph = {
+            item["id"]: item for item in state["gate_checklist"]["items"]
+        }["resource:project_graph"]
+        self.assertIsNone(graph["version_id"])
 
     def test_legacy_synthesis_doc_role_is_rejected_for_new_associations(self) -> None:
         syn_id = self._drive_to_synthesizing()
@@ -1341,6 +1516,29 @@ class ReflectionGateTest(unittest.TestCase):
                 caller_session_id="reviewer",
             )
         self.assertIn("target changed", str(ctx.exception))
+
+    def test_stale_reflection_review_request_is_not_actionable_guidance(self) -> None:
+        syn_id = self._drive_to_reflection_review()
+        req = self.call(
+            "review.request",
+            project_id=self.project_id,
+            target_type="reflection",
+            target_id=syn_id,
+            role="reflection_reviewer",
+        )
+        self._associate_file(
+            syn_id=syn_id,
+            path="project/logic_graph.json",
+            role="project_graph",
+            body=VALID_PROJECT_GRAPH.replace("LR schedule", "Warmup schedule"),
+        )
+
+        workflow = self.call(
+            "workflow.status_and_next", project_id=self.project_id
+        )["project_reflection"]["workflow"]
+        self.assertNotIn(req["review_request_id"], json.dumps(workflow))
+        self.assertEqual(workflow["review_gate"]["status"], "none")
+        self.assertIn("review.request", workflow["allowed_actions"])
 
     # ---- terminal + discovery ----
 

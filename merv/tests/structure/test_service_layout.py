@@ -749,8 +749,8 @@ class ServiceLayoutTest(unittest.TestCase):
         source = _rc_source("reviews.py")
 
         self.assertIn("domain.review_gates", imports)
-        self.assertIn("expected_review_gate_role", source)
         self.assertIn("is_review_gate_exempt", source)
+        self.assertIn("gate.review.role", source)
         self.assertNotIn('"synthesis_review":', source)
         self.assertNotIn('"design_review":', source)
         self.assertNotIn('"experiment_review":', source)
@@ -774,13 +774,13 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIs(hints["experiments"], ExperimentService)
         self.assertIs(hints["reflections"], ReflectionService)
         experiment_calls = {
-            "get_state",
+            "get_state_with_gate",
             "send_back_to_planned",
             "send_back_to_running",
             "target_snapshot_id",
         }
         reflection_calls = {
-            "get_state",
+            "get_state_with_gate",
             "send_back_to_reflecting",
             "send_back_to_synthesizing",
             "target_snapshot_id",

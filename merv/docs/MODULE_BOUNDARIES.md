@@ -167,6 +167,15 @@ submitted resource-content and figure selection behind `ArtifactsFacade`.
 Surface retains authentication, conditional HTTP caching, local-field
 redaction, MIME/header shaping, and serialization only.
 
+Research evaluates each experiment or reflection gate once per hydration. The
+typed, JSON-safe evaluation carries requirement, validation, current-snapshot
+review-request, blocker, and legal-transition facts. That same value enforces
+transitions, projects the existing checklist, travels in `ResearchSnapshot`,
+and drives workflow guidance. Application may combine those facts with live
+Sandbox state for presentation, but it cannot reconstruct transition legality.
+Review requests likewise read their expected role from the current evaluation;
+there is no parallel status-to-review-role map.
+
 Review role/verdict validation is Research domain policy; resource association
 role/target validation is Artifacts domain policy. Project membership mutation
 is owned by `ProjectService`, not by an HTTP route.
@@ -186,7 +195,7 @@ function-local imports, classifies every brain file twice, enforces both laws,
 checks component-owned SQL, and rejects stale table entries and stale exception
 pairs. Every stable table has an explicit owner; an unclassified new table
 fails closed. SQL may name only tables owned by the file's component, Kernel
-tables, or tables behind a ratified component dependency. The remaining 20
+tables, or tables behind a ratified component dependency. The remaining 18
 Research SQL references to Artifact-owned tables have a separate exact counter,
 because the temporary Research-to-Artifacts component edge would otherwise
 hide them. Both that counter and the public-entrypoint exception ledger must
@@ -208,12 +217,12 @@ registry collaborators, and whole-app route dependencies. New `Any` or generic
 `Callable` collaborators fail; repaired entries must be removed from the
 ledger.
 
-The 42 public boundary value objects—including exported Application response/event
+The 43 public boundary value objects—including exported Application response/event
 values—are discovered by structure tests, normalized to JSON primitives, and
 round-tripped with strict finite-number handling. A complete sample registry
 prevents new DTOs from escaping the test. Untyped fields and non-string mapping
-keys are an exact shrinking debt ledger; the one current serialization debt is
-recorded by exact type, error, and count. Concrete connections, cursors, stores,
+keys are an exact shrinking debt ledger; there is no remaining JSON-roundtrip
+exception. Concrete connections, cursors, stores,
 repositories, and services are never permitted in boundary values.
 
 Sandbox provider neutrality is enforced separately: services do not dispatch

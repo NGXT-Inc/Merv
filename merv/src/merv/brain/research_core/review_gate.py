@@ -10,75 +10,40 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..kernel.state.store import row_to_dict
 from .domain.gates import ReviewRequirement
 from .domain.review_snapshot import review_snapshot_id
+from .gate_evaluation import GateItem, RequirementEvaluation
 from .projects import project_settings
 
 
-def review_gate_state(
-    *, conn, project_id: str, target_type: str, target_id: str, role: str, snapshot_id: str
-) -> dict[str, Any]:
-    """Whether reviews satisfy a gate, honoring require_verified_reviews.
-
-    A gate is satisfied by a 'pass' review pinned to the current snapshot.
-    When the project's require_verified_reviews policy is on, only passes with
-    verified reviewer independence count; an attested-only pass reports a
-    blocked_reason instead.
-    """
-    rows = conn.execute(
-        """
-        SELECT r.verdict, s.independence
-        FROM reviews r
-        JOIN review_sessions s ON s.id = r.session_id
-        WHERE r.target_type = ? AND r.target_id = ? AND r.role = ?
-          AND r.target_snapshot_id = ?
-        ORDER BY r.created_seq DESC
-        """,
-        (target_type, target_id, role, snapshot_id),
-    ).fetchall()
-    verdict = str(rows[0]["verdict"]) if rows else None
-    passes = [row for row in rows if str(row["verdict"]) == "pass"]
-    if not passes:
-        return {"verdict": verdict, "satisfied": False, "blocked_reason": None}
-    verified = any(
-        str(row["independence"]) == "verified_agent_review" for row in passes
-    )
-    settings = project_settings(conn=conn, project_id=project_id)
-    if verified or not settings.get("require_verified_reviews"):
-        return {"verdict": verdict, "satisfied": True, "blocked_reason": None}
-    return {
-        "verdict": verdict,
-        "satisfied": False,
-        "blocked_reason": (
-            f"a {role} review passed but its independence is only attested "
-            "(the reviewer did not present a session identity) and this "
-            "project requires verified reviews (require_verified_reviews is "
-            "on): request a fresh review and have the reviewer pass its own "
-            "caller_session_id to review.start"
-        ),
-    }
-
-
-def _review_checklist_item(
+def evaluate_review_gate(
     *,
     conn,
-    status: str,
     target_type: str,
     target: dict[str, Any],
     review: ReviewRequirement,
-    label: str,
-) -> dict[str, Any]:
+) -> RequirementEvaluation:
     snapshot_id = review_snapshot_id(target_type=target_type, target=target)
-    gate_state = review_gate_state(
-        conn=conn,
-        project_id=str(target["project_id"]),
-        target_type=target_type,
-        target_id=str(target["id"]),
-        role=review.role,
-        snapshot_id=snapshot_id,
+    passes = conn.execute(
+        """
+        SELECT s.independence FROM reviews r
+        JOIN review_sessions s ON s.id = r.session_id
+        WHERE r.target_type = ? AND r.target_id = ? AND r.role = ?
+          AND r.target_snapshot_id = ? AND r.verdict = 'pass'
+        ORDER BY r.created_seq DESC
+        """,
+        (target_type, str(target["id"]), review.role, snapshot_id),
+    ).fetchall()
+    verified = any(
+        str(row["independence"]) == "verified_agent_review" for row in passes
     )
-    passed = gate_state["satisfied"]
+    strict = bool(
+        passes
+        and project_settings(conn=conn, project_id=str(target["project_id"])).get(
+            "require_verified_reviews"
+        )
+    )
+    passed = bool(passes) and (verified or not strict)
     row = conn.execute(
         """
         SELECT id, status, expires_at
@@ -90,26 +55,42 @@ def _review_checklist_item(
         """,
         (target_type, str(target["id"]), review.role, snapshot_id),
     ).fetchone()
-    request = row_to_dict(row=row)
+    request = None if row is None else dict(row)
     review_status = "pending"
     if passed:
         review_status = "passed"
     elif request is not None and request.get("status") in {"requested", "started"}:
         review_status = str(request["status"])
-    item: dict[str, Any] = {
+    blocked_reason = (
+        f"a {review.role} review passed but its independence is only attested "
+        "(the reviewer did not present a session identity) and this project "
+        "requires verified reviews (require_verified_reviews is on): request "
+        "a fresh review and have the reviewer pass its own caller_session_id "
+        "to review.start"
+        if passes and strict and not verified
+        else ""
+    )
+    error = "" if passed else blocked_reason or review.error
+    item: GateItem = {
         "id": f"review:{review.role}",
         "kind": "review",
         "role": review.role,
-        "label": label,
-        "satisfied": passed,
+        "label": review.label,
+        "satisfied": bool(passed),
         "status": review_status,
-        "gate": status,
+        "gate": str(target["status"]),
         "action": review.pass_action if passed else f"launch_{review.action_name}er",
         "skill": review.skill,
     }
-    if gate_state.get("blocked_reason"):
-        item["problems"] = [gate_state["blocked_reason"]]
+    if blocked_reason:
+        item["problems"] = [blocked_reason]
     if request is not None:
-        item["request_id"] = request["id"]
-        item["expires_at"] = request["expires_at"]
-    return item
+        item.update(request_id=str(request["id"]), expires_at=str(request["expires_at"]))
+    return RequirementEvaluation(
+        role=review.role,
+        status=review_status,
+        blocker_code=f"{review.action_name}_required" if not passed else "",
+        enforcement_error=error,
+        problems=(blocked_reason,) if blocked_reason else (),
+        items=(item,),
+    )

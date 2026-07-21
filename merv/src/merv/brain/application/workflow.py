@@ -12,9 +12,9 @@ from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
 from ..research_core.facade import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
+    GateEvaluation,
     ResearchSnapshot,
     ResearchSnapshots,
-    ReviewGateSnapshot,
 )
 from ..sandbox.facade import SandboxReads
 
@@ -62,15 +62,15 @@ class NextActions(Protocol):
         *,
         experiment: Record,
         sandboxes: list[Record],
-        review_gates: dict[tuple[str, str, str], ReviewGateSnapshot],
+        evaluation: GateEvaluation,
     ) -> Record: ...
     def project_reflection(
         self,
         *,
         open_wave: Record | None,
+        evaluation: GateEvaluation | None,
         signal: Record,
         idle: bool,
-        review_gates: dict[tuple[str, str, str], ReviewGateSnapshot],
     ) -> Record | None: ...
     def reflection_workflow_takeover(
         self, *, reflection: Record | None
@@ -141,7 +141,7 @@ class WorkflowQuery:
             self.policy.experiment(
                 experiment=experiment,
                 sandboxes=sandboxes,
-                review_gates=snapshot.review_gates,
+                evaluation=snapshot.gate_evaluations[str(experiment["id"])],
             )
             if experiment is not None
             else self.policy.project_setup()
@@ -152,9 +152,13 @@ class WorkflowQuery:
         )
         reflection = self.policy.project_reflection(
             open_wave=snapshot.open_reflection,
+            evaluation=(
+                None
+                if snapshot.open_reflection is None
+                else snapshot.gate_evaluations[str(snapshot.open_reflection["id"])]
+            ),
             signal=snapshot.reflection_signal,
             idle=idle,
-            review_gates=snapshot.review_gates,
         )
         if snapshot.requested_experiment_id is None and idle:
             workflow = (
@@ -223,7 +227,7 @@ class WorkflowQuery:
                     "workflow": self.policy.experiment(
                         experiment=experiment,
                         sandboxes=experiment_sandboxes,
-                        review_gates=snapshot.review_gates,
+                        evaluation=snapshot.gate_evaluations[str(experiment["id"])],
                     ),
                     "sandboxes": experiment_sandboxes,
                     "active_processes": [

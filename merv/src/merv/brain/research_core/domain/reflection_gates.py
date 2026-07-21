@@ -17,7 +17,8 @@ fan-out (attempt bump — every lens must submit a fresh reflection), while
 reflection artifacts (graph + reflection doc + change spec) are revised.
 
 The same three consumers as ``domain.workflow_gates.GATE_TABLE`` read this table —
-enforcement (``ReflectionService._next_status``), guidance
+enforcement (``ReflectionService._evaluate_gate`` and
+``GateEvaluation.require_transition``), guidance
 (``NextActionPolicy._reflection_workflow_for``), and discovery
 (``allowed_reflection_transitions_for``) — reusing the same gate contract
 dataclasses so the two workflows cannot drift in shape.
@@ -111,6 +112,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
                     "(role 'reflection_lens_doc')"
                 ),
                 guidance_key="reflection",
+                label="Per-lens reflections submitted",
             ),
         ),
         ready_gate="reflections_complete",
@@ -145,6 +147,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
                 allowed=("resource.register",),
                 missing="project logic graph resource (role 'project_graph')",
                 guidance_key="project_graph",
+                label="Project graph present and valid",
             ),
             RoleRequirement(
                 role="reflection_doc",
@@ -161,6 +164,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
                 allowed=("resource.register",),
                 missing="reflection document resource (role 'reflection_doc')",
                 guidance_key="reflection_doc",
+                label="Reflection document present and valid",
             ),
             RoleRequirement(
                 role="change_spec",
@@ -177,6 +181,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
                 allowed=("resource.register",),
                 missing="change spec resource (role 'change_spec')",
                 guidance_key="change_spec",
+                label="Change spec present and materializable",
             ),
         ),
         ready_gate="reflection_review_required",
@@ -200,6 +205,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
             action_name="reflection_review",
             error="reflection review must pass before publish",
             pass_action="publish_reflection",
+            label="Reflection review passed",
         ),
     ),
 }

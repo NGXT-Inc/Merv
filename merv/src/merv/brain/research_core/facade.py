@@ -15,6 +15,7 @@ from .domain.vocabulary import (
 from .experiment_views import slim_experiment_state
 from .experiments import ExperimentService
 from .graph_refs import GraphRefResolver
+from .gate_evaluation import GateEvaluation
 from .reflections import ReflectionService
 from .transition_types import (
     CommittedExperimentTransition,
@@ -24,15 +25,6 @@ from .transition_types import (
     PersistedRunState,
     SlimExperimentState,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewGateSnapshot:
-    """Review facts needed by the pure next-action policy."""
-
-    satisfied: bool
-    blocked_reason: str
-    request: dict[str, Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +41,7 @@ class ResearchSnapshot:
     open_reflection: dict[str, Any] | None
     latest_published_reflection: dict[str, Any] | None
     reflection_signal: dict[str, Any]
-    review_gates: dict[tuple[str, str, str], ReviewGateSnapshot]
+    gate_evaluations: dict[str, GateEvaluation]
     recent_claims: list[dict[str, Any]]
     claim_events_since_reflection: list[dict[str, Any]]
 
@@ -290,6 +282,7 @@ __all__ = [
     "EXPERIMENT_TERMINAL_STATUSES",
     "ExhibitVerdict",
     "ExperimentState",
+    "GateEvaluation",
     "MAX_GRAPH_NODES",
     "PersistedRunState",
     "ResearchCore",
@@ -297,7 +290,6 @@ __all__ = [
     "ResearchReviews",
     "ResearchSnapshot",
     "ResearchSnapshots",
-    "ReviewGateSnapshot",
     "SlimExperimentState",
     "graph_problems",
 ]

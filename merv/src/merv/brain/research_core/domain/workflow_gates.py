@@ -4,9 +4,9 @@ Each non-terminal experiment status has exactly one *forward* transition. Its
 ``ForwardTransition`` entry declares everything every consumer needs, so the
 three surfaces that used to hand-maintain parallel copies cannot drift:
 
-- ENFORCEMENT — ``ExperimentService._next_status`` walks ``requirements`` (and
-  ``review``), raising ``WorkflowError`` with the entry's ``error`` text on the
-  first unmet one.
+- ENFORCEMENT — ``ExperimentService._evaluate_gate`` evaluates the contract and
+  ``GateEvaluation.require_transition`` raises ``WorkflowError`` with the
+  entry's ``error`` text on the first unmet requirement.
 - GUIDANCE — ``NextActionPolicy.experiment`` walks the same ``requirements``;
   the first role missing from the current attempt yields that requirement's
   gate/action/allowed payload, and once all are present the transition's
@@ -51,6 +51,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 allowed=("resource.register",),
                 missing="experiment plan resource",
                 guidance_key="plan",
+                label="Plan associated and valid",
             ),
         ),
         ready_gate="design_review_required",
@@ -67,6 +68,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
             action_name="design_review",
             error="design review must pass before ready_to_run",
             pass_action="mark_ready_to_run",
+            label="Design review passed",
         ),
     ),
     "ready_to_run": ForwardTransition(
@@ -106,6 +108,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 ),
                 missing="result resource",
                 guidance_key="result",
+                label="Result resource present",
             ),
             RoleRequirement(
                 role="report",
@@ -126,6 +129,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 ),
                 missing="results report resource (role 'report')",
                 guidance_key="report",
+                label="Results report present and valid",
             ),
             RoleRequirement(
                 role="graph",
@@ -146,6 +150,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                 ),
                 missing="logic graph resource (role 'graph')",
                 guidance_key="graph",
+                label="Logic graph present and valid",
             ),
         ),
         ready_gate="experiment_review_required",
@@ -172,6 +177,7 @@ GATE_TABLE: dict[str, ForwardTransition] = {
             action_name="experiment_review",
             error="experiment review must pass before complete",
             pass_action="complete_experiment",
+            label="Experiment review passed",
         ),
     ),
 }

@@ -36,13 +36,13 @@ class WorkflowQueryIntegrationTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_project_dashboard_hydrates_each_experiment_once(self) -> None:
-        original = self.app.experiments.get_state
+        original = self.app.experiments.get_state_with_gate
         wrapped = Mock(wraps=original)
-        self.app.experiments.get_state = wrapped
+        self.app.experiments.get_state_with_gate = wrapped
         try:
             result = self.app.project_dashboard_query(project_id=self.project_id)
         finally:
-            self.app.experiments.get_state = original
+            self.app.experiments.get_state_with_gate = original
 
         self.assertCountEqual(
             [experiment["id"] for experiment in result["experiments"]],
@@ -52,16 +52,16 @@ class WorkflowQueryIntegrationTest(unittest.TestCase):
         self.assertCountEqual(hydrated, self.experiment_ids)
 
     def test_scoped_workflow_hydrates_only_the_selected_experiment(self) -> None:
-        original = self.app.experiments.get_state
+        original = self.app.experiments.get_state_with_gate
         wrapped = Mock(wraps=original)
-        self.app.experiments.get_state = wrapped
+        self.app.experiments.get_state_with_gate = wrapped
         try:
             result = self.app.workflow.status_and_next(
                 project_id=self.project_id,
                 experiment_id=self.experiment_ids[0],
             )
         finally:
-            self.app.experiments.get_state = original
+            self.app.experiments.get_state_with_gate = original
 
         self.assertEqual(result["experiment"]["id"], self.experiment_ids[0])
         self.assertEqual(

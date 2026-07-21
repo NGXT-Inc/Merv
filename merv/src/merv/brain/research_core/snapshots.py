@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .domain.reflection_gates import REFLECTION_GATE_TABLE
 from .domain.reflection_policy import reflection_signal_state
-from .domain.workflow_gates import GATE_TABLE, TERMINAL_STATUSES
+from .domain.workflow_gates import TERMINAL_STATUSES
 from .experiments import ExperimentService
-from .facade import ResearchSnapshot, ReviewGateSnapshot
+from .facade import ResearchSnapshot
+from .gate_evaluation import GateEvaluation
 from .reflections import ReflectionService
-from .reviews import ReviewService
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 
 
@@ -23,12 +22,10 @@ class ResearchSnapshotReader:
         store: BaseStateStore,
         experiments: ExperimentService,
         reflections: ReflectionService,
-        reviews: ReviewService,
     ) -> None:
         self.store = store
         self.experiments = experiments
         self.reflections = reflections
-        self.reviews = reviews
 
     def read(
         self,
@@ -71,21 +68,32 @@ class ResearchSnapshotReader:
                     [selected_id] if selected_id and hydrate_selected_experiment else []
                 )
             )
-            states = [
-                self.experiments.get_state(
+            evaluated_states = [
+                self.experiments.get_state_with_gate(
                     experiment_id=state_id, project_id=project_id, conn=conn
                 )
                 for state_id in state_ids
             ]
+            states = [state for state, _ in evaluated_states]
+            gate_evaluations = {
+                str(state["id"]): evaluation
+                for state, evaluation in evaluated_states
+            }
             selected = next(
                 (state for state in states if state["id"] == selected_id), None
             )
-            open_reflection = self._reflection(
+            open_reflection, open_gate = self._reflection(
                 conn=conn, project_id=project_id, terminal=False
             )
-            published = self._reflection(
+            published, published_gate = self._reflection(
                 conn=conn, project_id=project_id, terminal=True
             )
+            for reflection, evaluation in (
+                (open_reflection, open_gate),
+                (published, published_gate),
+            ):
+                if reflection is not None and evaluation is not None:
+                    gate_evaluations[str(reflection["id"])] = evaluation
             signal = reflection_signal_state(
                 current_terminal={
                     str(row["id"]): str(row["status"])
@@ -97,9 +105,6 @@ class ResearchSnapshotReader:
                 },
                 published=published,
                 open_wave=open_reflection,
-            )
-            review_gates = self._review_gates(
-                conn=conn, experiments=states, reflection=open_reflection
             )
             recent_claims, claim_events = (
                 self._dashboard_facts(
@@ -119,14 +124,14 @@ class ResearchSnapshotReader:
                 open_reflection=open_reflection,
                 latest_published_reflection=published,
                 reflection_signal=signal,
-                review_gates=review_gates,
+                gate_evaluations=gate_evaluations,
                 recent_claims=recent_claims,
                 claim_events_since_reflection=claim_events,
             )
 
     def _reflection(
         self, *, conn, project_id: str, terminal: bool
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any] | None, GateEvaluation | None]:
         predicate = (
             "status = 'published'"
             if terminal
@@ -140,39 +145,12 @@ class ResearchSnapshotReader:
             (project_id,),
         ).fetchone()
         return (
-            None
+            (None, None)
             if row is None
-            else self.reflections.get_state(reflection_id=row["id"], conn=conn)
+            else self.reflections.get_state_with_gate(
+                reflection_id=row["id"], conn=conn
+            )
         )
-
-    def _review_gates(
-        self,
-        *,
-        conn,
-        experiments: list[dict[str, Any]],
-        reflection: dict[str, Any] | None,
-    ) -> dict[tuple[str, str, str], ReviewGateSnapshot]:
-        subjects = [("experiment", item, GATE_TABLE) for item in experiments]
-        if reflection is not None:
-            subjects.append(("reflection", reflection, REFLECTION_GATE_TABLE))
-        result: dict[tuple[str, str, str], ReviewGateSnapshot] = {}
-        for target_type, target, table in subjects:
-            forward = table.get(str(target.get("status") or ""))
-            if forward is None or forward.review is None:
-                continue
-            role = forward.review.role
-            target_id = str(target["id"])
-            gate = self.reviews.gate_state(
-                conn=conn, target_type=target_type, target_id=target_id, role=role
-            )
-            result[(target_type, target_id, role)] = ReviewGateSnapshot(
-                satisfied=bool(gate["satisfied"]),
-                blocked_reason=str(gate.get("blocked_reason") or ""),
-                request=self.reviews.open_request(
-                    conn=conn, target_type=target_type, target_id=target_id, role=role
-                ),
-            )
-        return result
 
     def _dashboard_facts(
         self, *, conn, project_id: str, published: dict[str, Any] | None

@@ -23,8 +23,8 @@ from .domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
     active_experiment_cap_would_exceed_message,
 )
-from .domain.gates import RequirementState, ReviewState, decide_gated_transition
 from .domain.graph_lint import graph_problems
+from .domain.gates import RoleRequirement
 from .domain.reflection_artifacts import (
     claim_refs,
     current_reflection_requirement_resource,
@@ -33,9 +33,6 @@ from .domain.reflection_artifacts import (
     parse_change_spec,
     reflection_coverage_for,
     reflection_doc_review_problems,
-    reflection_gate_resource_label,
-    reflection_gate_review_label,
-    reflection_lens_checklist_items,
     reflection_requirement_roles,
     validate_reflection_roster,
 )
@@ -52,6 +49,12 @@ from .domain.reflection_gates import (
     allowed_reflection_transitions_for,
 )
 from .domain.vocabulary import EXPERIMENT_TERMINAL_STATUSES
+from .gate_evaluation import (
+    GateEvaluation,
+    GateItem,
+    RequirementEvaluation,
+    evaluate_resource_requirement,
+)
 from ..kernel.ports.reflection_writers import (
     ReflectionClaimWriter,
     ReflectionExperimentWriter,
@@ -64,7 +67,7 @@ from ..kernel.state.store import (
     rows_to_dicts,
 )
 from ..kernel.utils import NotFoundError, WorkflowError, new_id, now_iso
-from .review_gate import _review_checklist_item, review_gate_state
+from .review_gate import evaluate_review_gate
 
 
 class ReflectionService:
@@ -196,6 +199,13 @@ class ReflectionService:
     def get_state(
         self, *, reflection_id: str, project_id: str | None = None, conn=None
     ) -> dict[str, Any]:
+        return self.get_state_with_gate(
+            reflection_id=reflection_id, project_id=project_id, conn=conn
+        )[0]
+
+    def get_state_with_gate(
+        self, *, reflection_id: str, project_id: str | None = None, conn=None
+    ) -> tuple[dict[str, Any], GateEvaluation]:
         owns_conn = conn is None
         if conn is None:
             conn = self.store.connect()
@@ -278,11 +288,12 @@ class ReflectionService:
             data["project_graph_diff"] = self._project_graph_diff(
                 conn=conn, reflection=data
             )
-            data["gate_checklist"] = self._gate_checklist(conn=conn, reflection=data)
-            data["allowed_transitions"] = allowed_reflection_transitions_for(
-                str(data.get("status", ""))
-            )
-            return data
+            evaluation = self._evaluate_gate(conn=conn, reflection=data)
+            data["gate_checklist"] = evaluation.checklist()
+            data["allowed_transitions"] = [
+                dict(item) for item in evaluation.legal_transitions
+            ]
+            return data, evaluation
         finally:
             if owns_conn:
                 conn.close()
@@ -513,88 +524,168 @@ class ReflectionService:
         data = json.loads(text)
         return data, []
 
-    def _gate_checklist(self, *, conn, reflection: dict[str, Any]) -> dict[str, Any]:
-        """Current reflection-wave gate as machine-readable checklist data.
-
-        This is the reflection counterpart of experiment state gate_checklist:
-        it derives from the declarative reflection gate table, reports exactly
-        which lens/artifact/review items are missing or invalid, and uses the
-        same pinned-byte validators that transitions use.
-        """
+    def _evaluate_gate(self, *, conn, reflection: dict[str, Any]) -> GateEvaluation:
+        """Collect reflection facts once for enforcement, state, and guidance."""
         status = str(reflection.get("status") or "")
         forward = REFLECTION_GATE_TABLE.get(status)
-        if forward is None:
-            return {
-                "status": status,
-                "transition": None,
-                "leads_to": None,
-                "ready": status in REFLECTION_TERMINAL_STATUSES,
-                "items": [],
-            }
-
-        if status == "reflecting":
-            items = reflection_lens_checklist_items(reflection=reflection)
-        else:
-            items = []
+        requirements: list[RequirementEvaluation] = []
+        if forward is not None and status == "reflecting":
+            requirements.append(
+                self._evaluate_roster_gate(
+                    conn=conn,
+                    reflection=reflection,
+                    requirement=forward.requirements[0],
+                )
+            )
+        elif forward is not None:
             for requirement in forward.requirements:
                 resource = current_reflection_requirement_resource(
                     reflection=reflection, role=requirement.role
                 )
                 present = resource is not None
-                problems: list[str] = []
-                state = "present" if present else "missing"
+                problems: tuple[str, ...] = ()
                 if present and requirement.validator:
                     try:
                         self._run_validator(
                             conn=conn, reflection=reflection, name=requirement.validator
                         )
                     except WorkflowError as exc:
-                        problems = [str(exc)]
-                    state = "invalid" if problems else "valid"
-                item: dict[str, Any] = {
-                    "id": f"resource:{requirement.role}",
-                    "kind": "resource",
-                    "role": requirement.role,
-                    "label": reflection_gate_resource_label(role=requirement.role),
-                    "satisfied": present and not problems,
-                    "status": state,
-                    "gate": requirement.gate,
-                    "action": requirement.action,
-                }
-                if requirement.validator:
-                    item["validator"] = requirement.validator
-                if resource is not None:
-                    item["path"] = resource.get("path")
-                    item["version_id"] = resource.get("association_version_id")
-                    item["association_role"] = resource.get("association_role")
-                if not present:
-                    item["missing"] = (
-                        requirement.missing or f"{requirement.role} resource"
+                        problems = (str(exc),)
+                requirements.append(
+                    evaluate_resource_requirement(
+                        requirement,
+                        present=present,
+                        problems=problems,
+                        resource_fields=(
+                            None
+                            if resource is None
+                            else {
+                                "path": resource.get("path"),
+                                "version_id": resource.get("association_version_id"),
+                                "association_role": resource.get("association_role"),
+                            }
+                        ),
                     )
-                if problems:
-                    item["problems"] = problems
-                items.append(item)
-
-        if forward.review is not None:
-            review = forward.review
-            items.append(
-                _review_checklist_item(
-                    conn=conn,
-                    status=status,
-                    target_type="reflection",
-                    target=reflection,
-                    review=review,
-                    label=reflection_gate_review_label(role=review.role),
                 )
-            )
 
-        return {
-            "status": status,
-            "transition": forward.name,
-            "leads_to": forward.to_status,
-            "ready": all(bool(item.get("satisfied")) for item in items),
-            "items": items,
+        review = (
+            None
+            if forward is None or forward.review is None
+            else evaluate_review_gate(
+                conn=conn,
+                target_type="reflection",
+                target=reflection,
+                review=forward.review,
+            )
+        )
+        return GateEvaluation(
+            subject="reflection wave",
+            status=status,
+            transition=None if forward is None else forward.name,
+            leads_to=None if forward is None else forward.to_status,
+            terminal=status in REFLECTION_TERMINAL_STATUSES,
+            requirements=tuple(requirements),
+            review=review,
+            legal_transitions=tuple(
+                dict(item) for item in allowed_reflection_transitions_for(status)
+            ),
+        )
+
+    def _evaluate_roster_gate(
+        self,
+        *,
+        conn,
+        reflection: dict[str, Any],
+        requirement: RoleRequirement,
+    ) -> RequirementEvaluation:
+        coverage = reflection.get("reflection_coverage") or {}
+        by_lens = {
+            str(item.get("lens_id") or ""): item
+            for item in coverage.get("lenses") or []
         }
+        missing_lenses = list(coverage.get("missing") or [])
+        role_aliases = set(reflection_requirement_roles(role=requirement.role))
+        has_association = any(
+            item.get("association_role") in role_aliases
+            for item in reflection.get("current_attempt_resources") or []
+        )
+        missing_error = ""
+        if missing_lenses:
+            missing_error = requirement.error if not has_association else (
+                "reflections are missing for lens(es): "
+                + ", ".join(missing_lenses)
+                + " — each roster lens must have its own reflection associated "
+                "(role 'reflection_lens_doc') for the current attempt, in a "
+                "file named <lens_id>.md, submitted by its own subagent"
+            )
+        invalid: dict[str, str] = {}
+        if not missing_lenses:
+            for lens in coverage.get("lenses") or []:
+                lens_id, path = str(lens["lens_id"]), str(lens["path"])
+                try:
+                    text = self._pinned_text(
+                        conn=conn,
+                        version_id=lens.get("version_id"),
+                        path=path,
+                        role=str(lens.get("role") or "reflection_lens_doc"),
+                        what=f"reflection {lens_id!r}",
+                    )
+                    if not text.strip():
+                        invalid[lens_id] = (
+                            f"reflection for lens {lens_id!r} ({path}) is empty — "
+                            "write it and re-associate to submit the content"
+                        )
+                except WorkflowError as exc:
+                    invalid[lens_id] = str(exc)
+
+        items: list[GateItem] = []
+        for lens in reflection.get("roster") or []:
+            lens_id = str(lens.get("id") or "")
+            found = by_lens.get(lens_id) or {}
+            covered = bool(found.get("covered"))
+            problem = invalid.get(lens_id, "")
+            item: GateItem = {
+                "id": f"reflection_lens:{lens_id}",
+                "kind": "reflection_lens",
+                "role": requirement.role,
+                "lens_id": lens_id,
+                "label": f"{str(lens.get('title') or lens_id)} reflection submitted",
+                "satisfied": covered and not problem,
+                "status": "invalid" if problem else "present" if covered else "missing",
+                "gate": requirement.gate,
+                "action": requirement.action,
+            }
+            if covered:
+                item.update(
+                    path=found.get("path"),
+                    version_id=found.get("version_id"),
+                    association_role=found.get("role"),
+                )
+            else:
+                item["missing"] = (
+                    f"reflection doc for lens {lens_id!r} "
+                    "(role 'reflection_lens_doc', file <lens_id>.md)"
+                )
+            if problem:
+                item["problems"] = [problem]
+            items.append(item)
+        problems = tuple(invalid.values())
+        error = missing_error or (problems[0] if problems else "")
+        status = "missing" if missing_lenses else "invalid" if problems else "valid"
+        return RequirementEvaluation(
+            role=requirement.role,
+            status=status,
+            blocker_code=(
+                ""
+                if not error
+                else requirement.gate
+                if missing_lenses
+                else f"{requirement.role}_invalid"
+            ),
+            enforcement_error=error,
+            problems=problems,
+            items=tuple(items),
+        )
 
     # ---- transitions ----
 
@@ -607,13 +698,11 @@ class ReflectionService:
     ) -> dict[str, Any]:
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            reflection = self.get_state(
+            reflection, gate = self.get_state_with_gate(
                 reflection_id=reflection_id, project_id=project_id, conn=conn
             )
             status = reflection["status"]
-            next_status = self._next_status(
-                conn=conn, reflection=reflection, transition=transition
-            )
+            next_status = gate.require_transition(transition)
             now = now_iso()
             if transition == "publish":
                 self._materialize_change_spec(conn=conn, reflection=reflection)
@@ -649,106 +738,13 @@ class ReflectionService:
             )
             return self.get_state(reflection_id=reflection_id, conn=conn)
 
-    def _next_status(self, *, conn, reflection: dict[str, Any], transition: str) -> str:
-        status = str(reflection["status"])
-        forward = REFLECTION_GATE_TABLE.get(status)
-        requirement_states: list[RequirementState] = []
-        review_state: ReviewState | None = None
-        if forward is not None:
-            for requirement in forward.requirements:
-                validation_error = ""
-                present = self._has_resource_role(
-                    conn=conn, reflection_id=reflection["id"], role=requirement.role
-                )
-                if present and requirement.validator:
-                    try:
-                        self._run_validator(
-                            conn=conn, reflection=reflection, name=requirement.validator
-                        )
-                    except WorkflowError as exc:
-                        validation_error = str(exc)
-                requirement_states.append(
-                    RequirementState(
-                        role=requirement.role,
-                        present=present,
-                        missing_error=requirement.error,
-                        validation_error=validation_error,
-                    )
-                )
-            if forward.review is not None:
-                gate_state = self._review_gate_state(
-                    conn=conn, reflection_id=reflection["id"], role=forward.review.role
-                )
-                review_state = ReviewState(
-                    satisfied=bool(gate_state["satisfied"]),
-                    error=forward.review.error,
-                    blocked_reason=str(gate_state.get("blocked_reason") or ""),
-                )
-        return decide_gated_transition(
-            subject="reflection wave",
-            status=status,
-            transition=transition,
-            terminal_statuses=REFLECTION_TERMINAL_STATUSES,
-            direct_transitions={"abandon": "abandoned"},
-            forward=forward,
-            requirement_states=requirement_states,
-            review_state=review_state,
-            allowed_transitions=allowed_reflection_transitions_for(status),
-        )
-
-    def _has_resource_role(self, *, conn, reflection_id: str, role: str) -> bool:
-        roles = reflection_requirement_roles(role=role)
-        placeholders = ",".join("?" * len(roles))
-        row = conn.execute(
-            f"""
-            SELECT 1
-            FROM resource_associations
-            WHERE target_type = 'reflection' AND target_id = ? AND role IN ({placeholders})
-              AND attempt_index = (SELECT attempt_index FROM reflections WHERE id = ?)
-            LIMIT 1
-            """,
-            (reflection_id, *roles, reflection_id),
-        ).fetchone()
-        return row is not None
-
     def _run_validator(self, *, conn, reflection: dict[str, Any], name: str) -> None:
-        if name == "roster":
-            self._validate_roster_coverage(conn=conn, reflection=reflection)
-        elif name == "graph":
+        if name == "graph":
             self._validate_project_graph(conn=conn, reflection=reflection)
         elif name in {"reflection_doc", "synthesis_doc"}:
             self._validate_reflection_doc(conn=conn, reflection=reflection)
         elif name == "change_spec":
             self._validate_change_spec(conn=conn, reflection=reflection)
-
-    def _validate_roster_coverage(self, *, conn, reflection: dict[str, Any]) -> None:
-        """The hard 'all lenses before synthesize' requirement: every declared
-        lens needs a current-attempt reflection (file named <lens_id>.md) that
-        exists and is non-empty on disk. Which insights each reflection holds
-        is the synthesizer's and reviewer's business, not the gate's."""
-        fresh = self.get_state(reflection_id=reflection["id"], conn=conn)
-        coverage = fresh["reflection_coverage"]
-        if coverage["missing"]:
-            raise WorkflowError(
-                "reflections are missing for lens(es): "
-                + ", ".join(coverage["missing"])
-                + " — each roster lens must have its own reflection associated "
-                "(role 'reflection_lens_doc') for the current attempt, in a "
-                "file named <lens_id>.md, submitted by its own subagent"
-            )
-        for lens in coverage["lenses"]:
-            text = self._pinned_text(
-                conn=conn,
-                version_id=lens.get("version_id"),
-                path=str(lens["path"]),
-                role=str(lens.get("role") or "reflection_lens_doc"),
-                what=f"reflection {lens['lens_id']!r}",
-            )
-            if not text.strip():
-                raise WorkflowError(
-                    f"reflection for lens {lens['lens_id']!r} ({lens['path']}) is "
-                    "empty — write it and re-associate to submit the content"
-                )
 
     def _validate_project_graph(self, *, conn, reflection: dict[str, Any]) -> None:
         row = self._current_role_row_for_roles(
@@ -1092,23 +1088,6 @@ class ReflectionService:
             version_id=str(version_id),
             what=what,
             role=role,
-        )
-
-    def _review_gate_state(
-        self, *, conn, reflection_id: str, role: str
-    ) -> dict[str, Any]:
-        row = conn.execute(
-            "SELECT project_id FROM reflections WHERE id = ?", (reflection_id,)
-        ).fetchone()
-        return review_gate_state(
-            conn=conn,
-            project_id=str(row["project_id"]) if row else "",
-            target_type="reflection",
-            target_id=reflection_id,
-            role=role,
-            snapshot_id=self._target_snapshot_id(
-                conn=conn, reflection_id=reflection_id
-            ),
         )
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:

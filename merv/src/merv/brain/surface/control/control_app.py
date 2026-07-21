@@ -165,7 +165,6 @@ class ControlApp:
         self.research_snapshots = ResearchSnapshotReader(
             store=self.store,
             experiments=self.experiments,
-            reviews=self.reviews,
             reflections=self.reflection_waves,
         )
         self.sandbox_reads = SandboxReadFacade(

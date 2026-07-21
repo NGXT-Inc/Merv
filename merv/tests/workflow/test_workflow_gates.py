@@ -178,6 +178,38 @@ class WorkflowGateTest(unittest.TestCase):
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
 
+    def test_pinned_plan_remains_gate_evidence_when_live_resource_is_missing(self) -> None:
+        exp = self.call(
+            "experiment.create",
+            name="missing-live-plan",
+            project_id=self.project_id,
+            intent="Pinned evidence survives its working file.",
+        )
+        self._write_and_associate(
+            exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN
+        )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE resources SET missing = 1 WHERE project_id = ? AND path = ?",
+                (self.project_id, "plan.md"),
+            )
+
+        state = self.call(
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+        )
+        item = state["gate_checklist"]["items"][0]
+        self.assertEqual(item["status"], "valid")
+        self.assertTrue(item["satisfied"])
+        out = self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+            transition="submit_design",
+        )
+        self.assertEqual(out["status"], "design_review")
+
     def test_workflow_surfaces_plan_gate_with_folder_guidance(self) -> None:
         exp = self.call("experiment.create", name="plan-gate", project_id=self.project_id, intent="No plan yet.")
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])
@@ -690,6 +722,38 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertEqual(workflow["next_action"], "write_and_associate_logic_graph")
         self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
         self.assertIn("experiments/exp-1/graph.json", workflow["resource_guidance"]["guidance"])
+
+    def test_missing_graph_guidance_preserves_earlier_invalid_report_error(self) -> None:
+        exp_id = self._drive_to_running_with_result()
+        self._write_and_associate(
+            exp_id=exp_id,
+            path="report.md",
+            role="report",
+            body="## Summary\nIncomplete report.\n",
+        )
+        state = self.call(
+            "experiment.get_state",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+        items = {item["id"]: item for item in state["gate_checklist"]["items"]}
+        report_error = items["resource:report"]["problems"][0]
+
+        workflow = self.call(
+            "workflow.status_and_next",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )["workflow"]
+        self.assertEqual(workflow["current_gate"], "logic_graph_required")
+        self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "experiment.transition",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                transition="submit_results",
+            )
+        self.assertEqual(str(ctx.exception), report_error)
 
     # ---- readiness pre-lint (status_and_next runs the deep lints) ----
 

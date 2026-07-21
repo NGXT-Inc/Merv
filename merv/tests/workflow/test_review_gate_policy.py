@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from merv.brain.research_core.domain import review_gates
 from merv.brain.research_core.domain.review_gates import (
     REVIEW_GATE_EXEMPT_ROLES,
-    REVIEW_GATE_ROLES,
-    expected_review_gate_role,
     is_review_gate_exempt,
 )
 from merv.brain.research_core.domain.reflection_gates import REFLECTION_GATE_TABLE
@@ -26,7 +25,7 @@ def _review_roles_from_gate_tables() -> dict[tuple[str, str], str]:
 class ReviewGatePolicyTest(unittest.TestCase):
     def test_gate_roles_are_explicit_table_entries(self) -> None:
         self.assertEqual(
-            REVIEW_GATE_ROLES,
+            _review_roles_from_gate_tables(),
             {
                 ("experiment", "design_review"): "design_reviewer",
                 ("experiment", "experiment_review"): "experiment_reviewer",
@@ -34,23 +33,14 @@ class ReviewGatePolicyTest(unittest.TestCase):
             },
         )
 
-    def test_gate_roles_match_transition_review_requirements(self) -> None:
-        self.assertEqual(REVIEW_GATE_ROLES, _review_roles_from_gate_tables())
+    def test_gate_roles_have_no_parallel_registry(self) -> None:
+        self.assertFalse(hasattr(review_gates, "REVIEW_GATE_ROLES"))
+        self.assertFalse(hasattr(review_gates, "expected_review_gate_role"))
 
-    def test_expected_role_returns_none_outside_review_gates(self) -> None:
-        self.assertEqual(
-            expected_review_gate_role(
-                target_type="experiment",
-                target_status="design_review",
-            ),
-            "design_reviewer",
-        )
-        self.assertIsNone(
-            expected_review_gate_role(
-                target_type="experiment",
-                target_status="running",
-            )
-        )
+    def test_non_review_states_have_no_review_requirement(self) -> None:
+        self.assertIsNone(GATE_TABLE["running"].review)
+        self.assertIsNone(REFLECTION_GATE_TABLE["reflecting"].review)
+        self.assertIsNone(REFLECTION_GATE_TABLE["synthesizing"].review)
 
     def test_human_and_automated_checks_are_gate_exempt(self) -> None:
         self.assertEqual(REVIEW_GATE_EXEMPT_ROLES, {"human", "automated_check"})

@@ -18,7 +18,6 @@ from .domain.experiment_policy import (
     normalize_claim_ids,
 )
 from .domain.experiment_names import validate_experiment_name
-from .domain.gates import RequirementState, ReviewState, decide_gated_transition
 from .domain.graph_lint import graph_problems
 from .domain.paths import experiment_folder_rel
 from .domain.reflection_policy import (
@@ -31,13 +30,18 @@ from .domain.workflow_gates import (
     TERMINAL_STATUSES,
     allowed_transitions_for,
 )
+from .gate_evaluation import (
+    GateEvaluation,
+    RequirementEvaluation,
+    evaluate_resource_requirement,
+)
 from ..artifacts.pinned import PinnedStore
 from ..kernel.events import StoredEvent
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
 from ..kernel.utils import now_iso
-from .review_gate import _review_checklist_item, review_gate_state
+from .review_gate import evaluate_review_gate
 from .storage_objects import StorageObjectsReader
 from .transition_types import (
     CommittedExperimentTransition,
@@ -287,6 +291,13 @@ class ExperimentService:
     def get_state(
         self, *, experiment_id: str, project_id: str | None = None, conn=None
     ) -> dict[str, Any]:
+        return self.get_state_with_gate(
+            experiment_id=experiment_id, project_id=project_id, conn=conn
+        )[0]
+
+    def get_state_with_gate(
+        self, *, experiment_id: str, project_id: str | None = None, conn=None
+    ) -> tuple[dict[str, Any], GateEvaluation]:
         owns_conn = conn is None
         if conn is None:
             conn = self.store.connect()
@@ -356,14 +367,15 @@ class ExperimentService:
                 review["findings"] = json.loads(review.pop("findings_json", "[]"))
                 review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
             data["reviews"] = reviews
-            data["allowed_transitions"] = allowed_transitions_for(
-                str(data.get("status", ""))
-            )
-            data["gate_checklist"] = self._gate_checklist(conn=conn, experiment=data)
+            evaluation = self._evaluate_gate(conn=conn, experiment=data)
+            data["allowed_transitions"] = [
+                dict(item) for item in evaluation.legal_transitions
+            ]
+            data["gate_checklist"] = evaluation.checklist()
             data["claim_update_suggestions"] = self._claim_update_suggestions(
                 experiment=data
             )
-            return data
+            return data, evaluation
         finally:
             if owns_conn:
                 conn.close()
@@ -542,97 +554,57 @@ class ExperimentService:
             )
         return suggestions
 
-    def _gate_checklist(self, *, conn, experiment: dict[str, Any]) -> dict[str, Any]:
-        """Current forward gate as machine-readable checklist data.
-
-        This mirrors the declarative gate table and uses the same pinned-byte
-        validators as transitions, so experiment state can show both missing
-        artifacts and submitted artifact lint failures before the caller tries
-        the transition.
-        """
+    def _evaluate_gate(self, *, conn, experiment: dict[str, Any]) -> GateEvaluation:
+        """Collect current facts once for enforcement, state, and guidance."""
         status = str(experiment.get("status") or "")
         forward = GATE_TABLE.get(status)
-        if forward is None:
-            return {
-                "status": status,
-                "transition": None,
-                "leads_to": None,
-                "ready": status in TERMINAL_STATUSES,
-                "items": [],
-            }
-
         resources = experiment.get("current_attempt_resources") or []
         present_roles = {
             str(res.get("association_role"))
             for res in resources
-            if res.get("association_role") and not res.get("missing")
+            if res.get("association_role")
         }
-        items: list[dict[str, Any]] = []
-        for requirement in forward.requirements:
+        requirements: list[RequirementEvaluation] = []
+        for requirement in () if forward is None else forward.requirements:
             present = requirement.role in present_roles
-            problems: list[str] = []
-            state = "present" if present else "missing"
+            problems: tuple[str, ...] = ()
             if present and requirement.validator:
-                problems = self.validator_problems(
-                    conn=conn,
-                    experiment_id=str(experiment["id"]),
-                    name=requirement.validator,
-                )
-                state = "invalid" if problems else "valid"
-            item: dict[str, Any] = {
-                "id": f"resource:{requirement.role}",
-                "kind": "resource",
-                "role": requirement.role,
-                "label": self._gate_resource_label(role=requirement.role),
-                "satisfied": present and not problems,
-                "status": state,
-                "gate": requirement.gate,
-                "action": requirement.action,
-            }
-            if requirement.validator:
-                item["validator"] = requirement.validator
-            if not present:
-                item["missing"] = requirement.missing or f"{requirement.role} resource"
-            if problems:
-                item["problems"] = problems
-            items.append(item)
-
-        if forward.review is not None:
-            review = forward.review
-            items.append(
-                _review_checklist_item(
-                    conn=conn,
-                    status=status,
-                    target_type="experiment",
-                    target=experiment,
-                    review=review,
-                    label=self._gate_review_label(role=review.role),
+                try:
+                    self._run_validator(
+                        conn=conn, experiment_id=str(experiment["id"]), name=requirement.validator
+                    )
+                except WorkflowError as exc:
+                    problems = (str(exc),)
+            requirements.append(
+                evaluate_resource_requirement(
+                    requirement,
+                    present=present,
+                    problems=problems,
                 )
             )
 
-        return {
-            "status": status,
-            "transition": forward.name,
-            "leads_to": forward.to_status,
-            "ready": all(bool(item.get("satisfied")) for item in items),
-            "items": items,
-        }
-
-    def _gate_resource_label(self, *, role: str) -> str:
-        labels = {
-            "plan": "Plan associated and valid",
-            "result": "Result resource present",
-            "report": "Results report present and valid",
-            "graph": "Logic graph present and valid",
-        }
-        return labels.get(role, f"{role} resource present")
-
-    def _gate_review_label(self, *, role: str) -> str:
-        labels = {
-            "design_reviewer": "Design review passed",
-            "experiment_reviewer": "Experiment review passed",
-        }
-        return labels.get(role, f"{role} review passed")
+        review = (
+            None
+            if forward is None or forward.review is None
+            else evaluate_review_gate(
+                conn=conn,
+                target_type="experiment",
+                target=experiment,
+                review=forward.review,
+            )
+        )
+        return GateEvaluation(
+            subject="experiment",
+            status=status,
+            transition=None if forward is None else forward.name,
+            leads_to=None if forward is None else forward.to_status,
+            terminal=status in TERMINAL_STATUSES,
+            requirements=tuple(requirements),
+            review=review,
+            legal_transitions=tuple(
+                dict(item) for item in allowed_transitions_for(status)
+            ),
+        )
 
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
@@ -675,16 +647,11 @@ class ExperimentService:
 
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            experiment = self.get_state(
+            experiment, gate = self.get_state_with_gate(
                 experiment_id=experiment_id, project_id=project_id, conn=conn
             )
             status = experiment["status"]
-            next_status = self._next_status(
-                conn=conn,
-                experiment_id=experiment_id,
-                status=status,
-                transition=transition,
-            )
+            next_status = gate.require_transition(transition)
             now = now_iso()
             if transition == "complete":
                 conn.execute(
@@ -830,61 +797,6 @@ class ExperimentService:
             payload={"revision_context": revision_context},
         )
 
-    def _next_status(
-        self, *, conn, experiment_id: str, status: str, transition: str
-    ) -> str:
-        forward = GATE_TABLE.get(status)
-        requirement_states: list[RequirementState] = []
-        review_state: ReviewState | None = None
-        if forward is not None:
-            for requirement in forward.requirements:
-                validation_error = ""
-                present = self._has_resource_role(
-                    conn=conn,
-                    experiment_id=experiment_id,
-                    role=requirement.role,
-                )
-                if present and requirement.validator:
-                    try:
-                        self._run_validator(
-                            conn=conn,
-                            experiment_id=experiment_id,
-                            name=requirement.validator,
-                        )
-                    except WorkflowError as exc:
-                        validation_error = str(exc)
-                requirement_states.append(
-                    RequirementState(
-                        role=requirement.role,
-                        present=present,
-                        missing_error=requirement.error,
-                        validation_error=validation_error,
-                    )
-                )
-            if forward.review is not None:
-                gate_state = self._review_gate_state(
-                    conn=conn, experiment_id=experiment_id, role=forward.review.role
-                )
-                review_state = ReviewState(
-                    satisfied=bool(gate_state["satisfied"]),
-                    error=forward.review.error,
-                    blocked_reason=str(gate_state.get("blocked_reason") or ""),
-                )
-        direct_transitions = {"abandon": "abandoned", "mark_failed": "failed"}
-        if status == "running":
-            direct_transitions["retry_running"] = "running"
-        return decide_gated_transition(
-            subject="experiment",
-            status=status,
-            transition=transition,
-            terminal_statuses=TERMINAL_STATUSES,
-            direct_transitions=direct_transitions,
-            forward=forward,
-            requirement_states=requirement_states,
-            review_state=review_state,
-            allowed_transitions=allowed_transitions_for(status),
-        )
-
     def _run_validator(self, *, conn, experiment_id: str, name: str) -> None:
         """Dispatch a gate-table validator name to its deep-lint implementation."""
         if name == "plan":
@@ -893,31 +805,6 @@ class ExperimentService:
             self._validate_results_report(conn=conn, experiment_id=experiment_id)
         elif name == "graph":
             self._validate_logic_graph(conn=conn, experiment_id=experiment_id)
-
-    def validator_problems(self, *, conn, experiment_id: str, name: str) -> list[str]:
-        """A gate-table validator's findings as data instead of a raise.
-
-        Runs the exact same deep lint the transition runs, so the workflow's
-        readiness guidance can never call an artifact ready that the
-        transition would reject."""
-        try:
-            self._run_validator(conn=conn, experiment_id=experiment_id, name=name)
-        except WorkflowError as exc:
-            return [str(exc)]
-        return []
-
-    def _has_resource_role(self, *, conn, experiment_id: str, role: str) -> bool:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM resource_associations
-            WHERE target_type = 'experiment' AND target_id = ? AND role = ?
-              AND attempt_index = (SELECT attempt_index FROM experiments WHERE id = ?)
-            LIMIT 1
-            """,
-            (experiment_id, role, experiment_id),
-        ).fetchone()
-        return row is not None
 
     def _pinned_text(
         self, *, conn, experiment_id: str, role: str, what: str
@@ -1113,23 +1000,6 @@ class ExperimentService:
                 target_id=experiment_id,
                 payload=verdict,
             )
-
-    def _review_gate_state(
-        self, *, conn, experiment_id: str, role: str
-    ) -> dict[str, Any]:
-        row = conn.execute(
-            "SELECT project_id FROM experiments WHERE id = ?", (experiment_id,)
-        ).fetchone()
-        return review_gate_state(
-            conn=conn,
-            project_id=str(row["project_id"]) if row else "",
-            target_type="experiment",
-            target_id=experiment_id,
-            role=role,
-            snapshot_id=self._target_snapshot_id(
-                conn=conn, experiment_id=experiment_id
-            ),
-        )
 
     def target_snapshot_id(self, *, conn, experiment_id: str) -> str:
         return self._target_snapshot_id(conn=conn, experiment_id=experiment_id)

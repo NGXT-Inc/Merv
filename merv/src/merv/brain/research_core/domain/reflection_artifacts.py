@@ -205,58 +205,6 @@ def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
     return {"lenses": lenses, "missing": missing, "complete": not missing}
 
 
-def reflection_lens_checklist_items(
-    *, reflection: dict[str, Any]
-) -> list[dict[str, Any]]:
-    coverage_by_lens = {
-        str(row.get("lens_id") or ""): row
-        for row in (reflection.get("reflection_coverage") or {}).get("lenses", [])
-    }
-    items: list[dict[str, Any]] = []
-    for lens in reflection.get("roster", []):
-        lens_id = str(lens.get("id") or "")
-        coverage = coverage_by_lens.get(lens_id) or {}
-        covered = bool(coverage.get("covered"))
-        title = str(lens.get("title") or lens_id)
-        item: dict[str, Any] = {
-            "id": f"reflection_lens:{lens_id}",
-            "kind": "reflection_lens",
-            "role": "reflection_lens_doc",
-            "lens_id": lens_id,
-            "label": f"{title} reflection submitted",
-            "satisfied": covered,
-            "status": "present" if covered else "missing",
-            "gate": "reflection_roster_incomplete",
-            "action": "fan_out_reflection_subagents",
-        }
-        if covered:
-            item["path"] = coverage.get("path")
-            item["version_id"] = coverage.get("version_id")
-            item["association_role"] = coverage.get("role")
-        else:
-            item["missing"] = (
-                f"reflection doc for lens {lens_id!r} "
-                "(role 'reflection_lens_doc', file <lens_id>.md)"
-            )
-        items.append(item)
-    return items
-
-
-def reflection_gate_resource_label(*, role: str) -> str:
-    labels = {
-        "project_graph": "Project graph present and valid",
-        "reflection_doc": "Reflection document present and valid",
-        "change_spec": "Change spec present and materializable",
-        "reflection_lens_doc": "Per-lens reflections submitted",
-    }
-    return labels.get(role, f"{role} resource present")
-
-
-def reflection_gate_review_label(*, role: str) -> str:
-    labels = {"reflection_reviewer": "Reflection review passed"}
-    return labels.get(role, f"{role} review passed")
-
-
 def claim_change_problems(
     spec: dict[str, Any],
     *,
