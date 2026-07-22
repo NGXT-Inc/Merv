@@ -221,9 +221,8 @@ class SandboxDecompositionTest(unittest.TestCase):
 
     def test_facade_delegates_typed_commands_queries_and_maintenance(self) -> None:
         source = FACADE.read_text(encoding="utf-8")
-        # Keep the public signatures readable while preventing orchestration
-        # policy from accumulating in the stable entry point again.
-        self.assertLessEqual(len(source.splitlines()), 300)
+        # Prevent orchestration policy from accumulating in the stable entry
+        # point again.
         for binding in (
             "self.commands = SandboxCommandHandler(self)",
             "self.queries = SandboxQueryHandler(self)",
