@@ -181,6 +181,17 @@ Application owns hosted content-response and experiment/figure presentation.
 Surface retains authentication, conditional HTTP caching, local-field
 redaction, MIME/header shaping, and serialization only.
 
+The bulk snapshot is backed by plural Research state/gate reads and the
+connection-free `EvidenceReader.resources_for_targets` port, which chunks exact
+IDs in groups of 400. A project dashboard therefore uses 22 database reads for
+both one and 25 experiments. Full Artifact pages use six reads, Research graph
+references use at most one read per reference type, and MLflow overview uses at
+most three remote calls. Reflection history is the deliberate exception: its
+frozen response returns every rich historical wave, so it remains linear and
+has explicit query ceilings for representative 25-wave abandoned and published-
+graph histories instead of a false constant-query claim. A future summary or
+paginated contract should precede batching that endpoint.
+
 Research evaluates each experiment or reflection gate once per hydration. The
 typed, JSON-safe evaluation carries requirement, validation, current-snapshot
 review-request, blocker, and legal-transition facts. That same value enforces

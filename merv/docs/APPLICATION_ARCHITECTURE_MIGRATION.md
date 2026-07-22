@@ -149,9 +149,9 @@ The component import matrix is exact (row imports columns):
 | Artifacts | Artifacts, Kernel |
 | Sandbox | Sandbox, Kernel |
 | Feed | Feed, Kernel |
-| Cross-component Application | Application, Research, Artifacts, Feed, Kernel |
+| Cross-component Application | Application, Research, Artifacts, Sandbox, Feed, Kernel |
 | Tracking integration | Tracking, Application, Kernel |
-| Storage | Storage, Kernel |
+| Storage | Storage, Application, Kernel |
 | Surface | any component (the independent layer law constrains delivery files) |
 
 SQL ownership remains component-based: moving Storage ledger policy to the
@@ -867,9 +867,19 @@ Research-owned orchestration service. `WorkflowQuery` joins the stable
 `ProjectDashboardQuery` reuses that same project snapshot for Home and the
 compact project orientation. `ResearchSnapshotReader` hydrates each requested
 experiment at most once per query and gathers reflection/review facts in the
-same Research transaction. `NextActionPolicy` is pure: it receives captured
-records and emits the byte-compatible workflow payload without SQL, service
-calls, or side effects.
+same Research transaction. Its plural state/gate loader joins batched immutable
+evidence through the `EvidenceReader` port, holding the rich dashboard at 22
+database reads for either one or 25 experiments. `NextActionPolicy` is pure: it
+receives captured records and emits the byte-compatible workflow payload
+without SQL, service calls, or side effects.
+
+Other collection ratchets now hold a full Artifact page at six database reads,
+Research graph references at one read per reference type, and project MLflow
+overview at three remote calls. Reflection history intentionally retains its
+frozen all-waves rich response and therefore remains linear; tests cap the
+representative one- and 25-wave abandoned and published-graph cases, and
+pagination or a summary contract is required before claiming constant cost
+there.
 
 The superseded `research_core/workflow.py`, `workflow_views.py`,
 `project_overview.py`, and Kernel workflow-reader protocols were deleted.
@@ -905,11 +915,13 @@ Formatter-clean structure has a real size cost: the tree is **41,389 brain lines
 above the 40,848 pre-consolidation checkpoint. The old orchestration hubs still
 shrank by more than 500 lines in aggregate; the increase is the explicit DTO,
 port, reducer, and runtime structure that replaced hidden coupling. The new
-41,389 landed-checkpoint ceiling bounds that cost, while tighter per-hub ratchets cap the
-workflow group at 1,600 lines, the Sandbox facade at 300, its handlers at 1,050,
+41,389 landed checkpoint bounded that phase, while tighter per-hub ratchets cap
+the workflow group at 1,600 lines, the Sandbox facade at 300, its handlers at 1,050,
 the HTTP factory/gateway pair at 500, and the proxy composition/gateway/shell at
-100/350/120. This avoids rewarding line compression while preventing policy
-from growing back into the delivery facades.
+  100/350/120. Later port/query work temporarily consumed that headroom; the
+  completed reduction pass closes at **41,624 Brain lines** under the executable
+  41,700 ceiling. This avoids rewarding line compression while preventing
+  policy from growing back into the delivery facades.
 
 ## Non-goals and follow-up queue
 

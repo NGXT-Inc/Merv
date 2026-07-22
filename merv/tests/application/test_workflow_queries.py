@@ -383,5 +383,194 @@ class ProjectDashboardBatchingTest(unittest.TestCase):
         )
 
 
+class ReflectionHistoryQueryCeilingTest(unittest.TestCase):
+    """Characterize representative costs of the frozen rich-history response."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.store = CountingStateStore(db_path=root / "state.sqlite")
+        self.app = TestBrain(
+            repo_root=root,
+            db_path=root / "state.sqlite",
+            store=self.store,
+        )
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+        self.tmp.cleanup()
+
+    def _seed_abandoned_history(self, *, project_id: str, count: int) -> None:
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
+                (project_id, project_id, "2026-07-22T00:00:00Z"),
+            )
+            for index in range(count):
+                created_at = f"2026-07-22T00:{index:02d}:00Z"
+                conn.execute(
+                    """
+                    INSERT INTO reflections
+                      (id, project_id, title, status, roster_json, corpus_json,
+                       created_at, updated_at, created_seq)
+                    VALUES (?, ?, ?, 'abandoned', '[]', '{}', ?, ?, ?)
+                    """,
+                    (
+                        f"syn_{project_id}_{index:03d}",
+                        project_id,
+                        f"Reflection {index}",
+                        created_at,
+                        created_at,
+                        index + 1,
+                    ),
+                )
+
+    def _seed_published_graph_history(self, *, project_id: str, count: int) -> None:
+        graph = (
+            b'{"version":1,"title":"Project logic","nodes":['
+            b'{"id":"lesson","kind":"lesson","label":"Result"}],"edges":[]}'
+        )
+        sha256 = self.app.blobs.put(
+            namespace=project_id,
+            data=graph,
+            content_type="application/json",
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
+                (project_id, project_id, "2026-07-22T00:00:00Z"),
+            )
+            for index in range(count):
+                created_at = f"2026-07-22T00:{index:02d}:00Z"
+                reflection_id = f"syn_{project_id}_{index:03d}"
+                resource_id = f"res_{project_id}_{index:03d}"
+                version_id = f"rsv_{project_id}_{index:03d}"
+                path = f"project/logic_graph_{index:03d}.json"
+                conn.execute(
+                    """
+                    INSERT INTO reflections
+                      (id, project_id, title, status, roster_json, corpus_json,
+                       published_at, published_graph_version_id,
+                       created_at, updated_at, created_seq)
+                    VALUES (?, ?, ?, 'published', '[]', '{}', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        reflection_id,
+                        project_id,
+                        f"Reflection {index}",
+                        created_at,
+                        version_id,
+                        created_at,
+                        created_at,
+                        index + 1,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO resources
+                      (id, project_id, path, kind, current_version_id,
+                       version_token, mtime_ns, size_bytes, observed_at,
+                       created_at, updated_at)
+                    VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resource_id,
+                        project_id,
+                        path,
+                        version_id,
+                        f"token-{index}",
+                        index,
+                        len(graph),
+                        created_at,
+                        created_at,
+                        created_at,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO resource_versions
+                      (id, resource_id, project_id, path, content_sha256,
+                       size_bytes, mtime_ns, observed_at, content_type,
+                       created_at, created_seq)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'application/json', ?, ?)
+                    """,
+                    (
+                        version_id,
+                        resource_id,
+                        project_id,
+                        path,
+                        sha256,
+                        len(graph),
+                        index,
+                        created_at,
+                        created_at,
+                        index + 1,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO resource_associations
+                      (id, resource_id, version_id, target_type, target_id,
+                       role, attempt_index, created_at, created_seq)
+                    VALUES (?, ?, ?, 'reflection', ?, 'project_graph', 1, ?, ?)
+                    """,
+                    (
+                        f"assoc_{project_id}_{index:03d}",
+                        resource_id,
+                        version_id,
+                        reflection_id,
+                        created_at,
+                        index + 1,
+                    ),
+                )
+
+    def _select_count(self, query, *, project_id: str) -> tuple[dict, int]:
+        self.store.statements.clear()
+        result = query(project_id=project_id)
+        count = sum(
+            statement.lstrip().upper().startswith(("SELECT", "WITH"))
+            for statement in self.store.statements
+        )
+        return result, count
+
+    def test_representative_reflection_histories_have_explicit_query_ceilings(
+        self,
+    ) -> None:
+        for seed, prefix in (
+            (self._seed_abandoned_history, "abandoned"),
+            (self._seed_published_graph_history, "published"),
+        ):
+            seed(project_id=f"proj_{prefix}_one", count=1)
+            seed(project_id=f"proj_{prefix}_many", count=25)
+
+        for prefix, query, one_ceiling, many_ceiling in (
+            ("abandoned", self.app.research_core.list_reflections, 8, 152),
+            ("abandoned", self.app.research_core.reflection_overview, 15, 159),
+            ("published", self.app.research_core.list_reflections, 8, 248),
+            ("published", self.app.research_core.reflection_overview, 27, 275),
+        ):
+            with self.subTest(history=prefix, query=query.__name__):
+                one, one_count = self._select_count(
+                    query, project_id=f"proj_{prefix}_one"
+                )
+                many, many_count = self._select_count(
+                    query, project_id=f"proj_{prefix}_many"
+                )
+                self.assertEqual(len(one["reflections"]), 1)
+                self.assertEqual(len(many["reflections"]), 25)
+                if prefix == "published":
+                    self.assertTrue(
+                        all(item["resources"] for item in many["reflections"])
+                    )
+                    self.assertTrue(
+                        all(
+                            item["project_graph_diff"]["available"]
+                            for item in many["reflections"][1:]
+                        )
+                    )
+                self.assertLessEqual(one_count, one_ceiling)
+                self.assertLessEqual(many_count, many_ceiling)
+
+
 if __name__ == "__main__":
     unittest.main()

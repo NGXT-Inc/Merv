@@ -749,6 +749,56 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         self.assertEqual(str(row["created_at"]), committed.event.created_at)
         self.assertEqual(committed.state["mlflow_run"]["run_id"], "run_pg")
 
+    def test_event_insert_failure_rolls_back_transition_and_event(self) -> None:
+        import psycopg
+
+        project_id = self._seed_project()
+        experiments = ExperimentService(
+            store=self.store,
+            evidence_reader=ResourceService(
+                store=self.store,
+                association_targets=AssociationTargets(store=self.store),
+            ),
+        )
+        created = experiments.create(
+            project_id=project_id, name="rollback-event", intent="postgres"
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                """
+                ALTER TABLE events ADD CONSTRAINT reject_transition_event
+                CHECK (type <> 'experiment.transitioned')
+                """
+            )
+
+        with self.assertRaisesRegex(
+            psycopg.errors.CheckViolation, "reject_transition_event"
+        ):
+            experiments.transition_with_event(
+                project_id=project_id,
+                experiment_id=created["id"],
+                transition="mark_failed",
+            )
+
+        state = experiments.get_state(
+            project_id=project_id, experiment_id=created["id"]
+        )
+        self.assertEqual(state["status"], "planned")
+        conn = self.store.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS count FROM events
+                WHERE type = 'experiment.transitioned' AND target_id = ?
+                """,
+                (created["id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(int(row["count"]), 0)
+
     def test_evidence_reads_inside_writer_transaction(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         repo = Path(tmp.name)

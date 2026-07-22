@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import os
+import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.support.brain import TestBrain
 from merv.brain.kernel.utils import ValidationError
@@ -53,6 +58,89 @@ class ResourceVersioningTest(unittest.TestCase):
         self.assertEqual(len(history["versions"]), 2)
         # New version must reflect new file contents — sha256 differs.
         self.assertNotEqual(first_version["content_sha256"], second_version["content_sha256"])
+
+    def test_association_lock_prevents_a_torn_gated_transition(self) -> None:
+        body = (
+            "## Summary\nConcurrent association.\n\n"
+            "## Objective & hypothesis\nProve the gate sees one atomic snapshot.\n\n"
+            "## Evaluation\nMetric: the transition succeeds only with this plan.\n"
+        )
+        (self.repo / "concurrent-plan.md").write_text(body)
+        resource = self.call(
+            "resource.register",
+            project_id=self.project_id,
+            path="concurrent-plan.md",
+            kind="plan",
+        )
+        association_uncommitted = threading.Event()
+        allow_association_commit = threading.Event()
+        transaction = self.app.store.transaction
+        connect = self.app.store.connect
+
+        def contention_connection():
+            conn = connect()
+            if threading.current_thread().name.startswith("submit-design"):
+                conn.execute("PRAGMA busy_timeout = 100")
+            return conn
+
+        @contextmanager
+        def coordinated_transaction():
+            thread_name = threading.current_thread().name
+            is_association = thread_name.startswith("associate-plan")
+            with transaction() as conn:
+                yield conn
+                if is_association:
+                    association_uncommitted.set()
+                    if not allow_association_commit.wait(timeout=10):
+                        raise TimeoutError("test did not release association commit")
+
+        with patch.object(
+            self.app.store, "connect", contention_connection
+        ), patch.object(self.app.store, "transaction", coordinated_transaction):
+            with ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="associate-plan"
+            ) as association_pool, ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="submit-design"
+            ) as transition_pool:
+                association = association_pool.submit(
+                    self.app.resources.associate_observed,
+                    resource_id=resource["id"],
+                    target_type="experiment",
+                    target_id=self.exp_id,
+                    role="plan",
+                    project_id=self.project_id,
+                    content_bytes=body.encode(),
+                )
+                try:
+                    self.assertTrue(association_uncommitted.wait(timeout=10))
+                    transition = transition_pool.submit(
+                        self.app.experiments.transition,
+                        experiment_id=self.exp_id,
+                        transition="submit_design",
+                        project_id=self.project_id,
+                    )
+                    with self.assertRaisesRegex(
+                        sqlite3.OperationalError, "database is locked"
+                    ):
+                        transition.result(timeout=10)
+                finally:
+                    allow_association_commit.set()
+                association.result(timeout=10)
+
+        state = self.app.experiments.transition(
+            experiment_id=self.exp_id,
+            transition="submit_design",
+            project_id=self.project_id,
+        )
+
+        self.assertEqual(state["status"], "design_review")
+        self.assertEqual(
+            [
+                item["association_role"]
+                for item in state["current_attempt_resources"]
+            ],
+            ["plan"],
+        )
 
     def test_passing_review_survives_live_edits_after_submission(self) -> None:
         plan_path = self.repo / "plan.md"

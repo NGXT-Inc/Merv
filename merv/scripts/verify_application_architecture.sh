@@ -16,7 +16,7 @@ cd "$verify_dir"
 brain_loc=$(find src/merv/brain -name '*.py' | xargs wc -l | tail -1 | awk '{print $1}')
 test "$((brain_loc_max - phase_3_brain_loc))" -eq 435
 test "$brain_loc" -le "$brain_loc_max"
-test "$(wc -l < src/merv/brain/mlflow/exhibit.py)" -le 15
+test ! -e src/merv/brain/mlflow/exhibit.py
 test "$(wc -l < src/merv/brain/surface/tools/tool_handlers.py)" \
   -le "$surface_orchestration_max"
 test "$(wc -l < src/merv/brain/surface/transport/api/views.py)" \
