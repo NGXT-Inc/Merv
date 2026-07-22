@@ -61,23 +61,23 @@ class ResearchSnapshotReader:
             selected_id = experiment_id or (
                 str(experiment_rows[-1]["id"]) if experiment_rows else None
             )
-            state_ids = (
-                [str(row["id"]) for row in experiment_rows]
-                if hydrate_all_experiments
-                else (
-                    [selected_id] if selected_id and hydrate_selected_experiment else []
+            if hydrate_all_experiments:
+                evaluated_states = self.experiments.list_states_with_gates(
+                    conn=conn, project_id=project_id
                 )
-            )
-            evaluated_states = [
-                self.experiments.get_state_with_gate(
-                    experiment_id=state_id, project_id=project_id, conn=conn
-                )
-                for state_id in state_ids
-            ]
+            elif selected_id and hydrate_selected_experiment:
+                evaluated_states = [
+                    self.experiments.get_state_with_gate(
+                        experiment_id=selected_id,
+                        project_id=project_id,
+                        conn=conn,
+                    )
+                ]
+            else:
+                evaluated_states = []
             states = [state for state, _ in evaluated_states]
             gate_evaluations = {
-                str(state["id"]): evaluation
-                for state, evaluation in evaluated_states
+                str(state["id"]): evaluation for state, evaluation in evaluated_states
             }
             selected = next(
                 (state for state in states if state["id"] == selected_id), None

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.research_core.domain.artifacts import plan_sections_missing
+from merv.brain.research_core.domain.artifacts import plan_sections_missing, report_figure_links
 from merv.brain.research_core.domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
     infer_claim_status_from_conclusion,
@@ -319,6 +319,12 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertEqual(
             set(plan_sections_missing("# Title only\n")),
             {"Summary", "Objective & hypothesis", "Evaluation"},
+        )
+
+    def test_report_figure_links_preserves_keyword_compatibility(self) -> None:
+        self.assertEqual(
+            report_figure_links(report_text="![result](figures/result.png)"),
+            ["figures/result.png"],
         )
 
     # ---- transition discovery (allowed_transitions + helpful errors) ----

@@ -37,10 +37,7 @@ from .gate_evaluation import (
     RequirementEvaluation,
     evaluate_resource_requirement,
 )
-from ..artifacts.ports import (
-    EvidenceReader,
-    SubmittedDocument,
-)
+from ..artifacts.ports import AssociatedEvidence, EvidenceReader, SubmittedDocument
 from ..kernel.events import StoredEvent
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
@@ -51,6 +48,10 @@ from .transition_types import (
     CommittedExperimentTransition,
     CommittedTrackingRunRefresh,
 )
+
+
+def _query(conn, sql: str, parameters: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return rows_to_dicts(rows=conn.execute(sql, parameters).fetchall())
 
 
 class ExperimentService:
@@ -300,51 +301,112 @@ class ExperimentService:
                 raise NotFoundError(
                     f"experiment not found in project {project_id}: {experiment_id}"
                 )
-            claim_rows = conn.execute(
-                """
-                SELECT c.*
-                FROM claims c
-                JOIN experiment_claims ec ON ec.claim_id = c.id
-                WHERE ec.experiment_id = ?
-                ORDER BY c.created_at, c.id
-                """,
-                (experiment_id,),
-            ).fetchall()
-            data["tested_claims"] = rows_to_dicts(rows=claim_rows)
-            data["resources"] = [
-                resource_state_record(evidence)
-                for evidence in self.evidence_reader.resources_for_target(
+            return self._assemble_state_with_gate(
+                conn=conn,
+                experiment=data,
+                tested_claims=_query(
+                    conn,
+                    """
+                    SELECT c.* FROM claims c
+                    JOIN experiment_claims ec ON ec.claim_id = c.id
+                    WHERE ec.experiment_id = ?
+                    ORDER BY c.created_at, c.id
+                    """,
+                    (experiment_id,),
+                ),
+                evidence=self.evidence_reader.resources_for_target(
                     target_type="experiment", target_id=experiment_id
-                )
-            ]
-            data["current_attempt_resources"] = [
-                res
-                for res in data["resources"]
-                if res.get("association_attempt_index") == data["attempt_index"]
-            ]
-            data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
-            review_rows = conn.execute(
-                """
-                SELECT * FROM reviews
-                WHERE target_type = 'experiment' AND target_id = ?
-                ORDER BY created_seq DESC
-                """,
-                (experiment_id,),
-            ).fetchall()
-            reviews = rows_to_dicts(rows=review_rows)
-            for review in reviews:
-                review["findings"] = json.loads(review.pop("findings_json", "[]"))
-                review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
-            data["reviews"] = reviews
-            evaluation = self._evaluate_gate(conn=conn, experiment=data)
-            data["allowed_transitions"] = [
-                dict(item) for item in evaluation.legal_transitions
-            ]
-            data["gate_checklist"] = evaluation.checklist()
-            return data, evaluation
+                ),
+                reviews=_query(
+                    conn,
+                    """SELECT * FROM reviews
+                    WHERE target_type = 'experiment' AND target_id = ?
+                    ORDER BY created_seq DESC""",
+                    (experiment_id,),
+                ),
+            )
         finally:
             if owns_conn:
                 conn.close()
+
+    def list_states_with_gates(
+        self, *, conn, project_id: str
+    ) -> list[tuple[dict[str, Any], GateEvaluation]]:
+        """Hydrate a project's experiment states with one read per child table."""
+        experiment_rows = _query(
+            conn,
+            "SELECT * FROM experiments WHERE project_id = ? ORDER BY created_at, id",
+            (project_id,),
+        )
+        experiment_ids = tuple(str(row["id"]) for row in experiment_rows)
+        if not experiment_ids:
+            return []
+
+        claims: dict[str, list[dict[str, Any]]] = {}
+        for claim in _query(
+            conn,
+            """SELECT ec.experiment_id AS _experiment_id, c.*
+            FROM experiment_claims ec
+            JOIN experiments e ON e.id = ec.experiment_id
+            JOIN claims c ON c.id = ec.claim_id
+            WHERE e.project_id = ?
+            ORDER BY e.created_at, e.id, c.created_at, c.id""",
+            (project_id,),
+        ):
+            experiment_id = str(claim.pop("_experiment_id"))
+            claims.setdefault(experiment_id, []).append(claim)
+
+        reviews: dict[str, list[dict[str, Any]]] = {}
+        for review in _query(
+            conn,
+            """SELECT r.* FROM reviews r
+            JOIN experiments e ON e.id = r.target_id
+            WHERE r.target_type = 'experiment' AND e.project_id = ?
+            ORDER BY e.created_at, e.id, r.created_seq DESC""",
+            (project_id,),
+        ):
+            reviews.setdefault(str(review["target_id"]), []).append(review)
+
+        evidence = self.evidence_reader.resources_for_targets(
+            target_type="experiment", target_ids=experiment_ids
+        )
+        return [
+            self._assemble_state_with_gate(
+                conn=conn,
+                experiment=experiment,
+                tested_claims=claims.get(str(experiment["id"]), []),
+                evidence=evidence.get(str(experiment["id"]), ()),
+                reviews=reviews.get(str(experiment["id"]), []),
+            )
+            for experiment in experiment_rows
+        ]
+
+    def _assemble_state_with_gate(
+        self,
+        *,
+        conn,
+        experiment: dict[str, Any],
+        tested_claims: list[dict[str, Any]],
+        evidence: tuple[AssociatedEvidence, ...],
+        reviews: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], GateEvaluation]:
+        data = dict(experiment)
+        data["tested_claims"] = tested_claims
+        data["resources"] = [resource_state_record(item) for item in evidence]
+        data["current_attempt_resources"] = [
+            resource
+            for resource in data["resources"]
+            if resource.get("association_attempt_index") == data["attempt_index"]
+        ]
+        data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
+        for review in reviews:
+            review["findings"] = json.loads(review.pop("findings_json", "[]"))
+            review["evidence"] = json.loads(review.pop("evidence_json", "{}"))
+        data["reviews"] = reviews
+        evaluation = self._evaluate_gate(conn=conn, experiment=data)
+        data["allowed_transitions"] = [dict(x) for x in evaluation.legal_transitions]
+        data["gate_checklist"] = evaluation.checklist()
+        return data, evaluation
 
     def assert_in_project(self, *, experiment_id: str, project_id: str) -> None:
         """Verify experiment identity/scope without hydrating its child records."""
@@ -526,15 +588,8 @@ class ExperimentService:
     def list_experiments(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            rows = conn.execute(
-                "SELECT id FROM experiments WHERE project_id = ? ORDER BY created_at, id",
-                (project_id,),
-            ).fetchall()
-            return {
-                "experiments": [
-                    self.get_state(experiment_id=row["id"], conn=conn) for row in rows
-                ]
-            }
+            states = self.list_states_with_gates(conn=conn, project_id=project_id)
+            return {"experiments": [state for state, _gate in states]}
 
     def list_experiment_summaries(
         self, *, project_id: str | None = None
@@ -908,8 +963,5 @@ class ExperimentService:
             )
 
     def target_snapshot_id(self, *, conn, experiment_id: str) -> str:
-        return self._target_snapshot_id(conn=conn, experiment_id=experiment_id)
-
-    def _target_snapshot_id(self, *, conn, experiment_id: str) -> str:
         experiment = self.get_state(experiment_id=experiment_id, conn=conn)
         return review_snapshot_id(target_type="experiment", target=experiment)

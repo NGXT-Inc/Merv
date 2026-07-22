@@ -736,12 +736,18 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("class ExperimentReviewTarget", source)
         self.assertNotIn("class SynthesisReviewTarget", source)
         from merv.brain.research_core.experiments import ExperimentService
+        from merv.brain.research_core.domain.review_handoff import (
+            reviewer_handoff_payload,
+        )
+        from merv.brain.research_core.domain.review_snapshot import snapshot_from_id
         from merv.brain.research_core.reviews import ReviewService
         from merv.brain.research_core.reflections import ReflectionService
 
         hints = get_type_hints(ReviewService.__init__)
         self.assertIs(hints["experiments"], ExperimentService)
         self.assertIs(hints["reflections"], ReflectionService)
+        self.assertIs(ReviewService.reviewer_handoff, reviewer_handoff_payload)
+        self.assertIs(ReviewService.snapshot_from_id, snapshot_from_id)
         experiment_calls = {
             "get_state_with_gate",
             "send_back_to_planned",

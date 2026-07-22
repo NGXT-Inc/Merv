@@ -1033,9 +1033,6 @@ class ReflectionService:
         ).text
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:
-        return self._target_snapshot_id(conn=conn, reflection_id=reflection_id)
-
-    def _target_snapshot_id(self, *, conn, reflection_id: str) -> str:
         reflection = self.get_state(reflection_id=reflection_id, conn=conn)
         return review_snapshot_id(target_type="reflection", target=reflection)
 

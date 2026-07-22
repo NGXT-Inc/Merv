@@ -619,25 +619,8 @@ class ReviewService:
             data["recovery"] = self._request_recovery(request=data)
         return data
 
-    def reviewer_handoff(
-        self,
-        *,
-        role: str,
-        target_type: str,
-        target_id: str,
-        review_request_id: str = "",
-        reviewer_capability: str = "",
-    ) -> dict[str, Any]:
-        return reviewer_handoff_payload(
-            role=role,
-            target_type=target_type,
-            target_id=target_id,
-            review_request_id=review_request_id,
-            reviewer_capability=reviewer_capability,
-        )
-
-    def snapshot_from_id(self, *, snapshot_id: str) -> dict[str, Any]:
-        return snapshot_from_id(snapshot_id=snapshot_id)
+    reviewer_handoff = staticmethod(reviewer_handoff_payload)
+    snapshot_from_id = staticmethod(snapshot_from_id)
 
     def _validate_request_open(self, *, req, capability: str) -> None:
         # Constant-time compare of the presented token's hash against the stored
