@@ -5,8 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .._config import _env_discovery_disabled
-from .._config import _absolute_posix_path, _load_env_text, _positive_float, _positive_int, _validate_data_dir
+from .._config import (
+    _absolute_posix_path,
+    _env_discovery_disabled,
+    _first_env,
+    _http_base_url,
+    _load_env_text,
+    _positive_float,
+    _positive_int,
+    _required_env,
+    _validate_data_dir,
+)
 from .....kernel.env import env_value
 from ....sandbox_backend import BackendValidationError
 from ....sandbox_paths import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT
@@ -26,21 +35,16 @@ class LambdaCloudConfig:
     @classmethod
     def from_env(cls) -> "LambdaCloudConfig":
         load_lambda_env_file()
-        api_key = (
-            env_value("MERV_LAMBDA_API_KEY")
-            or env_value("LAMBDA_LABS_API_KEY")
-            or env_value("LAMBDA_API_KEY")
-            or ""
+        return cls(
+            api_key=_required_env(
+                "MERV_LAMBDA_API_KEY",
+                "LAMBDA_LABS_API_KEY",
+                "LAMBDA_API_KEY",
+                error="Lambda Cloud API key is required; set MERV_LAMBDA_API_KEY, "
+                "LAMBDA_LABS_API_KEY, or LAMBDA_API_KEY",
+            ),
+            base_url=_http_base_url("MERV_LAMBDA_API_BASE", DEFAULT_BASE_URL),
         )
-        if not api_key:
-            raise BackendValidationError(
-                "Lambda Cloud API key is required; set MERV_LAMBDA_API_KEY, "
-                "LAMBDA_LABS_API_KEY, or LAMBDA_API_KEY"
-            )
-        base_url = env_value("MERV_LAMBDA_API_BASE") or DEFAULT_BASE_URL
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError("MERV_LAMBDA_API_BASE must be an HTTP URL")
-        return cls(api_key=api_key, base_url=base_url.rstrip("/"))
 
 
 @dataclass(frozen=True)
@@ -81,7 +85,9 @@ class LambdaSandboxConfig:
             env_value("MERV_LAMBDA_DATA_DIR") or DEFAULT_SANDBOX_DATA_DIR,
             field="MERV_LAMBDA_DATA_DIR",
         )
-        _validate_data_dir(sandbox_data_dir, remote_root=remote_root, field="MERV_LAMBDA_DATA_DIR")
+        _validate_data_dir(
+            sandbox_data_dir, remote_root=remote_root, field="MERV_LAMBDA_DATA_DIR"
+        )
         return cls(
             cloud=cloud,
             region_name=region_name,
@@ -122,11 +128,3 @@ def load_lambda_env_file() -> None:
     if not path.exists():
         raise BackendValidationError(f"Lambda env file does not exist: {path}")
     _load_env_text(path.read_text())
-
-
-def _first_env(*names: str) -> str:
-    for name in names:
-        value = env_value(name)
-        if value:
-            return value
-    return ""

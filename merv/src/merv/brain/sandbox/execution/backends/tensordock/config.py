@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._config import _http_base_url, _required_env
 from .....kernel.env import env_value
-from ....sandbox_backend import BackendValidationError
 from ....sandbox_paths import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT
 
 
@@ -25,24 +25,15 @@ class TensorDockCloudConfig:
 
     @classmethod
     def from_env(cls) -> "TensorDockCloudConfig":
-        token = (
-            env_value("MERV_TENSORDOCK_TOKEN")
-            or env_value("TENSORDOCK_TOKEN")
-            or ""
-        ).strip()
-        if not token:
-            raise BackendValidationError(
-                "TensorDock API token is required; set "
-                "MERV_TENSORDOCK_TOKEN or TENSORDOCK_TOKEN"
-            )
-        base_url = (
-            env_value("MERV_TENSORDOCK_API_BASE") or DEFAULT_BASE_URL
-        ).strip()
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError(
-                "MERV_TENSORDOCK_API_BASE must be an HTTP URL"
-            )
-        return cls(token=token, base_url=base_url.rstrip("/"))
+        return cls(
+            token=_required_env(
+                "MERV_TENSORDOCK_TOKEN",
+                "TENSORDOCK_TOKEN",
+                error="TensorDock API token is required; set "
+                "MERV_TENSORDOCK_TOKEN or TENSORDOCK_TOKEN",
+            ),
+            base_url=_http_base_url("MERV_TENSORDOCK_API_BASE", DEFAULT_BASE_URL),
+        )
 
 
 @dataclass(frozen=True)
@@ -59,11 +50,7 @@ class TensorDockSandboxConfig:
     def from_env(cls) -> "TensorDockSandboxConfig":
         return cls(
             cloud=TensorDockCloudConfig.from_env(),
-            image=(
-                env_value("MERV_TENSORDOCK_IMAGE") or DEFAULT_IMAGE
-            ).strip(),
-            ssh_user=(
-                env_value("MERV_TENSORDOCK_SSH_USER") or DEFAULT_SSH_USER
-            ).strip()
+            image=(env_value("MERV_TENSORDOCK_IMAGE") or DEFAULT_IMAGE).strip(),
+            ssh_user=(env_value("MERV_TENSORDOCK_SSH_USER") or DEFAULT_SSH_USER).strip()
             or DEFAULT_SSH_USER,
         )

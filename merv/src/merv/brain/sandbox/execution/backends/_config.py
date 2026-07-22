@@ -9,6 +9,28 @@ from ...sandbox_backend import BackendValidationError
 from ...sandbox_paths import SESSIONS_DIRNAME
 
 
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = env_value(name)
+        if value:
+            return value
+    return ""
+
+
+def _required_env(*names: str, error: str) -> str:
+    value = _first_env(*names)
+    if not value:
+        raise BackendValidationError(error)
+    return value
+
+
+def _http_base_url(name: str, default: str) -> str:
+    value = env_value(name) or default
+    if not value.startswith(("http://", "https://")):
+        raise BackendValidationError(f"{name} must be an HTTP URL")
+    return value.rstrip("/")
+
+
 def _env_discovery_disabled() -> bool:
     """True in control mode, where implicit user-machine .env discovery is off.
 

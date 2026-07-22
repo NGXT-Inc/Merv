@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._config import _http_base_url, _required_env
 from .....kernel.env import env_value
-from ....sandbox_backend import BackendValidationError
 from ....sandbox_paths import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT
 
 
@@ -22,24 +22,15 @@ class VoltageParkCloudConfig:
 
     @classmethod
     def from_env(cls) -> "VoltageParkCloudConfig":
-        token = (
-            env_value("MERV_VOLTAGE_PARK_TOKEN")
-            or env_value("VOLTAGE_PARK_TOKEN")
-            or ""
-        ).strip()
-        if not token:
-            raise BackendValidationError(
-                "Voltage Park API token is required; set "
-                "MERV_VOLTAGE_PARK_TOKEN or VOLTAGE_PARK_TOKEN"
-            )
-        base_url = (
-            env_value("MERV_VOLTAGE_PARK_API_BASE") or DEFAULT_BASE_URL
-        ).strip()
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError(
-                "MERV_VOLTAGE_PARK_API_BASE must be an HTTP URL"
-            )
-        return cls(token=token, base_url=base_url.rstrip("/"))
+        return cls(
+            token=_required_env(
+                "MERV_VOLTAGE_PARK_TOKEN",
+                "VOLTAGE_PARK_TOKEN",
+                error="Voltage Park API token is required; set "
+                "MERV_VOLTAGE_PARK_TOKEN or VOLTAGE_PARK_TOKEN",
+            ),
+            base_url=_http_base_url("MERV_VOLTAGE_PARK_API_BASE", DEFAULT_BASE_URL),
+        )
 
 
 @dataclass(frozen=True)

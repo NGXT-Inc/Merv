@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._config import _http_base_url, _required_env
 from .....kernel.env import env_value
-from ....sandbox_backend import BackendValidationError
 from ....sandbox_paths import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT
 
 
@@ -25,26 +25,17 @@ class DigitalOceanCloudConfig:
 
     @classmethod
     def from_env(cls) -> "DigitalOceanCloudConfig":
-        token = (
-            env_value("MERV_DIGITALOCEAN_TOKEN")
-            or env_value("DIGITALOCEAN_TOKEN")
-            or env_value("DIGITALOCEAN_ACCESS_TOKEN")
-            or ""
-        ).strip()
-        if not token:
-            raise BackendValidationError(
-                "DigitalOcean API token is required; set "
+        return cls(
+            token=_required_env(
+                "MERV_DIGITALOCEAN_TOKEN",
+                "DIGITALOCEAN_TOKEN",
+                "DIGITALOCEAN_ACCESS_TOKEN",
+                error="DigitalOcean API token is required; set "
                 "MERV_DIGITALOCEAN_TOKEN, DIGITALOCEAN_TOKEN, or "
-                "DIGITALOCEAN_ACCESS_TOKEN"
-            )
-        base_url = (
-            env_value("MERV_DIGITALOCEAN_API_BASE") or DEFAULT_BASE_URL
-        ).strip()
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError(
-                "MERV_DIGITALOCEAN_API_BASE must be an HTTP URL"
-            )
-        return cls(token=token, base_url=base_url.rstrip("/"))
+                "DIGITALOCEAN_ACCESS_TOKEN",
+            ),
+            base_url=_http_base_url("MERV_DIGITALOCEAN_API_BASE", DEFAULT_BASE_URL),
+        )
 
 
 @dataclass(frozen=True)
@@ -63,9 +54,7 @@ class DigitalOceanSandboxConfig:
     def from_env(cls) -> "DigitalOceanSandboxConfig":
         return cls(
             cloud=DigitalOceanCloudConfig.from_env(),
-            image=(
-                env_value("MERV_DIGITALOCEAN_IMAGE") or DEFAULT_IMAGE
-            ).strip(),
+            image=(env_value("MERV_DIGITALOCEAN_IMAGE") or DEFAULT_IMAGE).strip(),
             region=(env_value("MERV_DIGITALOCEAN_REGION") or "").strip(),
             size=(env_value("MERV_DIGITALOCEAN_SIZE") or "").strip(),
             ssh_user=(

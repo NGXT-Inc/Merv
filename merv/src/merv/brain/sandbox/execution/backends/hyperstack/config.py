@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .._config import _http_base_url, _required_env
 from .....kernel.env import env_value
 from ....sandbox_backend import BackendValidationError
 from ....sandbox_paths import DEFAULT_DATA_DIR, DEFAULT_REMOTE_ROOT
@@ -25,24 +26,15 @@ class HyperstackCloudConfig:
 
     @classmethod
     def from_env(cls) -> "HyperstackCloudConfig":
-        api_key = (
-            env_value("MERV_HYPERSTACK_API_KEY")
-            or env_value("HYPERSTACK_API_KEY")
-            or ""
-        ).strip()
-        if not api_key:
-            raise BackendValidationError(
-                "Hyperstack API key is required; set "
-                "MERV_HYPERSTACK_API_KEY or HYPERSTACK_API_KEY"
-            )
-        base_url = (
-            env_value("MERV_HYPERSTACK_API_BASE") or DEFAULT_BASE_URL
-        ).strip()
-        if not base_url.startswith(("http://", "https://")):
-            raise BackendValidationError(
-                "MERV_HYPERSTACK_API_BASE must be an HTTP URL"
-            )
-        return cls(api_key=api_key, base_url=base_url.rstrip("/"))
+        return cls(
+            api_key=_required_env(
+                "MERV_HYPERSTACK_API_KEY",
+                "HYPERSTACK_API_KEY",
+                error="Hyperstack API key is required; set "
+                "MERV_HYPERSTACK_API_KEY or HYPERSTACK_API_KEY",
+            ),
+            base_url=_http_base_url("MERV_HYPERSTACK_API_BASE", DEFAULT_BASE_URL),
+        )
 
 
 @dataclass(frozen=True)
@@ -61,9 +53,7 @@ class HyperstackSandboxConfig:
 
     @classmethod
     def from_env(cls) -> "HyperstackSandboxConfig":
-        environment_name = (
-            env_value("MERV_HYPERSTACK_ENVIRONMENT") or ""
-        ).strip()
+        environment_name = (env_value("MERV_HYPERSTACK_ENVIRONMENT") or "").strip()
         if not environment_name:
             raise BackendValidationError(
                 "Hyperstack requires an environment; create one in the console "
@@ -75,11 +65,7 @@ class HyperstackSandboxConfig:
             image_name=(
                 env_value("MERV_HYPERSTACK_IMAGE") or DEFAULT_IMAGE_NAME
             ).strip(),
-            flavor_name=(
-                env_value("MERV_HYPERSTACK_FLAVOR") or ""
-            ).strip(),
-            ssh_user=(
-                env_value("MERV_HYPERSTACK_SSH_USER") or DEFAULT_SSH_USER
-            ).strip()
+            flavor_name=(env_value("MERV_HYPERSTACK_FLAVOR") or "").strip(),
+            ssh_user=(env_value("MERV_HYPERSTACK_SSH_USER") or DEFAULT_SSH_USER).strip()
             or DEFAULT_SSH_USER,
         )
