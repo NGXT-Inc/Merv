@@ -90,8 +90,10 @@ class RecordingResearch:
         self.order.append("research.state")
         return deepcopy(self.state)
 
-    def project_experiments(self, *, project_id: str) -> list[dict[str, Any]]:
-        self.order.append("research.project_experiments")
+    def project_experiment_summaries(
+        self, *, project_id: str
+    ) -> list[dict[str, Any]]:
+        self.order.append("research.project_experiment_summaries")
         self.project_calls.append(project_id)
         return [deepcopy(self.state)]
 
@@ -249,7 +251,10 @@ class TrackingContextQueryTest(unittest.TestCase):
             [{"project_id": PROJECT_ID, "include_credentials": True}],
         )
         self.assertEqual(research.project_calls, [PROJECT_ID])
-        self.assertEqual(order, ["tracking.project_context", "research.project_experiments"])
+        self.assertEqual(
+            order,
+            ["tracking.project_context", "research.project_experiment_summaries"],
+        )
 
     def test_experiment_context_resolves_identity_and_preserves_credentials(self) -> None:
         order: list[str] = []

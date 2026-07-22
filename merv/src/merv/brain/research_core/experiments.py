@@ -536,6 +536,23 @@ class ExperimentService:
                 ]
             }
 
+    def list_experiment_summaries(
+        self, *, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            rows = conn.execute(
+                """
+                SELECT id, project_id, name, intent, status, attempt_index,
+                       created_at, updated_at
+                FROM experiments
+                WHERE project_id = ?
+                ORDER BY created_at, id
+                """,
+                (project_id,),
+            ).fetchall()
+            return rows_to_dicts(rows=rows)
+
     def transition(
         self,
         *,

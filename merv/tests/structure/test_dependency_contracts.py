@@ -32,8 +32,7 @@ def _debt(lines: str) -> Counter[tuple[str, str, str, str]]:
 
 
 DEPENDENCY_TYPE_DEBT = _debt(
-    """application/queries.py | MlflowOverviewQuery | experiments | RecordQuery
-application/queries.py | ExperimentFigureQuery | experiment_state | RecordQuery
+    """application/queries.py | ExperimentFigureQuery | experiment_state | RecordQuery
 application/queries.py | ExperimentFigureQuery | review_snapshot | RecordQuery
 application/queries.py | ExperimentFigureQuery | open_reviews | RecordsQuery
 application/queries.py | ExperimentFigureQuery | sandbox_row | Callable[..., Record | None]
@@ -42,7 +41,6 @@ application/queries.py | ExperimentFigureQuery | sandbox_status_active | Callabl
 application/queries.py | TenantCountersQuery | event_count | Callable[..., int]
 application/queries.py | TenantCountersQuery | generation_counters | RecordQuery
 application/queries.py | ComputeCostQuery | project_spend | RecordQuery
-application/queries.py | ComputeCostQuery | experiments | RecordsQuery
 application/workflow.py | ProjectDashboardQuery | resources | RecordQuery
 application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
 application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery

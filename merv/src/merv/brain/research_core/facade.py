@@ -24,6 +24,7 @@ from .transition_types import (
     CommittedTrackingRunRefresh,
     ExhibitVerdict,
     ExperimentState,
+    ExperimentSummary,
     PersistedRunState,
 )
 
@@ -84,6 +85,10 @@ class ResearchCore(Protocol):
     ) -> ExperimentState: ...
 
     def project_experiments(self, *, project_id: str | None) -> list[ExperimentState]: ...
+
+    def project_experiment_summaries(
+        self, *, project_id: str | None
+    ) -> list[ExperimentSummary]: ...
 
     def transition_experiment(
         self,
@@ -201,6 +206,14 @@ class ResearchCoreFacade:
         return cast(
             list[ExperimentState],
             self._experiments.list_experiments(project_id=project_id)["experiments"],
+        )
+
+    def project_experiment_summaries(
+        self, *, project_id: str | None
+    ) -> list[ExperimentSummary]:
+        return cast(
+            list[ExperimentSummary],
+            self._experiments.list_experiment_summaries(project_id=project_id),
         )
 
     def transition_experiment(
@@ -363,7 +376,7 @@ class ResearchReviewDelivery(Protocol):
 
 __all__ = (
     "CommittedExperimentTransition", "CommittedTrackingRunRefresh", "EXPERIMENT_ACTIVE_PROCESS_STATUSES",
-    "EXPERIMENT_TERMINAL_STATUSES", "ExperimentCreateArgs", "ExhibitVerdict", "ExperimentState",
+    "EXPERIMENT_TERMINAL_STATUSES", "ExperimentCreateArgs", "ExhibitVerdict", "ExperimentState", "ExperimentSummary",
     "GateEvaluation", "MAX_GRAPH_NODES", "PersistedRunState", "ResearchClaims", "ResearchCore",
     "ResearchCoreFacade", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
     "ResearchSnapshot", "ResearchSnapshots", "REVIEW_VERDICT_VALUES", "RequirementEvaluation",

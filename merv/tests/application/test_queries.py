@@ -310,16 +310,14 @@ class ApplicationQueryTest(unittest.TestCase):
         tracking = RecordingTracking()
         query = MlflowOverviewQuery(
             experiments=RecordingQuery(
-                {
-                    "experiments": [
-                        {
-                            "id": "exp_1",
-                            "name": "Experiment One",
-                            "status": "running",
-                            "intent": "Measure it",
-                        }
-                    ]
-                }
+                [
+                    {
+                        "id": "exp_1",
+                        "name": "Experiment One",
+                        "status": "running",
+                        "intent": "Measure it",
+                    }
+                ]
             ),
             tracking=tracking,
         )
@@ -350,7 +348,7 @@ class ApplicationQueryTest(unittest.TestCase):
     def test_mlflow_overview_short_circuits_an_unreachable_adapter(self) -> None:
         tracking = RecordingTracking(reachable=False)
         query = MlflowOverviewQuery(
-            experiments=RecordingQuery({"experiments": [{"id": "exp_1"}]}),
+            experiments=RecordingQuery([{"id": "exp_1"}]),
             tracking=tracking,
         )
 

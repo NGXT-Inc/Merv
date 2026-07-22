@@ -106,7 +106,9 @@ class GetTrackingContext:
                         experiment_id=str(state.get("id") or ""),
                     ),
                 }
-                for state in self.research.project_experiments(project_id=project_id)
+                for state in self.research.project_experiment_summaries(
+                    project_id=project_id
+                )
                 if state.get("id")
             ]
         return cast(

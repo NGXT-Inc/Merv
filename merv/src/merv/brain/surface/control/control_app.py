@@ -201,7 +201,7 @@ class ControlApp:
             current=core.projects.current,
         )
         self.mlflow_overview_query = MlflowOverviewQuery(
-            experiments=core.experiments.list_experiments,
+            experiments=self.research_core.project_experiment_summaries,
             tracking=self._tracking,
         )
         self.experiment_figure_query = ExperimentFigureQuery(
@@ -214,7 +214,7 @@ class ControlApp:
         )
         self.compute_cost_query = ComputeCostQuery(
             project_spend=core.quotas.project_spend,
-            experiments=self.research_core.project_experiments,
+            experiments=self.research_core.project_experiment_summaries,
         )
         self.tenant_counters_query = TenantCountersQuery(
             event_count=store.tenant_event_count,

@@ -28,6 +28,17 @@ class ExperimentState(TypedDict, total=False):
     mlflow_run: PersistedRunState | None
 
 
+class ExperimentSummary(TypedDict):
+    id: str
+    project_id: str
+    name: str
+    intent: str
+    status: str
+    attempt_index: int
+    created_at: str
+    updated_at: str
+
+
 class ExhibitVerdict(TypedDict, total=False):
     runs_found: int
     result_files: int
@@ -52,5 +63,6 @@ __all__ = [
     "CommittedTrackingRunRefresh",
     "ExhibitVerdict",
     "ExperimentState",
+    "ExperimentSummary",
     "PersistedRunState",
 ]

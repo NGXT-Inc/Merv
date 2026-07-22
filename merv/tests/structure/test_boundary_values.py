@@ -69,6 +69,7 @@ from merv.brain.research_core.transition_types import (
     CommittedExperimentUpdate,
     ExhibitVerdict,
     ExperimentState,
+    ExperimentSummary,
     PersistedRunState,
 )
 from merv.brain.sandbox.messages import (
@@ -383,6 +384,16 @@ SAMPLES: dict[type, object] = {
         "status": "running",
         "attempt_index": 1,
         "mlflow_run": RUN,
+    },
+    ExperimentSummary: {
+        "id": "exp_1",
+        "project_id": "proj_1",
+        "name": "Example",
+        "intent": "Test one claim",
+        "status": "running",
+        "attempt_index": 1,
+        "created_at": "2026-07-21T12:00:00Z",
+        "updated_at": "2026-07-21T12:00:00Z",
     },
     SlimExperimentState: {
         "id": "exp_1",

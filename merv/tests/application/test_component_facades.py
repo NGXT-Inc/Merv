@@ -64,6 +64,10 @@ class RecordingExperimentService:
         self.calls.append(("list_experiments", kwargs))
         return {"experiments": [self.state]}
 
+    def list_experiment_summaries(self, **kwargs):
+        self.calls.append(("list_experiment_summaries", kwargs))
+        return [self.state]
+
     def transition_with_event(self, **kwargs):
         self.calls.append(("transition_with_event", kwargs))
         return self.committed
@@ -141,6 +145,9 @@ class RecordingResearchCoreFake:
         return {"id": kwargs["experiment_id"]}
 
     def project_experiments(self, **kwargs):
+        return []
+
+    def project_experiment_summaries(self, **kwargs):
         return []
 
     def transition_experiment(self, **kwargs):
@@ -288,6 +295,10 @@ class ComponentFacadeTest(unittest.TestCase):
             service.state,
         )
         self.assertEqual(facade.project_experiments(project_id="proj_1"), [service.state])
+        self.assertEqual(
+            facade.project_experiment_summaries(project_id="proj_1"),
+            [service.state],
+        )
         self.assertIs(
             facade.transition_experiment(
                 experiment_id="exp_1",
@@ -335,6 +346,7 @@ class ComponentFacadeTest(unittest.TestCase):
             [
                 ("get_state", {"experiment_id": "exp_1", "project_id": "proj_1"}),
                 ("list_experiments", {"project_id": "proj_1"}),
+                ("list_experiment_summaries", {"project_id": "proj_1"}),
                 (
                     "transition_with_event",
                     {

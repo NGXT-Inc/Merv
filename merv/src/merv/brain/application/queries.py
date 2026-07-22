@@ -11,6 +11,7 @@ from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
 
 from ..artifacts.facade import Artifacts
 from ..research_core.facade import (
+    ExperimentSummary,
     MAX_GRAPH_NODES,
     ResearchCore,
     graph_problems,
@@ -36,11 +37,15 @@ class TrackingOverview(Protocol):
     def namespace_experiments(self, *, project_id: str) -> list[Record]: ...
 
 
+class ExperimentSummaries(Protocol):
+    def __call__(self, *, project_id: str) -> list[ExperimentSummary]: ...
+
+
 @dataclass(slots=True)
 class MlflowOverviewQuery:
     """Join Research experiments to their external tracking read models."""
 
-    experiments: RecordQuery
+    experiments: ExperimentSummaries
     tracking: TrackingOverview
 
     def experiment_metrics(self, *, project_id: str, experiment_id: str) -> Record:
@@ -52,7 +57,7 @@ class MlflowOverviewQuery:
         health = self.tracking.health()
         unreachable = health.get("reachable") is False
         items: list[Record] = []
-        for experiment in self.experiments(project_id=project_id)["experiments"]:
+        for experiment in self.experiments(project_id=project_id):
             experiment_id = str(experiment.get("id") or "")
             if not experiment_id:
                 continue
@@ -155,7 +160,7 @@ class ComputeCostQuery:
     """Hydrate the Sandbox spend ledger with Research experiment names."""
 
     project_spend: RecordQuery
-    experiments: RecordsQuery
+    experiments: ExperimentSummaries
 
     def __call__(self, *, project_id: str) -> Record:
         spend = self.project_spend(project_id=project_id)
