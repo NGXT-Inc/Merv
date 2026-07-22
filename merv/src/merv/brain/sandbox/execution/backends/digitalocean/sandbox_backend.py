@@ -14,8 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ...bootstrap_tools import BASELINE_APT_PACKAGES, ML_PYTHON_PACKAGES
-from ...vm_bootstrap import build_standard_user_data
+from ...bootstrap_tools import BASELINE_APT_PACKAGES
 from ....sandbox_backend import (
     BackendCapabilities,
     BackendUnavailableError,
@@ -26,7 +25,6 @@ from ....sandbox_backend import (
     ProvisionedSandbox,
     SandboxRequest,
 )
-from ....sandbox_paths import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, to_agent_options
 from .client import DigitalOceanClient
@@ -110,20 +108,11 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
             )
 
             self._notify(on_phase, "creating", f"{size} in {region}")
-            workdir = request.remote_workdir or remote_experiment_dir(
-                experiment_id=request.experiment_id, root=self.config.remote_root
-            )
-            user_data = build_standard_user_data(
-                public_key=request.public_key,
-                experiment_id=request.experiment_id,
+            workdir = self._sandbox_workdir(request)
+            user_data = self._standard_user_data(
+                request=request,
                 workdir=workdir,
-                sessions_dir=remote_sessions_dir(
-                    experiment_id=request.experiment_id, root=remote_root_of(workdir)
-                ),
-                sandbox_data_dir=self.config.sandbox_data_dir,
-                management_public_key=request.management_public_key,
                 apt_packages=DIGITALOCEAN_APT_PACKAGES,
-                python_packages=ML_PYTHON_PACKAGES,
             )
             if len(user_data.encode("utf-8")) > USER_DATA_MAX_BYTES:
                 raise BackendValidationError(

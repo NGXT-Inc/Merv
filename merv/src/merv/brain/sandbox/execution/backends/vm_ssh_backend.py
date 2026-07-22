@@ -8,6 +8,7 @@ import socket
 import time
 from typing import Any, Mapping
 
+from ..bootstrap_tools import ML_PYTHON_PACKAGES
 from ..vm_ssh import (
     SshInputRunner,
     SshRunner,
@@ -19,7 +20,14 @@ from ..vm_ssh import (
     sandbox_tokens,
     write_secrets_via_mgmt_ssh,
 )
-from ...sandbox_backend import BackendUnavailableError, SandboxBackendBase, TranscriptTail
+from ..vm_bootstrap import build_standard_user_data
+from ...sandbox_backend import (
+    BackendUnavailableError,
+    SandboxBackendBase,
+    SandboxRequest,
+    TranscriptTail,
+)
+from ...sandbox_paths import remote_experiment_dir, remote_root_of, remote_sessions_dir
 
 
 def _vm_name(experiment_id: str, *, max_length: int = 60) -> str:
@@ -38,6 +46,31 @@ class VmSshSandboxBackend(SandboxBackendBase):
     ) -> None:
         self._ssh_runner = ssh_runner or run_ssh
         self._ssh_input_runner = ssh_input_runner or run_ssh_input
+
+    def _sandbox_workdir(self, request: SandboxRequest) -> str:
+        return request.remote_workdir or remote_experiment_dir(
+            experiment_id=request.experiment_id, root=self.config.remote_root
+        )
+
+    def _standard_user_data(
+        self,
+        *,
+        request: SandboxRequest,
+        workdir: str,
+        apt_packages: tuple[str, ...],
+    ) -> str:
+        return build_standard_user_data(
+            public_key=request.public_key,
+            experiment_id=request.experiment_id,
+            workdir=workdir,
+            sessions_dir=remote_sessions_dir(
+                experiment_id=request.experiment_id, root=remote_root_of(workdir)
+            ),
+            sandbox_data_dir=self.config.sandbox_data_dir,
+            management_public_key=request.management_public_key,
+            apt_packages=apt_packages,
+            python_packages=ML_PYTHON_PACKAGES,
+        )
 
     def read_transcript(
         self,

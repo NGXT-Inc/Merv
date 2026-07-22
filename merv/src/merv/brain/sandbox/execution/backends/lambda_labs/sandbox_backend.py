@@ -28,7 +28,6 @@ from ....sandbox_backend import (
     ProvisionedSandbox,
     SandboxRequest,
 )
-from ....sandbox_paths import remote_experiment_dir, remote_root_of, remote_sessions_dir
 from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend, _vm_name as _sandbox_name
 from .catalog import find_option, summarize_instance_types, to_agent_options
 from .client import LambdaCloudClient
@@ -123,20 +122,13 @@ class LambdaLabsSandboxBackend(VmSshSandboxBackend):
             key_id = str(key.get("id") or "")
 
             self._notify(on_phase, "creating", f"{instance_type} in {region}")
-            workdir = request.remote_workdir or remote_experiment_dir(
-                experiment_id=request.experiment_id, root=self.config.remote_root
-            )
-            user_data = build_user_data(
-                public_key=request.public_key,
-                experiment_id=request.experiment_id,
+            workdir = self._sandbox_workdir(request)
+            # No tokens are embedded; credentials are delivered post-boot over
+            # the management channel.
+            user_data = self._standard_user_data(
+                request=request,
                 workdir=workdir,
-                sessions_dir=remote_sessions_dir(
-                    experiment_id=request.experiment_id, root=remote_root_of(workdir)
-                ),
-                sandbox_data_dir=self.config.sandbox_data_dir,
-                management_public_key=request.management_public_key,
-                # No tokens embedded in user_data (plan Phase 9, risk 16): they
-                # are delivered post-boot via write_secrets over the mgmt channel.
+                apt_packages=LAMBDA_APT_PACKAGES,
             )
             instance_id = self.client.launch_instance(
                 region_name=region,

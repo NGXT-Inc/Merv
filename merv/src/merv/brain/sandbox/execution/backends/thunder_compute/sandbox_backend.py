@@ -28,7 +28,7 @@ from ....sandbox_backend import (
     ProvisionedSandbox,
     SandboxRequest,
 )
-from ....sandbox_paths import remote_experiment_dir, remote_root_of, remote_sessions_dir
+from ....sandbox_paths import remote_root_of, remote_sessions_dir
 from ..vm_ssh_backend import SshInputRunner, SshRunner, VmSshSandboxBackend
 from .catalog import find_option, summarize_specs
 from .client import ThunderComputeClient
@@ -130,9 +130,7 @@ class ThunderComputeSandboxBackend(VmSshSandboxBackend):
             if not host:
                 raise BackendUnavailableError("Thunder instance became running without a public IP")
 
-            workdir = request.remote_workdir or remote_experiment_dir(
-                experiment_id=request.experiment_id, root=self.config.remote_root
-            )
+            workdir = self._sandbox_workdir(request)
             self._notify(on_phase, "bootstrapping", "installing sandbox ssh wrapper")
             self._bootstrap_vm(
                 host=host,
