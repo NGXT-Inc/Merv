@@ -46,7 +46,7 @@ from .record_core import build_record_core
 from ...sandbox.sandbox_backend import SandboxBackend
 from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ...mlflow import CentralMlflowService
-from ...sandbox.facade import SandboxFacade, SandboxReadFacade
+from ...sandbox.facade import SandboxFacade
 from ...sandbox.runtime import build_sandbox_runtime
 from ...object_storage.service import StorageLedgerService
 from ...object_storage.catalog import StorageObjectCatalog
@@ -177,17 +177,13 @@ class ControlApp:
             experiments=core.experiments,
             reflections=core.reflection_waves,
         )
-        self.sandbox_reads = SandboxReadFacade(
-            store=store,
-            reader=self.sandboxes,
-        )
         self.next_action_policy = StatusGuidancePolicy(
             storage_enabled=storage is not None,
             storage_guidance=storage_guidance(enabled=storage is not None),
         )
         self.workflow = StatusAndNextQuery(
             snapshots=self.research_snapshots,
-            sandboxes=self.sandbox_reads,
+            sandboxes=self.sandboxes,
             policy=self.next_action_policy,
             objects=self.produced_objects,
         )

@@ -352,7 +352,7 @@ class ControlAppTest(unittest.TestCase):
                 "experiment.create",
                 {"project_id": project_id, "name": "exp", "intent": "measure"},
             )["id"]
-            app.sandboxes.registry.upsert(
+            app.sandboxes.repository.upsert(
                 experiment_id=exp_id,
                 sandbox_uid="uid_control_metrics",
                 project_id=project_id,

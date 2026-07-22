@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 
 from merv.brain.sandbox.repository import SandboxRepository
-from merv.brain.sandbox.sandbox_registry import SandboxRegistry
 
 
 ROOT = Path(__file__).parents[2] / "src" / "merv" / "brain"
@@ -24,7 +23,6 @@ FACADE_INTERNALS = {
     "provisioner",
     "queries",
     "quotas",
-    "registry",
     "repository",
     "runs_ledger",
     "runtime",
@@ -40,14 +38,16 @@ FACADE_INTERNALS = {
 
 
 class SandboxArchitectureTest(unittest.TestCase):
-    def test_repository_is_the_compatibility_registry(self) -> None:
-        self.assertIs(SandboxRepository, SandboxRegistry)
+    def test_legacy_repository_and_facade_modules_are_absent(self) -> None:
+        self.assertFalse((ROOT / "sandbox" / "sandbox_registry.py").exists())
+        self.assertFalse((ROOT / "sandbox" / "sandboxes.py").exists())
+        self.assertEqual(SandboxRepository.__module__, "merv.brain.sandbox.repository")
 
     def test_sandbox_paths_have_one_canonical_module(self) -> None:
         self.assertFalse((ROOT / "sandbox" / "execution" / "sync_dirs.py").exists())
 
     def test_facade_does_not_construct_or_start_runtime(self) -> None:
-        source = (ROOT / "sandbox" / "sandboxes.py").read_text(encoding="utf-8")
+        source = (ROOT / "sandbox" / "facade.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         facade = next(
             node
@@ -84,7 +84,7 @@ class SandboxArchitectureTest(unittest.TestCase):
         }
         self.assertFalse(
             any(
-                name.endswith(("sandbox_backend", "sandbox_registry", "state.store"))
+                name.endswith(("sandbox_backend", "repository", "state.store"))
                 for name in imported
             )
         )

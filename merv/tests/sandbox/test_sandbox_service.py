@@ -41,7 +41,7 @@ class SandboxServiceTest(unittest.TestCase):
         return self.app.call_tool(tool, kwargs)
 
     def _record_running_command(self, *, sandbox_uid: str) -> None:
-        self.app.sandboxes.registry.record_command_snapshot(
+        self.app.sandboxes.repository.record_command_snapshot(
             sandbox_uid=sandbox_uid,
             snapshot={
                 "command_id": "cmd_running",
@@ -206,7 +206,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(attached["workdir"], created["workdir"])
         self.assertNotIn("command", attached["ssh"])
 
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=uid)
         self.assertEqual(row["mgmt_key_ref"], uid)
         self.assertEqual(
             self.call(
@@ -366,7 +366,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(first["workdir"], second["workdir"])
         self.assertIn(second["sandbox_uid"][:12], second["workdir"])
 
-        rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandboxes.repository.list_by_experiment(experiment_id=exp_id)
         self.assertEqual(
             {row["sandbox_uid"] for row in rows},
             {first["sandbox_uid"], second["sandbox_uid"]},
@@ -427,7 +427,7 @@ class SandboxServiceTest(unittest.TestCase):
         primary = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
-        pending_uid = self.app.sandboxes.registry.create_sandbox(
+        pending_uid = self.app.sandboxes.repository.create_sandbox(
             experiment_id=exp_id,
             project_id=self.project_id,
             status="provisioning",
@@ -478,7 +478,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertEqual(released["released_count"], 2)
         self.assertIn(first["sandbox_id"], self.backend.terminated)
         self.assertIn(second["sandbox_id"], self.backend.terminated)
-        rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandboxes.repository.list_by_experiment(experiment_id=exp_id)
         self.assertEqual(rows, [])
 
     def test_reaper_does_not_change_experiment_status(self) -> None:
@@ -697,7 +697,7 @@ class SandboxServiceTest(unittest.TestCase):
             name="Tenant Sandbox", tenant_id="tenant_a"
         )["id"]
         sandbox_uid = "uid_tenant"
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id="exp_tenant",
             sandbox_uid=sandbox_uid,
             project_id=project_id,
@@ -869,12 +869,12 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_terminal_authenticates_with_the_management_key(self) -> None:
         # SSH-transcript backends (Lambda Labs) read the log over SSH; the
-        # registry hands read_transcript the row's stored endpoint and the
+        # repository hands read_transcript the row's stored endpoint and the
         # per-sandbox MANAGEMENT key (plan Phase 5, fixed decision 4) — never
         # the user key, which stays data-plane-only.
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         self.call("sandbox.terminal", project_id=self.project_id, experiment_id=exp_id)
         read = self.backend.transcript_reads[-1]
         self.assertEqual(read["ssh_host"], "sandbox.modal.test")
@@ -1136,7 +1136,7 @@ class SandboxServiceTest(unittest.TestCase):
             "finished_at": None,
             "output_tail": "loss 0.1",
         }
-        result = self.app.sandboxes.registry.record_command_snapshot(
+        result = self.app.sandboxes.repository.record_command_snapshot(
             sandbox_uid=uid, snapshot=stale
         )
         self.assertEqual(result["status"], "succeeded")
@@ -1232,7 +1232,7 @@ class SandboxServiceTest(unittest.TestCase):
 
     def test_extend_can_target_sandbox_uid_with_smaller_increment(self) -> None:
         created = self.call("sandbox.request", project_id=self.project_id)
-        self.app.sandboxes.registry.record_heartbeat(
+        self.app.sandboxes.repository.record_heartbeat(
             experiment_id="",
             sandbox_uid=created["sandbox_uid"],
             idle_since=None,

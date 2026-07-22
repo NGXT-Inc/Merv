@@ -48,21 +48,21 @@ def build_sandbox_runtime(
 ) -> SandboxRuntime:
     """Construct the runtime without starting any thread."""
     repository = SandboxRepository(store=store)
-    metrics = SandboxMetrics(registry=repository, backend=backend, mgmt_keys=mgmt_keys)
+    metrics = SandboxMetrics(repository=repository, backend=backend, mgmt_keys=mgmt_keys)
     runs = SandboxRunLedger(
         store=store,
-        registry=repository,
+        repository=repository,
         backend=backend,
         mgmt_keys=mgmt_keys,
     )
     lifecycle = SandboxLifecycle(
-        registry=repository,
+        repository=repository,
         backend=backend,
         mgmt_keys=mgmt_keys,
         tasks=tasks,
     )
     provisioner = SandboxProvisioner(
-        registry=repository,
+        repository=repository,
         backend=backend,
         lifecycle=lifecycle,
         stale_provision_seconds=env_float(
@@ -73,7 +73,7 @@ def build_sandbox_runtime(
     )
     lifecycle.job_probe = provisioner.job_is_live
     daemons = SandboxDaemons(
-        registry=repository,
+        repository=repository,
         backend=backend,
         provisioner=provisioner,
         lifecycle=lifecycle,

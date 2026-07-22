@@ -106,7 +106,7 @@ class SandboxBackendContractTest(unittest.TestCase):
         self, backend: SandboxBackendBase, *, force_expiry_reaper: bool = False
     ) -> SandboxDaemons:
         return SandboxDaemons(
-            registry=object(),  # type: ignore[arg-type]
+            repository=object(),  # type: ignore[arg-type]
             backend=backend,
             provisioner=object(),  # type: ignore[arg-type]
             lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]

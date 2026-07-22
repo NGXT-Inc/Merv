@@ -1236,7 +1236,7 @@ class BaseStateStore:
         """Change signal for a project's sandbox rows (no event-table proxy).
 
         Sandbox lifecycle mutations — provision, status, heartbeat, command,
-        terminate — every one bumps ``updated_at`` (see sandbox_registry) but,
+        terminate — every one bumps ``updated_at`` (see repository) but,
         unlike claims/experiments/reviews, do NOT append an event, so the event
         signal can't stand in for them. Digest each row's identity plus the
         fields the sandbox_list_view surfaces: it changes iff that payload would.

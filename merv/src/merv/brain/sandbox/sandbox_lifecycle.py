@@ -14,7 +14,7 @@ the invariants in one place:
   - a live provisioning job owns its row at any age — only the lifecycle's
     job probe decides whether "provisioning" means in-flight or wedged.
 
-The registry stays persistence-only; the provisioner keeps job threads; the
+The repository stays persistence-only; the provisioner keeps job threads; the
 daemons keep scheduling. None of them decide life or death.
 """
 
@@ -43,12 +43,12 @@ class SandboxLifecycle:
     def __init__(
         self,
         *,
-        registry: SandboxRepository,
+        repository: SandboxRepository,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
         tasks: TaskChannel,
     ) -> None:
-        self.registry = registry
+        self.repository = repository
         self.backend = backend
         self.mgmt_keys = mgmt_keys
         self.tasks = tasks
@@ -83,7 +83,7 @@ class SandboxLifecycle:
     # ---------- terminal transitions (mark + teardown, one owner) ----------
 
     def mark_terminated(self, *, experiment_id: str, sandbox_uid: str) -> None:
-        facts = self.registry.mark_terminated(
+        facts = self.repository.mark_terminated(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
         self._teardown(experiment_id=experiment_id, facts=facts)
@@ -91,7 +91,7 @@ class SandboxLifecycle:
     def mark_failed(
         self, *, experiment_id: str, error: str, sandbox_uid: str
     ) -> None:
-        facts = self.registry.mark_failed(
+        facts = self.repository.mark_failed(
             experiment_id=experiment_id, error=error, sandbox_uid=sandbox_uid
         )
         self._teardown(experiment_id=experiment_id, facts=facts)
@@ -120,7 +120,7 @@ class SandboxLifecycle:
                     "sandbox_uid": sandbox_uid,
                     "remove_experiment_alias": True,
                 },
-                tenant_id=self.registry.tenant_for_sandbox(
+                tenant_id=self.repository.tenant_for_sandbox(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid
                 ),
             )
@@ -149,7 +149,7 @@ class SandboxLifecycle:
             active_sibling = bool(
                 experiment_id
                 and sandbox_uid
-                and self.registry.has_active_for_experiment(
+                and self.repository.has_active_for_experiment(
                     experiment_id=experiment_id, exclude_sandbox_uid=sandbox_uid
                 )
             )
@@ -219,21 +219,21 @@ class SandboxLifecycle:
                     sandbox_uid=sandbox_uid,
                     error=str(intent.payload.get("error") or "sandbox failed"),
                 )
-                current = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+                current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "mark_terminated":
                 self.mark_terminated(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid
                 )
-                current = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+                current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "touch_alive":
-                self.registry.touch_alive(
+                self.repository.touch_alive(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid
                 )
-                current = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+                current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "refresh_endpoint":
                 current = self.refresh_endpoint(row=current)
         if decision.event is not None:
-            self.registry.emit_event(
+            self.repository.emit_event(
                 project_id=str(row.get("project_id") or ""),
                 event_type=decision.event.type,
                 experiment_id=experiment_id,
@@ -272,7 +272,7 @@ class SandboxLifecycle:
             ):
                 return row  # genuinely in flight — keep polling
             # The job may have JUST settled; re-read before declaring failure.
-            fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+            fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             if fresh.get("status") != "provisioning":
                 return self.reconcile(row=fresh)
             return self.apply(
@@ -314,13 +314,13 @@ class SandboxLifecycle:
         sandbox_uid = str(row.get("sandbox_uid") or "")
         if not sandbox_uid:
             return row
-        self.registry.upsert(
+        self.repository.upsert(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             ssh_host=host,
             ssh_port=port,
         )
-        fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
         # The agent's conn file must follow the endpoint: a conn_refresh task
         # re-renders it through the data plane. Best-effort, like the refresh
         # itself — the next agent view re-renders it anyway.
@@ -332,11 +332,11 @@ class SandboxLifecycle:
                     "name": f"sandbox-{sandbox_uid[:12]}",
                     "use_sandbox_uid_command": True,
                 },
-                tenant_id=self.registry.tenant_for_project(
+                tenant_id=self.repository.tenant_for_project(
                     project_id=str(fresh.get("project_id") or "")
                 ),
             )
-        self.registry.emit_event(
+        self.repository.emit_event(
             project_id=str(row.get("project_id")),
             event_type="sandbox.endpoint_refreshed",
             experiment_id=experiment_id,
@@ -354,7 +354,7 @@ class SandboxLifecycle:
         """
         now_dt = now or datetime.now(tz=UTC)
         reaped = 0
-        for row in self.registry.list_running_rows():
+        for row in self.repository.list_running_rows():
             expires_at = parse_iso(row.get("expires_at"))
             if expires_at is None or now_dt < expires_at:
                 continue
@@ -362,7 +362,7 @@ class SandboxLifecycle:
             # (provider calls take seconds each), and sandbox.extend races
             # exactly this window — a just-extended row must not be reaped
             # off the stale copy.
-            fresh = self.registry.get_by_uid(
+            fresh = self.repository.get_by_uid(
                 sandbox_uid=str(row.get("sandbox_uid") or "")
             )
             fresh_expires = parse_iso(fresh.get("expires_at"))

@@ -125,14 +125,14 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
 
         self.assertEqual(
             len(
-                self.app.sandbox_reads.for_experiment(
+                self.app.sandboxes.for_experiment(
                     project_id=other_project, experiment_id=other_experiment
                 )
             ),
             1,
         )
         self.assertEqual(
-            self.app.sandbox_reads.for_experiment(
+            self.app.sandboxes.for_experiment(
                 project_id=self.project_id, experiment_id=other_experiment
             ),
             [],

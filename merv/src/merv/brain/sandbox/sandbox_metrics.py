@@ -22,11 +22,11 @@ class SandboxMetrics:
     def __init__(
         self,
         *,
-        registry: SandboxRepository,
+        repository: SandboxRepository,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
     ) -> None:
-        self.registry = registry
+        self.repository = repository
         self.backend = backend
         self.mgmt_keys = mgmt_keys
         self._cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
@@ -41,7 +41,7 @@ class SandboxMetrics:
     ) -> dict[str, Any]:
         """Sample live in-container usage for a running sandbox."""
         try:
-            row = self.registry.fetch_scoped(
+            row = self.repository.fetch_scoped(
                 experiment_id=experiment_id,
                 project_id=project_id,
                 sandbox_uid=sandbox_uid,

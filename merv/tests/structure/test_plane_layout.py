@@ -536,7 +536,7 @@ load("subprocess")
     def test_sandbox_services_use_backend_port_not_execution_package(self) -> None:
         # Record/control sandbox services depend on the provider-neutral port,
         # while concrete provider machinery stays under execution/.
-        for name in ("sandbox_daemons.py", "sandbox_provisioner.py", "sandboxes.py"):
+        for name in ("sandbox_daemons.py", "sandbox_provisioner.py", "facade.py"):
             with self.subTest(module=name):
                 self.assertNotIn(
                     "execution", _import_segments(BACKEND_ROOT / "sandbox" / name)
@@ -614,6 +614,8 @@ if loaded:
         )
         imports = _import_segments(BACKEND_ROOT / "application" / "workflow.py")
         self.assertIn("facade", imports)
+        self.assertIn("from .ports.sandbox import SandboxReads", source)
+        self.assertNotIn("from ..sandbox.facade import SandboxReads", source)
         self.assertNotIn("from ..research_core.experiments", source)
         self.assertNotIn("reviews", imports)
         self.assertNotIn("sandboxes", imports)

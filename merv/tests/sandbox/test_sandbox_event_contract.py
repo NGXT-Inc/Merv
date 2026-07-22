@@ -14,7 +14,7 @@ from merv.brain.kernel.utils import format_iso, now_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.repository import SandboxRepository
 from merv.brain.sandbox.sandbox_runs import SandboxRunLedger
-from merv.brain.sandbox.sandboxes import SandboxFacade
+from merv.brain.sandbox.facade import SandboxFacade
 
 
 PUBLIC_SIGNATURES = {
@@ -462,7 +462,7 @@ class SandboxRepositoryEventContractScenarios:
         )
         ledger = SandboxRunLedger(
             store=self.store,
-            registry=repository,
+            repository=repository,
             backend=object(),  # type: ignore[arg-type]
             mgmt_keys=object(),  # type: ignore[arg-type]
         )

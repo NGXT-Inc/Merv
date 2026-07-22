@@ -56,12 +56,12 @@ class SandboxProvisioner:
     def __init__(
         self,
         *,
-        registry: SandboxRepository,
+        repository: SandboxRepository,
         backend: SandboxBackend,
         lifecycle: SandboxLifecycle,
         stale_provision_seconds: float,
     ) -> None:
-        self.registry = registry
+        self.repository = repository
         self.backend = backend
         self.lifecycle = lifecycle
         self.stale_provision_seconds = stale_provision_seconds
@@ -116,7 +116,7 @@ class SandboxProvisioner:
         """
         sandbox_uid = str(sandbox_uid or req.sandbox_uid or "").strip()
         if not sandbox_uid:
-            sandbox_uid = self.registry.new_sandbox_uid()
+            sandbox_uid = self.repository.new_sandbox_uid()
         with self._jobs_lock:
             job = self._jobs.get(sandbox_uid)
             if job is not None and job.thread.is_alive():
@@ -227,7 +227,7 @@ class SandboxProvisioner:
                 )
                 return
             now = now_iso()
-            self.registry.upsert(
+            self.repository.upsert(
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
                 project_id=project_id,
@@ -266,7 +266,7 @@ class SandboxProvisioner:
             # per-experiment overwrite. Best-effort — a ledger write must never
             # fail an otherwise-successful provision.
             with suppress(Exception):
-                self.registry.record_generation(
+                self.repository.record_generation(
                     experiment_id=experiment_id,
                     project_id=project_id,
                     sandbox_id=provisioned.sandbox_id,
@@ -275,7 +275,7 @@ class SandboxProvisioner:
                     gpu=provisioned.gpu or (req.gpu or ""),
                     price_usd_per_hour=provisioned.price_usd_per_hour,
                 )
-            self.registry.emit_event(
+            self.repository.emit_event(
                 project_id=project_id,
                 event_type="sandbox.created",
                 experiment_id=experiment_id,
@@ -328,8 +328,8 @@ class SandboxProvisioner:
         now = now_iso()
         sandbox_uid = str(req.sandbox_uid or sandbox_uid or "").strip()
         if not sandbox_uid:
-            sandbox_uid = self.registry.new_sandbox_uid()
-        writer = self.registry.create_sandbox if create_new else self.registry.upsert
+            sandbox_uid = self.repository.new_sandbox_uid()
+        writer = self.repository.create_sandbox if create_new else self.repository.upsert
         writer(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
@@ -383,7 +383,7 @@ class SandboxProvisioner:
             fields["sandbox_id"] = sandbox_id
         if sandbox_name is not None:
             fields["sandbox_name"] = sandbox_name
-        self.registry.upsert(
+        self.repository.upsert(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid, **fields
         )
 
@@ -411,7 +411,7 @@ class SandboxProvisioner:
         how many were reaped.
         """
         reaped = 0
-        for row in self.registry.list_rows_by_status(status="provisioning"):
+        for row in self.repository.list_rows_by_status(status="provisioning"):
             experiment_id = str(row.get("experiment_id") or "")
             sandbox_uid = str(row.get("sandbox_uid") or "")
             if self.job_is_live(
@@ -423,7 +423,7 @@ class SandboxProvisioner:
                 continue
             # The job may have JUST settled the row between the list and here;
             # only reap one that is still provisioning.
-            fresh = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+            fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             if fresh.get("status") != "provisioning":
                 continue
             try:
@@ -436,7 +436,7 @@ class SandboxProvisioner:
                         "the sandbox was terminated — call sandbox.request again"
                     ),
                 )
-                self.registry.emit_event(
+                self.repository.emit_event(
                     project_id=str(fresh.get("project_id") or ""),
                     event_type="sandbox.failed",
                     experiment_id=experiment_id,
@@ -459,7 +459,7 @@ class SandboxProvisioner:
         self.lifecycle.mark_terminated(
             experiment_id=experiment_id, sandbox_uid=sandbox_uid
         )
-        self.registry.emit_event(
+        self.repository.emit_event(
             project_id=project_id,
             event_type="sandbox.released",
             experiment_id=experiment_id,
@@ -479,7 +479,7 @@ class SandboxProvisioner:
             error=error,
             sandbox_uid=sandbox_uid,
         )
-        self.registry.emit_event(
+        self.repository.emit_event(
             project_id=project_id,
             event_type="sandbox.failed",
             experiment_id=experiment_id,

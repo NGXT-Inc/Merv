@@ -15,8 +15,8 @@ from ..research_core.facade import (
     ResearchSnapshot,
     ResearchSnapshots,
 )
-from ..sandbox.facade import SandboxReads
 from .experiments.presentation import project_fields, project_rows, rich_experiment_state
+from .ports.sandbox import SandboxReads
 from .ports.storage import ProducedObjectCatalog
 from .status_guidance import (
     StatusGuidancePolicy,

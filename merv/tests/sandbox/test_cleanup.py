@@ -67,7 +67,7 @@ class CleanupSweepTest(unittest.TestCase):
     def test_orphan_vm_sweep_reaps_a_running_row_whose_vm_is_gone(self) -> None:
         exp_id = self._experiment()
         sandbox_uid = "uid_gone"
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -82,12 +82,12 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertFalse(self.backend.is_alive(sandbox_id="sb-gone"))
         reaped = self.cleanup.sweep_orphan_vms(now=datetime.now(tz=UTC))
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "terminated")
 
     def test_orphan_vm_sweep_leaves_a_live_row_running(self) -> None:
         exp_id = self._experiment()
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_live",
             project_id=self.project_id,
@@ -101,7 +101,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.backend.alive["sb-live"] = True
         reaped = self.cleanup.sweep_orphan_vms(now=datetime.now(tz=UTC))
         self.assertEqual(reaped, 0)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "running")
 
     # ---- blob TTL GC ----
@@ -125,7 +125,7 @@ class CleanupSweepTest(unittest.TestCase):
         exp_id = self._experiment()
         sandbox_uid = "uid_wedged"
         started = "2026-01-01T00:00:00Z"
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -140,7 +140,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "failed")
         # The billing VM was terminated by cleanup_orphan.
         self.assertIn("sb-wedged", self.backend.terminated)
@@ -150,7 +150,7 @@ class CleanupSweepTest(unittest.TestCase):
         # leaves a billing VM in a provisioning phase. The sweep must still
         # reap it — the VM exists from `creating` onward.
         exp_id = self._experiment()
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_connecting",
             project_id=self.project_id,
@@ -164,7 +164,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid="uid_connecting")
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid="uid_connecting")
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-connecting", self.backend.terminated)
 
@@ -175,7 +175,7 @@ class CleanupSweepTest(unittest.TestCase):
         # (cleanup_orphan -> backend.find_sandbox_id). It must still be killed.
         exp_id = self._experiment()
         sandbox_uid = "uid_unrecorded"
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -190,13 +190,13 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 20, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 1)
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "failed")
         self.assertIn("sb-unrecorded", self.backend.terminated)
 
     def test_stale_provision_left_alone_within_deadline(self) -> None:
         exp_id = self._experiment()
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_fresh",
             project_id=self.project_id,
@@ -209,7 +209,7 @@ class CleanupSweepTest(unittest.TestCase):
         now = datetime(2026, 1, 1, 0, 2, 0, tzinfo=UTC)
         reaped = self.cleanup.sweep_stale_provisions(now=now)
         self.assertEqual(reaped, 0)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         self.assertEqual(row["status"], "provisioning")
 
     # ---- run_all ----
@@ -220,7 +220,7 @@ class CleanupSweepTest(unittest.TestCase):
             namespace=self.project_id, data=b"x", expires_at="2000-01-01T00:00:00Z"
         )
         exp_id = self._experiment()
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid="uid_dead_run_all",
             project_id=self.project_id,

@@ -86,13 +86,13 @@ class SandboxIdentityTest(unittest.TestCase):
         self._seed_row(experiment_id=exp, sandbox_uid="uid_old", status="provisioning", seq=1)
         self._seed_row(experiment_id=exp, sandbox_uid="uid_new", status="failed", seq=2)
         self.assertEqual(
-            self.app.sandboxes.registry.load_row(experiment_id=exp)["sandbox_uid"],
+            self.app.sandboxes.repository.load_row(experiment_id=exp)["sandbox_uid"],
             "uid_old",
         )
         # A running row always wins, regardless of recency.
         self._seed_row(experiment_id=exp, sandbox_uid="uid_run", status="running", seq=3)
         self.assertEqual(
-            self.app.sandboxes.registry.load_row(experiment_id=exp)["sandbox_uid"],
+            self.app.sandboxes.repository.load_row(experiment_id=exp)["sandbox_uid"],
             "uid_run",
         )
 
@@ -101,22 +101,22 @@ class SandboxIdentityTest(unittest.TestCase):
         exp_b = self._experiment("exp-b")
         self._request(exp_a)
         self._request(exp_b)
-        uid_a = str(self.app.sandboxes.registry.load_row(experiment_id=exp_a)["sandbox_uid"])
-        uid_b = str(self.app.sandboxes.registry.load_row(experiment_id=exp_b)["sandbox_uid"])
+        uid_a = str(self.app.sandboxes.repository.load_row(experiment_id=exp_a)["sandbox_uid"])
+        uid_b = str(self.app.sandboxes.repository.load_row(experiment_id=exp_b)["sandbox_uid"])
 
         self.assertNotEqual(uid_a, uid_b)
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_a, sandbox_uid=uid_a, detail="refreshed"
         )
         self.assertEqual(
-            self.app.sandboxes.registry.load_row(experiment_id=exp_a)["sandbox_uid"],
+            self.app.sandboxes.repository.load_row(experiment_id=exp_a)["sandbox_uid"],
             uid_a,
         )
 
     def test_attachment_created_on_request_and_closed_on_release(self) -> None:
         exp_id = self._experiment("exp-attach")
         self._request(exp_id)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         sandbox_uid = str(row["sandbox_uid"])
 
         attachment = self._attachment(sandbox_uid, exp_id)
@@ -137,11 +137,11 @@ class SandboxIdentityTest(unittest.TestCase):
     def test_experiment_lookup_still_returns_the_one_sandbox(self) -> None:
         exp_id = self._experiment("exp-lookup")
         self._request(exp_id)
-        rows = self.app.sandboxes.registry.list_by_experiment(experiment_id=exp_id)
+        rows = self.app.sandboxes.repository.list_by_experiment(experiment_id=exp_id)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["experiment_id"], exp_id)
-        by_uid = self.app.sandboxes.registry.get_by_uid(
+        by_uid = self.app.sandboxes.repository.get_by_uid(
             sandbox_uid=str(rows[0]["sandbox_uid"])
         )
         self.assertEqual(by_uid["experiment_id"], exp_id)

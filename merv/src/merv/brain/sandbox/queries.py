@@ -35,7 +35,7 @@ class SandboxQueryHandler(SandboxHandler):
         if not experiment_id and (not (sandbox_uid or "").strip()):
             raise ValidationError("sandbox.get requires experiment_id or sandbox_uid")
         try:
-            row = self.registry.fetch_scoped(
+            row = self.repository.fetch_scoped(
                 experiment_id=experiment_id,
                 project_id=project_id,
                 tenant_id=tenant_id,
@@ -44,7 +44,7 @@ class SandboxQueryHandler(SandboxHandler):
         except NotFoundError:
             if (sandbox_uid or "").strip():
                 raise
-            if experiment_id and self.registry.exists(experiment_id=experiment_id):
+            if experiment_id and self.repository.exists(experiment_id=experiment_id):
                 raise
             return {
                 "experiment_id": experiment_id,
@@ -91,7 +91,7 @@ class SandboxQueryHandler(SandboxHandler):
             raise ValidationError(
                 "sandbox.terminal requires experiment_id or sandbox_uid"
             )
-        row = self.registry.fetch_scoped(
+        row = self.repository.fetch_scoped(
             experiment_id=experiment_id, project_id=project_id, sandbox_uid=sandbox_uid
         )
         status = str(row.get("status", "none"))
@@ -151,7 +151,7 @@ class SandboxQueryHandler(SandboxHandler):
         last_command: dict[str, Any] | None = None
         command_status_stale = False
         if unavailable:
-            last_command = self.registry.command_snapshot(row=row)
+            last_command = self.repository.command_snapshot(row=row)
             command_status_stale = last_command is not None
             last_exit_code = (
                 None if last_command is None else last_command.get("exit_code")
@@ -173,7 +173,7 @@ class SandboxQueryHandler(SandboxHandler):
             ):
                 snapshot = {**snapshot, "status": "interrupted"}
             last_command = (
-                self.registry.record_command_snapshot(
+                self.repository.record_command_snapshot(
                     sandbox_uid=sandbox_uid, snapshot=snapshot
                 )
                 if snapshot.get("command_id")
@@ -213,7 +213,7 @@ class SandboxQueryHandler(SandboxHandler):
         if not experiment_id and (not sandbox_uid):
             raise ValidationError("sandbox.runs requires experiment_id or sandbox_uid")
         try:
-            self.registry.fetch_scoped(
+            self.repository.fetch_scoped(
                 experiment_id=experiment_id,
                 project_id=project_id,
                 tenant_id=tenant_id,
@@ -261,11 +261,11 @@ class SandboxQueryHandler(SandboxHandler):
     def _reconcile_runs_targets(self, *, experiment_id: str, sandbox_uid: str) -> None:
         if sandbox_uid:
             try:
-                rows = [self.registry.get_by_uid(sandbox_uid=sandbox_uid)]
+                rows = [self.repository.get_by_uid(sandbox_uid=sandbox_uid)]
             except NotFoundError:
                 rows = []
         else:
-            rows = self.registry.list_by_experiment(experiment_id=experiment_id)
+            rows = self.repository.list_by_experiment(experiment_id=experiment_id)
         for row in rows:
             self.runs_ledger.reconcile_row(row=row)
 
@@ -284,7 +284,7 @@ class SandboxQueryHandler(SandboxHandler):
         sandbox_uid: str | None = None,
     ) -> dict[str, Any] | None:
         try:
-            row = self.registry.fetch_scoped(
+            row = self.repository.fetch_scoped(
                 experiment_id=experiment_id or "",
                 project_id=project_id,
                 sandbox_uid=sandbox_uid,
@@ -294,7 +294,7 @@ class SandboxQueryHandler(SandboxHandler):
         return self.lifecycle.reconcile(row=row)
 
     def rows(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
-        return self.registry.list_rows(project_id=project_id)
+        return self.repository.list_rows(project_id=project_id)
 
     def row_view(self, *, row: dict[str, Any]) -> dict[str, Any]:
         return self._row_view(row=row)

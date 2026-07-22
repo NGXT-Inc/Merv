@@ -46,7 +46,7 @@ application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
 application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery
 application/workflow.py | ProjectDashboardQuery | health | Callable[[], dict[str, object]]
 application/workflow.py | ProjectDashboardQuery | current | RecordQuery
-sandbox/sandboxes.py | SandboxFacade.__init__ | attachment_check | Callable[..., None] | None
+sandbox/facade.py | SandboxFacade.__init__ | attachment_check | Callable[..., None] | None
 kernel/state/dialects.py | PostgresConnection.__init__ | raw | Any
 mlflow/tracking.py | CentralMlflowService.__init__ | health_check | Callable[[], bool] | None
 object_storage/s3_blobs.py | S3BlobStore.__init__ | client | Any | None
@@ -58,7 +58,7 @@ sandbox/execution/backends/thunder_compute/sandbox_backend.py | ThunderComputeSa
 sandbox/handler.py | SandboxHandler.__init__ | host | Any
 sandbox/sandbox_daemons.py | SandboxDaemons.__init__ | sample_metrics | Callable[..., dict[str, Any]] | None
 sandbox/sandbox_daemons.py | SandboxDaemons.__init__ | reconcile_runs | Callable[[], int] | None
-sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | registry | Any
+sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | repository | Any
 sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | sample_metrics | Callable[..., dict[str, Any]]
 sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | reap_row | Callable[..., None]
 sandbox/transcript_cache.py | TranscriptCache.__init__ | clock | Callable[[], float] | None

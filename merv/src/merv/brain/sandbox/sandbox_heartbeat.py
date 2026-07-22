@@ -170,12 +170,12 @@ class SandboxHeartbeatMonitor:
     def __init__(
         self,
         *,
-        registry: Any,
+        repository: Any,
         sample_metrics: Callable[..., dict[str, Any]],
         reap_row: Callable[..., None],
         policy: SandboxIdlePolicy | None = None,
     ) -> None:
-        self.registry = registry
+        self.repository = repository
         self.sample_metrics = sample_metrics
         self.reap_row = reap_row
         self.policy = policy or SandboxIdlePolicy()
@@ -187,7 +187,7 @@ class SandboxHeartbeatMonitor:
             return 0
         now_dt = now or datetime.now(tz=UTC)
         reaped = 0
-        for row in self.registry.list_running_rows():
+        for row in self.repository.list_running_rows():
             try:
                 if self._tick_row(
                     row=row, now=now_dt, threshold_seconds=threshold_seconds
@@ -207,7 +207,7 @@ class SandboxHeartbeatMonitor:
         metrics = self._sample(row=row, experiment_id=experiment_id)
         if not isinstance(metrics, dict):
             return False
-        previous_record = self.registry.heartbeat_snapshot(row=row)
+        previous_record = self.repository.heartbeat_snapshot(row=row)
         previous = (
             previous_record.get("metrics")
             if isinstance(previous_record, dict)
@@ -220,7 +220,7 @@ class SandboxHeartbeatMonitor:
         )
         idle_since = parse_iso(row.get("idle_since"))
         if not isinstance(previous, dict) or previous_at is None:
-            self.registry.record_heartbeat(
+            self.repository.record_heartbeat(
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
                 idle_since=None,
@@ -235,7 +235,7 @@ class SandboxHeartbeatMonitor:
         next_idle_since = self.policy.next_idle_since(
             idle_since=idle_since, now=now, is_idle=is_idle
         )
-        self.registry.record_heartbeat(
+        self.repository.record_heartbeat(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             idle_since=format_iso(next_idle_since) if next_idle_since else None,

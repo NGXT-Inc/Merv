@@ -17,7 +17,7 @@ class SandboxMaintenanceHandler(SandboxHandler):
 
     def reconcile_running_rows(self) -> int:
         left_running = 0
-        for row in self.registry.list_running_rows():
+        for row in self.repository.list_running_rows():
             try:
                 fresh = self.lifecycle.reconcile(row=row)
             except Exception:

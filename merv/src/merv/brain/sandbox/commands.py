@@ -57,7 +57,7 @@ class SandboxCommandHandler(SandboxHandler):
             self.attachment_check(attachment_id=experiment_id, project_id=project_id)
         if experiment_id:
             try:
-                existing = self.registry.load_row(experiment_id=experiment_id)
+                existing = self.repository.load_row(experiment_id=experiment_id)
             except NotFoundError:
                 existing = None
         else:
@@ -65,10 +65,10 @@ class SandboxCommandHandler(SandboxHandler):
             additional = False
         requested_uid = (sandbox_uid or "").strip()
         sandbox_uid = requested_uid or (
-            self.registry.new_sandbox_uid()
+            self.repository.new_sandbox_uid()
             if additional
             else str(
-                (existing or {}).get("sandbox_uid") or self.registry.new_sandbox_uid()
+                (existing or {}).get("sandbox_uid") or self.repository.new_sandbox_uid()
             )
         )
         supplied_public_key = (
@@ -93,23 +93,23 @@ class SandboxCommandHandler(SandboxHandler):
                 is not False
             )
         ):
-            self.registry.touch_alive(
+            self.repository.touch_alive(
                 experiment_id=experiment_id,
                 sandbox_uid=str(existing.get("sandbox_uid") or ""),
             )
             row = self.lifecycle.refresh_endpoint(
-                row=self.registry.get_by_uid(
+                row=self.repository.get_by_uid(
                     sandbox_uid=str(existing.get("sandbox_uid") or "")
                 )
             )
-            self.registry.emit_event(
+            self.repository.emit_event(
                 project_id=project_id,
                 event_type="sandbox.reused",
                 experiment_id=experiment_id,
                 payload={
                     "sandbox_id": existing["sandbox_id"],
                     "sandbox_uid": existing.get("sandbox_uid", ""),
-                    "active_experiment_ids": self.registry.active_experiment_ids(
+                    "active_experiment_ids": self.repository.active_experiment_ids(
                         sandbox_uid=str(existing.get("sandbox_uid") or "")
                     ),
                 },
@@ -129,7 +129,7 @@ class SandboxCommandHandler(SandboxHandler):
             )
         self.quotas.check_admission(
             request=AdmissionRequest(
-                tenant_id=self.registry.tenant_for_project(project_id=project_id),
+                tenant_id=self.repository.tenant_for_project(project_id=project_id),
                 time_limit_seconds=int(time_limit),
                 price_usd_per_hour=self._price_for_instance(
                     instance_type=instance_type, region=region, provider=caps.name
@@ -165,7 +165,7 @@ class SandboxCommandHandler(SandboxHandler):
             create_new=additional,
         )
         job.done.wait(timeout=self.request_wait_seconds)
-        row = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
         reused = False if row.get("status") == "running" else None
         self._deliver_secrets_once(row=row, experiment_id=experiment_id)
         result = self._agent_result(
@@ -190,7 +190,7 @@ class SandboxCommandHandler(SandboxHandler):
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
         try:
-            source_row = self.registry.get_by_uid(sandbox_uid=sandbox_uid)
+            source_row = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
         except NotFoundError as exc:
             raise NotFoundError(f"sandbox not found: {sandbox_uid}") from exc
         if source_row.get("project_id") != project_id:
@@ -204,13 +204,13 @@ class SandboxCommandHandler(SandboxHandler):
             raise ValidationError("sandbox.attach requires a live sandbox")
         if self.attachment_check is not None:
             self.attachment_check(attachment_id=experiment_id, project_id=project_id)
-        row = self.registry.attach(
+        row = self.repository.attach(
             sandbox_uid=sandbox_uid, experiment_id=experiment_id, project_id=project_id
         )
-        active_experiment_ids = self.registry.active_experiment_ids(
+        active_experiment_ids = self.repository.active_experiment_ids(
             sandbox_uid=sandbox_uid
         )
-        self.registry.emit_event(
+        self.repository.emit_event(
             project_id=project_id,
             event_type="sandbox.attached",
             experiment_id=experiment_id,
@@ -244,7 +244,7 @@ class SandboxCommandHandler(SandboxHandler):
         seconds = int(seconds)
         if seconds <= 0 or seconds > 1800:
             raise ValidationError("sandbox.extend seconds must be between 1 and 1800")
-        row = self.registry.fetch_scoped(
+        row = self.repository.fetch_scoped(
             experiment_id=experiment_id,
             project_id=project_id,
             tenant_id=tenant_id,
@@ -272,7 +272,7 @@ class SandboxCommandHandler(SandboxHandler):
         resolved_project_id = str(row.get("project_id") or project_id or "")
         tenant = str(
             row.get("tenant_id")
-            or self.registry.tenant_for_project(project_id=resolved_project_id)
+            or self.repository.tenant_for_project(project_id=resolved_project_id)
         )
         price = row.get("price_usd_per_hour")
         self.quotas.check_lifetime_extension(
@@ -281,15 +281,15 @@ class SandboxCommandHandler(SandboxHandler):
             price_usd_per_hour=float(price) if price is not None else None,
         )
         if not self.activity_policy.is_active_snapshot(
-            snapshot=self.registry.heartbeat_snapshot(row=row),
-            command=self.registry.command_snapshot(row=row),
+            snapshot=self.repository.heartbeat_snapshot(row=row),
+            command=self.repository.command_snapshot(row=row),
         ):
             raise ValidationError(
                 "sandbox.extend requires a running command or active heartbeat metrics"
             )
         old_expires_at = str(row.get("expires_at") or "")
         new_expires_at = format_iso(expires_at + timedelta(seconds=seconds))
-        updated = self.registry.extend_lifetime(
+        updated = self.repository.extend_lifetime(
             sandbox_uid=str(row.get("sandbox_uid") or ""),
             expires_at=new_expires_at,
             time_limit=new_limit,
@@ -297,7 +297,7 @@ class SandboxCommandHandler(SandboxHandler):
         resolved_experiment_id = experiment_id or str(
             updated.get("experiment_id") or ""
         )
-        self.registry.emit_event(
+        self.repository.emit_event(
             project_id=resolved_project_id,
             event_type="sandbox.lifetime_extended",
             experiment_id=resolved_experiment_id,
@@ -332,14 +332,14 @@ class SandboxCommandHandler(SandboxHandler):
             raise ValidationError(
                 "sandbox.release requires experiment_id or sandbox_uid"
             )
-        row = self.registry.fetch_scoped(
+        row = self.repository.fetch_scoped(
             experiment_id=experiment_id, project_id=project_id, sandbox_uid=sandbox_uid
         )
         targets = [row]
         if experiment_id and (not sandbox_uid):
             rows = [
                 item
-                for item in self.registry.list_by_experiment(
+                for item in self.repository.list_by_experiment(
                     experiment_id=experiment_id
                 )
                 if item.get("project_id") == row.get("project_id")
@@ -422,12 +422,12 @@ class SandboxCommandHandler(SandboxHandler):
         )
         self.lifecycle.apply(row=row, decision=decision)
         if outcome == "maybe_alive":
-            view = self._row_view(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
+            view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
             view["hint"] = (
                 "Release did NOT complete: the provider terminate call failed and the VM may still be running (and billing). The sandbox stays active; retry sandbox.release, or the expiry reaper will retry at the deadline."
             )
             return view
-        view = self._row_view(row=self.registry.get_by_uid(sandbox_uid=sandbox_uid))
+        view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
         if was_active:
             view["hint"] = (
                 "Sandbox terminated. The VM and files on it are gone. Only files the agent explicitly copied or uploaded before release remain durable."

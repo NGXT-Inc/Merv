@@ -55,7 +55,7 @@ class SandboxRunsTest(unittest.TestCase):
             {"project_id": self.project_id, "experiment_id": self.experiment_id},
         )
         self.sandbox_uid = view["sandbox_uid"]
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=self.sandbox_uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
         self.sandbox_id = str(row["sandbox_id"])
 
     def tearDown(self) -> None:

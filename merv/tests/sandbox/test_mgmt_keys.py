@@ -178,7 +178,7 @@ class DualKeyProvisionTest(unittest.TestCase):
     def test_row_records_a_mgmt_key_ref_but_never_key_material(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         self.assertEqual(row["mgmt_key_ref"], row["sandbox_uid"])
         private_key = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=row["sandbox_uid"]).read_text()
         for value in row.values():
@@ -187,7 +187,7 @@ class DualKeyProvisionTest(unittest.TestCase):
     def test_release_drops_the_management_keypair_with_the_sandbox(self) -> None:
         exp_id = self._experiment()
         self.call("sandbox.request", project_id=self.project_id, experiment_id=exp_id)
-        row = self.app.sandboxes.registry.load_row(experiment_id=exp_id)
+        row = self.app.sandboxes.repository.load_row(experiment_id=exp_id)
         key_path = self.app.sandboxes.mgmt_keys.key_path(sandbox_uid=row["sandbox_uid"])
         self.assertTrue(key_path.exists())
         self.call(

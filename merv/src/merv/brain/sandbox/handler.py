@@ -140,7 +140,7 @@ class SandboxHandler:
         sandbox_uid = str(row.get("sandbox_uid") or "")
         if not sandbox_uid:
             return []
-        return self.registry.active_experiment_ids(sandbox_uid=sandbox_uid)
+        return self.repository.active_experiment_ids(sandbox_uid=sandbox_uid)
 
     def _with_active_experiment_ids(self, *, row: dict[str, Any]) -> dict[str, Any]:
         out = dict(row)

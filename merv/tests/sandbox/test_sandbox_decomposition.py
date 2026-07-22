@@ -2,7 +2,7 @@
 
 Behavior is covered by test_sandbox_service.py; this file guards the
 *structure* so the machinery doesn't quietly grow back into the facade:
-the facade owns the public verbs and delegates rows to SandboxRegistry,
+the facade owns the public verbs and delegates rows to SandboxRepository,
 job threads to SandboxProvisioner, every destructive decision (liveness
 policy, VM termination, terminal marks + teardown, reconcile, reaping) to
 SandboxLifecycle — the single owner of status transitions — control-owned task
@@ -35,12 +35,12 @@ from merv.brain.sandbox.sandbox_heartbeat import (
 from merv.brain.sandbox.sandbox_lifecycle import SandboxLifecycle
 from merv.brain.sandbox.sandbox_metrics import SandboxMetrics
 from merv.brain.sandbox.sandbox_provisioner import SandboxProvisioner
-from merv.brain.sandbox.sandbox_registry import SandboxRegistry
-from merv.brain.sandbox.sandboxes import SandboxService
+from merv.brain.sandbox.repository import SandboxRepository
+from merv.brain.sandbox.facade import SandboxService
 from merv.brain.kernel.utils import ValidationError
 from tests.paths import BACKEND_ROOT, IMPORT_ROOT
 
-FACADE = BACKEND_ROOT / "sandbox" / "sandboxes.py"
+FACADE = BACKEND_ROOT / "sandbox" / "facade.py"
 
 
 def _import_modules(path: Path) -> set[str]:
@@ -71,7 +71,7 @@ class SandboxDecompositionTest(unittest.TestCase):
 
     def test_facade_wires_the_collaborators(self) -> None:
         service = self.app.sandboxes
-        self.assertIsInstance(service.registry, SandboxRegistry)
+        self.assertIsInstance(service.repository, SandboxRepository)
         self.assertIsInstance(service.lifecycle, SandboxLifecycle)
         self.assertIsInstance(service.provisioner, SandboxProvisioner)
         self.assertIsInstance(service.worker, ControlSandboxWorker)
@@ -79,42 +79,42 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIsInstance(service.daemons, SandboxDaemons)
         self.assertIsInstance(service.daemons.heartbeat, SandboxHeartbeatMonitor)
         self.assertIsInstance(service.daemons.heartbeat.policy, SandboxIdlePolicy)
-        # The registry is persistence-only: no outward hook — terminal marks
+        # The repository is persistence-only: no outward hook — terminal marks
         # run teardown through the lifecycle, the single owner of transitions.
-        self.assertFalse(hasattr(service.registry, "on_terminal"))
+        self.assertFalse(hasattr(service.repository, "on_terminal"))
         # The one inversion left: the lifecycle's provisioning-job probe.
         self.assertIsNotNone(service.lifecycle.job_probe)
         self.assertEqual(service.lifecycle.job_probe, service.provisioner.job_is_live)
-        # All collaborators share the one registry (single writer of rows) and
+        # All collaborators share the one repository (single writer of rows) and
         # the one lifecycle (single owner of transitions).
-        self.assertIs(service.lifecycle.registry, service.registry)
-        self.assertIs(service.provisioner.registry, service.registry)
+        self.assertIs(service.lifecycle.repository, service.repository)
+        self.assertIs(service.provisioner.repository, service.repository)
         self.assertIs(service.provisioner.lifecycle, service.lifecycle)
-        self.assertIs(service.daemons.registry, service.registry)
+        self.assertIs(service.daemons.repository, service.repository)
         self.assertIs(service.daemons.lifecycle, service.lifecycle)
-        self.assertIs(service.daemons.heartbeat.registry, service.registry)
-        self.assertIs(service.metrics.registry, service.registry)
+        self.assertIs(service.daemons.heartbeat.repository, service.repository)
+        self.assertIs(service.metrics.repository, service.repository)
         self.assertIs(service.worker, self.app.worker)
 
     def test_lifecycle_is_the_only_writer_of_terminal_marks(self) -> None:
-        # Every registry.mark_* call outside the lifecycle would skip teardown
+        # Every repository.mark_* call outside the lifecycle would skip teardown
         # (mgmt-key removal + the data-plane teardown task); every direct
         # backend.terminate outside it would skip the liveness confirmation
         # that keeps billing VMs from being stranded behind terminated rows.
         lifecycle_src = (FACADE.parent / "sandbox_lifecycle.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("registry.mark_terminated", lifecycle_src)
-        self.assertIn("registry.mark_failed", lifecycle_src)
+        self.assertIn("repository.mark_terminated", lifecycle_src)
+        self.assertIn("repository.mark_failed", lifecycle_src)
         for module in (
-            "sandboxes.py",
+            "facade.py",
             "commands.py",
             "sandbox_provisioner.py",
             "sandbox_daemons.py",
         ):
             source = (FACADE.parent / module).read_text(encoding="utf-8")
-            self.assertNotIn("registry.mark_terminated", source, module)
-            self.assertNotIn("registry.mark_failed", source, module)
+            self.assertNotIn("repository.mark_terminated", source, module)
+            self.assertNotIn("repository.mark_failed", source, module)
             self.assertNotIn("backend.terminate", source, module)
             self.assertNotIn(
                 "cleanup_orphan(",
@@ -241,7 +241,6 @@ class SandboxDecompositionTest(unittest.TestCase):
         ):
             self.assertNotIn(policy, source)
         for attribute in (
-            "registry",
             "repository",
             "lifecycle",
             "provisioner",
@@ -254,7 +253,7 @@ class SandboxDecompositionTest(unittest.TestCase):
             self.assertIn(f"self.{attribute} =", source)
 
     def test_repository_owns_workflow_row_reads(self) -> None:
-        repository = (FACADE.parent / "sandbox_registry.py").read_text(encoding="utf-8")
+        repository = (FACADE.parent / "repository.py").read_text(encoding="utf-8")
         queries = (FACADE.parent / "queries.py").read_text(encoding="utf-8")
         self.assertIn("def rows_for_experiment(", repository)
         self.assertIn("def rows_for_project(", repository)
@@ -264,7 +263,7 @@ class SandboxDecompositionTest(unittest.TestCase):
     def test_facade_import_does_not_load_proxy_modules(self) -> None:
         code = """
 import sys
-import merv.brain.sandbox.sandboxes
+import merv.brain.sandbox.facade
 loaded = sorted(
     name for name in sys.modules
     if name == "merv.proxy" or name.startswith("merv.proxy.")
@@ -283,15 +282,15 @@ if loaded:
         self.assertEqual(facade_hints["worker"].__name__, "SandboxWorker")
         self.assertNotIn("worker", provisioner_hints)
 
-    def test_registry_module_stays_dependency_free(self) -> None:
-        # The registry must not import its consumers (no cycles, no backend,
+    def test_repository_module_stays_dependency_free(self) -> None:
+        # The repository must not import its consumers (no cycles, no backend,
         # no local paths — rows are cloud-bound records).
-        source = (FACADE.parent / "sandbox_registry.py").read_text(encoding="utf-8")
+        source = (FACADE.parent / "repository.py").read_text(encoding="utf-8")
         for forbidden in (
             "sandbox_provisioner",
             "sandbox_daemons",
-            "import sandboxes",
-            "from .sandboxes",
+            "import facade",
+            "from .facade",
             "workspace",
             "repo_root",
         ):

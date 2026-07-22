@@ -90,7 +90,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
     def _seed_expired_running_sandbox(self, app) -> tuple[str, str, str]:
         # Seed a running, already-expired sandbox row directly (the provision
         # handshake is exercised elsewhere; here we test crash recovery of an
-        # existing running row). The registry is the cloud's row authority.
+        # existing running row). The repository is the cloud's row authority.
         project_id = app.tools.call_tool("project", {"action": "create", "name": "Cloud Project"})["id"]
         exp_id = app.tools.call_tool(
             "experiment.create",
@@ -101,7 +101,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
                 "UPDATE experiments SET status = 'running' WHERE id = ?", (exp_id,)
             )
         sandbox_uid = "uid_recovery"
-        app.sandboxes.registry.upsert(
+        app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=project_id,

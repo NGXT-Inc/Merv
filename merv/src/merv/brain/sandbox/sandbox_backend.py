@@ -60,7 +60,7 @@ class CapacityUnavailableError(BackendUnavailableError):
     """
 
 
-# Provisioning progress callbacks. The registry passes these to acquire() so it
+# Provisioning progress callbacks. The repository passes these to acquire() so it
 # can persist the sandbox id the instant it exists, before the slow SSH wait.
 OnPhase = Callable[[str, str], None]      # (phase, detail)
 OnCreated = Callable[[str, str], None]    # (sandbox_id, sandbox_name)

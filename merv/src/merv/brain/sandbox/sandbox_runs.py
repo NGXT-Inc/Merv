@@ -1,6 +1,6 @@
 """Brain-side mirror of merv_run receipts: reconcile, persist, notify.
 
-The sandbox filesystem is the registry (merv_run writes .runs/<label>/ sentinel
+The sandbox filesystem is the repository (merv_run writes .runs/<label>/ sentinel
 files); this ledger pulls that state over the management channel the brain
 already holds and keeps the `sandbox_runs` table as its durable mirror, so a
 run's outcome survives the agent session AND the sandbox. run.finished is
@@ -29,12 +29,12 @@ class SandboxRunLedger:
         self,
         *,
         store: BaseStateStore,
-        registry: SandboxRepository,
+        repository: SandboxRepository,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
     ) -> None:
         self.store = store
-        self.registry = registry
+        self.repository = repository
         self.backend = backend
         self.mgmt_keys = mgmt_keys
 
@@ -47,7 +47,7 @@ class SandboxRunLedger:
         an empty answer). Returns how many rows answered.
         """
         reconciled = 0
-        for row in self.registry.list_running_rows():
+        for row in self.repository.list_running_rows():
             try:
                 if self.reconcile_row(row=row):
                     reconciled += 1

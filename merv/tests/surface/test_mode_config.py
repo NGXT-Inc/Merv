@@ -260,7 +260,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
         backend.alive["sbx_primary"] = True
         backend.alive["sbx_extra"] = True
         for uid, sid in (("uid_primary", "sbx_primary"), ("uid_extra", "sbx_extra")):
-            self.app.sandboxes.registry.upsert(
+            self.app.sandboxes.repository.upsert(
                 experiment_id=exp_id,
                 sandbox_uid=uid,
                 project_id=project_id,

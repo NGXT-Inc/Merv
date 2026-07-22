@@ -220,7 +220,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         idle_since: datetime,
         metrics: dict,
     ) -> None:
-        self.app.sandboxes.registry.record_heartbeat(
+        self.app.sandboxes.repository.record_heartbeat(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             idle_since=format_iso(idle_since),
@@ -299,7 +299,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
 class SandboxHeartbeatEnvTest(unittest.TestCase):
     def _daemons(self) -> SandboxDaemons:
         return SandboxDaemons(
-            registry=object(),  # type: ignore[arg-type]
+            repository=object(),  # type: ignore[arg-type]
             backend=FakeSandboxBackend(),
             provisioner=object(),  # type: ignore[arg-type]
             lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]

@@ -477,6 +477,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("class ProjectDashboardQuery:", query)
         self.assertIn("snapshots: ResearchSnapshots", query)
         self.assertIn("sandboxes: SandboxReads", query)
+        self.assertIn("from .ports.sandbox import SandboxReads", query)
+        self.assertNotIn("from ..sandbox.facade import SandboxReads", query)
 
         reader = _rc_source("snapshots.py")
         self.assertIn("class ResearchSnapshotReader:", reader)
@@ -594,10 +596,10 @@ class ServiceLayoutTest(unittest.TestCase):
         )
         self.assertNotIn(
             "sandbox_mgmt_keys",
-            _import_segments(BACKEND_ROOT / "sandbox" / "sandboxes.py"),
+            _import_segments(BACKEND_ROOT / "sandbox" / "facade.py"),
         )
         self.assertFalse((SERVICES / "sandbox_mgmt_keys.py").exists())
-        self.assertNotIn("class QuotaAdmission", _sandbox_source("sandboxes.py"))
+        self.assertNotIn("class QuotaAdmission", _sandbox_source("facade.py"))
         self.assertNotIn(
             "class ControlPlaneView", _sandbox_source("sandbox_daemons.py")
         )
@@ -1038,7 +1040,7 @@ class ServiceLayoutTest(unittest.TestCase):
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
         for path in (
             ARTIFACTS_ROOT / "resources.py",
-            BACKEND_ROOT / "sandbox" / "sandboxes.py",
+            BACKEND_ROOT / "sandbox" / "facade.py",
         ):
             with self.subTest(module=path.name):
                 source = path.read_text(encoding="utf-8")

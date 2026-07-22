@@ -79,7 +79,7 @@ class DaemonDiesMidProvisionTest(_Base):
         # the daemon died — the row is wedged before running.
         exp_id = self._experiment()
         sandbox_uid = "uid_billing"
-        self.app.sandboxes.registry.upsert(
+        self.app.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=self.project_id,
@@ -96,7 +96,7 @@ class DaemonDiesMidProvisionTest(_Base):
         report = self.cleanup.run_all(now=now)
 
         self.assertEqual(report.stale_provisions_reaped, 1)
-        row = self.app.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(row["status"], "failed")
         # The billing VM was terminated — no forever-billing orphan.
         self.assertIn("sb-billing", self.backend.terminated)
@@ -158,7 +158,7 @@ class ControlRestartTest(unittest.TestCase):
             {"project_id": project_id, "name": "exp-x", "intent": "y"},
         )["id"]
         sandbox_uid = "uid_dead_restart"
-        first.sandboxes.registry.upsert(
+        first.sandboxes.repository.upsert(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
             project_id=project_id,
@@ -183,7 +183,7 @@ class ControlRestartTest(unittest.TestCase):
             sandboxes=restarted.sandboxes, blobs=restarted._blobs
         )
         reaped = cleanup.sweep_orphan_vms()
-        row = restarted.sandboxes.registry.get_by_uid(sandbox_uid=sandbox_uid)
+        row = restarted.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
         self.assertEqual(
             row["status"],
             "terminated",

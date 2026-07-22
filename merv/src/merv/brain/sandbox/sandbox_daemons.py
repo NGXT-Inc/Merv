@@ -31,7 +31,7 @@ class SandboxDaemons:
     def __init__(
         self,
         *,
-        registry: SandboxRepository,
+        repository: SandboxRepository,
         backend: SandboxBackend,
         provisioner: ProvisionReaper,
         lifecycle: SandboxLifecycle,
@@ -40,7 +40,7 @@ class SandboxDaemons:
         idle_policy: SandboxIdlePolicy | None = None,
         force_expiry_reaper: bool = False,
     ) -> None:
-        self.registry = registry
+        self.repository = repository
         self.backend = backend
         self.provisioner = provisioner
         self.lifecycle = lifecycle
@@ -54,7 +54,7 @@ class SandboxDaemons:
         # False and keep the env off-switch (the user owns their own bill).
         self.force_expiry_reaper = bool(force_expiry_reaper)
         self.heartbeat = SandboxHeartbeatMonitor(
-            registry=registry,
+            repository=repository,
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
             reap_row=lifecycle.reap_row,
             policy=idle_policy,
