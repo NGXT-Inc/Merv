@@ -12,6 +12,7 @@ from merv.brain.kernel.state.activity import (
     ActivityLogger,
     cap_result,
 )
+from merv.brain.surface.control.control_runtime import ControlActivitySink
 
 
 class CapResultTest(unittest.TestCase):
@@ -75,6 +76,10 @@ class TailReadTest(unittest.TestCase):
             enabled=True,
             mirror_stderr=False,
         )
+
+    def test_control_sink_reuses_the_canonical_tool_event_methods(self) -> None:
+        self.assertIs(ControlActivitySink.tool_ok, ActivityLogger.tool_ok)
+        self.assertIs(ControlActivitySink.tool_error, ActivityLogger.tool_error)
 
     def test_recent_returns_most_recent_within_limit(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

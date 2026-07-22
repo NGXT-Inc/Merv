@@ -55,54 +55,8 @@ ID_KEYS = {
 }
 
 
-class ActivityLogger:
-    """Writes compact JSONL events without owning domain state."""
-
-    def __init__(
-        self,
-        *,
-        repo_root: Path,
-        log_path: Path | None = None,
-        enabled: bool | None = None,
-        mirror_stderr: bool | None = None,
-    ) -> None:
-        self.repo_root = repo_root
-        self.enabled = env_bool("RESEARCH_PLUGIN_ACTIVITY_LOG", default=True) if enabled is None else enabled
-        self.mirror_stderr = (
-            env_bool("RESEARCH_PLUGIN_ACTIVITY_STDERR", default=False)
-            if mirror_stderr is None
-            else mirror_stderr
-        )
-        configured = env_value("MERV_ACTIVITY_LOG_PATH")
-        explicit = log_path if log_path is not None else (Path(configured) if configured else None)
-        if explicit is not None and not explicit.is_absolute():
-            explicit = repo_root / explicit
-        # Default path resolves per-write (see project_dirs: never cache).
-        self._explicit_log_path = explicit
-
-    @property
-    def log_path(self) -> Path:
-        if self._explicit_log_path is not None:
-            return self._explicit_log_path
-        return resolve_project_state_dir(self.repo_root) / "activity.jsonl"
-
-    def emit(self, *, event_type: str, payload: dict[str, Any]) -> None:
-        if not self.enabled:
-            return
-        event = {
-            "ts": now_iso(),
-            "event": event_type,
-            **payload,
-        }
-        line = json.dumps(event, sort_keys=True, separators=(",", ":"))
-        if self._explicit_log_path is None:
-            ensure_project_state_dir(self.repo_root)
-        else:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.log_path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-        if self.mirror_stderr:
-            print(line, file=sys.stderr, flush=True)
+class ToolActivityEmitter:
+    """Shared tool-call event shaping for activity sinks."""
 
     def tool_ok(
         self,
@@ -157,6 +111,56 @@ class ActivityLogger:
                 "received_chars": len(error or ""),
             },
         )
+
+
+class ActivityLogger(ToolActivityEmitter):
+    """Writes compact JSONL events without owning domain state."""
+
+    def __init__(
+        self,
+        *,
+        repo_root: Path,
+        log_path: Path | None = None,
+        enabled: bool | None = None,
+        mirror_stderr: bool | None = None,
+    ) -> None:
+        self.repo_root = repo_root
+        self.enabled = env_bool("RESEARCH_PLUGIN_ACTIVITY_LOG", default=True) if enabled is None else enabled
+        self.mirror_stderr = (
+            env_bool("RESEARCH_PLUGIN_ACTIVITY_STDERR", default=False)
+            if mirror_stderr is None
+            else mirror_stderr
+        )
+        configured = env_value("MERV_ACTIVITY_LOG_PATH")
+        explicit = log_path if log_path is not None else (Path(configured) if configured else None)
+        if explicit is not None and not explicit.is_absolute():
+            explicit = repo_root / explicit
+        # Default path resolves per-write (see project_dirs: never cache).
+        self._explicit_log_path = explicit
+
+    @property
+    def log_path(self) -> Path:
+        if self._explicit_log_path is not None:
+            return self._explicit_log_path
+        return resolve_project_state_dir(self.repo_root) / "activity.jsonl"
+
+    def emit(self, *, event_type: str, payload: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        event = {
+            "ts": now_iso(),
+            "event": event_type,
+            **payload,
+        }
+        line = json.dumps(event, sort_keys=True, separators=(",", ":"))
+        if self._explicit_log_path is None:
+            ensure_project_state_dir(self.repo_root)
+        else:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        if self.mirror_stderr:
+            print(line, file=sys.stderr, flush=True)
 
     def http_request(self, *, method: str, path: str, status: int, duration_ms: int) -> None:
         payload = dict(method=method, path=path, status=status, duration_ms=duration_ms)

@@ -10,17 +10,16 @@ from typing import Any
 
 from ...kernel.state.tool_call_stats import by_tool, tool_call_totals
 from ...kernel.state.activity import (
-    cap_result,
+    ToolActivityEmitter,
     effective_source,
     is_event_ok,
     payload_chars,
     redact_sensitive,
-    summarize_arguments,
 )
 from ...kernel.utils import ValidationError, now_iso, parse_iso
 
 
-class ControlActivitySink:
+class ControlActivitySink(ToolActivityEmitter):
     """Bounded in-memory activity sink for the unified brain composition."""
 
     log_path = "<control-activity-disabled>"
@@ -35,54 +34,6 @@ class ControlActivitySink:
         with self._lock:
             self._events.append(event)
             del self._events[: max(0, len(self._events) - self.max_events)]
-
-    def tool_ok(
-        self,
-        *,
-        source: str,
-        tool: str,
-        arguments: dict[str, Any],
-        duration_ms: int,
-        result: dict[str, Any],
-    ) -> None:
-        self.emit(
-            event_type="tool.call",
-            payload={
-                "source": source,
-                "tool": tool,
-                "status": "ok",
-                "duration_ms": duration_ms,
-                "args": summarize_arguments(arguments=arguments),
-                "result": cap_result(value=result),
-                "sent_chars": payload_chars(value=arguments),
-                "received_chars": payload_chars(value=result),
-            },
-        )
-
-    def tool_error(
-        self,
-        *,
-        source: str,
-        tool: str,
-        arguments: dict[str, Any],
-        duration_ms: int,
-        error: str,
-        error_code: str = "",
-    ) -> None:
-        self.emit(
-            event_type="tool.call",
-            payload={
-                "source": source,
-                "tool": tool,
-                "status": "error",
-                "duration_ms": duration_ms,
-                "error": error,
-                "error_code": error_code,
-                "args": summarize_arguments(arguments=arguments),
-                "sent_chars": payload_chars(value=arguments),
-                "received_chars": len(error or ""),
-            },
-        )
 
     def recent(
         self,
