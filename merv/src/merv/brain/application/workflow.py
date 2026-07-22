@@ -18,7 +18,11 @@ from ..research_core.facade import (
 from ..sandbox.facade import SandboxReads
 from .experiments.presentation import project_fields, project_rows, rich_experiment_state
 from .ports.storage import ProducedObjectCatalog
-from .status_guidance import StatusGuidancePolicy
+from .status_guidance import (
+    StatusGuidancePolicy,
+    _SLIM_RESOURCE_FIELDS,
+    _SLIM_REVIEW_FIELDS,
+)
 
 Record = dict[str, Any]
 RecordQuery = Callable[..., Record]
@@ -32,16 +36,6 @@ _EXPERIMENT_PRIORITY = {
 }
 _PROCESS_PRIORITY = {"running": 0, "provisioning": 1}
 _STATUS_EXPERIMENT_FIELDS = ("id", "name", "intent", "status", "attempt_index")
-_SLIM_RESOURCE_FIELDS = (
-    "id",
-    "association_role",
-    "association_version_id",
-    "path",
-    "kind",
-    "missing",
-    "size_bytes",
-)
-_SLIM_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "synopsis")
 _SANDBOX_SUMMARY_FIELDS = (
     "sandbox_id",
     "status",
