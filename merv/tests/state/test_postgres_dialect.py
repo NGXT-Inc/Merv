@@ -62,6 +62,9 @@ from tests.surface.test_control_plane_contract import (
     ControlPlaneContractScenarios,
     InProcessControlPlaneClient,
 )
+from tests.sandbox.test_sandbox_event_contract import (
+    SandboxRepositoryEventContractScenarios,
+)
 
 
 CONTAINER = "rp-test-postgres-dialect"
@@ -246,6 +249,14 @@ class PostgresControlPlaneContractTest(
     """(b) The Phase 3 scenario corpus, services unchanged, store swapped."""
 
     harness_factory = staticmethod(_postgres_harness)
+
+
+@unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
+class PostgresSandboxRepositoryEventContractTest(
+    SandboxRepositoryEventContractScenarios, unittest.TestCase
+):
+    def setUp(self) -> None:
+        self.store = PostgresStateStore(dsn=_reset_database())
 
 
 @unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
