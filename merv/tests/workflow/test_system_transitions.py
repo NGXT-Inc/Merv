@@ -109,11 +109,10 @@ class SandboxDrivenTransitionTest(SystemTransitionTestBase):
     def test_sandbox_code_has_no_raw_experiment_writes(self) -> None:
         # The boundary itself: sandbox services must not UPDATE/INSERT the
         # experiments table.
-        source = (BACKEND_ROOT / "sandbox" / "sandboxes.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("UPDATE experiments", source)
-        self.assertNotIn("INSERT INTO experiments", source)
+        for path in sorted((BACKEND_ROOT / "sandbox").rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("UPDATE experiments", source, path.name)
+            self.assertNotIn("INSERT INTO experiments", source, path.name)
 
 
 class GateTableConsistencyTest(SystemTransitionTestBase):
