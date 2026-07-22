@@ -27,7 +27,7 @@ class MlflowSnapshotError(RuntimeError):
 def finite_metric_value(value: Any) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
 
@@ -60,7 +60,7 @@ def snapshot_mlflow(
             captured: list[dict[str, Any]] = []
             for experiment in experiments[:MAX_EXPERIMENTS]:
                 experiment_id = str(experiment.get("experiment_id") or "")
-                runs = _search_runs(client, base, experiment_id)
+                runs = _search_runs(client, base, (experiment_id,))
                 if not runs:
                     continue
                 captured.append(
@@ -81,44 +81,61 @@ def snapshot_mlflow(
     return {"source": "mlflow", "base_url": base, "experiments": captured} if captured else None
 
 
-def search_mlflow_experiments(
-    base_url: str, *, name_like: str
-) -> list[dict[str, Any]]:
-    """Search experiment metadata once without fetching any runs."""
+def snapshot_mlflow_project(
+    base_url: str, *, name_like: str, experiment_names: frozenset[str]
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]] | None]:
+    """Read namespace rows and selected run records in two requests."""
     base = (base_url or "").split("#", 1)[0].rstrip("/")
     if not base:
-        return []
+        return [], {}
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
-            response = client.get(
-                f"{base}/api/2.0/mlflow/experiments/search",
-                params={
-                    "max_results": MAX_EXPERIMENT_SCAN,
-                    "filter": "name LIKE '" + name_like.replace("'", "\\'") + "'",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+            rows = _search_experiments(client, base, name_like=name_like)
+            selected = {
+                external_id: []
+                for row in rows
+                if str(row.get("name") or "") in experiment_names
+                and (external_id := str(row.get("experiment_id") or ""))
+            }
+            if not selected:
+                return rows, {}
+            try:
+                runs = _search_runs(client, base, tuple(selected))
+            except Exception:  # noqa: BLE001 - retain the successful namespace read
+                return rows, None
+            for run in runs:
+                info = run.get("info") or {}
+                if not isinstance(info, dict):
+                    continue
+                bucket = selected.get(str(info.get("experiment_id") or ""))
+                if bucket is None or len(bucket) >= MAX_RUNS:
+                    continue
+                try:
+                    bucket.append(_run_record(client, base, run, include_history=False))
+                except (AttributeError, TypeError, ValueError):
+                    continue
     except Exception as exc:  # noqa: BLE001 - normalized for the tracking facade
-        raise MlflowSnapshotError("MLflow experiment search failed") from exc
-    return [
-        experiment
-        for experiment in (payload.get("experiments") or [])
-        if isinstance(experiment, dict)
-    ]
+        raise MlflowSnapshotError("MLflow project snapshot failed") from exc
+    return rows, selected
 
 
 def _search_experiments(
-    client: httpx.Client, base: str, *, experiment_name: str = ""
+    client: httpx.Client,
+    base: str,
+    *,
+    experiment_name: str = "",
+    name_like: str = "",
 ) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"max_results": MAX_EXPERIMENT_SCAN}
     if experiment_name:
         params["filter"] = "name = '" + experiment_name.replace("'", "\\'") + "'"
+    elif name_like:
+        params["filter"] = "name LIKE '" + name_like.replace("'", "\\'") + "'"
     try:
         response = client.get(f"{base}/api/2.0/mlflow/experiments/search", params=params)
         response.raise_for_status()
     except Exception:
-        if not experiment_name:
+        if not (experiment_name or name_like):
             raise
         response = client.get(
             f"{base}/api/2.0/mlflow/experiments/search",
@@ -132,25 +149,32 @@ def _search_experiments(
         experiments = [
             e for e in experiments if str(e.get("name") or "") == experiment_name
         ]
+    elif name_like.endswith("%"):
+        prefix = name_like[:-1]
+        experiments = [
+            e for e in experiments if str(e.get("name") or "").startswith(prefix)
+        ]
     return experiments
 
 
 def _search_runs(
-    client: httpx.Client, base: str, experiment_id: str
+    client: httpx.Client, base: str, experiment_ids: tuple[str, ...]
 ) -> list[dict[str, Any]]:
-    if not experiment_id:
+    ids = tuple(experiment_id for experiment_id in experiment_ids if experiment_id)
+    if not ids:
         return []
+    max_results = MAX_RUNS * len(ids)
     response = client.post(
         f"{base}/api/2.0/mlflow/runs/search",
         json={
-            "experiment_ids": [experiment_id],
+            "experiment_ids": list(ids),
             "order_by": ["attributes.start_time DESC"],
-            "max_results": MAX_RUNS,
+            "max_results": max_results,
         },
     )
     response.raise_for_status()
     runs = response.json().get("runs") or []
-    return [run for run in runs if isinstance(run, dict)][:MAX_RUNS]
+    return [run for run in runs if isinstance(run, dict)][:max_results]
 
 
 def _run_record(

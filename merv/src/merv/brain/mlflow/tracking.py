@@ -25,8 +25,8 @@ from ..application.ports.tracking import (
 )
 from .metrics import (
     MlflowSnapshotError,
-    search_mlflow_experiments,
     snapshot_mlflow,
+    snapshot_mlflow_project,
 )
 from .config import (
     MLFLOW_AGENT_USERNAME,
@@ -573,33 +573,57 @@ class CentralMlflowService:
             result["dashboard_experiment_url"] = drill_url
         return result
 
-    def namespace_experiments(self, *, project_id: str) -> list[dict[str, object]]:
-        """List experiment metadata under one project's MLflow namespace."""
+    def project_results_snapshot(
+        self, *, project_id: str, experiment_ids: tuple[str, ...]
+    ) -> tuple[dict[str, dict[str, object]], list[dict[str, object]], str]:
+        """Read one project's overview in a constant number of remote calls."""
         read_uri = self.server_uri or self.tracking_uri
         if not read_uri:
-            return []
+            return {}, [], self._unconfigured_note()
+        expected = {
+            _tracking_experiment_name(project_id=project_id, experiment_id=item)
+            for item in experiment_ids
+            if item
+        }
         try:
-            experiments = search_mlflow_experiments(
-                read_uri, name_like=f"{_TRACKING_NAMESPACE_PREFIX}/{project_id}/%"
+            rows, runs_by_external_id = snapshot_mlflow_project(
+                read_uri,
+                name_like=f"{_TRACKING_NAMESPACE_PREFIX}/{project_id}/%",
+                experiment_names=frozenset(expected),
             )
         except MlflowSnapshotError:
-            return []
-        result: list[dict[str, object]] = []
-        for experiment in experiments:
-            experiment_id = str(experiment.get("experiment_id") or "")
-            name = str(experiment.get("name") or "")
-            if not experiment_id or not name:
+            return {}, [], "MLflow unreachable."
+        namespace: list[dict[str, object]] = []
+        snapshots: dict[str, dict[str, object]] = {}
+        run_failed = runs_by_external_id is None
+        runs_by_external_id = runs_by_external_id or {}
+        for row in rows:
+            external_id = str(row.get("experiment_id") or "")
+            name = str(row.get("name") or "")
+            if not external_id or not name:
                 continue
             entry: dict[str, object] = {
                 "name": name,
-                "experiment_id": experiment_id,
+                "experiment_id": external_id,
             }
-            if self.dashboard_url:
-                entry["dashboard_experiment_url"] = (
-                    f"{self.dashboard_url}/#/experiments/{experiment_id}"
-                )
-            result.append(entry)
-        return result
+            if url := self._experiment_url(external_id):
+                entry["dashboard_experiment_url"] = url
+            namespace.append(entry)
+            runs = runs_by_external_id.get(external_id)
+            if name in expected and runs:
+                snapshots[name] = {
+                    "experiment_id": external_id,
+                    "name": name,
+                    "last_update_time": row.get("last_update_time"),
+                    "runs": runs,
+                }
+        return snapshots, namespace, "MLflow unreachable." if run_failed else ""
+
+    def namespace_experiments(self, *, project_id: str) -> list[dict[str, object]]:
+        """List experiment metadata under one project's MLflow namespace."""
+        return self.project_results_snapshot(
+            project_id=project_id, experiment_ids=()
+        )[1]
 
     def _dashboard_experiment_url(
         self, snapshot: dict[str, object], experiment_name: str
@@ -609,17 +633,20 @@ class CentralMlflowService:
         The backend owns the namespace→URL mapping so UI surfaces never have to
         reconstruct MLflow's ``#/experiments/<numeric_id>`` route themselves.
         """
-        if not self.dashboard_url:
-            return ""
         experiments = snapshot.get("experiments") if isinstance(snapshot, dict) else None
-        numeric_id = ""
-        for entry in experiments or []:
-            if str(entry.get("name") or "") == experiment_name:
-                numeric_id = str(entry.get("experiment_id") or "")
-                break
-        if not numeric_id and experiments:
-            numeric_id = str(experiments[0].get("experiment_id") or "")
-        return f"{self.dashboard_url}/#/experiments/{numeric_id}" if numeric_id else ""
+        entries = [entry for entry in experiments or [] if isinstance(entry, dict)]
+        match = next(
+            (entry for entry in entries if entry.get("name") == experiment_name),
+            entries[0] if entries else {},
+        )
+        return self._experiment_url(str(match.get("experiment_id") or ""))
+
+    def _experiment_url(self, experiment_id: str) -> str:
+        return (
+            f"{self.dashboard_url}/#/experiments/{experiment_id}"
+            if self.dashboard_url and experiment_id
+            else ""
+        )
 
     def _reachable(self) -> bool:
         if self._health_check is not None:

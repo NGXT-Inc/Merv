@@ -30,11 +30,13 @@ RecordsQuery = Callable[..., list[Record]]
 class TrackingOverview(Protocol):
     def health(self) -> dict[str, object]: ...
 
+    def project_results_snapshot(
+        self, *, project_id: str, experiment_ids: tuple[str, ...]
+    ) -> tuple[dict[str, Record], list[Record], str]: ...
+
     def results_metrics(
         self, *, project_id: str, experiment_id: str, include_history: bool = True
     ) -> Record: ...
-
-    def namespace_experiments(self, *, project_id: str) -> list[Record]: ...
 
 
 class ExperimentSummaries(Protocol):
@@ -56,42 +58,60 @@ class MlflowOverviewQuery:
     def __call__(self, *, project_id: str) -> Record:
         health = self.tracking.health()
         unreachable = health.get("reachable") is False
+        experiments = self.experiments(project_id=project_id)
+        snapshots, namespace, failure_hint = (
+            ({}, [], "MLflow unreachable.")
+            if unreachable
+            else self.tracking.project_results_snapshot(
+                project_id=project_id,
+                experiment_ids=tuple(
+                    str(item["id"]) for item in experiments if item.get("id")
+                ),
+            )
+        )
+        namespace_by_name = {
+            str(entry.get("name") or ""): entry for entry in namespace
+        }
         items: list[Record] = []
-        for experiment in self.experiments(project_id=project_id):
+        for experiment in experiments:
             experiment_id = str(experiment.get("id") or "")
             if not experiment_id:
                 continue
-            metrics = (
-                {
-                    "experiment_id": experiment_id,
-                    "available": False,
-                    "source": "mlflow",
-                    "hint": "MLflow unreachable.",
-                }
-                if unreachable
-                else self.tracking.results_metrics(
-                    project_id=project_id,
-                    experiment_id=experiment_id,
-                    include_history=False,
-                )
+            mlflow_name = tracking_experiment_name(
+                project_id=project_id, experiment_id=experiment_id
             )
+            snapshot = snapshots.get(mlflow_name)
+            namespace_entry = namespace_by_name.get(mlflow_name, {})
+            dashboard_url = (
+                str(namespace_entry.get("dashboard_experiment_url") or "")
+                if snapshot is not None
+                else ""
+            )
+            metrics: Record = {
+                "experiment_id": experiment_id,
+                "available": snapshot is not None,
+                "source": "mlflow",
+            }
+            if snapshot is None:
+                metrics["hint"] = failure_hint or (
+                    "No MLflow runs found for this experiment yet."
+                )
+            else:
+                metrics["experiments"] = [snapshot]
+                if dashboard_url:
+                    metrics["dashboard_experiment_url"] = dashboard_url
             items.append(
                 {
                     "experiment_id": experiment_id,
                     "name": experiment.get("name") or experiment_id,
                     "status": experiment.get("status") or "",
                     "intent": experiment.get("intent") or "",
-                    "mlflow_experiment_name": tracking_experiment_name(
-                        project_id=project_id, experiment_id=experiment_id
-                    ),
-                    "dashboard_experiment_url": metrics.get("dashboard_experiment_url", ""),
+                    "mlflow_experiment_name": mlflow_name,
+                    "dashboard_experiment_url": dashboard_url,
                     "metrics": metrics,
                 }
             )
         expected_names = {str(item["mlflow_experiment_name"]) for item in items}
-        namespace = [] if unreachable else self.tracking.namespace_experiments(
-            project_id=project_id
-        )
         return {
             "mlflow": health,
             "experiments": items,

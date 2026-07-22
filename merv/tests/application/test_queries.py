@@ -38,13 +38,32 @@ class RecordingTracking:
             "dashboard_experiment_url": "https://tracking.test/#/experiments/7",
         }
 
-    def namespace_experiments(self, **kwargs):
-        self.calls.append(("namespace_experiments", kwargs))
+    def project_results_snapshot(self, **kwargs):
+        self.calls.append(("project_results_snapshot", kwargs))
         project_id = kwargs["project_id"]
-        return [
-            {"name": f"merv/{project_id}/exp_1", "experiment_id": "7"},
-            {"name": f"merv/{project_id}/stray", "experiment_id": "8"},
-        ]
+        experiment_ids = kwargs["experiment_ids"]
+        return (
+            {
+                f"merv/{project_id}/{experiment_id}": {
+                    "experiment_id": str(index),
+                    "name": f"merv/{project_id}/{experiment_id}",
+                    "runs": [{"run_id": f"run_{index}"}],
+                }
+                for index, experiment_id in enumerate(experiment_ids, start=7)
+            },
+            [
+                {
+                    "name": f"merv/{project_id}/{experiment_id}",
+                    "experiment_id": str(index),
+                    "dashboard_experiment_url": (
+                        f"https://tracking.test/#/experiments/{index}"
+                    ),
+                }
+                for index, experiment_id in enumerate(experiment_ids, start=7)
+            ]
+            + [{"name": f"merv/{project_id}/stray", "experiment_id": "8"}],
+            "",
+        )
 
 
 class GraphResearch:
@@ -335,15 +354,55 @@ class ApplicationQueryTest(unittest.TestCase):
         )
         self.assertIn(
             (
-                "results_metrics",
+                "project_results_snapshot",
                 {
                     "project_id": "proj_1",
-                    "experiment_id": "exp_1",
-                    "include_history": False,
+                    "experiment_ids": ("exp_1",),
                 },
             ),
             tracking.calls,
         )
+
+    def test_mlflow_overview_uses_two_adapter_calls_for_one_and_twenty_five(self) -> None:
+        for count in (1, 25):
+            with self.subTest(count=count):
+                tracking = RecordingTracking()
+                summaries = [
+                    {
+                        "id": f"exp_{index:02d}",
+                        "name": f"Experiment {index}",
+                        "status": "running",
+                        "intent": f"Measure {index}",
+                    }
+                    for index in range(count)
+                ]
+
+                result = MlflowOverviewQuery(
+                    experiments=RecordingQuery(summaries), tracking=tracking
+                )(project_id="proj_1")
+
+                expected_ids = tuple(item["id"] for item in summaries)
+                self.assertEqual(
+                    tracking.calls,
+                    [
+                        ("health", {}),
+                        (
+                            "project_results_snapshot",
+                            {
+                                "project_id": "proj_1",
+                                "experiment_ids": expected_ids,
+                            },
+                        ),
+                    ],
+                )
+                self.assertEqual(
+                    [item["experiment_id"] for item in result["experiments"]],
+                    list(expected_ids),
+                )
+                self.assertEqual(
+                    result["unmapped_mlflow_experiments"],
+                    [{"name": "merv/proj_1/stray", "experiment_id": "8"}],
+                )
 
     def test_mlflow_overview_short_circuits_an_unreachable_adapter(self) -> None:
         tracking = RecordingTracking(reachable=False)
@@ -365,6 +424,77 @@ class ApplicationQueryTest(unittest.TestCase):
         )
         self.assertEqual(result["unmapped_mlflow_experiments"], [])
         self.assertEqual(tracking.calls, [("health", {})])
+
+    def test_mlflow_overview_distinguishes_batch_failure_from_no_runs(self) -> None:
+        class SparseTracking(RecordingTracking):
+            def __init__(self, hint):
+                super().__init__()
+                self.hint = hint
+
+            def project_results_snapshot(self, **kwargs):
+                self.calls.append(("project_results_snapshot", kwargs))
+                return (
+                    {},
+                    [
+                        {
+                            "name": "merv/proj_1/exp_1",
+                            "experiment_id": "7",
+                            "dashboard_experiment_url": (
+                                "https://tracking.test/#/experiments/7"
+                            ),
+                        },
+                        {"name": "merv/proj_1/stray", "experiment_id": "8"},
+                    ],
+                    self.hint,
+                )
+
+        for failure_hint, expected_hint in (
+            ("", "No MLflow runs found for this experiment yet."),
+            ("MLflow unreachable.", "MLflow unreachable."),
+        ):
+            with self.subTest(failure_hint=failure_hint):
+                result = MlflowOverviewQuery(
+                    experiments=RecordingQuery([{"id": "exp_1"}]),
+                    tracking=SparseTracking(failure_hint),
+                )(project_id="proj_1")
+
+                self.assertEqual(
+                    result["experiments"][0]["metrics"]["hint"], expected_hint
+                )
+                self.assertEqual(
+                    result["experiments"][0]["dashboard_experiment_url"], ""
+                )
+                self.assertNotIn(
+                    "dashboard_experiment_url",
+                    result["experiments"][0]["metrics"],
+                )
+                self.assertEqual(
+                    result["unmapped_mlflow_experiments"],
+                    [{"name": "merv/proj_1/stray", "experiment_id": "8"}],
+                )
+
+    def test_mlflow_overview_reads_namespace_for_an_empty_research_project(self) -> None:
+        tracking = RecordingTracking()
+
+        result = MlflowOverviewQuery(
+            experiments=RecordingQuery([]), tracking=tracking
+        )(project_id="proj_1")
+
+        self.assertEqual(
+            tracking.calls,
+            [
+                ("health", {}),
+                (
+                    "project_results_snapshot",
+                    {"project_id": "proj_1", "experiment_ids": ()},
+                ),
+            ],
+        )
+        self.assertEqual(result["experiments"], [])
+        self.assertEqual(
+            result["unmapped_mlflow_experiments"],
+            [{"name": "merv/proj_1/stray", "experiment_id": "8"}],
+        )
 
     def test_figure_gathers_review_and_sandbox_facts_before_projection(self) -> None:
         experiment = {

@@ -10,6 +10,7 @@ from merv.brain.mlflow.metrics import (
     MlflowSnapshotError,
     downsample_history,
     snapshot_mlflow,
+    snapshot_mlflow_project,
 )
 
 
@@ -35,6 +36,9 @@ class FakeClient:
         self.history = history or {}
         self.fail = fail
         self.history_calls = 0
+        self.get_calls = []
+        self.post_calls = []
+        self.calls = []
 
     def __enter__(self):
         return self
@@ -43,6 +47,8 @@ class FakeClient:
         return False
 
     def get(self, url, params=None):
+        self.get_calls.append((url, params or {}))
+        self.calls.append(("GET", url))
         if self.fail:
             raise OSError("connection refused")
         if url.endswith("/experiments/search"):
@@ -59,11 +65,21 @@ class FakeClient:
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, json=None):
+        self.post_calls.append((url, json or {}))
+        self.calls.append(("POST", url))
         if self.fail:
             raise OSError("connection refused")
         if url.endswith("/runs/search"):
-            experiment_id = (json or {}).get("experiment_ids", [""])[0]
-            return FakeResponse({"runs": self.runs.get(experiment_id, [])})
+            experiment_ids = (json or {}).get("experiment_ids", [])
+            return FakeResponse(
+                {
+                    "runs": [
+                        run
+                        for experiment_id in experiment_ids
+                        for run in self.runs.get(experiment_id, [])
+                    ]
+                }
+            )
         raise AssertionError(f"unexpected POST {url}")
 
 
@@ -127,6 +143,20 @@ class SnapshotMlflowTest(unittest.TestCase):
         self.assertEqual(run["history"]["acc"], [[10, 0.85], [20, 0.91]])
         self.assertIsNone(run["metrics"]["bad"]["last"])
         self.assertNotIn("bad", run["history"])
+        self.assertEqual(
+            [call[1]["experiment_ids"] for call in client.post_calls],
+            [["0"], ["1"]],
+        )
+        self.assertEqual(
+            [(method, url.rsplit("/", 1)[-1]) for method, url in client.calls],
+            [
+                ("GET", "search"),
+                ("POST", "search"),
+                ("POST", "search"),
+                ("GET", "get-history"),
+                ("GET", "get-history"),
+            ],
+        )
         # The whole record must be strict JSON (no NaN literals).
         json.loads(json.dumps(snapshot, allow_nan=False))
 
@@ -181,6 +211,164 @@ class SnapshotMlflowTest(unittest.TestCase):
         run = snapshot["experiments"][0]["runs"][0]
         self.assertNotIn("history", run)
         self.assertEqual(client.history_calls, 0)
+
+    def test_project_snapshot_batches_one_and_twenty_five_run_searches(self) -> None:
+        for count in (1, 25):
+            with self.subTest(count=count):
+                experiments = [
+                    {
+                        "experiment_id": str(index),
+                        "name": f"merv/proj/exp_{index:02d}",
+                        "last_update_time": index,
+                    }
+                    for index in range(count, 0, -1)
+                ]
+                client = FakeClient(
+                    experiments=experiments,
+                    runs={
+                        str(index): [
+                            {
+                                "info": {
+                                    "experiment_id": str(index),
+                                    "run_id": f"run_{index}",
+                                    "start_time": index,
+                                },
+                                "data": {
+                                    "metrics": [
+                                        {"key": "score", "value": float(index)}
+                                    ]
+                                },
+                            }
+                        ]
+                        for index in range(1, count + 1)
+                    }
+                )
+
+                with _client_patch(client):
+                    rows, runs_by_external_id = snapshot_mlflow_project(
+                        "http://mlflow",
+                        name_like="merv/proj/%",
+                        experiment_names=frozenset(
+                            experiment["name"] for experiment in experiments
+                        ),
+                    )
+
+                expected_external_ids = [
+                    str(index) for index in range(count, 0, -1)
+                ]
+                self.assertEqual(
+                    [item["experiment_id"] for item in rows],
+                    expected_external_ids,
+                )
+                self.assertIsNotNone(runs_by_external_id)
+                self.assertEqual(
+                    list(runs_by_external_id), expected_external_ids
+                )
+                self.assertEqual(len(client.post_calls), 1)
+                self.assertEqual(len(client.get_calls), 1)
+                self.assertEqual(
+                    client.get_calls[0][1],
+                    {
+                        "max_results": 1000,
+                        "filter": "name LIKE 'merv/proj/%'",
+                    },
+                )
+                self.assertEqual(
+                    client.post_calls[0][1]["experiment_ids"],
+                    expected_external_ids,
+                )
+                self.assertEqual(
+                    client.post_calls[0][1]["max_results"], count * 50
+                )
+                self.assertEqual(client.history_calls, 0)
+                self.assertTrue(
+                    all(
+                        "history" not in runs[0]
+                        for runs in runs_by_external_id.values()
+                    )
+                )
+
+    def test_empty_research_selection_still_discovers_namespace_without_runs(self) -> None:
+        client = FakeClient(
+            experiments=[{"experiment_id": "1", "name": "merv/proj/stray"}]
+        )
+
+        with _client_patch(client):
+            rows, runs_by_external_id = snapshot_mlflow_project(
+                "http://mlflow",
+                name_like="merv/proj/%",
+                experiment_names=frozenset(),
+            )
+
+        self.assertEqual(rows, client.experiments)
+        self.assertEqual(runs_by_external_id, {})
+        self.assertEqual(len(client.get_calls), 1)
+        self.assertEqual(client.post_calls, [])
+
+    def test_project_snapshot_isolates_malformed_run_rows(self) -> None:
+        experiments = [
+            {"experiment_id": "1", "name": "merv/proj/good"},
+            {"experiment_id": "2", "name": "merv/proj/bad"},
+        ]
+        client = FakeClient(
+            experiments=experiments,
+            runs={
+                "1": [{"info": {"experiment_id": "1", "run_id": "ok"}}],
+                "2": [
+                    {"info": ["invalid"]},
+                    {"info": {"experiment_id": "2"}, "data": ["invalid"]},
+                ],
+            }
+        )
+
+        with _client_patch(client):
+            rows, runs_by_external_id = snapshot_mlflow_project(
+                "http://mlflow",
+                name_like="merv/proj/%",
+                experiment_names=frozenset(
+                    experiment["name"] for experiment in experiments
+                ),
+            )
+
+        self.assertEqual(rows, experiments)
+        self.assertIsNotNone(runs_by_external_id)
+        self.assertEqual(len(runs_by_external_id["1"]), 1)
+        self.assertEqual(runs_by_external_id["1"][0]["run_id"], "ok")
+        self.assertEqual(runs_by_external_id["2"], [])
+
+    def test_project_snapshot_survives_an_oversized_metric_value(self) -> None:
+        experiments = [{"experiment_id": "1", "name": "merv/proj/exp"}]
+        client = FakeClient(
+            experiments=experiments,
+            runs={
+                "1": [
+                    {
+                        "info": {"experiment_id": "1", "run_id": "huge"},
+                        "data": {
+                            "metrics": [{"key": "loss", "value": 10**400}]
+                        },
+                    },
+                    {
+                        "info": {"experiment_id": "1", "run_id": "good"},
+                        "data": {"metrics": [{"key": "loss", "value": 0.25}]},
+                    },
+                ]
+            },
+        )
+
+        with _client_patch(client):
+            rows, runs_by_external_id = snapshot_mlflow_project(
+                "http://mlflow",
+                name_like="merv/proj/%",
+                experiment_names=frozenset({"merv/proj/exp"}),
+            )
+
+        self.assertEqual(rows, experiments)
+        self.assertIsNotNone(runs_by_external_id)
+        runs = runs_by_external_id["1"]
+        self.assertEqual([run["run_id"] for run in runs], ["huge", "good"])
+        self.assertIsNone(runs[0]["metrics"]["loss"]["last"])
+        self.assertEqual(runs[1]["metrics"]["loss"]["last"], 0.25)
 
     def test_run_discloses_metric_key_cap(self) -> None:
         metrics = [

@@ -266,23 +266,194 @@ class MlflowTrackingServiceTest(unittest.TestCase):
             server_uri="http://mlflow:5000",
             dashboard_url="https://mlflow.test",
         )
+        rows = [
+            {"name": "merv/proj/exp", "experiment_id": "7"},
+            {"name": "merv/proj/stray", "experiment_id": "8"},
+        ]
         with patch(
-            "merv.brain.mlflow.tracking.search_mlflow_experiments",
-            return_value=[
-                {"name": "merv/proj/exp", "experiment_id": "7"},
-                {"name": "merv/proj/stray", "experiment_id": "8"},
-            ],
-        ) as search:
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project",
+            return_value=(rows, {}),
+        ) as snapshot_project:
             experiments = service.namespace_experiments(project_id="proj")
 
-        search.assert_called_once_with(
-            "http://mlflow:5000", name_like="merv/proj/%"
+        snapshot_project.assert_called_once_with(
+            "http://mlflow:5000",
+            name_like="merv/proj/%",
+            experiment_names=frozenset(),
         )
         self.assertEqual(experiments[1]["name"], "merv/proj/stray")
         self.assertEqual(
             experiments[1]["dashboard_experiment_url"],
             "https://mlflow.test/#/experiments/8",
         )
+
+    def test_project_results_snapshot_is_sparse_and_preserves_namespace_order(self) -> None:
+        service = CentralMlflowService(
+            server_uri="http://mlflow:5000",
+            dashboard_url="https://mlflow.test",
+        )
+        experiment_ids = tuple(f"exp_{index:02d}" for index in range(25))
+        rows = [
+            {
+                "name": f"merv/proj/{experiment_id}",
+                "experiment_id": str(index + 1),
+            }
+            for index, experiment_id in enumerate(experiment_ids)
+        ]
+        rows.append({"name": "merv/proj/stray", "experiment_id": "99"})
+        runs_by_external_id = {
+            str(index + 1): [
+                {
+                    "run_id": f"run_{index}",
+                    "metrics": {"score": {"last": float(index)}},
+                }
+            ]
+            for index, _row in enumerate(rows[:-1])
+            if index % 2 == 0
+        }
+
+        with patch(
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project",
+            return_value=(rows, runs_by_external_id),
+        ) as snapshot_project:
+            captured, namespace, hint = service.project_results_snapshot(
+                project_id="proj", experiment_ids=experiment_ids
+            )
+
+        snapshot_project.assert_called_once_with(
+            "http://mlflow:5000",
+            name_like="merv/proj/%",
+            experiment_names=frozenset(
+                f"merv/proj/{experiment_id}" for experiment_id in experiment_ids
+            ),
+        )
+        self.assertEqual(
+            list(captured),
+            [f"merv/proj/exp_{index:02d}" for index in range(0, 25, 2)],
+        )
+        self.assertEqual(captured["merv/proj/exp_00"]["experiment_id"], "1")
+        self.assertEqual(hint, "")
+        self.assertEqual(
+            namespace[0]["dashboard_experiment_url"],
+            "https://mlflow.test/#/experiments/1",
+        )
+        self.assertNotIn("merv/proj/exp_01", captured)
+        self.assertEqual(namespace[-1]["name"], "merv/proj/stray")
+        self.assertEqual(
+            namespace[-1]["dashboard_experiment_url"],
+            "https://mlflow.test/#/experiments/99",
+        )
+
+    def test_project_results_snapshot_uses_three_remote_calls_for_one_and_twenty_five(
+        self,
+    ) -> None:
+        for count in (1, 25):
+            with self.subTest(count=count):
+                rows = [
+                    {
+                        "name": f"merv/proj/exp_{index:02d}",
+                        "experiment_id": str(index + 1),
+                    }
+                    for index in range(count)
+                ]
+                runs = [
+                    {
+                        "info": {
+                            "experiment_id": str(index + 1),
+                            "run_id": f"run_{index}",
+                        },
+                        "data": {"metrics": []},
+                    }
+                    for index in range(count)
+                ]
+                client = MagicMock()
+                client.__enter__.return_value = client
+                client.get.return_value = _JsonResponse({"experiments": rows})
+                client.post.return_value = _JsonResponse({"runs": runs})
+                service = CentralMlflowService(server_uri="http://mlflow:5000")
+
+                with (
+                    patch(
+                        "merv.brain.mlflow.tracking.httpx.get",
+                        return_value=_JsonResponse({}),
+                    ) as health_get,
+                    patch(
+                        "merv.brain.mlflow.metrics.httpx.Client",
+                        return_value=client,
+                    ),
+                ):
+                    self.assertTrue(service.health()["reachable"])
+                    captured, _namespace, hint = service.project_results_snapshot(
+                        project_id="proj",
+                        experiment_ids=tuple(
+                            f"exp_{index:02d}" for index in range(count)
+                        ),
+                    )
+
+                self.assertEqual(len(captured), count)
+                self.assertEqual(hint, "")
+                self.assertEqual(health_get.call_count, 1)
+                self.assertEqual(client.get.call_count, 1)
+                self.assertEqual(client.post.call_count, 1)
+                self.assertEqual(
+                    client.post.call_args.kwargs["json"]["experiment_ids"],
+                    [str(index + 1) for index in range(count)],
+                )
+
+    def test_project_results_snapshot_preserves_namespace_when_run_batch_fails(self) -> None:
+        service = CentralMlflowService(server_uri="http://mlflow:5000")
+        rows = [{"name": "merv/proj/exp", "experiment_id": "7"}]
+
+        with patch(
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project",
+            return_value=(rows, None),
+        ) as snapshot_project:
+            captured, namespace, hint = service.project_results_snapshot(
+                project_id="proj", experiment_ids=("exp",)
+            )
+
+        snapshot_project.assert_called_once_with(
+            "http://mlflow:5000",
+            name_like="merv/proj/%",
+            experiment_names=frozenset({"merv/proj/exp"}),
+        )
+        self.assertEqual(captured, {})
+        self.assertEqual(hint, "MLflow unreachable.")
+        self.assertEqual(namespace, [{"name": "merv/proj/exp", "experiment_id": "7"}])
+
+    def test_project_results_snapshot_namespace_failure_is_fail_closed(self) -> None:
+        service = CentralMlflowService(server_uri="http://mlflow:5000")
+
+        with patch(
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project",
+            side_effect=MlflowSnapshotError("namespace failed"),
+        ) as snapshot_project:
+            captured, namespace, hint = service.project_results_snapshot(
+                project_id="proj", experiment_ids=("exp",)
+            )
+
+        snapshot_project.assert_called_once_with(
+            "http://mlflow:5000",
+            name_like="merv/proj/%",
+            experiment_names=frozenset({"merv/proj/exp"}),
+        )
+        self.assertEqual(captured, {})
+        self.assertEqual(namespace, [])
+        self.assertEqual(hint, "MLflow unreachable.")
+
+    def test_project_results_snapshot_preserves_unconfigured_note(self) -> None:
+        service = CentralMlflowService(note="Tracking intentionally disabled.")
+        with patch(
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project"
+        ) as snapshot_project:
+            captured, namespace, hint = service.project_results_snapshot(
+                project_id="proj", experiment_ids=("exp",)
+            )
+
+        snapshot_project.assert_not_called()
+        self.assertEqual(captured, {})
+        self.assertEqual(namespace, [])
+        self.assertEqual(hint, "Tracking intentionally disabled.")
 
     def test_create_run_creates_experiment_and_returns_resume_identity(self) -> None:
         service = CentralMlflowService(

@@ -448,6 +448,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             ],
         }
 
+        namespace_rows = [
+            {"name": f"merv/{project_id}/{exp_id}", "experiment_id": "7"},
+            {"name": f"merv/{project_id}/stray", "experiment_id": "8"},
+        ]
         namespace = [
             {
                 "name": f"merv/{project_id}/{exp_id}",
@@ -460,16 +464,11 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 "dashboard_experiment_url": "https://mlflow.test/#/experiments/8",
             },
         ]
-        with (
-            patch(
-                "merv.brain.mlflow.tracking.snapshot_mlflow", return_value=snapshot
-            ) as snapshot_read,
-            patch.object(
-                self.app.mlflow_tracking,
-                "namespace_experiments",
-                return_value=namespace,
-            ),
-        ):
+        run_record = snapshot["experiments"][0]["runs"][0]
+        with patch(
+            "merv.brain.mlflow.tracking.snapshot_mlflow_project",
+            return_value=(namespace_rows, {"7": [run_record]}),
+        ) as project_snapshot:
             overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
         self.assertTrue(overview["mlflow"]["configured"])
         self.assertEqual(overview["mlflow"]["dashboard_url"], "https://mlflow.test")
@@ -480,12 +479,41 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(item["name"], "exp-ml")
         # Deep link resolves the MLflow numeric id from the matching snapshot.
         self.assertEqual(item["dashboard_experiment_url"], "https://mlflow.test/#/experiments/7")
+        self.assertEqual(
+            list(item["metrics"]),
+            [
+                "experiment_id",
+                "available",
+                "source",
+                "experiments",
+                "dashboard_experiment_url",
+            ],
+        )
+        self.assertEqual(
+            item["metrics"],
+            {
+                "experiment_id": exp_id,
+                "available": True,
+                "source": "mlflow",
+                "experiments": [
+                    {
+                        "experiment_id": "7",
+                        "name": f"merv/{project_id}/{exp_id}",
+                        "last_update_time": None,
+                        "runs": [run_record],
+                    }
+                ],
+                "dashboard_experiment_url": (
+                    "https://mlflow.test/#/experiments/7"
+                ),
+            },
+        )
         run = item["metrics"]["experiments"][0]["runs"][0]
         self.assertNotIn("history", run)
-        snapshot_read.assert_called_once_with(
+        project_snapshot.assert_called_once_with(
             "https://mlflow.test",
-            experiment_name=f"merv/{project_id}/{exp_id}",
-            include_history=False,
+            name_like=f"merv/{project_id}/%",
+            experiment_names=frozenset({f"merv/{project_id}/{exp_id}"}),
         )
         self.assertEqual(
             overview["unmapped_mlflow_experiments"], [namespace[1]]
@@ -505,15 +533,13 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         ))
 
         with (
-            patch.object(self.app.mlflow_tracking, "results_metrics") as metrics,
             patch.object(
-                self.app.mlflow_tracking, "namespace_experiments"
-            ) as namespace,
+                self.app.mlflow_tracking, "project_results_snapshot"
+            ) as project_snapshot,
         ):
             overview = self.request("GET", f"/api/projects/{project_id}/mlflow")
 
-        metrics.assert_not_called()
-        namespace.assert_not_called()
+        project_snapshot.assert_not_called()
         self.assertFalse(overview["mlflow"]["reachable"])
         self.assertFalse(overview["experiments"][0]["metrics"]["available"])
         self.assertEqual(
