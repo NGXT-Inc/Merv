@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from merv.shared.artifact_roles import (
     GATED_ROLE_BYTE_CAPS,
@@ -45,12 +45,21 @@ from .ports import (
     SubmittedEvidence,
 )
 
+_RESOURCE_HYDRATION_BATCH_SIZE = 400
+
 
 def _resubmit_hint(*, role: str, path: str) -> str:
     return (
         f"re-register it (resource.register with role {role!r}) to submit "
         f"the current content of {path}"
     )
+
+
+def _rows_for_ids(*, conn: Connection, query: str, ids: list[str]) -> Iterator[Row]:
+    for start in range(0, len(ids), _RESOURCE_HYDRATION_BATCH_SIZE):
+        batch = ids[start : start + _RESOURCE_HYDRATION_BATCH_SIZE]
+        placeholders = ", ".join("?" for _ in batch)
+        yield from conn.execute(query.format(placeholders=placeholders), batch).fetchall()
 
 
 class ResourceService:
@@ -408,10 +417,14 @@ class ResourceService:
                 page_params.append(2_147_483_647)
                 page_params.append(int(offset))
             rows = conn.execute(query, page_params).fetchall()
-            resources = [
-                self._hydrate_resource(row=row, conn=conn, compact=compact)
-                for row in rows
-            ]
+            resources = (
+                [
+                    self._hydrate_resource(row=row, conn=conn, compact=True)
+                    for row in rows
+                ]
+                if compact
+                else self._hydrate_resource_page(rows=rows, conn=conn)
+            )
             returned = len(resources)
             return {
                 "resources": resources,
@@ -745,27 +758,59 @@ class ResourceService:
             # Lean projection: omit associations + the heavy nested current_version.
             # version_token is kept so callers can detect changes cheaply.
             return {k: data.get(k) for k in self._COMPACT_FIELDS}
-        assoc_rows = conn.execute(
-            """
-            SELECT target_type, target_id, role, attempt_index, version_id
-            FROM resource_associations
-            WHERE resource_id = ?
-            ORDER BY target_type, role, attempt_index
+        return self._hydrate_resource_page(rows=[row], conn=conn)[0]
+
+    def _hydrate_resource_page(self, *, rows: list[Row], conn: Connection) -> list[dict[str, Any]]:
+        resources = [row_to_dict(row=row) or {} for row in rows]
+        if not resources:
+            return resources
+        resource_ids = [str(resource["id"]) for resource in resources]
+        version_ids = list(dict.fromkeys(
+            str(resource["current_version_id"]) for resource in resources
+            if resource.get("current_version_id")
+        ))
+        versions: dict[str, dict[str, Any]] = {}
+        for row in _rows_for_ids(
+            conn=conn,
+            query="SELECT * FROM resource_versions WHERE id IN ({placeholders})",
+            ids=version_ids,
+        ):
+            version = row_to_dict(row=row) or {}
+            version["associations"] = []
+            versions[str(version["id"])] = version
+        resource_associations = {str(resource["id"]): [] for resource in resources}
+        for row in _rows_for_ids(
+            conn=conn,
+            query="""
+                SELECT resource_id, target_type, target_id, role, attempt_index,
+                       version_id FROM resource_associations
+                WHERE resource_id IN ({placeholders})
+                ORDER BY target_type, role, attempt_index
             """,
-            (data["id"],),
-        ).fetchall()
-        data["associations"] = rows_to_dicts(rows=assoc_rows)
-        if data.get("current_version_id"):
-            row = conn.execute(
-                "SELECT * FROM resource_versions WHERE id = ?",
-                (data["current_version_id"],),
-            ).fetchone()
-            data["current_version"] = (
-                self._hydrate_version(row=row, conn=conn) if row else None
-            )
-        else:
-            data["current_version"] = None
-        return data
+            ids=resource_ids,
+        ):
+            association = row_to_dict(row=row) or {}
+            resource_id = str(association.pop("resource_id"))
+            resource_associations[resource_id].append(association)
+        for row in _rows_for_ids(
+            conn=conn,
+            query="""
+                SELECT version_id, target_type, target_id, role, attempt_index,
+                       created_at FROM resource_associations
+                WHERE version_id IN ({placeholders})
+                ORDER BY target_type, role, attempt_index
+            """,
+            ids=version_ids,
+        ):
+            association = row_to_dict(row=row) or {}
+            version_id = str(association.pop("version_id"))
+            if version_id in versions:
+                versions[version_id]["associations"].append(association)
+        for resource in resources:
+            resource["associations"] = resource_associations[str(resource["id"])]
+            current_id = str(resource.get("current_version_id") or "")
+            resource["current_version"] = versions.get(current_id)
+        return resources
 
     def _repo_relative_path(self, *, path: str) -> str:
         if not path:
