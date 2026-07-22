@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import socket
 import time
@@ -165,22 +164,6 @@ class VmSshSandboxBackend(SandboxBackendBase):
         hands these to write_secrets. Empty when none are configured.
         """
         return sandbox_tokens()
-
-    def sandbox_environment(self) -> dict:
-        available_tokens: list[str] = []
-        if os.environ.get("HF_TOKEN"):
-            available_tokens.append("HF_TOKEN")
-        return {
-            "available_tokens": available_tokens,
-            "notes": (
-                [
-                    "HF_TOKEN is available inside the sandbox for Hugging Face downloads. "
-                    "Do not print or write the token; use it through Hugging Face tooling."
-                ]
-                if available_tokens
-                else []
-            ),
-        }
 
     def _wait_for_ssh(self, *, host: str, port: int = 22) -> None:
         deadline = time.monotonic() + self.config.poll_timeout_seconds

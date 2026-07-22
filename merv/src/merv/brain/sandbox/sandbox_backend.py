@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
@@ -303,6 +304,20 @@ class SandboxBackendBase:
         """Single-provider default: one backend serves every request."""
         _ = provider
         return self.capabilities
+
+    def sandbox_environment(self) -> dict[str, Any]:
+        available_tokens = ["HF_TOKEN"] if os.environ.get("HF_TOKEN") else []
+        return {
+            "available_tokens": available_tokens,
+            "notes": (
+                [
+                    "HF_TOKEN is available inside the sandbox for Hugging Face downloads. "
+                    "Do not print or write the token; use it through Hugging Face tooling."
+                ]
+                if available_tokens
+                else []
+            ),
+        }
 
     def sample_metrics(
         self,

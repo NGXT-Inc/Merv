@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from merv.brain.sandbox.execution.backends.modal.sandbox_backend import (
+    ModalSandboxBackend,
+)
+from merv.brain.sandbox.execution.backends.vm_ssh_backend import VmSshSandboxBackend
 from merv.brain.sandbox.execution.driver_registry import (
     SANDBOX_DRIVER_REGISTRY,
     sandbox_driver_inventory,
@@ -144,6 +148,41 @@ class SandboxBackendContractTest(unittest.TestCase):
             backend.write_secrets(sandbox_id="sb", secrets={"TOKEN": "value"})
         )
         self.assertIsNone(backend.shutdown())
+
+    def test_vm_and_modal_share_exact_token_environment_default(self) -> None:
+        backend = VmSshSandboxBackend()
+        note = (
+            "HF_TOKEN is available inside the sandbox for Hugging Face downloads. "
+            "Do not print or write the token; use it through Hugging Face tooling."
+        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                backend.sandbox_environment(),
+                {"available_tokens": [], "notes": []},
+            )
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "secret"}, clear=True):
+            self.assertEqual(
+                backend.sandbox_environment(),
+                {"available_tokens": ["HF_TOKEN"], "notes": [note]},
+            )
+
+        self.assertIs(
+            VmSshSandboxBackend.sandbox_environment,
+            SandboxBackendBase.sandbox_environment,
+        )
+        self.assertIs(
+            ModalSandboxBackend.sandbox_environment,
+            SandboxBackendBase.sandbox_environment,
+        )
+        self.assertIs(ModalSandboxBackend.shutdown, SandboxBackendBase.shutdown)
+        self.assertIsNot(
+            FakeSandboxBackend.sandbox_environment,
+            SandboxBackendBase.sandbox_environment,
+        )
+        self.assertIsNot(
+            MultiplexingSandboxBackend.sandbox_environment,
+            SandboxBackendBase.sandbox_environment,
+        )
 
     def test_services_do_not_probe_backend_optional_methods(self) -> None:
         for path in (*SERVICES_ROOT.rglob("*.py"), *_provider_neutral_sandbox_sources()):
