@@ -39,7 +39,7 @@ class OAuthMigrationTest(unittest.TestCase):
                     (row["version"], row["name"])
                     for row in conn.execute(
                         "SELECT version, name FROM schema_migrations "
-                        "WHERE version >= 28 ORDER BY version"
+                        "WHERE version BETWEEN 28 AND 30 ORDER BY version"
                     ).fetchall()
                 ]
         self.assertEqual(
@@ -94,7 +94,8 @@ class OAuthMigrationTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [(version, name) for version, name, _statement in MIGRATIONS[-3:]],
+            [(version, name) for version, name, _statement in MIGRATIONS
+             if 28 <= version <= 30],
             migrations,
         )
 
@@ -134,7 +135,8 @@ class OAuthMigrationTest(unittest.TestCase):
                 }
         self.assertEqual(
             before,
-            [(version, name) for version, name, _statement in MIGRATIONS[:-3]],
+            [(version, name) for version, name, _statement in MIGRATIONS
+             if version < 28],
         )
         self.assertEqual(
             after,

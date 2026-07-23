@@ -73,13 +73,8 @@ def create_fastapi_app(
     routers = (
         meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls),
         projects.build_router(
-            ctx,
-            projects=api.projects,
-            dashboard=api.dashboard,
-            workflow=api.workflow,
-            timeline=api.timeline,
-            sandboxes=api.sandboxes,
-        ),
+            ctx, projects=api.projects, dashboard=api.dashboard,
+            workflow=api.workflow, timeline=api.timeline, sandboxes=api.sandboxes),
         claims.build_router(ctx),
         experiments.build_router(
             ctx,
