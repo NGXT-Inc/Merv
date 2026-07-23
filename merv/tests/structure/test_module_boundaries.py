@@ -150,6 +150,8 @@ FILE_LAYERS = {
     "surface/control/control_runtime.py": ADAPTER,
     "surface/project_keys.py": APPLICATION_LAYER,
     "surface/project_key_store.py": ADAPTER,
+    "surface/oauth.py": APPLICATION_LAYER,
+    "surface/oauth_store.py": ADAPTER,
 }
 
 ALLOWED_LAYER_EDGES = (
