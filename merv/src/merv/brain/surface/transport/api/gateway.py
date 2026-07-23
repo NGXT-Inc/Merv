@@ -24,7 +24,7 @@ from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import is_local_origin
+from .shared import is_local_origin, operator_denial
 from . import oauth, project_keys, sdk_auth
 
 
@@ -88,6 +88,8 @@ class ProjectAuthorizer:
     _query_scoped_prefixes = ("/api/activity", "/api/debug/")
     # Operator/tenant diagnostics an mk_ key must never reach (INV-11).
     _operator_diagnostic_prefixes = ("/api/activity", "/api/debug/", "/api/admin")
+    # Global mutators/aggregates: operator-token-only in hosted mode (FIX 1).
+    _global_mutator_prefixes = ("/api/admin", "/api/debug/tool-calls/clear")
 
     @staticmethod
     def user_id(principal: Any) -> str:
@@ -126,6 +128,9 @@ class ProjectAuthorizer:
                  "error_code": "project_scope_forbidden"},
                 status_code=403,
             )
+        if path.startswith(self._global_mutator_prefixes):
+            # Operator token replaces membership scoping here (local keeps access).
+            return operator_denial(request)
         match = self._project_path.match(path)
         project_id = match.group(1) if match else ""
         if not project_id and path.startswith(self._query_scoped_prefixes):
@@ -292,10 +297,8 @@ class ToolInvocationGateway:
         )
 
     def authorize_data_plane_project(self, request: Request, project_id: str) -> None:
-        self.projects.require_member(
-            project_id=project_id,
-            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
-        )
+        self.projects.require_member(project_id=project_id,
+            principal=getattr(request.state, "principal", LOCAL_PRINCIPAL))
 
 
 def install_request_middleware(
@@ -360,15 +363,11 @@ def install_auth_routes(
                 request.headers.get("Authorization")
             )
         except UnauthorizedError:
-            return Response(
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'},
-            )
+            return Response(status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'})
         # A project (mk_) key is not a valid MLflow-audience credential (INV-7).
         if getattr(principal, "key_id", None):
             return JSONResponse(
                 {"detail": "project API keys are not valid for the MLflow audience",
-                 "error_code": "credential_audience_forbidden"},
-                status_code=403,
-            )
+                 "error_code": "credential_audience_forbidden"}, status_code=403)
         return Response(status_code=204)

@@ -359,13 +359,71 @@ class ProjectKeySurfaceTest(unittest.TestCase):
                 self.assertEqual(
                     response.json()["error_code"], "project_scope_forbidden"
                 )
-        # A JWT operator on the same paths is unaffected.
+        # A JWT MEMBER reads its OWN project's diagnostics — membership, not
+        # operator status, grants it (the read is scoped to the caller's
+        # memberships; global mutators are operator-only — see the next test).
         self.assertEqual(
             self.client.get(
                 f"/api/activity?project_id={self.project_a}", headers=_bearer(self.jwt_a)
             ).status_code,
             200,
         )
+
+    def test_diagnostics_scope_to_membership_and_mutators_are_operator_only(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        # A recorded tool call belonging to project_b (jwt_a is a member of B).
+        recorded = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "workflow.status_and_next",
+                "arguments": {"project_id": self.project_b},
+            },
+            headers=_bearer(self.jwt_a),
+        )
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        stats = self.client.get(
+            f"/api/debug/tool-calls?project_id={self.project_b}",
+            headers=_bearer(self.jwt_a),
+        )
+        self.assertEqual(stats.status_code, 200, stats.text)
+        call_ids = [call["id"] for call in stats.json()["calls"]]
+        self.assertTrue(call_ids, stats.text)
+        call_id = call_ids[0]
+        # The owner (member of B) can read that call...
+        own = self.client.get(
+            f"/api/debug/tool-calls/{call_id}?project_id={self.project_b}",
+            headers=_bearer(self.jwt_a),
+        )
+        self.assertEqual(own.status_code, 200, own.text)
+
+        # ...but a member of project_a ONLY cannot read a project_b call, even
+        # supplying ?project_id=project_a to satisfy the membership gate (INV-11:
+        # the fetch is scoped to the caller's memberships, not the query param).
+        self._add_member(self.project_a, USER_B)
+        leaked = self.client.get(
+            f"/api/debug/tool-calls/{call_id}?project_id={self.project_a}",
+            headers=_bearer(self.jwt_b),
+        )
+        self.assertEqual(leaked.status_code, 404, leaked.text)
+
+        # A global mutator (telemetry clear) is operator-only in hosted mode: a
+        # JWT owner is 403 without MERV_ADMIN_TOKEN, 200 with the matching token.
+        clear_path = f"/api/debug/tool-calls/clear?project_id={self.project_a}"
+        no_token = self.client.post(clear_path, headers=_bearer(self.jwt_a))
+        self.assertEqual(no_token.status_code, 403, no_token.text)
+        self.assertEqual(no_token.json()["error_code"], "operator_forbidden")
+        with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+            wrong = self.client.post(
+                clear_path, headers={**_bearer(self.jwt_a), "X-Admin-Token": "nope"}
+            )
+            self.assertEqual(wrong.status_code, 403, wrong.text)
+            ok = self.client.post(
+                clear_path,
+                headers={**_bearer(self.jwt_a), "X-Admin-Token": "op-secret"},
+            )
+            self.assertEqual(ok.status_code, 200, ok.text)
 
     def test_key_cannot_submit_foreign_project_review_session(self) -> None:
         with self.app.store.transaction() as conn:
@@ -422,6 +480,47 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         self.assertTrue(jwt_principal.client_id.startswith("jwt:"))
         self.assertEqual(rr_principal.user_id, USER_B)
         self.assertTrue(rr_principal.client_id.startswith("key:"))
+
+    def test_admin_routes_are_operator_only(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        class _Cleanup:
+            def run_all(self) -> "_Cleanup":
+                return self
+
+            def as_dict(self) -> dict[str, int]:
+                return {"swept": 1}
+
+        admin_client = TestClient(
+            create_fastapi_app(
+                self.app.http,
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=True, hosted_control=True
+                ),
+                auth=self.verifier,
+                cleanup=_Cleanup(),
+                tenant_counters=lambda *, tenant_id: {"tenant_id": tenant_id},
+            ),
+            raise_server_exceptions=False,
+        )
+        # An mk_ key is refused at the operator boundary (before the token gate).
+        key_denied = admin_client.post("/api/admin/cleanup", headers=_bearer(self.key))
+        self.assertEqual(key_denied.status_code, 403, key_denied.text)
+        self.assertEqual(key_denied.json()["error_code"], "project_scope_forbidden")
+        # A JWT owner needs MERV_ADMIN_TOKEN on every global admin route.
+        for path, method in (
+            ("/api/admin/cleanup", admin_client.post),
+            ("/api/admin/tenants/local/counters", admin_client.get),
+        ):
+            denied = method(path, headers=_bearer(self.jwt_a))
+            self.assertEqual(denied.status_code, 403, path)
+            self.assertEqual(denied.json()["error_code"], "operator_forbidden")
+            with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+                allowed = method(
+                    path, headers={**_bearer(self.jwt_a), "X-Admin-Token": "op-secret"}
+                )
+                self.assertEqual(allowed.status_code, 200, allowed.text)
 
     def test_mlflow_gate_rejects_project_key_but_allows_other_audiences(self) -> None:
         denied = self.client.get("/internal/auth/mlflow", headers=_bearer(self.key))

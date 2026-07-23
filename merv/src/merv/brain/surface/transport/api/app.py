@@ -70,7 +70,7 @@ def create_fastapi_app(
     ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
                           auth_meta=auth.meta() if auth is not None else None)
     routers = (
-        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls),
+        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, projects=api.projects),
         projects.build_router(
             ctx,
             projects=api.projects,

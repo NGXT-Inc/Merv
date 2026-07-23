@@ -1,4 +1,11 @@
-"""Control-admin HTTP routes kept out of the general UI route factory."""
+"""Control-admin HTTP routes kept out of the general UI route factory.
+
+These are GLOBAL operator surfaces (tenant-wide cleanup, arbitrary tenant
+counters). They are operator-only in hosted mode: the request gateway's
+membership boundary gates every ``/api/admin`` path on MERV_ADMIN_TOKEN before
+these handlers run, so LOCAL_PRINCIPAL keeps access while a hosted caller —
+even a JWT owner — must present the operator token (INV-11 FIX 1).
+"""
 
 from __future__ import annotations
 
