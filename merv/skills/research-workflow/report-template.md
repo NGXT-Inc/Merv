@@ -5,7 +5,8 @@
   in the UI to understand what happened, and the artifact the experiment
   reviewer grades against the plan's pre-registered Evaluation section. Write
   it in the experiment folder (e.g. experiments/<name>/report.md), then
-  register + associate it with role "report".
+  submit it with artifact.submit (role "report") and run the returned
+  upload command.
 
   REQUIRED spine — `experiment.transition(submit_results)` is blocked until
   each of these has real content (the lint strips these HTML comments, so a
@@ -55,7 +56,7 @@
   - Use the exact metrics named in the plan's Evaluation section.
 
   An unconfigured/no-run fallback can have quantitative result files without a
-  pinned exhibit. In that case, interpret the registered result evidence and
+  pinned exhibit. In that case, interpret the submitted result evidence and
   explain why no exhibit was available; do not invent an exhibit link.
 -->
 

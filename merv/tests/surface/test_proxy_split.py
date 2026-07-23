@@ -171,7 +171,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
             },
         )
         self.assertTrue(pending["artifact_id"].startswith("art_"))
-        self.assertIn("curl -sf -T plan.md", pending["run"])
+        self.assertIn("curl -sf -T 'plan.md'", pending["run"])
 
     def test_enriched_control_health_reports_proxy_data_plane_and_cloud(self) -> None:
         health = self._call("sandbox.health")

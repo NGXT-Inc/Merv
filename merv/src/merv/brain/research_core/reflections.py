@@ -16,7 +16,7 @@ from contextlib import closing
 import json
 from typing import Any
 
-from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from .domain.experiment_names import validate_experiment_name
 from .domain.experiment_policy import (
@@ -33,7 +33,6 @@ from .domain.reflection_artifacts import (
     parse_change_spec,
     reflection_coverage_for,
     reflection_doc_review_problems,
-    reflection_requirement_roles,
     validate_reflection_roster,
 )
 from .domain.reflection_policy import (
@@ -384,7 +383,7 @@ class ReflectionService:
         return preferred_associated_artifact(
             artifacts=reflection.get("artifacts", []),
             attempt=reflection.get("attempt_index"),
-            roles=PROJECT_GRAPH_ROLES,
+            roles=(PROJECT_GRAPH_ROLE,),
         )
 
     def _project_graph_diff(
@@ -584,9 +583,8 @@ class ReflectionService:
             for item in coverage.get("lenses") or []
         }
         missing_lenses = list(coverage.get("missing") or [])
-        role_aliases = set(reflection_requirement_roles(role=requirement.role))
         has_association = any(
-            item.get("role") in role_aliases
+            item.get("role") == requirement.role
             for item in reflection.get("current_attempt_artifacts") or []
         )
         missing_error = ""
@@ -718,7 +716,7 @@ class ReflectionService:
     def _run_validator(self, *, conn, reflection: dict[str, Any], name: str) -> None:
         if name == "graph":
             self._validate_project_graph(conn=conn, reflection=reflection)
-        elif name in {"reflection_doc", "synthesis_doc"}:
+        elif name == "reflection_doc":
             self._validate_reflection_doc(conn=conn, reflection=reflection)
         elif name == "change_spec":
             self._validate_change_spec(conn=conn, reflection=reflection)
@@ -726,7 +724,7 @@ class ReflectionService:
     def _validate_project_graph(self, *, conn, reflection: dict[str, Any]) -> None:
         document = self._submitted_role_document(
             reflection=reflection,
-            roles=PROJECT_GRAPH_ROLES,
+            roles=(PROJECT_GRAPH_ROLE,),
             what="project logic graph",
         )
         if document is None:
@@ -745,7 +743,7 @@ class ReflectionService:
     def _validate_reflection_doc(self, *, conn, reflection: dict[str, Any]) -> None:
         document = self._submitted_role_document(
             reflection=reflection,
-            roles=("reflection_doc", "synthesis_doc"),
+            roles=("reflection_doc",),
             what="reflection document",
         )
         if document is None:
@@ -979,7 +977,7 @@ class ReflectionService:
         artifact = preferred_associated_artifact(
             artifacts=reflection.get("current_attempt_artifacts") or [],
             attempt=reflection.get("attempt_index"),
-            roles=PROJECT_GRAPH_ROLES,
+            roles=(PROJECT_GRAPH_ROLE,),
         )
         artifact_id = (artifact or {}).get("id")
         return str(artifact_id) if artifact_id else None

@@ -14,20 +14,14 @@ ARTIFACT_TARGET_TYPES = frozenset(
 
 PROJECT_GRAPH_ROLE = "project_graph"
 LEGACY_PROJECT_GRAPH_ROLE = "graph"
-PROJECT_GRAPH_ROLES = (PROJECT_GRAPH_ROLE, LEGACY_PROJECT_GRAPH_ROLE)
 
 REFLECTION_LENS_DOC_ROLE = "reflection_lens_doc"
-LEGACY_REFLECTION_LENS_DOC_ROLE = "reflection"
-REFLECTION_LENS_DOC_ROLES = (
-    REFLECTION_LENS_DOC_ROLE,
-    LEGACY_REFLECTION_LENS_DOC_ROLE,
-)
 
-# Pre-rename role spellings. Rejected at submit (with the replacement named)
-# but still readable: artifact rows backfilled from pre-cut databases keep
-# their original role strings.
+# Pre-rename role spellings, rejected at submit with the replacement named.
+# Migration 24 canonicalizes backfilled rows to the replacement roles, so no
+# stored artifact carries a legacy spelling — readers know only the canon.
 LEGACY_ROLE_REPLACEMENTS = {
-    LEGACY_REFLECTION_LENS_DOC_ROLE: REFLECTION_LENS_DOC_ROLE,
+    "reflection": REFLECTION_LENS_DOC_ROLE,
     "synthesis_doc": "reflection_doc",
     "proposals": "change_spec",
 }
@@ -66,8 +60,7 @@ def artifact_byte_cap(role: str) -> int | None:
 
 # Gated roles: the artifacts workflow gates lint. Submitting one of these pins
 # the file's bytes in the blob store (size-capped), so gates and reviewers read
-# immutable content. Legacy spellings stay listed so backfilled rows keep
-# counting as gated.
+# immutable content.
 GATED_ROLE_BYTE_CAPS: dict[str, int] = {
     "plan": 16_000,
     "report": 16_000,
@@ -76,6 +69,5 @@ GATED_ROLE_BYTE_CAPS: dict[str, int] = {
     REFLECTION_LENS_DOC_ROLE: 16_000,
     "reflection_doc": 16_000,
     "change_spec": 16_000,
-    **{legacy: 16_000 for legacy in LEGACY_ROLE_REPLACEMENTS},
 }
 GATED_ROLES = frozenset(GATED_ROLE_BYTE_CAPS)

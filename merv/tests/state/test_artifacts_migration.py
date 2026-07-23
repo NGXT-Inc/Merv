@@ -126,6 +126,8 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
                 (resource_id, path, kind, title, f"rver_{resource_id[4:]}"),
             )
         versions = [
+            # rver_plan_v1 is superseded: no association pins it any more.
+            ("rver_plan_v1", "res_plan", "plan.md", "9" * 64, 10),
             ("rver_plan", "res_plan", "plan.md", "a" * 64, 11),
             ("rver_lens", "res_lens", "reflections/rigor.md", "b" * 64, 12),
             ("rver_graph", "res_graph", "project/logic_graph.json", "c" * 64, 13),
@@ -145,10 +147,15 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         associations = [
             # (id, resource, version, target_type, target_id, role, attempt)
             ("as_1", "res_plan", "rver_plan", "experiment", "exp_1", "plan", 2),
+            # Legacy lens-doc role spelling: canonicalized by the backfill.
             ("as_2", "res_lens", "rver_lens", "reflection", "ref_1",
-             "reflection_lens_doc", 1),
+             "reflection", 1),
             ("as_3", "res_graph", "rver_graph", "reflection", "ref_1",
              "project_graph", 1),
+            # Shares rver_graph with as_3 under another (legacy) role, so the
+            # version->artifact map must keep both artifacts.
+            ("as_4", "res_graph", "rver_graph", "reflection", "ref_1",
+             "synthesis_doc", 1),
         ]
         for seq, row in enumerate(associations, 1):
             conn.execute(
@@ -160,40 +167,50 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
                 """,
                 (*row, seq),
             )
-        conn.execute(
-            """
-            INSERT INTO report_figures
-              (report_version_id, link_path, sha256, size_bytes, created_at)
-            VALUES ('rver_plan', 'figures/curve.png', ?, 42, '2026-07-01T01:00:00Z')
-            """,
-            ("d" * 64,),
-        )
-        # Old-format snapshot: resource:version tokens for the plan gate.
-        conn.execute(
-            """
-            INSERT INTO review_requests
-              (id, project_id, target_type, target_id, role, capability_hash,
-               status, target_snapshot_id, expires_at, created_at, created_seq)
-            VALUES ('req_1', 'proj_1', 'experiment', 'exp_1', 'design_reviewer',
-                    'hash', 'requested',
-                    'experiment|exp_1|design_review|2|res_plan:rver_plan:plan:2',
-                    '2027-01-01T00:00:00Z', '2026-07-01T02:00:00Z', 1)
-            """
-        )
+        for version_id, link in (
+            ("rver_plan", "figures/curve.png"),
+            # Attached to the shared version: must fan out to BOTH artifacts.
+            ("rver_graph", "figures/shared.png"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO report_figures
+                  (report_version_id, link_path, sha256, size_bytes, created_at)
+                VALUES (?, ?, ?, 42, '2026-07-01T01:00:00Z')
+                """,
+                (version_id, link, "d" * 64),
+            )
+        # req_1: old-format snapshot pinning the CURRENT plan version.
+        # req_2: pinned to the superseded rver_plan_v1 — it must stay stale
+        # (kept verbatim), never be revived onto the current version's artifact.
+        for req_id, snapshot in (
+            ("req_1", "experiment|exp_1|design_review|2|res_plan:rver_plan:plan:2"),
+            ("req_2", "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO review_requests
+                  (id, project_id, target_type, target_id, role, capability_hash,
+                   status, target_snapshot_id, expires_at, created_at, created_seq)
+                VALUES (?, 'proj_1', 'experiment', 'exp_1', 'design_reviewer',
+                        ?, 'requested', ?,
+                        '2027-01-01T00:00:00Z', '2026-07-01T02:00:00Z', 1)
+                """,
+                (req_id, f"hash_{req_id}", snapshot),
+            )
 
     def test_backfill_maps_rows_figures_and_refs(self) -> None:
         StateStore(db_path=self.db_path)  # replays migrations 24 (backfill) + 25 (drop)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         artifacts = {
-            str(row["path"]): dict(row)
+            (str(row["path"]), str(row["role"])): dict(row)
             for row in conn.execute("SELECT * FROM artifacts").fetchall()
         }
-        self.assertEqual(len(artifacts), 3)
+        self.assertEqual(len(artifacts), 4)
 
-        plan = artifacts["plan.md"]
+        plan = artifacts[("plan.md", "plan")]
         self.assertTrue(str(plan["id"]).startswith("art_"))
-        self.assertEqual(plan["role"], "plan")
         self.assertEqual(plan["target_id"], "exp_1")
         self.assertEqual(plan["attempt_index"], 2)
         self.assertEqual(plan["content_sha256"], "a" * 64)
@@ -201,33 +218,54 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         self.assertEqual(plan["status"], "complete")
         self.assertEqual(plan["lens_id"], "")
 
-        # Lens docs inherit lens_id from the basename stem convention.
-        lens = artifacts["reflections/rigor.md"]
+        # Legacy roles are canonicalized; lens docs inherit lens_id from the
+        # basename stem convention.
+        lens = artifacts[("reflections/rigor.md", "reflection_lens_doc")]
         self.assertEqual(lens["lens_id"], "rigor")
         self.assertEqual(lens["title"], "Rigor lens")
+        graph = artifacts[("project/logic_graph.json", "project_graph")]
+        doc = artifacts[("project/logic_graph.json", "reflection_doc")]
 
-        # report_figures follow their document via the version->artifact map.
-        figures = conn.execute(
-            "SELECT artifact_id, link_path, content_sha256 FROM artifact_figures"
-        ).fetchall()
-        self.assertEqual(len(figures), 1)
-        self.assertEqual(figures[0]["artifact_id"], plan["id"])
-        self.assertEqual(figures[0]["link_path"], "figures/curve.png")
+        # report_figures follow their document via the version->artifact map;
+        # a version shared by two associations fans out to both artifacts.
+        figures = {
+            (str(row["artifact_id"]), str(row["link_path"]))
+            for row in conn.execute(
+                "SELECT artifact_id, link_path FROM artifact_figures"
+            ).fetchall()
+        }
+        self.assertEqual(
+            figures,
+            {
+                (plan["id"], "figures/curve.png"),
+                (graph["id"], "figures/shared.png"),
+                (doc["id"], "figures/shared.png"),
+            },
+        )
 
-        # The published-graph ref now points at the backfilled artifact.
-        graph = artifacts["project/logic_graph.json"]
+        # The published-graph ref resolves to the project_graph-role artifact
+        # specifically, even though another role shares the pinned version.
         published_ref = conn.execute(
             "SELECT published_graph_version_id FROM reflections WHERE id = 'ref_1'"
         ).fetchone()[0]
         self.assertEqual(published_ref, graph["id"])
 
-        # The pinned snapshot token was rewritten to artifact_id:role:attempt.
-        snapshot = conn.execute(
-            "SELECT target_snapshot_id FROM review_requests WHERE id = 'req_1'"
-        ).fetchone()[0]
+        # The current-version snapshot token was rewritten to
+        # artifact_id:role:attempt; the superseded-version token stays
+        # verbatim, so its review remains stale instead of matching again.
+        snapshots = {
+            str(row["id"]): str(row["target_snapshot_id"])
+            for row in conn.execute(
+                "SELECT id, target_snapshot_id FROM review_requests"
+            ).fetchall()
+        }
         self.assertEqual(
-            snapshot,
+            snapshots["req_1"],
             f"experiment|exp_1|design_review|2|{plan['id']}:plan:2",
+        )
+        self.assertEqual(
+            snapshots["req_2"],
+            "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2",
         )
 
         # Migration 25 dropped the resource-era tables right after the backfill.

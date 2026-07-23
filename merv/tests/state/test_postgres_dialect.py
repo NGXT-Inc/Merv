@@ -8,8 +8,8 @@ This module supplies the Postgres half:
   (b) the control-plane contract scenarios (the full research loop, driven
       only through the tool surface) pass against a TestBrain whose
       store is ``PostgresStateStore`` — services unchanged;
-  (c) events identity ordering, resource_versions/associations created_seq
-      ordering, ON CONFLICT upsert paths, and the record_event/recent_events
+  (c) events identity ordering, artifacts created_seq ordering, the
+      artifact-slot supersede path, and the record_event/recent_events
       round trip behave exactly as on SQLite;
   (d) two concurrent transactions serialize (the advisory-lock emulation of
       SQLite's BEGIN IMMEDIATE single-writer semantics).
@@ -20,7 +20,7 @@ cleanly (fast ``docker info`` probe) when docker is unavailable; the schema
 parity tests at the bottom need no docker and always run.
 
 Scope note (per the plan): the behavioral pass covers the record services —
-projects/claims/experiments/resources/reviews/syntheses/workflow. Sandbox
+projects/claims/experiments/artifacts/reviews/syntheses/workflow. Sandbox
 rows share the dialect-neutral SQL (created_seq, no rowid) but their
 behavioral parity rides with Phase 8's split-mode composition, which is when
 a control plane actually serves them.
@@ -830,20 +830,17 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                     "intent": "Read evidence under the writer lock.",
                 },
             )["id"]
-            (repo / "plan.md").write_text(
-                "## Summary\nPostgres evidence.\n\n"
-                "## Objective & hypothesis\nExercise the seam.\n\n"
-                "## Evaluation\nThe read completes.\n"
-            )
-            app.call_tool(
-                "resource.register",
-                {
-                    "project_id": project_id,
-                    "path": "plan.md",
-                    "target_type": "experiment",
-                    "target_id": experiment_id,
-                    "role": "plan",
-                },
+            app.submit_artifact(
+                project_id=project_id,
+                target_type="experiment",
+                target_id=experiment_id,
+                role="plan",
+                path="plan.md",
+                body=(
+                    "## Summary\nPostgres evidence.\n\n"
+                    "## Objective & hypothesis\nExercise the seam.\n\n"
+                    "## Evaluation\nThe read completes.\n"
+                ),
             )
 
             with self.assertRaisesRegex(RuntimeError, "rollback outer"):
@@ -852,17 +849,15 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
                         "UPDATE experiments SET revision_context = ? WHERE id = ?",
                         ("outer postgres write", experiment_id),
                     )
-                    resources = app.resources.resources_for_target(
+                    artifacts = app.artifact_submissions.artifacts_for_target(
                         target_type="experiment", target_id=experiment_id
                     )
-                    document = app.resources.submitted_document(
-                        version_id=resources[0].submitted_version_id,
-                        path=resources[0].path,
-                        role="plan",
+                    document = app.artifact_submissions.submitted_document(
+                        artifact_id=artifacts[0].artifact_id,
                         what="experiment plan",
                     )
                     raise RuntimeError("rollback outer")
-            self.assertEqual(resources[0].role, "plan")
+            self.assertEqual(artifacts[0].role, "plan")
             self.assertIn("Postgres evidence", document.text)
             conn = self.store.connect()
             try:
@@ -877,117 +872,208 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             app.shutdown()
             tmp.cleanup()
 
-    def test_created_seq_orders_versions_and_associations(self) -> None:
+    def test_created_seq_orders_artifacts(self) -> None:
         project_id = self._seed_project()
         with self.store.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO resources (
-                  id, project_id, path, kind, title, version_token, mtime_ns,
-                  size_bytes, observed_at, missing, created_by, created_at, updated_at
-                )
-                VALUES (?, ?, 'notes.md', 'note', '', 'tok', 1, 1, ?, 0, 'codex', ?, ?)
-                """,
-                ("res_1", project_id, now_iso(), now_iso(), now_iso()),
-            )
             for index in range(3):
-                seq = next_created_seq(conn=conn, table="resource_versions")
+                seq = next_created_seq(conn=conn, table="artifacts")
                 self.assertEqual(seq, index + 1)
                 conn.execute(
                     """
-                    INSERT INTO resource_versions (
-                      id, resource_id, project_id, path, content_sha256, size_bytes,
-                      mtime_ns, observed_at, created_by, created_at, created_seq
+                    INSERT INTO artifacts (
+                      id, project_id, target_type, target_id, role, path,
+                      status, created_at, updated_at, created_seq
                     )
-                    VALUES (?, ?, ?, 'notes.md', ?, 1, 1, ?, 'codex', ?, ?)
+                    VALUES (?, ?, 'experiment', 'exp_1', 'result', 'notes.md',
+                            'complete', ?, ?, ?)
                     """,
-                    (
-                        f"rver_{index}",
-                        "res_1",
-                        project_id,
-                        f"sha{index}",
-                        now_iso(),
-                        now_iso(),
-                        seq,
-                    ),
+                    (f"art_{index}", project_id, now_iso(), now_iso(), seq),
                 )
         conn = self.store.connect()
         try:
             rows = conn.execute(
-                "SELECT id FROM resource_versions WHERE resource_id = ? ORDER BY created_seq",
-                ("res_1",),
+                "SELECT id FROM artifacts WHERE project_id = ? ORDER BY created_seq",
+                (project_id,),
             ).fetchall()
-            self.assertEqual(
-                [r["id"] for r in rows], ["rver_0", "rver_1", "rver_2"]
+            self.assertEqual([r["id"] for r in rows], ["art_0", "art_1", "art_2"])
+        finally:
+            conn.close()
+
+    def test_artifact_resubmit_supersedes_the_slot_on_postgres(self) -> None:
+        """The artifact.submit replace path: resubmitting the same slot deletes
+        the prior complete artifact and keeps only the fresh one."""
+        tmp = tempfile.TemporaryDirectory()
+        repo = Path(tmp.name)
+        app = TestBrain(
+            repo_root=repo,
+            db_path=repo / ".research_plugin" / "unused.sqlite",
+            store=self.store,
+        )
+        try:
+            project_id = app.call_tool(
+                "project", {"action": "create", "name": "Supersede PG"}
+            )["id"]
+            experiment_id = app.call_tool(
+                "experiment.create",
+                {
+                    "project_id": project_id,
+                    "name": "supersede-pg",
+                    "intent": "Replace the plan slot on resubmit.",
+                },
+            )["id"]
+            first = app.submit_artifact(
+                project_id=project_id,
+                target_type="experiment",
+                target_id=experiment_id,
+                role="plan",
+                path="plan.md",
+                body="## Summary\nv1\n",
+            )
+            second = app.submit_artifact(
+                project_id=project_id,
+                target_type="experiment",
+                target_id=experiment_id,
+                role="plan",
+                path="plan.md",
+                body="## Summary\nv2\n",
+            )
+            self.assertNotEqual(first["artifact_id"], second["artifact_id"])
+            conn = self.store.connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id FROM artifacts WHERE project_id = ? AND status = 'complete'",
+                    (project_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertEqual([r["id"] for r in rows], [second["artifact_id"]])
+        finally:
+            app.shutdown()
+            tmp.cleanup()
+
+    def test_resource_era_database_replays_migrations_24_and_25(self) -> None:
+        """Old-DB upgrade on the Postgres dialect: recreate the resource-era
+        tables, rewind ledger rows 24/25, and re-open the store — the backfill
+        canonicalizes legacy roles, rewrites the pinned snapshot token, and
+        migration 25 drops the resource tables (each migration + its ledger
+        row inside its own transaction on the autocommit connection)."""
+        project_id = self._seed_project()
+        conn = self.store.connect()
+        try:
+            conn.execute("DELETE FROM schema_migrations WHERE version IN (24, 25)")
+            conn.execute(
+                """
+                CREATE TABLE resources (
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                  path TEXT NOT NULL, kind TEXT NOT NULL,
+                  title TEXT NOT NULL DEFAULT '', current_version_id TEXT,
+                  version_token TEXT NOT NULL, mtime_ns BIGINT NOT NULL,
+                  size_bytes BIGINT NOT NULL, observed_at TEXT NOT NULL,
+                  git_commit TEXT, missing BIGINT NOT NULL DEFAULT 0,
+                  deleted BIGINT NOT NULL DEFAULT 0,
+                  created_by TEXT NOT NULL DEFAULT 'codex',
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE resource_versions (
+                  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL,
+                  project_id TEXT NOT NULL, path TEXT NOT NULL,
+                  content_sha256 TEXT NOT NULL, size_bytes BIGINT NOT NULL,
+                  mtime_ns BIGINT NOT NULL, observed_at TEXT NOT NULL,
+                  content_type TEXT NOT NULL DEFAULT 'text/markdown',
+                  created_by TEXT NOT NULL DEFAULT 'codex',
+                  created_at TEXT NOT NULL, created_seq BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE resource_associations (
+                  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL,
+                  version_id TEXT, target_type TEXT NOT NULL,
+                  target_id TEXT NOT NULL, role TEXT NOT NULL,
+                  attempt_index BIGINT NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL, created_seq BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO resources
+                  (id, project_id, path, kind, version_token, mtime_ns,
+                   size_bytes, observed_at, created_at, updated_at)
+                VALUES ('res_1', ?, 'project/reflection.md', 'document', 'tok',
+                        1, 9, ?, ?, ?)
+                """,
+                (project_id, now_iso(), now_iso(), now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO resource_versions
+                  (id, resource_id, project_id, path, content_sha256,
+                   size_bytes, mtime_ns, observed_at, created_at, created_seq)
+                VALUES ('rver_1', 'res_1', ?, 'project/reflection.md', ?,
+                        9, 1, ?, ?, 1)
+                """,
+                (project_id, "a" * 64, now_iso(), now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO resource_associations
+                  (id, resource_id, version_id, target_type, target_id, role,
+                   attempt_index, created_at, created_seq)
+                VALUES ('as_1', 'res_1', 'rver_1', 'reflection', 'ref_1',
+                        'synthesis_doc', 1, ?, 1)
+                """,
+                (now_iso(),),
+            )
+            conn.execute(
+                """
+                INSERT INTO review_requests
+                  (id, project_id, target_type, target_id, role,
+                   capability_hash, status, target_snapshot_id, expires_at,
+                   created_at, created_seq)
+                VALUES ('req_1', ?, 'reflection', 'ref_1',
+                        'reflection_reviewer', 'hash_pg_24', 'requested',
+                        'reflection|ref_1|reflection_review|1|res_1:rver_1:synthesis_doc:1',
+                        '2099-01-01T00:00:00Z', ?, 1)
+                """,
+                (project_id, now_iso()),
             )
         finally:
             conn.close()
 
-    def _seed_resource_with_versions(self, *, project_id: str) -> None:
-        """res_1 with two pinned versions (rver_a, rver_b) — FK targets."""
-        with self.store.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO resources (
-                  id, project_id, path, kind, title, version_token, mtime_ns,
-                  size_bytes, observed_at, missing, created_by, created_at, updated_at
-                )
-                VALUES (?, ?, 'plan.md', 'plan', '', 'tok', 1, 1, ?, 0, 'codex', ?, ?)
-                """,
-                ("res_1", project_id, now_iso(), now_iso(), now_iso()),
-            )
-            for version_id in ("rver_a", "rver_b"):
-                conn.execute(
-                    """
-                    INSERT INTO resource_versions (
-                      id, resource_id, project_id, path, content_sha256, size_bytes,
-                      mtime_ns, observed_at, created_by, created_at, created_seq
-                    )
-                    VALUES (?, 'res_1', ?, 'plan.md', ?, 1, 1, ?, 'codex', ?, ?)
-                    """,
-                    (
-                        version_id,
-                        project_id,
-                        f"sha-{version_id}",
-                        now_iso(),
-                        now_iso(),
-                        next_created_seq(conn=conn, table="resource_versions"),
-                    ),
-                )
-
-    def test_association_upsert_replaces_pin_and_keeps_created_seq(self) -> None:
-        """The resource.register association ON CONFLICT path: re-associating the same
-        (resource, target, role, attempt) updates the pinned version but keeps
-        the original insertion order — rowid parity."""
-        project_id = self._seed_project()
-        self._seed_resource_with_versions(project_id=project_id)
-        insert = """
-            INSERT INTO resource_associations
-              (id, resource_id, version_id, target_type, target_id, role,
-               attempt_index, created_at, created_seq)
-            VALUES (?, ?, ?, 'experiment', 'exp_1', 'plan', 1, ?, ?)
-            ON CONFLICT(resource_id, target_type, target_id, role, attempt_index)
-            DO UPDATE SET version_id = excluded.version_id, created_at = excluded.created_at
-        """
-        with self.store.transaction() as conn:
-            conn.execute(
-                insert,
-                ("assoc_a", "res_1", "rver_a", now_iso(),
-                 next_created_seq(conn=conn, table="resource_associations")),
-            )
-        with self.store.transaction() as conn:
-            conn.execute(
-                insert,
-                ("assoc_b", "res_1", "rver_b", now_iso(),
-                 next_created_seq(conn=conn, table="resource_associations")),
-            )
-        conn = self.store.connect()
+        replay = PostgresStateStore(dsn=self.store.dsn)
+        conn = replay.connect()
         try:
-            rows = conn.execute("SELECT * FROM resource_associations").fetchall()
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["id"], "assoc_a")  # original row survived
-            self.assertEqual(rows[0]["version_id"], "rver_b")  # pin replaced
-            self.assertEqual(int(rows[0]["created_seq"]), 1)  # order kept
+            artifact = conn.execute(
+                "SELECT id, role, lens_id FROM artifacts WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            self.assertEqual(str(artifact["role"]), "reflection_doc")
+            snapshot = conn.execute(
+                "SELECT target_snapshot_id FROM review_requests WHERE id = 'req_1'"
+            ).fetchone()
+            self.assertEqual(
+                str(snapshot["target_snapshot_id"]),
+                f"reflection|ref_1|reflection_review|1|{artifact['id']}:reflection_doc:1",
+            )
+            tables = {
+                str(row["table_name"])
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public'"
+                ).fetchall()
+            }
+            for table in ("resources", "resource_versions", "resource_associations"):
+                self.assertNotIn(table, tables)
+            ledger = conn.execute(
+                "SELECT COUNT(*) AS n FROM schema_migrations WHERE version IN (24, 25)"
+            ).fetchone()
+            self.assertEqual(int(ledger["n"]), 2)
         finally:
             conn.close()
 

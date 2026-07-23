@@ -30,7 +30,7 @@ from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, is_local_origin
+from .shared import UI_CORS_EXPOSE_HEADERS, UI_CORS_HEADERS, is_local_origin, redact_upload_tokens
 from . import sdk_auth
 
 
@@ -307,7 +307,7 @@ def install_activity_middleware(
                 kind="http",
                 request_id=request_id,
                 tenant_id=getattr(principal, "tenant_id", "") or "",
-                path=str(request.url.path),
+                path=redact_upload_tokens(str(request.url.path)),
                 status=status,
                 duration_ms=monotonic_ms() - started,
                 method=request.method,

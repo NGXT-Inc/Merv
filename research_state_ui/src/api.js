@@ -245,7 +245,7 @@ export const api = {
   // upload token), so there are no register/associate/delete calls.
   listArtifacts: (pid) =>
     request(`/api/projects/${encodeURIComponent(pid)}/artifacts`),
-  // Decoded text ({ content, is_binary, size_bytes, content_type }). An
+  // Decoded text ({ content, is_binary, size_bytes, content_type, available }). An
   // artifact id pins exact bytes — resubmission mints a new id, so there is
   // no version parameter.
   getArtifactContent: (pid, aid) =>

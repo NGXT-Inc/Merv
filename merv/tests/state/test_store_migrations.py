@@ -1141,15 +1141,17 @@ class StoreMigrationTest(unittest.TestCase):
             )
 
             # Migration 24 backfilled the association into an artifact row
-            # (legacy role spelling preserved) and rewrote the snapshot token
-            # to the artifact id; migration 25 dropped the resource tables.
+            # (legacy role canonicalized) and rewrote the snapshot token to
+            # the artifact id with the same canonical role, so the pinned
+            # passing review still matches; migration 25 dropped the resource
+            # tables.
             artifact = conn.execute(
                 "SELECT id, target_type, role FROM artifacts"
             ).fetchone()
             self.assertEqual(artifact["target_type"], "reflection")
-            self.assertEqual(artifact["role"], "synthesis_doc")  # legacy role stays
+            self.assertEqual(artifact["role"], "reflection_doc")
             expected_snapshot = (
-                f"reflection|syn_1|reflection_review|1|{artifact['id']}:synthesis_doc:1"
+                f"reflection|syn_1|reflection_review|1|{artifact['id']}:reflection_doc:1"
             )
             for table in ("reviews", "review_requests"):
                 row = conn.execute(

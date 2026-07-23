@@ -96,12 +96,12 @@ future-direction decision diagram. Save generated images under a local
 ![compressed project graph](figures/project_graph.png)
 ```
 
-Every relative image link must resolve to a local file under 5 MB before you
-associate the reflection doc — a dangling or oversized link is rejected at
-associate. Save the image file, register the reflection doc, and associate it
-with role `reflection_doc`. Associating the markdown submits the linked image
-bytes too; if you add or change a figure later, re-associate the reflection
-doc. Do not
+Every relative image link must resolve to a local file under 5 MB. Save the
+image file, then submit the reflection doc with artifact.submit (role
+`reflection_doc`) and run the returned upload command; the upload response
+returns one follow-up command per linked image — run each to push the figure
+bytes. If you add or change a figure later, resubmit the reflection doc for
+fresh figure uploads. Do not
 add decorative visuals; every image should carry project reasoning that the
 text would otherwise make slow to inspect.
 

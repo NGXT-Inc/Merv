@@ -1640,7 +1640,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             "GET", f"/api/projects/{pid}/artifacts/{wave1_graph['artifact_id']}/content"
         )
         self.assertEqual(pinned["content"], graph_text)
-        self.assertEqual(pinned["source"], "submitted")
+        self.assertTrue(pinned["available"])
+        self.assertFalse(pinned["is_binary"])
+        self.assertEqual(pinned["content_type"], "application/json")
 
         # An unknown artifact id is rejected, not served.
         bad = self.client.get(f"/api/projects/{pid}/artifacts/art_bogus/content")
@@ -1752,6 +1754,65 @@ class ArtifactFigureRouteTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_figure_upload_command_resolves_relative_to_the_document(self) -> None:
+        # The doc lives at plans/plan.md and links figures/diagram.png, so the
+        # generated curl must read plans/figures/diagram.png (quoted), while
+        # the stored link_path stays document-relative.
+        figure = self.plan["figures"][0]
+        self.assertEqual(figure["link_path"], "figures/diagram.png")
+        self.assertIn("-T 'plans/figures/diagram.png'", figure["run"])
+
+    def test_upload_routes_gate_on_the_token_before_reading_the_body(self) -> None:
+        # Unknown tokens 404 even when an over-cap body is attached — the
+        # handler never buffers a byte for an unauthenticated caller.
+        for kind in ("u", "f"):
+            response = self.client.put(
+                f"/api/artifacts/{kind}/tok_unknown", content=b"x" * 20_000
+            )
+            self.assertEqual(response.status_code, 404, response.text)
+
+    def test_over_cap_upload_is_413_and_keeps_the_token_alive(self) -> None:
+        exp = self.client.post(
+            f"/api/projects/{self.project_id}/experiments",
+            json={"name": "cap-check", "intent": "Reject oversize uploads."},
+        ).json()
+        pending = self.app.call_tool(
+            "artifact.submit",
+            {
+                "project_id": self.project_id,
+                "target_type": "experiment",
+                "target_id": exp["id"],
+                "role": "report",
+                "path": "report.md",
+            },
+        )
+        token = upload_token(pending["run"])
+        response = self.client.put(f"/api/artifacts/u/{token}", content=b"x" * 17_000)
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(response.json()["error_code"], "payload_too_large")
+        # The cap refusal never consumed the token: a slimmed retry works.
+        retry = self.app.upload_artifact_bytes(token=token, data=b"## Summary\nS.\n")
+        self.assertEqual(retry["artifact_id"], pending["artifact_id"])
+
+
+class UploadTokenRedactionTest(unittest.TestCase):
+    def test_activity_paths_redact_upload_tokens(self) -> None:
+        from merv.brain.surface.transport.api.shared import redact_upload_tokens
+
+        self.assertEqual(
+            redact_upload_tokens("/api/artifacts/u/tok_SECRET"),
+            "/api/artifacts/u/<redacted>",
+        )
+        self.assertEqual(
+            redact_upload_tokens("/api/artifacts/f/tok_SECRET"),
+            "/api/artifacts/f/<redacted>",
+        )
+        # Non-token routes pass through untouched.
+        self.assertEqual(
+            redact_upload_tokens("/api/projects/p_1/artifacts/art_1/content"),
+            "/api/projects/p_1/artifacts/art_1/content",
+        )
+
 
 class FigureViewTest(unittest.TestCase):
     def test_artifact_fanout_rolls_up_past_cap(self) -> None:
@@ -1837,7 +1898,7 @@ class DegradedStatesTest(unittest.TestCase):
         ).json()
         self.assertFalse(body["available"])
         self.assertIsNone(body["content"])
-        self.assertEqual(body["source"], "unavailable")
+        self.assertFalse(body["is_binary"])
         # The raw-file route reports not-found instead of erroring.
         raw = self.client.get(
             f"/api/projects/{pid}/artifacts/{pending['artifact_id']}/file"

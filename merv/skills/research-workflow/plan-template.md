@@ -4,8 +4,8 @@
   This file is the FACE of the experiment: it is what the user reads in the UI
   to understand what the experiment is, and the artifact the design reviewer
   evaluates. Copy it to the experiment plan (e.g.
-  experiments/<name>/plan.md), fill it in, then register + associate it with
-  role "plan".
+  experiments/<name>/plan.md), fill it in, then submit it with
+  artifact.submit (role "plan") and run the returned upload command.
 
   REQUIRED spine — `experiment.transition(submit_design)` is blocked until each
   of these has real content (the lint strips these HTML comments, so a section
@@ -21,7 +21,7 @@
     - Risks & confounders
 
   Figures are supported: relative image links (e.g. figures/diagram.png) are
-  captured when the plan is registered and rendered in the UI. Every link must
+  captured when the plan is submitted and rendered in the UI. Every link must
   resolve to a local file under 5 MB, or the upload is rejected.
 
   Keep the title line (`# ...`) to one line; it is the headline. The durable

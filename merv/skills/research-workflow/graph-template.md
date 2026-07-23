@@ -1,7 +1,7 @@
 # Logic graph (graph.json)
 
 The logic graph is one JSON repo file (e.g. `experiments/<name>/graph.json`)
-associated with the experiment under role `graph`. It is a **qualitative
+submitted against the experiment under role `graph` (artifact.submit). It is a **qualitative
 story you write about the logical path of the experiment**: the critical
 questions that needed answers, the hard decisions and the reasoning behind
 them, the pivots (including those forced by reviews), what was ruled out, and
@@ -41,7 +41,7 @@ illustrative, not required. A useful test for every node: does it help answer
 
 `experiment.transition(submit_results)` is blocked until the current attempt
 has a role-`graph` artifact whose SUBMITTED content (the bytes pinned
-when you associate it — re-associate after every edit you want counted)
+when you upload it — resubmit after every edit you want counted)
 passes these checks:
 
 - valid JSON object with `"version": 1`
@@ -59,7 +59,7 @@ reviewer, not the linter.
 ## Refs: brief nodes, linked detail
 
 Prefer brief nodes that point at evidence over long `detail` prose. A node's
-`refs` array takes plain strings — repo-relative paths of registered files
+`refs` array takes plain strings — repo-relative paths of your local files
 (`experiments/<name>/results.json`) or known record ids (`art_…`, `rev_…`,
 `claim_…`, `exp_…`). The UI resolves them on read and renders them as links,
 so the user and the reviewer can jump from a node to the file, review, or
@@ -69,7 +69,7 @@ submitted as artifacts so the links resolve.
 
 ## Keeping it current
 
-Start the graph early (the objective node costs one minute) and re-register it
+Start the graph early (the objective node costs one minute) and resubmit it
 as the story develops — the user watches submitted versions, and a decision is
 best recorded in the moment you make it, while the reasoning is still fresh; a
 graph reconstructed at the end keeps the events but loses the *why*. After a

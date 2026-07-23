@@ -172,7 +172,7 @@ class GatedRoleCapAlignmentTest(unittest.TestCase):
         self.assertEqual(GATED_ROLE_BYTE_CAPS["project_graph"], MAX_GRAPH_BYTES)
         self.assertEqual(GATED_ROLE_BYTE_CAPS["reflection_lens_doc"], 16_000)
         self.assertEqual(GATED_ROLE_BYTE_CAPS["reflection_doc"], 16_000)
-        self.assertEqual(GATED_ROLE_BYTE_CAPS["synthesis_doc"], 16_000)
+        # Legacy spellings are gone: migration 24 canonicalized stored rows.
         self.assertEqual(
             GATED_ROLES,
             {
@@ -182,10 +182,7 @@ class GatedRoleCapAlignmentTest(unittest.TestCase):
                 "project_graph",
                 "reflection_lens_doc",
                 "reflection_doc",
-                "synthesis_doc",
                 "change_spec",
-                "proposals",
-                "reflection",
             },
         )
 

@@ -25,6 +25,7 @@ from merv.shared.artifact_roles import (
 from merv.shared.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
+    figure_link_problem,
     markdown_image_links,
 )
 
@@ -74,11 +75,15 @@ def _content_type_for(path: str) -> str:
     )
 
 
+def _shell_quote(value: str) -> str:
+    """POSIX single-quote — the agent runs the command verbatim in a shell."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def upload_command(*, base_url: str, path: str, token: str, kind: str = "u") -> str:
     """The ready-to-run one-liner the agent executes verbatim."""
     base = (base_url or _LOCAL_API_BASE).rstrip("/")
-    safe_path = path if " " not in path else f'"{path}"'
-    return f"curl -sf -T {safe_path} '{base}/api/artifacts/{kind}/{token}'"
+    return f"curl -sf -T {_shell_quote(path)} '{base}/api/artifacts/{kind}/{token}'"
 
 
 def _evidence(row: Row) -> AssociatedEvidence:
@@ -284,6 +289,34 @@ class ArtifactSubmissionService:
             "size_bytes": len(data),
         }
 
+    def pending_upload_cap(self, *, token: str, kind: str = "u") -> int:
+        """Byte cap for a pending upload token; 404s on unknown tokens so the
+        transport can refuse to buffer a body for anyone without a token."""
+        self._sweep_expired()
+        with closing(self.store.connect()) as conn:
+            if kind == "f":
+                row = conn.execute(
+                    "SELECT 1 FROM artifact_figures WHERE upload_token = ? AND status = 'pending'",
+                    (token,),
+                ).fetchone()
+                if row is None:
+                    raise NotFoundError(
+                        "unknown, used, or expired figure token — resubmit the "
+                        "document to mint fresh figure uploads"
+                    )
+                return MARKDOWN_FIGURE_MAX_BYTES
+            row = conn.execute(
+                "SELECT role FROM artifacts WHERE upload_token = ? AND status = 'pending'",
+                (token,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(
+                "unknown, used, or expired upload token — call artifact.submit again"
+            )
+        # Every submittable role is capped today; the figure cap bounds any
+        # future uncapped role so the transport read stays memory-safe.
+        return artifact_byte_cap(str(row["role"])) or MARKDOWN_FIGURE_MAX_BYTES
+
     # ---- reads ----
 
     def find(
@@ -331,16 +364,37 @@ class ArtifactSubmissionService:
     def artifact_content(
         self, *, artifact_id: str, project_id: str | None = None
     ) -> dict[str, Any]:
-        """Submitted text for one artifact, shaped for UI display."""
+        """Canonical UI wire shape: {content, is_binary, size_bytes,
+        content_type, available}. Binary = declared binary content type or a
+        strict-UTF-8 decode failure — never the filename."""
         artifact = self.resolve(artifact_id=artifact_id, project_id=project_id)
-        text = self.submitted_text_for_artifact(artifact_id=str(artifact["id"]))
+        content_type = str(artifact.get("content_type") or "")
+        data = None
+        if self.blobs is not None and artifact.get("status") == "complete":
+            try:
+                data = self.blobs.get(
+                    namespace=str(artifact["project_id"]),
+                    sha256=str(artifact.get("content_sha256") or ""),
+                )
+            except NotFoundError:
+                data = None
+        text, is_binary = None, False
+        if data is not None:
+            if content_type.startswith(("image/", "audio/", "video/")) or (
+                content_type == "application/pdf"
+            ):
+                is_binary = True
+            else:
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    is_binary = True
         return {
-            "artifact": artifact,
-            "path": artifact.get("path"),
             "content": text,
-            "text": text,
-            "available": text is not None,
-            "source": "submitted" if text is not None else "unavailable",
+            "is_binary": is_binary,
+            "size_bytes": int(artifact.get("size_bytes") or 0),
+            "content_type": content_type,
+            "available": data is not None,
         }
 
     def artifact_file(
@@ -702,6 +756,11 @@ class ArtifactSubmissionService:
         text = data.decode("utf-8", errors="replace")
         figures: list[dict[str, Any]] = []
         for link in dict.fromkeys(markdown_image_links(text)):
+            problem = figure_link_problem(link)
+            if problem:
+                # Raising rolls the transaction back: the artifact stays
+                # pending and the same token accepts the fixed document.
+                raise ValidationError(f"{problem} — fix the link and re-upload")
             token = secrets.token_urlsafe(24)
             conn.execute(
                 """

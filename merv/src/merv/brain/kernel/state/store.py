@@ -736,6 +736,22 @@ def _schema_table_ddl(*, table: str, name: str | None = None) -> str:
     return ddl
 
 
+# Migration 24's own legacy-role map (frozen here: the shared vocabulary no
+# longer carries aliases). 'graph' is legacy only on reflection targets —
+# experiment logic graphs legitimately keep the role.
+_MIGRATION_24_LEGACY_ROLES = {
+    "reflection": "reflection_lens_doc",
+    "synthesis_doc": "reflection_doc",
+    "proposals": "change_spec",
+}
+
+
+def _canonical_artifact_role(*, role: str, target_type: str) -> str:
+    if target_type == "reflection" and role == "graph":
+        return "project_graph"
+    return _MIGRATION_24_LEGACY_ROLES.get(role, role)
+
+
 class BaseStateStore:
     """Dialect-neutral record-store contract and shared persistence helpers.
 
@@ -755,6 +771,13 @@ class BaseStateStore:
     def transaction(self) -> Iterator[Connection]:
         raise NotImplementedError
 
+    @contextmanager
+    def _migration_scope(self, *, conn: Connection) -> Iterator[None]:
+        """Atomicity for one migration + its ledger row. SQLite already runs
+        _apply_migrations inside _initialize's BEGIN IMMEDIATE, so the base is
+        a no-op; the Postgres dialect (autocommit connections) overrides."""
+        yield
+
     def _apply_migrations(self, *, conn: Connection) -> None:
         """Apply unapplied ledger migrations in order, recording each."""
         applied = {
@@ -764,52 +787,56 @@ class BaseStateStore:
         for version, name, statement in MIGRATIONS:
             if version in applied:
                 continue
-            if name == "add_sandbox_tenant_id":
-                self._ensure_sandbox_tenant_id(conn=conn)
-            elif name == "add_sandbox_heartbeat_columns":
-                self._ensure_sandbox_heartbeat_columns(conn=conn)
-            elif name == "migrate_sandbox_uid_identity":
-                self._migrate_sandbox_uid_identity(conn=conn)
-            elif name == "drop_sandboxes_experiment_unique":
-                self._drop_sandboxes_experiment_unique(conn=conn)
-            elif name == "backfill_sandbox_mgmt_key_refs":
-                self._backfill_sandbox_mgmt_key_refs(conn=conn)
-            elif name == "allow_sandbox_attachment_history":
-                self._allow_sandbox_attachment_history(conn=conn)
-            elif name == "drop_sandboxes_experiment_id":
-                self._drop_sandboxes_experiment_id(conn=conn)
-            elif name == "add_project_settings_json":
-                self._ensure_project_settings_json(conn=conn)
-            elif name == "add_experiment_mlflow_run_columns":
-                self._ensure_experiment_mlflow_columns(conn=conn)
-            elif name == "add_review_synopsis":
-                self._ensure_review_synopsis(conn=conn)
-            elif name == "add_sandbox_public_key_source":
-                self._ensure_sandbox_public_key_source(conn=conn)
-            elif name == "rename_syntheses_to_reflections":
-                self._rename_syntheses_to_reflections(conn=conn)
-            elif name == "add_sandbox_last_command_columns":
-                self._ensure_sandbox_last_command_columns(conn=conn)
-            elif name == "add_sandbox_provider_columns":
-                self._ensure_sandbox_provider_columns(conn=conn)
-            elif name == "unify_synthesis_to_reflection":
-                self._unify_synthesis_to_reflection(conn=conn)
-            elif name == "add_litreview_sections":
-                conn.execute(_schema_table_ddl(table="litreview_sections"))
-            elif name == "add_litreview_papers":
-                conn.execute(_schema_table_ddl(table="papers"))
-            elif name == "add_litreview_paper_links":
-                conn.execute(_schema_table_ddl(table="paper_links"))
-            elif name == "add_artifacts_tables":
-                self._add_artifacts_tables(conn=conn)
-            elif name == "drop_resource_tables":
-                self._drop_resource_tables(conn=conn)
-            else:
-                conn.execute(statement)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-                (version, name, now_iso()),
-            )
+            with self._migration_scope(conn=conn):
+                self._apply_one_migration(conn=conn, name=name, statement=statement)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, now_iso()),
+                )
+
+    def _apply_one_migration(self, *, conn: Connection, name: str, statement: str) -> None:
+        if name == "add_sandbox_tenant_id":
+            self._ensure_sandbox_tenant_id(conn=conn)
+        elif name == "add_sandbox_heartbeat_columns":
+            self._ensure_sandbox_heartbeat_columns(conn=conn)
+        elif name == "migrate_sandbox_uid_identity":
+            self._migrate_sandbox_uid_identity(conn=conn)
+        elif name == "drop_sandboxes_experiment_unique":
+            self._drop_sandboxes_experiment_unique(conn=conn)
+        elif name == "backfill_sandbox_mgmt_key_refs":
+            self._backfill_sandbox_mgmt_key_refs(conn=conn)
+        elif name == "allow_sandbox_attachment_history":
+            self._allow_sandbox_attachment_history(conn=conn)
+        elif name == "drop_sandboxes_experiment_id":
+            self._drop_sandboxes_experiment_id(conn=conn)
+        elif name == "add_project_settings_json":
+            self._ensure_project_settings_json(conn=conn)
+        elif name == "add_experiment_mlflow_run_columns":
+            self._ensure_experiment_mlflow_columns(conn=conn)
+        elif name == "add_review_synopsis":
+            self._ensure_review_synopsis(conn=conn)
+        elif name == "add_sandbox_public_key_source":
+            self._ensure_sandbox_public_key_source(conn=conn)
+        elif name == "rename_syntheses_to_reflections":
+            self._rename_syntheses_to_reflections(conn=conn)
+        elif name == "add_sandbox_last_command_columns":
+            self._ensure_sandbox_last_command_columns(conn=conn)
+        elif name == "add_sandbox_provider_columns":
+            self._ensure_sandbox_provider_columns(conn=conn)
+        elif name == "unify_synthesis_to_reflection":
+            self._unify_synthesis_to_reflection(conn=conn)
+        elif name == "add_litreview_sections":
+            conn.execute(_schema_table_ddl(table="litreview_sections"))
+        elif name == "add_litreview_papers":
+            conn.execute(_schema_table_ddl(table="papers"))
+        elif name == "add_litreview_paper_links":
+            conn.execute(_schema_table_ddl(table="paper_links"))
+        elif name == "add_artifacts_tables":
+            self._add_artifacts_tables(conn=conn)
+        elif name == "drop_resource_tables":
+            self._drop_resource_tables(conn=conn)
+        else:
+            conn.execute(statement)
 
     def _ensure_project_settings_json(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="projects", column="settings_json"):
@@ -953,12 +980,13 @@ class BaseStateStore:
 
         Metadata-only: every gated/result blob already lives in the blob store
         keyed by (project_id, sha256), so one artifact row per association
-        (resource x version x target) carries the story forward. Fresh
+        (resource x version x target) carries the story forward. Legacy role
+        spellings are canonicalized here — post-cut readers (and the UI) know
+        only the canonical vocabulary — and the snapshot-token rewrite emits
+        the canonical role so pinned passing reviews keep matching. Fresh
         databases hit only the IF-NOT-EXISTS creates — the resource tables are
         empty, so every backfill loop is a no-op.
         """
-        from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLES
-
         conn.execute(_schema_table_ddl(table="artifacts"))
         conn.execute(_schema_table_ddl(table="artifact_figures"))
         if not self._has_table(conn=conn, table="resource_associations"):
@@ -976,16 +1004,24 @@ class BaseStateStore:
             ORDER BY a.created_seq
             """
         ).fetchall()
-        # (resource, target, role, attempt) -> artifact id, for snapshot tokens;
-        # (version, target) -> artifact id, for figures and published-graph refs.
-        by_assoc: dict[tuple[str, str, str, str, int], str] = {}
-        by_version_target: dict[tuple[str, str, str], str] = {}
+        # (resource, version, target, legacy role, attempt) -> (artifact id,
+        # canonical role), for snapshot tokens — the version keeps a review
+        # pinned to a superseded version stale instead of reviving it;
+        # (version, target) -> [(artifact id, canonical role)], for figures
+        # and published-graph refs (shared versions keep every artifact).
+        by_assoc: dict[tuple[str, str, str, str, str, int], tuple[str, str]] = {}
+        by_version_target: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
         for row in rows:
             path = str(row["path"] or "")
             role = str(row["role"] or "")
+            canonical = _canonical_artifact_role(
+                role=role, target_type=str(row["target_type"])
+            )
             basename = path.rsplit("/", 1)[-1]
             lens_id = (
-                basename.rsplit(".", 1)[0] if role in REFLECTION_LENS_DOC_ROLES else ""
+                basename.rsplit(".", 1)[0]
+                if canonical == "reflection_lens_doc"
+                else ""
             )
             artifact_id = new_id(prefix="art")
             created_at = str(row["created_at"])
@@ -1001,7 +1037,7 @@ class BaseStateStore:
                 """,
                 (
                     artifact_id, str(row["project_id"]), str(row["target_type"]),
-                    str(row["target_id"]), role, int(row["attempt_index"] or 0),
+                    str(row["target_id"]), canonical, int(row["attempt_index"] or 0),
                     lens_id, path, str(row["title"] or ""),
                     str(row["content_sha256"] or ""), int(row["size_bytes"] or 0),
                     str(row["content_type"] or ""), str(row["created_by"] or ""),
@@ -1010,10 +1046,15 @@ class BaseStateStore:
             )
             target_key = (str(row["target_type"]), str(row["target_id"]))
             by_assoc[
-                (str(row["resource_id"]), *target_key, role, int(row["attempt_index"] or 0))
-            ] = artifact_id
+                (
+                    str(row["resource_id"]), str(row["version_id"] or ""),
+                    *target_key, role, int(row["attempt_index"] or 0),
+                )
+            ] = (artifact_id, canonical)
             if row["version_id"]:
-                by_version_target[(str(row["version_id"]), *target_key)] = artifact_id
+                by_version_target.setdefault(
+                    (str(row["version_id"]), *target_key), []
+                ).append((artifact_id, canonical))
         self._backfill_artifact_figures(conn=conn, by_version_target=by_version_target)
         self._rewrite_published_graph_refs(
             conn=conn, by_version_target=by_version_target
@@ -1033,14 +1074,19 @@ class BaseStateStore:
             conn.execute(f"DROP TABLE IF EXISTS {table}")
 
     def _backfill_artifact_figures(
-        self, *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
+        self,
+        *,
+        conn: Connection,
+        by_version_target: dict[tuple[str, str, str], list[tuple[str, str]]],
     ) -> None:
         """report_figures rows fan out to one row per backfilled artifact."""
         if not self._has_table(conn=conn, table="report_figures"):
             return
         artifacts_by_version: dict[str, list[str]] = {}
-        for (version_id, _tt, _tid), artifact_id in by_version_target.items():
-            artifacts_by_version.setdefault(version_id, []).append(artifact_id)
+        for (version_id, _tt, _tid), artifacts in by_version_target.items():
+            artifacts_by_version.setdefault(version_id, []).extend(
+                artifact_id for artifact_id, _role in artifacts
+            )
         for row in conn.execute(
             "SELECT report_version_id, link_path, sha256, size_bytes FROM report_figures"
         ).fetchall():
@@ -1060,14 +1106,22 @@ class BaseStateStore:
 
     @staticmethod
     def _rewrite_published_graph_refs(
-        *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
+        *,
+        conn: Connection,
+        by_version_target: dict[tuple[str, str, str], list[tuple[str, str]]],
     ) -> None:
+        """Repoint each publish pin at that reflection's project_graph artifact
+        specifically — a version shared with another role must not win."""
         for row in conn.execute(
             "SELECT id, published_graph_version_id FROM reflections "
             "WHERE COALESCE(published_graph_version_id, '') != ''"
         ).fetchall():
-            artifact_id = by_version_target.get(
-                (str(row["published_graph_version_id"]), "reflection", str(row["id"]))
+            candidates = by_version_target.get(
+                (str(row["published_graph_version_id"]), "reflection", str(row["id"])),
+                [],
+            )
+            artifact_id = next(
+                (aid for aid, role in candidates if role == "project_graph"), None
             )
             if artifact_id:
                 conn.execute(
@@ -1077,12 +1131,16 @@ class BaseStateStore:
 
     @staticmethod
     def _rewrite_snapshot_resource_tokens(
-        *, conn: Connection, by_assoc: dict[tuple[str, str, str, str, int], str]
+        *,
+        conn: Connection,
+        by_assoc: dict[tuple[str, str, str, str, str, int], tuple[str, str]],
     ) -> None:
-        """Old `res:ver:role:attempt` snapshot tokens become `art:role:attempt`.
+        """Old `res:ver:role:attempt` snapshot tokens become `art:role:attempt`
+        with the canonical role spelling.
 
-        Unmapped tokens (association gone) are kept verbatim: the snapshot can
-        never match again either way, and keeping bytes is the honest record.
+        The version is part of the lookup key: a review pinned to a superseded
+        version finds no mapping and keeps its token verbatim — the snapshot
+        stays stale instead of being revived onto the current version.
         """
         for table in ("reviews", "review_requests"):
             for row in conn.execute(
@@ -1095,19 +1153,20 @@ class BaseStateStore:
                     continue
                 tokens = []
                 for token in parts[4].split(","):
+                    mapped = None
                     try:
                         head, role, attempt = token.rsplit(":", 2)
-                        resource_id = head.split(":", 1)[0]
-                        artifact_id = by_assoc.get(
+                        resource_id, _, version_id = head.partition(":")
+                        mapped = by_assoc.get(
                             (
-                                resource_id, str(row["target_type"]),
+                                resource_id, version_id, str(row["target_type"]),
                                 str(row["target_id"]), role, int(attempt),
                             )
                         )
                     except ValueError:
-                        artifact_id = None
+                        mapped = None
                     tokens.append(
-                        f"{artifact_id}:{role}:{attempt}" if artifact_id else token
+                        f"{mapped[0]}:{mapped[1]}:{attempt}" if mapped else token
                     )
                 rewritten = "|".join([*parts[:4], ",".join(sorted(tokens))])
                 if rewritten != str(row["target_snapshot_id"]):

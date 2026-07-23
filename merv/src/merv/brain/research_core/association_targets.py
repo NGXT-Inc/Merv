@@ -22,6 +22,9 @@ _TABLE_BY_TYPE = {
 # a review rejection that bumps the attempt naturally invalidates stale
 # associations for either target kind.
 _ATTEMPT_TABLE_BY_TYPE = {"experiment": "experiments", "reflection": "reflections"}
+# A published wave is frozen — its pinned graph is the project's comparison
+# base — and an abandoned one is closed; neither accepts new artifacts.
+_TERMINAL_REFLECTION_STATUSES = ("published", "abandoned")
 
 
 class AssociationTargets:
@@ -38,12 +41,19 @@ class AssociationTargets:
         if table is None:
             raise ValidationError(f"unsupported target type: {target_type}")
         attempt = ", attempt_index" if target_type in _ATTEMPT_TABLE_BY_TYPE else ""
+        status = ", status" if target_type == "reflection" else ""
         with closing(self.store.connect()) as conn:
             row = conn.execute(
-                f"SELECT project_id{attempt} FROM {table} WHERE id = ?", (target_id,)
+                f"SELECT project_id{attempt}{status} FROM {table} WHERE id = ?",
+                (target_id,),
             ).fetchone()
         if row is None:
             raise NotFoundError(f"{target_type} not found: {target_id}")
+        if status and str(row["status"]) in _TERMINAL_REFLECTION_STATUSES:
+            raise ValidationError(
+                f"reflection {target_id} is {row['status']} — the wave is "
+                "frozen and no longer accepts artifact submissions"
+            )
         return AssociationTarget(
             project_id=str(row["project_id"]),
             attempt_index=int(row["attempt_index"]) if attempt else 0,

@@ -13,11 +13,7 @@ import json
 import re
 from typing import Any, Callable
 
-from merv.shared.artifact_roles import (
-    PROJECT_GRAPH_ROLE,
-    PROJECT_GRAPH_ROLES,
-    REFLECTION_LENS_DOC_ROLES,
-)
+from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLE
 from merv.shared.markdown_images import markdown_image_links
 
 from .artifact_evidence import preferred_associated_artifact
@@ -146,23 +142,13 @@ def validate_reflection_roster(*, lenses: list[dict[str, Any]]) -> list[dict[str
     return roster
 
 
-def reflection_requirement_roles(*, role: str) -> tuple[str, ...]:
-    if role == "reflection_doc":
-        return ("reflection_doc", "synthesis_doc")
-    if role == "reflection_lens_doc":
-        return REFLECTION_LENS_DOC_ROLES
-    if role == PROJECT_GRAPH_ROLE:
-        return PROJECT_GRAPH_ROLES
-    return (role,)
-
-
 def current_reflection_requirement_artifact(
     *, reflection: dict[str, Any], role: str
 ) -> dict[str, Any] | None:
     return preferred_associated_artifact(
         artifacts=reflection.get("current_attempt_artifacts") or [],
         attempt=reflection.get("attempt_index"),
-        roles=reflection_requirement_roles(role=role),
+        roles=(role,),
     )
 
 
@@ -171,7 +157,7 @@ def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
     # explicit lens_id L (artifact.submit requires it for the role).
     by_lens: dict[str, dict[str, Any]] = {}
     for res in reflection.get("current_attempt_artifacts", []):
-        if res.get("role") not in REFLECTION_LENS_DOC_ROLES:
+        if res.get("role") != REFLECTION_LENS_DOC_ROLE:
             continue
         by_lens.setdefault(
             str(res.get("lens_id") or ""),

@@ -163,6 +163,19 @@ class PostgresStateStore(BaseStateStore):
         finally:
             conn.close()
 
+    @contextmanager
+    def _migration_scope(self, *, conn: Any) -> Iterator[None]:
+        """One migration + its ledger row commit or roll back together —
+        autocommit connections would otherwise persist half a migration."""
+        conn.execute("BEGIN")
+        try:
+            yield
+            conn.execute("COMMIT")
+        except Exception:
+            with suppress(Exception):
+                conn.execute("ROLLBACK")
+            raise
+
     def _has_column(self, *, conn: Any, table: str, column: str) -> bool:
         row = conn.execute(
             """

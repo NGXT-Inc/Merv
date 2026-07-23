@@ -168,11 +168,20 @@ export default function ArtifactContentView({
   }
   if (!content) return null;
 
-  const isBinary = content.is_binary || !('content' in content);
+  // Canonical wire shape: { content, is_binary, size_bytes, content_type, available }.
+  if (content.available === false) {
+    return (
+      <div className="empty">
+        No submitted content is available for this artifact yet.
+      </div>
+    );
+  }
+
+  const isBinary = Boolean(content.is_binary);
   const fullText = content.content ?? '';
   const overCap = fullText.length > MAX_PREVIEW_CHARS;
   let text = overCap ? fullText.slice(0, MAX_PREVIEW_CHARS) : fullText;
-  if (isMarkdown(path || content.path)) {
+  if (isMarkdown(path)) {
     if (dedupeTitle) text = stripMatchingH1(text, dedupeTitle);
     else if (stripTitle) text = stripLeadingH1(text);
   }
@@ -180,7 +189,7 @@ export default function ArtifactContentView({
 
   return (
     <div>
-      {(content.truncated || overCap) && (
+      {overCap && (
         <div className="content-truncated-note">File is large — preview is truncated.</div>
       )}
       {isBinary ? (
@@ -191,7 +200,7 @@ export default function ArtifactContentView({
       ) : (
         <FileRenderer
           text={text}
-          path={path || content.path}
+          path={path}
           resolveImageSrc={resolveImageSrc}
         />
       )}

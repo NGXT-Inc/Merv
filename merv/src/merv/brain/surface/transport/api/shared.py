@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import urllib.parse
 from collections.abc import Callable
 from typing import Any
@@ -24,6 +25,14 @@ UI_CORS_HEADERS = [
 ]
 # ETag is not CORS-safelisted; expose it so a cross-origin dev UI can echo it back.
 UI_CORS_EXPOSE_HEADERS = ["ETag"]
+
+# Artifact upload tokens are bearer credentials living in the URL path; the
+# activity log must never persist them.
+_UPLOAD_TOKEN_PATH_RE = re.compile(r"(/api/artifacts/[uf]/)[^/?]+")
+
+
+def redact_upload_tokens(path: str) -> str:
+    return _UPLOAD_TOKEN_PATH_RE.sub(r"\1<redacted>", path)
 
 
 def path_scoped_body(body: JsonBody, **scope: str) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from ..artifacts.facade import Artifacts
 from ..research_core.facade import (
@@ -275,7 +275,7 @@ class LogicGraphQuery:
             preferred_associated_artifact(
                 artifacts=reflection.get("artifacts", []),
                 attempt=reflection.get("attempt_index"),
-                roles=PROJECT_GRAPH_ROLES,
+                roles=(PROJECT_GRAPH_ROLE,),
             )
             if reflection
             else None

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from merv.shared.artifact_roles import PROJECT_GRAPH_ROLES
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
 
 from ..research_core.facade import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
@@ -371,9 +371,9 @@ class ProjectDashboardQuery:
                 changed.append(claim_id)
         reflection = None
         if latest is not None:
-            graph = _artifact_link(latest, PROJECT_GRAPH_ROLES, "project_graph")
+            graph = _artifact_link(latest, (PROJECT_GRAPH_ROLE,), "project_graph")
             document = _artifact_link(
-                latest, ("reflection_doc", "synthesis_doc"), "reflection_doc"
+                latest, ("reflection_doc",), "reflection_doc"
             )
             reflection = {
                 "reflection_id": latest.get("id"),

@@ -169,7 +169,7 @@ Read all five reflections, then:
 > they disagree on, and keep the eliminated avenues and partial progress, not
 > just the wins.
 
-Produce three artifacts and associate each to the reflection wave:
+Produce three artifacts and submit each to the reflection wave (artifact.submit):
 
 1. **The project logic graph** (role `project_graph`) — edit the living file (e.g.
    `project/logic_graph.json`) in place; same envelope as experiment graphs

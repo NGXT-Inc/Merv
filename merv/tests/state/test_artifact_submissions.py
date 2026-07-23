@@ -9,6 +9,7 @@ from merv.brain.artifacts.submissions import (
     ArtifactSubmissionService,
     UPLOAD_TOKEN_TTL_SECONDS,
 )
+from merv.shared.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
 from merv.brain.kernel.state import StateStore
 from merv.brain.kernel.utils import (
     NotFoundError,
@@ -184,6 +185,45 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
                 ],
             },
         )
+
+    def test_upload_command_always_shell_quotes_the_path(self) -> None:
+        pending = self._submit(path="my plan's file.md")
+        self.assertIn("curl -sf -T 'my plan'\\''s file.md' '", pending["run"])
+
+    def test_pending_upload_cap_gates_on_the_token_first(self) -> None:
+        with self.assertRaises(NotFoundError):
+            self.service.pending_upload_cap(token="tok_unknown")
+        pending = self._submit()
+        self.assertEqual(
+            self.service.pending_upload_cap(token=self._token(pending)), 16_000
+        )
+        report = self._submit(role="report", path="report.md")
+        result = self.service.complete_upload(
+            token=self._token(report), data=REPORT_WITH_FIGURE.encode()
+        )
+        self.assertEqual(
+            self.service.pending_upload_cap(
+                token=result["figures"][0]["token"], kind="f"
+            ),
+            MARKDOWN_FIGURE_MAX_BYTES,
+        )
+        with self.assertRaises(NotFoundError):
+            self.service.pending_upload_cap(token="tok_unknown", kind="f")
+
+    def test_unsafe_figure_links_are_rejected_at_upload(self) -> None:
+        for link in ("../secrets.png", "figs;rm.png", "figs/`id`.png", "$HOME.png"):
+            pending = self._submit(role="report", path=f"r{len(link)}.md")
+            bad = f"## Summary\nS.\n\n![x]({link})\n"
+            with self.assertRaises(ValidationError):
+                self.service.complete_upload(
+                    token=self._token(pending), data=bad.encode()
+                )
+            # The rollback kept the row pending: the same token accepts the
+            # fixed document.
+            result = self.service.complete_upload(
+                token=self._token(pending), data=b"## Summary\nS.\n"
+            )
+            self.assertEqual(result["artifact_id"], pending["artifact_id"])
 
     def test_figure_flow_mints_tokens_and_pins_bytes(self) -> None:
         pending = self._submit(role="report", path="report.md")

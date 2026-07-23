@@ -109,7 +109,9 @@ export default function ReportSpotlight({
           ) : error ? (
             <div className="error-message">{error}</div>
           ) : content ? (
-            content.is_binary ? (
+            content.available === false ? (
+              <div className="empty">No submitted report content is available.</div>
+            ) : content.is_binary ? (
               <div className="empty">Binary report file</div>
             ) : isMarkdown(reportArtifact.path) ? (
               <MarkdownView
