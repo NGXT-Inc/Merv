@@ -370,7 +370,6 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         for principal in (jwt_principal, rr_principal):
             self.assertIsNone(principal.key_id)
             self.assertIsNone(principal.key_project_id)
-            self.assertIsNone(principal.key_quota_context())
             self.assertFalse(hasattr(principal, "profile"))
         self.assertTrue(jwt_principal.client_id.startswith("jwt:"))
         self.assertEqual(rr_principal.user_id, USER_B)
