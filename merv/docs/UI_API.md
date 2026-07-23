@@ -155,6 +155,7 @@ experiments and provides dashboard links when configured.
 ## Reflections
 
 ```http
+GET /api/projects/{project_id}/litreview
 GET /api/projects/{project_id}/reflections
 GET /api/projects/{project_id}/reflections/{reflection_id}
 GET /api/projects/{project_id}/reflections/current/graph

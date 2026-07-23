@@ -136,6 +136,49 @@ class LiteratureService:
                 )
             return self._overview(conn=conn, project_id=project_id)
 
+    def ui_snapshot(self, *, project_id: str | None = None) -> dict[str, Any]:
+        """The whole review in one read — UI endpoint only, no agent tool."""
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            overview = self._overview(conn=conn, project_id=project_id)
+            sections = conn.execute(
+                """
+                SELECT * FROM litreview_sections
+                WHERE project_id = ? AND kind = 'section'
+                ORDER BY position, created_seq
+                """,
+                (project_id,),
+            ).fetchall()
+            papers = conn.execute(
+                "SELECT * FROM papers WHERE project_id = ? ORDER BY created_seq",
+                (project_id,),
+            ).fetchall()
+            links = conn.execute(
+                "SELECT paper_id, target_type, target_id, note FROM paper_links "
+                "WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+            by_paper: dict[str, list[dict[str, Any]]] = {}
+            for link in links:
+                by_paper.setdefault(str(link["paper_id"]), []).append(
+                    {k: link[k] for k in ("target_type", "target_id", "note")}
+                )
+            ledger = []
+            for row in papers:
+                item = dict(row)
+                item["authors"] = json.loads(item.pop("authors_json") or "[]")
+                item.pop("created_seq", None)
+                item["links"] = by_paper.get(str(row["id"]), [])
+                ledger.append(item)
+            return {
+                "summary": overview["summary"],
+                "sections": [
+                    self._present_section(conn=conn, row=row, full=True)
+                    for row in sections
+                ],
+                "papers": ledger,
+            }
+
     def _overview(self, *, conn: Any, project_id: str) -> dict[str, Any]:
         summary = conn.execute(
             "SELECT * FROM litreview_sections WHERE project_id = ? AND kind = 'summary'",

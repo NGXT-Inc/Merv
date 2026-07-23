@@ -274,6 +274,7 @@ class ControlApp:
             experiment_figure=self.experiment_figure_query,
             tracking_overview=self.mlflow_overview_query,
             tenant_counters=self.tenant_counters_query,
+            literature=core.literature,
         )
 
     def shutdown(self) -> None:

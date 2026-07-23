@@ -8,7 +8,7 @@ SYNOPSIS_MIN_LEN = 40
 SYNOPSIS_MAX_LEN = 420
 
 # Catches entity ids leaking into reader-facing prose, e.g. "exp_3f2a".
-_ENTITY_ID_RE = re.compile(r"\b(exp|claim|res|rev|rver|syn)_[A-Za-z0-9]")
+_ENTITY_ID_RE = re.compile(r"\b(exp|claim|res|rev|rver|syn|lit|paper)_[A-Za-z0-9]")
 
 
 def validate_synopsis(value: str) -> str:
