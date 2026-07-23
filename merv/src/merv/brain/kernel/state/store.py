@@ -102,6 +102,32 @@ CREATE TABLE IF NOT EXISTS project_members (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+-- Surface-owned project credentials (agent-anywhere). The presented mk_ secret
+-- is returned once at mint; only its SHA-256 digest is authoritative here. One
+-- key binds one project immutably; there is no update path for project scope.
+-- Ceilings are stored but not yet enforced (enforcement is a later phase).
+CREATE TABLE IF NOT EXISTS project_api_keys (
+  id TEXT PRIMARY KEY,
+  secret_digest TEXT NOT NULL UNIQUE,
+  owner_user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  -- OAuth access keys bind this to their full RFC 8707 resource URI. Direct
+  -- project keys keep NULL and retain their existing REST + MCP authority.
+  audience TEXT,
+  -- Stable grant identity for OAuth access-key rotations. Direct project keys
+  -- keep NULL and use their immutable key id for idempotency instead.
+  oauth_family_id TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  parent_key_id TEXT,
+  sandbox_seconds_ceiling BIGINT CHECK (sandbox_seconds_ceiling IS NULL OR sandbox_seconds_ceiling >= 0),
+  blob_bytes_ceiling BIGINT CHECK (blob_bytes_ceiling IS NULL OR blob_bytes_ceiling >= 0),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(parent_key_id) REFERENCES project_api_keys(id)
+);
+
 CREATE TABLE IF NOT EXISTS claims (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -475,6 +501,9 @@ CREATE TABLE IF NOT EXISTS sandbox_generations (
   instance_type TEXT NOT NULL DEFAULT '',
   gpu TEXT NOT NULL DEFAULT '',
   price_usd_per_hour REAL NOT NULL DEFAULT 0,
+  -- Provisioning credential attribution (agent-anywhere spend). NULL for every
+  -- JWT/rr_sk_/local write; set to the project_api_keys.id that provisioned it.
+  key_id TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
   created_seq INTEGER NOT NULL DEFAULT 0
@@ -677,6 +706,15 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # so FK enforcement never blocks. resources_migrate is the transient
     # rebuild table from the retired pre-ledger UNIQUE migration.
     (25, "drop_resource_tables", ""),
+    # Agent-anywhere Phase A (July 2026): an authoritative, project-scoped
+    # credential table (mk_ keys). SCHEMA creates it before this ledger runs;
+    # the handler runs the SCHEMA-extracted DDL so ledger and SCHEMA cannot
+    # drift. audience + oauth_family_id are folded into the initial DDL (no
+    # separate ALTER migrations) and stay NULL for direct project keys.
+    (26, "add_project_api_keys", ""),
+    # Spend attribution for project-key sandbox generations. Nullable keeps
+    # every JWT, rr_sk_, and local write on its historical row shape.
+    (27, "add_sandbox_generation_key_id", ""),
 )
 
 
@@ -835,8 +873,19 @@ class BaseStateStore:
             self._add_artifacts_tables(conn=conn)
         elif name == "drop_resource_tables":
             self._drop_resource_tables(conn=conn)
+        elif name == "add_project_api_keys":
+            if not self._has_table(conn=conn, table="project_api_keys"):
+                conn.execute(_schema_table_ddl(table="project_api_keys"))
+        elif name == "add_sandbox_generation_key_id":
+            self._ensure_sandbox_generation_key_id(conn=conn)
         else:
             conn.execute(statement)
+
+    def _ensure_sandbox_generation_key_id(self, *, conn: Connection) -> None:
+        if not self._has_column(
+            conn=conn, table="sandbox_generations", column="key_id"
+        ):
+            conn.execute("ALTER TABLE sandbox_generations ADD COLUMN key_id TEXT")
 
     def _ensure_project_settings_json(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="projects", column="settings_json"):

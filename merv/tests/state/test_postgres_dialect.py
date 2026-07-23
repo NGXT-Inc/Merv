@@ -242,6 +242,27 @@ def _schema_without_review_synopsis() -> str:
     return legacy
 
 
+def _schema_without_project_keys() -> str:
+    """SCHEMA before the agent-anywhere Phase-A tables: no project_api_keys
+    table and no sandbox_generations.key_id column."""
+    legacy = re.sub(
+        r"\n-- Surface-owned project credentials.*?"
+        r"CREATE TABLE IF NOT EXISTS project_api_keys \(.*?\n\);\n",
+        "\n",
+        SCHEMA,
+        flags=re.DOTALL,
+    )
+    legacy = re.sub(
+        r"\n  -- Provisioning credential attribution.*?\n  key_id TEXT,",
+        "",
+        legacy,
+        flags=re.DOTALL,
+    )
+    if legacy == SCHEMA or "project_api_keys" in legacy or "key_id" in legacy:
+        raise AssertionError("failed to build the pre-project-keys schema")
+    return legacy
+
+
 @unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
 class PostgresControlPlaneContractTest(
     ControlPlaneContractScenarios, unittest.TestCase
@@ -549,6 +570,72 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(review)
             self.assertEqual(review["synopsis"], "")
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
+
+    def test_legacy_postgres_store_gains_project_keys_and_generation_key_id(self) -> None:
+        """Old-DB upgrade through the agent-anywhere Phase-A block: replay ledger
+        rows < 26 against a schema with neither project_api_keys nor
+        sandbox_generations.key_id, re-open, and confirm migrations 26/27 add
+        both (each migration + its ledger row inside one transaction on the
+        autocommit connection) without disturbing an existing generation row."""
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_project_keys()
+        created = now_iso()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            for version, name, _statement in MIGRATIONS:
+                if version >= 26:
+                    continue
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) "
+                    "VALUES (%s, %s, %s)",
+                    (version, name, created),
+                )
+            conn.execute(
+                "INSERT INTO projects (id, name, summary, created_at) "
+                "VALUES (%s, %s, %s, %s)",
+                ("proj_keys_old", "Old", "", created),
+            )
+            conn.execute(
+                """
+                INSERT INTO sandbox_generations
+                  (id, experiment_id, project_id, tenant_id,
+                   price_usd_per_hour, started_at, created_seq)
+                VALUES ('sbg_old', 'exp_old', 'proj_keys_old', 'local', 1.0, %s, 1)
+                """,
+                (created,),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            self.assertTrue(store._has_table(conn=conn, table="project_api_keys"))
+            for column in ("audience", "oauth_family_id", "sandbox_seconds_ceiling"):
+                self.assertTrue(
+                    store._has_column(
+                        conn=conn, table="project_api_keys", column=column
+                    ),
+                    column,
+                )
+            self.assertTrue(
+                store._has_column(
+                    conn=conn, table="sandbox_generations", column="key_id"
+                )
+            )
+            key_id = conn.execute(
+                "SELECT key_id FROM sandbox_generations WHERE id = 'sbg_old'"
+            ).fetchone()
+            self.assertIsNone(key_id["key_id"])  # pre-existing row keeps NULL
             ledger = conn.execute(
                 "SELECT version, name FROM schema_migrations ORDER BY version"
             ).fetchall()
