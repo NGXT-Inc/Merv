@@ -21,7 +21,7 @@ from ....application.facade import (
     TenantCountersQuery,
 )
 from ....application.ports.storage import ObjectStorage
-from ....artifacts.facade import ArtifactRecords, Artifacts
+from ....artifacts.facade import ArtifactRecords, Artifacts, ArtifactSubmissions
 from ....feed.facade import FeedDelivery
 from ....research_core.facade import (
     ResearchLiterature,
@@ -55,6 +55,7 @@ class HttpDependencies:
     projects: ResearchProjects
     reviews: ResearchReviewDelivery
     artifact_records: ArtifactRecords
+    artifact_submissions: ArtifactSubmissions
     artifacts: Artifacts
     feed: FeedDelivery
     sandboxes: SandboxFacade

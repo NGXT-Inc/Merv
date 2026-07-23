@@ -48,7 +48,7 @@ class RequestAuthenticator:
         request.state.authenticated = False
         path = request.url.path
         if path in ("/health", "/api/meta", "/internal/auth/mlflow") or path.startswith(
-            "/api/sdk/auth/"
+            ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/")
         ):
             return None
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
@@ -151,6 +151,7 @@ class ToolInvocationGateway:
         project_scope: str | None = None,
         activity_source: str = "http",
         principal: Any | None = None,
+        base_url: str = "",  # renders the artifact.submit upload one-liner
     ) -> dict[str, Any]:
         arguments = dict(arguments or {})
         context = dict(context or {})
@@ -170,16 +171,14 @@ class ToolInvocationGateway:
                 "local files, hold user SSH keys, or run rsync",
                 details={"tool": name, "reason": "requires_local_data_plane"},
             )
-        self.projects.require_member(
-            project_id=arguments.get("project_id"), principal=principal
-        )
-        self.projects.require_member(project_id=project_scope, principal=principal)
+        for scope in (arguments.get("project_id"), project_scope):
+            self.projects.require_member(project_id=scope, principal=principal)
         user_id = self.projects.user_id(principal)
-        internal_kwargs = (
-            {"user_id": user_id}
-            if user_id and name in ("project", "project.list")
-            else None
-        )
+        internal_kwargs = None
+        if user_id and name in ("project", "project.list"):
+            internal_kwargs = {"user_id": user_id}
+        if name == "artifact.submit" and base_url:
+            internal_kwargs = {"base_url": base_url}
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if self.surface.use_hosted_tool_policies
@@ -250,6 +249,7 @@ class ToolInvocationGateway:
             context=context,
             activity_source="mcp",
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
+            base_url=str(request.base_url).rstrip("/"),  # caller-reachable base
         )
 
     def authorize_data_plane_project(self, request: Request, project_id: str) -> None:

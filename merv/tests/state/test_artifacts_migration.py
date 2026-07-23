@@ -1,0 +1,205 @@
+"""Migration 24: artifact tables + metadata-only backfill from resources."""
+
+from __future__ import annotations
+
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+from merv.brain.kernel.state.store import StateStore
+
+
+class ArtifactsBackfillMigrationTest(unittest.TestCase):
+    """Replay migration 24 against a resource-era database.
+
+    A first StateStore boot creates the modern schema; the test then rewinds
+    just migration 24 (drops the artifact tables + its ledger row), seeds
+    resource-era rows, and re-opens the store so only the backfill replays —
+    the same shape a production upgrade sees.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "state.sqlite"
+        StateStore(db_path=self.db_path)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DROP TABLE IF EXISTS artifact_figures")
+            conn.execute("DROP TABLE IF EXISTS artifacts")
+            conn.execute("DELETE FROM schema_migrations WHERE version = 24")
+            self._seed(conn)
+            conn.commit()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _seed(self, conn: sqlite3.Connection) -> None:
+        project = ("proj_1",)
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES (?, 'P', '2026-07-01T00:00:00Z')",
+            project,
+        )
+        experiments = [("exp_1", 2)]
+        for exp_id, attempt in experiments:
+            conn.execute(
+                """
+                INSERT INTO experiments
+                  (id, project_id, name, intent, status, attempt_index,
+                   revision_context, created_at, updated_at)
+                VALUES (?, 'proj_1', ?, 'i', 'running', ?, '',
+                        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')
+                """,
+                (exp_id, exp_id, attempt),
+            )
+        conn.execute(
+            """
+            INSERT INTO reflections
+              (id, project_id, title, status, roster_json, corpus_json,
+               published_at, published_graph_version_id, created_at,
+               updated_at, created_seq)
+            VALUES ('ref_1', 'proj_1', 'Wave', 'published', '[]', '{}',
+                    '2026-07-02T00:00:00Z', 'rver_graph',
+                    '2026-07-01T00:00:00Z', '2026-07-02T00:00:00Z', 1)
+            """
+        )
+        resources = [
+            # (id, path, kind, title)
+            ("res_plan", "plan.md", "plan", "Plan"),
+            ("res_lens", "reflections/rigor.md", "reflection", "Rigor lens"),
+            ("res_graph", "project/logic_graph.json", "document", ""),
+        ]
+        for resource_id, path, kind, title in resources:
+            conn.execute(
+                """
+                INSERT INTO resources
+                  (id, project_id, path, kind, title, current_version_id,
+                   version_token, mtime_ns, size_bytes, observed_at,
+                   created_by, created_at, updated_at)
+                VALUES (?, 'proj_1', ?, ?, ?, ?, 'tok', 1, 10,
+                        '2026-07-01T00:00:00Z', 'codex',
+                        '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')
+                """,
+                (resource_id, path, kind, title, f"rver_{resource_id[4:]}"),
+            )
+        versions = [
+            ("rver_plan", "res_plan", "plan.md", "a" * 64, 11),
+            ("rver_lens", "res_lens", "reflections/rigor.md", "b" * 64, 12),
+            ("rver_graph", "res_graph", "project/logic_graph.json", "c" * 64, 13),
+        ]
+        for seq, (version_id, resource_id, path, sha, size) in enumerate(versions, 1):
+            conn.execute(
+                """
+                INSERT INTO resource_versions
+                  (id, resource_id, project_id, path, content_sha256,
+                   size_bytes, mtime_ns, observed_at, content_type,
+                   created_by, created_at, created_seq)
+                VALUES (?, ?, 'proj_1', ?, ?, ?, 1, '2026-07-01T00:00:00Z',
+                        'text/markdown', 'codex', '2026-07-01T00:00:00Z', ?)
+                """,
+                (version_id, resource_id, path, sha, size, seq),
+            )
+        associations = [
+            # (id, resource, version, target_type, target_id, role, attempt)
+            ("as_1", "res_plan", "rver_plan", "experiment", "exp_1", "plan", 2),
+            ("as_2", "res_lens", "rver_lens", "reflection", "ref_1",
+             "reflection_lens_doc", 1),
+            ("as_3", "res_graph", "rver_graph", "reflection", "ref_1",
+             "project_graph", 1),
+        ]
+        for seq, row in enumerate(associations, 1):
+            conn.execute(
+                """
+                INSERT INTO resource_associations
+                  (id, resource_id, version_id, target_type, target_id, role,
+                   attempt_index, created_at, created_seq)
+                VALUES (?, ?, ?, ?, ?, ?, ?, '2026-07-01T01:00:00Z', ?)
+                """,
+                (*row, seq),
+            )
+        conn.execute(
+            """
+            INSERT INTO report_figures
+              (report_version_id, link_path, sha256, size_bytes, created_at)
+            VALUES ('rver_plan', 'figures/curve.png', ?, 42, '2026-07-01T01:00:00Z')
+            """,
+            ("d" * 64,),
+        )
+        # Old-format snapshot: resource:version tokens for the plan gate.
+        conn.execute(
+            """
+            INSERT INTO review_requests
+              (id, project_id, target_type, target_id, role, capability_hash,
+               status, target_snapshot_id, expires_at, created_at, created_seq)
+            VALUES ('req_1', 'proj_1', 'experiment', 'exp_1', 'design_reviewer',
+                    'hash', 'requested',
+                    'experiment|exp_1|design_review|2|res_plan:rver_plan:plan:2',
+                    '2027-01-01T00:00:00Z', '2026-07-01T02:00:00Z', 1)
+            """
+        )
+
+    def test_backfill_maps_rows_figures_and_refs(self) -> None:
+        StateStore(db_path=self.db_path)  # replays only migration 24
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        artifacts = {
+            str(row["path"]): dict(row)
+            for row in conn.execute("SELECT * FROM artifacts").fetchall()
+        }
+        self.assertEqual(len(artifacts), 3)
+
+        plan = artifacts["plan.md"]
+        self.assertTrue(str(plan["id"]).startswith("art_"))
+        self.assertEqual(plan["role"], "plan")
+        self.assertEqual(plan["target_id"], "exp_1")
+        self.assertEqual(plan["attempt_index"], 2)
+        self.assertEqual(plan["content_sha256"], "a" * 64)
+        self.assertEqual(plan["size_bytes"], 11)
+        self.assertEqual(plan["status"], "complete")
+        self.assertEqual(plan["lens_id"], "")
+
+        # Lens docs inherit lens_id from the basename stem convention.
+        lens = artifacts["reflections/rigor.md"]
+        self.assertEqual(lens["lens_id"], "rigor")
+        self.assertEqual(lens["title"], "Rigor lens")
+
+        # report_figures follow their document via the version->artifact map.
+        figures = conn.execute(
+            "SELECT artifact_id, link_path, content_sha256 FROM artifact_figures"
+        ).fetchall()
+        self.assertEqual(len(figures), 1)
+        self.assertEqual(figures[0]["artifact_id"], plan["id"])
+        self.assertEqual(figures[0]["link_path"], "figures/curve.png")
+
+        # The published-graph ref now points at the backfilled artifact.
+        graph = artifacts["project/logic_graph.json"]
+        published_ref = conn.execute(
+            "SELECT published_graph_version_id FROM reflections WHERE id = 'ref_1'"
+        ).fetchone()[0]
+        self.assertEqual(published_ref, graph["id"])
+
+        # The pinned snapshot token was rewritten to artifact_id:role:attempt.
+        snapshot = conn.execute(
+            "SELECT target_snapshot_id FROM review_requests WHERE id = 'req_1'"
+        ).fetchone()[0]
+        self.assertEqual(
+            snapshot,
+            f"experiment|exp_1|design_review|2|{plan['id']}:plan:2",
+        )
+        conn.close()
+
+    def test_backfill_is_a_noop_on_fresh_databases(self) -> None:
+        with tempfile.TemporaryDirectory() as fresh:
+            StateStore(db_path=Path(fresh) / "state.sqlite")
+            conn = sqlite3.connect(Path(fresh) / "state.sqlite")
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 0
+            )
+            applied = conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 24"
+            ).fetchone()[0]
+            self.assertEqual(applied, 1)
+            conn.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

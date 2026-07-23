@@ -8,13 +8,27 @@ from merv.shared.artifact_roles import GATED_ROLES
 
 from ..kernel.utils import NotFoundError
 from .resources import ResourceService
+from .submissions import ArtifactSubmissionService, upload_command
+
+
+@runtime_checkable
+class ArtifactSubmissions(Protocol):
+    """Public artifact submit/upload/read contract for delivery adapters."""
+
+    def submit(self, **kwargs: Any) -> dict[str, Any]: ...
+    def complete_upload(self, *, token: str, data: bytes) -> dict[str, Any]: ...
+    def complete_figure_upload(self, *, token: str, data: bytes) -> dict[str, Any]: ...
+    def find(self, **kwargs: Any) -> dict[str, Any]: ...
+    def artifact_content(self, **kwargs: Any) -> dict[str, Any]: ...
+    def artifact_file(self, **kwargs: Any) -> tuple[bytes, str, str]: ...
+    def figure_bytes(self, **kwargs: Any) -> bytes | None: ...
 
 
 class MetricFileSource(TypedDict):
     path: str
-    version_id: str
+    artifact_id: str
     sha256: str
-    observed_at: str
+    submitted_at: str
     data: object
 
 
@@ -33,9 +47,14 @@ class Artifacts(Protocol):
         content_bytes: bytes,
         content_type: str,
         title: str,
-        kind: str,
         project_id: str,
     ) -> None: ...
+
+    def submitted_text_for_artifact(self, *, artifact_id: str | None) -> str | None: ...
+
+    def submitted_artifact_figure(
+        self, *, project_id: str, artifact_id: str, link_path: str
+    ) -> tuple[bytes, str] | None: ...
 
     def resolve_resource(
         self, *, project_id: str, resource_id: str
@@ -57,19 +76,27 @@ class Artifacts(Protocol):
 
 
 class ArtifactsFacade:
-    """Narrow adapter over the already-composed resource service."""
+    """Narrow adapter over the composed artifact services.
 
-    __slots__ = ("_resources",)
+    Submitted-artifact reads and system pinning run on the new submission
+    service; the resource-shaped methods below delegate to the legacy resource
+    service only for the pre-cut HTTP routes and die with it in the deletion
+    phase."""
 
-    def __init__(self, resources: ResourceService) -> None:
+    __slots__ = ("_resources", "_submissions")
+
+    def __init__(
+        self, resources: ResourceService, *, submissions: ArtifactSubmissionService
+    ) -> None:
         self._resources = resources
+        self._submissions = submissions
 
     def metric_file_sources(
         self, *, experiment_id: str, attempt_index: int
     ) -> list[MetricFileSource]:
         return cast(
             list[MetricFileSource],
-            self._resources.metric_file_sources(
+            self._submissions.metric_sources(
                 target_id=experiment_id, attempt_index=attempt_index
             ),
         )
@@ -83,10 +110,9 @@ class ArtifactsFacade:
         content_bytes: bytes,
         content_type: str,
         title: str,
-        kind: str,
         project_id: str,
     ) -> None:
-        self._resources.pin_system_artifact(
+        self._submissions.pin_system_artifact(
             path=path,
             target_type="experiment",
             target_id=experiment_id,
@@ -94,9 +120,19 @@ class ArtifactsFacade:
             content_bytes=content_bytes,
             content_type=content_type,
             title=title,
-            kind=kind,
             project_id=project_id,
         )
+
+    def submitted_text_for_artifact(self, *, artifact_id: str | None) -> str | None:
+        return self._submissions.submitted_text_for_artifact(artifact_id=artifact_id)
+
+    def submitted_artifact_figure(
+        self, *, project_id: str, artifact_id: str, link_path: str
+    ) -> tuple[bytes, str] | None:
+        data = self._submissions.figure_bytes(
+            project_id=project_id, artifact_id=artifact_id, link_path=link_path
+        )
+        return (data, link_path.rsplit("/", 1)[-1]) if data is not None else None
 
     def resolve_resource(
         self, *, project_id: str, resource_id: str
@@ -194,4 +230,11 @@ class ArtifactRecords(Protocol):
     def delete(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
-__all__ = ["ArtifactRecords", "Artifacts", "ArtifactsFacade", "MetricFileSource"]
+__all__ = [
+    "ArtifactRecords",
+    "ArtifactSubmissions",
+    "Artifacts",
+    "ArtifactsFacade",
+    "MetricFileSource",
+    "upload_command",
+]

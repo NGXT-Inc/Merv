@@ -200,6 +200,8 @@ TABLE_OWNERS = {
     "resource_versions": ARTIFACTS,
     "resource_associations": ARTIFACTS,
     "report_figures": ARTIFACTS,
+    "artifacts": ARTIFACTS,
+    "artifact_figures": ARTIFACTS,
     "storage_objects": OBJECT_STORAGE,
     "sandboxes": SANDBOX,
     "sandbox_attachments": SANDBOX,

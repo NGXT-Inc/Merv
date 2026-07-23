@@ -15,7 +15,7 @@ from ...application.facade import (
     TransitionExperiment,
 )
 from ...application.ports.storage import ObjectStorage
-from ...artifacts.facade import ArtifactRecords
+from ...artifacts.facade import ArtifactRecords, ArtifactSubmissions
 from ...feed.facade import FeedDelivery
 from ...research_core.facade import (
     ResearchClaims,
@@ -36,6 +36,7 @@ def build_control_tool_handlers(
     create_experiment: CreateExperiment,
     reflection_tools: ReflectionCommands,
     resources: ArtifactRecords,
+    artifact_submissions: ArtifactSubmissions,
     storage: ObjectStorage | None,
     reviews: ResearchReviewDelivery,
     sandboxes: SandboxFacade,
@@ -67,6 +68,7 @@ def build_control_tool_handlers(
         "tracking_finalize": tracking_finalize,
         "reflection_tools": reflection_tools,
         "resources": resources,
+        "artifact_submissions": artifact_submissions,
         "reviews": reviews,
         "review_status": review_status,
         "sandboxes": sandboxes,

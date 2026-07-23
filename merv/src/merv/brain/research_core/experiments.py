@@ -314,7 +314,7 @@ class ExperimentService:
                     """,
                     (experiment_id,),
                 ),
-                evidence=self.evidence_reader.resources_for_target(
+                evidence=self.evidence_reader.artifacts_for_target(
                     target_type="experiment", target_id=experiment_id
                 ),
                 reviews=_query(
@@ -367,7 +367,7 @@ class ExperimentService:
         ):
             reviews.setdefault(str(review["target_id"]), []).append(review)
 
-        evidence = self.evidence_reader.resources_for_targets(
+        evidence = self.evidence_reader.artifacts_for_targets(
             target_type="experiment", target_ids=experiment_ids
         )
         return [
@@ -799,30 +799,23 @@ class ExperimentService:
         self, *, experiment: dict[str, Any], role: str, what: str
     ) -> SubmittedDocument:
         resource = preferred_associated_resource(
-            resources=[
-                item
-                for item in experiment.get("current_attempt_resources") or []
-                if not item.get("deleted")
-            ],
+            resources=experiment.get("current_attempt_resources") or [],
             attempt=experiment.get("attempt_index"),
             roles=(role,),
         )
         if resource is None:
             raise WorkflowError(
-                f"no {role!r} resource is associated for the current attempt"
+                f"no {role!r} artifact is submitted for the current attempt"
             )
         return self.evidence_reader.submitted_document(
-            version_id=resource.get("association_version_id"),
-            path=str(resource.get("path") or ""),
-            role=role,
-            what=what,
+            artifact_id=str(resource.get("id") or ""), what=what
         )
 
     def _validate_plan_sections(self, *, experiment: dict[str, Any]) -> None:
         """Block submit_design unless the current attempt's SUBMITTED plan fills
         in the required spine and every relative figure link has submitted
         figure content. Lints the bytes pinned at associate; editing the
-        live file changes nothing until it is re-associated."""
+        live file changes nothing until it is resubmitted."""
         document = self._submitted_document(
             experiment=experiment,
             role="plan",
@@ -835,14 +828,14 @@ class ExperimentService:
                 "experiment plan is missing required sections before design review: "
                 + ", ".join(missing)
                 + ". Fill in the plan template's required spine — Summary; "
-                "Objective & hypothesis; Evaluation — then re-associate the plan "
+                "Objective & hypothesis; Evaluation — then resubmit the plan "
                 "to submit the fix; see skills/research-workflow/plan-template.md."
             )
         figures = set(document.figure_links)
         problems = [
             f"figure {link!r} has no submitted content: make sure the file "
             f"exists next to {path} (copy it out first if it was produced "
-            "on the sandbox), then re-associate the plan to submit it"
+            "on the sandbox), then resubmit the plan to submit it"
             for link in markdown_image_links(plan_text)
             if link not in figures
         ]
@@ -872,15 +865,11 @@ class ExperimentService:
             return (
                 f"figure {link!r} has no submitted content: make sure the file "
                 f"exists next to {path} (copy it out first if it was produced "
-                "on the sandbox), then re-associate the report to submit it"
+                "on the sandbox), then resubmit the report to submit it"
             )
 
         exhibit = preferred_associated_resource(
-            resources=[
-                resource
-                for resource in experiment.get("current_attempt_resources") or []
-                if not resource.get("deleted")
-            ],
+            resources=experiment.get("current_attempt_resources") or [],
             attempt=experiment.get("attempt_index"),
             roles=(EXHIBIT_ROLE,),
         )
@@ -893,7 +882,7 @@ class ExperimentService:
             raise WorkflowError(
                 "results report is not ready for experiment review: "
                 + "; ".join(problems)
-                + ". Fix the file and re-associate it to submit the revision — "
+                + ". Fix the file and resubmit it (artifact.submit) — "
                 "see skills/research-workflow/report-template.md."
             )
 
@@ -912,7 +901,7 @@ class ExperimentService:
             raise WorkflowError(
                 "logic graph is not ready for experiment review: "
                 + "; ".join(problems)
-                + ". Fix the file and re-associate it to submit the revision — "
+                + ". Fix the file and resubmit it (artifact.submit) — "
                 "see skills/research-workflow/graph-template.md."
             )
 

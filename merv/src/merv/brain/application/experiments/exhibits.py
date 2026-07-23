@@ -69,7 +69,7 @@ class ExperimentExhibits:
             raise WorkflowError(
                 "experiment.exhibit previews a running experiment; this one is "
                 f"{state.get('status')!r}. After submit_results, read the pinned "
-                "exhibit resource instead (resource.find)."
+                "exhibit artifact instead (artifact.find)."
             )
         exhibit = self.generate(state=state)
         path = self.research.exhibit_path(

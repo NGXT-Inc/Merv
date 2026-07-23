@@ -94,7 +94,9 @@ class ControlApp:
         )
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
         self.produced_objects = StorageObjectCatalog(store=store)
-        self.artifacts = ArtifactsFacade(core.resources)
+        self.artifacts = ArtifactsFacade(
+            core.resources, submissions=core.artifact_submissions
+        )
         self.hosted_resource_content_query = HostedResourceContentQuery(
             artifacts=self.artifacts
         )
@@ -233,6 +235,7 @@ class ControlApp:
                 create_experiment=self.create_experiment,
                 reflection_tools=self.reflection_commands,
                 resources=core.resources,
+                artifact_submissions=core.artifact_submissions,
                 storage=storage,
                 reviews=core.reviews,
                 sandboxes=self.sandboxes,
@@ -255,6 +258,7 @@ class ControlApp:
             projects=core.projects,
             reviews=core.reviews,
             artifact_records=core.resources,
+            artifact_submissions=core.artifact_submissions,
             artifacts=self.artifacts,
             feed=core.feed,
             sandboxes=self.sandboxes,

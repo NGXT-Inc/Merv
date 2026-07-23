@@ -13,7 +13,7 @@ from merv.brain.application.events import (
     EventDispatcher,
     EventReaction,
 )
-from merv.brain.artifacts.resources import ResourceService
+from merv.brain.artifacts.submissions import ArtifactSubmissionService
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import ExperimentService
@@ -30,7 +30,7 @@ class CommittedEventTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
-        self.evidence = ResourceService(
+        self.evidence = ArtifactSubmissionService(
             store=self.store,
             association_targets=AssociationTargets(store=self.store),
         )

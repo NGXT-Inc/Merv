@@ -14,34 +14,28 @@ from typing import Protocol, runtime_checkable
 
 @dataclass(frozen=True, slots=True)
 class AssociatedEvidence:
-    """One resource association expressed without persistence-shaped names."""
+    """One complete submitted artifact expressed without persistence names."""
 
-    resource_id: str
+    artifact_id: str
     project_id: str
+    role: str
+    attempt_index: int
+    lens_id: str
     path: str
-    kind: str
     title: str
-    current_version_id: str | None
-    version_token: str
-    modified_time_ns: int
+    content_sha256: str
     size_bytes: int
-    observed_at: str
-    git_commit: str | None
-    is_missing: bool
-    is_deleted: bool
+    content_type: str
     created_by: str
     created_at: str
     updated_at: str
-    role: str
-    attempt_index: int
-    submitted_version_id: str | None
-    association_order: int
+    order: int
 
 
 @dataclass(frozen=True, slots=True)
 class SubmittedDocument:
     text: str
-    version_id: str
+    artifact_id: str
     path: str
     role: str
     figure_links: tuple[str, ...]
@@ -49,12 +43,12 @@ class SubmittedDocument:
 
 @dataclass(frozen=True, slots=True)
 class SubmittedEvidence:
-    """Best-effort submitted text for one immutable association."""
+    """Best-effort submitted text for one immutable artifact."""
 
     role: str
     path: str
-    version_id: str | None
-    association_order: int
+    artifact_id: str
+    order: int
     content: str | None
 
 
@@ -68,21 +62,16 @@ class AssociationTarget:
 class EvidenceReader(Protocol):
     """Immutable Artifact evidence consumed by Research policy."""
 
-    def resources_for_target(
+    def artifacts_for_target(
         self, *, target_type: str, target_id: str
     ) -> tuple[AssociatedEvidence, ...]: ...
 
-    def resources_for_targets(
+    def artifacts_for_targets(
         self, *, target_type: str, target_ids: tuple[str, ...]
     ) -> dict[str, tuple[AssociatedEvidence, ...]]: ...
 
     def submitted_document(
-        self,
-        *,
-        version_id: str | None,
-        path: str,
-        role: str,
-        what: str,
+        self, *, artifact_id: str | None, what: str
     ) -> SubmittedDocument: ...
 
     def submitted_evidence(
@@ -97,7 +86,7 @@ class EvidenceReader(Protocol):
 
 @runtime_checkable
 class AssociationTargetResolver(Protocol):
-    """Research-owned target facts needed while associating a resource."""
+    """Research-owned target facts needed while submitting an artifact."""
 
     def resolve(self, *, target_type: str, target_id: str) -> AssociationTarget: ...
 

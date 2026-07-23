@@ -62,20 +62,19 @@ class ExperimentPresentationTest(unittest.TestCase):
             ],
             "resources": [
                 {
-                    "id": "res_old",
+                    "id": "art_old",
                     "association_role": "report",
                     "association_attempt_index": 1,
                     "path": "old.md",
-                    "kind": "report",
+                    "lens_id": "",
                 },
                 {
-                    "id": "res_current",
+                    "id": "art_current",
                     "association_role": "report",
                     "association_attempt_index": 2,
                     "path": "report.md",
-                    "kind": "report",
+                    "lens_id": "",
                     "size_bytes": 12,
-                    "missing": False,
                     "title": "Report",
                 },
             ],
@@ -115,18 +114,17 @@ class ExperimentPresentationTest(unittest.TestCase):
 
         self.assertEqual(result["current_attempt_resources"], [
             {
-                "id": "res_current",
+                "id": "art_current",
                 "association_role": "report",
                 "path": "report.md",
-                "kind": "report",
+                "lens_id": "",
                 "size_bytes": 12,
-                "missing": False,
                 "title": "Report",
             }
         ])
         self.assertEqual(result["prior_attempt_resources"], [
             {
-                "id": "res_old",
+                "id": "art_old",
                 "association_role": "report",
                 "path": "old.md",
                 "association_attempt_index": 1,

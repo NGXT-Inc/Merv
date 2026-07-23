@@ -94,15 +94,15 @@ class RecordingResourcesService:
         self.sources = [
             {
                 "path": "experiments/first/results.json",
-                "version_id": "rver_1",
+                "artifact_id": "art_1",
                 "sha256": "abc",
-                "observed_at": "2026-07-19T11:30:00Z",
+                "submitted_at": "2026-07-19T11:30:00Z",
                 "data": {"accuracy": 0.8},
             }
         ]
 
-    def metric_file_sources(self, **kwargs):
-        self.calls.append(("metric_file_sources", kwargs))
+    def metric_sources(self, **kwargs):
+        self.calls.append(("metric_sources", kwargs))
         return self.sources
 
     def pin_system_artifact(self, **kwargs):
@@ -201,6 +201,12 @@ class RecordingArtifactsFake:
         return []
 
     def pin_system_artifact(self, **kwargs):
+        return None
+
+    def submitted_text_for_artifact(self, **_kwargs):
+        return None
+
+    def submitted_artifact_figure(self, **_kwargs):
         return None
 
     def resolve_resource(self, **_kwargs):
@@ -440,7 +446,7 @@ class ComponentFacadeTest(unittest.TestCase):
 
     def test_artifacts_facade_normalizes_only_the_experiment_target(self) -> None:
         service = RecordingResourcesService()
-        facade = ArtifactsFacade(service)
+        facade = ArtifactsFacade(service, submissions=service)
 
         self.assertIs(facade._resources, service)
         self.assertIsInstance(facade, Artifacts)
@@ -456,7 +462,6 @@ class ComponentFacadeTest(unittest.TestCase):
                 content_bytes=b"{}",
                 content_type="application/json",
                 title="Metrics exhibit",
-                kind="result",
                 project_id="proj_1",
             )
         )
@@ -470,7 +475,7 @@ class ComponentFacadeTest(unittest.TestCase):
             service.calls,
             [
                 (
-                    "metric_file_sources",
+                    "metric_sources",
                     {"target_id": "exp_1", "attempt_index": 2},
                 ),
                 (
@@ -483,7 +488,6 @@ class ComponentFacadeTest(unittest.TestCase):
                         "content_bytes": b"{}",
                         "content_type": "application/json",
                         "title": "Metrics exhibit",
-                        "kind": "result",
                         "project_id": "proj_1",
                     },
                 ),

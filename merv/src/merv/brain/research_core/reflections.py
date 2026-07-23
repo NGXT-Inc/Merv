@@ -228,7 +228,7 @@ class ReflectionService:
             data["corpus"] = json.loads(str(data.pop("corpus_json", "{}")))
             data["resources"] = [
                 resource_state_record(evidence)
-                for evidence in self.evidence_reader.resources_for_target(
+                for evidence in self.evidence_reader.artifacts_for_target(
                     target_type="reflection", target_id=reflection_id
                 )
             ]
@@ -391,13 +391,14 @@ class ReflectionService:
         self, *, conn, reflection: dict[str, Any]
     ) -> dict[str, Any]:
         current_resource = self._project_graph_resource(reflection=reflection)
-        current_version_id = str(
+        # published_graph_version_id holds the artifact id pinned at publish.
+        current_artifact_id = str(
             (
                 reflection.get("published_graph_version_id")
                 if reflection.get("status") == "published"
                 else None
             )
-            or (current_resource or {}).get("association_version_id")
+            or (current_resource or {}).get("id")
             or ""
         )
         base = self._previous_published_graph_ref(conn=conn, reflection=reflection)
@@ -408,10 +409,10 @@ class ReflectionService:
             "base_reflection_id": base.get("reflection_id") if base else None,
             "base_graph_version_id": base.get("graph_version_id") if base else None,
             "current_reflection_id": reflection.get("id"),
-            "current_graph_version_id": current_version_id or None,
+            "current_graph_version_id": current_artifact_id or None,
             "problems": [],
         }
-        if not current_version_id:
+        if not current_artifact_id:
             result.update(
                 {
                     "reason": "no_current_project_graph",
@@ -429,17 +430,11 @@ class ReflectionService:
             return result
 
         base_graph, base_problems = self._load_graph_for_diff(
-            conn=conn,
-            version_id=str(base["graph_version_id"]),
-            role="project_graph",
+            artifact_id=str(base["graph_version_id"]),
             what="previous project logic graph",
         )
         current_graph, current_problems = self._load_graph_for_diff(
-            conn=conn,
-            version_id=current_version_id,
-            role=str(
-                (current_resource or {}).get("association_role") or "project_graph"
-            ),
+            artifact_id=current_artifact_id,
             what="current project logic graph",
         )
         problems = [*base_problems, *current_problems]
@@ -495,14 +490,11 @@ class ReflectionService:
         }
 
     def _load_graph_for_diff(
-        self, *, conn, version_id: str, role: str, what: str
+        self, *, artifact_id: str, what: str
     ) -> tuple[dict[str, Any] | None, list[str]]:
         try:
             text = self.evidence_reader.submitted_document(
-                version_id=version_id,
-                path="",
-                what=what,
-                role=role,
+                artifact_id=artifact_id, what=what
             ).text
         except WorkflowError as exc:
             return None, [str(exc)]
@@ -549,7 +541,7 @@ class ReflectionService:
                             if resource is None
                             else {
                                 "path": resource.get("path"),
-                                "version_id": resource.get("association_version_id"),
+                                "artifact_id": resource.get("id"),
                                 "association_role": resource.get("association_role"),
                             }
                         ),
@@ -602,25 +594,23 @@ class ReflectionService:
             missing_error = requirement.error if not has_association else (
                 "reflections are missing for lens(es): "
                 + ", ".join(missing_lenses)
-                + " — each roster lens must have its own reflection associated "
-                "(role 'reflection_lens_doc') for the current attempt, in a "
-                "file named <lens_id>.md, submitted by its own subagent"
+                + " — each roster lens must have its own reflection submitted "
+                "(artifact.submit with role 'reflection_lens_doc' and its "
+                "lens_id) for the current attempt, by its own subagent"
             )
         invalid: dict[str, str] = {}
         if not missing_lenses:
             for lens in coverage.get("lenses") or []:
                 lens_id, path = str(lens["lens_id"]), str(lens["path"])
                 try:
-                    text = self._submitted_version_text(
-                        version_id=lens.get("version_id"),
-                        path=path,
-                        role=str(lens.get("role") or "reflection_lens_doc"),
+                    text = self.evidence_reader.submitted_document(
+                        artifact_id=str(lens.get("artifact_id") or ""),
                         what=f"reflection {lens_id!r}",
-                    )
+                    ).text
                     if not text.strip():
                         invalid[lens_id] = (
                             f"reflection for lens {lens_id!r} ({path}) is empty — "
-                            "write it and re-associate to submit the content"
+                            "write it and resubmit it (artifact.submit) to submit the content"
                         )
                 except WorkflowError as exc:
                     invalid[lens_id] = str(exc)
@@ -644,13 +634,14 @@ class ReflectionService:
             if covered:
                 item.update(
                     path=found.get("path"),
-                    version_id=found.get("version_id"),
+                    artifact_id=found.get("artifact_id"),
                     association_role=found.get("role"),
                 )
             else:
                 item["missing"] = (
                     f"reflection doc for lens {lens_id!r} "
-                    "(role 'reflection_lens_doc', file <lens_id>.md)"
+                    "(artifact.submit with role 'reflection_lens_doc', "
+                    f"lens_id {lens_id!r})"
                 )
             if problem:
                 item["problems"] = [problem]
@@ -747,7 +738,7 @@ class ReflectionService:
             raise WorkflowError(
                 "project logic graph is not ready for reflection review: "
                 + "; ".join(problems)
-                + ". Fix the file and re-associate it to submit the revision — "
+                + ". Fix the file and resubmit it (artifact.submit) — "
                 "see skills/research-workflow/graph-template.md."
             )
 
@@ -770,7 +761,7 @@ class ReflectionService:
             raise WorkflowError(
                 "reflection document is not ready for review: "
                 + "; ".join(problems)
-                + ". Keep it concise, fix the file, and re-associate it to "
+                + ". Keep it concise, fix the file, and resubmit it (artifact.submit) to "
                 "submit the revision — see "
                 "skills/project-reflection/reflection-artifacts-template.md."
             )
@@ -984,17 +975,14 @@ class ReflectionService:
     def _current_graph_version_id(
         self, *, reflection: dict[str, Any]
     ) -> str | None:
+        """The current project-graph ARTIFACT id, pinned at publish."""
         resource = preferred_associated_resource(
-            resources=[
-                item
-                for item in reflection.get("current_attempt_resources") or []
-                if not item.get("deleted")
-            ],
+            resources=reflection.get("current_attempt_resources") or [],
             attempt=reflection.get("attempt_index"),
             roles=PROJECT_GRAPH_ROLES,
         )
-        version_id = (resource or {}).get("association_version_id")
-        return str(version_id) if version_id else None
+        artifact_id = (resource or {}).get("id")
+        return str(artifact_id) if artifact_id else None
 
     def _submitted_role_document(
         self,
@@ -1004,33 +992,15 @@ class ReflectionService:
         what: str,
     ) -> SubmittedDocument | None:
         resource = preferred_associated_resource(
-            resources=[
-                item
-                for item in reflection.get("current_attempt_resources") or []
-                if not item.get("deleted")
-            ],
+            resources=reflection.get("current_attempt_resources") or [],
             attempt=reflection.get("attempt_index"),
             roles=roles,
         )
         if resource is None:
             return None
         return self.evidence_reader.submitted_document(
-            version_id=resource.get("association_version_id"),
-            path=str(resource.get("path") or ""),
-            role=str(resource.get("association_role") or roles[0]),
-            what=what,
+            artifact_id=str(resource.get("id") or ""), what=what
         )
-
-    def _submitted_version_text(
-        self, *, version_id: Any, path: str, role: str, what: str
-    ) -> str:
-        """The submitted bytes of a pinned association, never the working tree."""
-        return self.evidence_reader.submitted_document(
-            version_id=str(version_id) if version_id else None,
-            path=path,
-            what=what,
-            role=role,
-        ).text
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:
         reflection = self.get_state(reflection_id=reflection_id, conn=conn)

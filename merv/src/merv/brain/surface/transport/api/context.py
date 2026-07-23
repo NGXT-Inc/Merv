@@ -35,5 +35,6 @@ class ApiRouteContext:
             project_scope=project_scope,
             activity_source="http",
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL),
+            base_url=str(request.base_url).rstrip("/"),
         )
         return present(result)

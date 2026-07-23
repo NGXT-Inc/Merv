@@ -340,8 +340,8 @@ class LogicGraphQuery:
         }
 
     def _associated_text(self, resource: Record) -> str | None:
-        return self.artifacts.submitted_text_for_version(
-            version_id=resource.get("association_version_id")
+        return self.artifacts.submitted_text_for_artifact(
+            artifact_id=resource.get("id")
         )
 
     def _resolve_graph_refs(

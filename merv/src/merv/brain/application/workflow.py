@@ -557,18 +557,17 @@ def _resource_link(
             if canonical_role == "project_graph"
             else "Latest reflection doc"
         ),
-        "kind": "resource",
+        "kind": "artifact",
         "role": canonical_role,
         "legacy_role": (
             resource.get("association_role")
             if resource.get("association_role") != canonical_role
             else None
         ),
-        "resource_id": resource.get("id"),
+        "artifact_id": resource.get("id"),
         "path": resource.get("path"),
-        "version_id": resource.get("association_version_id"),
-        "read_with": "resource.find",
-        "read_args": {"resource_id": resource.get("id"), "include_history": True},
+        "read_with": "artifact.find",
+        "read_args": {"artifact_id": resource.get("id")},
     }
 
 

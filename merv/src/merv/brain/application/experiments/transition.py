@@ -149,7 +149,6 @@ class TransitionExperiment:
             content_bytes=exhibit_bytes(exhibit),
             content_type="application/json",
             title="Metrics exhibit (system-generated)",
-            kind="result",
             project_id=project_id,
         )
         return exhibit
@@ -173,9 +172,9 @@ class TransitionExperiment:
             "notice": (
                 "At submit_results the system generates a metrics exhibit from "
                 "up to the newest 50 MLflow runs in this attempt's window (no "
-                "curation; the cap is recorded) and eligible pinned result JSON "
-                "(metrics.json, results.json, and results/*.json associated with "
-                "role 'result'). It pins the exhibit when matching runs are found, "
+                "curation; the cap is recorded) and every role-'result' artifact "
+                "submitted for the attempt (JSON is parsed into the exhibit). "
+                "It pins the exhibit when matching runs are found, "
                 "or when MLflow is unavailable after a plugin-created run, at "
                 f"{path}. When pinned, your report must reference "
                 f"{METRICS_EXHIBIT_FILENAME} and answer around it — log every run "

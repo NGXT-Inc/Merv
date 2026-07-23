@@ -301,12 +301,13 @@ class ReviewService:
             entry: dict[str, Any] = {
                 "role": item.role,
                 "path": item.path,
-                "version_id": item.version_id,
+                "artifact_id": item.artifact_id,
                 "content": item.content,
             }
             if item.content is None:
                 entry["note"] = (
-                    "submitted content unavailable; ask the producer to re-associate"
+                    "submitted content unavailable; ask the producer to resubmit "
+                    "it with artifact.submit"
                 )
             artifacts.append(entry)
         artifacts.reverse()

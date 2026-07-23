@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from merv.shared.artifact_roles import RESOURCE_ROLES, RESOURCE_TARGET_TYPES
+from merv.shared.artifact_roles import (
+    RESOURCE_ROLES,
+    RESOURCE_TARGET_TYPES,
+    SUBMITTABLE_ROLES,
+)
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
 from merv.shared.tool_validation import (
     validate_openssh_public_key,
@@ -513,6 +517,58 @@ class ResourceFindInput(ProjectScopedInput):
         ge=0,
         description="List mode: number of resources to skip (pagination).",
     )
+
+
+class ArtifactSubmitInput(ProjectScopedInput):
+    target_type: str = Field(
+        description="Workflow target kind the artifact attaches to.",
+        json_schema_extra={"enum": sorted(RESOURCE_TARGET_TYPES)},
+    )
+    target_id: str = Field(
+        description="Id of the experiment, reflection, claim, or review."
+    )
+    role: str = Field(
+        description=(
+            "Artifact role. Gated docs (plan, report, graph, project_graph, "
+            "reflection_lens_doc, reflection_doc, change_spec) and metrics "
+            "'result' JSON only — all size-capped at 16 KB."
+        ),
+        json_schema_extra={"enum": sorted(SUBMITTABLE_ROLES)},
+    )
+    path: str = Field(
+        description=(
+            "Relative path of the local file you wrote — the provenance label "
+            "and the file the returned upload command sends."
+        )
+    )
+    lens_id: str = Field(
+        default="",
+        description=(
+            "REQUIRED when role=reflection_lens_doc: the roster lens this "
+            "reflection covers. Invalid for any other role."
+        ),
+    )
+    title: str = Field(default="", description="Optional display title.")
+
+    @model_validator(mode="after")
+    def _check_lens(self) -> "ArtifactSubmitInput":
+        if self.role == "reflection_lens_doc" and not self.lens_id:
+            raise ValueError("lens_id is required when role is reflection_lens_doc")
+        if self.lens_id and self.role != "reflection_lens_doc":
+            raise ValueError("lens_id only applies to reflection_lens_doc artifacts")
+        return self
+
+
+class ArtifactFindInput(ProjectScopedInput):
+    artifact_id: str = Field(
+        default="",
+        description="Resolve one artifact by id. Omit to list with the filters below.",
+    )
+    target_type: str = Field(
+        default="", description="List filter: target kind (e.g. 'experiment')."
+    )
+    target_id: str = Field(default="", description="List filter: target id.")
+    role: str = Field(default="", description="List filter: artifact role.")
 
 
 class StoragePutObjectInput(ProjectScopedInput):
@@ -1341,6 +1397,30 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "metadata is fetched from known paper hosts, otherwise pass title. "
             "After citing, make a targeted litreview.edit so the review stays "
             "current."
+        ),
+    ),
+    "artifact.submit": ToolContract(
+        handler_identity="artifact_submissions.submit",
+        input_model=ArtifactSubmitInput,
+        description=(
+            "Submit a typed artifact against a workflow target. FIRST write "
+            "the document to a local file, then call this with its relative "
+            "path; the result contains a one-line `run` command — execute it "
+            "verbatim to upload the bytes (one-time token, expires in ~15 "
+            "min). Gated roles are validated and size-capped (16 KB); for "
+            "markdown with relative image links the upload response returns "
+            "follow-up commands to push each figure the same way. "
+            "Resubmitting the same slot replaces the previous artifact."
+        ),
+    ),
+    "artifact.find": ToolContract(
+        handler_identity="artifact_submissions.find",
+        input_model=ArtifactFindInput,
+        description=(
+            "Find submitted artifacts. Pass artifact_id to resolve one, or "
+            "filter the project's complete artifacts by target_type/"
+            "target_id/role. Compact rows: id, target, role, attempt, "
+            "lens_id, path label, title, size, timestamps."
         ),
     ),
     "resource.register": ToolContract(

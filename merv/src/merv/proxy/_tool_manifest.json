@@ -1227,6 +1227,133 @@
       "visibility": "public"
     },
     {
+      "description": "Submit a typed artifact against a workflow target. FIRST write the document to a local file, then call this with its relative path; the result contains a one-line `run` command \u2014 execute it verbatim to upload the bytes (one-time token, expires in ~15 min). Gated roles are validated and size-capped (16 KB); for markdown with relative image links the upload response returns follow-up commands to push each figure the same way. Resubmitting the same slot replaces the previous artifact.",
+      "executionStrategy": "control",
+      "featureRequirements": [],
+      "handlerIdentity": "artifact_submissions.submit",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "lens_id": {
+            "default": "",
+            "description": "REQUIRED when role=reflection_lens_doc: the roster lens this reflection covers. Invalid for any other role.",
+            "title": "Lens Id",
+            "type": "string"
+          },
+          "path": {
+            "description": "Relative path of the local file you wrote \u2014 the provenance label and the file the returned upload command sends.",
+            "title": "Path",
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "role": {
+            "description": "Artifact role. Gated docs (plan, report, graph, project_graph, reflection_lens_doc, reflection_doc, change_spec) and metrics 'result' JSON only \u2014 all size-capped at 16 KB.",
+            "enum": [
+              "change_spec",
+              "graph",
+              "plan",
+              "project_graph",
+              "reflection_doc",
+              "reflection_lens_doc",
+              "report",
+              "result"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "target_id": {
+            "description": "Id of the experiment, reflection, claim, or review.",
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "description": "Workflow target kind the artifact attaches to.",
+            "enum": [
+              "attempt",
+              "claim",
+              "experiment",
+              "reflection",
+              "review"
+            ],
+            "title": "Target Type",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "description": "Optional display title.",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "target_type",
+          "target_id",
+          "role",
+          "path"
+        ],
+        "type": "object"
+      },
+      "localHandlerIdentity": null,
+      "name": "artifact.submit",
+      "plane": "control",
+      "scopeStrategy": "linked-project",
+      "visibility": "public"
+    },
+    {
+      "description": "Find submitted artifacts. Pass artifact_id to resolve one, or filter the project's complete artifacts by target_type/target_id/role. Compact rows: id, target, role, attempt, lens_id, path label, title, size, timestamps.",
+      "executionStrategy": "control",
+      "featureRequirements": [],
+      "handlerIdentity": "artifact_submissions.find",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "default": "",
+            "description": "Resolve one artifact by id. Omit to list with the filters below.",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "project_id": {
+            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "role": {
+            "default": "",
+            "description": "List filter: artifact role.",
+            "title": "Role",
+            "type": "string"
+          },
+          "target_id": {
+            "default": "",
+            "description": "List filter: target id.",
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "default": "",
+            "description": "List filter: target kind (e.g. 'experiment').",
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "type": "object"
+      },
+      "localHandlerIdentity": null,
+      "name": "artifact.find",
+      "plane": "control",
+      "scopeStrategy": "linked-project",
+      "visibility": "public"
+    },
+    {
       "description": "Register repo file(s) as resources and, optionally, associate them to a claim, experiment, review, or attempt in one call. Pass 'path' (one file) or 'paths' (a changed-files batch) to register/observe the file(s); add the association trio (target_type, target_id, role) to also associate each registered resource. Or pass 'resource_id' to associate an ALREADY-registered resource \u2014 that mode requires the trio. Association validates the file against the role: gated artifacts (plan, report, graph, project_graph, reflection_doc, reflection_lens_doc, change_spec) are size-capped and their figure links resolved at register time, so keep them lean and reference raw data instead of inlining it.",
       "executionStrategy": "local-orchestration",
       "featureRequirements": [],

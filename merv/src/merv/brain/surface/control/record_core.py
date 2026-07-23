@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ...artifacts.resources import ResourceService
+from ...artifacts.submissions import ArtifactSubmissionService
 from ...research_core.association_targets import AssociationTargets
 from ...research_core.claims import ClaimService
 from ...research_core.experiments import ExperimentService
@@ -29,6 +30,7 @@ class RecordCore:
     claims: ClaimService
     experiments: ExperimentService
     resources: ResourceService
+    artifact_submissions: ArtifactSubmissionService
     graph_refs: GraphRefResolver
     reflection_waves: ReflectionService
     reviews: ReviewService
@@ -43,27 +45,34 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
     projects = ProjectService(store=store)
     claims = ClaimService(store=store)
     # Artifacts receives the narrow Research-owned association target resolver.
+    # The legacy resource service stays composed only for the pre-cut read
+    # routes; the submission service is the evidence reader everywhere.
     resources = ResourceService(
+        store=store,
+        blobs=blobs,
+        association_targets=AssociationTargets(store=store),
+    )
+    artifact_submissions = ArtifactSubmissionService(
         store=store,
         blobs=blobs,
         association_targets=AssociationTargets(store=store),
     )
     experiments = ExperimentService(
         store=store,
-        evidence_reader=resources,
+        evidence_reader=artifact_submissions,
     )
     graph_refs = GraphRefResolver(store=store)
     reflection_waves = ReflectionService(
         store=store,
         claims=claims,
         experiment_writer=experiments,
-        evidence_reader=resources,
+        evidence_reader=artifact_submissions,
     )
     reviews = ReviewService(
         store=store,
         experiments=experiments,
         reflections=reflection_waves,
-        evidence_reader=resources,
+        evidence_reader=artifact_submissions,
     )
     feed = FeedService(store=store, blobs=blobs, link_unfurl=NetworkLinkUnfurl())
     literature = LiteratureService(store=store, unfurl=AllowlistedPaperUnfurl())
@@ -74,6 +83,7 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         claims=claims,
         experiments=experiments,
         resources=resources,
+        artifact_submissions=artifact_submissions,
         graph_refs=graph_refs,
         reflection_waves=reflection_waves,
         reviews=reviews,

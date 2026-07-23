@@ -117,8 +117,8 @@ class GraphArtifacts:
     def __init__(self) -> None:
         self.resolved = []
 
-    def submitted_text_for_version(self, *, version_id):
-        if version_id == "ver_new":
+    def submitted_text_for_artifact(self, *, artifact_id):
+        if artifact_id == "res_new":
             return '{"version":1,"nodes":[{"id":"n","label":"New","refs":["claim_1"]}]}'
         return None
 
@@ -200,11 +200,6 @@ class ApplicationQueryTest(unittest.TestCase):
 
     def test_logic_graph_query_composes_refs_in_first_seen_order(self) -> None:
         class MixedResearch(GraphResearch):
-            def experiment_state(self, **_kwargs):
-                state = super().experiment_state()
-                state["resources"][-1]["association_version_id"] = "ver_mixed"
-                return state
-
             def resolve_research_graph_refs(self, **kwargs):
                 self.resolved.append(kwargs)
                 return {
@@ -213,8 +208,8 @@ class ApplicationQueryTest(unittest.TestCase):
                 }
 
         class MixedArtifacts(GraphArtifacts):
-            def submitted_text_for_version(self, *, version_id):
-                if version_id == "ver_mixed":
+            def submitted_text_for_artifact(self, *, artifact_id):
+                if artifact_id == "res_new":
                     return (
                         '{"version":1,"nodes":['
                         '{"id":"a","label":"A","refs":'

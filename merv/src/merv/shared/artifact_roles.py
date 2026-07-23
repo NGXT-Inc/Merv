@@ -78,6 +78,31 @@ def metric_result_capture_cap(*, role: str, path: str) -> int | None:
     return None
 
 
+# Roles an agent may submit via artifact.submit: the canonical gated docs plus
+# the metrics-JSON 'result' role. The old untyped registration roles (code,
+# config, input, note, model, other) die with the resource system — nothing
+# consumed those rows.
+SUBMITTABLE_ROLES = frozenset(
+    {
+        "plan",
+        "report",
+        "graph",
+        PROJECT_GRAPH_ROLE,
+        REFLECTION_LENS_DOC_ROLE,
+        "reflection_doc",
+        "change_spec",
+        "result",
+    }
+)
+
+
+def artifact_byte_cap(role: str) -> int | None:
+    """Upload byte cap for a submittable role; None = role is not size-capped."""
+    if role == "result":
+        return METRIC_RESULT_MAX_BYTES
+    return GATED_ROLE_BYTE_CAPS.get(role)
+
+
 # Gated roles: the artifacts workflow gates lint. Associating one of these
 # captures the file's bytes into the blob store (size-capped), pinning the
 # association to immutable content.

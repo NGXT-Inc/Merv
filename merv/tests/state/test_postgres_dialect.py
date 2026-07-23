@@ -40,7 +40,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
-from merv.brain.artifacts.resources import ResourceService
+from merv.brain.artifacts.submissions import ArtifactSubmissionService
 from merv.brain.surface.config import build_state_store, resolve_db_url
 from merv.brain.application.queries import TenantCountersQuery
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
@@ -731,7 +731,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         project_id = self._seed_project()
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=ResourceService(
+            evidence_reader=ArtifactSubmissionService(
                 store=self.store,
                 association_targets=AssociationTargets(store=self.store),
             ),
@@ -766,7 +766,7 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         project_id = self._seed_project()
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=ResourceService(
+            evidence_reader=ArtifactSubmissionService(
                 store=self.store,
                 association_targets=AssociationTargets(store=self.store),
             ),

@@ -34,10 +34,8 @@ from .reflection_guidance import (
 _SLIM_RESOURCE_FIELDS = (
     "id",
     "association_role",
-    "association_version_id",
+    "lens_id",
     "path",
-    "kind",
-    "missing",
     "size_bytes",
 )
 _SLIM_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "synopsis")

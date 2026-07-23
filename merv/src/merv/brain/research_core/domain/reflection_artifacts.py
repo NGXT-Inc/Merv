@@ -72,7 +72,7 @@ def reflection_doc_review_problems(
         if link not in submitted_images:
             problems.append(
                 f"image {link!r} has no submitted content: make sure the "
-                f"file exists next to {path}, then re-associate the "
+                f"file exists next to {path}, then resubmit the "
                 "reflection document to submit it"
             )
     return problems
@@ -167,22 +167,17 @@ def current_reflection_requirement_resource(
 
 
 def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
-    # A current-attempt reflection covers lens L when its file is named
-    # `<L>.md` in any directory—the convention given to fan-out subagents.
-    stems: dict[str, dict[str, Any]] = {}
+    # A current-attempt lens doc covers lens L when it was submitted with the
+    # explicit lens_id L (artifact.submit requires it for the role).
+    by_lens: dict[str, dict[str, Any]] = {}
     for res in reflection.get("current_attempt_resources", []):
-        if res.get("association_role") not in REFLECTION_LENS_DOC_ROLES or res.get(
-            "missing"
-        ):
+        if res.get("association_role") not in REFLECTION_LENS_DOC_ROLES:
             continue
-        path = str(res.get("path") or "")
-        name = path.rsplit("/", 1)[-1]
-        stem = name.rsplit(".", 1)[0] if "." in name else name
-        stems.setdefault(
-            stem,
+        by_lens.setdefault(
+            str(res.get("lens_id") or ""),
             {
-                "path": path,
-                "version_id": res.get("association_version_id"),
+                "path": str(res.get("path") or ""),
+                "artifact_id": res.get("id"),
                 "role": res.get("association_role"),
             },
         )
@@ -190,13 +185,13 @@ def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
     missing = []
     for lens in reflection.get("roster", []):
         lens_id = str(lens.get("id") or "")
-        entry = stems.get(lens_id)
+        entry = by_lens.get(lens_id)
         lenses.append(
             {
                 "lens_id": lens_id,
                 "covered": entry is not None,
                 "path": entry["path"] if entry else None,
-                "version_id": entry.get("version_id") if entry else None,
+                "artifact_id": entry.get("artifact_id") if entry else None,
                 "role": entry.get("role") if entry else None,
             }
         )
@@ -381,7 +376,7 @@ def parse_change_spec(
     if not text.strip():
         raise WorkflowError(
             f"change spec {path!r} is empty — write it and "
-            "re-associate to submit the content"
+            "resubmit it (artifact.submit) to submit the content"
         )
     try:
         spec = json.loads(text)
@@ -390,7 +385,7 @@ def parse_change_spec(
             f"change spec {path!r} is not valid JSON: {exc}. "
             "Write the role 'change_spec' artifact from "
             "skills/project-reflection/reflection-artifacts-template.md and "
-            "re-associate it."
+            "resubmit it with artifact.submit."
         ) from exc
     if not isinstance(spec, dict):
         raise WorkflowError(f"change spec {path!r} must be a JSON object")
@@ -414,7 +409,7 @@ def parse_change_spec(
         raise WorkflowError(
             "change spec is not ready for review: "
             + "; ".join(problems)
-            + ". Fix the file and re-associate it to submit the revision — "
+            + ". Fix the file and resubmit it (artifact.submit) — "
             "see skills/project-reflection/reflection-artifacts-template.md."
         )
     return spec

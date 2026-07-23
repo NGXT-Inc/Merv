@@ -7,13 +7,15 @@ from __future__ import annotations
 from typing import Any
 
 def review_snapshot_id(*, target_type: str, target: dict[str, Any]) -> str:
-    """`type|id|status|attempt|sorted-comma-joined-resource-tokens`.
+    """`type|id|status|attempt|sorted-comma-joined-artifact-tokens`.
 
     `target` is a get_state() dict with id/status/attempt_index and
-    current_attempt_resources. Field order and token format are an
-    equality key — keep byte-identical."""
-    resource_tokens = [
-        f"{res['id']}:{res.get('association_version_id') or res['version_token']}:{res.get('association_role', '')}:{res.get('association_attempt_index', 0)}"
+    current_attempt_resources (artifact-backed records). Each token is
+    `artifact_id:role:attempt` — resubmitting mints a new artifact id, so the
+    snapshot invalidates without any content fingerprint. Field order and
+    token format are an equality key — keep byte-identical."""
+    artifact_tokens = [
+        f"{res['id']}:{res.get('association_role', '')}:{res.get('association_attempt_index', 0)}"
         for res in target.get("current_attempt_resources", [])
     ]
     return "|".join(
@@ -22,7 +24,7 @@ def review_snapshot_id(*, target_type: str, target: dict[str, Any]) -> str:
             target["id"],
             target["status"],
             str(target["attempt_index"]),
-            ",".join(sorted(resource_tokens)),
+            ",".join(sorted(artifact_tokens)),
         ]
     )
 
@@ -35,21 +37,17 @@ def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
     resources = []
     for token in (parts[4].split(",") if len(parts) > 4 and parts[4] else []):
         try:
-            resource_and_version, role, attempt_index = token.rsplit(":", 2)
-            resource_id, version_ref = resource_and_version.split(":", 1)
+            artifact_id, role, attempt_index = token.rsplit(":", 2)
         except ValueError:
             resources.append({"raw": token})
             continue
-        item: dict[str, Any] = {
-            "resource_id": resource_id,
-            "role": role,
-            "attempt_index": _int_or_zero(value=attempt_index),
-        }
-        if version_ref.startswith("rver_"):
-            item["version_id"] = version_ref
-        else:
-            item["version_token"] = version_ref
-        resources.append(item)
+        resources.append(
+            {
+                "artifact_id": artifact_id,
+                "role": role,
+                "attempt_index": _int_or_zero(value=attempt_index),
+            }
+        )
     return {
         "target_type": parts[0] if len(parts) > 0 else "",
         "target_id": parts[1] if len(parts) > 1 else "",

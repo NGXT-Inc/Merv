@@ -445,8 +445,7 @@ class ReflectionHistoryQueryCeilingTest(unittest.TestCase):
             for index in range(count):
                 created_at = f"2026-07-22T00:{index:02d}:00Z"
                 reflection_id = f"syn_{project_id}_{index:03d}"
-                resource_id = f"res_{project_id}_{index:03d}"
-                version_id = f"rsv_{project_id}_{index:03d}"
+                artifact_id = f"art_{project_id}_{index:03d}"
                 path = f"project/logic_graph_{index:03d}.json"
                 conn.execute(
                     """
@@ -461,7 +460,7 @@ class ReflectionHistoryQueryCeilingTest(unittest.TestCase):
                         project_id,
                         f"Reflection {index}",
                         created_at,
-                        version_id,
+                        artifact_id,
                         created_at,
                         created_at,
                         index + 1,
@@ -469,58 +468,22 @@ class ReflectionHistoryQueryCeilingTest(unittest.TestCase):
                 )
                 conn.execute(
                     """
-                    INSERT INTO resources
-                      (id, project_id, path, kind, current_version_id,
-                       version_token, mtime_ns, size_bytes, observed_at,
-                       created_at, updated_at)
-                    VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO artifacts
+                      (id, project_id, target_type, target_id, role,
+                       attempt_index, path, content_sha256, size_bytes,
+                       content_type, status, created_at, updated_at,
+                       created_seq)
+                    VALUES (?, ?, 'reflection', ?, 'project_graph', 1, ?, ?,
+                            ?, 'application/json', 'complete', ?, ?, ?)
                     """,
                     (
-                        resource_id,
+                        artifact_id,
                         project_id,
-                        path,
-                        version_id,
-                        f"token-{index}",
-                        index,
-                        len(graph),
-                        created_at,
-                        created_at,
-                        created_at,
-                    ),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO resource_versions
-                      (id, resource_id, project_id, path, content_sha256,
-                       size_bytes, mtime_ns, observed_at, content_type,
-                       created_at, created_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'application/json', ?, ?)
-                    """,
-                    (
-                        version_id,
-                        resource_id,
-                        project_id,
+                        reflection_id,
                         path,
                         sha256,
                         len(graph),
-                        index,
                         created_at,
-                        created_at,
-                        index + 1,
-                    ),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO resource_associations
-                      (id, resource_id, version_id, target_type, target_id,
-                       role, attempt_index, created_at, created_seq)
-                    VALUES (?, ?, ?, 'reflection', ?, 'project_graph', 1, ?, ?)
-                    """,
-                    (
-                        f"assoc_{project_id}_{index:03d}",
-                        resource_id,
-                        version_id,
-                        reflection_id,
                         created_at,
                         index + 1,
                     ),

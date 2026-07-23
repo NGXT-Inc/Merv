@@ -110,9 +110,9 @@ def build_metrics_exhibit(
             "source": {
                 "type": "result_file",
                 "path": source.get("path") or "",
-                "version_id": source.get("version_id") or "",
+                "artifact_id": source.get("artifact_id") or "",
                 "sha256": source.get("sha256") or "",
-                "observed_at": source.get("observed_at") or "",
+                "submitted_at": source.get("submitted_at") or "",
             },
         }
         for source in file_sources

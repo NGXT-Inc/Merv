@@ -155,12 +155,8 @@ def build_experiment_figure(
                     "sublabel": role,
                     "status": "none",
                     "group": f"attempt:{attempt}",
-                    "ref": {
-                        "kind": "resource",
-                        "id": res.get("id"),
-                        "version_id": res.get("association_version_id"),
-                    },
-                    "meta": {"role": role, "path": res.get("path"), "kind": res.get("kind")},
+                    "ref": {"kind": "resource", "id": res.get("id")},
+                    "meta": {"role": role, "path": res.get("path")},
                 }
             )
             if upstream:

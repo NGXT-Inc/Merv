@@ -18,9 +18,8 @@ _SLIM_RESOURCE_FIELDS = (
     "id",
     "association_role",
     "path",
-    "kind",
+    "lens_id",
     "size_bytes",
-    "missing",
     "title",
 )
 _SLIM_STORAGE_FIELDS = tuple(

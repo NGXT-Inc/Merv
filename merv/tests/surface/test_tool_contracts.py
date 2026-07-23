@@ -67,6 +67,7 @@ def _handler_targets() -> dict[str, Any]:
         "agent_experiment": target,
         "reflection_tools": target,
         "resources": target,
+        "artifact_submissions": target,
         "storage": target,
         "reviews": target,
         "sandboxes": target,

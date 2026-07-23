@@ -456,6 +456,51 @@ CREATE TABLE IF NOT EXISTS report_figures (
   FOREIGN KEY(report_version_id) REFERENCES resource_versions(id)
 );
 
+-- Typed submitted artifacts (July 2026, dev_docs/artifact_submit_cut_plan.md).
+-- One row per submitted object against a workflow target; bytes live in the
+-- blob store keyed by (project_id, content_sha256). ``path`` is a trust-based
+-- provenance label, never identity. Rows are born 'pending' with a one-time
+-- upload token and flip to 'complete' when the PUT lands; resubmitting the
+-- same slot mints a NEW id and deletes the old row, so review snapshot ids
+-- (artifact_id:role:attempt) invalidate naturally.
+CREATE TABLE IF NOT EXISTS artifacts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  attempt_index INTEGER NOT NULL DEFAULT 0,
+  lens_id TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  content_sha256 TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  content_type TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  upload_token TEXT NOT NULL DEFAULT '',
+  expires_at TEXT,
+  created_by TEXT NOT NULL DEFAULT 'agent',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  created_seq INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+-- Figures referenced via relative image links in a gated markdown artifact.
+-- Minted pending (with their own one-time tokens) when the document upload
+-- lands; lints and the UI read only 'complete' rows.
+CREATE TABLE IF NOT EXISTS artifact_figures (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL,
+  link_path TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending',
+  upload_token TEXT NOT NULL DEFAULT '',
+  expires_at TEXT,
+  FOREIGN KEY(artifact_id) REFERENCES artifacts(id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -692,6 +737,15 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
         "CREATE UNIQUE INDEX IF NOT EXISTS litreview_one_summary\n"
         "  ON litreview_sections(project_id) WHERE kind = 'summary'",
     ),
+    # Artifact submit cut (July 2026): the typed-artifact tables plus a
+    # metadata-only backfill from the resource system (blobs already live in
+    # the blob store keyed by sha). Also rewrites the artifact-bearing refs
+    # that must keep matching: review snapshot ids (resource:version tokens ->
+    # artifact_id:role:attempt) and reflections.published_graph_version_id
+    # (version id -> the backfilled artifact id) — without these, passed
+    # review gates and published-graph diffs silently break (the migration-19
+    # lesson).
+    (24, "add_artifacts_tables", ""),
 )
 
 
@@ -843,6 +897,8 @@ class BaseStateStore:
                 conn.execute(_schema_table_ddl(table="papers"))
             elif name == "add_litreview_paper_links":
                 conn.execute(_schema_table_ddl(table="paper_links"))
+            elif name == "add_artifacts_tables":
+                self._add_artifacts_tables(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -983,6 +1039,161 @@ class BaseStateStore:
             "UPDATE resource_associations SET target_type = 'reflection' "
             "WHERE target_type = 'synthesis'"
         )
+
+    def _add_artifacts_tables(self, *, conn: Connection) -> None:
+        """Create the artifact tables and backfill from the resource system.
+
+        Metadata-only: every gated/result blob already lives in the blob store
+        keyed by (project_id, sha256), so one artifact row per association
+        (resource x version x target) carries the story forward. Fresh
+        databases hit only the IF-NOT-EXISTS creates — the resource tables are
+        empty, so every backfill loop is a no-op.
+        """
+        from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLES
+
+        conn.execute(_schema_table_ddl(table="artifacts"))
+        conn.execute(_schema_table_ddl(table="artifact_figures"))
+        if not self._has_table(conn=conn, table="resource_associations"):
+            return
+        rows = conn.execute(
+            """
+            SELECT a.target_type, a.target_id, a.role, a.attempt_index,
+                   a.version_id, a.created_at, a.created_seq,
+                   r.id AS resource_id, r.project_id, r.path, r.title,
+                   r.created_by,
+                   v.content_sha256, v.size_bytes, v.content_type
+            FROM resource_associations a
+            JOIN resources r ON r.id = a.resource_id
+            LEFT JOIN resource_versions v ON v.id = a.version_id
+            ORDER BY a.created_seq
+            """
+        ).fetchall()
+        # (resource, target, role, attempt) -> artifact id, for snapshot tokens;
+        # (version, target) -> artifact id, for figures and published-graph refs.
+        by_assoc: dict[tuple[str, str, str, str, int], str] = {}
+        by_version_target: dict[tuple[str, str, str], str] = {}
+        for row in rows:
+            path = str(row["path"] or "")
+            role = str(row["role"] or "")
+            basename = path.rsplit("/", 1)[-1]
+            lens_id = (
+                basename.rsplit(".", 1)[0] if role in REFLECTION_LENS_DOC_ROLES else ""
+            )
+            artifact_id = new_id(prefix="art")
+            created_at = str(row["created_at"])
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                  id, project_id, target_type, target_id, role, attempt_index,
+                  lens_id, path, title, content_sha256, size_bytes, content_type,
+                  status, upload_token, created_by, created_at, updated_at,
+                  created_seq
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', '', ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id, str(row["project_id"]), str(row["target_type"]),
+                    str(row["target_id"]), role, int(row["attempt_index"] or 0),
+                    lens_id, path, str(row["title"] or ""),
+                    str(row["content_sha256"] or ""), int(row["size_bytes"] or 0),
+                    str(row["content_type"] or ""), str(row["created_by"] or ""),
+                    created_at, created_at, int(row["created_seq"] or 0),
+                ),
+            )
+            target_key = (str(row["target_type"]), str(row["target_id"]))
+            by_assoc[
+                (str(row["resource_id"]), *target_key, role, int(row["attempt_index"] or 0))
+            ] = artifact_id
+            if row["version_id"]:
+                by_version_target[(str(row["version_id"]), *target_key)] = artifact_id
+        self._backfill_artifact_figures(conn=conn, by_version_target=by_version_target)
+        self._rewrite_published_graph_refs(
+            conn=conn, by_version_target=by_version_target
+        )
+        self._rewrite_snapshot_resource_tokens(conn=conn, by_assoc=by_assoc)
+
+    @staticmethod
+    def _backfill_artifact_figures(
+        *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
+    ) -> None:
+        """report_figures rows fan out to one row per backfilled artifact."""
+        artifacts_by_version: dict[str, list[str]] = {}
+        for (version_id, _tt, _tid), artifact_id in by_version_target.items():
+            artifacts_by_version.setdefault(version_id, []).append(artifact_id)
+        for row in conn.execute(
+            "SELECT report_version_id, link_path, sha256, size_bytes FROM report_figures"
+        ).fetchall():
+            for artifact_id in artifacts_by_version.get(str(row["report_version_id"]), []):
+                conn.execute(
+                    """
+                    INSERT INTO artifact_figures
+                      (id, artifact_id, link_path, content_sha256, size_bytes,
+                       status, upload_token)
+                    VALUES (?, ?, ?, ?, ?, 'complete', '')
+                    """,
+                    (
+                        new_id(prefix="fig"), artifact_id, str(row["link_path"]),
+                        str(row["sha256"]), int(row["size_bytes"] or 0),
+                    ),
+                )
+
+    @staticmethod
+    def _rewrite_published_graph_refs(
+        *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
+    ) -> None:
+        for row in conn.execute(
+            "SELECT id, published_graph_version_id FROM reflections "
+            "WHERE COALESCE(published_graph_version_id, '') != ''"
+        ).fetchall():
+            artifact_id = by_version_target.get(
+                (str(row["published_graph_version_id"]), "reflection", str(row["id"]))
+            )
+            if artifact_id:
+                conn.execute(
+                    "UPDATE reflections SET published_graph_version_id = ? WHERE id = ?",
+                    (artifact_id, row["id"]),
+                )
+
+    @staticmethod
+    def _rewrite_snapshot_resource_tokens(
+        *, conn: Connection, by_assoc: dict[tuple[str, str, str, str, int], str]
+    ) -> None:
+        """Old `res:ver:role:attempt` snapshot tokens become `art:role:attempt`.
+
+        Unmapped tokens (association gone) are kept verbatim: the snapshot can
+        never match again either way, and keeping bytes is the honest record.
+        """
+        for table in ("reviews", "review_requests"):
+            for row in conn.execute(
+                f"SELECT id, target_type, target_id, target_snapshot_id FROM {table} "
+                "WHERE target_snapshot_id LIKE ?",
+                ("%|%",),
+            ).fetchall():
+                parts = str(row["target_snapshot_id"]).split("|", 4)
+                if len(parts) < 5 or not parts[4]:
+                    continue
+                tokens = []
+                for token in parts[4].split(","):
+                    try:
+                        head, role, attempt = token.rsplit(":", 2)
+                        resource_id = head.split(":", 1)[0]
+                        artifact_id = by_assoc.get(
+                            (
+                                resource_id, str(row["target_type"]),
+                                str(row["target_id"]), role, int(attempt),
+                            )
+                        )
+                    except ValueError:
+                        artifact_id = None
+                    tokens.append(
+                        f"{artifact_id}:{role}:{attempt}" if artifact_id else token
+                    )
+                rewritten = "|".join([*parts[:4], ",".join(sorted(tokens))])
+                if rewritten != str(row["target_snapshot_id"]):
+                    conn.execute(
+                        f"UPDATE {table} SET target_snapshot_id = ? WHERE id = ?",
+                        (rewritten, row["id"]),
+                    )
 
     def _ensure_sandbox_tenant_id(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="sandboxes", column="tenant_id"):
