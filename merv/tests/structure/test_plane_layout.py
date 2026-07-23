@@ -338,15 +338,15 @@ class ToolPlanePartitionTest(unittest.TestCase):
             DATA_PLANE_TOOL_NAMES,
             {
                 "experiment.materialize_folders",
-                "storage.upload_file",
-                "storage.download_file",
                 "sandbox.request",
                 "sandbox.attach",
                 "sandbox.pull_outputs",
                 # feed.post reads a local image file before recording the post,
                 # so it lives on the data plane; find/delete are pure control
                 # records. Artifact submission is control-plane: bytes travel
-                # over the agent's own curl, not through the proxy.
+                # over the agent's own curl, not through the proxy. storage.submit
+                # / storage.fetch are control too — they mint token-curl commands
+                # the agent runs, so bytes go direct to S3, never via the proxy.
                 "feed.post",
             },
         )
@@ -356,11 +356,16 @@ class ToolPlanePartitionTest(unittest.TestCase):
     def test_local_repo_file_readers_are_data_plane(self) -> None:
         self.assertLessEqual(
             {
-                "storage.upload_file",
                 "feed.post",
             },
             DATA_PLANE_TOOL_NAMES,
         )
+        # storage.submit / storage.fetch used to be data-plane file movers; the
+        # token-curl conversion made them control (no local file IO in the brain).
+        self.assertNotIn("storage.submit", DATA_PLANE_TOOL_NAMES)
+        self.assertNotIn("storage.fetch", DATA_PLANE_TOOL_NAMES)
+        self.assertIn("storage.submit", CONTROL_PLANE_TOOL_NAMES)
+        self.assertIn("storage.fetch", CONTROL_PLANE_TOOL_NAMES)
 
     def test_proxy_local_data_plane_dispatches_contract_plane_sets(self) -> None:
         proxy = PROXY_ROOT / "proxy.py"

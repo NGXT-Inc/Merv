@@ -730,7 +730,7 @@ class SandboxFacade:
             "pending_release": pending,
             "hint": f"Not released yet. This will permanently destroy {count} {noun} and everything on the VM. First confirm you have retained everything you need: rsync the light files you want off the box yourself over SSH into the local work folder"
             + (
-                f", and storage.upload_file for durable heavy artifacts. {self.storage_hint}"
+                f", and storage.submit for durable heavy artifacts. {self.storage_hint}"
                 if self.storage_enabled
                 else "; heavy-file storage is not enabled on this backend"
             )

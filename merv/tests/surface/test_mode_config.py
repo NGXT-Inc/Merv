@@ -223,8 +223,8 @@ class HostedControlSurfaceTest(unittest.TestCase):
         rejected = self.client.post(
             "/mcp/call",
             json={
-                "name": "storage.upload_file",
-                "arguments": {"path": "x.bin", "kind": "model"},
+                "name": "feed.post",
+                "arguments": {"handle": "x", "text": "y"},
             },
         )
         self.assertEqual(rejected.status_code, 400, rejected.text)
