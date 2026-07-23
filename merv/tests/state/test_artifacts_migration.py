@@ -201,6 +201,12 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
              "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2"),
             ("req_3", "reflection", "ref_1",
              "reflection|ref_1|reflection_review|1|res_lens:rver_lens:reflection:1"),
+            # req_4: lists BOTH halves of the deduped pair — the rewrite must
+            # collapse them to ONE survivor token, matching the live snapshot.
+            ("req_4", "reflection", "ref_1",
+             "reflection|ref_1|reflection_review|1|"
+             "res_lens:rver_lens:reflection:1,"
+             "res_lens:rver_lens:reflection_lens_doc:1"),
         ):
             conn.execute(
                 """
@@ -300,6 +306,12 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         # artifact with the canonical role spelling.
         self.assertEqual(
             snapshots["req_3"],
+            f"reflection|ref_1|reflection_review|1|{lens['id']}:reflection_lens_doc:1",
+        )
+        # Both deduped-pair tokens collapse to a single survivor token —
+        # byte-identical to the freshly computed post-migration snapshot.
+        self.assertEqual(
+            snapshots["req_4"],
             f"reflection|ref_1|reflection_review|1|{lens['id']}:reflection_lens_doc:1",
         )
 

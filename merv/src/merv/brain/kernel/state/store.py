@@ -1200,7 +1200,9 @@ class BaseStateStore:
                     tokens.append(
                         f"{mapped[0]}:{mapped[1]}:{attempt}" if mapped else token
                     )
-                rewritten = "|".join([*parts[:4], ",".join(sorted(tokens))])
+                # set(): duplicate-slot dedupe maps several old associations to
+                # one survivor; the live snapshot lists that artifact once.
+                rewritten = "|".join([*parts[:4], ",".join(sorted(set(tokens)))])
                 if rewritten != str(row["target_snapshot_id"]):
                     conn.execute(
                         f"UPDATE {table} SET target_snapshot_id = ? WHERE id = ?",
