@@ -71,7 +71,7 @@ def create_fastapi_app(
     ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
                           auth_meta=auth.meta() if auth is not None else None)
     routers = (
-        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls),
+        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, projects=api.projects),
         projects.build_router(
             ctx, projects=api.projects, dashboard=api.dashboard,
             workflow=api.workflow, timeline=api.timeline, sandboxes=api.sandboxes),
@@ -103,13 +103,12 @@ def create_fastapi_app(
         activity=api.activity,
     )
     register_mcp_routes(
-        http,
-        list_tools=api.tools.list_tools,
-        call_tool=gateway.call_mcp,
+        http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
         # Data tools stay proxy-only over MCP except the key-sandbox surface an
         # mk_ key reaches over control (Phase C); the gateway gates who is served.
         allow_tool=lambda tool: tool.get("plane") != "data"
         or tool.get("name") in KEY_SANDBOX_CONTROL_TOOLS,
+        authorize_scope=gateway.authorize_data_plane_project,
     )
     register_data_plane_routes(
         http,

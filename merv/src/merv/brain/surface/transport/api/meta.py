@@ -4,14 +4,25 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from .... import __version__
 from ....kernel.version import meta
+from ....research_core.facade import ResearchProjects
 
 from .context import ApiRouteContext
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 from .views import activity_view, tool_call_detail as select_tool_call_detail
+
+
+def _caller_project_ids(projects: ResearchProjects, request: Request) -> set[str] | None:
+    """The authenticated caller's project memberships, or None for the local
+    principal (unscoped/global — unchanged local behavior). Diagnostics scope to
+    this set so a member cannot read another project's calls (INV-11 FIX 1)."""
+    user_id = str(getattr(getattr(request.state, "principal", None), "user_id", "") or "")
+    if not user_id:
+        return None
+    return {str(project["id"]) for project in projects.list_projects(user_id=user_id)["projects"]}
 
 
 def build_router(
@@ -19,6 +30,7 @@ def build_router(
     *,
     activity_log: ActivityTelemetry,
     tool_calls: ToolCallTelemetry,
+    projects: ResearchProjects,
 ) -> APIRouter:
     api_router = APIRouter()
     surface = ctx.surface
@@ -65,12 +77,17 @@ def build_router(
 
     @api_router.get("/api/activity")
     def activity(
+        request: Request,
         limit: int = Query(100, ge=1),
         source: str | None = None,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         return activity_view(
-            activity_log, limit=limit, source=source, project_id=project_id
+            activity_log,
+            limit=limit,
+            source=source,
+            project_id=project_id,
+            project_ids=_caller_project_ids(projects, request),
         )
 
     # /api/debug/* expose tool-call internals. Hosted control is currently a
@@ -78,6 +95,7 @@ def build_router(
     # broad exposure.
     @api_router.get("/api/debug/tool-calls")
     def tool_call_stats(
+        request: Request,
         minutes: int | None = Query(None, ge=1),
         source: str | None = None,
         status: str | None = None,
@@ -93,20 +111,24 @@ def build_router(
             status=status,
             tool=tool,
             project_id=project_id,
-            project_ids=None,
+            project_ids=_caller_project_ids(projects, request),
             limit=limit, sort=sort, order=order,
         )
 
     @api_router.get("/api/debug/tool-calls/{call_id}")
-    def tool_call_detail(call_id: int) -> dict[str, Any]:
+    def tool_call_detail(call_id: int, request: Request) -> dict[str, Any]:
+        # A supplied call must belong to one of the caller's projects, so a
+        # member can never read an arbitrary cross-project call (INV-11).
         return select_tool_call_detail(
             tool_calls,
             call_id=call_id,
-            project_ids=None,
+            project_ids=_caller_project_ids(projects, request),
         )
 
     @api_router.post("/api/debug/tool-calls/clear")
     def tool_calls_clear() -> dict[str, Any]:
+        # Global mutator: the gateway's membership boundary gates this path on
+        # MERV_ADMIN_TOKEN (hosted) before the route runs; local keeps access.
         return tool_calls.clear(project_ids=None)
 
 

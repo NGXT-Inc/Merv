@@ -263,6 +263,39 @@ class McpStreamableHttpProtocolTest(unittest.TestCase):
             "research_plugin_error",
         )
 
+    def test_ping_returns_an_empty_result(self) -> None:
+        # Spec liveness probe (FIX 5): ping is a request that returns {}.
+        response = self.http.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 21, "method": "ping"},
+            headers={"Accept": MCP_ACCEPT, "MCP-Protocol-Version": PROTOCOL_VERSION},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"jsonrpc": "2.0", "id": 21, "result": {}})
+
+    def test_protocol_version_header_is_validated(self) -> None:
+        # FIX 5: a supplied-but-unsupported MCP-Protocol-Version is a 400; a
+        # supported one and an absent one are both accepted.
+        base = {"jsonrpc": "2.0", "id": 22, "method": "tools/list"}
+        unsupported = self.http.post(
+            "/mcp",
+            json=base,
+            headers={"Accept": MCP_ACCEPT, "MCP-Protocol-Version": "1999-01-01"},
+        )
+        self.assertEqual(unsupported.status_code, 400, unsupported.text)
+        self.assertEqual(
+            unsupported.json()["error"]["data"]["error_code"],
+            "unsupported_protocol_version",
+        )
+        supported = self.http.post(
+            "/mcp",
+            json=base,
+            headers={"Accept": MCP_ACCEPT, "MCP-Protocol-Version": PROTOCOL_VERSION},
+        )
+        self.assertEqual(supported.status_code, 200, supported.text)
+        absent = self.http.post("/mcp", json=base, headers={"Accept": MCP_ACCEPT})
+        self.assertEqual(absent.status_code, 200, absent.text)
+
     def test_both_mcp_endpoints_reject_declared_oversize_before_body_allocation(
         self,
     ) -> None:
@@ -408,6 +441,47 @@ class McpStreamableHttpProgressTest(unittest.TestCase):
         self.assertEqual(
             frames[-1]["result"]["structuredContent"],
             {"ok": True, "name": "slow.tool"},
+        )
+
+
+class McpStreamablePreflightTest(unittest.TestCase):
+    """FIX 6: a scope/visibility denial resolves SYNCHRONOUSLY, before the SSE
+    stream can commit a 200, so it is always a transport 403 — even when the
+    tool executor is slow enough that the fast-call window would have elapsed."""
+
+    def test_scope_denial_is_http_403_even_when_execution_is_slow(self) -> None:
+        from merv.brain.surface.identity import ProjectKeyScopeError
+
+        app = FastAPI()
+
+        def call_tool(name, arguments, context, request):
+            time.sleep(0.3)  # far past the 50ms fast-call window
+            return {"ok": True, "name": name}
+
+        def authorize_scope(request, project_id):
+            raise ProjectKeyScopeError(
+                "project API key cannot access a different project",
+                details={"requested_project_id": project_id},
+            )
+
+        register_mcp_routes(
+            app,
+            list_tools=lambda: [{"name": "slow.tool"}],
+            call_tool=call_tool,
+            authorize_scope=authorize_scope,
+        )
+        mcp = _McpClient(TestClient(app))
+        mcp.initialize()  # Accept carries text/event-stream (would stream)
+        response = mcp.request(
+            "tools/call",
+            {"name": "slow.tool", "arguments": {"project_id": "p_other"}},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertTrue(
+            response.headers["content-type"].startswith("application/json")
+        )
+        self.assertEqual(
+            response.json()["error"]["data"]["error_code"], "project_scope_forbidden"
         )
 
 

@@ -20,6 +20,7 @@ from ...kernel.utils import ValidationError
 from .mcp_streamable_http import (
     McpStreamableHttp,
     RequestBodyTooLarge,
+    ScopeAuthorizer,
     read_limited_mcp_body,
 )
 
@@ -39,6 +40,7 @@ def register_mcp_routes(
     call_tool: ToolCaller,
     allow_tool: ToolFilter | None = None,
     authorize: Authorizer | None = None,
+    authorize_scope: ScopeAuthorizer | None = None,
 ) -> None:
     def check_authorized(authorization: str | None) -> None:
         if authorize is not None:
@@ -115,4 +117,5 @@ def register_mcp_routes(
         call_tool=call_tool,
         allow_tool=allow_tool,
         authorize=authorize,
+        authorize_scope=authorize_scope,
     ).register(http)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 import urllib.parse
@@ -11,9 +12,14 @@ from typing import Any
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
+from ....kernel.env import env_value
 from ....kernel.utils import ValidationError
+from ...identity import is_local_principal
+
+ADMIN_TOKEN_ENV_VAR = "MERV_ADMIN_TOKEN"
+ADMIN_TOKEN_HEADER = "X-Admin-Token"
 
 JsonBody = dict[str, Any] | None
 UI_CORS_HEADERS = [
@@ -107,3 +113,21 @@ def conditional_json_from_signal(
 def is_local_origin(origin: str) -> bool:
     host = (urllib.parse.urlsplit(origin).hostname or "").lower()
     return host in ("localhost", "127.0.0.1", "::1")
+
+
+def operator_denial(request: Request) -> JSONResponse | None:
+    """Gate a GLOBAL operator mutator/aggregate (INV-11 FIX 1). LOCAL_PRINCIPAL
+    (local mode, no verifier) is the trusted operator and keeps access; any
+    hosted caller — even a JWT owner — must present MERV_ADMIN_TOKEN on the
+    X-Admin-Token header (constant-time). An unset token in hosted mode denies
+    everyone, so the prod cleanup cron must send the token."""
+    if is_local_principal(getattr(request.state, "principal", None)):
+        return None
+    token = env_value(ADMIN_TOKEN_ENV_VAR) or ""
+    supplied = request.headers.get(ADMIN_TOKEN_HEADER, "")
+    if token and hmac.compare_digest(supplied, token):
+        return None
+    return JSONResponse(
+        {"detail": "operator token required", "error_code": "operator_forbidden"},
+        status_code=403,
+    )

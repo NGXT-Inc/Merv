@@ -24,12 +24,22 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ... import __version__
 from ...kernel.utils import ResearchPluginError, ValidationError
-from ..identity import ProjectKeyScopeError, ToolVisibilityError
+from ..identity import (
+    LOCAL_PRINCIPAL,
+    ProjectKeyScopeError,
+    ToolVisibilityError,
+    is_local_principal,
+)
 from ..tools.contracts import TOOL_MANIFEST
 from .request_body import RequestBodyTooLarge, read_limited_body
 
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
+# The streamable-HTTP protocol revisions this stateless server actually speaks;
+# initialize only ever negotiates MCP_PROTOCOL_VERSION, so that is the sole
+# version served. A supplied-but-unsupported MCP-Protocol-Version header is a
+# 400 (spec 2025-06-18); an absent header defaults to the negotiated version.
+SUPPORTED_MCP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION})
 MAX_MCP_REQUEST_BODY_BYTES = 36_000_000
 _FAST_CALL_SECONDS = 0.05
 _PROGRESS_INTERVAL_SECONDS = 10.0
@@ -64,6 +74,14 @@ class ToolCaller(Protocol):
 
 class Authorizer(Protocol):
     def __call__(self, authorization: str | None) -> None: ...
+
+
+class ScopeAuthorizer(Protocol):
+    """Resolves project scope (key-project equality + membership) for a request,
+    raising ProjectKeyScopeError / NotFoundError. Used for the synchronous
+    pre-flight so a slow denial is a transport 403, never a mid-stream error."""
+
+    def __call__(self, request: Request, project_id: str) -> None: ...
 
 
 def _is_request_id(value: object) -> bool:
@@ -115,6 +133,25 @@ def tool_visible_over_mcp(*, name: str) -> bool:
     return contract is None or contract.visibility == "public"
 
 
+def _protocol_version_denial(version: str | None) -> JSONResponse | None:
+    """400 on a supplied-but-unsupported MCP-Protocol-Version; None otherwise
+    (absent header defaults to the negotiated version, per the 2025-06-18 spec)."""
+    if version is None or version in SUPPORTED_MCP_PROTOCOL_VERSIONS:
+        return None
+    return _json_response(
+        _error(
+            None,
+            -32600,
+            f"Unsupported MCP-Protocol-Version: {version}",
+            {
+                "error_code": "unsupported_protocol_version",
+                "supported": sorted(SUPPORTED_MCP_PROTOCOL_VERSIONS),
+            },
+        ),
+        status_code=400,
+    )
+
+
 def _error_status(exc: BaseException | None) -> int:
     """Scope + internal-tool refusals surface as 403; everything else 200."""
     return 403 if isinstance(exc, (ProjectKeyScopeError, ToolVisibilityError)) else 200
@@ -146,20 +183,26 @@ class McpStreamableHttp:
         call_tool: ToolCaller,
         allow_tool: ToolFilter | None,
         authorize: Authorizer | None,
+        authorize_scope: ScopeAuthorizer | None = None,
     ) -> None:
         self._list_tools = list_tools
         self._call_tool = call_tool
         self._allow_tool = allow_tool
         self._authorize = authorize
+        self._authorize_scope = authorize_scope
 
     def register(self, http: FastAPI) -> None:
         @http.post("/mcp")
         async def mcp_streamable_http(
             request: Request,
             authorization: str | None = Header(default=None),
+            mcp_protocol_version: str | None = Header(default=None),
         ) -> Response:
             if self._authorize is not None:
                 self._authorize(authorization)
+            version_denial = _protocol_version_denial(mcp_protocol_version)
+            if version_denial is not None:
+                return version_denial
             try:
                 raw_body = await read_limited_mcp_body(request)
             except RequestBodyTooLarge as exc:
@@ -236,6 +279,9 @@ class McpStreamableHttp:
             # accepted and ignored (no response channel to report on).
             return Response(status_code=202)
 
+        if method == "ping":
+            # Spec liveness probe: an empty result echoing the request id.
+            return _json_response(_result(request_id, {}))
         if method == "tools/list":
             return self._tools_list(request_id=request_id, params=params)
         if method == "tools/call":
@@ -305,6 +351,11 @@ class McpStreamableHttp:
         progress_token, token_error = self._progress_token(params)
         if token_error is not None:
             return _json_response(_error(request_id, -32602, token_error))
+        denied = self._preauthorize(
+            name=name, arguments=arguments, request=request, request_id=request_id
+        )
+        if denied is not None:
+            return denied
 
         task = asyncio.create_task(
             run_in_threadpool(self._call_tool, name, arguments, {}, request)
@@ -324,6 +375,33 @@ class McpStreamableHttp:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    def _preauthorize(
+        self, *, name: str, arguments: JsonObject, request: Request, request_id: RequestId
+    ) -> JSONResponse | None:
+        """INV-5/INV-11 (FIX 6): resolve project scope and the internal-tool block
+        SYNCHRONOUSLY — before the SSE stream can commit a 200 — so a slow scope
+        or visibility denial is always a transport 403, never a mid-stream error.
+        Tool execution alone runs behind the stream."""
+        principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        try:
+            if self._authorize_scope is not None:
+                self._authorize_scope(request, str(arguments.get("project_id") or ""))
+            contract = TOOL_MANIFEST.get(name)
+            if (
+                contract is not None
+                and contract.visibility == "internal"
+                and not is_local_principal(principal)
+            ):
+                raise ToolVisibilityError(
+                    f"tool {name} is internal and cannot be invoked over MCP",
+                    details={"tool": name, "visibility": "internal"},
+                )
+        except ResearchPluginError as exc:
+            return _json_response(
+                _dispatcher_error(request_id, exc), status_code=_error_status(exc)
+            )
+        return None
 
     @staticmethod
     def _progress_token(

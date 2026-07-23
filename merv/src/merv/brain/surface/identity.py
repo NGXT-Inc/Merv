@@ -33,16 +33,6 @@ class HumanSessionRequiredError(PermissionDeniedError):
     error_code = "human_session_required"
 
 
-@dataclass(frozen=True, slots=True)
-class ProjectKeyQuotaContext:
-    """The key's stored (not yet enforced) ceilings, for later phases."""
-
-    key_id: str
-    tenant_id: str
-    sandbox_seconds_ceiling: int | None
-    blob_bytes_ceiling: int | None
-
-
 @dataclass(frozen=True)
 class Principal:
     """The authenticated identity behind a request.
@@ -68,16 +58,6 @@ class Principal:
     oauth_family_id: str | None = None
     key_sandbox_seconds_ceiling: int | None = None
     key_blob_bytes_ceiling: int | None = None
-
-    def key_quota_context(self) -> ProjectKeyQuotaContext | None:
-        if self.key_id is None:
-            return None
-        return ProjectKeyQuotaContext(
-            key_id=self.key_id,
-            tenant_id=self.tenant_id,
-            sandbox_seconds_ceiling=self.key_sandbox_seconds_ceiling,
-            blob_bytes_ceiling=self.key_blob_bytes_ceiling,
-        )
 
 
 LOCAL_PRINCIPAL = Principal(tenant_id=LOCAL_TENANT_ID, client_id=LOCAL_CLIENT_ID)
@@ -108,7 +88,6 @@ __all__ = [
     "HumanSessionRequiredError",
     "LOCAL_PRINCIPAL",
     "Principal",
-    "ProjectKeyQuotaContext",
     "ProjectKeyScopeError",
     "ToolVisibilityError",
     "is_external_key",
