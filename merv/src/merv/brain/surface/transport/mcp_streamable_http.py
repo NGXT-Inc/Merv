@@ -30,6 +30,11 @@ from .request_body import RequestBodyTooLarge, read_limited_body
 
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
+# The streamable-HTTP protocol revisions this stateless server actually speaks;
+# initialize only ever negotiates MCP_PROTOCOL_VERSION, so that is the sole
+# version served. A supplied-but-unsupported MCP-Protocol-Version header is a
+# 400 (spec 2025-06-18); an absent header defaults to the negotiated version.
+SUPPORTED_MCP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION})
 MAX_MCP_REQUEST_BODY_BYTES = 36_000_000
 _FAST_CALL_SECONDS = 0.05
 _PROGRESS_INTERVAL_SECONDS = 10.0
@@ -115,6 +120,25 @@ def tool_visible_over_mcp(*, name: str) -> bool:
     return contract is None or contract.visibility == "public"
 
 
+def _protocol_version_denial(version: str | None) -> JSONResponse | None:
+    """400 on a supplied-but-unsupported MCP-Protocol-Version; None otherwise
+    (absent header defaults to the negotiated version, per the 2025-06-18 spec)."""
+    if version is None or version in SUPPORTED_MCP_PROTOCOL_VERSIONS:
+        return None
+    return _json_response(
+        _error(
+            None,
+            -32600,
+            f"Unsupported MCP-Protocol-Version: {version}",
+            {
+                "error_code": "unsupported_protocol_version",
+                "supported": sorted(SUPPORTED_MCP_PROTOCOL_VERSIONS),
+            },
+        ),
+        status_code=400,
+    )
+
+
 def _error_status(exc: BaseException | None) -> int:
     """Scope + internal-tool refusals surface as 403; everything else 200."""
     return 403 if isinstance(exc, (ProjectKeyScopeError, ToolVisibilityError)) else 200
@@ -157,9 +181,13 @@ class McpStreamableHttp:
         async def mcp_streamable_http(
             request: Request,
             authorization: str | None = Header(default=None),
+            mcp_protocol_version: str | None = Header(default=None),
         ) -> Response:
             if self._authorize is not None:
                 self._authorize(authorization)
+            version_denial = _protocol_version_denial(mcp_protocol_version)
+            if version_denial is not None:
+                return version_denial
             try:
                 raw_body = await read_limited_mcp_body(request)
             except RequestBodyTooLarge as exc:
@@ -236,6 +264,9 @@ class McpStreamableHttp:
             # accepted and ignored (no response channel to report on).
             return Response(status_code=202)
 
+        if method == "ping":
+            # Spec liveness probe: an empty result echoing the request id.
+            return _json_response(_result(request_id, {}))
         if method == "tools/list":
             return self._tools_list(request_id=request_id, params=params)
         if method == "tools/call":
