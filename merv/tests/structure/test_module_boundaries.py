@@ -202,6 +202,7 @@ TABLE_OWNERS = {
     "artifacts": ARTIFACTS,
     "artifact_figures": ARTIFACTS,
     "storage_objects": OBJECT_STORAGE,
+    "storage_completion_tokens": OBJECT_STORAGE,
     "sandboxes": SANDBOX,
     "sandbox_attachments": SANDBOX,
     "sandbox_generations": SANDBOX,
