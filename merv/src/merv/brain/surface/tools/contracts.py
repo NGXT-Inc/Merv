@@ -643,8 +643,8 @@ class ReviewSubmitInput(ContractModel):
             "first thing the human reads on the experiment page, so write "
             "plain prose in reader context — name things by their human "
             "names, and use at most one decisive number with its baseline. "
-            "No entity ids (exp_/claim_/res_/rev_/rver_/syn_), no backticks "
-            "or markdown, no newlines."
+            "No entity ids (exp_/claim_/res_/rev_/rver_/syn_/lit_/paper_), "
+            "no backticks or markdown, no newlines."
         )
     )
     return_to: Literal["", "planned", "running", "reflecting", "synthesizing"] = Field(
@@ -1081,8 +1081,9 @@ class LitreviewCiteInput(ProjectScopedInput):
 
     @model_validator(mode="after")
     def _one_identity(self) -> "LitreviewCiteInput":
-        if not (self.url or self.doi or self.arxiv_id):
-            raise ValueError("provide url, doi, or arxiv_id")
+        provided = [v for v in (self.url, self.doi, self.arxiv_id) if v]
+        if len(provided) != 1:
+            raise ValueError("provide exactly one of url, doi, or arxiv_id")
         return self
 
 

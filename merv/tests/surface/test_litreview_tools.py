@@ -94,6 +94,10 @@ class LitreviewToolsTest(unittest.TestCase):
         with self.assertRaises(ToolValidationError):
             self._call("litreview.cite")  # no identity
         with self.assertRaises(ToolValidationError):
+            self._call(  # conflicting identities
+                "litreview.cite", url="https://example.com/p", arxiv_id="2107.03374"
+            )
+        with self.assertRaises(ToolValidationError):
             self._call(
                 "litreview.cite",
                 url="https://example.com/p",

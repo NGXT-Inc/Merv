@@ -152,10 +152,20 @@ runs, params, final values, and downsampled metric histories. It is not a second
 metrics database. `/mlflow` aggregates that view across the project's
 experiments and provides dashboard links when configured.
 
-## Reflections
+## Literature review
 
 ```http
 GET /api/projects/{project_id}/litreview
+```
+
+The whole living review in one read: `summary` (synthesized with
+`exists: false` until first written), ordered `sections` with cited papers,
+and the `papers` ledger with its links. Served with a content-hash `ETag`
+and honors `If-None-Match` (304).
+
+## Reflections
+
+```http
 GET /api/projects/{project_id}/reflections
 GET /api/projects/{project_id}/reflections/{reflection_id}
 GET /api/projects/{project_id}/reflections/current/graph

@@ -2115,7 +2115,7 @@
             "type": "string"
           },
           "synopsis": {
-            "description": "The researcher's TLDR, 1-3 plain sentences, 40-420 chars: what was tried, what happened, and whether it holds. This is the first thing the human reads on the experiment page, so write plain prose in reader context \u2014 name things by their human names, and use at most one decisive number with its baseline. No entity ids (exp_/claim_/res_/rev_/rver_/syn_), no backticks or markdown, no newlines.",
+            "description": "The researcher's TLDR, 1-3 plain sentences, 40-420 chars: what was tried, what happened, and whether it holds. This is the first thing the human reads on the experiment page, so write plain prose in reader context \u2014 name things by their human names, and use at most one decisive number with its baseline. No entity ids (exp_/claim_/res_/rev_/rver_/syn_/lit_/paper_), no backticks or markdown, no newlines.",
             "title": "Synopsis",
             "type": "string"
           },

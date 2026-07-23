@@ -97,7 +97,10 @@ def _normalize_url_key(url: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise ValidationError(f"invalid port in URL: {url}") from exc
-    if port not in (None, 80, 443):
+    # Only the scheme's own default port is dropped: https://host:80 is a
+    # different endpoint from https://host and must not dedupe into it.
+    default_port = 443 if parsed.scheme == "https" else 80
+    if port is not None and port != default_port:
         host = f"{host}:{port}"
     path = parsed.path or "/"
     if path == "/":
@@ -129,7 +132,11 @@ class LiteratureService:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if section:
                 row = self._resolve_section(conn=conn, project_id=project_id, address=section)
-                return {"section": self._present_section(conn=conn, row=row, full=True)}
+                return {
+                    "section": self._present_section(
+                        conn=conn, project_id=project_id, row=row, full=True
+                    )
+                }
             if papers:
                 return self._paper_page(
                     conn=conn, project_id=project_id, cursor=int(cursor), limit=limit
@@ -173,7 +180,9 @@ class LiteratureService:
             return {
                 "summary": overview["summary"],
                 "sections": [
-                    self._present_section(conn=conn, row=row, full=True)
+                    self._present_section(
+                        conn=conn, project_id=project_id, row=row, full=True
+                    )
                     for row in sections
                 ],
                 "papers": ledger,
@@ -198,7 +207,12 @@ class LiteratureService:
         ).fetchone()
         return {
             "summary": (
-                self._present_section(conn=conn, row=summary, full=True)
+                {
+                    **self._present_section(
+                        conn=conn, project_id=project_id, row=summary, full=True
+                    ),
+                    "exists": True,
+                }
                 if summary is not None
                 # Synthesized when absent — reads never create it; the first
                 # write (edit op=edit, section='summary', expected_revision=0)
@@ -234,8 +248,9 @@ class LiteratureService:
         papers = []
         for row in page:
             links = conn.execute(
-                "SELECT target_type, target_id FROM paper_links WHERE paper_id = ?",
-                (row["id"],),
+                "SELECT target_type, target_id FROM paper_links "
+                "WHERE paper_id = ? AND project_id = ?",
+                (row["id"], project_id),
             ).fetchall()
             item = dict(row)
             item["authors"] = json.loads(item.pop("authors_json") or "[]")
@@ -246,7 +261,9 @@ class LiteratureService:
             "next_cursor": int(page[-1]["created_seq"]) if more and page else None,
         }
 
-    def _present_section(self, *, conn: Any, row: Any, full: bool) -> dict[str, Any]:
+    def _present_section(
+        self, *, conn: Any, project_id: str, row: Any, full: bool
+    ) -> dict[str, Any]:
         data = dict(row)
         data.pop("created_seq", None)
         if full:
@@ -255,9 +272,10 @@ class LiteratureService:
                 SELECT p.id, p.title, p.url
                 FROM paper_links l JOIN papers p ON p.id = l.paper_id
                 WHERE l.target_type = 'litreview_section' AND l.target_id = ?
+                  AND l.project_id = ? AND p.project_id = ?
                 ORDER BY p.created_seq
                 """,
-                (data["id"],),
+                (data["id"], project_id, project_id),
             ).fetchall()
             data["cited_papers"] = rows_to_dicts(rows=links)
         return data
@@ -339,7 +357,11 @@ class LiteratureService:
             conn=conn, project_id=project_id, event="litreview.section_added",
             section_id=section_id,
         )
-        return {"section": self._read_section(conn=conn, section_id=section_id)}
+        return {
+            "section": self._read_section(
+                conn=conn, project_id=project_id, section_id=section_id
+            )
+        }
 
     def _edit(
         self, *, conn: Any, project_id: str, address: str, title: str, tldr: str,
@@ -377,7 +399,11 @@ class LiteratureService:
                     conn=conn, project_id=project_id,
                     event="litreview.section_edited", section_id=section_id,
                 )
-                return {"section": self._read_section(conn=conn, section_id=section_id)}
+                return {
+                    "section": self._read_section(
+                        conn=conn, project_id=project_id, section_id=section_id
+                    )
+                }
             row = existing
         else:
             row = self._resolve_section(conn=conn, project_id=project_id, address=address)
@@ -396,19 +422,32 @@ class LiteratureService:
         )
         if next_title.casefold() != str(row["title"]).casefold():
             self._check_title_free(conn=conn, project_id=project_id, title=next_title)
-        conn.execute(
+        # revision in the WHERE clause makes this a database-level CAS, not
+        # just the check-then-act read above.
+        cursor = conn.execute(
             """
             UPDATE litreview_sections
             SET title = ?, tldr = ?, body = ?, revision = revision + 1, updated_at = ?
-            WHERE id = ?
+            WHERE id = ? AND project_id = ? AND revision = ?
             """,
-            (next_title, next_tldr, next_body, now_iso(), row["id"]),
+            (
+                next_title, next_tldr, next_body, now_iso(),
+                row["id"], project_id, expected_revision,
+            ),
         )
+        if cursor.rowcount != 1:
+            raise ValidationError(
+                f"stale revision for {row['id']}: it changed mid-write — re-read and retry"
+            )
         self._section_event(
             conn=conn, project_id=project_id, event="litreview.section_edited",
             section_id=str(row["id"]),
         )
-        return {"section": self._read_section(conn=conn, section_id=str(row["id"]))}
+        return {
+            "section": self._read_section(
+                conn=conn, project_id=project_id, section_id=str(row["id"])
+            )
+        }
 
     def _delete(
         self, *, conn: Any, project_id: str, address: str, expected_revision: int
@@ -421,12 +460,23 @@ class LiteratureService:
                 f"stale revision for {row['id']}: expected {expected_revision}, "
                 f"current {row['revision']} (tldr: {row['tldr']})"
             )
-        snapshot = self._read_section(conn=conn, section_id=str(row["id"]))
-        conn.execute(
-            "DELETE FROM paper_links WHERE target_type = 'litreview_section' AND target_id = ?",
-            (row["id"],),
+        snapshot = self._read_section(
+            conn=conn, project_id=project_id, section_id=str(row["id"])
         )
-        conn.execute("DELETE FROM litreview_sections WHERE id = ?", (row["id"],))
+        conn.execute(
+            "DELETE FROM paper_links WHERE project_id = ? "
+            "AND target_type = 'litreview_section' AND target_id = ?",
+            (project_id, row["id"]),
+        )
+        cursor = conn.execute(
+            "DELETE FROM litreview_sections "
+            "WHERE id = ? AND project_id = ? AND revision = ?",
+            (row["id"], project_id, expected_revision),
+        )
+        if cursor.rowcount != 1:
+            raise ValidationError(
+                f"stale revision for {row['id']}: it changed mid-write — re-read and retry"
+            )
         self.store.record_event(
             conn=conn, project_id=project_id, event_type="litreview.section_deleted",
             target_type="litreview_section", target_id=str(row["id"]), payload=snapshot,
@@ -450,15 +500,28 @@ class LiteratureService:
             )
         now = now_iso()
         for position, item in enumerate(order, start=1):
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE litreview_sections "
-                "SET position = ?, revision = revision + 1, updated_at = ? WHERE id = ?",
-                (position, now, str(item["id"])),
+                "SET position = ?, revision = revision + 1, updated_at = ? "
+                "WHERE id = ? AND project_id = ? AND revision = ?",
+                (position, now, str(item["id"]), project_id, have[str(item["id"])]),
             )
+            if cursor.rowcount != 1:
+                raise ValidationError(
+                    f"stale revision for {item['id']}: the outline changed "
+                    "mid-write — re-read litreview.view and retry"
+                )
+        # Post-state per section (bodies are unchanged by reorder, so the
+        # order envelope is the full history this event needs).
+        rows = conn.execute(
+            "SELECT id, title, position, revision FROM litreview_sections "
+            "WHERE project_id = ? AND kind = 'section' ORDER BY position",
+            (project_id,),
+        ).fetchall()
         self.store.record_event(
             conn=conn, project_id=project_id, event_type="litreview.sections_reordered",
             target_type="litreview_section", target_id="",
-            payload={"order": [str(item["id"]) for item in order]},
+            payload={"order": rows_to_dicts(rows=rows)},
         )
         return {"order": [str(item["id"]) for item in order]}
 
@@ -480,6 +543,10 @@ class LiteratureService:
         norm_key, source_kind, canonical_url = normalize_paper_identity(
             url=url, doi=doi, arxiv_id=arxiv_id
         )
+        # Scope is validated before any network I/O: a bad project must never
+        # trigger an outbound fetch.
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
         # Network work happens before the write transaction opens.
         card: dict[str, Any] | None = None
         fetch_status = "manual"
@@ -502,7 +569,10 @@ class LiteratureService:
                 targets=targets or [], note=note, created_by=created_by,
             )
             paper = dict(
-                conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
+                conn.execute(
+                    "SELECT * FROM papers WHERE id = ? AND project_id = ?",
+                    (paper_id, project_id),
+                ).fetchone()
             )
             paper["authors"] = json.loads(paper.pop("authors_json") or "[]")
             paper.pop("created_seq", None)
@@ -659,6 +729,13 @@ class LiteratureService:
         return f"section not found: {address}. Existing: {outline}"
 
     def _check_title_free(self, *, conn: Any, project_id: str, title: str) -> None:
+        # Reserved: a kind='section' row with the summary's name could never
+        # be addressed by title again (_is_summary_address intercepts it).
+        if self._is_summary_address(title):
+            raise ValidationError(
+                f"'{title}' is reserved for the General Summary — "
+                "address it as section='summary'"
+            )
         wanted = title.casefold()
         rows = conn.execute(
             "SELECT title FROM litreview_sections WHERE project_id = ?", (project_id,)
@@ -686,9 +763,12 @@ class LiteratureService:
             raise ValidationError(f"body exceeds {MAX_BODY_BYTES} bytes")
         return title, tldr
 
-    def _read_section(self, *, conn: Any, section_id: str) -> dict[str, Any]:
+    def _read_section(
+        self, *, conn: Any, project_id: str, section_id: str
+    ) -> dict[str, Any]:
         row = conn.execute(
-            "SELECT * FROM litreview_sections WHERE id = ?", (section_id,)
+            "SELECT * FROM litreview_sections WHERE id = ? AND project_id = ?",
+            (section_id, project_id),
         ).fetchone()
         data = dict(row)
         data.pop("created_seq", None)
@@ -701,5 +781,7 @@ class LiteratureService:
         self.store.record_event(
             conn=conn, project_id=project_id, event_type=event,
             target_type="litreview_section", target_id=section_id,
-            payload=self._read_section(conn=conn, section_id=section_id),
+            payload=self._read_section(
+                conn=conn, project_id=project_id, section_id=section_id
+            ),
         )

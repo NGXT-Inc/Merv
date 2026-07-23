@@ -29,7 +29,7 @@ def validate_synopsis(value: str) -> str:
         raise ValueError(f"{length_hint} (no markdown headings)")
     if _ENTITY_ID_RE.search(synopsis):
         raise ValueError(
-            f"{length_hint} (no entity ids like exp_/claim_/res_/rev_/rver_/syn_ "
-            "— name things by their human names instead)"
+            f"{length_hint} (no entity ids like exp_/claim_/res_/rev_/rver_/syn_/"
+            "lit_/paper_ — name things by their human names instead)"
         )
     return synopsis

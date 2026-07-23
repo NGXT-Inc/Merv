@@ -92,6 +92,21 @@ class NormalizeIdentityTest(unittest.TestCase):
             normalize_paper_identity(url="https://example.com/p")[0],
         )
 
+    def test_only_the_schemes_own_default_port_is_dropped(self) -> None:
+        # https on port 80 is a different endpoint from plain https.
+        self.assertNotEqual(
+            normalize_paper_identity(url="https://example.com:80/p")[0],
+            normalize_paper_identity(url="https://example.com/p")[0],
+        )
+        self.assertNotEqual(
+            normalize_paper_identity(url="http://example.com:443/p")[0],
+            normalize_paper_identity(url="http://example.com/p")[0],
+        )
+        self.assertEqual(
+            normalize_paper_identity(url="http://example.com:80/p")[0],
+            normalize_paper_identity(url="https://example.com:443/p")[0],
+        )
+
     def test_rejections(self) -> None:
         with self.assertRaises(ValidationError):
             normalize_paper_identity()
@@ -201,6 +216,30 @@ class LiteratureServiceTest(unittest.TestCase):
         )
         self.assertEqual(deleted["deleted"], edited["id"])
         self.assertEqual(self._section_rows(), 0)
+
+    def test_summary_presents_exists_true_once_written(self) -> None:
+        self.svc.edit(
+            project_id=self.project_id, op="edit", section="summary",
+            tldr="Written.", expected_revision=0,
+        )
+        view = self.svc.view(project_id=self.project_id)
+        self.assertTrue(view["summary"]["exists"])
+        self.assertEqual(view["summary"]["revision"], 1)
+
+    def test_summary_title_is_reserved_for_sections(self) -> None:
+        for title in ("summary", "General Summary", "GENERAL SUMMARY"):
+            with self.assertRaises(ValidationError):
+                self.svc.edit(
+                    project_id=self.project_id, op="add", title=title, tldr="t"
+                )
+        section = self.svc.edit(
+            project_id=self.project_id, op="add", title="Ok", tldr="t"
+        )["section"]
+        with self.assertRaises(ValidationError):
+            self.svc.edit(
+                project_id=self.project_id, op="edit", section=str(section["id"]),
+                title="Summary", expected_revision=1,
+            )
 
     def test_titles_are_casefold_unique_and_required(self) -> None:
         self._add("Token Density")

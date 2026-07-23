@@ -23,7 +23,7 @@ export default function LitReview() {
     if (!projectId) return;
     try {
       const res = await api.getLitReviewIfChanged(projectId, etagRef.current);
-      if (res?.notModified) return;
+      if (res?.notModified) { setError(null); return; }
       etagRef.current = res?.etag || null;
       setData(res?.data ?? res);
       setError(null);
@@ -52,8 +52,11 @@ export default function LitReview() {
     });
   };
 
-  if (error) return <div className="page-stage"><p className="muted">{error}</p></div>;
-  if (!data) return <div className="page-stage"><p className="muted">Loading…</p></div>;
+  // A transient poll failure never blanks last-good data — the error screen
+  // only shows when there is nothing to render at all.
+  if (!data) {
+    return <div className="page-stage"><p className="muted">{error || 'Loading…'}</p></div>;
+  }
 
   const empty = !data.summary?.exists && sections.length === 0 && papers.length === 0;
 
