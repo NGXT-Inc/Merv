@@ -614,8 +614,17 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         """Old-DB upgrade through the agent-anywhere Phase-A block: replay ledger
         rows < 26 against a schema with neither project_api_keys nor
         sandbox_generations.key_id, re-open, and confirm migrations 26/27 add
-        both (each migration + its ledger row inside one transaction on the
-        autocommit connection) without disturbing an existing generation row."""
+        both without disturbing an existing generation row.
+
+        The guarantee is idempotent convergence, NOT one-transaction atomicity of
+        the schema change with its ledger row. `CREATE TABLE IF NOT EXISTS`
+        (translate_schema_to_postgres(SCHEMA)) runs first in its own autocommit,
+        separately from the ledger; each migration's `_has_table`/`_has_column`-
+        gated handler then commits with its ledger row inside `_migration_scope`.
+        Because the handlers are gated, a crash that commits the schema change
+        before the ledger row heals on the next migrate (the gated handler
+        no-ops, the missing ledger row is (re)inserted) — the shipped 24/25
+        pattern. See the SQLite convergence test in test_store_migrations.py."""
         dsn = _reset_database()
         import psycopg
 
@@ -679,10 +688,13 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
     def test_legacy_postgres_store_gains_oauth_tables(self) -> None:
         """Old-DB upgrade through the agent-anywhere Phase-B block: replay ledger
         rows < 28 against a schema with none of the three OAuth tables, re-open,
-        and confirm migrations 28/29/30 create each (migration + its ledger row
-        inside one transaction on the autocommit connection). The FK order
-        (clients before codes/refresh, refresh before project_api_keys of
-        migration 26) must apply cleanly on Postgres."""
+        and confirm migrations 28/29/30 create each. Each `_has_table`-gated
+        handler commits with its ledger row inside `_migration_scope`; the
+        schema CREATE IF NOT EXISTS ran earlier in its own autocommit, so
+        convergence — not one-transaction schema+ledger atomicity — is what
+        heals a crash between the two. The FK order (clients before
+        codes/refresh, refresh before project_api_keys of migration 26) must
+        apply cleanly on Postgres."""
         dsn = _reset_database()
         import psycopg
 

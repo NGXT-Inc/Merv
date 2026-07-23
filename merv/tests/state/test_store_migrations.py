@@ -1184,6 +1184,50 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_precreated_table_with_missing_ledger_row_converges(self) -> None:
+        # INV-16 (FIX 4): the schema CREATE IF NOT EXISTS commits SEPARATELY from
+        # the migration ledger — executescript(SCHEMA) autocommits before the
+        # ledger rows land in _initialize's later BEGIN IMMEDIATE. A crash in
+        # that window leaves the project_api_keys table present but its ledger
+        # row (migration 26) missing. This is NOT single-transaction atomicity of
+        # the schema change with its ledger row; it is a WINDOW that CONVERGES,
+        # because the migration-26 handler is _has_table-gated: the next migrate
+        # no-ops the DDL and re-inserts the ledger row (the shipped 24/25
+        # pattern), so no error is raised and the schema never drifts.
+        StateStore(db_path=self.db)  # fresh: creates the table and ledger row 26
+        with sqlite3.connect(self.db) as conn:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='project_api_keys'"
+                ).fetchone()
+            )
+            # Reproduce the crash-between state: table kept, ledger row 26 gone.
+            conn.execute("DELETE FROM schema_migrations WHERE version = 26")
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = 26"
+                ).fetchone()
+            )
+            conn.commit()
+
+        StateStore(db_path=self.db)  # converges cleanly (no error)
+        store = StateStore(db_path=self.db)  # idempotent second boot
+        conn = store.connect()
+        try:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='project_api_keys'"
+                ).fetchone()
+            )
+            row = conn.execute(
+                "SELECT name FROM schema_migrations WHERE version = 26"
+            ).fetchone()
+            self.assertEqual(row["name"], "add_project_api_keys")
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
