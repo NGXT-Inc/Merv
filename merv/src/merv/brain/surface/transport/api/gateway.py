@@ -40,8 +40,9 @@ class RequestAuthenticator:
         request.state.principal = LOCAL_PRINCIPAL
         request.state.authenticated = False
         path = request.url.path
+        # Token-bearer routes carry their own credential (INV-12): artifact PUTs + storage completion.
         if path in ("/health", "/api/meta", "/internal/auth/mlflow") or path.startswith(
-            ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/")
+            ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/", "/api/storage/u/")
         ):
             return None
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
@@ -206,8 +207,8 @@ class ToolInvocationGateway:
         internal_kwargs = None
         if user_id and name in ("project", "project.list"):
             internal_kwargs = {"user_id": user_id}
-        if name == "artifact.submit" and base_url:
-            internal_kwargs = {"base_url": base_url}
+        if name in ("artifact.submit", "storage.submit") and base_url:
+            internal_kwargs = {"base_url": base_url}  # mints the upload one-liner
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if self.surface.use_hosted_tool_policies
