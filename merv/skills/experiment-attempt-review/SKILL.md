@@ -96,7 +96,7 @@ On `needs_changes` or `fail` you MUST also pass `return_to` to `review.submit`
   conclusion is flawed (bug in the run, wrong data handling, partial run,
   conclusion not supported by the observed results). The experiment resumes
   `running` with the approved plan and current attempt intact: fix, re-run
-  what is needed, retain/associate results, and resubmit for review.
+  what is needed, resubmit results via `artifact.submit`, and request review.
 
 Choose `planned` only when the plan is the problem. Do not send a sound plan
 back to design review for an execution mistake.

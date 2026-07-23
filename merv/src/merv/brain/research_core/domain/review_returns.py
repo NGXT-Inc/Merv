@@ -114,7 +114,8 @@ def revision_context_for_review_return(
     if target_type == "experiment" and return_to == "running":
         pieces.append(
             "Sent back to running: the approved plan stands; fix execution "
-            "and/or the conclusion, then retain/associate results and resubmit"
+            "and/or the conclusion, then resubmit results via artifact.submit "
+            "and request review again"
         )
     if target_type == "reflection":
         if return_to == "reflecting":

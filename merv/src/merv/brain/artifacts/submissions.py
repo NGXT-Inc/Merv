@@ -75,6 +75,18 @@ def _content_type_for(path: str) -> str:
     )
 
 
+def _is_textual_type(content_type: str) -> bool:
+    """Declared-textual: text/*, JSON/XML (incl. +json/+xml suffixes), or an
+    absent declaration (the byte inspection decides)."""
+    base = content_type.split(";", 1)[0].strip().lower()
+    return (
+        not base
+        or base.startswith("text/")
+        or base in ("application/json", "application/xml")
+        or base.endswith(("+json", "+xml"))
+    )
+
+
 def _shell_quote(value: str) -> str:
     """POSIX single-quote — the agent runs the command verbatim in a shell."""
     return "'" + value.replace("'", "'\\''") + "'"
@@ -183,7 +195,12 @@ class ArtifactSubmissionService:
         }
 
     def complete_upload(self, *, token: str, data: bytes) -> dict[str, Any]:
-        """Pin the uploaded bytes: cap, sha, blob, flip complete, supersede."""
+        """Pin the uploaded bytes: cap, sha, blob, flip complete, supersede.
+
+        The target is re-resolved through the same resolver used at submit: a
+        target that went terminal after submit (e.g. the reflection wave
+        published) refuses the bytes, and the pending row expires with its
+        token — otherwise a pre-minted token could drift a frozen wave."""
         if self.blobs is None:
             raise WorkflowError("artifact submission requires a configured blob store")
         self._sweep_expired()
@@ -196,44 +213,55 @@ class ArtifactSubmissionService:
                 raise NotFoundError(
                     "unknown, used, or expired upload token — call artifact.submit again"
                 )
-            role, path = str(row["role"]), str(row["path"])
-            cap = artifact_byte_cap(role)
-            if cap is not None and len(data) > cap:
-                raise ValidationError(
-                    f"{path} is {len(data)} bytes; the maximum for a role-{role!r} "
-                    f"artifact is {cap} bytes — slim the file (move raw "
-                    "data/outputs elsewhere and reference them) and resubmit",
-                    details={"role": role, "size_bytes": len(data), "max_bytes": cap},
+            refusal = self._frozen_target_refusal(row=row)
+            if refusal is not None:
+                # Expire, not rollback: the delete must commit (raising here
+                # would roll it back) so the dead token can never complete.
+                conn.execute(
+                    "DELETE FROM artifact_figures WHERE artifact_id = ?", (row["id"],)
                 )
-            project_id = str(row["project_id"])
-            content_type = _content_type_for(path)
-            sha = self.blobs.put(
-                namespace=project_id, data=data, content_type=content_type
-            )
-            self._supersede_slot(conn=conn, row=row)
-            conn.execute(
-                """
-                UPDATE artifacts
-                SET status = 'complete', upload_token = '', expires_at = NULL,
-                    content_sha256 = ?, size_bytes = ?, content_type = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (sha, len(data), content_type, now_iso(), row["id"]),
-            )
-            self.store.record_event(
-                conn=conn,
-                project_id=project_id,
-                event_type="artifact.submitted",
-                target_type=str(row["target_type"]),
-                target_id=str(row["target_id"]),
-                payload={
-                    "artifact_id": str(row["id"]),
-                    "role": role,
-                    "path": path,
-                    "attempt_index": int(row["attempt_index"]),
-                },
-            )
-            figures = self._mint_figure_tokens(conn=conn, row=row, data=data)
+                conn.execute("DELETE FROM artifacts WHERE id = ?", (row["id"],))
+            else:
+                role, path = str(row["role"]), str(row["path"])
+                cap = artifact_byte_cap(role)
+                if cap is not None and len(data) > cap:
+                    raise ValidationError(
+                        f"{path} is {len(data)} bytes; the maximum for a role-{role!r} "
+                        f"artifact is {cap} bytes — slim the file (move raw "
+                        "data/outputs elsewhere and reference them) and resubmit",
+                        details={"role": role, "size_bytes": len(data), "max_bytes": cap},
+                    )
+                project_id = str(row["project_id"])
+                content_type = _content_type_for(path)
+                sha = self.blobs.put(
+                    namespace=project_id, data=data, content_type=content_type
+                )
+                self._supersede_slot(conn=conn, row=row)
+                conn.execute(
+                    """
+                    UPDATE artifacts
+                    SET status = 'complete', upload_token = '', expires_at = NULL,
+                        content_sha256 = ?, size_bytes = ?, content_type = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (sha, len(data), content_type, now_iso(), row["id"]),
+                )
+                self.store.record_event(
+                    conn=conn,
+                    project_id=project_id,
+                    event_type="artifact.submitted",
+                    target_type=str(row["target_type"]),
+                    target_id=str(row["target_id"]),
+                    payload={
+                        "artifact_id": str(row["id"]),
+                        "role": role,
+                        "path": path,
+                        "attempt_index": int(row["attempt_index"]),
+                    },
+                )
+                figures = self._mint_figure_tokens(conn=conn, row=row, data=data)
+        if refusal is not None:
+            raise refusal
         return {
             "artifact_id": str(row["id"]),
             "role": role,
@@ -365,7 +393,8 @@ class ArtifactSubmissionService:
         self, *, artifact_id: str, project_id: str | None = None
     ) -> dict[str, Any]:
         """Canonical UI wire shape: {content, is_binary, size_bytes,
-        content_type, available}. Binary = declared binary content type or a
+        content_type, available}. Binary = declared non-text content type
+        (anything but text/*, JSON, XML, or empty), a NUL byte, or a
         strict-UTF-8 decode failure — never the filename."""
         artifact = self.resolve(artifact_id=artifact_id, project_id=project_id)
         content_type = str(artifact.get("content_type") or "")
@@ -380,9 +409,7 @@ class ArtifactSubmissionService:
                 data = None
         text, is_binary = None, False
         if data is not None:
-            if content_type.startswith(("image/", "audio/", "video/")) or (
-                content_type == "application/pdf"
-            ):
+            if not _is_textual_type(content_type) or b"\x00" in data:
                 is_binary = True
             else:
                 try:
@@ -720,6 +747,23 @@ class ArtifactSubmissionService:
         record = row_to_dict(row=row) or {}
         record.pop("upload_token", None)  # bearer credential, never surfaced
         return record
+
+    def _frozen_target_refusal(self, *, row: Row) -> ValidationError | None:
+        """Re-run submit-time target resolution for a pending upload.
+
+        Returns the refusal to raise once the expiry commits — None while the
+        target still accepts submissions."""
+        try:
+            self.association_targets.resolve(
+                target_type=str(row["target_type"]), target_id=str(row["target_id"])
+            )
+        except (NotFoundError, ValidationError) as exc:
+            reason = getattr(exc, "message", None) or str(exc)
+            return ValidationError(
+                f"upload refused — {reason}. This upload token has expired; "
+                "submit new work against a live target with artifact.submit"
+            )
+        return None
 
     def _supersede_slot(self, *, conn: Connection, row: Row) -> None:
         """Resubmit replaces: delete prior complete artifacts in the same slot.

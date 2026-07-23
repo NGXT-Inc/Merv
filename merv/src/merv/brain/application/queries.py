@@ -225,7 +225,8 @@ class LogicGraphQuery:
                 "available": False,
                 "graph": None,
                 "problems": [
-                    "graph has no submitted content — re-associate it (role 'graph')"
+                    "graph has no submitted content — resubmit it via "
+                    "artifact.submit (role 'graph')"
                 ],
                 "path": chosen.get("path"),
             }
@@ -302,8 +303,8 @@ class LogicGraphQuery:
                 "available": False,
                 "graph": None,
                 "problems": [
-                    "graph has no submitted content — re-associate it "
-                    "(role 'project_graph')"
+                    "graph has no submitted content — resubmit it via "
+                    "artifact.submit (role 'project_graph')"
                 ],
                 "path": chosen.get("path"),
             }

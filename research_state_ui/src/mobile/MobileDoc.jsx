@@ -82,6 +82,8 @@ export default function MobileDoc({
         <div className="error-message">{error}</div>
       ) : !content ? (
         <div className="mquiet">loading…</div>
+      ) : content.available === false ? (
+        <div className="mquiet">no submitted content available</div>
       ) : content.is_binary ? (
         <div className="mquiet">binary file</div>
       ) : kind === 'plan' ? (

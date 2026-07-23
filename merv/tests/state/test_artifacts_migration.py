@@ -156,6 +156,12 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
             # version->artifact map must keep both artifacts.
             ("as_4", "res_graph", "rver_graph", "reflection", "ref_1",
              "synthesis_doc", 1),
+            # Duplicate of as_2 under the CANONICAL spelling: both land in one
+            # new-model slot, so the backfill must keep a single artifact
+            # (preferring this already-canonical association) and map the
+            # legacy association onto the survivor.
+            ("as_5", "res_lens", "rver_lens", "reflection", "ref_1",
+             "reflection_lens_doc", 1),
         ]
         for seq, row in enumerate(associations, 1):
             conn.execute(
@@ -171,6 +177,9 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
             ("rver_plan", "figures/curve.png"),
             # Attached to the shared version: must fan out to BOTH artifacts.
             ("rver_graph", "figures/shared.png"),
+            # Attached to the deduped lens version: exactly ONE figure row,
+            # on the surviving artifact — not one per duplicate association.
+            ("rver_lens", "figures/lens.png"),
         ):
             conn.execute(
                 """
@@ -183,20 +192,26 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         # req_1: old-format snapshot pinning the CURRENT plan version.
         # req_2: pinned to the superseded rver_plan_v1 — it must stay stale
         # (kept verbatim), never be revived onto the current version's artifact.
-        for req_id, snapshot in (
-            ("req_1", "experiment|exp_1|design_review|2|res_plan:rver_plan:plan:2"),
-            ("req_2", "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2"),
+        # req_3: pinned via the LEGACY lens association (the dedupe loser) —
+        # it must rewrite onto the surviving canonical artifact.
+        for req_id, target_type, target_id, snapshot in (
+            ("req_1", "experiment", "exp_1",
+             "experiment|exp_1|design_review|2|res_plan:rver_plan:plan:2"),
+            ("req_2", "experiment", "exp_1",
+             "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2"),
+            ("req_3", "reflection", "ref_1",
+             "reflection|ref_1|reflection_review|1|res_lens:rver_lens:reflection:1"),
         ):
             conn.execute(
                 """
                 INSERT INTO review_requests
                   (id, project_id, target_type, target_id, role, capability_hash,
                    status, target_snapshot_id, expires_at, created_at, created_seq)
-                VALUES (?, 'proj_1', 'experiment', 'exp_1', 'design_reviewer',
+                VALUES (?, 'proj_1', ?, ?, 'design_reviewer',
                         ?, 'requested', ?,
                         '2027-01-01T00:00:00Z', '2026-07-01T02:00:00Z', 1)
                 """,
-                (req_id, f"hash_{req_id}", snapshot),
+                (req_id, target_type, target_id, f"hash_{req_id}", snapshot),
             )
 
     def test_backfill_maps_rows_figures_and_refs(self) -> None:
@@ -208,6 +223,10 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
             for row in conn.execute("SELECT * FROM artifacts").fetchall()
         }
         self.assertEqual(len(artifacts), 4)
+        # The keyed dict above would mask a duplicate-slot row; count raw rows.
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 4
+        )
 
         plan = artifacts[("plan.md", "plan")]
         self.assertTrue(str(plan["id"]).startswith("art_"))
@@ -219,10 +238,13 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         self.assertEqual(plan["lens_id"], "")
 
         # Legacy roles are canonicalized; lens docs inherit lens_id from the
-        # basename stem convention.
+        # basename stem convention. The legacy+canonical duplicate pair
+        # (as_2 + as_5) collapsed into ONE artifact — the total above counts
+        # it once — surviving as the already-canonical association (as_5).
         lens = artifacts[("reflections/rigor.md", "reflection_lens_doc")]
         self.assertEqual(lens["lens_id"], "rigor")
         self.assertEqual(lens["title"], "Rigor lens")
+        self.assertEqual(lens["created_seq"], 5)
         graph = artifacts[("project/logic_graph.json", "project_graph")]
         doc = artifacts[("project/logic_graph.json", "reflection_doc")]
 
@@ -240,8 +262,15 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
                 (plan["id"], "figures/curve.png"),
                 (graph["id"], "figures/shared.png"),
                 (doc["id"], "figures/shared.png"),
+                # Deduped slot: one figure row on the survivor, not two.
+                (lens["id"], "figures/lens.png"),
             },
         )
+        # The set above would hide row-level duplicates; count them out.
+        figure_rows = conn.execute(
+            "SELECT COUNT(*) FROM artifact_figures"
+        ).fetchone()[0]
+        self.assertEqual(figure_rows, 4)
 
         # The published-graph ref resolves to the project_graph-role artifact
         # specifically, even though another role shares the pinned version.
@@ -266,6 +295,12 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         self.assertEqual(
             snapshots["req_2"],
             "experiment|exp_1|design_review|2|res_plan:rver_plan_v1:plan:2",
+        )
+        # The legacy half of the deduped pair resolves to the SURVIVING
+        # artifact with the canonical role spelling.
+        self.assertEqual(
+            snapshots["req_3"],
+            f"reflection|ref_1|reflection_review|1|{lens['id']}:reflection_lens_doc:1",
         )
 
         # Migration 25 dropped the resource-era tables right after the backfill.

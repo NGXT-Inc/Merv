@@ -62,6 +62,19 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
             )
         return experiment_id
 
+    def _insert_reflection(self, *, status: str = "reflecting") -> str:
+        reflection_id = new_id(prefix="ref")
+        with self.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO reflections
+                  (id, project_id, title, status, created_at, updated_at)
+                VALUES (?, ?, 'Wave', ?, ?, ?)
+                """,
+                (reflection_id, self.project_id, status, now_iso(), now_iso()),
+            )
+        return reflection_id
+
     def _submit(self, *, role: str = "plan", path: str = "plan.md", **kwargs):
         return self.service.submit(
             target_type="experiment",
@@ -185,6 +198,60 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
                 ],
             },
         )
+
+    def test_frozen_target_refuses_completion_and_expires_the_row(self) -> None:
+        # Race closed: a token minted while the wave was open must not
+        # complete after the wave publishes (the frozen wave would drift).
+        reflection_id = self._insert_reflection()
+        pending = self.service.submit(
+            target_type="reflection",
+            target_id=reflection_id,
+            role="reflection_doc",
+            path="reflections/wave.md",
+            project_id=self.project_id,
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE reflections SET status = 'published' WHERE id = ?",
+                (reflection_id,),
+            )
+        with self.assertRaises(ValidationError) as caught:
+            self.service.complete_upload(
+                token=self._token(pending), data=b"## Story\nS.\n"
+            )
+        self.assertIn("published", caught.exception.message)
+        # The refusal expired the row: the token is dead, nothing completed.
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM artifacts WHERE id = ?", (pending["artifact_id"],)
+            ).fetchone()
+        self.assertIsNone(row)
+        with self.assertRaises(NotFoundError):
+            self.service.complete_upload(
+                token=self._token(pending), data=b"## Story\nS.\n"
+            )
+
+    def test_artifact_content_binary_contract(self) -> None:
+        # Declared non-text type is binary even when the bytes decode as UTF-8.
+        cases = (
+            ("data.bin", b"plain ascii bytes", True),
+            ("archive.zip", b"PK fake zip", True),
+            ("notes.txt", b"a\x00b", True),  # NUL byte in valid UTF-8
+            ("metrics.json", b'{"accuracy": 0.9}', False),
+            ("notes.txt", b"hello", False),
+        )
+        for path, data, expect_binary in cases:
+            with self.subTest(path=path, data=data):
+                pending = self._submit(role="result", path=path)
+                self.service.complete_upload(token=self._token(pending), data=data)
+                content = self.service.artifact_content(
+                    artifact_id=pending["artifact_id"], project_id=self.project_id
+                )
+                self.assertTrue(content["available"])
+                self.assertEqual(content["is_binary"], expect_binary)
+                self.assertEqual(
+                    content["content"], None if expect_binary else data.decode()
+                )
 
     def test_upload_command_always_shell_quotes_the_path(self) -> None:
         pending = self._submit(path="my plan's file.md")

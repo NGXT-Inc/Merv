@@ -109,7 +109,9 @@ export default function PlanSpotlight({
           ) : error ? (
             <div className="error-message">{error}</div>
           ) : content ? (
-            content.is_binary ? (
+            content.available === false ? (
+              <div className="empty">No submitted plan content is available.</div>
+            ) : content.is_binary ? (
               <div className="empty">Binary plan file</div>
             ) : (
               <PlanBody

@@ -1011,6 +1011,14 @@ class BaseStateStore:
         # and published-graph refs (shared versions keep every artifact).
         by_assoc: dict[tuple[str, str, str, str, str, int], tuple[str, str]] = {}
         by_version_target: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+        # One artifact per new-model slot: an old DB could legally hold a
+        # legacy AND a canonical role spelling for the same resource/target/
+        # attempt, which canonicalize into one slot. Winner: the association
+        # already spelled canonically, else the newer one; every duplicate
+        # still maps to the survivor below so snapshot-token rewrites and
+        # figure fan-out resolve.
+        prepared: list[tuple[Row, str, str, str, tuple]] = []
+        winners: dict[tuple, int] = {}
         for row in rows:
             path = str(row["path"] or "")
             role = str(row["role"] or "")
@@ -1023,6 +1031,22 @@ class BaseStateStore:
                 if canonical == "reflection_lens_doc"
                 else ""
             )
+            slot = (
+                str(row["project_id"]), str(row["target_type"]),
+                str(row["target_id"]), canonical,
+                int(row["attempt_index"] or 0), lens_id, path,
+            )
+            prepared.append((row, role, canonical, lens_id, slot))
+            held = winners.get(slot)
+            held_was_canonical = (
+                held is not None and prepared[held][1] == prepared[held][2]
+            )
+            if held is None or not (held_was_canonical and role != canonical):
+                winners[slot] = len(prepared) - 1  # canonical > legacy > older
+        slot_artifact: dict[tuple, str] = {}
+        for index in winners.values():
+            row, _role, canonical, lens_id, slot = prepared[index]
+            path = slot[-1]
             artifact_id = new_id(prefix="art")
             created_at = str(row["created_at"])
             conn.execute(
@@ -1044,6 +1068,10 @@ class BaseStateStore:
                     created_at, created_at, int(row["created_seq"] or 0),
                 ),
             )
+            slot_artifact[slot] = artifact_id
+        seen_version_artifacts: set[tuple] = set()
+        for row, role, canonical, _lens_id, slot in prepared:
+            artifact_id = slot_artifact[slot]
             target_key = (str(row["target_type"]), str(row["target_id"]))
             by_assoc[
                 (
@@ -1052,9 +1080,13 @@ class BaseStateStore:
                 )
             ] = (artifact_id, canonical)
             if row["version_id"]:
-                by_version_target.setdefault(
-                    (str(row["version_id"]), *target_key), []
-                ).append((artifact_id, canonical))
+                version_key = (str(row["version_id"]), *target_key)
+                if (version_key, artifact_id) in seen_version_artifacts:
+                    continue
+                seen_version_artifacts.add((version_key, artifact_id))
+                by_version_target.setdefault(version_key, []).append(
+                    (artifact_id, canonical)
+                )
         self._backfill_artifact_figures(conn=conn, by_version_target=by_version_target)
         self._rewrite_published_graph_refs(
             conn=conn, by_version_target=by_version_target
