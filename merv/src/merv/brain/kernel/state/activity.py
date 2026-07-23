@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -39,6 +40,29 @@ SENSITIVE_KEYS = {
     "MLFLOW_TRACKING_PASSWORD",
 }
 LOCAL_DATA_PLANE_KEYS = {"repo_root", "local_sync_dir", "local_experiment_dir"}
+
+# Value-level secret scrubbing (INV-12). storage.submit/fetch results carry a
+# presigned S3 URL and an upload-token completion URL inside their `run` command
+# string; the presigned URL is a ~1-hour replayable credential that bypasses
+# brain auth entirely, and the token is a one-time bearer credential. Neither may
+# reach a persisted log even when embedded in a string value, so we drop every
+# SigV4 query param (name and value) and the upload-token path segments.
+_S3_SIGV4_PARAM_RE = re.compile(
+    r"(?i)X-Amz-(?:Signature|Credential|Security-Token|Algorithm|Date|Expires|SignedHeaders)=[^&'\"\s]+"
+)
+_UPLOAD_TOKEN_URL_RE = re.compile(
+    r"(/api/(?:artifacts/[uf]|storage/u)/)[^/?'\"\s]+"
+)
+
+
+def scrub_secret_text(text: str) -> str:
+    """Redact presigned-URL SigV4 params and upload-token path segments embedded
+    in a string value before it is persisted to a visibility log."""
+    if "X-Amz-" in text:
+        text = _S3_SIGV4_PARAM_RE.sub("<redacted>", text)
+    if "/api/" in text:
+        text = _UPLOAD_TOKEN_URL_RE.sub(r"\1<redacted>", text)
+    return text
 ID_KEYS = {
     "project_id",
     "claim_id",
@@ -361,6 +385,8 @@ def redact_sensitive(*, value: Any) -> Any:
         return [redact_sensitive(value=item) for item in value]
     if isinstance(value, tuple):
         return tuple(redact_sensitive(value=item) for item in value)
+    if isinstance(value, str):
+        return scrub_secret_text(value)
     return value
 
 

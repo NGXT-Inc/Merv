@@ -29,7 +29,7 @@ from typing import Any, Iterator
 
 from .tool_call_stats import by_tool, tool_call_totals
 from ..utils import format_iso, now_iso, parse_iso
-from .activity import SENSITIVE_KEYS, jsonable, payload_chars
+from .activity import SENSITIVE_KEYS, jsonable, payload_chars, scrub_secret_text
 
 
 DEFAULT_MAX_ROWS = 1500
@@ -470,4 +470,9 @@ def _redact_sensitive(value: Any) -> Any:
         return [_redact_sensitive(item) for item in value]
     if isinstance(value, tuple):
         return tuple(_redact_sensitive(item) for item in value)
+    if isinstance(value, str):
+        # Value-level presigned-URL/token scrubbing (INV-12): this store keeps
+        # full I/O, so a storage.submit/fetch `run` command would otherwise
+        # persist replayable S3 signatures and one-time upload tokens.
+        return scrub_secret_text(value)
     return value
