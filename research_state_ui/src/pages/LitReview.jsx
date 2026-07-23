@@ -92,12 +92,6 @@ export default function LitReview() {
   return (
     <div className="page-stage litreview">
       <article className="litreview-sheet">
-        <div className="litreview-meta">
-          <span>{sections.length} section{sections.length === 1 ? '' : 's'}</span>
-          <span className="litreview-meta-dot">·</span>
-          <span>{papers.length} paper{papers.length === 1 ? '' : 's'}</span>
-        </div>
-
         <section className="litreview-summary">
           <h1>{data.summary?.title || 'General Summary'}</h1>
           {data.summary?.exists === false ? (

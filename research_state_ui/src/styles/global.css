@@ -5197,23 +5197,14 @@ a.spend-row-name:hover { color: var(--active); }
 /* --- Literature review ---------------------------------------------------- */
 /* One document on a raised sheet: General Summary, numbered sections (each
    ending in a reference list that jumps into Papers), then the Papers ledger. */
-.litreview { max-width: 920px; }
 .litreview-sheet {
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
-  padding: 40px 52px 52px;
+  padding: 64px 88px 72px;
 }
-.litreview-meta {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em;
-  text-transform: uppercase; color: var(--faint);
-  padding-bottom: 18px; margin-bottom: 26px;
-  border-bottom: 1px solid var(--line-soft);
-}
-.litreview-meta-dot { color: var(--line-strong); }
-.litreview-summary h1 { font-size: 26px; margin: 0 0 10px; letter-spacing: -0.01em; }
+.litreview-summary h1 { font-size: 27px; margin: 0 0 14px; letter-spacing: -0.01em; }
 .litreview-lede {
   font-size: 15.5px; line-height: 1.55; color: var(--muted);
   margin: 0 0 14px; max-width: 62ch;
@@ -5221,7 +5212,7 @@ a.spend-row-name:hover { color: var(--active); }
 .litreview-tldr { color: var(--muted); font-style: italic; margin: 6px 0 10px; line-height: 1.5; }
 
 .litreview-section {
-  margin-top: 30px; padding-top: 24px;
+  margin-top: 42px; padding-top: 30px;
   border-top: 1px solid var(--line-soft);
   scroll-margin-top: 24px;
 }
@@ -5240,10 +5231,10 @@ a.spend-row-name:hover { color: var(--active); }
 }
 .litreview-chevron.open { transform: rotate(90deg); }
 .litreview-section .litreview-tldr { margin-left: 28px; }
-.litreview-body { margin: 10px 0 0 28px; }
+.litreview-body { margin: 12px 0 0 28px; }
 
 /* The structured reference list a section ends with. */
-.litreview-refs { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.litreview-refs { margin-top: 22px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
 .litreview-refs-label {
   font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
   text-transform: uppercase; color: var(--faint); margin-bottom: 6px;
@@ -5268,8 +5259,8 @@ a.spend-row-name:hover { color: var(--active); }
 }
 
 /* The Papers ledger: every cited paper, numbered, with its project links. */
-.litreview-papers { margin-top: 36px; padding-top: 26px; border-top: 1px solid var(--line); }
-.litreview-papers h2 { margin: 0 0 14px; font-size: 20px; }
+.litreview-papers { margin-top: 52px; padding-top: 34px; border-top: 1px solid var(--line); }
+.litreview-papers h2 { margin: 0 0 18px; font-size: 20px; }
 .litreview-count {
   color: var(--faint); font-weight: 500; font-size: 0.8em;
   margin-left: 6px; font-variant-numeric: tabular-nums;
@@ -5308,8 +5299,8 @@ a.spend-row-name:hover { color: var(--active); }
 }
 .litreview-section-link:hover { color: var(--text); border-color: var(--line-strong); background: var(--hover); }
 
-@media (max-width: 700px) {
-  .litreview-sheet { padding: 22px 18px 30px; }
+@media (max-width: 900px) {
+  .litreview-sheet { padding: 28px 22px 36px; }
   .litreview-body, .litreview-section .litreview-tldr { margin-left: 0; }
   .litreview-ref-meta { display: none; }
 }
