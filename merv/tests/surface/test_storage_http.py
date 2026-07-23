@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,9 +18,19 @@ from merv.brain.surface.composition import build_local_server
 from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state.store import StateStore
-from merv.brain.object_storage.service import StorageLedgerService
+from merv.brain.object_storage.service import SINGLE_PUT_MAX_BYTES, StorageLedgerService
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.kernel.utils import ValidationError
+
+
+def _parse_submit_run(run: str) -> tuple[str, str]:
+    """Pull the presigned PUT URL and the completion token out of the compound
+    `run` command. Test data carries no single quotes, so a naive scan is safe."""
+    put_cmd, complete_cmd = run.split(" && ", 1)
+    quoted = re.findall(r"'([^']*)'", put_cmd)
+    presigned = quoted[-1]  # curl ... -T '<path>' '<presigned>'
+    token = re.search(r"/api/storage/u/([^/]+)/complete", complete_cmd).group(1)
+    return presigned, token
 
 
 class StorageHttpApiTest(unittest.TestCase):
@@ -79,76 +90,129 @@ class StorageHttpApiTest(unittest.TestCase):
             [],
         )
 
-    def test_storage_upload_and_download_file_tools_resolve_project_paths(self) -> None:
-        source = self.repo / "experiments" / "storage_demo" / "run.log"
-        source.parent.mkdir(parents=True)
-        source.write_bytes(b"tool bytes")
-
-        uploaded = self.app.call_tool(
-            "storage.upload_file",
+    def test_storage_submit_returns_token_curl_command_and_round_trips(self) -> None:
+        data = b"tool bytes"
+        sha = hashlib.sha256(data).hexdigest()
+        submitted = self.app.call_tool(
+            "storage.submit",
             {
                 "project_id": self.project_id,
                 "path": "experiments/storage_demo/run.log",
                 "kind": "other",
+                "sha256": sha,
+                "size_bytes": len(data),
             },
         )
-
-        self.assertTrue(uploaded["uploaded"])
+        # Fresh content: an upload is pending, and the compound command is a
+        # checksum-bound presigned PUT followed by the completion POST.
+        self.assertFalse(submitted["uploaded"])
         self.assertEqual(
-            uploaded["object"]["name"], "experiments/storage_demo/run.log"
+            submitted["object"]["name"], "experiments/storage_demo/run.log"
         )
-        self.assertEqual(uploaded["object"]["content_sha256"], hashlib.sha256(b"tool bytes").hexdigest())
+        self.assertEqual(submitted["object"]["status"], "uploading")
+        run = submitted["run"]
+        import base64
 
-        downloaded = self.app.call_tool(
-            "storage.download_file",
+        expected_checksum = base64.b64encode(bytes.fromhex(sha)).decode("ascii")
+        self.assertIn(f"-H 'x-amz-checksum-sha256:{expected_checksum}'", run)
+        self.assertIn("-T 'experiments/storage_demo/run.log'", run)
+        self.assertRegex(
+            run,
+            r"^curl -sf -X PUT .* && curl -sf -X POST "
+            r"'http://[^']+/api/storage/u/[^/']+/complete'$",
+        )
+
+        # Drive the command: the agent's PUT lands the bytes at the presigned
+        # target, then the auth-exempt completion POST finalizes the ledger.
+        presigned, token = _parse_submit_run(run)
+        Path(url2pathname(urlsplit(presigned).path)).write_bytes(data)
+        completed = self.client.post(f"/api/storage/u/{token}/complete")
+        self.assertEqual(completed.status_code, 200, completed.text)
+        obj = completed.json()["object"]
+        self.assertEqual(obj["status"], "available")
+        self.assertEqual(obj["content_sha256"], sha)
+
+        # Single-use: replaying the same token 404s (row deleted on success).
+        replay = self.client.post(f"/api/storage/u/{token}/complete")
+        self.assertEqual(replay.status_code, 404, replay.text)
+
+    def test_storage_submit_dedup_needs_no_upload(self) -> None:
+        data = b"dedup me"
+        sha = hashlib.sha256(data).hexdigest()
+        first = self._submit_and_complete(
+            path="datasets/a.bin", kind="dataset", data=data
+        )[0]
+        # A second submit of the same name+sha is idempotent: object available,
+        # no command, no completion token needed.
+        again = self.app.call_tool(
+            "storage.submit",
             {
                 "project_id": self.project_id,
-                "object_id": uploaded["object"]["id"],
-                "path": "experiments/storage_demo/copy.log",
+                "path": "datasets/a.bin",
+                "kind": "dataset",
+                "sha256": sha,
+                "size_bytes": len(data),
             },
         )
+        self.assertTrue(again["uploaded"])
+        self.assertEqual(again["run"], "")
+        self.assertEqual(again["object"]["id"], first["id"])
 
-        self.assertEqual(downloaded["bytes_written"], len(b"tool bytes"))
-        self.assertEqual(
-            (self.repo / "experiments" / "storage_demo" / "copy.log").read_bytes(),
-            b"tool bytes",
-        )
+    def test_storage_submit_enforces_size_caps(self) -> None:
+        # Above the 5 GiB single-PUT ceiling -> explicit v1-unsupported error.
+        with self.assertRaises(ValidationError) as ctx:
+            self.app.call_tool(
+                "storage.submit",
+                {
+                    "project_id": self.project_id,
+                    "path": "big.bin",
+                    "kind": "other",
+                    "sha256": "0" * 64,
+                    "size_bytes": SINGLE_PUT_MAX_BYTES + 1,
+                },
+            )
+        self.assertIn("unsupported in v1", str(ctx.exception).lower())
 
-    def test_storage_file_tools_reject_paths_outside_the_repo(self) -> None:
-        outside = Path(self.tmp.name).parent / "outside-secret.txt"
-        for path in (
-            "../outside-secret.txt",
-            str(outside),
-            ".research_plugin/state.sqlite",
-            ".merv/state.sqlite",
-        ):
-            with self.assertRaises(ValidationError):
-                self.app.call_tool(
-                    "storage.upload_file",
-                    {"project_id": self.project_id, "path": path, "kind": "other"},
-                )
-        source = self.repo / "in-repo.log"
-        source.write_bytes(b"contained")
-        uploaded = self.app.call_tool(
-            "storage.upload_file",
-            {"project_id": self.project_id, "path": "in-repo.log", "kind": "other"},
+        # An absolute cap (env-configured in composition) rejects before presign.
+        capped = StorageLedgerService(
+            store=self.app.store, objects=FakeObjectStore(), max_upload_bytes=1024
         )
-        for path in (
-            "../escape.log",
-            str(outside),
-            ".research_plugin/clobber",
-            ".merv/clobber",
-        ):
-            with self.assertRaises(ValidationError):
-                self.app.call_tool(
-                    "storage.download_file",
-                    {
-                        "project_id": self.project_id,
-                        "object_id": uploaded["object"]["id"],
-                        "path": path,
-                        "overwrite": True,
-                    },
-                )
+        with self.assertRaises(ValidationError) as ctx2:
+            capped.submit(
+                project_id=self.project_id,
+                path="over.bin",
+                kind="other",
+                sha256="0" * 64,
+                size_bytes=2048,
+            )
+        self.assertIn("maximum", str(ctx2.exception).lower())
+
+    def test_storage_completion_token_first_404_before_object_work(self) -> None:
+        # An unknown token 404s (token-first) without touching any object.
+        resp = self.client.post("/api/storage/u/nonexistent-token/complete")
+        self.assertEqual(resp.status_code, 404, resp.text)
+
+    def test_storage_fetch_returns_download_and_verify_command(self) -> None:
+        data = b"fetch me"
+        obj = self._submit_and_complete(
+            path="datasets/f.bin", kind="dataset", data=data
+        )[0]
+        sha = hashlib.sha256(data).hexdigest()
+        fetched = self.app.call_tool(
+            "storage.fetch",
+            {
+                "project_id": self.project_id,
+                "object_id": obj["id"],
+                "path": "local/copy.bin",
+            },
+        )
+        self.assertEqual(fetched["object"]["id"], obj["id"])
+        run = fetched["run"]
+        # curl the presigned GET to the path, then verify the stored sha256.
+        self.assertRegex(run, r"^curl -sf -o 'local/copy\.bin' '[^']+' && ")
+        self.assertIn(
+            f"printf '%s  %s\\n' {sha} 'local/copy.bin' | shasum -a 256 -c", run
+        )
 
     def test_experiment_state_surfaces_produced_storage_objects(self) -> None:
         exp = self.app.call_tool(
@@ -159,21 +223,15 @@ class StorageHttpApiTest(unittest.TestCase):
                 "intent": "Retain heavy artifacts in storage.",
             },
         )
-        source = self.repo / "experiments" / "storage-visible" / "model.bin"
-        source.parent.mkdir(parents=True)
-        source.write_bytes(b"model bytes")
-
-        uploaded = self.app.call_tool(
-            "storage.upload_file",
-            {
-                "project_id": self.project_id,
-                "path": "experiments/storage-visible/model.bin",
-                "kind": "model",
-                "producing_experiment_id": exp["id"],
-                "producing_run": "run-001",
-                "notes": "checkpoint retained for reviewer inspection",
-            },
+        obj, _submitted = self._submit_and_complete(
+            path="experiments/storage-visible/model.bin",
+            kind="model",
+            data=b"model bytes",
+            producing_experiment_id=exp["id"],
+            producing_run="run-001",
+            notes="checkpoint retained for reviewer inspection",
         )
+        uploaded = {"object": obj}
 
         state = self.app.call_tool(
             "experiment.get_state",
@@ -317,6 +375,29 @@ class StorageHttpApiTest(unittest.TestCase):
         response = self.client.request(method, path, json=body)
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
+
+    def _submit_and_complete(
+        self, *, path: str, kind: str, data: bytes, **extra: object
+    ) -> tuple[dict, dict]:
+        """Full token-curl round-trip: storage.submit -> presigned PUT (to the
+        fake target) -> auth-exempt completion POST. Returns (object, submit)."""
+        sha = hashlib.sha256(data).hexdigest()
+        submitted = self.app.call_tool(
+            "storage.submit",
+            {
+                "project_id": self.project_id,
+                "path": path,
+                "kind": kind,
+                "sha256": sha,
+                "size_bytes": len(data),
+                **extra,
+            },
+        )
+        presigned, token = _parse_submit_run(submitted["run"])
+        Path(url2pathname(urlsplit(presigned).path)).write_bytes(data)
+        completed = self.client.post(f"/api/storage/u/{token}/complete")
+        self.assertEqual(completed.status_code, 200, completed.text)
+        return completed.json()["object"], submitted
 
     def _put_and_complete(self, *, name: str, kind: str, data: bytes) -> dict:
         registered = self.app.storage.put_object(
