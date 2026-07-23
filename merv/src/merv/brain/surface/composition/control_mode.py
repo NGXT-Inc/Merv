@@ -36,6 +36,7 @@ from ..config import (
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
     resolve_oauth_resource_uri,
+    resolve_storage_max_upload_bytes,
     resolve_ui_base_url,
 )
 from .brain_dirs import resolve_brain_state_root, resolve_local_brain_staging
@@ -132,7 +133,15 @@ def build_control_app(
     )
     if storage is _UNSET:
         objects = build_object_store(default_root=state_root, env=env)
-        storage = StorageLedgerService(store=store, objects=objects) if objects else None
+        storage = (
+            StorageLedgerService(
+                store=store,
+                objects=objects,
+                max_upload_bytes=resolve_storage_max_upload_bytes(env),
+            )
+            if objects
+            else None
+        )
     task_channel = task_channel if task_channel is not None else ControlTaskChannel()
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)

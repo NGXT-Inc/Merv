@@ -13,7 +13,12 @@ from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
 
 _UPLOAD_PREFIX = ".uploads/"
-DEFAULT_MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024
+# Token-curl uploads (no-dataplane Phase D) are a single presigned PUT, which S3
+# accepts up to its 5 GiB hard limit. storage.submit caps at that limit and
+# rejects larger objects (multipart command orchestration is a documented
+# follow-on), so the default store single-PUTs the entire allowed range; a
+# smaller threshold stays configurable for the multipart contract path.
+DEFAULT_MULTIPART_THRESHOLD_BYTES = 5 * 1024 * 1024 * 1024
 DEFAULT_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 
 
