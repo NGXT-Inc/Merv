@@ -364,6 +364,12 @@ class ResearchClaims(Protocol):
     def update(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+class ResearchLiterature(Protocol):
+    def view(self, **kwargs: Any) -> dict[str, Any]: ...
+    def edit(self, **kwargs: Any) -> dict[str, Any]: ...
+    def cite(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
 class ResearchReviewDelivery(Protocol):
     def queue(self, *, project_id: str | None = None) -> dict[str, Any]: ...
     def request_project_id(self, *, review_request_id: Any) -> str | None: ...
@@ -378,7 +384,7 @@ __all__ = (
     "CommittedExperimentTransition", "CommittedTrackingRunRefresh", "EXPERIMENT_ACTIVE_PROCESS_STATUSES",
     "EXPERIMENT_TERMINAL_STATUSES", "ExperimentCreateArgs", "ExhibitVerdict", "ExperimentState", "ExperimentSummary",
     "GateEvaluation", "MAX_GRAPH_NODES", "PersistedRunState", "ResearchClaims", "ResearchCore",
-    "ResearchCoreFacade", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
+    "ResearchCoreFacade", "ResearchLiterature", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
     "ResearchSnapshot", "ResearchSnapshots", "REVIEW_VERDICT_VALUES", "RequirementEvaluation",
     "experiment_folder_rel", "graph_problems", "infer_claim_status_from_conclusion",
     "preferred_associated_resource",

@@ -244,6 +244,7 @@ class ControlApp:
                 tracking_finalize=self.finalize_tracking_run,
                 review_status=self.read_review_status,
                 operations=self.control_tool_operations,
+                litreview=core.literature,
             ),
             permissions=core.permissions,
             activity=self.activity,
