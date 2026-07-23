@@ -4995,3 +4995,13 @@ a.spend-row-name:hover { color: var(--active); }
   .mcpk-row--head { display: none; }
   .mcpk-when { display: none; }
 }
+
+/* --- OAUTH CONSENT --------------------------------------------------- */
+/* Rides the shared auth-modal grammar (see AuthGate) — these tune only the
+   client-scoped bits: the project picker, the resource line, and the footer
+   actions. */
+.oauth-consent { gap: 16px; }
+.oauth-project-select { width: 100%; }
+.oauth-consent-resource { margin: 0; font: var(--text-xs)/1.5 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.oauth-consent-error { margin: 0; color: var(--refutes); font-size: var(--text-sm); }
+.oauth-consent-actions { display: flex; justify-content: flex-end; gap: 8px; }
