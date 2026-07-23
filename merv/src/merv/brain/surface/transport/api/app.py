@@ -19,11 +19,13 @@ from .gateway import (
     ProjectAuthorizer,
     RequestAuthenticator,
     ToolInvocationGateway,
-    install_activity_middleware,
     install_auth_routes,
+    install_request_middleware,
+)
+from .middleware import (
+    install_activity_middleware,
     install_cors,
     install_error_handlers,
-    install_request_middleware,
 )
 def create_fastapi_app(
     app: HttpDependencies | None = None,
@@ -34,6 +36,7 @@ def create_fastapi_app(
     surface_policy: HttpSurfacePolicy | None = None,
     auth: Any | None = None,
     ui_base_url: str = "",
+    oauth_resource_uri: str = "",
 ) -> FastAPI:
     """Compose transport adapters around an already-built backend."""
     if app is None:
@@ -58,7 +61,8 @@ def create_fastapi_app(
     # Registered last so CORS decorates middleware short-circuits as well.
     install_cors(http, allowed_origins=allowed_origins, surface=surface)
     install_error_handlers(http)
-    install_auth_routes(http, verifier=auth, allowed_origins=allowed_origins, ui_base_url=ui_base_url)
+    install_auth_routes(http, verifier=auth, allowed_origins=allowed_origins,
+                        ui_base_url=ui_base_url, owner_key_audience=oauth_resource_uri)
 
     ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
                           auth_meta=auth.meta() if auth is not None else None)

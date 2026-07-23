@@ -374,19 +374,40 @@ class AuthedSurfaceTest(unittest.TestCase):
         self.assertEqual(stranger.status_code, 404, stranger.text)
 
     def test_mcp_call_enforces_membership(self) -> None:
+        # A public tool: membership (checked before dispatch) is the only gate.
+        # Internal tools are separately refused over MCP for any non-local
+        # caller (see test_internal_tools_blocked_over_mcp_for_non_local).
         project_id = self._create_project("Tooling", _bearer(USER_A))
         member = self.client.post(
             "/mcp/call",
-            json={"name": "claim.list", "arguments": {"project_id": project_id}},
+            json={
+                "name": "workflow.status_and_next",
+                "arguments": {"project_id": project_id},
+            },
             headers=_bearer(USER_A),
         )
         self.assertEqual(member.status_code, 200, member.text)
         stranger = self.client.post(
             "/mcp/call",
-            json={"name": "claim.list", "arguments": {"project_id": project_id}},
+            json={
+                "name": "workflow.status_and_next",
+                "arguments": {"project_id": project_id},
+            },
             headers=_bearer(USER_B),
         )
         self.assertEqual(stranger.status_code, 404, stranger.text)
+
+    def test_internal_tools_blocked_over_mcp_for_non_local(self) -> None:
+        # INV-5: an internal tool is refused over MCP for any non-local caller
+        # (here a raw JWT, which carries no key_id) on both transports.
+        project_id = self._create_project("Fortress internal", _bearer(USER_A))
+        legacy = self.client.post(
+            "/mcp/call",
+            json={"name": "claim.list", "arguments": {"project_id": project_id}},
+            headers=_bearer(USER_A),
+        )
+        self.assertEqual(legacy.status_code, 403, legacy.text)
+        self.assertEqual(legacy.json()["error_code"], "tool_visibility_forbidden")
 
     def test_api_key_authenticates_as_its_owner(self) -> None:
         project_id = self._create_project("Keyed", _bearer(USER_B))
