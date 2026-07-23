@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifacts.facade import ArtifactRecords
 from ..kernel.utils import ValidationError
 from ..research_core.facade import ResearchClaims, ResearchProjects
 from .experiments.queries import ExperimentCollectionQuery
@@ -17,7 +16,6 @@ class ControlToolOperations:
     projects: ResearchProjects
     claims: ResearchClaims
     experiments: ExperimentCollectionQuery
-    resources: ArtifactRecords
     storage: ObjectStorage | None
 
     def experiment_list(self, *, project_id: str | None = None) -> dict[str, Any]:
@@ -54,35 +52,6 @@ class ControlToolOperations:
             "proxy, not the brain. Seeing this means your Merv client "
             "is older than the brain — update the plugin (git pull) and restart "
             "your MCP client."
-        )
-
-    def resource_find(
-        self,
-        *,
-        resource_id: str | None = None,
-        include_history: bool = False,
-        kind: str | None = None,
-        experiment_id: str | None = None,
-        missing: bool | None = None,
-        compact: bool = False,
-        limit: int | None = None,
-        offset: int = 0,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        if resource_id is not None:
-            return self.resources.resolve(
-                resource_id=resource_id,
-                include_history=include_history,
-                project_id=project_id,
-            )
-        return self.resources.list_resources(
-            kind=kind,
-            experiment_id=experiment_id,
-            missing=missing,
-            compact=compact,
-            limit=limit,
-            offset=offset,
-            project_id=project_id,
         )
 
     def storage_find(

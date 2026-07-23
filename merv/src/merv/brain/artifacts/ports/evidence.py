@@ -90,6 +90,8 @@ class AssociationTargetResolver(Protocol):
 
     def resolve(self, *, target_type: str, target_id: str) -> AssociationTarget: ...
 
+    def publish_pinned_artifact_ids(self, *, conn: object) -> frozenset[str]: ...
+
 
 __all__ = [
     "AssociatedEvidence",

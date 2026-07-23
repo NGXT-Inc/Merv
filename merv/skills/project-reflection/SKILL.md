@@ -42,8 +42,8 @@ not write the reflections — the subagents do.
 ```
 reflection.create (declare the 5-lens roster; corpus is snapshotted)
   → reflecting:    fan out 5 lens subagents; project reads are read-only and
-                   EACH registers its own reflection doc (role
-                   'reflection_lens_doc', file <lens_id>.md)
+                   EACH submits its own reflection doc (role
+                   'reflection_lens_doc', with its lens_id)
   → submit_reflections (blocked until every lens is covered)
   → synthesizing:  reconcile the reflections; update the living project
                    graph (role 'project_graph') + write the short reflection doc
@@ -101,14 +101,14 @@ Spawn five subagents in parallel. Each gets:
   conclusion carried forward without re-verifying it against the current
   records. (Authored lenses are wave-specific and start fresh.);
 - read-only project access (claims, experiments and their logic graphs,
-  reports, reviews, resources — via MCP reads and repo files);
-- the instruction to write its reflection to
-  `reflections/<syn_id>/reflections/<lens_id>.md` (the filename **must** be
-  `<lens_id>.md` — coverage is matched by filename), then
-  `resource.register` it to the reflection wave with role `reflection_lens_doc`
-  (one call — pass the `path`, `target_type: "reflection"`, the wave id as
-  `target_id`, and `role: "reflection_lens_doc"`) — **the subagent submits its
-  own reflection**; do not collect and submit on its behalf.
+  reports, reviews, artifacts — via MCP reads and repo files);
+- the instruction to write its reflection to a local file (e.g.
+  `reflections/<syn_id>/reflections/<lens_id>.md`), then submit it with
+  `artifact.submit` (pass the `path`, `target_type: "reflection"`, the wave id
+  as `target_id`, `role: "reflection_lens_doc"`, and `lens_id: "<lens_id>"` —
+  coverage is matched by the explicit lens_id) and run the returned upload
+  command verbatim — **the subagent submits its own reflection**; do not
+  collect and submit on its behalf.
 
 After the wave publishes, each lens may also register a distinct handle with
 `feed.register` (`role="lens"`) and post ONE `feed.post` with its single

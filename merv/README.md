@@ -2,12 +2,12 @@
 
 Merv gives agentic coding clients (Claude Code, Codex, Cursor,
 Gemini CLI, OpenCode) a shared state machine for machine learning research:
-claims, experiments, repo-file resources, review gates, reflection waves, and
+claims, experiments, submitted artifacts, review gates, reflection waves, and
 sandboxed execution. A brain running locally or as a hosted service owns durable
 research state; a small stdio MCP proxy runs on your machine and does the
 checkout-local file work. The brain never receives the checkout root or reads
-it directly, although the proxy explicitly submits relative resource metadata
-and size-capped evidence bytes.
+it directly; gated documents are explicitly uploaded as size-capped
+artifacts.
 
 ## Get started
 
@@ -100,7 +100,7 @@ off cloud providers.
 - [docs/MCP_SERVER_CONTRACT.md](docs/MCP_SERVER_CONTRACT.md) - MCP tools and contracts
 - [docs/WORKFLOW_AND_REVIEW.md](docs/WORKFLOW_AND_REVIEW.md) - workflow gates and reviews
 - [docs/REVIEW_IDENTITY.md](docs/REVIEW_IDENTITY.md) - reviewer session and capability boundary
-- [docs/RESOURCE_MODEL.md](docs/RESOURCE_MODEL.md) - repo-file resource model
+- [docs/ARTIFACT_MODEL.md](docs/ARTIFACT_MODEL.md) - typed submitted-artifact model
 - [docs/STORAGE_MODEL.md](docs/STORAGE_MODEL.md) - optional heavy-object storage
 - [docs/CENTRALIZED_MLFLOW.md](docs/CENTRALIZED_MLFLOW.md) - centralized MLflow tracking
 - [docs/UI_API.md](docs/UI_API.md) - frontend HTTP API

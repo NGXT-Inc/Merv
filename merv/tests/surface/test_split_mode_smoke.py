@@ -74,7 +74,6 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
         )
         local_names = {tool["name"] for tool in proxy._local_tool_catalog()}
 
-        self.assertIn("resource.register", local_names)
         self.assertIn("sandbox.get", local_names)
         self.assertIn("sandbox.pull_outputs", local_names)
         self.assertNotIn("claim.create", local_names)
@@ -264,62 +263,6 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
                 },
             )
 
-    def test_invalid_association_intent_does_not_submit_local_bytes(self) -> None:
-        (self.repo / "result.txt").write_text("secret bytes", encoding="utf-8")
-        calls: list[str] = []
-
-        def api_post(path: str, payload: dict) -> dict:
-            calls.append(path)
-            if path.endswith("/validate-association"):
-                raise LocalDataPlaneError("bad association")
-            return {}
-
-        with self.assertRaises(LocalDataPlaneError):
-            self._plane(api_post=api_post).call_tool(
-                name="resource.register",
-                arguments={
-                    "resource_id": "res_1",
-                    "target_type": "experiment",
-                    "target_id": "exp_1",
-                    "role": "result",
-                },
-            )
-
-        self.assertEqual(calls, ["/api/data-plane/resources/validate-association"])
-
-    def test_absolute_markdown_figure_link_rejected_before_byte_submit(self) -> None:
-        (self.repo / "report.md").write_text(
-            "![plot](/tmp/plot.png)\n", encoding="utf-8"
-        )
-        calls: list[str] = []
-
-        def api_post(path: str, payload: dict) -> dict:
-            calls.append(path)
-            if path.endswith("/validate-association"):
-                return {"resource": {"path": "report.md", "kind": "report"}}
-            return {}
-
-        with self.assertRaises(ValidationError):
-            self._plane(api_post=api_post).call_tool(
-                name="resource.register",
-                arguments={
-                    "resource_id": "res_report",
-                    "target_type": "experiment",
-                    "target_id": "exp_1",
-                    "role": "report",
-                },
-            )
-
-        self.assertEqual(
-            calls,
-            [
-                "/api/data-plane/resources/validate-association",
-                "/api/data-plane/resources/observe",
-            ],
-        )
-        self.assertNotIn("/api/data-plane/resources/associate", calls)
-
-
 class PrivateSplitProxyTest(unittest.TestCase):
     def test_split_proxy_sends_project_id_not_repo_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -429,40 +372,45 @@ class SplitModeSmokeTest(unittest.TestCase):
         self.assertEqual(response["error"]["data"]["error_code"], "validation_error")
         self.assertIn("private-key", response["error"]["message"].lower())
 
-    def test_full_loop_through_proxy_local_data_plane(self) -> None:
+    def test_full_loop_through_split_proxy_artifact_submission(self) -> None:
         claim = self._call("claim.create", {"statement": "Split proxy can ship files."})
         exp = self._call(
             "experiment.create",
             {
                 "name": "split-proxy-loop",
-                "intent": "Exercise proxy-local resource shipping.",
+                "intent": "Exercise artifact submission through the split proxy.",
                 "tested_claim_ids": [claim["id"]],
             },
         )
-        exp_dir = self.repo / "experiments" / "split-proxy-loop"
-        exp_dir.mkdir(parents=True)
-        (exp_dir / "plan.md").write_text(
-            "## Summary\nPlan.\n\n## Objective & hypothesis\nGoal.\n\n## Evaluation\nMetric.\n",
-            encoding="utf-8",
-        )
-
-        resource = self._call(
-            "resource.register",
-            {"path": "experiments/split-proxy-loop/plan.md", "kind": "note"},
-        )
-        associated = self._call(
-            "resource.register",
+        pending = self._call(
+            "artifact.submit",
             {
-                "resource_id": resource["id"],
                 "target_type": "experiment",
                 "target_id": exp["id"],
                 "role": "plan",
+                "path": "experiments/split-proxy-loop/plan.md",
             },
+        )
+        self.assertIn("curl -sf -T", pending["run"])
+        token = pending["run"].rsplit("/", 1)[-1].rstrip("'")
+        uploaded = self.app.upload_artifact_bytes(
+            token=token,
+            data=(
+                "## Summary\nPlan.\n\n## Objective & hypothesis\nGoal.\n\n"
+                "## Evaluation\nMetric.\n"
+            ).encode(),
         )
         current = self._call("project", {"action": "current"})
 
-        self.assertEqual(associated["id"], resource["id"])
-        self.assertEqual(associated["associations"][0]["role"], "plan")
+        self.assertEqual(uploaded["artifact_id"], pending["artifact_id"])
+        state = self._call(
+            "experiment.get_state", {"experiment_id": exp["id"]}
+        )
+        roles = {
+            item["association_role"]
+            for item in state["current_attempt_resources"]
+        }
+        self.assertIn("plan", roles)
         self.assertTrue(current["exists"])
         self.assertEqual(current["project"]["id"], self.project["id"])
 

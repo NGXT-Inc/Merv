@@ -17,12 +17,12 @@ through a thin, one-directional bridge.
 ## What Belongs Where
 
 Rule of thumb: use storage for files that are too large or noisy for repo
-resources, or expensive to regenerate.
+the repo or artifact submission, or expensive to regenerate.
 
 - Use storage for checkpoints/model weights, precious datasets, dataset shards,
   parquet/archive outputs, generated caches that must survive, and logs/traces
   over about 10 MB that a reviewer may need.
-- Keep repo resources for `plan.md`, `report.md`, `graph.json`, scripts,
+- Keep repo files (and submitted artifacts) for `plan.md`, `report.md`, `graph.json`, scripts,
   configs, small retained result files, metrics TSV/JSON, summarized logs, and
   plots referenced by the report.
 - Leave ephemeral on the sandbox when the file is a regenerable package cache,

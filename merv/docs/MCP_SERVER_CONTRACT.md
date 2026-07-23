@@ -51,7 +51,7 @@ reflection.create            reflection.get
 reflection.transition
 litreview.view               litreview.edit
 litreview.cite
-resource.find
+artifact.submit              artifact.find
 storage.find                 storage.object
 review.request               review.start               review.submit
 sandbox.options              sandbox.get
@@ -64,7 +64,6 @@ The proxy-local data tools are:
 
 ```text
 experiment.materialize_folders
-resource.register
 storage.upload_file          storage.download_file
 sandbox.request              sandbox.attach              sandbox.pull_outputs
 feed.post
@@ -79,7 +78,6 @@ hidden from agent `tools/list`:
 ```text
 project.get                  project.update              project.list
 claim.list                   experiment.list             reflection.list
-resource.delete
 storage.put_object           storage.complete_upload
 review.status
 sandbox.list                 sandbox.health
@@ -99,31 +97,23 @@ switch projects: the proxy removes it and injects the linked id.
 Core services never infer an active project. Scope inference exists only in the
 proxy adapter.
 
-## Resource submissions
+## Artifact submissions
 
-`resource.register` has three modes:
-
-```text
-resource.register(path=..., kind=..., title?=...)
-resource.register(paths=[...], kind=..., title?=...)
-resource.register(resource_id=..., target_type=..., target_id=..., role=...)
-```
-
-The first two modes may also include the complete association trio
-`target_type`, `target_id`, and `role`. The trio is all-or-none.
-
-The proxy resolves and bounds each path, observes mtime/ctime/size/content type,
-computes SHA-256, and submits the facts. For gated roles it also submits
-size-capped bytes and referenced figures. The brain stores append-only version
-records and pins each association to an exact version and attempt.
+`artifact.submit {target_type, target_id, role, path, lens_id?, title?}` is a
+control tool: the brain validates legality and workflow-state guards, mints a
+pending artifact with a one-time upload token, and returns
+`{artifact_id, run}` where `run` is a ready-to-run
+`curl -sf -T <path> '<base>/api/artifacts/u/<token>'` line the agent executes
+verbatim. The token-bearer PUT enforces the role byte cap, pins the bytes, and
+(for gated markdown) returns one follow-up `run` line per relative image link.
+Bytes travel over the agent's own shell, never through the proxy or MCP.
 
 Workflow lints and reviews read the submitted bytes, never a later live edit.
-There is no background checkout scan. Re-register a changed file to submit a new
-version.
+There is no background checkout scan. Resubmit a changed file to replace the
+slot (a new artifact id is minted, invalidating review snapshots).
 
-`resource.find(resource_id=..., include_history=true)` resolves one resource and
-its observed versions. Without `resource_id`, it lists with filters and
-pagination.
+`artifact.find(artifact_id=...)` resolves one artifact; without `artifact_id`,
+it lists the project's complete artifacts filtered by target and role.
 
 ## Experiment workflow
 
@@ -149,11 +139,11 @@ abandon
 The declarative table in `src/merv/brain/research_core/domain/workflow_gates.py` drives enforcement,
 `allowed_transitions`, gate checklists, and `workflow.status_and_next`.
 
-- `submit_design` requires a pinned `plan` resource with the required section
+- `submit_design` requires a pinned `plan` artifact with the required section
   spine.
 - `mark_ready_to_run` requires a passing design review for the current snapshot.
 - `submit_results` requires current-attempt `result`, `report`, and `graph`
-  resources. It generates the attempt's system metrics exhibit and pins it when
+  artifacts. It generates the attempt's system metrics exhibit and pins it when
   runs are found, or when a plugin-created run proves the attempt was quantitative
   but MLflow is unavailable. When pinned, the report must reference and interpret
   it.
@@ -245,7 +235,7 @@ requires a caller-supplied `key_path` when pulling retained files.
 The sandbox workdir is machine-owned, independent of experiment attachment, and
 defaults under `/workspace`; provider-specific `MERV_*_WORKDIR`
 settings can change the root. Files are not synchronized automatically. Pull
-compact outputs into the local experiment folder before resource registration,
+compact outputs into the local experiment folder before artifact submission,
 and use durable object storage for heavy files.
 
 Provider behavior is capability-shaped:
@@ -301,8 +291,8 @@ The brain selects its record and blob adapters at composition time:
 
 The checkout never contains the brain database. The proxy owns only
 machine-local routing state in `project_links.sqlite`; project files remain
-ordinary checkout files until explicitly registered.
+ordinary checkout files until explicitly submitted.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md),
 [WORKFLOW_AND_REVIEW.md](WORKFLOW_AND_REVIEW.md), and
-[RESOURCE_MODEL.md](RESOURCE_MODEL.md) for the corresponding system contracts.
+[ARTIFACT_MODEL.md](ARTIFACT_MODEL.md) for the corresponding system contracts.

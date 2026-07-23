@@ -5,7 +5,7 @@ curated aha-moments for the human to glance at, in reverse-chronological order.
 Unlike every other agent-output surface it is editorial rather than complete,
 ungated rather than reviewed, and may carry intuition not tied to any state
 change — so posts are their own append-only, immutable entity (no edit/delete; a
-correction is a new post), not events and not resources.
+correction is a new post), not events and not artifacts.
 
 This service owns three agent tools — ``feed.register`` (claim a sci-fi handle),
 ``feed.post`` (write), ``feed.list`` (read back) — plus the read/image views the

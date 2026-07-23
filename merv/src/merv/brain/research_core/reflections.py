@@ -27,7 +27,7 @@ from .domain.graph_lint import graph_problems
 from .domain.gates import RoleRequirement
 from .domain.reflection_artifacts import (
     claim_refs,
-    current_reflection_requirement_resource,
+    current_reflection_requirement_artifact,
     graph_diff,
     graph_diff_summary,
     parse_change_spec,
@@ -40,9 +40,9 @@ from .domain.reflection_policy import (
     covered_terminal_ids,
     reflection_signal_state,
 )
-from .domain.resource_evidence import (
-    preferred_associated_resource,
-    resource_state_record,
+from .domain.artifact_evidence import (
+    preferred_associated_artifact,
+    artifact_state_record,
 )
 from ..artifacts.ports import EvidenceReader, SubmittedDocument
 from .domain.review_snapshot import review_snapshot_id
@@ -56,7 +56,7 @@ from .gate_evaluation import (
     GateEvaluation,
     GateItem,
     RequirementEvaluation,
-    evaluate_resource_requirement,
+    evaluate_artifact_requirement,
 )
 from ..kernel.ports.reflection_writers import (
     ReflectionClaimWriter,
@@ -227,7 +227,7 @@ class ReflectionService:
             data["roster"] = json.loads(str(data.pop("roster_json", "[]")))
             data["corpus"] = json.loads(str(data.pop("corpus_json", "{}")))
             data["resources"] = [
-                resource_state_record(evidence)
+                artifact_state_record(evidence)
                 for evidence in self.evidence_reader.artifacts_for_target(
                     target_type="reflection", target_id=reflection_id
                 )
@@ -335,17 +335,17 @@ class ReflectionService:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             signal = self.reflection_signal(project_id=project_id, conn=conn)
             reflection = self.open_reflection(conn=conn, project_id=project_id)
-            graph_resource = self._project_graph_resource(reflection=reflection)
-            if reflection is None or graph_resource is None:
+            graph_artifact = self._project_graph_artifact(reflection=reflection)
+            if reflection is None or graph_artifact is None:
                 published = self.latest_published(conn=conn, project_id=project_id)
-                published_graph = self._project_graph_resource(reflection=published)
+                published_graph = self._project_graph_artifact(reflection=published)
                 if published is not None and published_graph is not None:
                     reflection = published
-                    graph_resource = published_graph
+                    graph_artifact = published_graph
             return {
                 "signal": signal,
                 "reflection": reflection,
-                "graph_resource": graph_resource,
+                "graph_artifact": graph_artifact,
             }
 
     def open_reflection(self, *, conn, project_id: str) -> dict[str, Any] | None:
@@ -376,13 +376,13 @@ class ReflectionService:
         return self.get_state(reflection_id=row["id"], conn=conn)
 
     @staticmethod
-    def _project_graph_resource(
+    def _project_graph_artifact(
         *, reflection: dict[str, Any] | None
     ) -> dict[str, Any] | None:
         if reflection is None:
             return None
-        return preferred_associated_resource(
-            resources=reflection.get("resources", []),
+        return preferred_associated_artifact(
+            artifacts=reflection.get("resources", []),
             attempt=reflection.get("attempt_index"),
             roles=PROJECT_GRAPH_ROLES,
         )
@@ -390,7 +390,7 @@ class ReflectionService:
     def _project_graph_diff(
         self, *, conn, reflection: dict[str, Any]
     ) -> dict[str, Any]:
-        current_resource = self._project_graph_resource(reflection=reflection)
+        current_artifact = self._project_graph_artifact(reflection=reflection)
         # published_graph_version_id holds the artifact id pinned at publish.
         current_artifact_id = str(
             (
@@ -398,7 +398,7 @@ class ReflectionService:
                 if reflection.get("status") == "published"
                 else None
             )
-            or (current_resource or {}).get("id")
+            or (current_artifact or {}).get("id")
             or ""
         )
         base = self._previous_published_graph_ref(conn=conn, reflection=reflection)
@@ -519,10 +519,10 @@ class ReflectionService:
             )
         elif forward is not None:
             for requirement in forward.requirements:
-                resource = current_reflection_requirement_resource(
+                artifact = current_reflection_requirement_artifact(
                     reflection=reflection, role=requirement.role
                 )
-                present = resource is not None
+                present = artifact is not None
                 problems: tuple[str, ...] = ()
                 if present and requirement.validator:
                     try:
@@ -532,17 +532,17 @@ class ReflectionService:
                     except WorkflowError as exc:
                         problems = (str(exc),)
                 requirements.append(
-                    evaluate_resource_requirement(
+                    evaluate_artifact_requirement(
                         requirement,
                         present=present,
                         problems=problems,
-                        resource_fields=(
+                        artifact_fields=(
                             None
-                            if resource is None
+                            if artifact is None
                             else {
-                                "path": resource.get("path"),
-                                "artifact_id": resource.get("id"),
-                                "association_role": resource.get("association_role"),
+                                "path": artifact.get("path"),
+                                "artifact_id": artifact.get("id"),
+                                "association_role": artifact.get("association_role"),
                             }
                         ),
                     )
@@ -731,7 +731,7 @@ class ReflectionService:
         )
         if document is None:
             raise WorkflowError(
-                "a project logic graph resource must be submitted before reflection review"
+                "a project logic graph artifact must be submitted before reflection review"
             )
         problems = graph_problems(document.text)
         if problems:
@@ -750,7 +750,7 @@ class ReflectionService:
         )
         if document is None:
             raise WorkflowError(
-                "a reflection document resource must be submitted before reflection review"
+                "a reflection document artifact must be submitted before reflection review"
             )
         problems = reflection_doc_review_problems(
             text=document.text,
@@ -774,7 +774,7 @@ class ReflectionService:
         )
         if document is None:
             raise WorkflowError(
-                "a change spec resource must be submitted before reflection review"
+                "a change spec artifact must be submitted before reflection review"
             )
         self._parse_change_spec(
             conn=conn,
@@ -793,7 +793,7 @@ class ReflectionService:
         )
         if document is None:
             raise WorkflowError(
-                "a change spec resource must be submitted before publish"
+                "a change spec artifact must be submitted before publish"
             )
         return self._parse_change_spec(
             conn=conn,
@@ -976,12 +976,12 @@ class ReflectionService:
         self, *, reflection: dict[str, Any]
     ) -> str | None:
         """The current project-graph ARTIFACT id, pinned at publish."""
-        resource = preferred_associated_resource(
-            resources=reflection.get("current_attempt_resources") or [],
+        artifact = preferred_associated_artifact(
+            artifacts=reflection.get("current_attempt_resources") or [],
             attempt=reflection.get("attempt_index"),
             roles=PROJECT_GRAPH_ROLES,
         )
-        artifact_id = (resource or {}).get("id")
+        artifact_id = (artifact or {}).get("id")
         return str(artifact_id) if artifact_id else None
 
     def _submitted_role_document(
@@ -991,15 +991,15 @@ class ReflectionService:
         roles: tuple[str, ...],
         what: str,
     ) -> SubmittedDocument | None:
-        resource = preferred_associated_resource(
-            resources=reflection.get("current_attempt_resources") or [],
+        artifact = preferred_associated_artifact(
+            artifacts=reflection.get("current_attempt_resources") or [],
             attempt=reflection.get("attempt_index"),
             roles=roles,
         )
-        if resource is None:
+        if artifact is None:
             return None
         return self.evidence_reader.submitted_document(
-            artifact_id=str(resource.get("id") or ""), what=what
+            artifact_id=str(artifact.get("id") or ""), what=what
         )
 
     def target_snapshot_id(self, *, conn, reflection_id: str) -> str:

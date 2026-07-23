@@ -405,7 +405,7 @@
           },
           "intent": {
             "default": "",
-            "description": "Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.",
+            "description": "Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md artifact.",
             "title": "Intent",
             "type": "string"
           },
@@ -501,7 +501,7 @@
       "visibility": "internal"
     },
     {
-      "description": "Get one experiment state. Includes 'allowed_transitions': the transitions available from the current status, each with what it 'requires' (e.g. a registered plan resource, a passing review). Once running or later, includes the central 'mlflow' context and any plugin-created 'mlflow_run' identity for quantitative logging.",
+      "description": "Get one experiment state. Includes 'allowed_transitions': the transitions available from the current status, each with what it 'requires' (e.g. a submitted plan artifact, a passing review). Once running or later, includes the central 'mlflow' context and any plugin-created 'mlflow_run' identity for quantitative logging.",
       "executionStrategy": "control",
       "featureRequirements": [],
       "handlerIdentity": "agent_experiment.experiment",
@@ -860,7 +860,7 @@
       "visibility": "public"
     },
     {
-      "description": "Get one reflection wave state: roster, per-lens reflection coverage, current-attempt resources, reviews, and allowed_transitions with preconditions. Includes gate_checklist for missing lenses/artifacts/review state, and project_graph_diff when a submitted project graph can be compared with the previous published graph.",
+      "description": "Get one reflection wave state: roster, per-lens reflection coverage, current-attempt artifacts, reviews, and allowed_transitions with preconditions. Includes gate_checklist for missing lenses/artifacts/review state, and project_graph_diff when a submitted project graph can be compared with the previous published graph.",
       "executionStrategy": "control",
       "featureRequirements": [],
       "handlerIdentity": "reflection_tools.get",
@@ -1354,292 +1354,7 @@
       "visibility": "public"
     },
     {
-      "description": "Register repo file(s) as resources and, optionally, associate them to a claim, experiment, review, or attempt in one call. Pass 'path' (one file) or 'paths' (a changed-files batch) to register/observe the file(s); add the association trio (target_type, target_id, role) to also associate each registered resource. Or pass 'resource_id' to associate an ALREADY-registered resource \u2014 that mode requires the trio. Association validates the file against the role: gated artifacts (plan, report, graph, project_graph, reflection_doc, reflection_lens_doc, change_spec) are size-capped and their figure links resolved at register time, so keep them lean and reference raw data instead of inlining it.",
-      "executionStrategy": "local-orchestration",
-      "featureRequirements": [],
-      "handlerIdentity": "local.register_resource",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "created_by": {
-            "default": "codex",
-            "title": "Created By",
-            "type": "string"
-          },
-          "kind": {
-            "default": "other",
-            "title": "Kind",
-            "type": "string"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Repo-relative file path for a single file to register.",
-            "title": "Path"
-          },
-          "paths": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Repo-relative paths to register/observe as a batch (changed-files sweep). Provide 'path' (one file), 'paths' (many), or 'resource_id' (associate an already-registered resource).",
-            "title": "Paths"
-          },
-          "project_id": {
-            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "resource_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Associate an ALREADY-registered resource to the target trio instead of registering a new file. Requires target_type, target_id, and role.",
-            "title": "Resource Id"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Resource association role. Use 'result' for experiment output files.",
-            "enum": [
-              "change_spec",
-              "code",
-              "config",
-              "graph",
-              "input",
-              "model",
-              "note",
-              "other",
-              "plan",
-              "project_graph",
-              "reflection_doc",
-              "reflection_lens_doc",
-              "report",
-              "result"
-            ],
-            "title": "Role"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Id of the claim, experiment, review, or attempt to associate to.",
-            "title": "Target Id"
-          },
-          "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Association target kind. Provide the trio (target_type, target_id, role) together to associate the registered/observed resource(s).",
-            "enum": [
-              "attempt",
-              "claim",
-              "experiment",
-              "reflection",
-              "review"
-            ],
-            "title": "Target Type"
-          },
-          "title": {
-            "default": "",
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "type": "object"
-      },
-      "localHandlerIdentity": null,
-      "name": "resource.register",
-      "plane": "data",
-      "scopeStrategy": "linked-project",
-      "visibility": "public"
-    },
-    {
-      "description": "Delete a resource from active project tracking while preserving observed version history.",
-      "executionStrategy": "control",
-      "featureRequirements": [],
-      "handlerIdentity": "resources.delete",
-      "hidden": true,
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "resource_id": {
-            "title": "Resource Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "resource_id"
-        ],
-        "type": "object"
-      },
-      "localHandlerIdentity": null,
-      "name": "resource.delete",
-      "plane": "control",
-      "scopeStrategy": "linked-project",
-      "visibility": "internal"
-    },
-    {
-      "description": "Find registered resources. Pass 'resource_id' (with optional include_history=true for its immutable observed versions) to resolve one hydrated resource; otherwise list resources with filters (kind/experiment_id/missing), pagination (limit/offset), and compact=true for a lean projection that omits the heavy current_version (use version_token to detect changes).",
-      "executionStrategy": "control",
-      "featureRequirements": [],
-      "handlerIdentity": "operations.resource_find",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "compact": {
-            "default": false,
-            "description": "List mode: return a lean projection (id, path, kind, title, version_token, current_version_id, missing, updated_at) and OMIT the heavy nested current_version + associations. Use version_token to detect changes without re-pulling full payloads.",
-            "title": "Compact",
-            "type": "boolean"
-          },
-          "experiment_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "List filter: only resources associated with this experiment.",
-            "title": "Experiment Id"
-          },
-          "include_history": {
-            "default": false,
-            "description": "In resolve mode, also return the resource's immutable observed 'versions' (oldest-first) \u2014 the former resource.history.",
-            "title": "Include History",
-            "type": "boolean"
-          },
-          "kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "List filter: one resource kind (e.g. 'dataset', 'code').",
-            "title": "Kind"
-          },
-          "limit": {
-            "anyOf": [
-              {
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "List mode: max resources to return (page size).",
-            "title": "Limit"
-          },
-          "missing": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "List filter by file presence: true=only missing-on-disk, false=only present.",
-            "title": "Missing"
-          },
-          "offset": {
-            "default": 0,
-            "description": "List mode: number of resources to skip (pagination).",
-            "minimum": 0,
-            "title": "Offset",
-            "type": "integer"
-          },
-          "project_id": {
-            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "resource_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Resolve one registered resource by id (hydrated row). Omit to list resources with the filters below.",
-            "title": "Resource Id"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "type": "object"
-      },
-      "localHandlerIdentity": null,
-      "name": "resource.find",
-      "plane": "control",
-      "scopeStrategy": "linked-project",
-      "visibility": "public"
-    },
-    {
-      "description": "Register a heavy storage object intent. Returns a presigned upload target unless the content is already present in the project. Use storage for files that are too large or noisy for repo resources, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
+      "description": "Register a heavy storage object intent. Returns a presigned upload target unless the content is already present in the project. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
       "executionStrategy": "control",
       "featureRequirements": [
         "storage"
@@ -1718,7 +1433,7 @@
       "visibility": "internal"
     },
     {
-      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for repo resources, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
+      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
       "executionStrategy": "local-orchestration",
       "featureRequirements": [
         "storage"
@@ -2590,7 +2305,7 @@
       "visibility": "public"
     },
     {
-      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before resource.register or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before registering results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
+      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before submitting results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
       "executionStrategy": "local-orchestration",
       "featureRequirements": [],
       "handlerIdentity": "local.pull_sandbox_outputs",

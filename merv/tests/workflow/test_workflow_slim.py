@@ -13,11 +13,8 @@ from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 # association_version_id is the submission pin — agents confirm a
 # re-associate took effect by watching it change, so it stays in the slim view.
-SLIM_RESOURCE_KEYS = {
-    "id", "association_role", "association_version_id", "path", "kind",
-    "missing", "size_bytes",
-}
-HEAVY_RESOURCE_KEYS = {"version_token", "mtime_ns", "current_version_id", "git_commit"}
+SLIM_ARTIFACT_KEYS = {"id", "association_role", "lens_id", "path", "size_bytes"}
+HEAVY_ARTIFACT_KEYS = {"content_sha256", "content_type", "created_by", "created_at", "updated_at", "project_id", "association_rowid"}
 
 class WorkflowSlimTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -48,10 +45,9 @@ class WorkflowSlimTest(unittest.TestCase):
             project_id=self.project_id,
             intent="Do the thing on the staged subset.\n\nTitle: The Thing",
         )["id"]
-        (self.repo / "plan.md").write_text("planned\n")
-        self.call(
-            "resource.register", project_id=self.project_id, path="plan.md", kind="plan",
-            target_type="experiment", target_id=exp_id, role="plan",
+        self.app.submit_artifact(
+            project_id=self.project_id, target_type="experiment",
+            target_id=exp_id, role="plan", path="plan.md", body="planned\n",
         )
         return exp_id
 
@@ -70,8 +66,8 @@ class WorkflowSlimTest(unittest.TestCase):
         self.assertIn("current_attempt_resources", exp)
         # …and each resource carries only the light fields.
         res = exp["current_attempt_resources"][0]
-        self.assertEqual(set(res), SLIM_RESOURCE_KEYS)
-        self.assertEqual(HEAVY_RESOURCE_KEYS & set(res), set())
+        self.assertEqual(set(res), SLIM_ARTIFACT_KEYS)
+        self.assertEqual(HEAVY_ARTIFACT_KEYS & set(res), set())
         self.assertEqual(res["association_role"], "plan")
         # tested_claims collapsed to ids; reviews compacted.
         self.assertIn("tested_claim_ids", exp)
@@ -114,10 +110,10 @@ class WorkflowSlimTest(unittest.TestCase):
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
         exp_id = self._experiment_with_plan()
         full = self.app.workflow.status_and_next(project_id=self.project_id, experiment_id=exp_id)
-        # The UI path still gets the rich shape: all-attempts resources with
-        # version bookkeeping, and the project-wide experiment list.
+        # The UI path still gets the rich shape: the all-attempts artifact
+        # list with full metadata, and the project-wide experiment list.
         self.assertIn("resources", full["experiment"])
-        self.assertIn("version_token", full["experiment"]["current_attempt_resources"][0])
+        self.assertIn("content_type", full["experiment"]["current_attempt_resources"][0])
         self.assertIn("active_experiments", full["project"])
 
 

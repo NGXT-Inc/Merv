@@ -2,8 +2,8 @@
 name: research-workflow
 description: >-
   Use when the agent should operate the Merv workflow: ask MCP for
-  status and next action, inspect claims, create or run experiments, register
-  repo-file resources, use MCP-controlled mutations, and launch read-only design
+  status and next action, inspect claims, create or run experiments, submit
+  typed artifacts, use MCP-controlled mutations, and launch read-only design
   or experiment reviewers when required.
 ---
 
@@ -17,15 +17,16 @@ workflow state.
 - Claim: what we think.
 - Experiment: what we try.
 - Reflection: what the project has learned across experiments.
-- Agent-authored resource: one regular file in the local repo. The brain-created
-  metrics exhibit is the system-authored exception.
+- Artifact: a typed document (plan, report, graph, project_graph,
+  reflection_lens_doc, reflection_doc, change_spec, or a small `result`
+  metrics JSON) submitted to the brain against a workflow target. The
+  brain-created metrics exhibit is the system-authored exception.
 - Review: read-only design, experiment, reflection, human, or automated
   judgment submitted to MCP.
 
 You may freely work on local repo files. Do not treat those edits as
-research-state mutations. A file becomes a research resource only after MCP
-accepts a resource registration and associates it with a claim,
-experiment, review, or attempt.
+research-state mutations. A file becomes research state only after you submit
+it with `artifact.submit` and run the returned upload command.
 
 ## Research process
 
@@ -109,10 +110,10 @@ you can't back with a number).
 Every experiment owns exactly one folder: `experiments/<name>/`
 (announced by `experiment.create`; call `experiment.materialize_folders` if the
 local directory is missing). Everything the experiment is lives there —
-plan.md, scripts, configs, results, report.md, graph.json. Resource tools only
-see local repo files. A sandbox is just an ephemeral machine you SSH into: fetch
+plan.md, scripts, configs, results, report.md, graph.json. Artifact uploads
+read local files. A sandbox is just an ephemeral machine you SSH into: fetch
 code and data on the box, write compact outputs under `$MERV_EXPERIMENT_DIR`, then
-pull retained files back with `sandbox.pull_outputs` before registering them.
+pull retained files back with `sandbox.pull_outputs` before submitting them.
 Heavy artifacts should go to durable object storage instead of into the repo.
 
 ## Workflow
@@ -137,7 +138,7 @@ Heavy artifacts should go to durable object storage instead of into the repo.
    settled or abandoned one; before creating an experiment, use overview to see
    the siblings (name the contrast with them, and do not recreate a dead one).
 4. Follow MCP's `next_action`, allowed actions, blocked actions, and gate state.
-5. Use MCP for all claim, experiment, resource, review, and workflow mutations.
+5. Use MCP for all claim, experiment, artifact, review, and workflow mutations.
 6. Do not invent or pass project scope to normal agent-facing tools. Their
    schemas hide `project_id`; the local proxy discards any supplied value and
    injects the project linked to this checkout. The merged `project` tool is the
@@ -152,12 +153,12 @@ Heavy artifacts should go to durable object storage instead of into the repo.
    SSH (see Execution environment). Prefer CPU-only sandboxes for data profiling
    and preprocessing unless the specific command needs GPU acceleration.
 11. After execution in a sandbox, explicitly pull retained files off the box
-    before registering or associating result resources. Use `sandbox.pull_outputs`
+    before submitting result artifacts. Use `sandbox.pull_outputs`
     for light files, and storage tools for heavy files.
 12. Launch a separate read-only reviewer agent when MCP requires design review or
    experiment review.
 13. Make sure the reviewer submits directly to MCP using its review capability.
-14. Propose conclusions or claim updates only after required resources and reviews exist.
+14. Propose conclusions or claim updates only after required artifacts and reviews exist.
 
 If conversation memory is unclear, call `project` with `action: "current"`
 again. If `exists` is true, ask MCP for `workflow.status_and_next(experiment_id?)`;
@@ -240,22 +241,21 @@ canonical readback. This refreshes experiment state so stale immediate MLflow
 
 Do not make tracking stores the only submitted result. Save compact evidence
 under the experiment folder, especially `results/*.json`, `results/*.csv`, and
-`figures/*.png`, so `report.md` can cite files that can be registered and
+`figures/*.png`, so `report.md` can cite files that can be submitted and
 reviewed.
 
 ### The metrics exhibit — the system writes the numbers, you write the meaning
 
 At `submit_results` the system generates a **metrics exhibit** and pins it as a
-system-authored resource (`experiments/<name>/metrics_exhibit.json`) when the
+system-authored artifact (`experiments/<name>/metrics_exhibit.json`) when the
 attempt has an observed MLflow run (or a plugin-created run cannot be read back
 because MLflow is unavailable). Attempts with nothing quantitative to exhibit
 get no exhibit and no exhibit-reference gate. A pinned exhibit is built from
 observation, not from your account: up to the newest 50 MLflow runs in this
 attempt's window under `merv/<project>/<experiment>` — the exhibit records when
-that cap is reached — plus eligible pinned result JSON (`metrics.json`,
-`results.json`, and `results/*.json` associated with role `result`), each entry
-with provenance. Runs logged after `submit_results` remain in MLflow but are
-outside the attempt's finalized exhibit.
+that cap is reached — plus pinned result JSON (files submitted with role
+`result`), each entry with provenance. Runs logged after `submit_results`
+remain in MLflow but are outside the attempt's finalized exhibit.
 
 Consequences:
 - Whatever you log IS the record. Log every run to the MLflow env you were
@@ -266,7 +266,7 @@ Consequences:
   around it. When it returns a pinned exhibit, reference
   `metrics_exhibit.json` and interpret it; the gate requires that reference
   whenever the exhibit exists. If an unconfigured/no-run fallback produces no
-  exhibit, interpret the registered result evidence and explain the gap instead
+  exhibit, interpret the submitted result evidence and explain the gap instead
   of inventing an exhibit link. Qualitative experiments with no runs get no
   exhibit and no extra machinery.
 
@@ -337,11 +337,11 @@ run. Sandbox provisioning does not automatically export MLflow env vars, and
 sandbox responses are not the source of truth for tracking configuration. Save
 compact evidence under `$MERV_EXPERIMENT_DIR`.
 
-Before registering or associating result resources, call `sandbox.pull_outputs`
+Before submitting result artifacts, call `sandbox.pull_outputs`
 for light retained files, passing the caller-owned private `key_path` when
 `sandbox.get` did not return an `ssh.key_path` enrichment. Upload heavy artifacts
-with `storage.upload_file` when durable storage is enabled. Resource tools only
-see local repo files, so remote sandbox paths are not valid resources until you
+with `storage.upload_file` when durable storage is enabled. Artifact uploads
+read local files, so remote sandbox paths cannot be submitted until you
 have pulled the files back locally. Do this before `sandbox.release`; release
 and expiry destroy the VM and anything you did not retain. Release is two-step:
 the first call returns a retention checklist without deleting, and only a second
@@ -349,7 +349,7 @@ call with `confirm_retained: true` terminates the machine.
 
 Do not embed secrets in commands or retained files. Treat the sandbox as
 ephemeral: durable outputs must be explicitly copied or uploaded and then
-registered/associated as resources.
+submitted with `artifact.submit`.
 
 ## Experiment creation
 
@@ -386,7 +386,7 @@ replication project, `released_adapters` / `scratch_training` /
 
 `intent` is the durable **one-line headline** — the experiment's title in the
 UI. The full design (hypothesis, method, evaluation, risks) does **not** go in
-`intent`; it lives in the `plan.md` resource (see Experiment plan below). The
+`intent`; it lives in the `plan.md` artifact (see Experiment plan below). The
 MCP server still accepts the older aliases `claim_id`, `claim_ids`, `title`,
 `hypothesis`, `design`, `success_criteria`, and `risks`, but they are
 deprecated: `title` and friends only backfill an empty `intent` (they are not
@@ -397,7 +397,7 @@ state changes.
 ## Experiment plan
 
 The plan is one repo file in the experiment folder
-(`experiments/<name>/plan.md`) associated with role `plan`. It is the
+(`experiments/<name>/plan.md`) submitted with role `plan`. It is the
 **face of the experiment**: what the user reads in the UI
 and what the design reviewer evaluates. Write it from
 `skills/research-workflow/plan-template.md` (a PRD-style template).
@@ -416,19 +416,19 @@ not lint-enforced, but the design reviewer can return `needs_changes` if they
 are missing or too thin for this experiment. Scale their depth to the work.
 
 Plans may include figures: every relative image link must resolve to a local
-file under 5 MB when you register the plan — a dangling or oversized link is
-rejected at `resource.register`, and `submit_design` re-checks that each
-linked figure was submitted alongside the plan.
+file under 5 MB. The plan upload response returns one follow-up command per
+linked figure — run each verbatim; `submit_design` re-checks that each linked
+figure was submitted alongside the plan.
 
 If `submit_design` is rejected for missing sections, fill them in and
-**re-register the plan** (`resource.register` with role `plan`) before
-retrying — the lint reads the bytes you SUBMITTED at register time, never the
-live file, so an edit counts only once it is re-registered.
+**resubmit the plan** (`artifact.submit` with role `plan`, then run the
+returned upload command) before retrying — the lint reads the bytes you
+SUBMITTED, never the live file, so an edit counts only once it is resubmitted.
 
 ## Results report
 
 The report is one repo file in the experiment folder
-(`experiments/<name>/report.md`) associated with role `report`. It is
+(`experiments/<name>/report.md`) submitted with role `report`. It is
 the **face of the executed experiment**: what the
 user reads in the UI once results exist and what the experiment reviewer
 grades against the plan's Evaluation section. Write it from
@@ -436,8 +436,8 @@ grades against the plan's Evaluation section. Write it from
 files — save the figures (matplotlib PNGs) while the run's metrics are at hand.
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has BOTH a `result` resource and a `report` resource whose SUBMITTED content
-(the bytes captured when you associate it) passes the report lint:
+has BOTH a `result` artifact and a `report` artifact whose SUBMITTED content
+(the bytes the upload pinned) passes the report lint:
 
 - **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
   with real content.
@@ -446,14 +446,15 @@ has BOTH a `result` resource and a `report` resource whose SUBMITTED content
   exact metrics the plan's Evaluation section named. Do not hand-copy numbers
   into your own table as the record; the exhibit is the record (see The metrics
   exhibit above). Preview it with `experiment.exhibit` before writing. If no
-  exhibit is produced, interpret the registered result evidence and explain
+  exhibit is produced, interpret the submitted result evidence and explain
   the MLflow/no-run gap instead.
 - **Under 16 KB.** The report is the executive layer: link raw metrics files
-  (`results.json`, logs) as separate result resources instead of inlining.
+  (`results.json`, logs) as separate result artifacts instead of inlining.
 - **Every relative image link has submitted figure content.** Save figures
   next to the report (`figures/*.png`), copy them off the sandbox so they exist
-  locally, and THEN associate the report — associating it submits the figures it
-  links alongside it. Added a figure later? Re-associate the report.
+  locally, and THEN submit the report — the upload response returns one
+  follow-up command per linked figure; run each verbatim. Added a figure
+  later? Resubmit the report.
 
 The Conclusion must apply the plan's pre-registered decision rule explicitly —
 the experiment reviewer compares the two documents side by side.
@@ -461,7 +462,7 @@ the experiment reviewer compares the two documents side by side.
 ## Logic graph
 
 The logic graph is one JSON repo file in the experiment folder
-(`experiments/<name>/graph.json`) associated with role `graph`. It is a
+(`experiments/<name>/graph.json`) submitted with role `graph`. It is a
 **qualitative story you write about the logical path of the experiment** —
 the critical questions that needed answers, the hard decisions and the
 reasoning behind them, the pivots (including those forced by reviews), and
@@ -482,14 +483,13 @@ is an editorial call — record what shaped the experiment, not every step. If a
 development adds no valuable information to the story, you may leave it out.
 
 Keep nodes brief and use `refs` for depth: a node's `refs` array takes
-repo-relative paths of registered files or record ids (`res_…`, `rev_…`,
-`claim_…`, `exp_…`), and the UI resolves them into links the user and
-reviewer can follow. Point a problem node at the log that shows it, a pivot
-node at the review that forced it, an outcome node at the results file —
+record ids (`art_…`, `rev_…`, `claim_…`, `exp_…`), and the UI resolves them
+into links the user and reviewer can follow. Point a problem node at the
+review that forced a pivot or the submitted artifact that shows an outcome —
 instead of restating their contents in `detail`.
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has a role-`graph` resource whose SUBMITTED content passes the envelope lint: valid
+has a role-`graph` artifact whose SUBMITTED content passes the envelope lint: valid
 JSON (`version: 1`), every node with a unique `id` and non-empty `label`,
 **at most 16 nodes**, edges referencing existing nodes and forming a DAG, file
 under 16 KB. The lint checks shape only; the experiment reviewer judges
@@ -503,34 +503,35 @@ whether the rejection and the rework it forces belong in the story. If the
 graph is at the 16-node budget and something important must be added, reduce
 the graph first; how to retell the story within the budget is your call.
 
-## Resource discipline
+## Artifact submission
 
-Agent-authored resources are repo files. Prefer one file per resource; the
-brain-created metrics exhibit is not something the agent registers.
+Artifacts are typed documents; only the mandated roles exist (plan, report,
+graph, project_graph, reflection_lens_doc, reflection_doc, change_spec, and
+the small `result` metrics JSON). The brain-created metrics exhibit is not
+something the agent submits.
 
-When the agent creates or changes files during an experiment:
+To submit a gated document or result file:
 
-- identify the relevant repo-relative paths
-- if the experiment ran in a sandbox, pull retained files off the box with
-  `sandbox.pull_outputs` first; resource tools operate on local files and
-  cannot associate remote sandbox files
-- call `resource.register` with the local `path` (or `paths` for a batch) and
-  the association trio (`target_type`, `target_id`, `role`) to register the
-  file(s) and associate them to the current experiment, claim, or review in one
-  call; to associate an already-registered resource, pass its `resource_id`
-  with the trio instead of a path
-- when `workflow.status_and_next` includes `resource_guidance`, follow its
+- write the file locally FIRST (if the experiment ran in a sandbox, pull
+  retained files off the box with `sandbox.pull_outputs` first; uploads read
+  local files and cannot reach remote sandbox paths)
+- call `artifact.submit {target_type, target_id, role, path}` with the file's
+  relative path — pass `lens_id` when the role is `reflection_lens_doc` — and
+  run the returned one-line upload command **verbatim** (one-time token,
+  expires in ~15 min)
+- for markdown with relative image links, the upload response returns one
+  follow-up command per figure; run each the same way
+- when `workflow.status_and_next` includes `artifact_guidance`, follow its
   `association_role`; do not guess plural role names such as `results`,
   `reports`, or `output` (the singular roles are `result`, `report`, and
   `graph`)
-- gates and lints judge the SUBMITTED bytes (pinned at `resource.register`),
-  never the live working tree: after fixing a gated artifact (plan, report,
-  graph, project_graph, reflection_lens_doc, reflection_doc, change_spec),
-  re-register it to submit the
-  fix — editing the file alone changes nothing the workflow can see
-- do not create artifact manifests or content-addressed resource objects
-- do not restore old versions through MCP; edit the live file normally and
-  re-register it to submit a new version
+- gates and lints judge the SUBMITTED bytes (pinned at upload), never the live
+  working tree: after fixing a gated artifact, resubmit it — editing the file
+  alone changes nothing the workflow can see; a resubmit replaces the previous
+  artifact in the same slot
+- do not create artifact manifests or content-addressed objects yourself
+- there is no version history to restore through MCP; edit the live file
+  normally and resubmit it
 
 ## Review discipline
 
@@ -558,7 +559,7 @@ own `caller_session_id`, and optional `declared_agent`, then submit with the
 returned `review_session_id`. The start capability and submit session gate the
 review protocol, but the server does not authenticate unrelated tool calls as
 reviewer calls. Therefore reviewers must not mutate claims, experiments,
-resources, sandboxes, or workflow state. Their `caller_session_id` is required
+artifacts, sandboxes, or workflow state. Their `caller_session_id` is required
 and must never be the producer session's.
 
 After any review submits, call `workflow.status_and_next` again. MCP's
@@ -569,7 +570,7 @@ step.
 
 Before marking an experiment complete:
 
-- resources are registered and associated
+- the required artifacts are submitted
 - design and experiment reviews are recorded and accepted by MCP
 - conclusion is grounded in files or sandbox outputs
 - MCP accepts the transition

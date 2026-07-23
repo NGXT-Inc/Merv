@@ -275,7 +275,7 @@ def _target_of(arguments: Any) -> tuple[str | None, str | None]:
     for target_type, key in (
         ("experiment", "experiment_id"),
         ("claim", "claim_id"),
-        ("resource", "resource_id"),
+        ("artifact", "artifact_id"),
     ):
         if arguments.get(key):
             return target_type, str(arguments[key])

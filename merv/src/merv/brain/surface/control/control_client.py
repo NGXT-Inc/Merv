@@ -107,15 +107,6 @@ class HttpControlPlaneClient:
             )
         return tools
 
-    def submit_resource_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/resources/observe", payload=payload)
-
-    def validate_resource_association(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/resources/validate-association", payload=payload)
-
-    def submit_resource_association(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/resources/associate", payload=payload)
-
     def validate_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post(path="/api/data-plane/feed/validate-post", payload=payload)
 

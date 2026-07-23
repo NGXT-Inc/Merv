@@ -7,14 +7,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RoleRequirement:
-    """A current-attempt resource association the forward transition needs."""
+    """A current-attempt artifact the forward transition needs."""
 
     role: str
-    # Enforcement: WorkflowError message when the association is absent.
+    # Enforcement: WorkflowError message when the artifact is absent.
     error: str
-    # Enforcement: deep-lint hook run after the association exists
+    # Enforcement: deep-lint hook run after the artifact exists
     # ("plan" | "report" | ""). The lint reads the SUBMITTED bytes pinned at
-    # resource.register - never the live file (fix-and-resubmit semantics).
+    # artifact.submit - never the live file (fix-and-resubmit semantics).
     validator: str = ""
     # Stable semantic facts used by enforcement and the public checklist.
     gate: str = ""

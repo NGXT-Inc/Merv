@@ -19,7 +19,6 @@ from .queries import (
 )
 from .reflections import ReflectionCommands
 from .reviews import ReadReviewStatus
-from .resource_content import HostedResourceContentQuery
 from .timeline import EventTimelineQuery
 from .workflow import ProjectDashboardQuery, StatusAndNextQuery
 from .tool_commands import ControlToolOperations
@@ -28,7 +27,7 @@ __all__ = (
     "AgentExperimentQuery", "ComputeCostQuery", "ControlToolOperations", "CreateExperiment",
     "EventTimelineQuery", "ExperimentCollectionQuery", "ExperimentDetailQuery",
     "ExperimentExhibits", "ExperimentFigureQuery", "FinalizeTrackingRun", "GetTrackingContext",
-    "HostedResourceContentQuery", "LogicGraphQuery", "MlflowOverviewQuery", "ProjectDashboardQuery",
+    "LogicGraphQuery", "MlflowOverviewQuery", "ProjectDashboardQuery",
     "ReadReviewStatus", "ReflectionCommands", "StatusAndNextQuery", "TenantCountersQuery",
     "TransitionExperiment",
 )

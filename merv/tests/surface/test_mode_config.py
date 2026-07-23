@@ -217,12 +217,15 @@ class HostedControlSurfaceTest(unittest.TestCase):
         self.assertEqual(tools.status_code, 200, tools.text)
         names = {tool["name"] for tool in tools.json()["tools"]}
         self.assertIn("claim.create", names)
-        self.assertNotIn("resource.register", names)
+        self.assertIn("artifact.submit", names)
         self.assertNotIn("feed.post", names)
 
         rejected = self.client.post(
             "/mcp/call",
-            json={"name": "resource.register", "arguments": {"path": "x.txt"}},
+            json={
+                "name": "storage.upload_file",
+                "arguments": {"path": "x.bin", "kind": "model"},
+            },
         )
         self.assertEqual(rejected.status_code, 400, rejected.text)
         self.assertEqual(rejected.json()["error_code"], "data_plane_required")
@@ -295,24 +298,35 @@ class HostedControlSurfaceTest(unittest.TestCase):
             f"/api/projects/{project_id}/resources",
             json={"path": "local-result.json", "kind": "result"},
         )
-        self.assertEqual(resp.status_code, 405, resp.text)
+        self.assertEqual(resp.status_code, 404, resp.text)
 
-    def test_hosted_resource_content_does_not_read_local_checkout(self) -> None:
+    def test_hosted_artifact_content_serves_only_submitted_bytes(self) -> None:
         project = self.client.post("/api/projects", json={"name": "Hosted Content"})
         self.assertEqual(project.status_code, 201, project.text)
         project_id = project.json()["id"]
-        (self.repo / "results.json").write_text('{"acc": 0.9}', encoding="utf-8")
-        resource = self.app.call_tool(
-            name="resource.register",
+        experiment = self.app.call_tool(
+            name="experiment.create",
             arguments={
                 "project_id": project_id,
+                "name": "hosted-content",
+                "intent": "Hosted content read.",
+            },
+        )
+        pending = self.app.call_tool(
+            name="artifact.submit",
+            arguments={
+                "project_id": project_id,
+                "target_type": "experiment",
+                "target_id": experiment["id"],
+                "role": "result",
                 "path": "results.json",
-                "kind": "result",
             },
         )
 
+        # No bytes were uploaded, so the hosted read degrades cleanly — it
+        # never falls back to a local checkout.
         content = self.client.get(
-            f"/api/projects/{project_id}/resources/{resource['id']}/content"
+            f"/api/projects/{project_id}/artifacts/{pending['artifact_id']}/content"
         )
         self.assertEqual(content.status_code, 200, content.text)
         self.assertFalse(content.json()["available"])
@@ -367,19 +381,18 @@ class HostedControlSurfaceTest(unittest.TestCase):
         )
 
         project = self.app.projects.list_projects()["projects"][0]
-        observed = client.post(
-            "/api/data-plane/resources/observe",
+        validated = client.post(
+            "/api/data-plane/feed/validate-post",
             json={
                 "project_id": project["id"],
-                "path": "results.txt",
-                "content_sha256": "0" * 64,
-                "mtime_ns": 1,
-                "ctime_ns": 1,
-                "size_bytes": 1,
+                "handle": "main",
+                "text": "private-surface probe",
             },
         )
-        self.assertEqual(observed.status_code, 200, observed.text)
-        self.assertEqual(observed.json()["path"], "results.txt")
+        # 400 = the route ran domain validation (unregistered handle), not an
+        # auth gate.
+        self.assertEqual(validated.status_code, 400, validated.text)
+        self.assertIn("not registered", validated.text)
 
 
 class SecretStoreCredentialsTest(unittest.TestCase):
@@ -540,11 +553,16 @@ class ModeCompositionTest(unittest.TestCase):
         )
         self.addCleanup(server.shutdown)
         paths = {getattr(r, "path", "") for r in server.fastapi_app.routes}
-        self.assertIn("/api/data-plane/resources/observe", paths)
+        self.assertIn("/api/data-plane/feed/post", paths)
         self.assertNotIn("/api/daemon/tasks", paths)
         self.assertIn("/mcp/call", paths)
         client = TestClient(server.fastapi_app, raise_server_exceptions=False)
         self.assertEqual(client.get("/api/projects").status_code, 200)
+        # The token-bearer artifact upload route is mounted: an unknown token
+        # reaches the submission service (its not-found), not a bare 404 route.
+        upload = client.put("/api/artifacts/u/bogus-token", content=b"x")
+        self.assertEqual(upload.status_code, 404, upload.text)
+        self.assertIn("upload token", upload.text)
 
     def test_daemon_builder_is_removed(self) -> None:
         import merv.brain.surface.composition as composition

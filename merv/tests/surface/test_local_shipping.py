@@ -61,7 +61,25 @@ class LocalShippingTest(unittest.TestCase):
         env["RESEARCH_PLUGIN_PYTHON"] = sys.executable
         return env
 
-    def test_mcp_launcher_uses_current_repo_for_state_and_resources(self) -> None:
+    def _submit_artifact(
+        self, proc, *, target_id: str, role: str, path: str, body: str
+    ) -> None:
+        pending = self._tool(
+            proc,
+            "artifact.submit",
+            target_type="experiment",
+            target_id=target_id,
+            role=role,
+            path=path,
+        )
+        # The run line is `curl -sf -T <path> '<url>'`; execute its PUT
+        # directly — the URL must be caller-reachable as returned.
+        url = pending["run"].rsplit("'", 2)[-2]
+        request = Request(url, data=body.encode(), method="PUT")
+        with urlopen(request, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_mcp_launcher_records_state_through_artifact_submission(self) -> None:
         # New architecture: the brain is repo-agnostic. The MCP proxy stays
         # project-local and forwards hidden repo context.
         daemon = self._start_http_daemon()
@@ -103,21 +121,16 @@ class LocalShippingTest(unittest.TestCase):
         )
         exp_id = exp["id"]
 
-        (self.research_repo / "experiments" / "shipping").mkdir(parents=True, exist_ok=True)
-        (self.research_repo / "experiments" / "shipping" / "plan.md").write_text(
-            "## Summary\nShip a plan and result through the installed launcher.\n\n"
-            "## Objective & hypothesis\nThreshold rule beats the majority class.\n\n"
-            "## Evaluation\nMetric: accuracy. Baseline: majority class. Success if higher.\n"
-        )
-        self._tool(
+        self._submit_artifact(
             proc,
-            "resource.register",
-            path="experiments/shipping/plan.md",
-            kind="note",
-            title="Shipping plan",
-            target_type="experiment",
             target_id=exp_id,
             role="plan",
+            path="experiments/shipping/plan.md",
+            body=(
+                "## Summary\nShip a plan and result through the installed launcher.\n\n"
+                "## Objective & hypothesis\nThreshold rule beats the majority class.\n\n"
+                "## Evaluation\nMetric: accuracy. Baseline: majority class. Success if higher.\n"
+            ),
         )
         self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="submit_design")
         self._submit_review(proc, exp_id, "design_reviewer", "pass", "Plan is scoped.")
@@ -129,45 +142,36 @@ class LocalShippingTest(unittest.TestCase):
         )
         self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="start_running")
 
-        (self.research_repo / "experiments" / "shipping" / "results.json").write_text('{"accuracy": 1.0}\n')
-        self._tool(
+        self._submit_artifact(
             proc,
-            "resource.register",
-            path="experiments/shipping/results.json",
-            kind="result",
-            target_type="experiment",
             target_id=exp_id,
             role="result",
+            path="experiments/shipping/results.json",
+            body='{"accuracy": 1.0}\n',
         )
-        (self.research_repo / "experiments" / "shipping" / "report.md").write_text(
-            "## Summary\nShipping smoke run completed per plan.\n\n"
-            "## Results\n\n| Metric | Target | Achieved |\n|---|---|---|\n| accuracy | majority | 1.0 |\n\n"
-            "## Deviations from plan\nNone.\n\n"
-            "## Conclusion\nDecision rule met: accuracy beats the majority baseline.\n"
-        )
-        self._tool(
+        self._submit_artifact(
             proc,
-            "resource.register",
-            path="experiments/shipping/report.md",
-            kind="report",
-            target_type="experiment",
             target_id=exp_id,
             role="report",
+            path="experiments/shipping/report.md",
+            body=(
+                "## Summary\nShipping smoke run completed per plan.\n\n"
+                "## Results\n\n| Metric | Target | Achieved |\n|---|---|---|\n| accuracy | majority | 1.0 |\n\n"
+                "## Deviations from plan\nNone.\n\n"
+                "## Conclusion\nDecision rule met: accuracy beats the majority baseline.\n"
+            ),
         )
-        (self.research_repo / "experiments" / "shipping" / "graph.json").write_text(
-            '{"version": 1, "nodes": ['
-            '{"id": "obj", "kind": "objective", "label": "Shipping smoke run"},'
-            '{"id": "out", "kind": "outcome", "label": "Beat the majority baseline"}],'
-            ' "edges": [{"from": "obj", "to": "out"}]}\n'
-        )
-        self._tool(
+        self._submit_artifact(
             proc,
-            "resource.register",
-            path="experiments/shipping/graph.json",
-            kind="other",
-            target_type="experiment",
             target_id=exp_id,
             role="graph",
+            path="experiments/shipping/graph.json",
+            body=(
+                '{"version": 1, "nodes": ['
+                '{"id": "obj", "kind": "objective", "label": "Shipping smoke run"},'
+                '{"id": "out", "kind": "outcome", "label": "Beat the majority baseline"}],'
+                ' "edges": [{"from": "obj", "to": "out"}]}\n'
+            ),
         )
         self._tool(proc, "experiment.transition", experiment_id=exp_id, transition="submit_results")
         self._submit_review(proc, exp_id, "experiment_reviewer", "pass", "Result file exists.")

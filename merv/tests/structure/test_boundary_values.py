@@ -87,7 +87,6 @@ APPLICATION_DATACLASS_EXCLUSIONS = frozenset(
         "merv.brain.application.experiments.tracking.AgentExperimentQuery",
         "merv.brain.application.experiments.tracking.ExperimentDetailQuery",
         "merv.brain.application.experiments.transition.TransitionExperiment",
-        "merv.brain.application.resource_content.HostedResourceContentQuery",
         "merv.brain.application.reflections.ReflectionCommands",
         "merv.brain.application.reviews.ReadReviewStatus",
         "merv.brain.application.workflow.ProjectDashboardQuery",

@@ -130,8 +130,8 @@ class ToolCallStore:
             return "experiment", str(arguments["experiment_id"])
         if arguments.get("claim_id"):
             return "claim", str(arguments["claim_id"])
-        if arguments.get("resource_id"):
-            return "resource", str(arguments["resource_id"])
+        if arguments.get("artifact_id"):
+            return "artifact", str(arguments["artifact_id"])
         review = arguments.get("review_id") or arguments.get("request_id")
         if review:
             return "review", str(review)
@@ -364,7 +364,7 @@ class ToolCallStore:
             for target_type, expr in (
                 ("experiment", "json_extract(args_json, '$.experiment_id')"),
                 ("claim", "json_extract(args_json, '$.claim_id')"),
-                ("resource", "json_extract(args_json, '$.resource_id')"),
+                ("artifact", "json_extract(args_json, '$.artifact_id')"),
                 ("review", "COALESCE(json_extract(args_json, '$.review_id'), json_extract(args_json, '$.request_id'))"),
             ):
                 conn.execute(

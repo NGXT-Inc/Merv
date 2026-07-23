@@ -32,16 +32,16 @@ def review_snapshot_id(*, target_type: str, target: dict[str, Any]) -> str:
 def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
     if "|" not in snapshot_id:
         target_type, _, target_id = snapshot_id.partition(":")
-        return {"target_type": target_type, "target_id": target_id, "resources": []}
+        return {"target_type": target_type, "target_id": target_id, "artifacts": []}
     parts = snapshot_id.split("|", 4)
-    resources = []
+    artifacts = []
     for token in (parts[4].split(",") if len(parts) > 4 and parts[4] else []):
         try:
             artifact_id, role, attempt_index = token.rsplit(":", 2)
         except ValueError:
-            resources.append({"raw": token})
+            artifacts.append({"raw": token})
             continue
-        resources.append(
+        artifacts.append(
             {
                 "artifact_id": artifact_id,
                 "role": role,
@@ -53,7 +53,7 @@ def snapshot_from_id(*, snapshot_id: str) -> dict[str, Any]:
         "target_id": parts[1] if len(parts) > 1 else "",
         "status": parts[2] if len(parts) > 2 else "",
         "attempt_index": _int_or_zero(value=parts[3]) if len(parts) > 3 else 0,
-        "resources": resources,
+        "artifacts": artifacts,
     }
 
 

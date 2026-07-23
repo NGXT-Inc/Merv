@@ -11,7 +11,6 @@ from merv.shared.tool_validation import validate_openssh_public_key
 from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES
 from merv.shared.feed_images import MAX_FEED_IMAGE_BYTES
 
-from ...artifacts.facade import ArtifactRecords
 from ...feed.facade import FeedDelivery
 from ...kernel.utils import ValidationError
 from ...sandbox.facade import SandboxFacade
@@ -52,91 +51,9 @@ def register_data_plane_routes(
     http: Any,
     *,
     authorize_project: AuthorizeProject,
-    artifacts: ArtifactRecords,
     feed: FeedDelivery,
     sandboxes: SandboxFacade,
 ) -> None:
-    @http.post("/api/data-plane/resources/validate-association")
-    def data_plane_validate_resource_association(
-        request: Request, body: JsonBody = Body(default=None)
-    ) -> dict[str, Any]:
-        payload = body or {}
-        project_id = _required_text(payload, "project_id")
-        authorize_project(request, project_id)
-        return artifacts.validate_association_intent(
-            project_id=project_id,
-            resource_id=_required_text(payload, "resource_id"),
-            target_type=_required_text(payload, "target_type"),
-            target_id=_required_text(payload, "target_id"),
-            role=_required_text(payload, "role"),
-        )
-
-    @http.post("/api/data-plane/resources/observe")
-    def data_plane_observe_resource(
-        request: Request, body: JsonBody = Body(default=None)
-    ) -> dict[str, Any]:
-        payload = body or {}
-        project_id = _required_text(payload, "project_id")
-        authorize_project(request, project_id)
-        return artifacts.record_observation(
-            project_id=project_id,
-            path=_required_text(payload, "path"),
-            kind=str(payload.get("kind") or "other"),
-            title=str(payload.get("title") or ""),
-            created_by=str(payload.get("created_by") or "codex"),
-            mtime_ns=int(payload.get("mtime_ns") or 0),
-            ctime_ns=int(payload.get("ctime_ns") or 0),
-            size_bytes=int(payload.get("size_bytes") or 0),
-            content_sha256=_required_text(payload, "content_sha256"),
-            content_type=str(payload.get("content_type") or "application/octet-stream"),
-        )
-
-    @http.post("/api/data-plane/resources/associate")
-    def data_plane_associate_resource(
-        request: Request, body: JsonBody = Body(default=None)
-    ) -> dict[str, Any]:
-        payload = body or {}
-        project_id = _required_text(payload, "project_id")
-        authorize_project(request, project_id)
-        artifacts.validate_association_intent(
-            project_id=project_id,
-            resource_id=_required_text(payload, "resource_id"),
-            target_type=_required_text(payload, "target_type"),
-            target_id=_required_text(payload, "target_id"),
-            role=_required_text(payload, "role"),
-        )
-        blob = payload.get("blob")
-        content_bytes = None
-        if isinstance(blob, dict):
-            content_bytes = _decode_b64_field(
-                blob.get("data_b64"), label="blob.data_b64"
-            )
-        figures: list[dict[str, Any]] = []
-        for index, figure in enumerate(payload.get("figures") or []):
-            if not isinstance(figure, dict):
-                raise ValidationError(f"figures[{index}] must be an object")
-            figures.append(
-                {
-                    "link_path": _required_text(figure, "link_path"),
-                    "data": _decode_b64_field(
-                        figure.get("data_b64"),
-                        label=f"figures[{index}].data_b64",
-                    ),
-                    "content_type": str(
-                        figure.get("content_type") or "application/octet-stream"
-                    ),
-                }
-            )
-        return artifacts.associate_observed(
-            project_id=project_id,
-            resource_id=_required_text(payload, "resource_id"),
-            target_type=_required_text(payload, "target_type"),
-            target_id=_required_text(payload, "target_id"),
-            role=_required_text(payload, "role"),
-            content_bytes=content_bytes,
-            figures=figures,
-        )
-
     @http.post("/api/data-plane/feed/validate-post")
     def data_plane_validate_feed_post(
         request: Request, body: JsonBody = Body(default=None)

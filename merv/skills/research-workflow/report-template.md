@@ -18,10 +18,10 @@
 
   HARD LIMITS, also lint-enforced at submit_results:
     - The report must stay under 16 KB. This is the executive layer: raw
-      numbers, logs, and large tables live in linked result resources
+      numbers, logs, and large tables live in linked result artifacts
       (results.json, metrics.csv), not here.
     - Every relative image link must resolve to a local file under 5 MB, or
-      resource.register rejects the report. Save figures next to the report
+      the upload is rejected. Save figures next to the report
       (e.g. figures/*.png), copy them off any sandbox first, then submit.
 
   RECOMMENDED — not lint-enforced, but the experiment reviewer judges whether

@@ -3,7 +3,7 @@
 
   This file is the FACE of the experiment: it is what the user reads in the UI
   to understand what the experiment is, and the artifact the design reviewer
-  evaluates. Copy it to the experiment's plan resource (e.g.
+  evaluates. Copy it to the experiment plan (e.g.
   experiments/<name>/plan.md), fill it in, then register + associate it with
   role "plan".
 
@@ -22,7 +22,7 @@
 
   Figures are supported: relative image links (e.g. figures/diagram.png) are
   captured when the plan is registered and rendered in the UI. Every link must
-  resolve to a local file under 5 MB, or resource.register rejects the plan.
+  resolve to a local file under 5 MB, or the upload is rejected.
 
   Keep the title line (`# ...`) to one line; it is the headline. The durable
   `intent` you pass to experiment.create should match it. Delete a RECOMMENDED
@@ -61,7 +61,7 @@
 
 ## Outputs
 <!-- RECOMMENDED. Named result files this experiment will produce and later
-     retain and register as result resources, e.g.
+     retain and submit as result artifacts, e.g.
      experiments/<name>/results.json. -->
 
 ## Risks & confounders

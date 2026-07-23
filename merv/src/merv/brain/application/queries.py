@@ -15,7 +15,7 @@ from ..research_core.facade import (
     MAX_GRAPH_NODES,
     ResearchCore,
     graph_problems,
-    preferred_associated_resource,
+    preferred_associated_artifact,
 )
 from .ports.tracking import tracking_experiment_name
 from .experiment_figure import build_experiment_figure
@@ -205,8 +205,8 @@ class LogicGraphQuery:
             experiment_id=experiment_id, project_id=project_id
         )
         attempt = experiment.get("attempt_index")
-        chosen = preferred_associated_resource(
-            resources=experiment.get("resources", []),
+        chosen = preferred_associated_artifact(
+            artifacts=experiment.get("resources", []),
             attempt=attempt,
             roles=("graph",),
         )
@@ -250,7 +250,7 @@ class LogicGraphQuery:
         return self._for_reflection(
             project_id=project_id,
             reflection=selection.get("reflection"),
-            graph_resource=selection.get("graph_resource"),
+            graph_artifact=selection.get("graph_artifact"),
             extra_base={"signal": present_reflection_signal(selection.get("signal"))},
         )
 
@@ -267,13 +267,13 @@ class LogicGraphQuery:
         *,
         project_id: str,
         reflection: Record | None,
-        graph_resource: Record | None = None,
+        graph_artifact: Record | None = None,
         extra_base: Record | None = None,
     ) -> Record:
         base: Record = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
-        chosen = graph_resource or (
-            preferred_associated_resource(
-                resources=reflection.get("resources", []),
+        chosen = graph_artifact or (
+            preferred_associated_artifact(
+                artifacts=reflection.get("resources", []),
                 attempt=reflection.get("attempt_index"),
                 roles=PROJECT_GRAPH_ROLES,
             )
@@ -329,7 +329,7 @@ class LogicGraphQuery:
         return {
             **base,
             "available": True,
-            "resource_id": chosen.get("id"),
+            "artifact_id": chosen.get("id"),
             "path": chosen.get("path"),
             "association_attempt_index": chosen.get("association_attempt_index"),
             "graph": graph,
@@ -339,9 +339,9 @@ class LogicGraphQuery:
             ),
         }
 
-    def _associated_text(self, resource: Record) -> str | None:
+    def _associated_text(self, artifact: Record) -> str | None:
         return self.artifacts.submitted_text_for_artifact(
-            artifact_id=resource.get("id")
+            artifact_id=artifact.get("id")
         )
 
     def _resolve_graph_refs(
@@ -358,22 +358,21 @@ class LogicGraphQuery:
             if ref in research:
                 resolved[ref] = research[ref]
                 continue
-            resource = self.artifacts.resolve_resource_reference(
-                project_id=project_id, ref=ref
+            artifact = (
+                self.artifacts.resolve_artifact_reference(
+                    project_id=project_id, artifact_id=ref
+                )
+                if ref.startswith("art_")
+                else None
             )
-            if resource is not None:
-                resolved[ref] = resource
-            elif ref.startswith("res_"):
-                resolved[ref] = {"type": "unknown", "resolved": False}
-            else:
-                resolved[ref] = {
-                    "type": "unknown",
-                    "resolved": False,
-                    "hint": (
-                        "not a registered resource path; register the file to make "
-                        "this ref resolvable"
-                    ),
-                }
+            resolved[ref] = artifact or {
+                "type": "unknown",
+                "resolved": False,
+                "hint": (
+                    "not a submitted artifact id; submit the file with "
+                    "artifact.submit to make this ref resolvable"
+                ),
+            }
         return resolved
 
 

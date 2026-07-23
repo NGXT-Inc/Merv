@@ -1,7 +1,7 @@
 # Centralized MLflow
 
 MLflow is the quantitative ledger for Merv projects. The brain owns
-workflow state, claims, reviews, resource records, and logic graphs. MLflow owns
+workflow state, claims, reviews, artifact records, and logic graphs. MLflow owns
 the empirical run record: parameters, metrics and their histories, run tags,
 datasets recorded through MLflow, and run artifacts.
 
@@ -196,8 +196,8 @@ purpose, metric direction, backend, dataset, and configuration metadata.
 Keep compact plots, tables, evaluation JSON, prediction samples, confusion
 matrices, and resolved configuration as MLflow artifacts when they help explain
 the run. Keep workflow-facing summaries and selected figures as checkout
-resources. Large datasets and model files can use durable object storage. These
-are separate records; a repo resource is still a checkout file, not a pointer
+artifacts. Large datasets and model files can use durable object storage. These
+are separate records; a repo file is still a checkout file, not a pointer
 to an MLflow or storage object.
 
 ## Metrics exhibit

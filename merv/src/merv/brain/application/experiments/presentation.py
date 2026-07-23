@@ -14,7 +14,7 @@ class SlimExperimentState(ExperimentState, total=False):
     """Agent-facing experiment detail: workflow substance without bookkeeping."""
 
 
-_SLIM_RESOURCE_FIELDS = (
+_SLIM_ARTIFACT_FIELDS = (
     "id",
     "association_role",
     "path",
@@ -27,7 +27,7 @@ _SLIM_STORAGE_FIELDS = tuple(
     for field in ProducedObject.__annotations__
     if field not in {"created_at", "updated_at", "last_accessed_at"}
 )
-_PRIOR_RESOURCE_FIELDS = (
+_PRIOR_ARTIFACT_FIELDS = (
     "id",
     "association_role",
     "path",
@@ -94,18 +94,18 @@ def slim_experiment_state(
 
     rich = rich_experiment_state(full, storage_objects=storage_objects)
     attempt = rich.get("attempt_index")
-    all_resources = rich.get("resources", [])
+    all_artifacts = rich.get("resources", [])
     current = rich.get("current_attempt_resources")
     if current is None:
         current = [
-            resource
-            for resource in all_resources
-            if resource.get("association_attempt_index") == attempt
+            artifact
+            for artifact in all_artifacts
+            if artifact.get("association_attempt_index") == attempt
         ]
     prior = [
-        resource
-        for resource in all_resources
-        if resource.get("association_attempt_index") != attempt
+        artifact
+        for artifact in all_artifacts
+        if artifact.get("association_attempt_index") != attempt
     ]
 
     slim: dict[str, Any] = {
@@ -123,12 +123,12 @@ def slim_experiment_state(
         "mlflow_run": rich.get("mlflow_run"),
         "claim_update_suggestions": rich.get("claim_update_suggestions", []),
         "tested_claims": project_rows(rich.get("tested_claims", []), _SLIM_CLAIM_FIELDS),
-        "current_attempt_resources": project_rows(current, _SLIM_RESOURCE_FIELDS),
+        "current_attempt_resources": project_rows(current, _SLIM_ARTIFACT_FIELDS),
         "storage_objects": project_rows(rich.get("storage_objects", []), _SLIM_STORAGE_FIELDS),
         "reviews": project_rows(rich.get("reviews", []), _SLIM_REVIEW_FIELDS),
     }
     if prior:
-        slim["prior_attempt_resources"] = project_rows(prior, _PRIOR_RESOURCE_FIELDS)
+        slim["prior_attempt_resources"] = project_rows(prior, _PRIOR_ARTIFACT_FIELDS)
     return cast(SlimExperimentState, slim)
 
 

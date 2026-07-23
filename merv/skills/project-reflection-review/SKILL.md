@@ -23,7 +23,7 @@ missing from the prompt, ask the spawning agent for them before proceeding.
 Operate read-only by procedure. The capability authenticates `review.start`
 and the returned session authenticates `review.submit`; it does not restrict
 unrelated tools. Use returned artifacts and ordinary read-only context for evidence
-and do not mutate claims, experiments, reflections, resources, sandboxes, or
+and do not mutate claims, experiments, reflections, artifacts, sandboxes, or
 workflow state. Call `review.start` with exactly the provided
 `review_request_id`, provided `reviewer_capability`, your own required
 `caller_session_id` (never the producer session's), and optional
@@ -46,7 +46,7 @@ workflow state. Call `review.start` with exactly the provided
    the raw inputs the orchestrator worked from.
 4. **The reflection result** — the updated project graph, reflection
    document, and change spec (the current attempt's `project_graph`,
-   `reflection_doc`, and `change_spec` resources).
+   `reflection_doc`, and `change_spec` artifacts).
 
 ## Check
 

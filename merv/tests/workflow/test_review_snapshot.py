@@ -88,7 +88,7 @@ class ReviewSnapshotIdTest(unittest.TestCase):
         self.assertEqual(parsed["target_id"], "exp_1")
         self.assertEqual(parsed["attempt_index"], 3)
         self.assertEqual(
-            parsed["resources"],
+            parsed["artifacts"],
             [{"artifact_id": "art_9", "role": "plan", "attempt_index": 3}],
         )
 

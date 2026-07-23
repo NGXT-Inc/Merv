@@ -9,7 +9,7 @@ from ..kernel.events import StoredEvent
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .domain.experiment_policy import infer_claim_status_from_conclusion
 from .domain.paths import experiment_folder_rel
-from .domain.resource_evidence import preferred_associated_resource
+from .domain.artifact_evidence import preferred_associated_artifact
 from .domain.vocabulary import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
@@ -397,5 +397,5 @@ __all__ = (
     "ResearchCoreFacade", "ResearchLiterature", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
     "ResearchSnapshot", "ResearchSnapshots", "REVIEW_VERDICT_VALUES", "RequirementEvaluation",
     "experiment_folder_rel", "graph_problems", "infer_claim_status_from_conclusion",
-    "preferred_associated_resource",
+    "preferred_associated_artifact",
 )

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ...artifacts.resources import ResourceService
 from ...artifacts.submissions import ArtifactSubmissionService
 from ...research_core.association_targets import AssociationTargets
 from ...research_core.claims import ClaimService
@@ -29,7 +28,6 @@ class RecordCore:
     projects: ProjectService
     claims: ClaimService
     experiments: ExperimentService
-    resources: ResourceService
     artifact_submissions: ArtifactSubmissionService
     graph_refs: GraphRefResolver
     reflection_waves: ReflectionService
@@ -45,13 +43,6 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
     projects = ProjectService(store=store)
     claims = ClaimService(store=store)
     # Artifacts receives the narrow Research-owned association target resolver.
-    # The legacy resource service stays composed only for the pre-cut read
-    # routes; the submission service is the evidence reader everywhere.
-    resources = ResourceService(
-        store=store,
-        blobs=blobs,
-        association_targets=AssociationTargets(store=store),
-    )
     artifact_submissions = ArtifactSubmissionService(
         store=store,
         blobs=blobs,
@@ -82,7 +73,6 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         projects=projects,
         claims=claims,
         experiments=experiments,
-        resources=resources,
         artifact_submissions=artifact_submissions,
         graph_refs=graph_refs,
         reflection_waves=reflection_waves,

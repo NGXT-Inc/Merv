@@ -35,17 +35,17 @@ GATE_TABLE: dict[str, ForwardTransition] = {
         name="submit_design",
         to_status="design_review",
         requires_prose=(
-            "a 'plan' resource must be registered and associated to this experiment, with "
+            "a 'plan' artifact must be submitted to this experiment, with "
             "the required plan section headers present"
         ),
         requirements=(
             RoleRequirement(
                 role="plan",
-                error="an experiment plan resource must be registered before design review",
+                error="an experiment plan artifact must be submitted before design review",
                 validator="plan",
                 gate="plan_required",
-                missing="experiment plan resource",
-                label="Plan associated and valid",
+                missing="experiment plan artifact",
+                label="Plan submitted and valid",
             ),
         ),
     ),
@@ -68,8 +68,8 @@ GATE_TABLE: dict[str, ForwardTransition] = {
         name="submit_results",
         to_status="experiment_review",
         requires_prose=(
-            "a 'result' resource, a results report (role 'report'), AND a logic "
-            "graph (role 'graph') must be registered and associated to this experiment; "
+            "a 'result' artifact, a results report (role 'report'), AND a logic "
+            "graph (role 'graph') must be submitted to this experiment; "
             "the report needs the required section headers, resolvable figure links, "
             "and — when the system pinned a metrics exhibit for this attempt — a "
             "reference to it (the exhibit, not an agent-written table, is the "
@@ -79,12 +79,12 @@ GATE_TABLE: dict[str, ForwardTransition] = {
         requirements=(
             RoleRequirement(
                 role="result",
-                error="result resource must be retained before experiment_review",
+                error="result artifact must be submitted before experiment_review",
                 # The workflow layer upgrades this to execution_active while a
                 # sandbox is live for the experiment.
                 gate="execution_ready",
-                missing="result resource",
-                label="Result resource present",
+                missing="result artifact",
+                label="Result artifact present",
             ),
             RoleRequirement(
                 role="report",
@@ -94,12 +94,12 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                     "system metrics exhibit — preview it with experiment.exhibit; "
                     "Deviations from plan; Conclusion applying the plan's "
                     "decision rule), copy it out if produced on the sandbox, and "
-                    "associate it with role 'report' — "
+                    "submit it with artifact.submit (role 'report') — "
                     "see skills/research-workflow/report-template.md"
                 ),
                 validator="report",
                 gate="results_report_required",
-                missing="results report resource (role 'report')",
+                missing="results report artifact (role 'report')",
                 label="Results report present and valid",
             ),
             RoleRequirement(
@@ -110,12 +110,12 @@ GATE_TABLE: dict[str, ForwardTransition] = {
                     "— your story of the experiment's logical path: the hard "
                     "decisions and the reasoning behind them, as a DAG of at most "
                     "16 nodes; not a pipeline/provenance diagram and never "
-                    "script-generated), copy it out if produced on the sandbox, and associate it "
-                    "with role 'graph' — see skills/research-workflow/graph-template.md"
+                    "script-generated), copy it out if produced on the sandbox, and submit it "
+                    "with artifact.submit (role 'graph') — see skills/research-workflow/graph-template.md"
                 ),
                 validator="graph",
                 gate="logic_graph_required",
-                missing="logic graph resource (role 'graph')",
+                missing="logic graph artifact (role 'graph')",
                 label="Logic graph present and valid",
             ),
         ),

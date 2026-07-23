@@ -25,7 +25,7 @@ from typing import Any, Callable, ClassVar, Protocol
 from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
-from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
+from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain, upload_token
 from merv.brain.surface.control.control_client import HttpControlPlaneClient
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.contracts import DATA_PLANE_TOOL_NAMES
@@ -157,10 +157,11 @@ class ProxyRoutedHttpClient:
 
 @dataclass
 class ClientHarness:
-    """A client plus the repo its artifact files live in."""
+    """A client, the repo its artifact files live in, and the upload channel."""
 
     client: ControlPlaneClient
     repo: Path
+    put_bytes: Callable[[str, bytes], dict[str, Any]]
     _closers: list[Callable[[], None]] = field(default_factory=list)
 
     def close(self) -> None:
@@ -179,6 +180,7 @@ def in_process_harness() -> ClientHarness:
     return ClientHarness(
         client=InProcessControlPlaneClient(app=app),
         repo=repo,
+        put_bytes=lambda token, data: app.upload_artifact_bytes(token=token, data=data),
         _closers=[app.shutdown, tmp.cleanup],
     )
 
@@ -211,7 +213,18 @@ def http_harness() -> ClientHarness:
         except Exception:
             time.sleep(step)
             elapsed += step
-    client = ProxyRoutedHttpClient(base_url=f"http://{host}:{port}", repo=repo)
+    base_url = f"http://{host}:{port}"
+    client = ProxyRoutedHttpClient(base_url=base_url, repo=repo)
+
+    def _put_bytes(token: str, data: bytes) -> dict[str, Any]:
+        req = Request(
+            f"{base_url}/api/artifacts/u/{token}",
+            data=data,
+            method="PUT",
+        )
+        with urlopen(req, timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8") or "{}")
+            return body if isinstance(body, dict) else {}
 
     def _stop() -> None:
         try:
@@ -223,6 +236,7 @@ def http_harness() -> ClientHarness:
     return ClientHarness(
         client=client,
         repo=repo,
+        put_bytes=_put_bytes,
         _closers=[_stop, app.shutdown, tmp.cleanup],
     )
 
@@ -250,22 +264,19 @@ class ControlPlaneContractScenarios:
 
     # ---- scenario helpers (tool-surface only) ----
 
-    def _associate_file(
+    def _submit_file(
         self, *, exp_id: str, path: str, role: str, body: str
     ) -> dict[str, Any]:
-        full = self.repo / path
-        full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(body)
-        result = self.call(
-            "resource.register",
+        pending = self.call(
+            "artifact.submit",
             project_id=self.project_id,
-            path=path,
-            kind=role,
             target_type="experiment",
             target_id=exp_id,
             role=role,
+            path=path,
         )
-        return result["association"]
+        uploaded = self.harness.put_bytes(upload_token(pending["run"]), body.encode())
+        return {**uploaded, "artifact_id": pending["artifact_id"]}
 
     def _pass_review(self, *, exp_id: str, role: str) -> None:
         request = self.call(
@@ -322,7 +333,7 @@ class ControlPlaneContractScenarios:
         self.assertEqual(exp["folder"], "experiments/contract-loop/")
 
         # Design gate: plan bytes submitted at associate, then review.
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-loop/plan.md",
             role="plan",
@@ -336,19 +347,19 @@ class ControlPlaneContractScenarios:
         self.assertEqual(self._status(exp_id=exp_id)["status"], "running")
 
         # Results gate: result metadata + report/graph bytes, then review.
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-loop/results.json",
             role="result",
             body='{"accuracy": 0.72}\n',
         )
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-loop/report.md",
             role="report",
             body=VALID_REPORT,
         )
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-loop/graph.json",
             role="graph",
@@ -385,7 +396,7 @@ class ControlPlaneContractScenarios:
             experiment_id=exp_id,
         )
         self.assertEqual(before["workflow"]["current_gate"], "plan_required")
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-gates/plan.md",
             role="plan",
@@ -405,7 +416,7 @@ class ControlPlaneContractScenarios:
             name="contract-review",
             intent="Review records through the client.",
         )["id"]
-        self._associate_file(
+        self._submit_file(
             exp_id=exp_id,
             path="experiments/contract-review/plan.md",
             role="plan",

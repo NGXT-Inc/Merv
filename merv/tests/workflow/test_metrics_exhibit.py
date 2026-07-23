@@ -118,22 +118,22 @@ class ExhibitBuilderTest(unittest.TestCase):
     def test_result_file_sources_carry_provenance_and_data(self) -> None:
         source = {
             "path": "experiments/exp/metrics.json",
-            "version_id": "rver_1",
+            "artifact_id": "art_1",
             "sha256": "ab" * 32,
-            "observed_at": WINDOW_START,
+            "submitted_at": WINDOW_START,
             "data": {"accuracy": 0.72},
         }
         exhibit = _build(file_sources=[source])
         entry = exhibit["result_files"][0]
         self.assertEqual(entry["data"], {"accuracy": 0.72})
         self.assertEqual(entry["source"]["type"], "result_file")
-        self.assertEqual(entry["source"]["version_id"], "rver_1")
+        self.assertEqual(entry["source"]["artifact_id"], "art_1")
         self.assertEqual(exhibit["verdict"]["result_files"], 1)
 
     def test_generation_is_deterministic_for_identical_state(self) -> None:
         kwargs = dict(
             snapshot=_snapshot([_run("seed-0", start_ms=WINDOW_START_MS + 1000)]),
-            file_sources=[{"path": "metrics.json", "version_id": "v", "sha256": "x", "observed_at": WINDOW_START, "data": {"a": 1}}],
+            file_sources=[{"path": "metrics.json", "artifact_id": "art_v", "sha256": "x", "submitted_at": WINDOW_START, "data": {"a": 1}}],
         )
         self.assertEqual(exhibit_bytes(_build(**kwargs)), exhibit_bytes(_build(**kwargs)))
 
@@ -246,18 +246,14 @@ class ExhibitFlowTest(unittest.TestCase):
 
     # ---- helpers ----
 
-    def _write_and_associate(self, *, exp_id: str, path: str, role: str, body: str) -> None:
-        target = self.repo / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body)
-        self.call(
-            "resource.register",
+    def _submit(self, *, exp_id: str, path: str, role: str, body: str) -> None:
+        self.app.submit_artifact(
             project_id=self.project_id,
-            path=path,
-            kind=role,
             target_type="experiment",
             target_id=exp_id,
             role=role,
+            path=path,
+            body=body,
         )
 
     def _pass_review(self, *, exp_id: str, role: str) -> None:
@@ -285,7 +281,7 @@ class ExhibitFlowTest(unittest.TestCase):
         exp_id = self.call(
             "experiment.create", name=name, project_id=self.project_id, intent="Exhibit flow."
         )["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
@@ -301,23 +297,20 @@ class ExhibitFlowTest(unittest.TestCase):
         self.mlflow.runs.append(_run(run_id, start_ms=int(time.time() * 1000) + offset_ms))
 
     def _submit_ready(self, exp_id: str, *, report: str = REPORT_WITH_REFERENCE) -> None:
-        self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body='{"accuracy": 0.72}\n')
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="results.json", role="result", body='{"accuracy": 0.72}\n')
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=report)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
 
     def _exhibit_association(self, exp_id: str) -> dict | None:
         conn = self.app._store.connect()
         try:
             row = conn.execute(
                 """
-                SELECT a.resource_id, a.version_id, r.path, r.created_by,
-                       v.content_sha256
-                FROM resource_associations a
-                JOIN resources r ON r.id = a.resource_id
-                JOIN resource_versions v ON v.id = a.version_id
-                WHERE a.target_type = 'experiment' AND a.target_id = ?
-                  AND a.role = 'exhibit'
-                ORDER BY a.created_seq DESC LIMIT 1
+                SELECT id, path, created_by, content_sha256
+                FROM artifacts
+                WHERE target_type = 'experiment' AND target_id = ?
+                  AND role = 'exhibit' AND status = 'complete'
+                ORDER BY created_seq DESC LIMIT 1
                 """,
                 (exp_id,),
             ).fetchone()
@@ -392,7 +385,7 @@ class ExhibitFlowTest(unittest.TestCase):
             )
         self.assertIn("metrics_exhibit.json", str(ctx.exception))
         # Referencing the exhibit (after previewing it) unblocks the gate.
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=REPORT_WITH_REFERENCE)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=REPORT_WITH_REFERENCE)
         out = self.call(
             "experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results"
         )
@@ -500,26 +493,18 @@ class ExhibitFlowTest(unittest.TestCase):
         association = self._exhibit_association(exp_id)
         exhibit_path = str(association["path"])
 
-        # The exhibit role is not associable through the agent surface.
-        forged = self.repo / "forged.json"
-        forged.write_text("{}")
-        res = self.call("resource.register", project_id=self.project_id, path="forged.json", kind="result")
-        with self.assertRaises(ValidationError):
-            self.call(
-                "resource.register",
-                project_id=self.project_id,
-                resource_id=res["id"],
-                target_type="experiment",
-                target_id=exp_id,
-                role="exhibit",
-            )
-        # The system resource cannot be re-registered over or deleted.
-        (self.repo / exhibit_path).parent.mkdir(parents=True, exist_ok=True)
-        (self.repo / exhibit_path).write_text('{"forged": true}')
-        with self.assertRaises(ValidationError):
-            self.call("resource.register", project_id=self.project_id, path=exhibit_path, kind="result")
-        with self.assertRaises(ValidationError):
-            self.call("resource.delete", project_id=self.project_id, resource_id=association["resource_id"])
+        # The exhibit role is not submittable through the agent surface —
+        # not even against the exhibit's own path label.
+        for path in ("forged.json", exhibit_path):
+            with self.assertRaises(ValidationError):
+                self.call(
+                    "artifact.submit",
+                    project_id=self.project_id,
+                    target_type="experiment",
+                    target_id=exp_id,
+                    role="exhibit",
+                    path=path,
+                )
 
 
 if __name__ == "__main__":

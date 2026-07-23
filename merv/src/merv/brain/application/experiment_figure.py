@@ -1,7 +1,7 @@
 """Application-owned derived experiment-figure projection.
 
 Builds a graph document — typed nodes + edges — for one experiment from state
-the backend already owns: the attempt chain, resource associations (with
+the backend already owns: the attempt chain, submitted artifacts (with
 attempt indices), review verdicts, sandbox liveness, conclusion, and tested
 claims. Nothing here is agent-authored; every node is derived and therefore
 true by construction. A later phase merges an agent-authored overlay (arms,
@@ -24,15 +24,16 @@ from typing import Any
 
 FIGURE_SCHEMA_VERSION = 1
 
-# Resource roles that feed an attempt vs. ones an attempt produces.
+# Artifact roles that feed an attempt vs. ones an attempt produces (legacy
+# untyped roles remain readable on rows backfilled from the resource era).
 UPSTREAM_ROLES = {"plan", "input", "code", "config", "model"}
 
-# Per-attempt, per-direction cap on individual resource nodes. Sandbox syncs
-# can associate hundreds of files to one attempt; past the cap the remainder
+# Per-attempt, per-direction cap on individual artifact nodes. Old sandbox syncs
+# could attach hundreds of files to one attempt; past the cap the remainder
 # rolls up into a single `resource_group` node so the canvas stays readable.
-RESOURCE_FANOUT_CAP = 6
+ARTIFACT_FANOUT_CAP = 6
 
-# Which resources survive the cap, most-load-bearing first.
+# Which artifacts survive the cap, most-load-bearing first.
 _ROLE_PRIORITY = {"plan": 0, "report": 1, "result": 2, "model": 3, "input": 4, "code": 5, "config": 6, "note": 7}
 
 _ATTEMPT_STATUS = {
@@ -58,11 +59,11 @@ def _humanize(value: str) -> str:
     return value.replace("_", " ")
 
 
-def _resource_label(resource: dict[str, Any]) -> str:
-    title = (resource.get("title") or "").strip()
+def _artifact_label(artifact: dict[str, Any]) -> str:
+    title = (artifact.get("title") or "").strip()
     if title:
         return title
-    return PurePosixPath(str(resource.get("path") or resource.get("id") or "resource")).name
+    return PurePosixPath(str(artifact.get("path") or artifact.get("id") or "artifact")).name
 
 
 def build_experiment_figure(
@@ -122,7 +123,7 @@ def build_experiment_figure(
         if k > 1:
             add_edge(f"attempt:{k - 1}", f"attempt:{k}", "revised_to")
 
-    # ---- resources, one node per (resource, attempt) association ----
+    # ---- artifacts, one node per (artifact, attempt) association ----
     # Bucket by (attempt, direction), keep the most load-bearing files under
     # the fan-out cap, and roll the rest into one expandable group node.
     buckets: dict[tuple[int, bool], list[dict[str, Any]]] = {}
@@ -143,7 +144,7 @@ def build_experiment_figure(
                 str(r.get("path") or ""),
             )
         )
-        shown, overflow = bucket[:RESOURCE_FANOUT_CAP], bucket[RESOURCE_FANOUT_CAP:]
+        shown, overflow = bucket[:ARTIFACT_FANOUT_CAP], bucket[ARTIFACT_FANOUT_CAP:]
         for res in shown:
             role = str(res.get("association_role") or "other")
             node_id = f"res:{res.get('id')}:a{attempt}"
@@ -151,7 +152,7 @@ def build_experiment_figure(
                 {
                     "id": node_id,
                     "type": "resource",
-                    "label": _resource_label(res),
+                    "label": _artifact_label(res),
                     "sublabel": role,
                     "status": "none",
                     "group": f"attempt:{attempt}",

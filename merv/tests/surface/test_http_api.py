@@ -9,41 +9,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from tests.support.brain import TestBrain
+from tests.support.brain import TestBrain, upload_token
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.surface.transport.http_api import create_fastapi_app
-from merv.brain.surface.transport.api.views import resource_file
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.kernel.utils import ContentUnavailableError
 from merv.proxy.time_utils import now_iso
-
-
-_NO_RESOURCE_MUTATION = object()
-
-
-def _deleted_resource_mutation(app_for_project, method: str, path: str, body: dict | None):
-    if method != "POST":
-        return _NO_RESOURCE_MUTATION
-    parts = path.strip("/").split("/")
-    if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "resources":
-        project_id = parts[2]
-        return app_for_project(project_id).call_tool(
-            "resource.register",
-            {"project_id": project_id, **(body or {})},
-        )
-    if (
-        len(parts) == 6
-        and parts[:2] == ["api", "projects"]
-        and parts[3] == "resources"
-        and parts[5] == "associate"
-    ):
-        project_id = parts[2]
-        resource_id = parts[4]
-        return app_for_project(project_id).call_tool(
-            "resource.register",
-            {"project_id": project_id, "resource_id": resource_id, **(body or {})},
-        )
-    return _NO_RESOURCE_MUTATION
 
 
 class ResearchPluginHttpApiTest(unittest.TestCase):
@@ -62,12 +32,30 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, method: str, path: str, body: dict | None = None):
-        mutation = _deleted_resource_mutation(lambda _pid: self.app, method, path, body)
-        if mutation is not _NO_RESOURCE_MUTATION:
-            return mutation
         response = self.client.request(method, path, json=body)
         self.assertLess(response.status_code, 400, response.text)
         return response.json()
+
+    def submit(
+        self,
+        *,
+        pid: str,
+        target_type: str,
+        target_id: str,
+        role: str,
+        path: str,
+        body: str,
+        lens_id: str = "",
+    ) -> dict:
+        return self.app.submit_artifact(
+            project_id=pid,
+            target_type=target_type,
+            target_id=target_id,
+            role=role,
+            path=path,
+            body=body,
+            lens_id=lens_id,
+        )
 
     def configure_mlflow(self, service: CentralMlflowService) -> None:
         self.app.mlflow_tracking.mode = service.mode
@@ -78,7 +66,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.app.mlflow_tracking.note = service.note
         self.app.mlflow_tracking._health_check = service._health_check
 
-    def test_home_claim_experiment_resource_review_endpoints(self) -> None:
+    def test_home_claim_experiment_artifact_review_endpoints(self) -> None:
         project = self.request("POST", "/api/projects", {"name": "UI Project", "summary": "Frontend target"})
         project_id = project["id"]
         claim = self.request(
@@ -92,20 +80,17 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"name": "threshold-vs-baseline", "intent": "Compare threshold with baseline.", "claim_ids": [claim["id"]]},
         )
         exp_id = exp["id"]
-        (self.repo / "plan.md").write_text(
-            "## Summary\nCompare a threshold classifier with the baseline.\n\n"
-            "## Objective & hypothesis\nThreshold rule beats majority class.\n\n"
-            "## Evaluation\nMetric: accuracy vs majority baseline; success if higher.\n"
-        )
-        resource = self.request(
-            "POST",
-            f"/api/projects/{project_id}/resources",
-            {"path": "plan.md", "kind": "note", "title": "Plan"},
-        )
-        self.request(
-            "POST",
-            f"/api/projects/{project_id}/resources/{resource['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
+        first = self.submit(
+            pid=project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body=(
+                "## Summary\nCompare a threshold classifier with the baseline.\n\n"
+                "## Objective & hypothesis\nThreshold rule beats majority class.\n\n"
+                "## Evaluation\nMetric: accuracy vs majority baseline; success if higher.\n"
+            ),
         )
 
         home = self.request("GET", f"/api/projects/{project_id}/home")
@@ -113,30 +98,29 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(home["stats"]["claims"], 1)
         self.assertEqual(home["workflow"]["next_action"], "submit_design_for_review")
 
-        content = self.request("GET", f"/api/projects/{project_id}/resources/{resource['id']}/content")
+        content = self.request(
+            "GET", f"/api/projects/{project_id}/artifacts/{first['artifact_id']}/content"
+        )
         self.assertIn("accuracy", content["content"])
-        history = self.request("GET", f"/api/projects/{project_id}/resources/{resource['id']}/history")
-        deleted_version_id = history["versions"][0]["id"]
-        self.assertTrue(deleted_version_id)
-        deleted_resource = self.request("DELETE", f"/api/projects/{project_id}/resources/{resource['id']}")
-        self.assertTrue(deleted_resource["deleted"])
-        self.assertEqual(self.request("GET", f"/api/projects/{project_id}/resources")["resources"], [])
-        resource = self.request(
-            "POST",
-            f"/api/projects/{project_id}/resources",
-            {"path": "plan.md", "kind": "note", "title": "Plan"},
+        # Resubmitting the same slot supersedes: a new artifact id, old row gone.
+        second = self.submit(
+            pid=project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body=(
+                "## Summary\nCompare a threshold classifier with the baseline (v2).\n\n"
+                "## Objective & hypothesis\nThreshold rule beats majority class.\n\n"
+                "## Evaluation\nMetric: accuracy vs majority baseline; success if higher.\n"
+            ),
         )
-        self.assertEqual(resource["id"], deleted_resource["resource"]["id"])
-        self.request(
-            "POST",
-            f"/api/projects/{project_id}/resources/{resource['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
+        artifact_id = second["artifact_id"]
+        self.assertNotEqual(artifact_id, first["artifact_id"])
+        listing = self.request("GET", f"/api/projects/{project_id}/artifacts")
+        self.assertEqual(
+            [row["id"] for row in listing["artifacts"]], [artifact_id]
         )
-        revived_history = self.request(
-            "GET", f"/api/projects/{project_id}/resources/{resource['id']}/history"
-        )
-        version_id = revived_history["versions"][-1]["id"]
-        self.assertNotEqual(version_id, deleted_version_id)
 
         self.request("POST", f"/api/projects/{project_id}/experiments/{exp_id}/transition", {"transition": "submit_design"})
         review_request = self.request(
@@ -145,12 +129,12 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"},
         )
         self.assertEqual(review_request["role"], "design_reviewer")
-        self.assertEqual(review_request["target_snapshot"]["resources"][0]["version_id"], version_id)
+        self.assertEqual(review_request["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
         reviews = self.request("GET", f"/api/projects/{project_id}/reviews?target_type=experiment&target_id={exp_id}")
         self.assertEqual(len(reviews["requests"]), 1)
-        self.assertEqual(reviews["requests"][0]["target_snapshot"]["resources"][0]["version_id"], version_id)
+        self.assertEqual(reviews["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
         queue = self.request("GET", f"/api/projects/{project_id}/reviews")
-        self.assertEqual(queue["requests"][0]["target_snapshot"]["resources"][0]["version_id"], version_id)
+        self.assertEqual(queue["requests"][0]["target_snapshot"]["artifacts"][0]["artifact_id"], artifact_id)
 
         # The synopsis is the researcher's TLDR: it persists and surfaces on
         # both the target-scoped review.status view and the project-wide queue.
@@ -216,13 +200,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         pid = project["id"]
         exp = self.request("POST", f"/api/projects/{pid}/experiments", {"name": "exp-1", "intent": "Scoped review"})
         exp_id = exp["id"]
-        (self.repo / "plan.md").write_text(
-            "## Summary\nScoped review.\n\n"
-            "## Objective & hypothesis\nTest scoping.\n\n"
-            "## Evaluation\nMetric: pass/fail of the scoping check.\n"
+        self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body=(
+                "## Summary\nScoped review.\n\n"
+                "## Objective & hypothesis\nTest scoping.\n\n"
+                "## Evaluation\nMetric: pass/fail of the scoping check.\n"
+            ),
         )
-        plan = self.request("POST", f"/api/projects/{pid}/resources", {"path": "plan.md", "kind": "plan"})
-        self.request("POST", f"/api/projects/{pid}/resources/{plan['id']}/associate", {"target_type": "experiment", "target_id": exp_id, "role": "plan"})
         self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
         req = self.request("POST", f"/api/projects/{pid}/reviews/request", {"target_type": "experiment", "target_id": exp_id, "role": "design_reviewer"})
 
@@ -767,7 +756,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
     def test_application_facades_share_the_composed_service_instances(self) -> None:
         self.assertIs(self.app.research_core._experiments, self.app.experiments)
-        self.assertIs(self.app.artifacts._resources, self.app.resources)
+        self.assertIs(self.app.artifacts._submissions, self.app.artifact_submissions)
         self.assertTrue(callable(self.app.feed.transition_advisory))
         self.assertIs(self.app.transition_experiment.research, self.app.research_core)
         self.assertIs(self.app.transition_experiment.exhibits, self.app.experiment_exhibits)
@@ -1121,17 +1110,19 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"name": "lora-ranks", "intent": "Compare LoRA ranks.", "claim_ids": [claim["id"]]},
         )
         exp_id = exp["id"]
-        (self.repo / "plan.md").write_text(
-            "## Summary\nCompare LoRA ranks.\n\n"
-            "## Objective & hypothesis\nRank 8 suffices.\n\n"
-            "## Evaluation\nMetric: eval loss delta; success if within 0.05.\n"
+        plan = self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body=(
+                "## Summary\nCompare LoRA ranks.\n\n"
+                "## Objective & hypothesis\nRank 8 suffices.\n\n"
+                "## Evaluation\nMetric: eval loss delta; success if within 0.05.\n"
+            ),
         )
-        plan = self.request("POST", f"/api/projects/{pid}/resources", {"path": "plan.md", "kind": "plan", "title": "Plan"})
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{plan['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
-        )
+        plan_id = plan["artifact_id"]
 
         figure = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/figure")
         nodes = {node["id"]: node for node in figure["nodes"]}
@@ -1139,8 +1130,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(figure["source"], "derived")
         self.assertEqual(figure["attempt_index"], 1)
         self.assertEqual(nodes["attempt:1"]["status"], "pending")
-        self.assertEqual(nodes[f"res:{plan['id']}:a1"]["sublabel"], "plan")
-        self.assertIn(f"res:{plan['id']}:a1->attempt:1:feeds", edge_ids)
+        self.assertEqual(nodes[f"res:{plan_id}:a1"]["sublabel"], "plan")
+        self.assertIn(f"res:{plan_id}:a1->attempt:1:feeds", edge_ids)
         self.assertEqual(nodes[f"claim:{claim['id']}"]["type"], "claim")
         self.assertIn(f"attempt:1->claim:{claim['id']}:tests", edge_ids)
 
@@ -1227,16 +1218,17 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(empty["max_nodes"], 16)
 
         # A passing design review supplies a real rev_ id to reference.
-        (self.repo / "plan.md").write_text(
-            "## Summary\nWarmup sweep.\n\n"
-            "## Objective & hypothesis\nWarmup changes accuracy.\n\n"
-            "## Evaluation\nMetric: accuracy delta; success if > 1pt.\n"
-        )
-        plan = self.request("POST", f"/api/projects/{pid}/resources", {"path": "plan.md", "kind": "plan"})
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{plan['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "plan"},
+        plan = self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body=(
+                "## Summary\nWarmup sweep.\n\n"
+                "## Objective & hypothesis\nWarmup changes accuracy.\n\n"
+                "## Evaluation\nMetric: accuracy delta; success if > 1pt.\n"
+            ),
         )
         self.request("POST", f"/api/projects/{pid}/experiments/{exp_id}/transition", {"transition": "submit_design"})
         req = self.request(
@@ -1263,9 +1255,14 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             },
         )
 
-        (self.repo / "results.json").write_text('{"accuracy": 0.93}\n')
-        result = self.request("POST", f"/api/projects/{pid}/resources", {"path": "results.json", "kind": "result"})
-        (self.repo / "notes.md").write_text("unregistered scratch notes\n")
+        result = self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="result",
+            path="results.json",
+            body='{"accuracy": 0.93}\n',
+        )
         graph_body = {
             "version": 1,
             # Agent-authored fields are opaque data, even when a key matches a
@@ -1278,23 +1275,23 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                  "refs": [review["id"]]},
                 {"id": "out", "kind": "outcome", "label": "Accuracy 93%",
                  "refs": [
-                     "results.json",
-                     f"{plan['id']}",
-                     "res_missing",
+                     result["artifact_id"],
+                     plan["artifact_id"],
+                     "art_missing",
                      "notes.md",
-                     "ghost.json",
                  ]},
             ],
             "edges": [{"from": "obj", "to": "rev"}, {"from": "rev", "to": "out"}],
         }
         import json as _json
 
-        (self.repo / "graph.json").write_text(_json.dumps(graph_body))
-        graph_res = self.request("POST", f"/api/projects/{pid}/resources", {"path": "graph.json", "kind": "other"})
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{graph_res['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "graph"},
+        self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="graph",
+            path="graph.json",
+            body=_json.dumps(graph_body),
         )
 
         payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
@@ -1303,28 +1300,23 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(len(payload["graph"]["nodes"]), 3)
         self.assertEqual(payload["graph"]["repo_root"], "keep-in-authored-graph")
         refs = payload["ref_index"]
-        # Repo-relative path of a registered resource → resource link.
-        self.assertEqual(refs["results.json"]["type"], "resource")
-        self.assertTrue(refs["results.json"]["resolved"])
-        self.assertEqual(refs["results.json"]["resource_id"], result["id"])
-        # res_ id → the same resource shape.
-        self.assertEqual(refs[plan["id"]]["type"], "resource")
-        self.assertEqual(refs[plan["id"]]["path"], "plan.md")
-        self.assertEqual(
-            refs["res_missing"], {"type": "unknown", "resolved": False}
-        )
+        # art_ ids → submitted-artifact links.
+        self.assertEqual(refs[result["artifact_id"]]["type"], "artifact")
+        self.assertTrue(refs[result["artifact_id"]]["resolved"])
+        self.assertEqual(refs[result["artifact_id"]]["path"], "results.json")
+        self.assertEqual(refs[plan["artifact_id"]]["type"], "artifact")
+        self.assertEqual(refs[plan["artifact_id"]]["path"], "plan.md")
         # rev_ / claim_ / exp_ ids → their records.
         self.assertEqual(refs[review["id"]]["type"], "review")
         self.assertEqual(refs[review["id"]]["verdict"], "pass")
         self.assertEqual(refs[claim["id"]]["type"], "claim")
         self.assertEqual(refs[claim["id"]]["statement"], "Warmup matters.")
         self.assertEqual(refs[exp_id]["type"], "experiment")
-        # Unregistered path (whether or not a file exists on disk): unresolved
-        # with register-the-file guidance — path refs resolve against the
-        # resource records only, never a disk probe.
-        for unregistered in ("notes.md", "ghost.json"):
-            self.assertFalse(refs[unregistered]["resolved"])
-            self.assertIn("not a registered resource", refs[unregistered]["hint"])
+        # Unknown art_ ids and raw paths are unresolved with submit guidance —
+        # refs resolve against records only, never a disk probe.
+        for unresolved in ("art_missing", "notes.md"):
+            self.assertFalse(refs[unresolved]["resolved"])
+            self.assertIn("not a submitted artifact id", refs[unresolved]["hint"])
 
     def test_experiment_logic_graph_picks_latest_association_and_reports_broken_json(self) -> None:
         import json as _json
@@ -1341,18 +1333,18 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         def graph_with(label):
             return _json.dumps({"version": 1, "nodes": [{"id": "n", "label": label}]})
 
-        # Associate two graph-role files in the same attempt. The alphabetically
+        # Submit two graph-role files in the same attempt. The alphabetically
         # later path goes FIRST, so a last-by-path picker would choose it; the
-        # endpoint must instead pick the most recently associated file — the
+        # endpoint must instead pick the most recently submitted file — the
         # same row the submit_results validator lints.
-        (self.repo / "b_old.json").write_text(graph_with("old story"))
-        (self.repo / "a_new.json").write_text(graph_with("new story"))
-        for path in ("b_old.json", "a_new.json"):
-            res = self.request("POST", f"/api/projects/{pid}/resources", {"path": path, "kind": "other"})
-            self.request(
-                "POST",
-                f"/api/projects/{pid}/resources/{res['id']}/associate",
-                {"target_type": "experiment", "target_id": exp_id, "role": "graph"},
+        for path, label in (("b_old.json", "old story"), ("a_new.json", "new story")):
+            self.submit(
+                pid=pid,
+                target_type="experiment",
+                target_id=exp_id,
+                role="graph",
+                path=path,
+                body=graph_with(label),
             )
 
         payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
@@ -1360,19 +1352,16 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(payload["path"], "a_new.json")
         self.assertEqual(payload["graph"]["nodes"][0]["label"], "new story")
 
-        # Corrupting the LIVE file is invisible — the endpoint renders the
-        # submitted bytes, exactly what the validator lints.
-        (self.repo / "a_new.json").write_text("{not json")
-        payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
-        self.assertTrue(payload["available"])
-        self.assertEqual(payload["graph"]["nodes"][0]["label"], "new story")
-        # Re-associating the corrupted file submits it: still available (a
-        # graph exists), problems stated — the UI renders them instead of hiding.
-        res = self.request("POST", f"/api/projects/{pid}/resources", {"path": "a_new.json", "kind": "other"})
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{res['id']}/associate",
-            {"target_type": "experiment", "target_id": exp_id, "role": "graph"},
+        # Resubmitting corrupted content replaces the pinned bytes: still
+        # available (a graph exists), problems stated — the UI renders them
+        # instead of hiding.
+        self.submit(
+            pid=pid,
+            target_type="experiment",
+            target_id=exp_id,
+            role="graph",
+            path="a_new.json",
+            body="{not json",
         )
         payload = self.request("GET", f"/api/projects/{pid}/experiments/{exp_id}/graph")
         self.assertTrue(payload["available"])
@@ -1427,46 +1416,40 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         empty = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
         self.assertFalse(empty["available"])
 
+        avoid_lens_artifact_id = ""
         for lens in ("amplify", "avoid", "entropy", "rigor", "cost"):
-            path = self.repo / f"reflections/{syn_id}/reflections/{lens}.md"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"{lens} findings\n")
-            res = self.request(
-                "POST",
-                f"/api/projects/{pid}/resources",
-                {"path": str(path.relative_to(self.repo))},
+            submitted = self.submit(
+                pid=pid,
+                target_type="reflection",
+                target_id=syn_id,
+                role="reflection_lens_doc",
+                path=f"reflections/{syn_id}/reflections/{lens}.md",
+                body=f"{lens} findings\n",
+                lens_id=lens,
             )
-            self.request(
-                "POST",
-                f"/api/projects/{pid}/resources/{res['id']}/associate",
-                {"target_type": "reflection", "target_id": syn_id, "role": "reflection_lens_doc"},
-            )
+            if lens == "avoid":
+                avoid_lens_artifact_id = submitted["artifact_id"]
         self.app.call_tool(
             "reflection.transition",
             {"project_id": pid, "reflection_id": syn_id, "transition": "submit_reflections"},
         )
 
-        # The project graph refs the wave itself (syn_) and a reflection file.
-        (self.repo / "project").mkdir()
-        (self.repo / "project/logic_graph.json").write_text(
+        # The project graph refs the wave itself (syn_) and a lens artifact.
+        graph_text = (
             '{"version": 1, "title": "Project logic", "nodes": ['
             '{"id": "a", "kind": "lesson", "label": "Lesson", "refs": ["' + syn_id + '"]},'
             '{"id": "b", "kind": "open", "label": "Open question", '
-            '"refs": ["reflections/' + syn_id + '/reflections/avoid.md"]}],'
+            '"refs": ["' + avoid_lens_artifact_id + '"]}],'
             ' "edges": [{"from": "a", "to": "b"}]}'
         )
-        (self.repo / "project" / "figures").mkdir()
-        (self.repo / "project" / "figures" / "project_graph.png").write_bytes(
-            b"\x89PNG\r\n\x1a\nfake"
-        )
-        (self.repo / "project/reflection.md").write_text(
+        reflection_text = (
             "# Reflection\n\n"
             "## Summary\nHTTP reflection test wave.\n\n"
             "![project graph](figures/project_graph.png)\n\n"
             "## Critical reading\nThe test wave adds one claim and two planned experiments.\n\n"
             "## Decision / future directions\nCreate both HTTP experiments in parallel.\n"
         )
-        (self.repo / "project/change_spec.json").write_text(
+        change_spec_text = (
             json.dumps(
                 {
                     "version": 1,
@@ -1501,27 +1484,47 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 }
             )
         )
-        reflection_doc_res_id = ""
-        for path, role in (
-            ("project/logic_graph.json", "project_graph"),
-            ("project/reflection.md", "reflection_doc"),
-            ("project/change_spec.json", "change_spec"),
-        ):
-            res = self.request("POST", f"/api/projects/{pid}/resources", {"path": path})
-            if role == "reflection_doc":
-                reflection_doc_res_id = res["id"]
-            self.request(
-                "POST",
-                f"/api/projects/{pid}/resources/{res['id']}/associate",
-                {"target_type": "reflection", "target_id": syn_id, "role": role},
-            )
-        (self.repo / "project" / "figures" / "project_graph.png").unlink()
+        self.submit(
+            pid=pid,
+            target_type="reflection",
+            target_id=syn_id,
+            role="project_graph",
+            path="project/logic_graph.json",
+            body=graph_text,
+        )
+        reflection_doc = self.submit(
+            pid=pid,
+            target_type="reflection",
+            target_id=syn_id,
+            role="reflection_doc",
+            path="project/reflection.md",
+            body=reflection_text,
+        )
+        # The upload response mints one figure token per markdown image link;
+        # pushing the bytes completes the figure the same way the agent's
+        # follow-up curl would.
+        self.assertEqual(
+            [fig["link_path"] for fig in reflection_doc["figures"]],
+            ["figures/project_graph.png"],
+        )
+        self.app.upload_artifact_bytes(
+            token=upload_token(reflection_doc["figures"][0]["run"]),
+            data=b"\x89PNG\r\n\x1a\nfake",
+            kind="f",
+        )
+        self.submit(
+            pid=pid,
+            target_type="reflection",
+            target_id=syn_id,
+            role="change_spec",
+            path="project/change_spec.json",
+            body=change_spec_text,
+        )
         figure = self.client.get(
-            f"/api/projects/{pid}/resources/{reflection_doc_res_id}/file",
+            f"/api/projects/{pid}/artifacts/{reflection_doc['artifact_id']}/figure",
             params={"rel": "figures/project_graph.png"},
         )
         self.assertEqual(figure.status_code, 200)
-        self.assertEqual(figure.headers["content-type"], "image/png")
         self.assertTrue(figure.content.startswith(b"\x89PNG"))
         self.app.call_tool(
             "reflection.transition",
@@ -1538,8 +1541,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(refs[syn_id]["type"], "reflection")
         self.assertTrue(refs[syn_id]["resolved"])
         self.assertEqual(refs[syn_id]["title"], "Wave 1")
-        reflection_ref = refs[f"reflections/{syn_id}/reflections/avoid.md"]
-        self.assertEqual(reflection_ref["type"], "resource")
+        reflection_ref = refs[avoid_lens_artifact_id]
+        self.assertEqual(reflection_ref["type"], "artifact")
 
         # Review over the HTTP review endpoints (target-polymorphic).
         req = self.request(
@@ -1584,97 +1587,10 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
         self.assertEqual(listing["latest_published"]["id"], syn_id)
         self.assertEqual(listing["current"]["id"], syn_id)
 
-    def test_per_wave_graph_and_versioned_content_endpoints(self) -> None:
+    def test_per_wave_graph_and_pinned_artifact_content(self) -> None:
         # The reflection-wave UI renders a SPECIFIC wave's graph + content from
-        # the bytes it pinned, so it stays faithful after later waves overwrite
-        # the living files. Exercise the two endpoints that back that.
-        project = self.request("POST", "/api/projects", {"name": "Pin"})
-        pid = project["id"]
-        syn = self.app.call_tool(
-            "reflection.create",
-            {
-                "project_id": pid,
-                "title": "Wave 1",
-                "lenses": [
-                    {"id": "amplify"},
-                    {"id": "avoid"},
-                    {"id": "entropy"},
-                    {"id": "rigor", "charter": "Method soundness.", "why_distinct": "How, not what."},
-                    {"id": "cost", "charter": "Compute spent.", "why_distinct": "Prices exploration."},
-                ],
-            },
-        )
-        syn_id = syn["id"]
-
-        # Before any graph is associated, the per-wave endpoint degrades cleanly.
-        empty = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}/graph")
-        self.assertFalse(empty["available"])
-
-        (self.repo / "project").mkdir()
-        graph_text = (
-            '{"version": 1, "title": "Wave 1 logic", "nodes": ['
-            '{"id": "a", "kind": "lesson", "label": "A lesson"}], "edges": []}'
-        )
-        (self.repo / "project/logic_graph.json").write_text(graph_text)
-        graph_res = self.request(
-            "POST", f"/api/projects/{pid}/resources", {"path": "project/logic_graph.json"}
-        )
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{graph_res['id']}/associate",
-            {"target_type": "reflection", "target_id": syn_id, "role": "project_graph"},
-        )
-
-        # The per-wave graph renders the wave's pinned bytes.
-        payload = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}/graph")
-        self.assertTrue(payload["available"])
-        self.assertEqual(payload["reflection"]["id"], syn_id)
-        self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
-        self.assertEqual(payload["problems"], [])
-
-        # Find the graph association's pinned version_id off the wave detail.
-        detail = self.request("GET", f"/api/projects/{pid}/reflections/{syn_id}")
-        graph_row = next(
-            r for r in detail["resources"] if r["association_role"] == "project_graph"
-        )
-        version_id = graph_row["association_version_id"]
-        self.assertTrue(version_id)
-
-        # Versioned content serves the exact submitted bytes.
-        pinned = self.request(
-            "GET",
-            f"/api/projects/{pid}/resources/{graph_res['id']}/content?version={version_id}",
-        )
-        self.assertEqual(pinned["content"], graph_text)
-        self.assertEqual(pinned["source"], "submitted")
-        self.assertEqual(pinned["version_id"], version_id)
-
-        # No version → unchanged behavior (still serves the gated bytes).
-        plain = self.request(
-            "GET", f"/api/projects/{pid}/resources/{graph_res['id']}/content"
-        )
-        self.assertEqual(plain["content"], graph_text)
-
-        # A version that is not this resource's is rejected, not served.
-        bad = self.client.get(
-            f"/api/projects/{pid}/resources/{graph_res['id']}/content?version=ver_bogus"
-        )
-        self.assertEqual(bad.status_code, 404)
-
-        # The literal current/graph route still resolves (not captured by the
-        # {reflection_id}/graph param route).
-        current = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
-        self.assertTrue(current["available"])
-        self.assertEqual(current["reflection"]["id"], syn_id)
-
-    def test_no_version_content_serves_current_version_not_oldest_pin(self) -> None:
-        # A living file (project/reflection.md) pinned by two reflection waves is
-        # one resource with two versions. The no-version content default is
-        # documented as the latest submitted bytes, so it must resolve to the
-        # resource's current_version_id (wave 2), NOT whichever association
-        # carries the highest per-target attempt index — wave 1 here, simulating
-        # a wave that needed extra review rounds, would otherwise win and serve
-        # stale bytes. The explicit ?version= path must still serve wave 1's.
+        # the artifacts that wave pinned, so it stays faithful after later
+        # waves submit new versions of the living files.
         roster = [
             {"id": "amplify"},
             {"id": "avoid"},
@@ -1682,82 +1598,95 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             {"id": "rigor", "charter": "Method soundness.", "why_distinct": "How, not what."},
             {"id": "cost", "charter": "Compute spent.", "why_distinct": "Prices exploration."},
         ]
-        project = self.request("POST", "/api/projects", {"name": "Pin2"})
+        project = self.request("POST", "/api/projects", {"name": "Pin"})
         pid = project["id"]
         wave1_id = self.app.call_tool(
             "reflection.create", {"project_id": pid, "title": "Wave 1", "lenses": roster}
         )["id"]
-        # Wave 1 went through extra review rounds → a higher attempt index than a
-        # fresh wave. Set it before associating so the association row records it.
-        with self.app.store.transaction() as conn:
-            conn.execute(
-                "UPDATE reflections SET attempt_index = 5 WHERE id = ?", (wave1_id,)
-            )
 
-        (self.repo / "project").mkdir()
-        refl = self.repo / "project/reflection.md"
-        old_text = "# Reflection\n\nWave 1 lessons.\n"
-        refl.write_text(old_text)
-        res = self.request(
-            "POST", f"/api/projects/{pid}/resources", {"path": "project/reflection.md"}
-        )
-        rid = res["id"]
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{rid}/associate",
-            {"target_type": "reflection", "target_id": wave1_id, "role": "reflection_doc"},
-        )
-        detail1 = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}")
-        old_version = next(
-            r for r in detail1["resources"] if r["association_role"] == "reflection_doc"
-        )["association_version_id"]
-        self.assertTrue(old_version)
+        # Before any graph is submitted, the per-wave endpoint degrades cleanly.
+        empty = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}/graph")
+        self.assertFalse(empty["available"])
 
-        # Close wave 1 so a second wave may open (only one wave edits the living
-        # project graph at a time); the content endpoint under test is
-        # status-agnostic, so publishing the full gated path is unnecessary here.
+        graph_text = (
+            '{"version": 1, "title": "Wave 1 logic", "nodes": ['
+            '{"id": "a", "kind": "lesson", "label": "A lesson"}], "edges": []}'
+        )
+        wave1_graph = self.submit(
+            pid=pid,
+            target_type="reflection",
+            target_id=wave1_id,
+            role="project_graph",
+            path="project/logic_graph.json",
+            body=graph_text,
+        )
+
+        # The per-wave graph renders the wave's pinned bytes.
+        payload = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}/graph")
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["reflection"]["id"], wave1_id)
+        self.assertEqual(payload["graph"]["nodes"][0]["id"], "a")
+        self.assertEqual(payload["problems"], [])
+
+        # The wave detail exposes the pinned artifact id.
+        detail = self.request("GET", f"/api/projects/{pid}/reflections/{wave1_id}")
+        graph_row = next(
+            r for r in detail["resources"] if r["association_role"] == "project_graph"
+        )
+        self.assertEqual(graph_row["id"], wave1_graph["artifact_id"])
+
+        # The artifact content endpoint serves the exact submitted bytes.
+        pinned = self.request(
+            "GET", f"/api/projects/{pid}/artifacts/{wave1_graph['artifact_id']}/content"
+        )
+        self.assertEqual(pinned["content"], graph_text)
+        self.assertEqual(pinned["source"], "submitted")
+
+        # An unknown artifact id is rejected, not served.
+        bad = self.client.get(f"/api/projects/{pid}/artifacts/art_bogus/content")
+        self.assertEqual(bad.status_code, 404)
+
+        # The literal current/graph route still resolves (not captured by the
+        # {reflection_id}/graph param route).
+        current = self.request("GET", f"/api/projects/{pid}/reflections/current/graph")
+        self.assertTrue(current["available"])
+        self.assertEqual(current["reflection"]["id"], wave1_id)
+
+        # A second wave submits its own version of the living file; wave 1's
+        # artifact keeps serving its original pinned bytes.
         with self.app.store.transaction() as conn:
             conn.execute(
                 "UPDATE reflections SET status = 'published' WHERE id = ?", (wave1_id,)
             )
-
         wave2_id = self.app.call_tool(
             "reflection.create", {"project_id": pid, "title": "Wave 2", "lenses": roster}
         )["id"]
-        new_text = "# Reflection\n\nWave 2 lessons — supersedes wave 1 entirely.\n"
-        refl.write_text(new_text)
-        self.request(
-            "POST",
-            f"/api/projects/{pid}/resources/{rid}/associate",
-            {"target_type": "reflection", "target_id": wave2_id, "role": "reflection_doc"},
+        new_text = graph_text.replace("Wave 1 logic", "Wave 2 logic")
+        wave2_graph = self.submit(
+            pid=pid,
+            target_type="reflection",
+            target_id=wave2_id,
+            role="project_graph",
+            path="project/logic_graph.json",
+            body=new_text,
         )
-        detail2 = self.request("GET", f"/api/projects/{pid}/reflections/{wave2_id}")
-        new_version = next(
-            r for r in detail2["resources"] if r["association_role"] == "reflection_doc"
-        )["association_version_id"]
-        self.assertTrue(new_version)
-        self.assertNotEqual(new_version, old_version)
-
-        # No version → the latest submitted bytes (wave 2 / current_version_id),
-        # even though wave 1's association carries the higher attempt index.
-        plain = self.request(
-            "GET", f"/api/projects/{pid}/resources/{rid}/content"
+        self.assertNotEqual(wave2_graph["artifact_id"], wave1_graph["artifact_id"])
+        self.assertEqual(
+            self.request(
+                "GET", f"/api/projects/{pid}/artifacts/{wave2_graph['artifact_id']}/content"
+            )["content"],
+            new_text,
         )
-        self.assertEqual(plain["content"], new_text)
-        self.assertEqual(plain["source"], "submitted")
-        self.assertEqual(plain["version_id"], new_version)
-
-        # Explicit old version still serves wave 1's pinned bytes faithfully.
-        old = self.request(
-            "GET", f"/api/projects/{pid}/resources/{rid}/content?version={old_version}"
+        self.assertEqual(
+            self.request(
+                "GET", f"/api/projects/{pid}/artifacts/{wave1_graph['artifact_id']}/content"
+            )["content"],
+            graph_text,
         )
-        self.assertEqual(old["content"], old_text)
-        self.assertEqual(old["source"], "submitted")
-        self.assertEqual(old["version_id"], old_version)
 
 
-class ResourceRelFileTest(unittest.TestCase):
-    """GET /resources/{id}/file?rel=... serves submitted figures only."""
+class ArtifactFigureRouteTest(unittest.TestCase):
+    """GET /artifacts/{id}/figure?rel=... serves submitted figure bytes only."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1770,92 +1699,64 @@ class ResourceRelFileTest(unittest.TestCase):
         self.client = TestClient(create_fastapi_app(self.app.http))
         project = self.client.post("/api/projects", json={"name": "Rel"}).json()
         self.project_id = project["id"]
-        (self.repo / "exp").mkdir()
-        (self.repo / "exp" / "report.md").write_text("![loss](figures/loss.png)\n")
-        (self.repo / "exp" / "figures").mkdir()
-        (self.repo / "exp" / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
-        self.resource_id = self.app.call_tool(
-            "resource.register",
-            {
-                "project_id": self.project_id,
-                "path": "exp/report.md",
-                "kind": "report",
-            },
-        )["id"]
-
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
-
-    def test_live_sibling_figure_is_unavailable_over_http(self) -> None:
-        response = self.client.get(
-            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
-            params={"rel": "figures/loss.png"},
-        )
-        self.assertEqual(response.status_code, 404, response.text)
-        self.assertEqual(response.json()["error_code"], "content_unavailable")
-
-    def test_serves_submitted_plan_figure_without_live_file(self) -> None:
         exp = self.client.post(
             f"/api/projects/{self.project_id}/experiments",
             json={"name": "plan-figure", "intent": "Verify submitted plan image."},
         ).json()
-        (self.repo / "plans" / "figures").mkdir(parents=True)
-        figure_path = self.repo / "plans" / "figures" / "diagram.png"
-        figure_path.write_bytes(b"\x89PNG\r\n\x1a\nplan")
-        (self.repo / "plans" / "plan.md").write_text(
-            "## Summary\nPlan with a diagram.\n\n"
-            "![diagram](figures/diagram.png)\n\n"
-            "## Objective & hypothesis\nTest plan image serving.\n\n"
-            "## Evaluation\nSuccess means the backend serves submitted bytes.\n"
-        )
-        resource = self.app.call_tool(
-            "resource.register",
-            {
-                "project_id": self.project_id,
-                "path": "plans/plan.md",
-                "kind": "plan",
-            },
-        )
-        self.app.call_tool(
-            "resource.register",
-            {
-                "project_id": self.project_id,
-                "resource_id": resource["id"],
-                "target_type": "experiment",
-                "target_id": exp["id"],
-                "role": "plan",
-            },
+        self.plan = self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="plan",
+            path="plans/plan.md",
+            body=(
+                "## Summary\nPlan with a diagram.\n\n"
+                "![diagram](figures/diagram.png)\n\n"
+                "## Objective & hypothesis\nTest plan image serving.\n\n"
+                "## Evaluation\nSuccess means the backend serves submitted bytes.\n"
+            ),
         )
 
-        figure_path.unlink()
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_unsubmitted_figure_is_not_found(self) -> None:
+        # The token was minted but the figure bytes were never pushed.
         response = self.client.get(
-            f"/api/projects/{self.project_id}/resources/{resource['id']}/file",
+            f"/api/projects/{self.project_id}/artifacts/{self.plan['artifact_id']}/figure",
             params={"rel": "figures/diagram.png"},
         )
+        self.assertEqual(response.status_code, 404, response.text)
 
+    def test_serves_submitted_plan_figure_without_live_file(self) -> None:
+        self.assertEqual(
+            [fig["link_path"] for fig in self.plan["figures"]],
+            ["figures/diagram.png"],
+        )
+        self.app.upload_artifact_bytes(
+            token=upload_token(self.plan["figures"][0]["run"]),
+            data=b"\x89PNG\r\n\x1a\nplan",
+            kind="f",
+        )
+        response = self.client.get(
+            f"/api/projects/{self.project_id}/artifacts/{self.plan['artifact_id']}/figure",
+            params={"rel": "figures/diagram.png"},
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(response.content, b"\x89PNG\r\n\x1a\nplan")
 
-    def test_rejects_escape_outside_repo_root(self) -> None:
+    def test_unknown_rel_is_not_found(self) -> None:
         response = self.client.get(
-            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
-            params={"rel": "../../../../etc/hosts"},
-        )
-        self.assertGreaterEqual(response.status_code, 400)
-
-    def test_missing_sibling_is_not_found(self) -> None:
-        response = self.client.get(
-            f"/api/projects/{self.project_id}/resources/{self.resource_id}/file",
+            f"/api/projects/{self.project_id}/artifacts/{self.plan['artifact_id']}/figure",
             params={"rel": "figures/nope.png"},
         )
-        self.assertGreaterEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 404)
 
 
 class FigureViewTest(unittest.TestCase):
-    def test_resource_fanout_rolls_up_past_cap(self) -> None:
+    def test_artifact_fanout_rolls_up_past_cap(self) -> None:
         from merv.brain.application.experiment_figure import (
-            RESOURCE_FANOUT_CAP,
+            ARTIFACT_FANOUT_CAP,
             build_experiment_figure,
         )
 
@@ -1869,13 +1770,11 @@ class FigureViewTest(unittest.TestCase):
             "reviews": [],
             "resources": [
                 {
-                    "id": f"res_{i:03d}",
+                    "id": f"art_{i:03d}",
                     "path": f"results/file_{i:03d}.json",
                     "title": "",
-                    "kind": "result",
                     "association_role": "result",
                     "association_attempt_index": 1,
-                    "association_version_id": None,
                 }
                 for i in range(20)
             ],
@@ -1886,11 +1785,11 @@ class FigureViewTest(unittest.TestCase):
             open_review_requests=[],
             sandbox=None,
         )
-        resource_nodes = [n for n in figure["nodes"] if n["type"] == "resource"]
+        artifact_nodes = [n for n in figure["nodes"] if n["type"] == "resource"]
         group_nodes = [n for n in figure["nodes"] if n["type"] == "resource_group"]
-        self.assertEqual(len(resource_nodes), RESOURCE_FANOUT_CAP)
+        self.assertEqual(len(artifact_nodes), ARTIFACT_FANOUT_CAP)
         self.assertEqual(len(group_nodes), 1)
-        self.assertEqual(group_nodes[0]["meta"]["count"], 20 - RESOURCE_FANOUT_CAP)
+        self.assertEqual(group_nodes[0]["meta"]["count"], 20 - ARTIFACT_FANOUT_CAP)
         self.assertIn("attempt:1->resgroup:a1:down:produced", {e["id"] for e in figure["edges"]})
         # Live attempt status flows through to the spine node.
         attempt = next(n for n in figure["nodes"] if n["id"] == "attempt:1")
@@ -1898,8 +1797,7 @@ class FigureViewTest(unittest.TestCase):
 
 
 class DegradedStatesTest(unittest.TestCase):
-    """Control-mode content reads return documented degraded shapes, not 500s
-    (cloud plan Phase 9, open decision F)."""
+    """Artifact content reads return documented degraded shapes, not 500s."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -1914,50 +1812,34 @@ class DegradedStatesTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _result_resource(self) -> tuple[str, str]:
+    def test_pending_artifact_content_is_unavailable_not_500(self) -> None:
         project = self.client.post(
             "/api/projects", json={"name": "Proj P", "summary": "s"}
         ).json()
         pid = project["id"]
-        # A result-role file exists on disk locally so registration succeeds...
-        (self.repo / "results.json").write_text('{"acc": 0.9}', encoding="utf-8")
-        res = self.app.call_tool(
-            "resource.register",
-            {"project_id": pid, "path": "results.json", "kind": "result"},
+        exp = self.client.post(
+            f"/api/projects/{pid}/experiments",
+            json={"name": "deg-exp", "intent": "Degraded read."},
+        ).json()
+        # Submitted but never uploaded: the row is pending, no bytes exist.
+        pending = self.app.call_tool(
+            "artifact.submit",
+            {
+                "project_id": pid,
+                "target_type": "experiment",
+                "target_id": exp["id"],
+                "role": "result",
+                "path": "results.json",
+            },
         )
-        return pid, res["id"]
-
-    def test_result_content_degrades_in_control_mode(self) -> None:
-        pid, rid = self._result_resource()
-        # ...but a hosted/control HTTP presentation has no local data plane to
-        # read it from.
-        body = self.app.http.hosted_resource_content(
-            project_id=pid, resource_id=rid
+        body = self.client.get(
+            f"/api/projects/{pid}/artifacts/{pending['artifact_id']}/content"
+        ).json()
+        self.assertFalse(body["available"])
+        self.assertIsNone(body["content"])
+        self.assertEqual(body["source"], "unavailable")
+        # The raw-file route reports not-found instead of erroring.
+        raw = self.client.get(
+            f"/api/projects/{pid}/artifacts/{pending['artifact_id']}/file"
         )
-        self.assertFalse(body["available"])
-        self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
-        self.assertIsNone(body["content"])
-
-    def test_result_content_degrades_in_local_http_mode(self) -> None:
-        pid, rid = self._result_resource()
-        resp = self.client.get(f"/api/projects/{pid}/resources/{rid}/content")
-        self.assertEqual(resp.status_code, 200, resp.text)
-        body = resp.json()
-        self.assertFalse(body["available"])
-        self.assertEqual(body["reason"], "content_unavailable_in_this_mode")
-        self.assertIsNone(body["content"])
-
-    def test_figure_file_degrades_in_control_mode(self) -> None:
-        pid, rid = self._result_resource()
-        with self.assertRaises(ContentUnavailableError) as ctx:
-            resource_file(
-                self.app.http.artifacts,
-                project_id=pid,
-                resource_id=rid,
-                rel="fig.png",
-            )
-        self.assertEqual(ctx.exception.error_code, "content_unavailable")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual(raw.status_code, 404)

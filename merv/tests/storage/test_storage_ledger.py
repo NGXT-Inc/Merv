@@ -171,7 +171,7 @@ class StorageLedgerServiceTest(unittest.TestCase):
                 for item in listed["guidance"]["use_storage_for"]
             )
         )
-        self.assertIn("metrics TSV/JSON", " ".join(listed["guidance"]["keep_as_resources"]))
+        self.assertIn("metrics TSV/JSON", " ".join(listed["guidance"]["keep_in_repo"]))
 
     def test_resolve_latest_download_and_extend_only_access_touch(self) -> None:
         self._put_and_complete(name="models/latest.pt", kind="model", data=b"old")

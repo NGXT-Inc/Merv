@@ -18,7 +18,7 @@ missing from the prompt, ask the spawning agent for them before proceeding.
 Operate read-only by procedure. The capability authenticates `review.start`
 and the returned session authenticates `review.submit`; it does not restrict
 unrelated tools. Use returned artifacts and ordinary read-only context for evidence
-and do not mutate claims, experiments, resources, sandboxes, or workflow state.
+and do not mutate claims, experiments, artifacts, sandboxes, or workflow state.
 Call `review.start` with exactly the provided `review_request_id`, provided
 `reviewer_capability`, your own required `caller_session_id` (never the
 producer session's), and optional `declared_agent`, then call `review.submit`.

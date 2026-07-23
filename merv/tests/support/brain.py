@@ -25,6 +25,11 @@ from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 DEFAULT_PUBLIC_KEY = "ssh-ed25519 " + ("A" * 48) + " test-brain@local"
 
 
+def upload_token(run_command: str) -> str:
+    """Extract the one-time token from an artifact.submit `run` line."""
+    return run_command.rsplit("/", 1)[-1].rstrip("'")
+
+
 class TestBrain:
     """Unified localhost brain plus an in-process proxy-local data plane.
 
@@ -36,8 +41,9 @@ class TestBrain:
 
     __test__ = False
     _RECORD_SERVICES = frozenset(
-        {"permissions", "quotas", "projects", "claims", "experiments", "resources",
-         "graph_refs", "reflection_waves", "reviews", "feed", "literature"}
+        {"permissions", "quotas", "projects", "claims", "experiments",
+         "artifact_submissions", "graph_refs", "reflection_waves", "reviews",
+         "feed", "literature"}
     )
     _PRIVATE_ALIASES = {
         "store": "_store", "blobs": "_blobs", "storage": "_storage",
@@ -142,6 +148,43 @@ class TestBrain:
             telemetry_project_id=telemetry_project_id,
         )
 
+    def submit_artifact(
+        self,
+        *,
+        project_id: str,
+        target_type: str,
+        target_id: str,
+        role: str,
+        path: str,
+        body: bytes | str,
+        lens_id: str = "",
+        title: str = "",
+    ) -> dict[str, Any]:
+        """The production submit flow: artifact.submit -> token-bearer PUT."""
+        pending = self.call_tool(
+            "artifact.submit",
+            {
+                "project_id": project_id,
+                "target_type": target_type,
+                "target_id": target_id,
+                "role": role,
+                "path": path,
+                "lens_id": lens_id,
+                "title": title,
+            },
+        )
+        result = self.upload_artifact_bytes(
+            token=upload_token(pending["run"]),
+            data=body if isinstance(body, bytes) else str(body).encode(),
+        )
+        return {**result, "artifact_id": pending["artifact_id"]}
+
+    def upload_artifact_bytes(
+        self, *, token: str, data: bytes, kind: str = "u"
+    ) -> dict[str, Any]:
+        response = self._client.put(f"/api/artifacts/{kind}/{token}", content=data)
+        return self._response_json(response)
+
     @contextlib.contextmanager
     def _project_scope(self, project_id: Any):
         previous = self._active_project_id
@@ -163,7 +206,10 @@ class TestBrain:
         return self._app.tools.call_tool(name=name, arguments=arguments)
 
     def _control_api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self._client.post(path, json=payload)
+        return self._response_json(self._client.post(path, json=payload))
+
+    @staticmethod
+    def _response_json(response: Any) -> dict[str, Any]:
         if response.status_code < 400:
             body = response.json()
             return body if isinstance(body, dict) else {}
@@ -188,4 +234,4 @@ class TestBrain:
             self.server.shutdown()
 
 
-__all__ = ["DEFAULT_PUBLIC_KEY", "TestBrain"]
+__all__ = ["DEFAULT_PUBLIC_KEY", "TestBrain", "upload_token"]

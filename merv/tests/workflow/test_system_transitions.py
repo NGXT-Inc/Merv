@@ -143,9 +143,9 @@ class GateTableConsistencyTest(SystemTransitionTestBase):
         workflow = wf["workflow"]
         self.assertEqual(workflow["current_gate"], plan_req.gate)
         self.assertEqual(
-            workflow["next_action"], "write_and_associate_plan_resource"
+            workflow["next_action"], "write_and_submit_plan"
         )
-        self.assertEqual(workflow["allowed_actions"], ["resource.register"])
+        self.assertEqual(workflow["allowed_actions"], ["artifact.submit"])
         self.assertEqual(workflow["missing_evidence"], [plan_req.missing])
 
 

@@ -66,7 +66,7 @@ def _folder_contract_note(
         "sandbox.pull_outputs — it copies the light retained files into "
         f"{local_destination} without clobbering existing local files "
         "(kept files are reported as files_kept_stale; pass overwrite=true to "
-        "replace them) — and then register them as resources. "
+        "replace them) — and then submit the gated docs with artifact.submit. "
         + heavy_note
         + "Keep caches and scratch data under "
         f"$RP_DATASET_DIR, outside the {folder_label}. "
@@ -269,10 +269,10 @@ def merge_agent_view(
                 storage_enabled=bool(view.get("storage_enabled")),
                 storage_hint=storage_hint,
             )
-            + "Before registering result resources, pull the files you need off "
+            + "Before submitting result artifacts, pull the files you need off "
             "the box with sandbox.pull_outputs (see the folder note) into the local "
             + "sandbox folder"
-            + ", then register those local files. "
+            + ", then submit those local files with artifact.submit. "
             + _expiry_note(
                 view.get('expires_at'),
                 attached_to_experiment=attached_to_experiment,

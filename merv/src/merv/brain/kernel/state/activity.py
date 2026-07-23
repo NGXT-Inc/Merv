@@ -43,7 +43,7 @@ ID_KEYS = {
     "project_id",
     "claim_id",
     "experiment_id",
-    "resource_id",
+    "artifact_id",
     "review_request_id",
     "review_session_id",
     "job_id",

@@ -1,4 +1,4 @@
-"""Research-core resolution of resource-association targets.
+"""Research-core resolution of artifact-association targets.
 
 Injected into the artifacts module at composition so artifacts never names
 research-core tables (import law allows research_core -> artifacts only).
@@ -48,3 +48,11 @@ class AssociationTargets:
             project_id=str(row["project_id"]),
             attempt_index=int(row["attempt_index"]) if attempt else 0,
         )
+
+    def publish_pinned_artifact_ids(self, *, conn) -> frozenset[str]:
+        """Artifact ids a published reflection froze as its graph pin."""
+        rows = conn.execute(
+            "SELECT published_graph_version_id FROM reflections "
+            "WHERE COALESCE(published_graph_version_id, '') != ''"
+        ).fetchall()
+        return frozenset(str(row["published_graph_version_id"]) for row in rows)

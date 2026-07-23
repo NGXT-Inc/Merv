@@ -31,12 +31,6 @@ class HttpSurfacePolicy:
             use_hosted_tool_policies=hosted_control,
         )
 
-    def data_plane_http_capabilities(self) -> dict[str, bool]:
-        return {
-            feature: False
-            for feature in HTTP_DATA_PLANE_FEATURE_TO_TOOL
-        }
-
 
 HOSTED_CONTROL_TOOL_POLICIES = {
     # The merged `project` tool (action=create reaches the brain) and the
@@ -45,14 +39,4 @@ HOSTED_CONTROL_TOOL_POLICIES = {
     "project": HostedToolPolicy(),
     "project.list": HostedToolPolicy(),
     "review.start": HostedToolPolicy(telemetry_from_review_request=True),
-}
-
-
-# Browser-visible /api/meta capability keys for local data-plane HTTP routes.
-# Proxy submission endpoints are not browser UI capabilities. Register and
-# associate are one tool now (resource.register), but the two browser
-# capability keys stay distinct so the UI's feature surface is unchanged.
-HTTP_DATA_PLANE_FEATURE_TO_TOOL = {
-    "resource_registration": "resource.register",
-    "resource_association": "resource.register",
 }

@@ -87,20 +87,21 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
         name="submit_reflections",
         to_status="synthesizing",
         requires_prose=(
-            "every roster lens must have its own reflection registered and associated "
-            "to this reflection wave (role 'reflection_lens_doc') for the current "
-            "attempt, in a file named <lens_id>.md — each reflection document "
+            "every roster lens must have its own reflection submitted "
+            "to this reflection wave (role 'reflection_lens_doc', with its "
+            "lens_id) for the current attempt — each reflection document "
             "is authored and submitted by its own subagent"
         ),
         requirements=(
             RoleRequirement(
                 role=REFLECTION_LENS_DOC_ROLE,
                 error=(
-                    "no reflections are associated yet: fan out one read-only "
+                    "no reflections are submitted yet: fan out one read-only "
                     "subagent per roster lens; each subagent writes its "
                     "reflection (e.g. reflections/<syn_id>/reflections/"
-                    "<lens_id>.md), registers it, and associates it with role "
-                    "'reflection_lens_doc' for this reflection wave"
+                    "<lens_id>.md) and submits it with artifact.submit (role "
+                    "'reflection_lens_doc', lens_id=<lens_id>) for this "
+                    "reflection wave"
                 ),
                 validator="roster",
                 gate="reflection_roster_incomplete",
@@ -119,7 +120,7 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
             "the updated project logic graph (role 'project_graph', valid JSON "
             "DAG of at most 16 nodes), a concise reflection document (role "
             "'reflection_doc'), AND a machine-actionable change spec (role "
-            "'change_spec') must be registered and associated to this reflection wave for "
+            "'change_spec') must be submitted to this reflection wave for "
             "the current attempt; after approval, publish applies the claim "
             "changes and creates the next experiment wave"
         ),
@@ -127,44 +128,44 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
             RoleRequirement(
                 role=PROJECT_GRAPH_ROLE,
                 error=(
-                    "the project logic graph must be registered before "
+                    "the project logic graph must be submitted before "
                     "reflection review: update the living project graph (e.g. "
                     "project/logic_graph.json — the current logic state of the "
-                    "whole project as a DAG of at most 16 nodes), register it, "
-                    "and associate it with role 'project_graph' — see "
+                    "whole project as a DAG of at most 16 nodes) and submit it "
+                    "with artifact.submit (role 'project_graph') — see "
                     "skills/research-workflow/graph-template.md"
                 ),
                 validator="graph",
                 gate="project_graph_required",
-                missing="project logic graph resource (role 'project_graph')",
+                missing="project logic graph artifact (role 'project_graph')",
                 label="Project graph present and valid",
             ),
             RoleRequirement(
                 role="reflection_doc",
                 error=(
-                    "a concise reflection document must be registered before "
+                    "a concise reflection document must be submitted before "
                     "reflection review: write the main agent's short markdown "
-                    "reflection on the five lens reflections, register it, "
-                    "and associate it with role 'reflection_doc' — see "
+                    "reflection on the five lens reflections and submit it "
+                    "with artifact.submit (role 'reflection_doc') — see "
                     "skills/project-reflection/reflection-artifacts-template.md"
                 ),
                 validator="reflection_doc",
                 gate="reflection_doc_required",
-                missing="reflection document resource (role 'reflection_doc')",
+                missing="reflection document artifact (role 'reflection_doc')",
                 label="Reflection document present and valid",
             ),
             RoleRequirement(
                 role="change_spec",
                 error=(
-                    "a change spec must be registered before reflection review: write "
+                    "a change spec must be submitted before reflection review: write "
                     "JSON with claim_changes plus a create_experiments decision "
-                    "(1-3 experiments), register it, and "
-                    "associate it with role 'change_spec' — see "
+                    "(1-3 experiments) and submit it with artifact.submit "
+                    "(role 'change_spec') — see "
                     "skills/project-reflection/reflection-artifacts-template.md"
                 ),
                 validator="change_spec",
                 gate="change_spec_required",
-                missing="change spec resource (role 'change_spec')",
+                missing="change spec artifact (role 'change_spec')",
                 label="Change spec present and materializable",
             ),
         ),

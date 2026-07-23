@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import mimetypes
 from typing import Any
 
-from ....artifacts.facade import Artifacts
 from ....kernel.state.activity import effective_source, is_event_ok
-from ....kernel.utils import ContentUnavailableError, NotFoundError
+from ....kernel.utils import NotFoundError
 from ....sandbox.facade import SandboxFacade
 from .dependencies import ActivityTelemetry, ToolCallTelemetry
 
@@ -154,39 +152,6 @@ def experiments_view(experiments: list[dict[str, Any]]) -> dict[str, Any]:
         "resource_use": [],
         "recent_runs": [],
     }
-
-
-def resources_tree(resources: list[dict[str, Any]]) -> dict[str, Any]:
-    tree: dict[str, list[dict[str, Any]]] = {}
-    for resource in resources:
-        tree.setdefault(resource.get("kind", "other"), []).append(resource)
-    return {"resources": resources, "tree": tree}
-
-
-def resource_file(
-    artifacts: Artifacts,
-    *,
-    project_id: str,
-    resource_id: str,
-    rel: str | None = None,
-) -> tuple[bytes, dict[str, str]]:
-    resource = artifacts.resolve_resource(project_id=project_id, resource_id=resource_id)
-    if rel:
-        blob = artifacts.submitted_figure(resource=resource, link_path=rel)
-        if blob is not None:
-            data, name = blob
-            return data, {
-                "Content-Type": mimetypes.guess_type(name)[0] or "application/octet-stream",
-                "Content-Disposition": f'inline; filename="{name}"',
-            }
-        raise ContentUnavailableError(
-            "figure bytes are unavailable in this mode",
-            details={"rel": rel, "reason": "content_unavailable_in_this_mode"},
-        )
-    raise ContentUnavailableError(
-        "file bytes are unavailable in this mode",
-        details={"reason": "content_unavailable_in_this_mode"},
-    )
 
 
 def sandbox_view(

@@ -7,7 +7,7 @@ from typing import Any
 from merv.shared.artifact_roles import (
     PROJECT_GRAPH_ROLE,
     REFLECTION_LENS_DOC_ROLE,
-    RESOURCE_ROLES,
+    SUBMITTABLE_ROLES,
 )
 
 from ..research_core.facade import (
@@ -31,7 +31,7 @@ from .reflection_guidance import (
     reflection_create_block_reason,
 )
 
-_SLIM_RESOURCE_FIELDS = (
+_SLIM_ARTIFACT_FIELDS = (
     "id",
     "association_role",
     "lens_id",
@@ -107,7 +107,7 @@ class StatusGuidancePolicy:
                 action=(
                     guidance.action
                     if current.status == "missing"
-                    else f"fix_{current.role}_resource"
+                    else f"fix_{current.role}_artifact"
                 ),
                 allowed=list(guidance.allowed),
                 missing=(
@@ -115,8 +115,8 @@ class StatusGuidancePolicy:
                     if current.status == "missing"
                     else list(current.problems)
                 ),
-                resource_guidance=self._resource_guidance(
-                    key=guidance.resource_key, experiment=experiment
+                artifact_guidance=self._artifact_guidance(
+                    key=guidance.artifact_key, experiment=experiment
                 ),
                 revision=experiment.get("revision_context", ""),
             )
@@ -132,7 +132,7 @@ class StatusGuidancePolicy:
             ),
         )
 
-    def _resource_guidance(
+    def _artifact_guidance(
         self, *, key: str, experiment: dict[str, Any]
     ) -> dict[str, Any] | None:
         folder = experiment_folder_rel(
@@ -140,13 +140,13 @@ class StatusGuidancePolicy:
             name=str(experiment.get("name") or ""),
         )
         if key == "plan":
-            return self._plan_resource_guidance(folder=folder)
+            return self._plan_artifact_guidance(folder=folder)
         if key == "result":
-            return self._result_resource_guidance()
+            return self._result_artifact_guidance()
         if key == "report":
-            return self._report_resource_guidance(folder=folder)
+            return self._report_artifact_guidance(folder=folder)
         if key == "graph":
-            return self._graph_resource_guidance(folder=folder)
+            return self._graph_artifact_guidance(folder=folder)
         return None
 
     def _review_next(
@@ -404,7 +404,7 @@ class StatusGuidancePolicy:
                 action=(
                     guidance.action
                     if current.status == "missing"
-                    else f"fix_{current.role}_resource"
+                    else f"fix_{current.role}_artifact"
                 ),
                 allowed=list(guidance.allowed),
                 missing=(
@@ -413,11 +413,11 @@ class StatusGuidancePolicy:
                     else list(current.problems)
                     or ([current.explanation] if status == "reflecting" else [])
                 ),
-                resource_guidance=(
-                    self._reflection_resource_guidance()
+                artifact_guidance=(
+                    self._reflection_artifact_guidance()
                     if status == "reflecting"
-                    else self._synthesizing_resource_guidance(
-                        key=guidance.resource_key
+                    else self._synthesizing_artifact_guidance(
+                        key=guidance.artifact_key
                     )
                 ),
                 revision=reflection.get("revision_context", ""),
@@ -446,7 +446,7 @@ class StatusGuidancePolicy:
             if item.get("status") == "missing" and item.get("missing")
         ] or [evaluation.explanation]
 
-    def _reflection_resource_guidance(self) -> dict[str, Any]:
+    def _reflection_artifact_guidance(self) -> dict[str, Any]:
         return {
             "target_type": "reflection",
             "association_role": REFLECTION_LENS_DOC_ROLE,
@@ -454,10 +454,12 @@ class StatusGuidancePolicy:
                 "Fan out one read-only subagent per missing lens. Each subagent "
                 "reads the project through its lens only (tell it which other "
                 "lenses are running so it stays in its lane), writes its "
-                "reflection to a file named <lens_id>.md (e.g. "
-                "reflections/<syn_id>/reflections/<lens_id>.md), registers it, and "
-                "associates it with role 'reflection_lens_doc' for this "
-                "reflection wave. See the project-reflection skill for the lens briefs."
+                "reflection to a local file (e.g. "
+                "reflections/<syn_id>/reflections/<lens_id>.md), then calls "
+                "artifact.submit for this reflection wave with role "
+                "'reflection_lens_doc', lens_id=<lens_id>, and the file's "
+                "relative path — and runs the returned upload command verbatim. "
+                "See the project-reflection skill for the lens briefs."
             ),
         }
 
@@ -471,13 +473,13 @@ class StatusGuidancePolicy:
             "roster": project_rows(reflection.get("roster", []), ("id", "title", "core")),
             "reflection_coverage": reflection.get("reflection_coverage"),
             "current_attempt_resources": project_rows(
-                reflection.get("current_attempt_resources", []), _SLIM_RESOURCE_FIELDS
+                reflection.get("current_attempt_resources", []), _SLIM_ARTIFACT_FIELDS
             ),
             "reviews": project_rows(reflection.get("reviews", []), _SLIM_REVIEW_FIELDS),
             "allowed_transitions": reflection.get("allowed_transitions", []),
         }
 
-    def _synthesizing_resource_guidance(self, *, key: str) -> dict[str, Any] | None:
+    def _synthesizing_artifact_guidance(self, *, key: str) -> dict[str, Any] | None:
         if key == "project_graph":
             return {
                 "target_type": "reflection",
@@ -491,12 +493,13 @@ class StatusGuidancePolicy:
                     "Treat the lens reflections as unverified inputs: reconcile "
                     "them against the actual records, don't average them. Edit "
                     "the living graph in place and prune within the budget; "
-                    "node refs may point at exp_/claim_/rev_/syn_ ids or files. "
-                    "Then register the file and associate it with role "
-                    "'project_graph' for this reflection wave."
+                    "node refs may point at exp_/claim_/rev_/syn_/art_ ids. "
+                    "Then submit the file to this reflection wave with "
+                    "artifact.submit (role 'project_graph') and run the "
+                    "returned upload command verbatim."
                 ),
             }
-        if key in {"reflection_doc", "synthesis_doc"}:
+        if key == "reflection_doc":
             return {
                 "target_type": "reflection",
                 "association_role": "reflection_doc",
@@ -508,10 +511,11 @@ class StatusGuidancePolicy:
                     "sections. Keep it under 16 KB. You may reference a few "
                     "figures with relative markdown image links (e.g. "
                     "![project graph](figures/project_graph.png)); every linked "
-                    "image must resolve to a local file under 5 MB or "
-                    "resource.register rejects the doc. Then register the file to "
-                    "this reflection wave with role 'reflection_doc' in one "
-                    "resource.register call."
+                    "image must resolve to a local file under 5 MB. Then submit "
+                    "the file to this reflection wave with artifact.submit "
+                    "(role 'reflection_doc'), run the returned upload command "
+                    "verbatim, and run the follow-up figure commands the upload "
+                    "response returns."
                 ),
             }
         if key == "change_spec":
@@ -525,13 +529,14 @@ class StatusGuidancePolicy:
                     "specs — names, intents, tested claim refs, and (for a "
                     "multi-experiment wave) a parallelism note each. Publish "
                     "will apply this only after the reflection reviewer passes "
-                    "it. Then register the file and associate it with role "
-                    "'change_spec' for this reflection wave."
+                    "it. Then submit the file to this reflection wave with "
+                    "artifact.submit (role 'change_spec') and run the returned "
+                    "upload command verbatim."
                 ),
             }
         return None
 
-    def _plan_resource_guidance(self, *, folder: str) -> dict[str, Any]:
+    def _plan_artifact_guidance(self, *, folder: str) -> dict[str, Any]:
         return {
             "target_type": "experiment",
             "association_role": "plan",
@@ -540,10 +545,10 @@ class StatusGuidancePolicy:
                 f"Write the experiment plan as one markdown file at {folder}plan.md "
                 "— the folder experiment.create made for this experiment. Keep "
                 "the plan, scripts, configs, and durable inputs there; live "
-                "sandboxes have their own work folders and can later be "
-                "associated with this experiment. "
-                "Start from the template's required sections, then register the "
-                "file and associate it with role 'plan'. Consider seeding the "
+                "sandboxes have their own work folders. "
+                "Start from the template's required sections, then submit the "
+                "file with artifact.submit (role 'plan') and run the returned "
+                "upload command verbatim. Consider seeding the "
                 f"logic graph now too ({folder}graph.json, see "
                 "skills/research-workflow/graph-template.md): an objective node "
                 "costs a minute, and the story of the experiment's hard "
@@ -552,15 +557,16 @@ class StatusGuidancePolicy:
             ),
         }
 
-    def _result_resource_guidance(self) -> dict[str, Any]:
+    def _result_artifact_guidance(self) -> dict[str, Any]:
         heavy_retention = (
             "copy light files out over SSH into the local experiment folder "
-            "or upload heavy files with storage.upload_file, then register "
-            "those retained files."
+            "or upload heavy files with storage.upload_file, then submit the "
+            "retained metrics JSON with artifact.submit (role 'result')."
             if self.storage_guidance.get("enabled")
             else (
                 "copy retained files out over SSH into the local experiment folder, "
-                "then register those retained files. Heavy-file storage is not "
+                "then submit the retained metrics JSON with artifact.submit "
+                "(role 'result'). Heavy-file storage is not "
                 "enabled on this backend, so large sandbox-only datasets/models "
                 "will not survive release."
             )
@@ -568,7 +574,7 @@ class StatusGuidancePolicy:
         return {
             "target_type": "experiment",
             "association_role": "result",
-            "allowed_resource_roles": sorted(RESOURCE_ROLES),
+            "allowed_roles": sorted(SUBMITTABLE_ROLES),
             "dataset_guidance": (
                 "Prefer CPU-only sandboxes for data inspection and data engineering "
                 "unless the command needs GPU. Work inside the sandbox work folder "
@@ -583,7 +589,7 @@ class StatusGuidancePolicy:
             ),
             "retention_guidance": (
                 "While a sandbox is live, treat its work folder as ephemeral "
-                "scratch. Before registering or associating result resources, "
+                "scratch. Before submitting result artifacts, "
                 + heavy_retention
             ),
             "storage_guidance": dict(self.storage_guidance),
@@ -605,7 +611,7 @@ class StatusGuidancePolicy:
             ),
         }
 
-    def _report_resource_guidance(self, *, folder: str) -> dict[str, Any]:
+    def _report_artifact_guidance(self, *, folder: str) -> dict[str, Any]:
         return {
             "target_type": "experiment",
             "association_role": "report",
@@ -621,14 +627,14 @@ class StatusGuidancePolicy:
                 "explicitly. Keep it under 16 KB: link raw metrics files instead "
                 "of inlining data. Reference figures with relative markdown image "
                 "links (e.g. ![loss](figures/loss.png)); every linked image must "
-                "resolve to a local file under 5 MB or resource.register rejects "
-                "the report, so copy figures off the sandbox first. "
-                "Then register the report with role 'report' in one "
-                "resource.register call."
+                "resolve to a local file under 5 MB, so copy figures off the "
+                "sandbox first. Then submit the report with artifact.submit "
+                "(role 'report'), run the returned upload command verbatim, and "
+                "run the follow-up figure commands the upload response returns."
             ),
         }
 
-    def _graph_resource_guidance(self, *, folder: str) -> dict[str, Any]:
+    def _graph_artifact_guidance(self, *, folder: str) -> dict[str, Any]:
         return {
             "target_type": "experiment",
             "association_role": "graph",
@@ -649,7 +655,8 @@ class StatusGuidancePolicy:
                 "graph: node 'kind' vocabulary, edge labels, and structure are "
                 "yours. If the graph is at the 16-node budget and something "
                 "important must be added, reduce the graph to make room. Then "
-                "register the file and associate it with role 'graph'."
+                "submit the file with artifact.submit (role 'graph') and run "
+                "the returned upload command verbatim."
             ),
         }
 
@@ -663,7 +670,7 @@ class StatusGuidancePolicy:
         missing: list[str] | None = None,
         revision: str = "",
         review_gate: dict[str, Any] | None = None,
-        resource_guidance: dict[str, Any] | None = None,
+        artifact_guidance: dict[str, Any] | None = None,
         live_experiments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         result = {
@@ -676,8 +683,8 @@ class StatusGuidancePolicy:
         }
         if review_gate is not None:
             result["review_gate"] = review_gate
-        if resource_guidance is not None:
-            result["resource_guidance"] = resource_guidance
+        if artifact_guidance is not None:
+            result["artifact_guidance"] = artifact_guidance
         if live_experiments is not None:
             result["live_experiments"] = live_experiments
         return result

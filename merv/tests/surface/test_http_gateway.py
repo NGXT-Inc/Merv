@@ -145,8 +145,8 @@ class HttpGatewayTest(unittest.TestCase):
         self.assertEqual(backend.calls[0]["name"], "project")
         with self.assertRaises(DataPlaneRequiredError):
             gateway.call(
-                name="resource.register",
-                arguments={"project_id": "proj-a", "path": "plan.md"},
+                name="storage.upload_file",
+                arguments={"project_id": "proj-a", "path": "model.bin", "kind": "model"},
                 principal=USER,
             )
 

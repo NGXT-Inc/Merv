@@ -1,4 +1,4 @@
-"""Pure markdown artifact lint for experiment plan and report resources."""
+"""Pure markdown artifact lint for experiment plan and report documents."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ REQUIRED_REPORT_SECTIONS: tuple[tuple[str, str], ...] = (
 )
 
 # Brevity is structural: the report is the executive layer; raw numbers, logs,
-# and large tables belong in linked result resources. 16 KB gives enough room
+# and large tables belong in linked result artifacts. 16 KB gives enough room
 # for curated metrics and figure captions without turning the report into a dump.
 MAX_REPORT_BYTES = 16_000
 
@@ -132,7 +132,7 @@ def report_problems(
     if size > MAX_REPORT_BYTES:
         problems.append(
             f"report is {size} bytes; keep it under {MAX_REPORT_BYTES} — move raw "
-            "numbers and logs into result resources and link them instead"
+            "numbers and logs into result artifacts and link them instead"
         )
     if figure_problem is not None:
         for target in report_figure_links(report_text):

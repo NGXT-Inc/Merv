@@ -266,11 +266,11 @@ class ReviewService:
                     "claim",
                     "experiment",
                     "reflection",
-                    "resource",
+                    "artifact",
                     "review",
                 ],
                 # The reviewer grades the SUBMITTED artifacts — the bytes
-                # pinned at associate — not whatever the working tree holds
+                # pinned at submit — not whatever the working tree holds
                 # now. Hydrated here so a reviewer never has to trust disk.
                 "submitted_artifacts": self._submitted_artifacts(
                     target_type=str(req["target_type"]),

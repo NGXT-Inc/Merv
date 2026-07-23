@@ -39,8 +39,7 @@ def translate_schema_to_postgres(schema_sql: str) -> str:
     - ``INTEGER PRIMARY KEY AUTOINCREMENT`` (events.id) becomes a BIGINT
       identity column (plan §3.1: "identity column for events").
     - ``INTEGER`` becomes ``BIGINT``: SQLite INTEGER is 64-bit while Postgres
-      INTEGER is 32-bit, and ``mtime_ns`` (nanoseconds since the epoch)
-      overflows 32 bits today.
+      INTEGER is 32-bit, and nanosecond-scale counters overflow 32 bits today.
     - ``REAL`` becomes ``DOUBLE PRECISION`` (SQLite REAL is an 8-byte float;
       Postgres REAL is only 4).
     - BLOB is unused in SCHEMA (verified; guarded below so it stays that way

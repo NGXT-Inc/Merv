@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from merv.brain.artifacts.association_policy import validate_resource_association
+from merv.brain.artifacts.association_policy import validate_artifact_association
 from merv.brain.kernel.utils import PermissionDeniedError, ValidationError
 from merv.brain.research_core.domain.review_validation import (
     validate_review_role,
@@ -21,15 +21,15 @@ class OwnedPermissionPolicyTest(unittest.TestCase):
             validate_review_verdict(verdict="maybe")
 
     def test_artifacts_validates_association_vocabulary(self) -> None:
-        validate_resource_association(target_type="experiment", role="plan")
+        validate_artifact_association(target_type="experiment", role="plan")
         with self.assertRaises(ValidationError) as target_error:
-            validate_resource_association(target_type="project", role="plan")
+            validate_artifact_association(target_type="project", role="plan")
         self.assertIn("experiment", target_error.exception.details["allowed_target_types"])
         with self.assertRaises(ValidationError) as legacy_error:
-            validate_resource_association(target_type="reflection", role="synthesis_doc")
+            validate_artifact_association(target_type="reflection", role="synthesis_doc")
         self.assertEqual(legacy_error.exception.details["replacement_role"], "reflection_doc")
         with self.assertRaises(ValidationError) as graph_error:
-            validate_resource_association(target_type="reflection", role="graph")
+            validate_artifact_association(target_type="reflection", role="graph")
         self.assertEqual(graph_error.exception.details["replacement_role"], "project_graph")
 
     def test_surface_permission_is_only_tool_authorization(self) -> None:

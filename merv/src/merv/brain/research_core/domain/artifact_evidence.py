@@ -7,11 +7,11 @@ from typing import Any
 from ...artifacts.ports import AssociatedEvidence
 
 
-def resource_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
+def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
     """Project one submitted artifact into the public Research record shape.
 
-    `id` is the artifact id; the association_* key names are kept so state
-    consumers (gates, guidance, UI projections) read one stable shape."""
+    `id` is the artifact id; the association_* key names are the stable shape
+    state consumers (gates, guidance, UI projections) read."""
     return {
         "id": evidence.artifact_id,
         "project_id": evidence.project_id,
@@ -29,33 +29,33 @@ def resource_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
     }
 
 
-def preferred_associated_resource(
+def preferred_associated_artifact(
     *,
-    resources: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]],
     attempt: Any,
     roles: tuple[str, ...],
 ) -> dict[str, Any] | None:
     """Select current-attempt evidence by role precedence and submission age."""
     candidates = [
-        resource
-        for resource in resources
-        if resource.get("association_role") in roles
+        artifact
+        for artifact in artifacts
+        if artifact.get("association_role") in roles
     ]
     if not candidates:
         return None
     current = [
-        resource
-        for resource in candidates
-        if resource.get("association_attempt_index") == attempt
+        artifact
+        for artifact in candidates
+        if artifact.get("association_attempt_index") == attempt
     ]
     role_rank = {role: index for index, role in enumerate(roles)}
     return min(
         current or candidates,
-        key=lambda resource: (
-            role_rank.get(str(resource.get("association_role")), len(roles)),
-            -(resource.get("association_rowid") or 0),
+        key=lambda artifact: (
+            role_rank.get(str(artifact.get("association_role")), len(roles)),
+            -(artifact.get("association_rowid") or 0),
         ),
     )
 
 
-__all__ = ["preferred_associated_resource", "resource_state_record"]
+__all__ = ["artifact_state_record", "preferred_associated_artifact"]

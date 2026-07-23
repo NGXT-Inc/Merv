@@ -35,7 +35,7 @@ classification plus file overrides handles mixed packages.
 |---|---|---|
 | Kernel | `kernel/**` | shared contracts, state floor, IDs, events, utilities |
 | Research | `research_core/**` | experiment/review/reflection/project authority |
-| Artifacts | `artifacts/**` | resources, associations, pinned evidence |
+| Artifacts | `artifacts/**` | submitted artifacts, upload tokens, pinned evidence |
 | Sandbox | `sandbox/**` | lifecycle and provider-driver capability |
 | Feed | `feed/**` | feed records and advisory policy |
 | Application | `application/**` | cross-component commands, reactions, and composite reads |
@@ -65,7 +65,7 @@ cross-component import must enter through a facade or port. Workflow reads use
 `ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
 declared `Sandbox` facade.
 
-Research reaches immutable resource evidence only through semantic DTOs on
+Research reaches immutable artifact evidence only through semantic DTOs on
 `artifacts/ports/EvidenceReader`; it never sees persistence rows, Artifact
 tables, or blob locators. Artifacts resolves association targets through the reverse
 `AssociationTargetResolver` port. Both concrete adapters use read-only store
@@ -139,7 +139,7 @@ features, and handler identities. Surface derives its control handlers from
 those identities; the proxy consumes a generated stdlib-only projection, so
 plane/hidden/handler routing is not separately maintained. The transition
 adapter still sets the agent credential audience. Merged project,
-experiment-list, resource-find, and storage decisions live in
+experiment-list and storage decisions live in
 `application/tool_commands.py`.
 
 These are dependency changes, not service extraction: everything still runs in
@@ -176,13 +176,13 @@ assembles workflow orientation and the project dashboard from one bulk Research
 snapshot plus Sandbox reads; `application/queries.py` owns tracking overview,
 experiment figure, hydrated compute costs, and experiment/project/reflection
 logic graphs. Artifacts owns
-submitted resource-content and figure selection behind `ArtifactsFacade`;
+submitted artifact-content and figure selection behind `ArtifactsFacade`;
 Application owns hosted content-response and experiment/figure presentation.
 Surface retains authentication, conditional HTTP caching, local-field
 redaction, MIME/header shaping, and serialization only.
 
 The bulk snapshot is backed by plural Research state/gate reads and the
-connection-free `EvidenceReader.resources_for_targets` port, which chunks exact
+connection-free `EvidenceReader.artifacts_for_targets` port, which chunks exact
 IDs in groups of 400. A project dashboard therefore uses 22 database reads for
 both one and 25 experiments. Full Artifact pages use six reads, Research graph
 references use at most one read per reference type, and MLflow overview uses at
@@ -212,7 +212,7 @@ Application derives their agent hint and post-publish actions.
 `StatusAndNextQuery` joins one Research snapshot with Sandbox and
 produced-object facts before applying that pure guidance policy.
 
-Review role/verdict validation is Research domain policy; resource association
+Review role/verdict validation is Research domain policy; artifact association
 role/target validation is Artifacts domain policy. Project membership mutation
 is owned by `ProjectService`, not by an HTTP route.
 

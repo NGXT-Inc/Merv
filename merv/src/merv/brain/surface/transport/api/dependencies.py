@@ -13,7 +13,6 @@ from ....application.facade import (
     ExperimentCollectionQuery,
     ExperimentDetailQuery,
     ExperimentFigureQuery,
-    HostedResourceContentQuery,
     LogicGraphQuery,
     MlflowOverviewQuery,
     ProjectDashboardQuery,
@@ -21,7 +20,7 @@ from ....application.facade import (
     TenantCountersQuery,
 )
 from ....application.ports.storage import ObjectStorage
-from ....artifacts.facade import ArtifactRecords, Artifacts, ArtifactSubmissions
+from ....artifacts.facade import ArtifactSubmissions
 from ....feed.facade import FeedDelivery
 from ....research_core.facade import (
     ResearchLiterature,
@@ -54,9 +53,7 @@ class HttpDependencies:
 
     projects: ResearchProjects
     reviews: ResearchReviewDelivery
-    artifact_records: ArtifactRecords
     artifact_submissions: ArtifactSubmissions
-    artifacts: Artifacts
     feed: FeedDelivery
     sandboxes: SandboxFacade
     storage: ObjectStorage | None
@@ -67,7 +64,6 @@ class HttpDependencies:
     structured_log: StructuredLogger
     experiment_detail: ExperimentDetailQuery
     experiment_collection: ExperimentCollectionQuery
-    hosted_resource_content: HostedResourceContentQuery
     compute_cost: ComputeCostQuery
     logic_graph: LogicGraphQuery
     workflow: StatusAndNextQuery

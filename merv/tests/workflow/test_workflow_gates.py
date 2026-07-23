@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support.brain import TestBrain
+from tests.support.brain import TestBrain, upload_token
 from merv.brain.research_core.domain.artifacts import plan_sections_missing, report_figure_links
 from merv.brain.research_core.domain.experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -68,16 +68,14 @@ class WorkflowGateTest(unittest.TestCase):
 
     # ---- helpers ----
 
-    def _write_and_associate(self, *, exp_id: str, path: str, role: str, body: str) -> None:
-        (self.repo / path).write_text(body)
-        self.call(
-            "resource.register",
+    def _submit(self, *, exp_id: str, path: str, role: str, body: str) -> dict:
+        return self.app.submit_artifact(
             project_id=self.project_id,
-            path=path,
-            kind=role,
             target_type="experiment",
             target_id=exp_id,
             role=role,
+            path=path,
+            body=body,
         )
 
     def _open_review_session(self, *, exp_id: str, role: str) -> str:
@@ -114,7 +112,7 @@ class WorkflowGateTest(unittest.TestCase):
             project_id=self.project_id,
             intent=intent,
         )["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
@@ -123,13 +121,13 @@ class WorkflowGateTest(unittest.TestCase):
 
     def _drive_to_running_with_result(self) -> str:
         exp_id = self._drive_to_running()
-        self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
+        self._submit(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
         return exp_id
 
     def _drive_to_experiment_review(self) -> str:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         return exp_id
 
@@ -143,14 +141,14 @@ class WorkflowGateTest(unittest.TestCase):
             intent="Full loop.",
             tested_claim_ids=tested_claim_ids or [],
         )["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running")
-        self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="results.json", role="result", body="{\"metric\": 1}\n")
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self._pass_review(exp_id=exp_id, role="experiment_reviewer")
         evidence = {"conclusion": conclusion} if conclusion else None
@@ -174,26 +172,22 @@ class WorkflowGateTest(unittest.TestCase):
             self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp["id"])["status"],
             "planned",
         )
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
 
-    def test_pinned_plan_remains_gate_evidence_when_live_resource_is_missing(self) -> None:
+    def test_pinned_plan_is_gate_evidence_without_any_live_file(self) -> None:
+        # Submission pins bytes server-side; no working-tree file ever existed,
+        # and the gate never probes disk.
         exp = self.call(
             "experiment.create",
             name="missing-live-plan",
             project_id=self.project_id,
             intent="Pinned evidence survives its working file.",
         )
-        self._write_and_associate(
+        self._submit(
             exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN
         )
-        with self.app.store.transaction() as conn:
-            conn.execute(
-                "UPDATE resources SET missing = 1 WHERE project_id = ? AND path = ?",
-                (self.project_id, "plan.md"),
-            )
-
         state = self.call(
             "experiment.get_state",
             project_id=self.project_id,
@@ -210,29 +204,20 @@ class WorkflowGateTest(unittest.TestCase):
         )
         self.assertEqual(out["status"], "design_review")
 
-    def test_reassociation_preserves_original_association_order(self) -> None:
+    def test_resubmit_supersedes_and_newest_submission_is_linted(self) -> None:
         exp = self.call(
             "experiment.create",
             name="association-order",
             project_id=self.project_id,
-            intent="Keep immutable association ordering.",
+            intent="Newest submission wins the gate.",
         )
-        self._write_and_associate(
-            exp_id=exp["id"], path="plan-a.md", role="plan", body=VALID_PLAN
-        )
-        self._write_and_associate(
+        self._submit(exp_id=exp["id"], path="plan-a.md", role="plan", body=VALID_PLAN)
+        self._submit(
             exp_id=exp["id"],
             path="plan-b.md",
             role="plan",
             body="## Summary\nIncomplete newer plan.\n",
         )
-        self._write_and_associate(
-            exp_id=exp["id"],
-            path="plan-a.md",
-            role="plan",
-            body=VALID_PLAN + "\nRe-associated without creating a new association row.\n",
-        )
-
         state = self.call(
             "experiment.get_state",
             project_id=self.project_id,
@@ -248,14 +233,24 @@ class WorkflowGateTest(unittest.TestCase):
                 transition="submit_design",
             )
         self.assertEqual(str(ctx.exception), plan["problems"][0])
+        # Resubmitting plan-a supersedes its slot and becomes the newest
+        # plan-role submission, so the gate lints the valid document again.
+        self._submit(exp_id=exp["id"], path="plan-a.md", role="plan", body=VALID_PLAN)
+        out = self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+            transition="submit_design",
+        )
+        self.assertEqual(out["status"], "design_review")
 
     def test_workflow_surfaces_plan_gate_with_folder_guidance(self) -> None:
         exp = self.call("experiment.create", name="plan-gate", project_id=self.project_id, intent="No plan yet.")
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "plan_required")
-        self.assertEqual(workflow["next_action"], "write_and_associate_plan_resource")
-        guidance = workflow["resource_guidance"]
+        self.assertEqual(workflow["next_action"], "write_and_submit_plan")
+        guidance = workflow["artifact_guidance"]
         self.assertEqual(guidance["association_role"], "plan")
         # The guidance names the experiment's actual folder, not a placeholder.
         self.assertIn("experiments/plan-gate/plan.md", guidance["guidance"])
@@ -263,7 +258,7 @@ class WorkflowGateTest(unittest.TestCase):
     def test_submit_design_requires_plan_spine_sections(self) -> None:
         exp = self.call("experiment.create", name="exp-4", project_id=self.project_id, intent="Thin plan.")
         # A plan resource exists, but the file lacks the required spine sections.
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body="just some loose notes\n")
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body="just some loose notes\n")
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertIn("missing required sections", str(ctx.exception))
@@ -273,30 +268,19 @@ class WorkflowGateTest(unittest.TestCase):
         )
         # Filling in the spine unblocks it. The lint reads the SUBMITTED bytes,
         # so the fix must be re-associated to count (fix-and-resubmit).
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.assertEqual(out["status"], "design_review")
 
     def test_submit_design_blocks_plan_figures_missing_from_submission(self) -> None:
-        # Defense in depth: a non-compliant data plane could submit plan bytes
-        # without the figures the markdown links; the gate must still block.
+        # The upload mints figure tokens for every markdown image link; until
+        # the figure bytes are pushed, the gate must still block.
         exp = self.call("experiment.create", name="plan-fig", project_id=self.project_id, intent="Plan figure gate.")
         plan = VALID_PLAN + "\n![arch](figures/diagram.png)\n"
-        (self.repo / "plan.md").write_text(plan)
-        res = self.call("resource.register", project_id=self.project_id, path="plan.md", kind="plan")
-        self.app._control_api_post(
-            "/api/data-plane/resources/associate",
-            {
-                "project_id": self.project_id,
-                "resource_id": res["id"],
-                "target_type": "experiment",
-                "target_id": exp["id"],
-                "role": "plan",
-                "blob": {
-                    "data_b64": base64.b64encode(plan.encode()).decode("ascii"),
-                    "content_type": "text/markdown",
-                },
-            },
+        submitted = self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=plan)
+        self.assertEqual(
+            [fig["link_path"] for fig in submitted["figures"]],
+            ["figures/diagram.png"],
         )
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
@@ -340,9 +324,9 @@ class WorkflowGateTest(unittest.TestCase):
         checklist = state["gate_checklist"]
         self.assertEqual(checklist["transition"], "submit_design")
         self.assertFalse(checklist["ready"])
-        self.assertEqual(checklist["items"][0]["id"], "resource:plan")
+        self.assertEqual(checklist["items"][0]["id"], "artifact:plan")
         self.assertEqual(checklist["items"][0]["status"], "missing")
-        self.assertIn("experiment plan resource", checklist["items"][0]["missing"])
+        self.assertIn("experiment plan artifact", checklist["items"][0]["missing"])
 
     def test_disallowed_transition_error_lists_allowed_options(self) -> None:
         exp = self.call("experiment.create", name="exp-6", project_id=self.project_id, intent="bad jump")
@@ -540,8 +524,8 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertIn("report", str(ctx.exception))
         self.assertIn("report-template", str(ctx.exception))
         # Adding a valid report (and the logic graph) unblocks the same transition.
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
@@ -556,8 +540,8 @@ class WorkflowGateTest(unittest.TestCase):
             "## Deviations from plan\nNone.\n\n"
             "## Conclusion\n<!-- todo -->\n"
         )
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=bad_report)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=bad_report)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         msg = str(ctx.exception)
@@ -568,24 +552,25 @@ class WorkflowGateTest(unittest.TestCase):
         (self.repo / "report.md").write_text(VALID_REPORT)
         with self.assertRaises(WorkflowError):
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
-    def test_report_image_links_must_resolve(self) -> None:
+    def test_report_image_links_must_have_submitted_figures(self) -> None:
         exp_id = self._drive_to_running_with_result()
         report = VALID_REPORT + "\n## Figures\n\n![loss curve](figures/loss.png)\n"
-        # A dangling figure link is rejected at associate time, before any
-        # bytes are pinned.
-        with self.assertRaises(ValidationError) as ctx:
-            self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
+        submitted = self._submit(exp_id=exp_id, path="report.md", role="report", body=report)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        # The figure bytes were never pushed, so the gate blocks.
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertIn("figures/loss.png", str(ctx.exception))
-        # Once the figure exists on disk, associating the report submits it
-        # alongside, and the gate opens.
-        (self.repo / "figures").mkdir()
-        (self.repo / "figures" / "loss.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=report)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        # Pushing the figure through its one-time token opens the gate.
+        self.app.upload_artifact_bytes(
+            token=upload_token(submitted["figures"][0]["run"]),
+            data=b"\x89PNG\r\n\x1a\n",
+            kind="f",
+        )
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
@@ -595,7 +580,7 @@ class WorkflowGateTest(unittest.TestCase):
         # Since byte capture landed (cloud plan Phase 1), the ceiling is
         # enforced at associate time — before the transition is ever attempted.
         with self.assertRaises(ValidationError) as ctx:
-            self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=bloated)
+            self._submit(exp_id=exp_id, path="report.md", role="report", body=bloated)
         self.assertIn("bytes", str(ctx.exception))
 
     def test_workflow_surfaces_report_gate_after_results(self) -> None:
@@ -603,174 +588,81 @@ class WorkflowGateTest(unittest.TestCase):
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "results_report_required")
-        self.assertEqual(workflow["next_action"], "write_and_associate_results_report")
-        self.assertEqual(workflow["resource_guidance"]["association_role"], "report")
-        self.assertIn("experiments/exp-1/report.md", workflow["resource_guidance"]["guidance"])
+        self.assertEqual(workflow["next_action"], "write_and_submit_results_report")
+        self.assertEqual(workflow["artifact_guidance"]["association_role"], "report")
+        self.assertIn("experiments/exp-1/report.md", workflow["artifact_guidance"]["guidance"])
 
     # ---- logic graph gate ----
 
     def test_submit_results_requires_logic_graph_resource(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertIn("logic graph", str(ctx.exception))
         self.assertIn("graph-template", str(ctx.exception))
         # Adding a valid graph unblocks the same transition.
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
-    def test_register_with_trio_satisfies_results_gate(self) -> None:
+    def test_multiple_result_submissions_all_reach_the_attempt(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        for path, role, body in (
-            ("report.md", "report", VALID_REPORT),
-            ("graph.json", "graph", VALID_GRAPH),
-        ):
-            (self.repo / path).write_text(body)
-            registered = self.call(
-                "resource.register",
-                project_id=self.project_id,
-                path=path,
-                kind=role,
-                target_type="experiment",
-                target_id=exp_id,
-                role=role,
-            )
-            self.assertIn("association", registered)
-            self.assertIn("resource", registered)
-
-        state = self.call(
-            "experiment.get_state",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-        )
-        roles = {
-            item["association_role"]
-            for item in state["current_attempt_resources"]
-        }
-        self.assertIn("result", roles)
-        self.assertIn("report", roles)
-        self.assertIn("graph", roles)
-        self.call(
-            "experiment.transition",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-            transition="submit_results",
-        )
-
-    def test_one_call_register_matches_two_step_resource_id_association(self) -> None:
-        # register+associate in one call must land the same association state as
-        # registering, then associating the returned resource_id separately.
-        exp_a = self.call("experiment.create", name="one-call", project_id=self.project_id, intent="x")["id"]
-        exp_b = self.call("experiment.create", name="two-step", project_id=self.project_id, intent="y")["id"]
-        (self.repo / "plan.md").write_text(VALID_PLAN)
-
-        one_call = self.call(
-            "resource.register",
-            project_id=self.project_id,
-            path="plan.md",
-            kind="plan",
-            target_type="experiment",
-            target_id=exp_a,
-            role="plan",
-        )["association"]
-
-        # Two-step through the SAME tool: register (path only), then associate
-        # the returned resource_id.
-        registered = self.call("resource.register", project_id=self.project_id, path="plan.md", kind="plan")
-        two_step = self.call(
-            "resource.register",
-            project_id=self.project_id,
-            resource_id=registered["id"],
-            target_type="experiment",
-            target_id=exp_b,
-            role="plan",
-        )
-
-        def assoc(hydrated: dict, exp_id: str) -> dict:
-            return next(
-                a for a in hydrated["associations"]
-                if a["target_id"] == exp_id and a["role"] == "plan"
-            )
-
-        a = assoc(one_call, exp_a)
-        b = assoc(two_step, exp_b)
-        self.assertEqual(a["role"], b["role"])
-        self.assertEqual(a["version_id"], b["version_id"])
-        self.assertEqual(a["attempt_index"], b["attempt_index"])
-
-    def test_register_paths_batch_associates_every_file_to_the_trio(self) -> None:
-        exp_id = self._drive_to_running_with_result()
-        for name in ("results/a.json", "results/b.json"):
-            p = self.repo / name
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text('{"metric": 1}\n')
-        out = self.call(
-            "resource.register",
-            project_id=self.project_id,
-            paths=["results/a.json", "results/b.json"],
-            kind="result",
-            target_type="experiment",
-            target_id=exp_id,
-            role="result",
-        )
-        self.assertEqual(out["count"], 2)
-        self.assertEqual(len(out["resources"]), 2)
-        self.assertEqual(len(out["associations"]), 2)
+        for path in ("results/a.json", "results/b.json"):
+            self._submit(exp_id=exp_id, path=path, role="result", body='{"metric": 1}\n')
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
-        associated = {
+        submitted = {
             item["path"]
             for item in state["current_attempt_resources"]
             if item["association_role"] == "result"
         }
-        self.assertIn("results/a.json", associated)
-        self.assertIn("results/b.json", associated)
+        self.assertIn("results/a.json", submitted)
+        self.assertIn("results/b.json", submitted)
 
     def test_logic_graph_node_budget_is_enforced(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         nodes = ",".join(
             f'{{"id": "n{i}", "label": "step {i}"}}' for i in range(17)
         )
         over_budget = f'{{"version": 1, "nodes": [{nodes}]}}'
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=over_budget)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=over_budget)
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         msg = str(ctx.exception)
         self.assertIn("17 nodes", msg)
         self.assertIn("16", msg)
         # The lint reads the submitted bytes: re-associating the fix unblocks.
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         out = self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertEqual(out["status"], "experiment_review")
 
     def test_logic_graph_must_be_a_dag(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         cyclic = (
             '{"version": 1, "nodes": ['
             '{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],'
             ' "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "a"}]}'
         )
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=cyclic)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=cyclic)
         with self.assertRaises(WorkflowError) as ctx:
             self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self.assertIn("cycle", str(ctx.exception))
 
     def test_workflow_surfaces_graph_gate_after_report(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "logic_graph_required")
-        self.assertEqual(workflow["next_action"], "write_and_associate_logic_graph")
-        self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
-        self.assertIn("experiments/exp-1/graph.json", workflow["resource_guidance"]["guidance"])
+        self.assertEqual(workflow["next_action"], "write_and_submit_logic_graph")
+        self.assertEqual(workflow["artifact_guidance"]["association_role"], "graph")
+        self.assertIn("experiments/exp-1/graph.json", workflow["artifact_guidance"]["guidance"])
 
     def test_missing_graph_guidance_preserves_earlier_invalid_report_error(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(
+        self._submit(
             exp_id=exp_id,
             path="report.md",
             role="report",
@@ -782,7 +674,7 @@ class WorkflowGateTest(unittest.TestCase):
             experiment_id=exp_id,
         )
         items = {item["id"]: item for item in state["gate_checklist"]["items"]}
-        report_error = items["resource:report"]["problems"][0]
+        report_error = items["artifact:report"]["problems"][0]
 
         workflow = self.call(
             "workflow.status_and_next",
@@ -790,7 +682,7 @@ class WorkflowGateTest(unittest.TestCase):
             experiment_id=exp_id,
         )["workflow"]
         self.assertEqual(workflow["current_gate"], "logic_graph_required")
-        self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
+        self.assertEqual(workflow["artifact_guidance"]["association_role"], "graph")
         with self.assertRaises(WorkflowError) as ctx:
             self.call(
                 "experiment.transition",
@@ -804,14 +696,14 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_ready_guidance_pre_lints_the_graph(self) -> None:
         exp_id = self._drive_to_running_with_result()
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
         nodes = ",".join(f'{{"id": "n{i}", "label": "step {i}"}}' for i in range(17))
         over_budget = f'{{"version": 1, "nodes": [{nodes}]}}'
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=over_budget)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=over_budget)
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         graph_item = {
             item["id"]: item for item in state["gate_checklist"]["items"]
-        }["resource:graph"]
+        }["artifact:graph"]
         self.assertEqual(graph_item["status"], "invalid")
         self.assertTrue(any("17 nodes" in p for p in graph_item["problems"]))
         self.assertFalse(state["gate_checklist"]["ready"])
@@ -819,20 +711,20 @@ class WorkflowGateTest(unittest.TestCase):
         workflow = wf.get("workflow") or wf
         # The workflow never says "submit" while the live graph would be rejected.
         self.assertEqual(workflow["current_gate"], "graph_invalid")
-        self.assertEqual(workflow["next_action"], "fix_graph_resource")
+        self.assertEqual(workflow["next_action"], "fix_graph_artifact")
         self.assertTrue(any("17 nodes" in p for p in workflow["missing_evidence"]))
-        self.assertEqual(workflow["resource_guidance"]["association_role"], "graph")
+        self.assertEqual(workflow["artifact_guidance"]["association_role"], "graph")
         # Fixing the live file alone changes nothing (the gate lints submitted
         # bytes); re-associating the fix flips the guidance to ready.
         (self.repo / "graph.json").write_text(VALID_GRAPH)
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "graph_invalid")
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         state = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         graph_item = {
             item["id"]: item for item in state["gate_checklist"]["items"]
-        }["resource:graph"]
+        }["artifact:graph"]
         self.assertEqual(graph_item["status"], "valid")
         self.assertTrue(state["gate_checklist"]["ready"])
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
@@ -841,16 +733,16 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_ready_guidance_pre_lints_the_plan(self) -> None:
         exp = self.call("experiment.create", name="thin-plan", project_id=self.project_id, intent="Thin plan.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body="loose notes\n")
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body="loose notes\n")
         wf = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp["id"])
         workflow = wf.get("workflow") or wf
         self.assertEqual(workflow["current_gate"], "plan_invalid")
-        self.assertEqual(workflow["next_action"], "fix_plan_resource")
+        self.assertEqual(workflow["next_action"], "fix_plan_artifact")
         self.assertTrue(any("missing required sections" in p for p in workflow["missing_evidence"]))
 
     def test_pending_review_allows_fresh_request_for_lost_capability(self) -> None:
         exp = self.call("experiment.create", name="review-pending", project_id=self.project_id, intent="Review pending.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         self.call(
             "review.request",
@@ -933,14 +825,14 @@ class WorkflowGateTest(unittest.TestCase):
             tested_claim_ids=claim_ids,
         )
         exp_id = exp["id"]
-        self._write_and_associate(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp_id, path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_design")
         self._pass_review(exp_id=exp_id, role="design_reviewer")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="mark_ready_to_run")
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="start_running")
-        self._write_and_associate(exp_id=exp_id, path="results.json", role="result", body='{"metric": 1}\n')
-        self._write_and_associate(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
-        self._write_and_associate(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
+        self._submit(exp_id=exp_id, path="results.json", role="result", body='{"metric": 1}\n')
+        self._submit(exp_id=exp_id, path="report.md", role="report", body=VALID_REPORT)
+        self._submit(exp_id=exp_id, path="graph.json", role="graph", body=VALID_GRAPH)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp_id, transition="submit_results")
         self._pass_review(exp_id=exp_id, role="experiment_reviewer")
         self.call(
@@ -955,7 +847,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_fresh_capability_revokes_the_open_request(self) -> None:
         exp = self.call("experiment.create", name="revoke-on-refresh", project_id=self.project_id, intent="Revoke on refresh.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         old = self.call(
             "review.request",
@@ -1004,7 +896,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_stale_review_session_cannot_yank_an_advanced_experiment(self) -> None:
         exp = self.call("experiment.create", name="stale-session", project_id=self.project_id, intent="Stale session.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         old = self.call(
             "review.request",
@@ -1048,7 +940,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_review_request_returns_a_spawn_ready_handoff(self) -> None:
         exp = self.call("experiment.create", name="review-helper", project_id=self.project_id, intent="Review helper.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
 
         req = self.call(
@@ -1069,7 +961,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_review_session_cannot_be_opened_by_the_producer(self) -> None:
         exp = self.call("experiment.create", name="review-helper-bad", project_id=self.project_id, intent="Review helper.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         req = self.call(
             "review.request",
@@ -1236,7 +1128,7 @@ class WorkflowGateTest(unittest.TestCase):
 
     def test_design_review_rejection_cannot_return_to_running(self) -> None:
         exp = self.call("experiment.create", name="exp-9", project_id=self.project_id, intent="Design reject.")
-        self._write_and_associate(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
+        self._submit(exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN)
         self.call("experiment.transition", project_id=self.project_id, experiment_id=exp["id"], transition="submit_design")
         session_id = self._open_review_session(exp_id=exp["id"], role="design_reviewer")
         with self.assertRaises(ValidationError):

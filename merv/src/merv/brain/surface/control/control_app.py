@@ -20,7 +20,6 @@ from ...application.experiments.tracking import (
 )
 from ...application.experiments.transition import TransitionExperiment
 from ...application.queries import ComputeCostQuery, ExperimentFigureQuery, LogicGraphQuery, MlflowOverviewQuery, TenantCountersQuery
-from ...application.resource_content import HostedResourceContentQuery
 from ...application.timeline import EventTimelineQuery
 from ...application.reflections import ReflectionCommands
 from ...application.status_guidance import StatusGuidancePolicy
@@ -94,12 +93,7 @@ class ControlApp:
         )
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
         self.produced_objects = StorageObjectCatalog(store=store)
-        self.artifacts = ArtifactsFacade(
-            core.resources, submissions=core.artifact_submissions
-        )
-        self.hosted_resource_content_query = HostedResourceContentQuery(
-            artifacts=self.artifacts
-        )
+        self.artifacts = ArtifactsFacade(submissions=core.artifact_submissions)
         self.experiment_exhibits = ExperimentExhibits(
             research=self.research_core,
             artifacts=self.artifacts,
@@ -153,7 +147,6 @@ class ControlApp:
             projects=core.projects,
             claims=core.claims,
             experiments=self.experiment_collection_query,
-            resources=core.resources,
             storage=storage,
         )
 
@@ -192,7 +185,7 @@ class ControlApp:
         self.project_dashboard_query = ProjectDashboardQuery(
             snapshots=self.research_snapshots,
             workflow=self.workflow,
-            resources=core.resources.list_resources,
+            artifacts=core.artifact_submissions.find,
             review_queue=core.reviews.queue,
             recent_events=store.recent_events,
             health=lambda: self._tracking.health(),
@@ -234,7 +227,6 @@ class ControlApp:
                 claims=core.claims,
                 create_experiment=self.create_experiment,
                 reflection_tools=self.reflection_commands,
-                resources=core.resources,
                 artifact_submissions=core.artifact_submissions,
                 storage=storage,
                 reviews=core.reviews,
@@ -257,9 +249,7 @@ class ControlApp:
         self.http = HttpDependencies(
             projects=core.projects,
             reviews=core.reviews,
-            artifact_records=core.resources,
             artifact_submissions=core.artifact_submissions,
-            artifacts=self.artifacts,
             feed=core.feed,
             sandboxes=self.sandboxes,
             storage=storage,
@@ -270,7 +260,6 @@ class ControlApp:
             structured_log=self.structured_logger,
             experiment_detail=self.experiment_detail_query,
             experiment_collection=self.experiment_collection_query,
-            hosted_resource_content=self.hosted_resource_content_query,
             compute_cost=self.compute_cost_query,
             logic_graph=self.logic_graph_query,
             workflow=self.workflow,

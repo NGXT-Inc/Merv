@@ -90,7 +90,7 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         names = {tool["name"] for tool in response["result"]["tools"]}
 
         self.assertIn("claim.create", names)
-        self.assertIn("resource.register", names)
+        self.assertIn("artifact.submit", names)
         self.assertIn("sandbox.get", names)
         self.assertIn("project", names)
         self.assertNotIn("project.connect", names)
@@ -156,16 +156,22 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertFalse(current["exists"])
         self.assertIn('action="connect"', current["hint"])
 
-    def test_data_tool_reads_local_file_and_submits_observation_to_control(
-        self,
-    ) -> None:
-        (self.repo / "note.txt").write_text("hello from proxy-local data plane\n")
-
-        resource = self._call("resource.register", {"path": "note.txt"})
-
-        self.assertEqual(resource["path"], "note.txt")
-        self.assertEqual(resource["project_id"], self.project["id"])
-        self.assertTrue(resource["current_version"]["content_sha256"])
+    def test_artifact_submit_routes_to_control_and_returns_upload_line(self) -> None:
+        experiment = self._call(
+            "experiment.create",
+            {"name": "proxy-split", "intent": "Route artifact.submit to control."},
+        )
+        pending = self._call(
+            "artifact.submit",
+            {
+                "target_type": "experiment",
+                "target_id": experiment["id"],
+                "role": "plan",
+                "path": "plan.md",
+            },
+        )
+        self.assertTrue(pending["artifact_id"].startswith("art_"))
+        self.assertIn("curl -sf -T plan.md", pending["run"])
 
     def test_enriched_control_health_reports_proxy_data_plane_and_cloud(self) -> None:
         health = self._call("sandbox.health")
@@ -535,9 +541,9 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
                 return {}
 
         proxy._local_data_plane = _Executor()  # type: ignore[assignment]
-        proxy._call_local_data(name="resource.register", arguments={"project_id": "proj_evil"})
+        proxy._call_local_data(name="storage.upload_file", arguments={"project_id": "proj_evil"})
 
-        self.assertEqual(captured["name"], "resource.register")
+        self.assertEqual(captured["name"], "storage.upload_file")
         self.assertNotIn("project_id", captured["arguments"])
 
 

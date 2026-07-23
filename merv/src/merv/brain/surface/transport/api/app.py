@@ -12,7 +12,7 @@ from ..data_plane_http import register_data_plane_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
-from . import artifacts, claims, events, experiments, litreview, meta, projects, reflections, resources, reviews, sandboxes, storage
+from . import artifacts, claims, events, experiments, litreview, meta, projects, reflections, reviews, sandboxes, storage
 from .context import ApiRouteContext
 from .dependencies import HttpDependencies
 from .gateway import (
@@ -85,12 +85,6 @@ def create_fastapi_app(
         reflections.build_router(graphs=api.logic_graph),
         litreview.build_router(literature=api.literature),
         artifacts.build_router(submissions=api.artifact_submissions),
-        resources.build_router(
-            ctx,
-            records=api.artifact_records,
-            artifacts=api.artifacts,
-            content_query=api.hosted_resource_content,
-        ),
         storage.build_router(storage=api.storage),
         reviews.build_router(ctx, review_delivery=api.reviews),
         sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),
@@ -113,7 +107,6 @@ def create_fastapi_app(
     register_data_plane_routes(
         http,
         authorize_project=gateway.authorize_data_plane_project,
-        artifacts=api.artifact_records,
         feed=api.feed,
         sandboxes=api.sandboxes,
     )

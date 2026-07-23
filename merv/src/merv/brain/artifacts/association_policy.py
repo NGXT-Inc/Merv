@@ -1,39 +1,30 @@
-"""Resource-association vocabulary validation owned by Artifacts."""
+"""Artifact-association vocabulary validation owned by Artifacts."""
 
 from __future__ import annotations
 
 from merv.shared.artifact_roles import (
+    ARTIFACT_TARGET_TYPES,
     LEGACY_PROJECT_GRAPH_ROLE,
-    LEGACY_PROPOSALS_ROLE,
-    LEGACY_REFLECTION_DOC_ROLE,
-    LEGACY_REFLECTION_LENS_DOC_ROLE,
-    LEGACY_RESOURCE_ROLES,
+    LEGACY_ROLE_REPLACEMENTS,
     PROJECT_GRAPH_ROLE,
-    REFLECTION_LENS_DOC_ROLE,
-    RESOURCE_ROLES,
-    RESOURCE_TARGET_TYPES,
+    SUBMITTABLE_ROLES,
 )
 
 from ..kernel.utils import ValidationError
 
 
-def validate_resource_association(*, target_type: str, role: str) -> None:
-    if target_type not in RESOURCE_TARGET_TYPES:
-        allowed = sorted(RESOURCE_TARGET_TYPES)
+def validate_artifact_association(*, target_type: str, role: str) -> None:
+    if target_type not in ARTIFACT_TARGET_TYPES:
+        allowed = sorted(ARTIFACT_TARGET_TYPES)
         raise ValidationError(
-            f"unknown resource target type: {target_type}. "
+            f"unknown artifact target type: {target_type}. "
             f"Allowed target types: {', '.join(allowed)}",
             details={"allowed_target_types": allowed},
         )
-    if role in LEGACY_RESOURCE_ROLES:
-        replacements = {
-            LEGACY_REFLECTION_LENS_DOC_ROLE: REFLECTION_LENS_DOC_ROLE,
-            LEGACY_REFLECTION_DOC_ROLE: "reflection_doc",
-            LEGACY_PROPOSALS_ROLE: "change_spec",
-        }
-        replacement = replacements[role]
+    if role in LEGACY_ROLE_REPLACEMENTS:
+        replacement = LEGACY_ROLE_REPLACEMENTS[role]
         raise ValidationError(
-            f"legacy resource role {role!r} is read-only for old records; "
+            f"legacy artifact role {role!r} is read-only for old records; "
             f"use {replacement!r}",
             details={"legacy_role": role, "replacement_role": replacement},
         )
@@ -46,12 +37,12 @@ def validate_resource_association(*, target_type: str, role: str) -> None:
                 "replacement_role": PROJECT_GRAPH_ROLE,
             },
         )
-    if role not in RESOURCE_ROLES:
-        allowed = sorted(RESOURCE_ROLES)
+    if role not in SUBMITTABLE_ROLES:
+        allowed = sorted(SUBMITTABLE_ROLES)
         raise ValidationError(
-            f"unknown resource role: {role}. Allowed roles: {', '.join(allowed)}",
+            f"unknown artifact role: {role}. Allowed roles: {', '.join(allowed)}",
             details={
-                "allowed_resource_roles": allowed,
+                "allowed_roles": allowed,
                 "recommended_result_role": "result",
             },
         )

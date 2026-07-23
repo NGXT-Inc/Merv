@@ -6,16 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from merv.shared.artifact_roles import (
-    RESOURCE_ROLES,
-    RESOURCE_TARGET_TYPES,
-    SUBMITTABLE_ROLES,
-)
+from merv.shared.artifact_roles import ARTIFACT_TARGET_TYPES, SUBMITTABLE_ROLES
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB
-from merv.shared.tool_validation import (
-    validate_openssh_public_key,
-    validate_resource_register_mode,
-)
+from merv.shared.tool_validation import validate_openssh_public_key
 
 from ...research_core.facade import REVIEW_VERDICT_VALUES
 
@@ -228,7 +221,7 @@ class ExperimentCreateInput(ProjectScopedInput):
     )
     intent: str = Field(
         default="",
-        description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md resource.",
+        description="Durable one-line headline for the experiment (its UI title). The full design belongs in the plan.md artifact.",
     )
     tested_claim_ids: list[str] | str | None = Field(default_factory=list)
     claim_id: str | None = Field(
@@ -412,117 +405,10 @@ class ReflectionTransitionInput(ProjectScopedInput):
     ]
 
 
-class ResourceRegisterInput(ProjectScopedInput):
-    path: str | None = Field(
-        default=None,
-        description="Repo-relative file path for a single file to register.",
-    )
-    paths: list[str] | None = Field(
-        default=None,
-        description=(
-            "Repo-relative paths to register/observe as a batch (changed-files "
-            "sweep). Provide 'path' (one file), 'paths' (many), or 'resource_id' "
-            "(associate an already-registered resource)."
-        ),
-    )
-    resource_id: str | None = Field(
-        default=None,
-        description=(
-            "Associate an ALREADY-registered resource to the target trio "
-            "instead of registering a new file. Requires target_type, "
-            "target_id, and role."
-        ),
-    )
-    kind: str = "other"
-    title: str = ""
-    created_by: str = "codex"
-    target_type: str | None = Field(
-        default=None,
-        description=(
-            "Association target kind. Provide the trio (target_type, target_id, "
-            "role) together to associate the registered/observed resource(s)."
-        ),
-        json_schema_extra={"enum": sorted(RESOURCE_TARGET_TYPES)},
-    )
-    target_id: str | None = Field(
-        default=None,
-        description="Id of the claim, experiment, review, or attempt to associate to.",
-    )
-    role: str | None = Field(
-        default=None,
-        description="Resource association role. Use 'result' for experiment output files.",
-        json_schema_extra={"enum": sorted(RESOURCE_ROLES)},
-    )
-
-    @model_validator(mode="after")
-    def _check_modes(self) -> "ResourceRegisterInput":
-        validate_resource_register_mode(
-            path=self.path,
-            paths=self.paths,
-            resource_id=self.resource_id,
-            target_type=self.target_type,
-            target_id=self.target_id,
-            role=self.role,
-        )
-        return self
-
-
-class ResourceDeleteInput(ProjectScopedInput):
-    resource_id: str
-
-
-class ResourceFindInput(ProjectScopedInput):
-    resource_id: str | None = Field(
-        default=None,
-        description=(
-            "Resolve one registered resource by id (hydrated row). Omit to list "
-            "resources with the filters below."
-        ),
-    )
-    include_history: bool = Field(
-        default=False,
-        description=(
-            "In resolve mode, also return the resource's immutable observed "
-            "'versions' (oldest-first) — the former resource.history."
-        ),
-    )
-    kind: str | None = Field(
-        default=None,
-        description="List filter: one resource kind (e.g. 'dataset', 'code').",
-    )
-    experiment_id: str | None = Field(
-        default=None,
-        description="List filter: only resources associated with this experiment.",
-    )
-    missing: bool | None = Field(
-        default=None,
-        description="List filter by file presence: true=only missing-on-disk, false=only present.",
-    )
-    compact: bool = Field(
-        default=False,
-        description=(
-            "List mode: return a lean projection (id, path, kind, title, "
-            "version_token, current_version_id, missing, updated_at) and OMIT "
-            "the heavy nested current_version + associations. Use version_token "
-            "to detect changes without re-pulling full payloads."
-        ),
-    )
-    limit: int | None = Field(
-        default=None,
-        ge=1,
-        description="List mode: max resources to return (page size).",
-    )
-    offset: int = Field(
-        default=0,
-        ge=0,
-        description="List mode: number of resources to skip (pagination).",
-    )
-
-
 class ArtifactSubmitInput(ProjectScopedInput):
     target_type: str = Field(
         description="Workflow target kind the artifact attaches to.",
-        json_schema_extra={"enum": sorted(RESOURCE_TARGET_TYPES)},
+        json_schema_extra={"enum": sorted(ARTIFACT_TARGET_TYPES)},
     )
     target_id: str = Field(
         description="Id of the experiment, reflection, claim, or review."
@@ -1239,7 +1125,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         description=(
             "Get one experiment state. Includes 'allowed_transitions': the "
             "transitions available from the current status, each with what it "
-            "'requires' (e.g. a registered plan resource, a passing review). "
+            "'requires' (e.g. a submitted plan artifact, a passing review). "
             "Once running or later, includes the central 'mlflow' context and "
             "any plugin-created 'mlflow_run' identity for quantitative logging."
         ),
@@ -1337,7 +1223,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ReflectionGetInput,
         description=(
             "Get one reflection wave state: roster, per-lens "
-            "reflection coverage, current-attempt resources, reviews, and "
+            "reflection coverage, current-attempt artifacts, reviews, and "
             "allowed_transitions with preconditions. Includes gate_checklist "
             "for missing lenses/artifacts/review state, and project_graph_diff "
             "when a submitted project graph can be compared with the previous "
@@ -1421,45 +1307,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "filter the project's complete artifacts by target_type/"
             "target_id/role. Compact rows: id, target, role, attempt, "
             "lens_id, path label, title, size, timestamps."
-        ),
-    ),
-    "resource.register": ToolContract(
-        handler_identity="local.register_resource",
-        execution_strategy="local-orchestration",
-        input_model=ResourceRegisterInput,
-        description=(
-            "Register repo file(s) as resources and, optionally, associate them "
-            "to a claim, experiment, review, or attempt in one call. Pass 'path' "
-            "(one file) or 'paths' (a changed-files batch) to register/observe "
-            "the file(s); add the association trio (target_type, target_id, "
-            "role) to also associate each registered resource. Or pass "
-            "'resource_id' to associate an ALREADY-registered resource — that "
-            "mode requires the trio. Association validates the file against the "
-            "role: gated artifacts (plan, report, graph, project_graph, "
-            "reflection_doc, reflection_lens_doc, change_spec) are size-capped "
-            "and their figure links resolved at register time, so keep them lean "
-            "and reference raw data instead of inlining it."
-        ),
-    ),
-    "resource.delete": ToolContract(
-        handler_identity="resources.delete",
-        visibility="internal",
-        input_model=ResourceDeleteInput,
-        description=(
-            "Delete a resource from active project tracking while preserving "
-            "observed version history."
-        ),
-    ),
-    "resource.find": ToolContract(
-        handler_identity="operations.resource_find",
-        input_model=ResourceFindInput,
-        description=(
-            "Find registered resources. Pass 'resource_id' (with optional "
-            "include_history=true for its immutable observed versions) to "
-            "resolve one hydrated resource; otherwise list resources with "
-            "filters (kind/experiment_id/missing), pagination (limit/offset), "
-            "and compact=true for a lean projection that omits the heavy "
-            "current_version (use version_token to detect changes)."
         ),
     ),
     "storage.put_object": ToolContract(
@@ -1643,11 +1490,11 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "This is a proxy-local data tool: pass key_path for the caller-owned "
             "private key when sandbox.get does not already include ssh.key_path. "
             "Use object storage tools for heavy artifacts. Use this before "
-            "resource.register or sandbox.release; "
+            "artifact.submit or sandbox.release; "
             "omit paths to pull common retained outputs. "
             "Existing local files are kept unless overwrite=true — ones that "
             "differ from the sandbox are reported in files_kept_stale, so check "
-            "it before registering results from a re-run. Remote symlinks and "
+            "it before submitting results from a re-run. Remote symlinks and "
             "device nodes are never recreated locally. One failing path is "
             "reported in errors/paths_failed without discarding the rest."
         ),

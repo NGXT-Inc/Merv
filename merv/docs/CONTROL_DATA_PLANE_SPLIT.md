@@ -53,10 +53,9 @@ inspect paths under a checkout.
 
 | Component | Modules | Why proxy-side |
 |---|---|---|
-| Resource observation | `src/merv/proxy/dataplane/resource_observer.py`, `src/merv/proxy/dataplane/resource_artifacts.py` | Reads repo files, hashes bytes, captures gated artifacts. |
 | Experiment folders | `src/merv/proxy/dataplane/experiment_folders.py`, `src/merv/proxy/workspace.py` | Creates `experiments/<name>/` in the checkout. |
 | Feed attachments | `src/merv/proxy/dataplane/feed_images.py`, `src/merv/proxy/dataplane/feed_embeds.py` | Reads local images and HTML embeds submitted with feed posts. |
-| Resource paths | `src/merv/proxy/dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
+| Repo paths | `src/merv/proxy/dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
 | Storage transfer and guidance | `src/merv/shared/file_transfer.py`, `src/merv/shared/storage_guidance.py`, called by `src/merv/proxy/local_data_plane.py` | Hashes and transfers local checkout files through presigned object-store URLs while sharing stable guidance with the brain. |
 | Sandbox output pulls | `src/merv/proxy/dataplane/sandbox_outputs.py` | Runs safe `rsync` from the sandbox into the local experiment folder. |
 | Project links | `src/merv/proxy/project_links.py` | Maps checkout folders to brain project ids in `project_links.sqlite`. |
@@ -65,11 +64,11 @@ inspect paths under a checkout.
 The proxy has a hard zero-brain-import invariant, for both ordinary and dynamic
 imports. It may import only the standard library, `merv.proxy`, and
 dependency-free `merv.shared`; shared code imports neither plane. Stable wire
-shape checks such as OpenSSH public-key and resource-register mode validation
-are shared, while authoritative artifact and workflow policy validation occurs
-on brain submission endpoints before any mutation. The former proxy-side
-`resource_validation.py` helper was deleted because it had no production
-consumer.
+shape checks such as OpenSSH public-key validation are shared, while
+authoritative artifact and workflow policy validation occurs on brain
+submission endpoints before any mutation. The proxy carries zero
+artifact-specific code: `artifact.submit` is control-plane, and the bytes
+travel over the agent's own curl against the token-bearer upload routes.
 
 ## Tool split
 
@@ -77,7 +76,6 @@ Control tools go to the brain. Data tools run in the proxy and submit explicit
 facts or bytes to the brain:
 
 - `experiment.materialize_folders`
-- `resource.register` (register file(s) + optionally associate + capture bytes)
 - `storage.upload_file` and `storage.download_file`
 - `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs`
 - `feed.post` (captures an optional local image or HTML embed before recording

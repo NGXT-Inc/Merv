@@ -70,7 +70,7 @@ class GateChecklistPresentationTest(unittest.TestCase):
                 "missing",
             ],
         )
-        self.assertEqual(item["action"], "write_and_associate_plan_resource")
+        self.assertEqual(item["action"], "write_and_submit_plan")
 
     def test_review_item_uses_application_owned_skill_and_pass_action(self) -> None:
         base = {

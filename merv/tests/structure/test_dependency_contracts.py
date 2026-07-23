@@ -41,7 +41,7 @@ application/queries.py | ExperimentFigureQuery | sandbox_status_active | Callabl
 application/queries.py | TenantCountersQuery | event_count | Callable[..., int]
 application/queries.py | TenantCountersQuery | generation_counters | RecordQuery
 application/queries.py | ComputeCostQuery | project_spend | RecordQuery
-application/workflow.py | ProjectDashboardQuery | resources | RecordQuery
+application/workflow.py | ProjectDashboardQuery | artifacts | RecordQuery
 application/workflow.py | ProjectDashboardQuery | review_queue | RecordQuery
 application/workflow.py | ProjectDashboardQuery | recent_events | RecordQuery
 application/workflow.py | ProjectDashboardQuery | health | Callable[[], dict[str, object]]

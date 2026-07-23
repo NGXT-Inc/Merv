@@ -90,7 +90,7 @@ def build_router(
     def home(project_id: str, request: Request) -> Response:
         # Composite signal ETag. The home payload is a pure function of three
         # inputs: the event ledger (claims/experiments/reviews/reflections/
-        # resources all append events), live sandbox rows (heartbeats bump
+        # artifacts all append events), live sandbox rows (heartbeats bump
         # updated_at but write no event), and the MLflow reachability probe
         # (external, 5s-cached). A 304 skips the heavy status/experiment render.
         return conditional_json_from_signal(

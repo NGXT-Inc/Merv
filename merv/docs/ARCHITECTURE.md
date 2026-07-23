@@ -13,7 +13,7 @@ for machine-learning research. Its durable model is:
 - **Project** — the scope for research state and policy.
 - **Claim** — what the project currently believes.
 - **Experiment** — a planned, executed, and reviewed test of one or more claims.
-- **Resource** — a registered repo file and its observed versions.
+- **Artifact** — a typed document submitted against a workflow target.
 - **Review** — an independent judgment pinned to an immutable target snapshot.
 - **Reflection** — a reviewed project-wide update to the logic graph, claims,
   and next experiment wave.
@@ -47,7 +47,7 @@ flowchart LR
 
 The brain is the single authority for research records and policy. It owns:
 
-- projects, claims, experiments, resources, reviews, reflections, and events;
+- projects, claims, experiments, artifacts, reviews, reflections, and events;
 - workflow gates, artifact lints, permissions, and reviewer capabilities;
 - sandbox registry, provider credentials, quotas, reapers, and cleanup;
 - blob metadata, optional heavy-object storage, and MLflow context;
@@ -96,7 +96,7 @@ local package installation. The `merv-client` CLI, `merv-http`, the brain, and
 the distributable wheel retain their Python 3.11+ floor.
 
 Pure two-sided contracts live in `merv.shared`: error identities, path naming,
-resource-observation wire records, narrow tool-shape validation, storage
+narrow tool-shape validation, storage
 transfer/guidance, feed-media primitives, artifact roles, and markdown-image
 parsing. Workflow policy, Pydantic models, service composition, and mutation
 authority remain brain-owned.
@@ -115,12 +115,13 @@ It resolves project scope from the local checkout link and injects an explicit
 `research_state_ui` is a React/Vite supervisory interface, not an agent runtime.
 It reads project-scoped HTTP views, uses server-sent events for prompt refreshes,
 and falls back to conditional polling with ETags. It renders desktop and mobile
-surfaces for claims, experiments, reviews, resources, reflection waves,
+surfaces for claims, experiments, reviews, artifacts, reflection waves,
 sandboxes, MLflow, storage, events, and the research feed.
 
-The browser cannot perform checkout-local operations. Resource registration,
-folder creation, local storage transfer, feed-image capture, and sandbox output
-pulls must go through the local MCP proxy.
+The browser cannot perform checkout-local operations. Folder creation, local
+storage transfer, feed-image capture, and sandbox output pulls must go through
+the local MCP proxy; artifact submission is agent-driven (artifact.submit plus
+the returned upload command).
 
 ## Composition and persistence
 
@@ -169,7 +170,6 @@ checkout-sensitive tools run in the proxy and submit validated facts or bytes
 to the brain:
 
 - `experiment.materialize_folders`;
-- `resource.register`;
 - `storage.upload_file` and `storage.download_file`;
 - `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs`;
 - `feed.post`.
@@ -218,28 +218,28 @@ or to `reflecting` when the fan-out must be repeated.
 
 All meaning-changing actions use typed MCP or HTTP operations. Editing a local
 file does not mutate research state. A file becomes evidence only after
-`resource.register` observes it and, when requested, associates the submitted
-version with a target and role.
+`artifact.submit` mints an upload and the agent runs the returned command,
+pinning the bytes against a target and role.
 
 ## Evidence and storage
 
 Three storage layers have distinct purposes:
 
 1. **Repo files** hold source, plans, compact results, reports, figures, and
-   logic graphs. The proxy registers them as resources.
+   logic graphs. The agent submits the mandated ones as artifacts.
 2. **Submitted-byte blobs** pin size-capped gated artifacts and selected small
    metric JSON so lints and reviewers see immutable submissions rather than a
    later working-tree edit.
 3. **Heavy-object storage** keeps large datasets, checkpoints, archives, and
    other valuable files that should not live in git.
 
-Artifacts owns resource identities, associations, submitted versions, figure
+Artifacts owns artifact identities, upload tokens, figure
 membership, and byte retrieval. Research receives those immutable facts through
 the public `EvidenceReader` port, then applies experiment/reflection gate and
 review policy. Research never queries Artifact tables or reads blobs directly.
 
 MLflow is the quantitative run ledger. Plugin state stores the research meaning
-around those runs: claim links, reviewed conclusions, resource references, and
+around those runs: claim links, reviewed conclusions, artifact references, and
 workflow state.
 
 Nothing on a sandbox is durable by default. Before release or expiry, agents

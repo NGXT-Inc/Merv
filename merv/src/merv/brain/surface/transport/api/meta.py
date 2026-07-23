@@ -39,7 +39,6 @@ def build_router(
         payload["capabilities"] = {
             "hosted_control": surface.hosted_control,
             "local_data_plane_http": surface.allow_data_plane_http,
-            **surface.data_plane_http_capabilities(),
         }
         # Auth handshake: tells the UI whether to show a login and which
         # Supabase project to sign in against (public values only).

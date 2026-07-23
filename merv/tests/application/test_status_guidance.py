@@ -132,7 +132,7 @@ class StatusGuidanceContractTest(unittest.TestCase):
                         items=(
                             {
                                 "status": "missing",
-                                "missing": "logic graph resource (role 'graph')",
+                                "missing": "logic graph artifact (role 'graph')",
                             },
                         ),
                     ),
@@ -140,9 +140,9 @@ class StatusGuidanceContractTest(unittest.TestCase):
             ),
         )
         self.assertEqual(result["current_gate"], "logic_graph_required")
-        self.assertEqual(result["next_action"], "write_and_associate_logic_graph")
+        self.assertEqual(result["next_action"], "write_and_submit_logic_graph")
         self.assertEqual(
-            result["missing_evidence"], ["logic graph resource (role 'graph')"]
+            result["missing_evidence"], ["logic graph artifact (role 'graph')"]
         )
 
     def test_live_sandbox_changes_only_the_execution_gate_name(self) -> None:

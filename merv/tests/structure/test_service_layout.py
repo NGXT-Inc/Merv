@@ -509,7 +509,6 @@ class ServiceLayoutTest(unittest.TestCase):
         expected_imports = {
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"dataclasses", "typing"},
-            "resource_records.py": {"typing", "merv.shared.resource_records"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
             "sandbox_worker.py": {"pathlib", "typing"},
             "reflection_writers.py": {"typing"},
@@ -530,48 +529,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse((PORTS_ROOT / "reflection_waves.py").exists())
         self.assertFalse((PORTS_ROOT / "review_targets.py").exists())
         self.assertFalse((PORTS_ROOT / "workflow_readers.py").exists())
-        resource_record_path = PORTS_ROOT / "resource_records.py"
-        resource_record_source = resource_record_path.read_text(encoding="utf-8")
-        self.assertNotIn("class ResourceObservation", resource_record_source)
-        self.assertIn(
-            "from merv.shared.resource_records import ResourceObservation",
-            resource_record_source,
-        )
-        self.assertIn("class ResourceObserver", resource_record_source)
-        self.assertNotIn("class ResourceAssociationPolicy", resource_record_source)
-        self.assertEqual(
-            _class_method_names(resource_record_path, "ResourceObserver"),
-            {"observe_file"},
-        )
-        from merv.brain.kernel.ports.resource_records import (
-            ResourceObservation,
-            ResourceObserver,
-        )
-        from merv.shared.resource_records import (
-            ResourceObservation as SharedResourceObservation,
-        )
-
-        self.assertTrue(is_typeddict(ResourceObservation))
-        self.assertIs(ResourceObservation, SharedResourceObservation)
-        self.assertEqual(ResourceObservation.__module__, "merv.shared.resource_records")
-        self.assertEqual(
-            set(get_type_hints(ResourceObservation)),
-            {
-                "path",
-                "kind",
-                "title",
-                "created_by",
-                "mtime_ns",
-                "ctime_ns",
-                "size_bytes",
-                "content_sha256",
-                "content_type",
-            },
-        )
-        self.assertIs(
-            get_type_hints(ResourceObserver.observe_file)["return"],
-            ResourceObservation,
-        )
+        # The resource-observation port died with the resource system.
+        self.assertFalse((PORTS_ROOT / "resource_records.py").exists())
         reflection_writer_path = PORTS_ROOT / "reflection_writers.py"
         self.assertEqual(
             _class_method_names(reflection_writer_path, "ReflectionClaimWriter"),
@@ -636,53 +595,26 @@ class ServiceLayoutTest(unittest.TestCase):
             self.assertNotIn("sandbox.rsync_error", source)
             self.assertNotIn("initial_rsynchronized", source)
 
-    def test_resource_service_records_observations_without_local_observer(self) -> None:
-        source = _artifacts_source("resources.py")
-        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
-
-        self.assertNotIn("resource_records", imports)
-        self.assertIn("def record_observation(", source)
-        self.assertNotIn("observer: ResourceObserver", source)
-        self.assertNotIn("self.observer", source)
-        self.assertNotIn("observe_file", source)
-        self.assertNotIn("def register_file(", source)
-        self.assertNotIn("def _register_one(", source)
-        self.assertNotIn("_resolve_repo_file", source)
-        self.assertNotIn("def _content_sha256(", source)
-        self.assertNotIn("file_path.stat(", source)
-
-    def test_resource_association_uses_submitted_artifact_bytes(self) -> None:
-        source = _artifacts_source("resources.py")
-        start = source.index("    def associate(")
-        end = source.index("    def associate_observed(")
-        associate_slice = source[start:end]
-
-        self.assertIn("self.associate_observed", associate_slice)
-        self.assertNotIn("_resolve_repo_file", source)
-        self.assertNotIn("_ensure_current_version_for_resource", source)
-        self.assertNotIn("_capture_gated_blob", source)
-
-    def test_resource_service_has_no_local_file_reads(self) -> None:
-        source = _artifacts_source("resources.py")
+    def test_submission_service_has_no_local_file_reads(self) -> None:
+        # The brain never reads a checkout: every consumed byte arrives via the
+        # token-bearer upload PUT. The submission service owns association
+        # legality but no permissions and no filesystem.
+        source = _artifacts_source("submissions.py")
+        imports = _import_segments(ARTIFACTS_ROOT / "submissions.py")
 
         self.assertNotIn(".read_bytes(", source)
         self.assertNotIn("repo_root", source)
         self.assertNotIn("self.workspace", source)
-        self.assertNotIn("backfill_gated_blobs", source)
-
-    def test_resource_service_owns_association_policy(self) -> None:
-        source = _artifacts_source("resources.py")
-        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
-
+        self.assertNotIn("observe_file", source)
         self.assertNotIn("permissions", imports)
         self.assertIn("association_policy", imports)
         self.assertNotIn("permissions:", source)
         self.assertNotIn("self.permissions", source)
-        self.assertIn("validate_resource_association(", source)
+        self.assertIn("validate_artifact_association(", source)
 
-        from merv.brain.artifacts.resources import ResourceService
+        from merv.brain.artifacts.submissions import ArtifactSubmissionService
 
-        get_type_hints(ResourceService.__init__)
+        get_type_hints(ArtifactSubmissionService.__init__)
 
     def test_review_service_owns_vocabulary_validation(self) -> None:
         imports = _import_segments(RESEARCH_CORE / "reviews.py")
@@ -880,17 +812,6 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertIs(kernel_helper, shared_helper)
 
-    def test_resource_observation_port_reexport_preserves_shared_identity(self) -> None:
-        from merv.brain.kernel.ports.resource_records import (
-            ResourceObservation as PortObservation,
-        )
-        from merv.shared.resource_records import (
-            ResourceObservation as SharedObservation,
-        )
-
-        self.assertIs(PortObservation, SharedObservation)
-        self.assertEqual(PortObservation.__module__, "merv.shared.resource_records")
-
     def test_iso_parsing_is_single_sourced(self) -> None:
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             if path.name == "utils.py":
@@ -1039,7 +960,7 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_control_services_do_not_leak_sqlite_connection_types(self) -> None:
         for path in (
-            ARTIFACTS_ROOT / "resources.py",
+            ARTIFACTS_ROOT / "submissions.py",
             BACKEND_ROOT / "sandbox" / "facade.py",
         ):
             with self.subTest(module=path.name):
@@ -1166,33 +1087,16 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("self.reviews.request_project_id(", source)
         self.assertNotIn("SELECT project_id FROM review_requests", source)
 
-    def test_http_data_plane_capabilities_use_policy_table(self) -> None:
-        source = _api_app_source()
+    def test_http_data_plane_capabilities_stay_retired(self) -> None:
+        # The resource-registration browser capabilities died with the
+        # resource system; the policy table must not grow back.
         route_source = _api_package_source()
         policy_source = (SURFACE_ROOT / "transport" / "http_policy.py").read_text(
             encoding="utf-8"
         )
-        from merv.brain.surface.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
-
-        self.assertEqual(
-            HTTP_DATA_PLANE_FEATURE_TO_TOOL,
-            {
-                "resource_registration": "resource.register",
-                "resource_association": "resource.register",
-            },
-        )
-        self.assertIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", policy_source)
-        self.assertIn("surface.data_plane_http_capabilities()", route_source)
+        self.assertNotIn("HTTP_DATA_PLANE_FEATURE_TO_TOOL", policy_source)
+        self.assertNotIn("data_plane_http_capabilities", route_source)
         self.assertNotIn("require_data_plane_for_http", route_source)
-        self.assertNotIn("require_data_plane_for_http", source)
-        for feature, tool_name in HTTP_DATA_PLANE_FEATURE_TO_TOOL.items():
-            with self.subTest(feature=feature):
-                self.assertNotIn(f'feature="{feature}"', route_source)
-                self.assertNotIn(f'tool="{tool_name}"', route_source)
-                self.assertNotIn(
-                    f'"{feature}": surface.allow_data_plane_http',
-                    route_source,
-                )
 
     def test_admin_http_routes_are_lifted_out_of_main_factory(self) -> None:
         source = _api_app_source()
@@ -1260,7 +1164,7 @@ class ServiceLayoutTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         imports = _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py")
-        self.assertIn("artifacts.facade", imports)
+        self.assertNotIn("artifacts.facade", imports)
         self.assertIn("feed.facade", imports)
         self.assertIn("sandbox.facade", imports)
         self.assertNotIn("feed.feed", imports)
@@ -1271,9 +1175,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("def _decode_b64_field", source)
         self.assertNotIn("base64", source)
         for route in (
-            '"/api/data-plane/resources/validate-association"',
-            '"/api/data-plane/resources/observe"',
-            '"/api/data-plane/resources/associate"',
             '"/api/data-plane/feed/validate-post"',
             '"/api/data-plane/feed/post"',
             '"/api/data-plane/sandboxes/request"',
@@ -1282,19 +1183,16 @@ class ServiceLayoutTest(unittest.TestCase):
             with self.subTest(route=route):
                 self.assertIn(route, data_plane_source)
                 self.assertNotIn(route, source)
+        # The resource submission routes died with the resource system.
+        self.assertNotIn("/api/data-plane/resources/", data_plane_source)
 
-    def test_transport_delegates_resource_content_to_application_query(self) -> None:
-        routes = (HTTP_API_PACKAGE / "resources.py").read_text(encoding="utf-8")
+    def test_transport_delegates_artifact_content_to_submissions(self) -> None:
+        self.assertFalse((HTTP_API_PACKAGE / "resources.py").exists())
+        routes = (HTTP_API_PACKAGE / "artifacts.py").read_text(encoding="utf-8")
         views = _api_views_source()
-        self.assertIn("content_query(", routes)
-        self.assertIn("artifacts.submitted_figure", views)
-        self.assertNotIn("ResourceService", routes)
-        self.assertNotIn("pinned_text_for_version", routes)
-        self.assertNotIn(
-            "SELECT project_id, content_sha256 FROM resource_versions",
-            routes + views,
-        )
-        self.assertNotIn("FROM report_figures", routes + views)
+        self.assertIn("submissions.artifact_content(", routes)
+        self.assertIn("submissions.figure_bytes(", routes)
+        self.assertNotIn("FROM artifacts", routes + views)
         self.assertNotIn(".blobs.get", routes + views)
 
     def test_transport_delegates_reflection_views_to_application_query(self) -> None:
@@ -1438,12 +1336,12 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertEqual(source.count("GraphRefType("), 6)
         self.assertIn("for ref_type in GRAPH_REF_TYPES:", source)
         self.assertNotIn("EvidenceReader", source)
-        self.assertNotIn("resolve_resource_reference", source)
+        self.assertNotIn("resolve_artifact_reference", source)
         self.assertIn("def _refs_from_graph(", application)
-        self.assertIn("self.artifacts.resolve_resource_reference", application)
-        self.assertIn('elif ref.startswith("res_")', application)
-        self.assertIn("def resolve_resource_reference(", artifacts)
-        self.assertNotIn("resolve_resource_reference", evidence)
+        self.assertIn("self.artifacts.resolve_artifact_reference", application)
+        self.assertIn('if ref.startswith("art_")', application)
+        self.assertIn("def resolve_artifact_reference(", artifacts)
+        self.assertNotIn("resolve_artifact_reference", evidence)
         for prefix in ("rev_", "claim_", "exp_", "syn_", "lit_", "paper_"):
             self.assertIn(f'prefix="{prefix}"', source)
             self.assertNotIn(f'if ref.startswith("{prefix}")', source)

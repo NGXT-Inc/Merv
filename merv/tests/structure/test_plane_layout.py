@@ -338,15 +338,15 @@ class ToolPlanePartitionTest(unittest.TestCase):
             DATA_PLANE_TOOL_NAMES,
             {
                 "experiment.materialize_folders",
-                "resource.register",
                 "storage.upload_file",
                 "storage.download_file",
                 "sandbox.request",
                 "sandbox.attach",
                 "sandbox.pull_outputs",
                 # feed.post reads a local image file before recording the post,
-                # so it lives on the data plane (byte capture mirrors
-                # resource.register); find/delete are pure control records.
+                # so it lives on the data plane; find/delete are pure control
+                # records. Artifact submission is control-plane: bytes travel
+                # over the agent's own curl, not through the proxy.
                 "feed.post",
             },
         )
@@ -356,25 +356,10 @@ class ToolPlanePartitionTest(unittest.TestCase):
     def test_local_repo_file_readers_are_data_plane(self) -> None:
         self.assertLessEqual(
             {
-                "resource.register",
                 "storage.upload_file",
                 "feed.post",
             },
             DATA_PLANE_TOOL_NAMES,
-        )
-
-    def test_http_data_plane_features_point_at_data_plane_tools(self) -> None:
-        from merv.brain.surface.transport.http_policy import HTTP_DATA_PLANE_FEATURE_TO_TOOL
-
-        self.assertEqual(
-            HTTP_DATA_PLANE_FEATURE_TO_TOOL,
-            {
-                "resource_registration": "resource.register",
-                "resource_association": "resource.register",
-            },
-        )
-        self.assertLessEqual(
-            set(HTTP_DATA_PLANE_FEATURE_TO_TOOL.values()), DATA_PLANE_TOOL_NAMES
         )
 
     def test_proxy_local_data_plane_dispatches_contract_plane_sets(self) -> None:
@@ -627,25 +612,19 @@ if loaded:
             self.assertFalse((RESEARCH_CORE_ROOT / obsolete).exists())
         self.assertFalse((RESEARCH_CORE_ROOT / "next_action.py").exists())
 
-    def test_resource_service_owns_association_policy(self) -> None:
-        # ResourceService is the control-safe record half. Local observation
-        # belongs to the local composition edge, not to the record service.
-        imports = _import_segments(ARTIFACTS_ROOT / "resources.py")
+    def test_submission_service_owns_association_policy(self) -> None:
+        # ArtifactSubmissionService is the control-plane record half; the
+        # proxy carries ZERO artifact-specific code (bytes travel over the
+        # agent's own curl against the token-bearer PUT routes).
+        imports = _import_segments(ARTIFACTS_ROOT / "submissions.py")
         self.assertIn("association_policy", imports)
         self.assertNotIn("permissions", imports)
-        source = (ARTIFACTS_ROOT / "resources.py").read_text(encoding="utf-8")
+        source = (ARTIFACTS_ROOT / "submissions.py").read_text(encoding="utf-8")
         self.assertNotIn("permissions:", source)
         self.assertNotIn("self.permissions", source)
-        self.assertNotIn("observer: ResourceObserver", source)
-        self.assertNotIn("self.observer", source)
-        self.assertNotIn("def register_file(", source)
-        self.assertNotIn("class ResourceObserver", source)
         proxy_source = (PROXY_ROOT / "local_data_plane.py").read_text(encoding="utf-8")
-        contracts_source = (SERVICES_ROOT / "tools" / "contracts.py").read_text(encoding="utf-8")
-        self.assertIn('handler_identity="local.register_resource"', contracts_source)
-        self.assertIn("def _register_resource(", proxy_source)
-        self.assertIn("LocalResourceObserver", proxy_source)
-        self.assertIn("observe_file(", proxy_source)
+        self.assertNotIn("resource", proxy_source.lower())
+        self.assertNotIn("artifact.submit", proxy_source)
 
     def test_reflection_tools_present_research_facts_in_application(self) -> None:
         self.assertFalse((RESEARCH_CORE_ROOT / "reflection_tools.py").exists())
@@ -706,7 +685,6 @@ if loaded:
             "PermissionService(",
             "ProjectService(",
             "QuotaService(",
-            "ResourceService(",
             "ReviewService(",
             "ReflectionService(",
         ):
@@ -742,7 +720,6 @@ if loaded:
             "LocalDataPlaneWorker",
             "LocalWorkspace",
             "LocalFeedImageReader",
-            "LocalResourceObserver",
             "ToolCallStore",
             "ActivityLogger",
         ):

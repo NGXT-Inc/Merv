@@ -107,12 +107,12 @@ class GateEvaluation:
         return selected["leads_to"]
 
 
-def evaluate_resource_requirement(
+def evaluate_artifact_requirement(
     requirement: RoleRequirement,
     *,
     present: bool,
     problems: tuple[str, ...] = (),
-    resource_fields: GateItem | None = None,
+    artifact_fields: GateItem | None = None,
 ) -> RequirementEvaluation:
     status: EvaluationStatus = (
         "missing"
@@ -125,8 +125,8 @@ def evaluate_resource_requirement(
     )
     error = requirement.error if not present else problems[0] if problems else ""
     item: GateItem = {
-        "id": f"resource:{requirement.role}",
-        "kind": "resource",
+        "id": f"artifact:{requirement.role}",
+        "kind": "artifact",
         "role": requirement.role,
         "label": requirement.label,
         "satisfied": present and not problems,
@@ -135,10 +135,10 @@ def evaluate_resource_requirement(
     }
     if requirement.validator:
         item["validator"] = requirement.validator
-    if resource_fields is not None:
-        item.update(resource_fields)
+    if artifact_fields is not None:
+        item.update(artifact_fields)
     if not present:
-        item["missing"] = requirement.missing or f"{requirement.role} resource"
+        item["missing"] = requirement.missing or f"{requirement.role} artifact"
     if problems:
         item["problems"] = list(problems)
     return RequirementEvaluation(

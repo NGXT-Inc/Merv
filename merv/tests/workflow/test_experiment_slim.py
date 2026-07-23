@@ -11,9 +11,9 @@ from pathlib import Path
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
-SLIM_RESOURCE_KEYS = {"id", "association_role", "path", "kind", "size_bytes", "missing", "title"}
-WASTE_RESOURCE_KEYS = {"version_token", "mtime_ns", "current_version_id", "association_version_id",
-                       "git_commit", "created_by", "observed_at", "project_id", "association_attempt_index"}
+SLIM_ARTIFACT_KEYS = {"id", "association_role", "path", "lens_id", "size_bytes", "title"}
+WASTE_ARTIFACT_KEYS = {"content_sha256", "content_type", "created_by", "created_at",
+                       "updated_at", "project_id", "association_attempt_index", "association_rowid"}
 WASTE_REVIEW_KEYS = {"target_snapshot_id", "request_id", "session_id", "target_id", "target_type", "project_id"}
 
 
@@ -34,21 +34,20 @@ class ExperimentSlimTest(unittest.TestCase):
     def call(self, tool: str, **kwargs):
         return self.app.call_tool(tool, kwargs)
 
-    def _experiment_with_resources(self) -> str:
+    def _experiment_with_artifacts(self) -> str:
         exp_id = self.call(
             "experiment.create", name="reve-small", project_id=self.project_id,
             intent="Train REVE-Small.\n\nTitle: REVE-Small",
         )["id"]
-        for path, kind, role in [
-            ("experiments/004/scripts/launch.sh", "script", "code"),
-            ("experiments/004/plan.md", "plan", "plan"),
-            ("experiments/004/results/status.json", "other", "result"),
+        for path, role in [
+            ("experiments/004/plan.md", "plan"),
+            ("experiments/004/report.md", "report"),
+            ("experiments/004/results/status.json", "result"),
         ]:
-            p = self.repo / path
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x" * 50)
-            self.call("resource.register", project_id=self.project_id, path=path, kind=kind,
-                      target_type="experiment", target_id=exp_id, role=role)
+            self.app.submit_artifact(
+                project_id=self.project_id, target_type="experiment",
+                target_id=exp_id, role=role, path=path, body="x" * 50,
+            )
         return exp_id
 
     def test_create_returns_folder_guidance_without_mkdir(self) -> None:
@@ -65,15 +64,15 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertFalse((self.repo / "experiments" / "folder-test").exists())
 
     def test_get_state_tool_is_slim(self) -> None:
-        exp_id = self._experiment_with_resources()
+        exp_id = self._experiment_with_artifacts()
         slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
 
         # The duplicate all-attempts `resources` list is gone.
         self.assertNotIn("resources", slim)
         self.assertIn("current_attempt_resources", slim)
         res = slim["current_attempt_resources"][0]
-        self.assertEqual(set(res), SLIM_RESOURCE_KEYS)
-        self.assertEqual(WASTE_RESOURCE_KEYS & set(res), set())
+        self.assertEqual(set(res), SLIM_ARTIFACT_KEYS)
+        self.assertEqual(WASTE_ARTIFACT_KEYS & set(res), set())
         # Detail that get_state exists for is preserved.
         self.assertIn("intent", slim)
         self.assertIn("conclusion", slim)
@@ -85,7 +84,7 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertNotIn("prior_attempt_resources", slim)
 
     def test_get_state_review_keeps_findings_drops_bookkeeping(self) -> None:
-        exp_id = self._experiment_with_resources()
+        exp_id = self._experiment_with_artifacts()
         # Seed a review directly (FK off) with bookkeeping + findings.
         import sqlite3
         raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
@@ -112,16 +111,16 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())     # bookkeeping dropped
 
     def test_list_tool_is_slim(self) -> None:
-        self._experiment_with_resources()
+        self._experiment_with_artifacts()
         listed = self.call("experiment.list", project_id=self.project_id)["experiments"]
         self.assertNotIn("resources", listed[0])
-        self.assertEqual(set(listed[0]["current_attempt_resources"][0]), SLIM_RESOURCE_KEYS)
+        self.assertEqual(set(listed[0]["current_attempt_resources"][0]), SLIM_ARTIFACT_KEYS)
 
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
-        exp_id = self._experiment_with_resources()
+        exp_id = self._experiment_with_artifacts()
         full = self.app.experiments.get_state(experiment_id=exp_id, project_id=self.project_id)
         self.assertIn("resources", full)
-        self.assertIn("version_token", full["current_attempt_resources"][0])
+        self.assertIn("content_type", full["current_attempt_resources"][0])
 
 
 if __name__ == "__main__":

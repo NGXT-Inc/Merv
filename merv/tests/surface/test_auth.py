@@ -235,26 +235,25 @@ class AuthedSurfaceTest(unittest.TestCase):
 
     def test_membership_scopes_data_plane_and_feed_boundaries(self) -> None:
         project_id = self._create_project("Scoped", _bearer(USER_A))
-        observation = {
+        post_intent = {
             "project_id": project_id,
-            "path": "reports/status.md",
-            "kind": "report",
-            "content_sha256": "0" * 64,
-            "mtime_ns": 1,
-            "ctime_ns": 1,
-            "size_bytes": 1,
-            "content_type": "text/markdown",
+            "handle": "main",
+            "text": "Scoped data-plane write.",
         }
 
+        # The member clears authorization and reaches domain validation (400:
+        # the handle is unregistered); the non-member is cut off with 404
+        # before any service runs.
         owner_write = self.client.post(
-            "/api/data-plane/resources/observe",
-            json=observation,
+            "/api/data-plane/feed/validate-post",
+            json=post_intent,
             headers=_bearer(USER_A),
         )
-        self.assertEqual(owner_write.status_code, 200, owner_write.text)
+        self.assertEqual(owner_write.status_code, 400, owner_write.text)
+        self.assertIn("not registered", owner_write.text)
         denied_write = self.client.post(
-            "/api/data-plane/resources/observe",
-            json=observation,
+            "/api/data-plane/feed/validate-post",
+            json=post_intent,
             headers=_bearer(USER_B),
         )
         self.assertEqual(denied_write.status_code, 404, denied_write.text)

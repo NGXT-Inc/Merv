@@ -39,7 +39,7 @@ is workflow-level rather than cryptographic identity.
    producer's declared session value.
 6. `review.start` returns the current attempt's submitted gated-role artifacts
    plus any system metrics exhibit. Ordinary code, input, result, config, model,
-   and note resources are not bundled; reviewers obtain any additional context
+   and note files are not bundled; reviewers obtain any additional context
    through ordinary read-only calls. The reviewer skill imposes a procedural
    read-only role. The reviewer submits one structured verdict through:
 
@@ -84,9 +84,9 @@ revoke-and-reissue: all prior requested or started sessions for that gate become
 
 ## What the snapshot pins
 
-The snapshot identifies the target status, attempt, and exact submitted resource
+The snapshot identifies the target status, attempt, and exact submitted artifact
 versions. `review.start` bundles pinned bytes for the gated artifacts and any
-system metrics exhibit; ordinary resource versions remain snapshot references
+system metrics exhibit; ordinary artifact ids remain snapshot references
 but their bytes are not included in that response. Reviewers judge the bundled
 submissions rather than later working-tree edits. A gated file revision must be
 re-registered and reviewed under a fresh snapshot.

@@ -8,7 +8,7 @@ from typing import NamedTuple
 class RequirementGuidance(NamedTuple):
     action: str
     allowed: tuple[str, ...]
-    resource_key: str
+    artifact_key: str
 
 
 class ReadyGuidance(NamedTuple):
@@ -25,7 +25,7 @@ class ReviewGuidance(NamedTuple):
 
 EXPERIMENT_REQUIREMENTS = {
     "plan": RequirementGuidance(
-        "write_and_associate_plan_resource", ("resource.register",), "plan"
+        "write_and_submit_plan", ("artifact.submit",), "plan"
     ),
     "result": RequirementGuidance(
         "run_experiment_and_retain_results",
@@ -35,15 +35,15 @@ EXPERIMENT_REQUIREMENTS = {
             "sandbox.terminal",
             "sandbox.get",
             "experiment.transition",
-            "resource.register",
+            "artifact.submit",
         ),
         "result",
     ),
     "report": RequirementGuidance(
-        "write_and_associate_results_report", ("resource.register",), "report"
+        "write_and_submit_results_report", ("artifact.submit",), "report"
     ),
     "graph": RequirementGuidance(
-        "write_and_associate_logic_graph", ("resource.register",), "graph"
+        "write_and_submit_logic_graph", ("artifact.submit",), "graph"
     ),
 }
 
@@ -62,7 +62,7 @@ EXPERIMENT_READY = {
             "submit_results_for_review (call only once the experiment is fully "
             "complete and every success criterion in the experiment intent is "
             "satisfied; do NOT call if the experiment should continue running; "
-            "continue with sandbox.* and resource.* calls instead and only "
+            "continue with sandbox.* and artifact.submit calls instead and only "
             "transition once the work is truly done; if revision_context is "
             "present, the last review rejected this attempt or an infrastructure "
             "retry was requested — address it before resubmitting)"
@@ -73,16 +73,16 @@ EXPERIMENT_READY = {
 
 REFLECTION_REQUIREMENTS = {
     "reflection_lens_doc": RequirementGuidance(
-        "fan_out_reflection_subagents", ("resource.register",), "reflection"
+        "fan_out_reflection_subagents", ("artifact.submit",), "reflection"
     ),
     "project_graph": RequirementGuidance(
-        "update_and_associate_project_graph", ("resource.register",), "project_graph"
+        "update_and_submit_project_graph", ("artifact.submit",), "project_graph"
     ),
     "reflection_doc": RequirementGuidance(
-        "write_and_associate_reflection_doc", ("resource.register",), "reflection_doc"
+        "write_and_submit_reflection_doc", ("artifact.submit",), "reflection_doc"
     ),
     "change_spec": RequirementGuidance(
-        "write_and_associate_change_spec", ("resource.register",), "change_spec"
+        "write_and_submit_change_spec", ("artifact.submit",), "change_spec"
     ),
 }
 

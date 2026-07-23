@@ -19,7 +19,6 @@ from typing import Any
 
 from merv.shared.artifact_roles import (
     REFLECTION_LENS_DOC_ROLE,
-    SUBMITTABLE_ROLES,
     SYSTEM_CREATED_BY,
     artifact_byte_cap,
 )
@@ -46,7 +45,7 @@ from ..kernel.utils import (
     new_id,
     now_iso,
 )
-from .association_policy import validate_resource_association
+from .association_policy import validate_artifact_association
 from .ports import (
     AssociatedEvidence,
     AssociationTargetResolver,
@@ -131,12 +130,7 @@ class ArtifactSubmissionService:
         base_url: str = "",
     ) -> dict[str, Any]:
         """Validate legality, create a pending artifact, return the upload line."""
-        validate_resource_association(target_type=target_type, role=role)
-        if role not in SUBMITTABLE_ROLES:
-            raise ValidationError(
-                f"role {role!r} is not submittable; allowed roles: "
-                + ", ".join(sorted(SUBMITTABLE_ROLES))
-            )
+        validate_artifact_association(target_type=target_type, role=role)
         if role == REFLECTION_LENS_DOC_ROLE and not lens_id:
             raise ValidationError(
                 "lens_id is required for reflection_lens_doc artifacts — pass "
@@ -674,7 +668,11 @@ class ArtifactSubmissionService:
         return record
 
     def _supersede_slot(self, *, conn: Connection, row: Row) -> None:
-        """Resubmit replaces: delete prior complete artifacts in the same slot."""
+        """Resubmit replaces: delete prior complete artifacts in the same slot.
+
+        Publish-pinned project graphs are exempt — a published reflection's
+        frozen comparison base must survive later submissions to the slot."""
+        pinned = self.association_targets.publish_pinned_artifact_ids(conn=conn)
         stale = conn.execute(
             """
             SELECT id FROM artifacts
@@ -688,6 +686,8 @@ class ArtifactSubmissionService:
             ),
         ).fetchall()
         for old in stale:
+            if str(old["id"]) in pinned:
+                continue
             conn.execute(
                 "DELETE FROM artifact_figures WHERE artifact_id = ?", (old["id"],)
             )

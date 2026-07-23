@@ -23,9 +23,9 @@ from .domain.reflection_policy import (
     reflection_create_block_message,
 )
 from .domain.review_snapshot import review_snapshot_id
-from .domain.resource_evidence import (
-    preferred_associated_resource,
-    resource_state_record,
+from .domain.artifact_evidence import (
+    preferred_associated_artifact,
+    artifact_state_record,
 )
 from .domain.workflow_gates import (
     GATE_TABLE,
@@ -35,7 +35,7 @@ from .domain.workflow_gates import (
 from .gate_evaluation import (
     GateEvaluation,
     RequirementEvaluation,
-    evaluate_resource_requirement,
+    evaluate_artifact_requirement,
 )
 from ..artifacts.ports import AssociatedEvidence, EvidenceReader, SubmittedDocument
 from ..kernel.events import StoredEvent
@@ -392,11 +392,11 @@ class ExperimentService:
     ) -> tuple[dict[str, Any], GateEvaluation]:
         data = dict(experiment)
         data["tested_claims"] = tested_claims
-        data["resources"] = [resource_state_record(item) for item in evidence]
+        data["resources"] = [artifact_state_record(item) for item in evidence]
         data["current_attempt_resources"] = [
-            resource
-            for resource in data["resources"]
-            if resource.get("association_attempt_index") == data["attempt_index"]
+            artifact
+            for artifact in data["resources"]
+            if artifact.get("association_attempt_index") == data["attempt_index"]
         ]
         data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
         for review in reviews:
@@ -537,11 +537,11 @@ class ExperimentService:
         """Collect current facts once for enforcement, state, and guidance."""
         status = str(experiment.get("status") or "")
         forward = GATE_TABLE.get(status)
-        resources = experiment.get("current_attempt_resources") or []
+        artifacts = experiment.get("current_attempt_resources") or []
         present_roles = {
-            str(res.get("association_role"))
-            for res in resources
-            if res.get("association_role")
+            str(art.get("association_role"))
+            for art in artifacts
+            if art.get("association_role")
         }
         requirements: list[RequirementEvaluation] = []
         for requirement in () if forward is None else forward.requirements:
@@ -555,7 +555,7 @@ class ExperimentService:
                 except WorkflowError as exc:
                     problems = (str(exc),)
             requirements.append(
-                evaluate_resource_requirement(
+                evaluate_artifact_requirement(
                     requirement,
                     present=present,
                     problems=problems,
@@ -759,7 +759,7 @@ class ExperimentService:
         self, *, conn, experiment_id: str, revision_context: str
     ) -> None:
         """Reject an executed attempt back to execution: the approved plan and
-        its attempt-scoped resources stay valid, so attempt_index is NOT bumped
+        its attempt-scoped artifacts stay valid, so attempt_index is NOT bumped
         — only execution and/or the conclusion must be redone before results
         are resubmitted."""
         row = conn.execute(
@@ -798,17 +798,17 @@ class ExperimentService:
     def _submitted_document(
         self, *, experiment: dict[str, Any], role: str, what: str
     ) -> SubmittedDocument:
-        resource = preferred_associated_resource(
-            resources=experiment.get("current_attempt_resources") or [],
+        artifact = preferred_associated_artifact(
+            artifacts=experiment.get("current_attempt_resources") or [],
             attempt=experiment.get("attempt_index"),
             roles=(role,),
         )
-        if resource is None:
+        if artifact is None:
             raise WorkflowError(
                 f"no {role!r} artifact is submitted for the current attempt"
             )
         return self.evidence_reader.submitted_document(
-            artifact_id=str(resource.get("id") or ""), what=what
+            artifact_id=str(artifact.get("id") or ""), what=what
         )
 
     def _validate_plan_sections(self, *, experiment: dict[str, Any]) -> None:
@@ -868,8 +868,8 @@ class ExperimentService:
                 "on the sandbox), then resubmit the report to submit it"
             )
 
-        exhibit = preferred_associated_resource(
-            resources=experiment.get("current_attempt_resources") or [],
+        exhibit = preferred_associated_artifact(
+            artifacts=experiment.get("current_attempt_resources") or [],
             attempt=experiment.get("attempt_index"),
             roles=(EXHIBIT_ROLE,),
         )

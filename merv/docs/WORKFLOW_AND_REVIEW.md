@@ -26,12 +26,12 @@ workflow.status_and_next(experiment_id?)
 
 The proxy supplies the linked `project_id`; brain services and HTTP routes still
 require explicit project scope. The agent should call `project(action="current")`
-and link or create a project before any claim, experiment, resource, review, or
+and link or create a project before any claim, experiment, artifact, review, or
 sandbox workflow.
 
 The server response is useful to both the agent and the user: current project
-summary, experiment status, active attempt, linked claims, plan resources, result
-resources, review state, blocked actions, allowed actions, and next action.
+summary, experiment status, active attempt, linked claims, submitted plan and
+result artifacts, review state, blocked actions, allowed actions, and next action.
 
 ## Required gates
 
@@ -43,7 +43,7 @@ Current gates:
    success criteria, risks, and confounders.
 2. Design review gate: a separate read-only design reviewer must pass the plan.
 3. Result retention gate: after execution, the agent must retain the selected
-   outputs locally and register/associate them as resources.
+   outputs locally and submit them as artifacts.
 4. Results report gate: before `submit_results`, the current attempt must carry
    a short markdown report (role `report`) with Summary, Results, Deviations
    from plan, and Conclusion sections; under 16 KB; every relative figure link
@@ -102,7 +102,7 @@ The design reviewer checks:
 - the claim and scope are clear
 - the experiment can actually test the linked claim
 - inputs, outputs, metric, baseline, and success criteria are defined
-- expected resource files are named
+- expected output files are named
 - risks and invalidating failure modes are explicit
 - the plan is small enough to run and review
 
@@ -140,7 +140,7 @@ fresh design review. Either way the experiment is never silently moved to
 forward prior attempt context:
 
 - previous plan
-- result resources
+- result artifacts
 - reviewer findings
 - what can be reused
 - what must be changed
@@ -205,9 +205,9 @@ synopsis is the human-readable headline above them.
 After any experiment execution, the agent should:
 
 1. identify changed files with git/status or filesystem checks
-2. decide which files are research resources
-3. call `resource.register` with the retained local `paths` (add the
-   `target_type`/`target_id`/`role` trio to associate them in the same call)
+2. decide which retained files carry the mandated roles
+3. submit each with `artifact.submit` (target, role, relative path) and run
+   the returned upload command verbatim
 4. ask `workflow.status_and_next`
 5. launch experiment reviewer if requested
 6. wait for review submission status through MCP
@@ -220,16 +220,17 @@ Once a reviewed experiment is completed, `experiment.get_state` includes
 These are pre-scoped `claim.update` call skeletons; they are suggestions, not
 automatic mutations.
 
-Resources from prior attempts remain visible as experiment history, but MCP only
-uses current-attempt resource associations to decide whether result retention or
+Artifacts from prior attempts remain visible as experiment history, but MCP only
+uses current-attempt artifacts to decide whether result retention or
 review gates are satisfied.
 
-While an experiment is `running` and no result resource is associated yet,
+While an experiment is `running` and no result artifact is submitted yet,
 `workflow.status_and_next` returns `run_experiment_and_retain_results` with
-`resource_guidance`. Agents may execute locally or on a sandbox. After sandbox
+`artifact_guidance`. Agents may execute locally or on a sandbox. After sandbox
 execution they pull selected output files back to the checkout with
-`sandbox.pull_outputs`, then call `resource.register` with `role: "result"`. Once
-result resources exist but no report exists, the gate becomes
+`sandbox.pull_outputs`, then submit the metrics JSON with `artifact.submit`
+(`role: "result"`). Once
+result artifacts exist but no report exists, the gate becomes
 `results_report_required` with report-specific guidance; once a report exists
 but no logic graph does, the gate becomes
 `logic_graph_required`.
@@ -254,10 +255,10 @@ loop or create a new experiment instead when the plan itself needs to change.
 `workflow.status_and_next` runs those same deep lints once every required
 artifact exists: if a submitted artifact would fail the transition's lint, the gate is
 `plan_invalid` / `report_invalid` / `graph_invalid` with the lint problems in
-`missing_evidence` and the action `fix_<role>_resource` — the workflow never
+`missing_evidence` and the action `fix_<role>_artifact` — the workflow never
 answers "ready to submit" for an artifact the transition would reject. The
-lints read the SUBMITTED bytes (pinned at resource.register), so clearing
-the gate means fixing the file AND re-registering it to submit the revision.
+lints read the SUBMITTED bytes (pinned at upload), so clearing
+the gate means fixing the file AND resubmitting it.
 
 On rejection, the attached revision context includes a soft reminder to
 *consider* updating the logic graph — whether the rejection and rework belong
@@ -269,7 +270,7 @@ applies.
 `complete` is accepted only from `experiment_review` when a passing current-
 snapshot `experiment_reviewer` review satisfies the gate. The earlier
 `submit_results` transition has already enforced the current attempt's result,
-report, and graph resources. A conclusion is useful and drives claim-update
+report, and graph artifacts. A conclusion is useful and drives claim-update
 suggestions, but it is not an additional completion precondition.
 
 ## Project reflection lifecycle (reflection waves)
@@ -298,10 +299,10 @@ Gates (envelope-only, same philosophy as experiment gates):
    lenses, each with a charter and a stated `why_distinct`. The corpus
    (terminal experiments + claim statuses) is snapshotted at create.
 2. Reflection coverage gate: `submit_reflections` is blocked until every
-   roster lens has a current-attempt role-`reflection_lens_doc` resource whose
-   filename is `<lens_id>.md` and whose pinned submission is non-empty. Each
+   roster lens has a current-attempt role-`reflection_lens_doc` artifact
+   submitted with that explicit `lens_id` and non-empty pinned content. Each
    reflection is authored and submitted by its own subagent. The subagent reads
-   project state without mutating it, then registers its own lens document as
+   project state without mutating it, then submits its own lens document as
    the one required mutation.
 3. Reflection artifacts gate: `submit_reflection_artifacts` requires the project logic
    graph (role `project_graph`, the shared `graph_lint` envelope), a concise reflection

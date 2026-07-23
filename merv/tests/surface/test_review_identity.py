@@ -40,15 +40,13 @@ class ReviewIdentityTest(unittest.TestCase):
         exp_id = self.call(
             "experiment.create", name="exp-identity", project_id=self.project_id, intent="Identity."
         )["id"]
-        (self.repo / "plan.md").write_text(VALID_PLAN)
-        self.call(
-            "resource.register",
+        self.app.submit_artifact(
             project_id=self.project_id,
-            path="plan.md",
-            kind="plan",
             target_type="experiment",
             target_id=exp_id,
             role="plan",
+            path="plan.md",
+            body=VALID_PLAN,
         )
         self.call(
             "experiment.transition",

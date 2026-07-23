@@ -60,14 +60,14 @@ class StatusAndNextQueryIntegrationTest(unittest.TestCase):
         )
         self.app.experiments.list_states_with_gates = batch
         self.app.experiments.get_state_with_gate = singular
-        original_evidence = self.app.resources.resources_for_target
-        self.app.resources.resources_for_target = singular_evidence
+        original_evidence = self.app.artifact_submissions.artifacts_for_target
+        self.app.artifact_submissions.artifacts_for_target = singular_evidence
         try:
             result = self.app.project_dashboard_query(project_id=self.project_id)
         finally:
             self.app.experiments.list_states_with_gates = original_batch
             self.app.experiments.get_state_with_gate = original_singular
-            self.app.resources.resources_for_target = original_evidence
+            self.app.artifact_submissions.artifacts_for_target = original_evidence
 
         self.assertCountEqual(
             [experiment["id"] for experiment in result["experiments"]],
@@ -232,39 +232,25 @@ class ProjectDashboardBatchingTest(unittest.TestCase):
             (2, "report", "b-report.md"),
             (1, "plan", "a-plan.md"),
         ):
-            resource_id = f"res_{project_id}_{index}_{attempt}"
             conn.execute(
                 """
-                INSERT INTO resources
-                  (id, project_id, path, kind, version_token, mtime_ns,
-                   size_bytes, observed_at, created_at, updated_at)
-                VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?, ?)
+                INSERT INTO artifacts
+                  (id, project_id, target_type, target_id, role, attempt_index,
+                   lens_id, path, title, content_sha256, size_bytes,
+                   content_type, status, upload_token, created_by,
+                   created_at, updated_at, created_seq)
+                VALUES (?, ?, 'experiment', ?, ?, ?, '', ?, '', '', ?,
+                        'text/markdown', 'complete', '', 'agent', ?, ?, ?)
                 """,
                 (
-                    resource_id,
+                    f"art_{project_id}_{index}_{attempt}",
                     project_id,
-                    f"experiments/{index}/{path_suffix}",
-                    f"token-{index}-{attempt}",
-                    index,
-                    index + attempt,
-                    created_at,
-                    created_at,
-                    created_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO resource_associations
-                  (id, resource_id, target_type, target_id, role,
-                   attempt_index, created_at, created_seq)
-                VALUES (?, ?, 'experiment', ?, ?, ?, ?, ?)
-                """,
-                (
-                    f"assoc_{resource_id}",
-                    resource_id,
                     experiment_id,
                     role,
                     attempt,
+                    f"experiments/{index}/{path_suffix}",
+                    index + attempt,
+                    created_at,
                     created_at,
                     attempt,
                 ),
@@ -368,9 +354,11 @@ class ProjectDashboardBatchingTest(unittest.TestCase):
             self._dashboard_select_count(project_id="proj_one"),
             self._dashboard_select_count(project_id="proj_many"),
         )
-        # 24 = the pre-litreview 22 plus the two constant literature-signal
-        # counts (papers_total, papers_unreviewed) in snapshots.read.
-        self.assertEqual(self._dashboard_select_count(project_id="proj_many"), 24)
+        # 23 = the pre-litreview 22 plus the two constant literature-signal
+        # counts (papers_total, papers_unreviewed) in snapshots.read, minus
+        # one: the artifact ledger listing is a single SELECT where the
+        # resource listing was two.
+        self.assertEqual(self._dashboard_select_count(project_id="proj_many"), 23)
 
     def test_seven_active_experiments_bound_terminal_history_cost(self) -> None:
         self._seed_project(project_id="proj_active_one", active=7, terminal=1)
@@ -381,7 +369,7 @@ class ProjectDashboardBatchingTest(unittest.TestCase):
             self._dashboard_select_count(project_id="proj_active_many"),
         )
         self.assertEqual(
-            self._dashboard_select_count(project_id="proj_active_many"), 24
+            self._dashboard_select_count(project_id="proj_active_many"), 23
         )
 
 

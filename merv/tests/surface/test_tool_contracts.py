@@ -16,9 +16,9 @@ from merv.brain.surface.tools.contracts import (
     DATA_PLANE_TOOL_NAMES,
     MCP_HIDDEN_TOOL_NAMES,
     ExperimentMaterializeFoldersInput,
+    ArtifactFindInput,
+    ArtifactSubmitInput,
     MlflowFinalizeRunInput,
-    ResourceFindInput,
-    ResourceRegisterInput,
     SandboxExtendInput,
     SandboxPullOutputsInput,
     SandboxRequestInput,
@@ -66,7 +66,6 @@ def _handler_targets() -> dict[str, Any]:
         "create_experiment": target,
         "agent_experiment": target,
         "reflection_tools": target,
-        "resources": target,
         "artifact_submissions": target,
         "storage": target,
         "reviews": target,
@@ -258,73 +257,32 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertNotIn("hidden", catalog["storage.find"])
         self.assertNotIn("hidden", catalog["storage.object"])
 
-    def test_resource_register_is_data_plane(self) -> None:
-        self.assertIs(
-            TOOL_CONTRACTS["resource.register"].input_model,
-            ResourceRegisterInput,
-        )
-        self.assertEqual(tool_plane("resource.register"), "data")
-        # The former register_file/associate/validate/associate_batch tools are
-        # merged into resource.register.
-        for removed in (
-            "resource.register_file",
-            "resource.associate",
-            "resource.validate",
-            "resource.associate_batch",
-        ):
+    def test_artifact_tools_are_control_plane(self) -> None:
+        self.assertIs(TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput)
+        self.assertIs(TOOL_CONTRACTS["artifact.find"].input_model, ArtifactFindInput)
+        self.assertEqual(tool_plane("artifact.submit"), "control")
+        self.assertEqual(tool_plane("artifact.find"), "control")
+        # The whole resource-tracking tool family died with the resource cut.
+        for removed in ("resource.register", "resource.find", "resource.delete"):
             self.assertNotIn(removed, TOOL_CONTRACTS)
 
-    def test_resource_find_is_control_plane(self) -> None:
-        self.assertIs(
-            TOOL_CONTRACTS["resource.find"].input_model,
-            ResourceFindInput,
-        )
-        self.assertEqual(tool_plane("resource.find"), "control")
-        for removed in ("resource.list", "resource.resolve"):
-            self.assertNotIn(removed, TOOL_CONTRACTS)
-
-    def test_resource_delete_is_hidden(self) -> None:
-        # Kept dispatchable for the REST/UI resource panel but dropped from the
-        # agent-facing tools/list.
-        self.assertIn("resource.delete", TOOL_CONTRACTS)
-        self.assertIn("resource.delete", MCP_HIDDEN_TOOL_NAMES)
-        catalog = {tool["name"]: tool for tool in static_tool_catalog()}
-        self.assertTrue(catalog["resource.delete"].get("hidden"))
-
-    def test_resource_register_requires_exactly_one_source(self) -> None:
-        base = {"project_id": "proj_1"}
-        # exactly one of path/paths/resource_id
-        for kwargs in (
-            {},
-            {"path": "a.md", "paths": ["b.md"]},
-            {"path": "a.md", "resource_id": "r1"},
-        ):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaises(PydanticValidationError):
-                    ResourceRegisterInput.model_validate({**base, **kwargs})
-
-    def test_resource_register_trio_is_all_or_none(self) -> None:
+    def test_artifact_submit_requires_lens_id_only_for_lens_docs(self) -> None:
+        base = {
+            "project_id": "p",
+            "target_type": "reflection",
+            "target_id": "syn_1",
+            "path": "reflections/amplify.md",
+        }
         with self.assertRaises(PydanticValidationError):
-            ResourceRegisterInput.model_validate(
-                {"project_id": "p", "path": "a.md", "target_type": "experiment"}
-            )
-
-    def test_resource_register_resource_id_requires_trio(self) -> None:
+            ArtifactSubmitInput.model_validate({**base, "role": "reflection_lens_doc"})
         with self.assertRaises(PydanticValidationError):
-            ResourceRegisterInput.model_validate(
-                {"project_id": "p", "resource_id": "r1"}
+            ArtifactSubmitInput.model_validate(
+                {**base, "role": "reflection_doc", "lens_id": "amplify"}
             )
-        # resource_id + full trio is accepted
-        parsed = ResourceRegisterInput.model_validate(
-            {
-                "project_id": "p",
-                "resource_id": "r1",
-                "target_type": "experiment",
-                "target_id": "e1",
-                "role": "result",
-            }
+        parsed = ArtifactSubmitInput.model_validate(
+            {**base, "role": "reflection_lens_doc", "lens_id": "amplify"}
         )
-        self.assertEqual(parsed.resource_id, "r1")
+        self.assertEqual(parsed.lens_id, "amplify")
 
     def test_sandbox_pull_outputs_is_data_plane(self) -> None:
         self.assertIs(

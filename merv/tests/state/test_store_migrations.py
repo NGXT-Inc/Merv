@@ -130,58 +130,6 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def _unique_index_columns(self, conn: sqlite3.Connection) -> list[list[str]]:
-        uniques: list[list[str]] = []
-        for idx in conn.execute("PRAGMA index_list(resources)").fetchall():
-            if not idx["unique"]:
-                continue
-            cols = [
-                str(info["name"])
-                for info in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()
-            ]
-            uniques.append(cols)
-        return uniques
-
-    def test_legacy_path_unique_is_rekeyed_to_project_path(self) -> None:
-        self._seed_legacy_db()
-
-        store = StateStore(db_path=self.db)
-        conn = store.connect()
-        try:
-            uniques = self._unique_index_columns(conn)
-            self.assertIn(["project_id", "path"], uniques)
-            self.assertNotIn(["path"], uniques)
-            row = conn.execute("SELECT id, project_id, path, deleted FROM resources").fetchone()
-            self.assertEqual(row["id"], "res_old")
-            self.assertEqual(row["path"], "shared.md")
-            self.assertEqual(row["deleted"], 0)
-        finally:
-            conn.close()
-
-        # After migration, a different project can register the same repo file.
-        app = TestBrain(repo_root=self.repo, db_path=self.db)
-        (self.repo / "shared.md").write_text("hello\n")
-        new_project = app.call_tool("project", {"action": "create", "name": "New"})
-        res = app.call_tool(
-            "resource.register",
-            {"project_id": new_project["id"], "path": "shared.md"},
-        )
-        self.assertTrue(res["id"])
-        self.assertNotEqual(res["id"], "res_old")
-
-    def test_fresh_db_is_not_rebuilt(self) -> None:
-        # A brand-new store already has the (project_id, path) unique index, so the
-        # migration must be a no-op (idempotent on repeated construction).
-        StateStore(db_path=self.db)
-        store = StateStore(db_path=self.db)
-        conn = store.connect()
-        try:
-            uniques = self._unique_index_columns(conn)
-            self.assertIn(["project_id", "path"], uniques)
-            self.assertNotIn(["path"], uniques)
-        finally:
-            conn.close()
-
     def test_legacy_syntheses_table_is_renamed_to_reflections(self) -> None:
         self._seed_legacy_db()
         conn = sqlite3.connect(self.db)
@@ -746,12 +694,27 @@ class StoreMigrationTest(unittest.TestCase):
     def test_legacy_db_gains_tenant_and_created_seq_columns(self) -> None:
         # Cloud-split Phase 6: tenancy lands on projects (the fixed 'local'
         # tenant), and the explicit ordering column that replaced rowid
-        # ordering backfills FROM rowid — so the order historical queries
-        # observed is preserved exactly across the upgrade.
+        # ordering backfills FROM rowid — pre-cut resource tables need it so
+        # migration 24's ORDER BY created_seq backfill preserves the order
+        # historical queries observed; migration 25 then drops the tables.
         self._seed_legacy_db()
         conn = sqlite3.connect(self.db)
         try:
             conn.executescript(OLD_RESOURCE_VERSIONS_SCHEMA)
+            conn.executescript(
+                """
+                CREATE TABLE resource_associations (
+                  id TEXT PRIMARY KEY,
+                  resource_id TEXT NOT NULL,
+                  version_id TEXT,
+                  target_type TEXT NOT NULL,
+                  target_id TEXT NOT NULL,
+                  role TEXT NOT NULL,
+                  attempt_index INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL
+                );
+                """
+            )
             for suffix in ("a", "b", "c"):
                 conn.execute(
                     """
@@ -763,6 +726,17 @@ class StoreMigrationTest(unittest.TestCase):
                             '2026-01-01T00:00:00Z', 'codex', '2026-01-01T00:00:00Z')
                     """,
                     (f"rver_{suffix}", f"sha_{suffix}"),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO resource_associations (
+                      id, resource_id, version_id, target_type, target_id,
+                      role, attempt_index, created_at
+                    )
+                    VALUES (?, 'res_old', ?, 'attempt', ?, 'note', 0,
+                            '2026-01-01T00:00:00Z')
+                    """,
+                    (f"assoc_{suffix}", f"rver_{suffix}", f"att_{suffix}"),
                 )
             conn.commit()
         finally:
@@ -776,11 +750,22 @@ class StoreMigrationTest(unittest.TestCase):
                 "SELECT tenant_id FROM projects WHERE id = 'proj_old'"
             ).fetchone()
             self.assertEqual(row["tenant_id"], "local")
+            # rowid-order preserved through the backfill; resource tables gone.
             rows = conn.execute(
-                "SELECT id, created_seq FROM resource_versions ORDER BY created_seq"
+                "SELECT target_id, content_sha256 FROM artifacts ORDER BY created_seq"
             ).fetchall()
-            self.assertEqual([r["id"] for r in rows], ["rver_a", "rver_b", "rver_c"])
-            self.assertEqual([r["created_seq"] for r in rows], [1, 2, 3])
+            self.assertEqual(
+                [r["target_id"] for r in rows], ["att_a", "att_b", "att_c"]
+            )
+            tables = {
+                str(item["name"])
+                for item in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            self.assertNotIn("resources", tables)
+            self.assertNotIn("resource_versions", tables)
+            self.assertNotIn("resource_associations", tables)
         finally:
             conn.close()
 
@@ -1069,6 +1054,28 @@ class StoreMigrationTest(unittest.TestCase):
                 INSERT INTO resource_associations VALUES
                   ('assoc_1', 'res_1', 'rver_1', 'synthesis', 'syn_1',
                    'synthesis_doc', 1, '2026-01-01T00:00:00Z', 1);
+                INSERT INTO resources (
+                  id, project_id, path, kind, title, current_version_id,
+                  version_token, mtime_ns, size_bytes, observed_at,
+                  git_commit, missing, created_by, created_at, updated_at
+                )
+                VALUES
+                  ('res_1', 'proj_old', 'project/reflection.md', 'document', '',
+                   'rver_1', 'tok', 1, 9, '2026-01-01T00:00:00Z', NULL, 0,
+                   'codex', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                CREATE TABLE resource_versions (
+                  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL,
+                  project_id TEXT NOT NULL, path TEXT NOT NULL,
+                  content_sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                  mtime_ns INTEGER NOT NULL, observed_at TEXT NOT NULL,
+                  content_type TEXT NOT NULL DEFAULT 'text/markdown',
+                  created_by TEXT NOT NULL DEFAULT 'codex',
+                  created_at TEXT NOT NULL, created_seq INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO resource_versions VALUES
+                  ('rver_1', 'res_1', 'proj_old', 'project/reflection.md',
+                   'aaaa', 9, 1, '2026-01-01T00:00:00Z', 'text/markdown',
+                   'codex', '2026-01-01T00:00:00Z', 1);
                 """
             )
             conn.commit()
@@ -1133,8 +1140,16 @@ class StoreMigrationTest(unittest.TestCase):
                 '{"status": "active", "source_reflection_id": "syn_1"}',
             )
 
+            # Migration 24 backfilled the association into an artifact row
+            # (legacy role spelling preserved) and rewrote the snapshot token
+            # to the artifact id; migration 25 dropped the resource tables.
+            artifact = conn.execute(
+                "SELECT id, target_type, role FROM artifacts"
+            ).fetchone()
+            self.assertEqual(artifact["target_type"], "reflection")
+            self.assertEqual(artifact["role"], "synthesis_doc")  # legacy role stays
             expected_snapshot = (
-                "reflection|syn_1|reflection_review|1|res_1:rver_1:synthesis_doc:1"
+                f"reflection|syn_1|reflection_review|1|{artifact['id']}:synthesis_doc:1"
             )
             for table in ("reviews", "review_requests"):
                 row = conn.execute(
@@ -1142,11 +1157,6 @@ class StoreMigrationTest(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row["target_type"], "reflection")
                 self.assertEqual(row["target_snapshot_id"], expected_snapshot)
-            association = conn.execute(
-                "SELECT target_type, role FROM resource_associations WHERE id = 'assoc_1'"
-            ).fetchone()
-            self.assertEqual(association["target_type"], "reflection")
-            self.assertEqual(association["role"], "synthesis_doc")  # legacy role stays
             migration = conn.execute(
                 "SELECT name FROM schema_migrations WHERE version = 19"
             ).fetchone()

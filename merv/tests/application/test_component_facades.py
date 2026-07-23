@@ -88,7 +88,7 @@ class RecordingExperimentService:
         return "2026-07-19T11:00:00Z"
 
 
-class RecordingResourcesService:
+class RecordingSubmissionsService:
     def __init__(self) -> None:
         self.calls = []
         self.sources = [
@@ -109,9 +109,9 @@ class RecordingResourcesService:
         self.calls.append(("pin_system_artifact", kwargs))
         return {"association": "internal result intentionally hidden"}
 
-    def resolve_resource_reference(self, **kwargs):
-        self.calls.append(("resolve_resource_reference", kwargs))
-        return {"type": "resource", "resolved": True, "resource_id": "res_1"}
+    def resolve(self, **kwargs):
+        self.calls.append(("resolve", kwargs))
+        return {"id": "art_1", "path": "results.json", "role": "result", "title": ""}
 
 
 class RecordingReflectionService:
@@ -209,19 +209,7 @@ class RecordingArtifactsFake:
     def submitted_artifact_figure(self, **_kwargs):
         return None
 
-    def resolve_resource(self, **_kwargs):
-        return {}
-
-    def select_resource_text(self, **_kwargs):
-        return None
-
-    def submitted_figure(self, **_kwargs):
-        return None
-
-    def submitted_text_for_version(self, **_kwargs):
-        return None
-
-    def resolve_resource_reference(self, **_kwargs):
+    def resolve_artifact_reference(self, **_kwargs):
         return None
 
 
@@ -445,10 +433,10 @@ class ComponentFacadeTest(unittest.TestCase):
         self.assertEqual(result, {"count": 1, "reflections": [{"id": "syn_1"}]})
 
     def test_artifacts_facade_normalizes_only_the_experiment_target(self) -> None:
-        service = RecordingResourcesService()
-        facade = ArtifactsFacade(service, submissions=service)
+        service = RecordingSubmissionsService()
+        facade = ArtifactsFacade(submissions=service)
 
-        self.assertIs(facade._resources, service)
+        self.assertIs(facade._submissions, service)
         self.assertIsInstance(facade, Artifacts)
         self.assertIs(
             facade.metric_file_sources(experiment_id="exp_1", attempt_index=2),
@@ -466,10 +454,17 @@ class ComponentFacadeTest(unittest.TestCase):
             )
         )
         self.assertEqual(
-            facade.resolve_resource_reference(
-                project_id="proj_1", ref="results.json"
+            facade.resolve_artifact_reference(
+                project_id="proj_1", artifact_id="art_1"
             ),
-            {"type": "resource", "resolved": True, "resource_id": "res_1"},
+            {
+                "type": "artifact",
+                "resolved": True,
+                "artifact_id": "art_1",
+                "path": "results.json",
+                "role": "result",
+                "title": "",
+            },
         )
         self.assertEqual(
             service.calls,
@@ -492,8 +487,8 @@ class ComponentFacadeTest(unittest.TestCase):
                     },
                 ),
                 (
-                    "resolve_resource_reference",
-                    {"project_id": "proj_1", "ref": "results.json"},
+                    "resolve",
+                    {"artifact_id": "art_1", "project_id": "proj_1"},
                 ),
             ],
         )

@@ -139,65 +139,6 @@ CREATE TABLE IF NOT EXISTS experiment_claims (
   PRIMARY KEY(experiment_id, claim_id)
 );
 
-CREATE TABLE IF NOT EXISTS resources (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  path TEXT NOT NULL,
-	  kind TEXT NOT NULL,
-	  title TEXT NOT NULL DEFAULT '',
-	  current_version_id TEXT,
-	  version_token TEXT NOT NULL,
-	  mtime_ns INTEGER NOT NULL,
-	  size_bytes INTEGER NOT NULL,
-  observed_at TEXT NOT NULL,
-  git_commit TEXT,
-  missing INTEGER NOT NULL DEFAULT 0,
-  deleted INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT NOT NULL DEFAULT 'codex',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-	  UNIQUE(project_id, path),
-	  FOREIGN KEY(project_id) REFERENCES projects(id)
-	);
-
-	CREATE TABLE IF NOT EXISTS resource_versions (
-	  id TEXT PRIMARY KEY,
-	  resource_id TEXT NOT NULL,
-	  project_id TEXT NOT NULL,
-	  path TEXT NOT NULL,
-	  content_sha256 TEXT NOT NULL,
-	  size_bytes INTEGER NOT NULL,
-	  mtime_ns INTEGER NOT NULL,
-	  observed_at TEXT NOT NULL,
-	  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
-	  created_by TEXT NOT NULL DEFAULT 'codex',
-	  created_at TEXT NOT NULL,
-	  -- Explicit insertion-order column (cloud plan Phase 6): replaces SQLite
-	  -- rowid ordering so the same queries run on Postgres. Service inserts set
-	  -- it via next_created_seq(); the DEFAULT 0 only keeps legacy convergence
-	  -- (ALTER TABLE ADD COLUMN) and raw test inserts valid.
-	  created_seq INTEGER NOT NULL DEFAULT 0,
-	  FOREIGN KEY(resource_id) REFERENCES resources(id),
-	  FOREIGN KEY(project_id) REFERENCES projects(id)
-	);
-
-	CREATE TABLE IF NOT EXISTS resource_associations (
-	  id TEXT PRIMARY KEY,
-	  resource_id TEXT NOT NULL,
-	  version_id TEXT,
-	  target_type TEXT NOT NULL,
-	  target_id TEXT NOT NULL,
-	  role TEXT NOT NULL,
-  attempt_index INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  -- Insertion-order column replacing rowid ordering (cloud plan Phase 6).
-  -- An upsert keeps its original created_seq, exactly like rowid did.
-  created_seq INTEGER NOT NULL DEFAULT 0,
-  UNIQUE(resource_id, target_type, target_id, role, attempt_index),
-	  FOREIGN KEY(resource_id) REFERENCES resources(id),
-	  FOREIGN KEY(version_id) REFERENCES resource_versions(id)
-	);
-
 CREATE TABLE IF NOT EXISTS storage_objects (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -439,21 +380,6 @@ CREATE TABLE IF NOT EXISTS sandbox_runs (
   finished_event_emitted INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (sandbox_uid, label),
   FOREIGN KEY(sandbox_uid) REFERENCES sandboxes(sandbox_uid)
-);
-
--- Figures submitted alongside a markdown gated artifact (cloud plan Phase 2):
--- when a plan, report, or reflection_doc (legacy synthesis_doc) is associated, each resolvable relative image
--- link's bytes are captured to the blob store and recorded here, keyed by the
--- artifact's pinned version. Markdown lints check THIS mapping (submitted
--- figures), never the disk.
-CREATE TABLE IF NOT EXISTS report_figures (
-  report_version_id TEXT NOT NULL,
-  link_path TEXT NOT NULL,
-  sha256 TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (report_version_id, link_path),
-  FOREIGN KEY(report_version_id) REFERENCES resource_versions(id)
 );
 
 -- Typed submitted artifacts (July 2026, dev_docs/artifact_submit_cut_plan.md).
@@ -746,6 +672,11 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # review gates and published-graph diffs silently break (the migration-19
     # lesson).
     (24, "add_artifacts_tables", ""),
+    # Artifact submit cut, deletion phase: the resource-tracking tables are
+    # dead once 24 has backfilled them into artifacts. Child tables drop first
+    # so FK enforcement never blocks. resources_migrate is the transient
+    # rebuild table from the retired pre-ledger UNIQUE migration.
+    (25, "drop_resource_tables", ""),
 )
 
 
@@ -757,34 +688,6 @@ EXPERIMENT_MLFLOW_COLUMNS: dict[str, str] = {
     "mlflow_run_created_at": "TEXT",
     "mlflow_run_error": "TEXT NOT NULL DEFAULT ''",
 }
-
-
-# Rebuild shape for the legacy `resources` table whose UNIQUE was on `path`
-# alone. SQLite cannot drop a column-level UNIQUE in place, so we copy into this
-# shape (UNIQUE on project_id + path) and swap. Kept in sync with the resources
-# block in SCHEMA above.
-_RESOURCES_REBUILD_DDL = """
-CREATE TABLE resources_migrate (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  path TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  current_version_id TEXT,
-  version_token TEXT NOT NULL,
-  mtime_ns INTEGER NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  observed_at TEXT NOT NULL,
-  git_commit TEXT,
-  missing INTEGER NOT NULL DEFAULT 0,
-  deleted INTEGER NOT NULL DEFAULT 0,
-  created_by TEXT NOT NULL DEFAULT 'codex',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(project_id, path),
-  FOREIGN KEY(project_id) REFERENCES projects(id)
-);
-"""
 
 
 # Rebuild shape for the legacy `review_requests` table whose `capability`
@@ -899,6 +802,8 @@ class BaseStateStore:
                 conn.execute(_schema_table_ddl(table="paper_links"))
             elif name == "add_artifacts_tables":
                 self._add_artifacts_tables(conn=conn)
+            elif name == "drop_resource_tables":
+                self._drop_resource_tables(conn=conn)
             else:
                 conn.execute(statement)
             conn.execute(
@@ -1035,10 +940,13 @@ class BaseStateStore:
             conn.execute(
                 f"UPDATE {table} SET target_type = 'reflection' WHERE target_type = 'synthesis'"
             )
-        conn.execute(
-            "UPDATE resource_associations SET target_type = 'reflection' "
-            "WHERE target_type = 'synthesis'"
-        )
+        # Guarded: fresh post-cut schemas never create resource_associations;
+        # migration 24 backfills it into artifacts and 25 drops it.
+        if self._has_table(conn=conn, table="resource_associations"):
+            conn.execute(
+                "UPDATE resource_associations SET target_type = 'reflection' "
+                "WHERE target_type = 'synthesis'"
+            )
 
     def _add_artifacts_tables(self, *, conn: Connection) -> None:
         """Create the artifact tables and backfill from the resource system.
@@ -1113,10 +1021,23 @@ class BaseStateStore:
         self._rewrite_snapshot_resource_tokens(conn=conn, by_assoc=by_assoc)
 
     @staticmethod
+    def _drop_resource_tables(*, conn: Connection) -> None:
+        """Migration 25: drop the resource-tracking tables, child tables first."""
+        for table in (
+            "report_figures",
+            "resource_associations",
+            "resource_versions",
+            "resources",
+            "resources_migrate",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+
     def _backfill_artifact_figures(
-        *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
+        self, *, conn: Connection, by_version_target: dict[tuple[str, str, str], str]
     ) -> None:
         """report_figures rows fan out to one row per backfilled artifact."""
+        if not self._has_table(conn=conn, table="report_figures"):
+            return
         artifacts_by_version: dict[str, list[str]] = {}
         for (version_id, _tt, _tid), artifact_id in by_version_target.items():
             artifacts_by_version.setdefault(version_id, []).append(artifact_id)
@@ -1648,7 +1569,6 @@ class StateStore(BaseStateStore):
             conn.close()
 
     def _initialize(self) -> None:
-        self._migrate_resources_unique()
         self._migrate_capability_hash()
         conn = self.connect()
         try:
@@ -1706,11 +1626,6 @@ class StateStore(BaseStateStore):
                 # the control plane when an experiment enters `running`.
                 **EXPERIMENT_MLFLOW_COLUMNS,
             },
-        )
-        self._ensure_columns(
-            conn=conn,
-            table="resources",
-            columns={"deleted": "INTEGER NOT NULL DEFAULT 0"},
         )
         # Stage-routed rejections (June 2026): experiment reviews record which
         # stage a rejection sent the experiment back to ('planned' or
@@ -1779,17 +1694,6 @@ class StateStore(BaseStateStore):
             WHERE project_id != ''
             """
         )
-        # The shadow-git unplug (May 2026) dropped these columns from the
-        # SCHEMA constant, but pre-existing databases still have them. The
-        # `snapshot_status` column is NOT NULL with no default, so any INSERT
-        # via the new code raises sqlite3.IntegrityError. Drop them on boot
-        # so old DBs match the new INSERT shape. Idempotent — _drop_columns
-        # is a no-op when the columns are already gone.
-        self._drop_columns(
-            conn=conn,
-            table="resource_versions",
-            columns=("snapshot_status", "git_path", "git_commit"),
-        )
         # Cloud-split Phase 3 (June 2026): machine-local values left the
         # cloud-bound sandboxes row — the per-experiment SSH key path and the
         # local sync dir live in the data-plane worker's local store now
@@ -1812,6 +1716,9 @@ class StateStore(BaseStateStore):
         # dialect (which has no rowid). Legacy rows backfill created_seq from
         # their rowid — the exact order the old queries observed — once, when
         # the column is first added; new writes set it via next_created_seq().
+        # The two resource tables stay in the loop only until migration 25
+        # drops them: pre-cut databases need created_seq before migration 24's
+        # ORDER BY a.created_seq backfill can run.
         for table in (
             "resource_versions",
             "resource_associations",
@@ -1820,6 +1727,10 @@ class StateStore(BaseStateStore):
             "reflections",
             "sandboxes",
         ):
+            if table.startswith("resource") and not self._has_table(
+                conn=conn, table=table
+            ):
+                continue
             added = self._ensure_columns(
                 conn=conn,
                 table=table,
@@ -2112,7 +2023,7 @@ class StateStore(BaseStateStore):
         Pre-Phase-7 databases stored the minted capability in plaintext under a
         column-level UNIQUE `capability` column. Phase 7 stores its sha256
         instead. SQLite cannot DROP a column carrying a column-level UNIQUE in
-        place, so — exactly like _migrate_resources_unique — the table is
+        place, so the table is
         rebuilt into the new shape (own connection, foreign_keys toggled off so
         the review_sessions/reviews FKs to review_requests(id) don't block the
         DROP/RENAME): `capability_hash` replaces `capability`, backfilled with
@@ -2218,77 +2129,6 @@ class StateStore(BaseStateStore):
         for name in columns:
             if name in existing:
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {name}")
-
-    def _migrate_resources_unique(self) -> None:
-        """Re-key `resources` uniqueness from `path` to `(project_id, path)`.
-
-        The original schema declared `path TEXT NOT NULL UNIQUE`, which blocked
-        two projects from registering the same repo-relative file. SQLite cannot
-        drop a column-level UNIQUE in place, so detect the legacy autoindex and
-        rebuild. No-op once the (project_id, path) unique index already exists
-        (fresh databases get the new shape directly from SCHEMA).
-        """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            if not self._resources_needs_unique_migration(conn=conn):
-                return
-            # PRAGMA foreign_keys cannot change inside a transaction; toggle it
-            # off around the rebuild so DROP/RENAME don't trip referential checks
-            # against resource_versions / resource_associations (both key on id).
-            conn.execute("PRAGMA foreign_keys = OFF")
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                # Single statement, so execute() (not executescript(), which would
-                # force-commit our BEGIN and break the rebuild's atomicity).
-                conn.execute(_RESOURCES_REBUILD_DDL)
-                conn.execute(
-                    """
-                    INSERT INTO resources_migrate (
-                      id, project_id, path, kind, title, current_version_id,
-                      version_token, mtime_ns, size_bytes, observed_at, git_commit,
-                      missing, deleted, created_by, created_at, updated_at
-                    )
-                    SELECT
-                      id, project_id, path, kind, title, current_version_id,
-                      version_token, mtime_ns, size_bytes, observed_at, git_commit,
-                      missing, 0, created_by, created_at, updated_at
-                    FROM resources
-                    """
-                )
-                conn.execute("DROP TABLE resources")
-                conn.execute("ALTER TABLE resources_migrate RENAME TO resources")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.execute("PRAGMA foreign_keys = ON")
-        finally:
-            conn.close()
-
-    def _resources_needs_unique_migration(self, *, conn: sqlite3.Connection) -> bool:
-        table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'resources'"
-        ).fetchone()
-        if table is None:
-            return False
-        has_path_only = False
-        has_project_path = False
-        for idx in conn.execute("PRAGMA index_list(resources)").fetchall():
-            if not idx["unique"]:
-                continue
-            cols = [
-                str(info["name"])
-                for info in conn.execute(
-                    f"PRAGMA index_info({idx['name']})"
-                ).fetchall()
-            ]
-            if cols == ["path"]:
-                has_path_only = True
-            elif cols == ["project_id", "path"]:
-                has_project_path = True
-        return has_path_only and not has_project_path
 
 
 # Alias for composition code that wants to name the dialect explicitly; the

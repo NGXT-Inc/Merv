@@ -102,7 +102,7 @@ class GraphResearch:
         return {"reflections": [{"id": "syn_1"}]}
 
     def project_logic_graph_selection(self, **_kwargs):
-        return {"reflection": None, "graph_resource": None, "signal": "stale"}
+        return {"reflection": None, "graph_artifact": None, "signal": "stale"}
 
     def resolve_research_graph_refs(self, **kwargs):
         self.resolved.append(kwargs)
@@ -122,8 +122,8 @@ class GraphArtifacts:
             return '{"version":1,"nodes":[{"id":"n","label":"New","refs":["claim_1"]}]}'
         return None
 
-    def resolve_resource_reference(self, *, project_id, ref):
-        self.resolved.append({"project_id": project_id, "ref": ref})
+    def resolve_artifact_reference(self, *, project_id, artifact_id):
+        self.resolved.append({"project_id": project_id, "artifact_id": artifact_id})
         return None
 
 
@@ -185,7 +185,7 @@ class ApplicationQueryTest(unittest.TestCase):
         result = query.experiment(project_id="proj_1", experiment_id="exp_1")
 
         self.assertTrue(result["available"])
-        self.assertEqual(result["resource_id"], "res_new")
+        self.assertEqual(result["artifact_id"], "res_new")
         self.assertEqual(result["graph"]["nodes"][0]["label"], "New")
         self.assertEqual(result["problems"], [])
         self.assertEqual(
@@ -213,19 +213,21 @@ class ApplicationQueryTest(unittest.TestCase):
                     return (
                         '{"version":1,"nodes":['
                         '{"id":"a","label":"A","refs":'
-                        '["claim_1","results.json","claim_1","exp_missing"]},'
+                        '["claim_1","art_results","claim_1","exp_missing"]},'
                         '{"id":"b","label":"B","refs":'
-                        '["res_missing","ghost.json"," ",7]}]}'
+                        '["art_missing","ghost.json"," ",7]}]}'
                     )
                 return None
 
-            def resolve_resource_reference(self, *, project_id, ref):
-                self.resolved.append({"project_id": project_id, "ref": ref})
-                if ref == "results.json":
+            def resolve_artifact_reference(self, *, project_id, artifact_id):
+                self.resolved.append(
+                    {"project_id": project_id, "artifact_id": artifact_id}
+                )
+                if artifact_id == "art_results":
                     return {
-                        "type": "resource",
+                        "type": "artifact",
                         "resolved": True,
-                        "resource_id": "res_results",
+                        "artifact_id": "art_results",
                     }
                 return None
 
@@ -240,9 +242,9 @@ class ApplicationQueryTest(unittest.TestCase):
             list(result["ref_index"]),
             [
                 "claim_1",
-                "results.json",
+                "art_results",
                 "exp_missing",
-                "res_missing",
+                "art_missing",
                 "ghost.json",
             ],
         )
@@ -250,12 +252,10 @@ class ApplicationQueryTest(unittest.TestCase):
             result["ref_index"]["exp_missing"],
             {"type": "unknown", "resolved": False},
         )
-        self.assertEqual(
-            result["ref_index"]["res_missing"],
-            {"type": "unknown", "resolved": False},
-        )
+        self.assertEqual(result["ref_index"]["art_results"]["type"], "artifact")
+        self.assertFalse(result["ref_index"]["art_missing"]["resolved"])
         self.assertIn(
-            "not a registered resource",
+            "not a submitted artifact id",
             result["ref_index"]["ghost.json"]["hint"],
         )
         self.assertEqual(
@@ -265,17 +265,17 @@ class ApplicationQueryTest(unittest.TestCase):
                     "project_id": "proj_1",
                     "refs": (
                         "claim_1",
-                        "results.json",
+                        "art_results",
                         "exp_missing",
-                        "res_missing",
+                        "art_missing",
                         "ghost.json",
                     ),
                 }
             ],
         )
         self.assertEqual(
-            [call["ref"] for call in artifacts.resolved],
-            ["results.json", "res_missing", "ghost.json"],
+            [call["artifact_id"] for call in artifacts.resolved],
+            ["art_results", "art_missing"],
         )
 
     def test_project_graph_keeps_signal_when_no_reflection_exists(self) -> None:

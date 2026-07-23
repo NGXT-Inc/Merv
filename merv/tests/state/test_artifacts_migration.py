@@ -11,13 +11,55 @@ from merv.brain.kernel.state.store import StateStore
 
 
 class ArtifactsBackfillMigrationTest(unittest.TestCase):
-    """Replay migration 24 against a resource-era database.
+    """Replay migrations 24+25 against a resource-era database.
 
     A first StateStore boot creates the modern schema; the test then rewinds
-    just migration 24 (drops the artifact tables + its ledger row), seeds
-    resource-era rows, and re-opens the store so only the backfill replays —
-    the same shape a production upgrade sees.
+    migrations 24 and 25 (drops the artifact tables + their ledger rows),
+    recreates the resource-era tables the pre-cut SCHEMA used to carry, seeds
+    rows, and re-opens the store so the backfill-then-drop replays — the same
+    shape a production upgrade sees.
     """
+
+    _RESOURCE_ERA_DDL = (
+        """
+        CREATE TABLE resources (
+          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, path TEXT NOT NULL,
+          kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+          current_version_id TEXT, version_token TEXT NOT NULL,
+          mtime_ns INTEGER NOT NULL, size_bytes INTEGER NOT NULL,
+          observed_at TEXT NOT NULL, git_commit TEXT,
+          missing INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL DEFAULT 'codex', created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL, UNIQUE(project_id, path)
+        )
+        """,
+        """
+        CREATE TABLE resource_versions (
+          id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, project_id TEXT NOT NULL,
+          path TEXT NOT NULL, content_sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+          mtime_ns INTEGER NOT NULL, observed_at TEXT NOT NULL,
+          content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+          created_by TEXT NOT NULL DEFAULT 'codex', created_at TEXT NOT NULL,
+          created_seq INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE resource_associations (
+          id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, version_id TEXT,
+          target_type TEXT NOT NULL, target_id TEXT NOT NULL, role TEXT NOT NULL,
+          attempt_index INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+          created_seq INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(resource_id, target_type, target_id, role, attempt_index)
+        )
+        """,
+        """
+        CREATE TABLE report_figures (
+          report_version_id TEXT NOT NULL, link_path TEXT NOT NULL,
+          sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL,
+          PRIMARY KEY (report_version_id, link_path)
+        )
+        """,
+    )
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -26,7 +68,9 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("DROP TABLE IF EXISTS artifact_figures")
             conn.execute("DROP TABLE IF EXISTS artifacts")
-            conn.execute("DELETE FROM schema_migrations WHERE version = 24")
+            conn.execute("DELETE FROM schema_migrations WHERE version IN (24, 25)")
+            for ddl in self._RESOURCE_ERA_DDL:
+                conn.execute(ddl)
             self._seed(conn)
             conn.commit()
 
@@ -138,7 +182,7 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
         )
 
     def test_backfill_maps_rows_figures_and_refs(self) -> None:
-        StateStore(db_path=self.db_path)  # replays only migration 24
+        StateStore(db_path=self.db_path)  # replays migrations 24 (backfill) + 25 (drop)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         artifacts = {
@@ -185,6 +229,16 @@ class ArtifactsBackfillMigrationTest(unittest.TestCase):
             snapshot,
             f"experiment|exp_1|design_review|2|{plan['id']}:plan:2",
         )
+
+        # Migration 25 dropped the resource-era tables right after the backfill.
+        remaining = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        for table in ("resources", "resource_versions", "resource_associations", "report_figures"):
+            self.assertNotIn(table, remaining)
         conn.close()
 
     def test_backfill_is_a_noop_on_fresh_databases(self) -> None:

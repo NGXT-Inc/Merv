@@ -320,19 +320,13 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
         role: str,
         body: str,
     ) -> None:
-        target = self.repo / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body)
-        app.call_tool(
-            "resource.register",
-            {
-                "project_id": project_id,
-                "path": path,
-                "kind": role,
-                "target_type": "experiment",
-                "target_id": experiment_id,
-                "role": role,
-            },
+        app.submit_artifact(
+            project_id=project_id,
+            target_type="experiment",
+            target_id=experiment_id,
+            role=role,
+            path=path,
+            body=body,
         )
 
     def _pass_review(
@@ -572,20 +566,17 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
         try:
             exhibit_link = conn.execute(
                 """
-                SELECT a.resource_id, a.version_id, r.path
-                FROM resource_associations a
-                JOIN resources r ON r.id = a.resource_id
-                WHERE a.target_type = 'experiment' AND a.target_id = ?
-                  AND a.role = 'exhibit'
-                ORDER BY a.created_seq DESC LIMIT 1
+                SELECT id, path FROM artifacts
+                WHERE target_type = 'experiment' AND target_id = ?
+                  AND role = 'exhibit' AND status = 'complete'
+                ORDER BY created_seq DESC LIMIT 1
                 """,
                 (experiment_id,),
             ).fetchone()
         finally:
             conn.close()
         self.assertIsNotNone(exhibit_link)
-        resource_id = str(exhibit_link["resource_id"])
-        version_id = str(exhibit_link["version_id"])
+        exhibit_artifact_id = str(exhibit_link["id"])
         exhibit_path = str(exhibit_link["path"])
         review_id = str(review["id"])
 
@@ -619,19 +610,12 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
                 },
             ),
             _row(
-                "resource.versioned",
-                resource_id,
-                {"path": exhibit_path, "version_id": version_id},
-                target_type="resource",
-            ),
-            _row(
-                "resource.associated",
+                "artifact.pinned",
                 experiment_id,
                 {
-                    "attempt_index": 1,
-                    "resource_id": resource_id,
+                    "artifact_id": exhibit_artifact_id,
+                    "path": exhibit_path,
                     "role": "exhibit",
-                    "version_id": version_id,
                 },
             ),
             _transition_row(

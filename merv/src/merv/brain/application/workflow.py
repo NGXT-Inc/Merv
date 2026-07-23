@@ -21,7 +21,7 @@ from .ports.storage import ProducedObjectCatalog
 from .reflection_guidance import literature_hint
 from .status_guidance import (
     StatusGuidancePolicy,
-    _SLIM_RESOURCE_FIELDS,
+    _SLIM_ARTIFACT_FIELDS,
     _SLIM_REVIEW_FIELDS,
 )
 
@@ -278,7 +278,7 @@ class ProjectDashboardQuery:
 
     snapshots: ResearchSnapshots
     workflow: StatusAndNextQuery
-    resources: RecordQuery
+    artifacts: RecordQuery
     review_queue: RecordQuery
     recent_events: RecordQuery
     health: Callable[[], dict[str, object]]
@@ -292,7 +292,7 @@ class ProjectDashboardQuery:
             snapshot=snapshot,
             sandboxes=self.workflow.sandboxes.for_project(project_id=project_id),
         )
-        resources = self.resources(project_id=project_id)["resources"]
+        artifacts = self.artifacts(project_id=project_id)["artifacts"]
         reviews = self.review_queue(project_id=project_id)
         events = self.recent_events(project_id=project_id, limit=25)["events"]
         claims = status["project"]["active_claims"]
@@ -305,7 +305,7 @@ class ProjectDashboardQuery:
             "experiments": experiments,
             "active_experiments": active_experiments,
             "active_processes": active_processes,
-            "resources": resources,
+            "artifacts": artifacts,
             "reviews": reviews,
             "pending_change_sets": [],
             "recent_events": events,
@@ -314,7 +314,7 @@ class ProjectDashboardQuery:
                 "experiments": len(experiments),
                 "active_experiments": len(active_experiments),
                 "active_processes": len(active_processes),
-                "resources": len(resources),
+                "artifacts": len(artifacts),
                 "open_reviews": len(reviews["requests"]),
             },
             "workflow": (
@@ -371,18 +371,18 @@ class ProjectDashboardQuery:
                 changed.append(claim_id)
         reflection = None
         if latest is not None:
-            graph = _resource_link(latest, PROJECT_GRAPH_ROLES, "project_graph")
-            document = _resource_link(
+            graph = _artifact_link(latest, PROJECT_GRAPH_ROLES, "project_graph")
+            document = _artifact_link(
                 latest, ("reflection_doc", "synthesis_doc"), "reflection_doc"
             )
             reflection = {
                 "reflection_id": latest.get("id"),
                 "time": latest.get("published_at"),
-                "reflection_doc_resource_id": (
-                    document.get("resource_id") if document else None
+                "reflection_doc_artifact_id": (
+                    document.get("artifact_id") if document else None
                 ),
-                "project_graph_resource_id": (
-                    graph.get("resource_id") if graph else None
+                "project_graph_artifact_id": (
+                    graph.get("artifact_id") if graph else None
                 ),
             }
         covered_count = len(covered & {str(item.get("id")) for item in terminal})
@@ -483,7 +483,7 @@ def _slim_status(full: Record) -> Record:
                 ],
                 "current_attempt_resources": project_rows(
                     experiment.get("current_attempt_resources", []),
-                    _SLIM_RESOURCE_FIELDS,
+                    _SLIM_ARTIFACT_FIELDS,
                 ),
                 "reviews": project_rows(
                     experiment.get("reviews", []), _SLIM_REVIEW_FIELDS
@@ -492,8 +492,6 @@ def _slim_status(full: Record) -> Record:
             "sandbox": _sandbox_summary(full.get("sandboxes", [])),
             "project": {"id": project.get("id"), "name": project.get("name")},
         }
-        if full.get("resource_refresh"):
-            result["resource_refresh"] = full["resource_refresh"]
     if full.get("project_reflection"):
         result["project_reflection"] = full["project_reflection"]
     if full.get("litreview"):
@@ -531,20 +529,20 @@ def _event_payload(event: Record) -> Record:
     return payload if isinstance(payload, dict) else {}
 
 
-def _resource_link(
+def _artifact_link(
     reflection: Record, roles: tuple[str, ...], canonical_role: str
 ) -> Record | None:
     attempt = reflection.get("attempt_index")
     candidates = [
-        resource
-        for resource in reflection.get("resources", [])
-        if resource.get("association_role") in roles
-        and resource.get("association_attempt_index") == attempt
+        artifact
+        for artifact in reflection.get("resources", [])
+        if artifact.get("association_role") in roles
+        and artifact.get("association_attempt_index") == attempt
     ]
     if not candidates:
         return None
     rank = {role: index for index, role in enumerate(roles)}
-    resource = min(
+    artifact = min(
         candidates,
         key=lambda item: (
             rank.get(str(item.get("association_role")), len(roles)),
@@ -560,14 +558,14 @@ def _resource_link(
         "kind": "artifact",
         "role": canonical_role,
         "legacy_role": (
-            resource.get("association_role")
-            if resource.get("association_role") != canonical_role
+            artifact.get("association_role")
+            if artifact.get("association_role") != canonical_role
             else None
         ),
-        "artifact_id": resource.get("id"),
-        "path": resource.get("path"),
+        "artifact_id": artifact.get("id"),
+        "path": artifact.get("path"),
         "read_with": "artifact.find",
-        "read_args": {"artifact_id": resource.get("id")},
+        "read_args": {"artifact_id": artifact.get("id")},
     }
 
 

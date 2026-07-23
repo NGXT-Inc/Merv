@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 STORAGE_RULE_OF_THUMB = (
-    "Use storage for files that are too large or noisy for repo resources, "
-    "or expensive to regenerate: checkpoints/models, precious datasets, "
-    "dataset shards, parquet/archive outputs, generated caches that must "
-    "survive, and logs/traces over about 10 MB."
+    "Use storage for files that are too large or noisy for the repo or "
+    "artifact submission, or expensive to regenerate: checkpoints/models, "
+    "precious datasets, dataset shards, parquet/archive outputs, generated "
+    "caches that must survive, and logs/traces over about 10 MB."
 )
 
 STORAGE_USE_FOR = (
@@ -18,7 +18,7 @@ STORAGE_USE_FOR = (
     "generated intermediates that must survive sandbox release but do not belong in git",
 )
 
-RESOURCE_USE_FOR = (
+REPO_USE_FOR = (
     "plan.md, report.md, graph.json, scripts, configs, and small retained result files",
     "metrics TSV/JSON, summarized logs, and plots referenced by the report",
     "dataset notes such as data.md with sources, filters, row counts, schema, and caveats",
@@ -35,7 +35,7 @@ def storage_guidance(*, enabled: bool = True) -> dict[str, Any]:
         "enabled": bool(enabled),
         "rule_of_thumb": STORAGE_RULE_OF_THUMB,
         "use_storage_for": list(STORAGE_USE_FOR),
-        "keep_as_resources": list(RESOURCE_USE_FOR),
+        "keep_in_repo": list(REPO_USE_FOR),
         "leave_ephemeral": list(EPHEMERAL_USE_FOR),
     }
     if not enabled:

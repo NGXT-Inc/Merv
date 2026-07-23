@@ -21,7 +21,7 @@ What the graph is NOT:
 - **Not a pipeline or provenance diagram.** If your nodes are components
   (code, environment, observability) and your edges read `produces`,
   `contains`, `records`, `implements`, you have drawn dataflow, not the
-  story. Lineage belongs in resources and the report.
+  story. Lineage belongs in artifacts and the report.
 - **Not a metrics dump.** A number earns a node only when it changed a
   decision; raw metrics belong in result files a node may `ref`.
 - **Not generated.** Do not build it with a script over your result files —
@@ -40,7 +40,7 @@ illustrative, not required. A useful test for every node: does it help answer
 ## Envelope (the only server-enforced rules)
 
 `experiment.transition(submit_results)` is blocked until the current attempt
-has a role-`graph` resource whose SUBMITTED content (the bytes captured
+has a role-`graph` artifact whose SUBMITTED content (the bytes pinned
 when you associate it — re-associate after every edit you want counted)
 passes these checks:
 
@@ -60,12 +60,12 @@ reviewer, not the linter.
 
 Prefer brief nodes that point at evidence over long `detail` prose. A node's
 `refs` array takes plain strings — repo-relative paths of registered files
-(`experiments/<name>/results.json`) or known record ids (`res_…`, `rev_…`,
+(`experiments/<name>/results.json`) or known record ids (`art_…`, `rev_…`,
 `claim_…`, `exp_…`). The UI resolves them on read and renders them as links,
 so the user and the reviewer can jump from a node to the file, review, or
 claim behind it. Unresolvable refs are shown grayed out, never an error —
 whether and what to reference is your call. Files you reference should be
-registered and associated as resources so the links resolve.
+submitted as artifacts so the links resolve.
 
 ## Keeping it current
 
@@ -90,7 +90,7 @@ your call.
       "label": "short, required",
       "kind": "optional, free-form — your vocabulary",
       "detail": "optional prose",
-      "refs": ["optional anchors: review ids, resource paths, run ids"]
+      "refs": ["optional anchors: review ids, artifact ids, run ids"]
     }
   ],
   "edges": [

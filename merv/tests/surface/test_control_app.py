@@ -521,18 +521,18 @@ class ControlAppTest(unittest.TestCase):
             acme_project = server.app.http.projects.create(
                 name="Acme Hosted", tenant_id="acme"
             )
+            # A data-plane submission route stays reachable on the private
+            # surface (400 = authorization admitted, domain validation ran).
             data_plane_write = client.post(
-                "/api/data-plane/resources/observe",
+                "/api/data-plane/feed/validate-post",
                 json={
                     "project_id": acme_project["id"],
-                    "path": "results.txt",
-                    "content_sha256": "0" * 64,
-                    "mtime_ns": 1,
-                    "ctime_ns": 1,
-                    "size_bytes": 1,
+                    "handle": "main",
+                    "text": "control-surface probe",
                 },
             )
-            self.assertEqual(data_plane_write.status_code, 200, data_plane_write.text)
+            self.assertEqual(data_plane_write.status_code, 400, data_plane_write.text)
+            self.assertIn("not registered", data_plane_write.text)
 
             meta = client.get("/api/meta")
             self.assertEqual(meta.status_code, 200, meta.text)

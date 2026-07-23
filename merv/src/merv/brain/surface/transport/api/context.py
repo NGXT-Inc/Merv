@@ -1,4 +1,4 @@
-"""Context shared by resource route modules."""
+"""Context shared by API route modules."""
 
 from __future__ import annotations
 

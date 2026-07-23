@@ -12,13 +12,11 @@ class ControlToolOperationsTest(unittest.TestCase):
         self.projects = Mock()
         self.claims = Mock()
         self.experiments = Mock()
-        self.resources = Mock()
         self.storage = Mock()
         self.operations = ControlToolOperations(
             projects=self.projects,
             claims=self.claims,
             experiments=self.experiments,
-            resources=self.resources,
             storage=self.storage,
         )
 
@@ -90,38 +88,6 @@ class ControlToolOperationsTest(unittest.TestCase):
             'project action="connect" is served by the local merv proxy, not the '
             "brain. Seeing this means your Merv client is older than the brain — "
             "update the plugin (git pull) and restart your MCP client.",
-        )
-
-    def test_resource_find_preserves_resolve_and_list_modes(self) -> None:
-        self.resources.resolve.return_value = {"resource": {"id": "res_1"}}
-        resolved = self.operations.resource_find(
-            project_id="proj_1", resource_id="res_1", include_history=True
-        )
-        self.assertEqual(resolved, {"resource": {"id": "res_1"}})
-        self.resources.resolve.assert_called_once_with(
-            resource_id="res_1", include_history=True, project_id="proj_1"
-        )
-        self.resources.list_resources.return_value = {"resources": []}
-
-        listed = self.operations.resource_find(
-            project_id="proj_1",
-            kind="report",
-            experiment_id="exp_1",
-            missing=False,
-            compact=True,
-            limit=4,
-            offset=2,
-        )
-
-        self.assertEqual(listed, {"resources": []})
-        self.resources.list_resources.assert_called_once_with(
-            kind="report",
-            experiment_id="exp_1",
-            missing=False,
-            compact=True,
-            limit=4,
-            offset=2,
-            project_id="proj_1",
         )
 
     def test_storage_find_preserves_resolve_and_list_modes(self) -> None:

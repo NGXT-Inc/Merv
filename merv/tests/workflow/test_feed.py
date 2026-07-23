@@ -995,18 +995,14 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
     def call(self, tool_name: str, **kwargs):
         return self.app.call_tool(tool_name, kwargs)
 
-    def _write_and_associate(
-        self, *, exp_id: str, path: str, role: str, body: str
-    ) -> None:
-        (self.repo / path).write_text(body)
-        self.call(
-            "resource.register",
+    def _submit(self, *, exp_id: str, path: str, role: str, body: str) -> None:
+        self.app.submit_artifact(
             project_id=self.pid,
-            path=path,
-            kind=role,
             target_type="experiment",
             target_id=exp_id,
             role=role,
+            path=path,
+            body=body,
         )
 
     def _pass_review(self, *, exp_id: str, role: str) -> None:
@@ -1037,7 +1033,7 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
             project_id=self.pid,
             intent="Feed note attach-point coverage.",
         )["id"]
-        self._write_and_associate(
+        self._submit(
             exp_id=exp_id, path="plan.md", role="plan", body=_VALID_PLAN
         )
         self.call(
@@ -1059,13 +1055,13 @@ class FeedNoteTransitionIntegrationTest(unittest.TestCase):
             experiment_id=exp_id,
             transition="start_running",
         )
-        self._write_and_associate(
+        self._submit(
             exp_id=exp_id, path="results.json", role="result", body='{"metric": 1}\n'
         )
-        self._write_and_associate(
+        self._submit(
             exp_id=exp_id, path="report.md", role="report", body=_VALID_REPORT
         )
-        self._write_and_associate(
+        self._submit(
             exp_id=exp_id, path="graph.json", role="graph", body=_VALID_GRAPH
         )
         self.call(

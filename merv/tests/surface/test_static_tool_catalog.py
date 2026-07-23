@@ -222,7 +222,7 @@ class BarePythonProxyTest(unittest.TestCase):
 
         self.assertEqual(bare, live)
         names = {tool["name"] for tool in bare}
-        self.assertIn("resource.register", names)
+        self.assertIn("sandbox.pull_outputs", names)
         # The bare/offline catalog is the data-plane half only. The merged
         # `project` tool is control-plane (brain-served), so with the brain
         # unreachable it is not listed offline — a documented consequence of the
@@ -255,51 +255,6 @@ class BarePythonProxyTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(captured["path"], "/api/data-plane/sandboxes/request")
         self.assertEqual(captured["payload"]["project_id"], "proj_bare")
-
-    def test_resource_register_without_brain_or_pydantic_uses_shared_validation(
-        self,
-    ) -> None:
-        (self.repo / "result.json").write_text('{"score": 1}\n', encoding="utf-8")
-        captured: dict = {}
-
-        def control_api_post(path: str, payload: dict) -> dict:
-            captured["path"] = path
-            captured["payload"] = payload
-            return {"id": "res_bare", **payload}
-
-        plane = LocalDataPlane(
-            repo_root=self.repo,
-            project_id_resolver=lambda: "proj_bare",
-            control_api_post=control_api_post,
-            control_tool_call=lambda tool, args: {},
-        )
-        with _without_brain_or_pydantic():
-            result = plane.call_tool(
-                name="resource.register",
-                arguments={"path": "result.json", "kind": "result"},
-            )
-
-        self.assertEqual(result["id"], "res_bare")
-        self.assertEqual(captured["path"], "/api/data-plane/resources/observe")
-        self.assertEqual(captured["payload"]["project_id"], "proj_bare")
-        self.assertEqual(captured["payload"]["path"], "result.json")
-
-    def test_resource_register_modes_are_checked_without_brain_or_pydantic(
-        self,
-    ) -> None:
-        plane = LocalDataPlane(
-            repo_root=self.repo,
-            project_id_resolver=lambda: "proj_bare",
-            control_api_post=lambda path, payload: {},
-            control_tool_call=lambda tool, args: {},
-        )
-        with _without_brain_or_pydantic(), self.assertRaisesRegex(
-            LocalDataPlaneError, "provide exactly one"
-        ):
-            plane.call_tool(
-                name="resource.register",
-                arguments={"path": "a.md", "paths": ["b.md"]},
-            )
 
 
 if __name__ == "__main__":

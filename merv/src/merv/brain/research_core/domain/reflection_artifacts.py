@@ -1,5 +1,5 @@
 """Reflection-wave artifact lints shared by the transition gates and the
-local data-plane resource-validation helper.
+shared markdown-image helper.
 
 Structure lives here so the two surfaces cannot drift. DB-backed checks
 (claim existence, taken experiment names, active-experiment caps) are
@@ -20,7 +20,7 @@ from merv.shared.artifact_roles import (
 )
 from merv.shared.markdown_images import markdown_image_links
 
-from .resource_evidence import preferred_associated_resource
+from .artifact_evidence import preferred_associated_artifact
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -156,11 +156,11 @@ def reflection_requirement_roles(*, role: str) -> tuple[str, ...]:
     return (role,)
 
 
-def current_reflection_requirement_resource(
+def current_reflection_requirement_artifact(
     *, reflection: dict[str, Any], role: str
 ) -> dict[str, Any] | None:
-    return preferred_associated_resource(
-        resources=reflection.get("current_attempt_resources") or [],
+    return preferred_associated_artifact(
+        artifacts=reflection.get("current_attempt_resources") or [],
         attempt=reflection.get("attempt_index"),
         roles=reflection_requirement_roles(role=role),
     )

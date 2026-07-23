@@ -1,12 +1,12 @@
-"""Artifacts module: resource records, versions, and evidence.
+"""Artifacts module: typed submitted artifacts and evidence contracts.
 
-Owns repo-file resource identity and associations (``resources``), the
-pinned-bytes rule, and public evidence contracts (``ports``). Shared role
-vocabulary and markdown parsing live below both planes in ``merv.shared``.
+Owns artifact submission (``submissions``), association legality
+(``association_policy``), and public evidence contracts (``ports``). Shared
+role vocabulary and markdown parsing live below both planes in ``merv.shared``.
 """
 
 from __future__ import annotations
 
-from .resources import ResourceService
+from .submissions import ArtifactSubmissionService
 
-__all__ = ["ResourceService"]
+__all__ = ["ArtifactSubmissionService"]

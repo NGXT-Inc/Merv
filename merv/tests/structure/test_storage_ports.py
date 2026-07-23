@@ -120,7 +120,7 @@ class HeavyObjectPortTest(unittest.TestCase):
 class StorageImportBoundaryTest(unittest.TestCase):
     def test_artifacts_and_feed_do_not_import_object_storage(self) -> None:
         paths = (
-            SRC_ROOT / "artifacts" / "resources.py",
+            SRC_ROOT / "artifacts" / "submissions.py",
             SRC_ROOT / "feed" / "feed.py",
         )
         for path in paths:

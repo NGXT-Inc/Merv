@@ -47,9 +47,7 @@ GET /api/meta
   "mode": "local",
   "capabilities": {
     "hosted_control": false,
-    "local_data_plane_http": false,
-    "resource_registration": false,
-    "resource_association": false
+    "local_data_plane_http": false
   }
 }
 ```
@@ -104,7 +102,7 @@ Create projects with `name` and `summary`. Do not send a repo path: checkout to
 project links are machine-local proxy state.
 
 `/home` is the primary UI bootstrap. It returns `project`, `claims`, the full
-`experiments` list, `resources`, `reviews`, `recent_events`, `stats`, `workflow`,
+`experiments` list, `artifacts`, `reviews`, `recent_events`, `stats`, `workflow`,
 `active_experiment`, `active_experiments`, `active_processes`, and MLflow health.
 `active_experiments` contains non-terminal work with its workflow, sandboxes,
 and active processes. `active_processes` includes both `provisioning` and
@@ -177,43 +175,37 @@ review-stage status (`reflection_review`) use the reflection vocabulary.
 
 The overview returns full wave states, the open/latest wave, and the project
 reflection staleness signal. A wave includes its five-lens roster, corpus,
-attempt-scoped resources, reviews, lens coverage, gate checklist, graph diff,
-and allowed transitions. Per-wave graph reads use the version pinned by that
+attempt-scoped artifacts, reviews, lens coverage, gate checklist, graph diff,
+and allowed transitions. Per-wave graph reads use the artifact pinned by that
 wave, so historical graphs remain faithful after the living graph changes.
 
-## Resources
+## Artifacts
 
 ```http
-GET    /api/projects/{project_id}/resources
-GET    /api/projects/{project_id}/resources?kind={kind}
-GET    /api/projects/{project_id}/resources/tree
-GET    /api/projects/{project_id}/resources/{resource_id}
-GET    /api/projects/{project_id}/resources/{resource_id}/history
-GET    /api/projects/{project_id}/resources/{resource_id}/content
-GET    /api/projects/{project_id}/resources/{resource_id}/content?version={version_id}
-GET    /api/projects/{project_id}/resources/{resource_id}/file?rel={relative_path}
-DELETE /api/projects/{project_id}/resources/{resource_id}
+GET /api/projects/{project_id}/artifacts
+GET /api/projects/{project_id}/artifacts?target_type={type}&target_id={id}&role={role}
+GET /api/projects/{project_id}/artifacts/{artifact_id}/content
+GET /api/projects/{project_id}/artifacts/{artifact_id}/file
+GET /api/projects/{project_id}/artifacts/{artifact_id}/figure?rel={relative_path}
 ```
 
-There are deliberately no browser `POST /resources` or `POST /associate`
-routes. The proxy's `resource.register` tool observes the local file and uses
-internal `/api/data-plane/resources/*` submissions. Associations of gated
-documents capture the submitted document and referenced figure bytes in the
-brain's blob store.
+There are deliberately no browser submission routes: artifacts are submitted
+by the agent (`artifact.submit` plus the returned one-time-token
+`PUT /api/artifacts/u/{token}` upload; figures via
+`PUT /api/artifacts/f/{token}`). The listing returns compact complete-artifact
+rows (id, target, role, attempt, lens_id, path label, title, size,
+timestamps).
 
-Content behavior follows the plane boundary:
+Content behavior:
 
-- `/content?version=` serves an exact associated submitted version when its blob
-  is available.
-- `/content` serves the newest available submitted bytes for a gated document.
-- Non-gated checkout files are metadata-only to the brain and return
-  `available: false` with `reason: content_unavailable_in_this_mode`.
-- `/file?rel=` serves a captured relative figure from a submitted gated
-  document. It does not read the live checkout; a direct file request or an
-  uncaptured relative file returns `404 content_unavailable`.
+- `/content` serves the pinned submitted bytes; a pending artifact returns
+  `available: false`.
+- `/file` serves the raw bytes with the path label's filename.
+- `/figure?rel=` serves a submitted figure for a markdown artifact; an
+  unsubmitted link returns 404. Nothing ever reads a live checkout.
 
-History contains observed version metadata. Deleting a resource marks its
-record deleted and removes its associations, but preserves version history.
+Each artifact is one immutable submission: resubmitting a slot mints a new
+artifact id and deletes the superseded row.
 
 ## Reviews
 

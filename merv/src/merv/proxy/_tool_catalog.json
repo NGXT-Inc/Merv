@@ -56,145 +56,7 @@
       "plane": "data"
     },
     {
-      "description": "Register repo file(s) as resources and, optionally, associate them to a claim, experiment, review, or attempt in one call. Pass 'path' (one file) or 'paths' (a changed-files batch) to register/observe the file(s); add the association trio (target_type, target_id, role) to also associate each registered resource. Or pass 'resource_id' to associate an ALREADY-registered resource \u2014 that mode requires the trio. Association validates the file against the role: gated artifacts (plan, report, graph, project_graph, reflection_doc, reflection_lens_doc, change_spec) are size-capped and their figure links resolved at register time, so keep them lean and reference raw data instead of inlining it.",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "created_by": {
-            "default": "codex",
-            "title": "Created By",
-            "type": "string"
-          },
-          "kind": {
-            "default": "other",
-            "title": "Kind",
-            "type": "string"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Repo-relative file path for a single file to register.",
-            "title": "Path"
-          },
-          "paths": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Repo-relative paths to register/observe as a batch (changed-files sweep). Provide 'path' (one file), 'paths' (many), or 'resource_id' (associate an already-registered resource).",
-            "title": "Paths"
-          },
-          "project_id": {
-            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "resource_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Associate an ALREADY-registered resource to the target trio instead of registering a new file. Requires target_type, target_id, and role.",
-            "title": "Resource Id"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Resource association role. Use 'result' for experiment output files.",
-            "enum": [
-              "change_spec",
-              "code",
-              "config",
-              "graph",
-              "input",
-              "model",
-              "note",
-              "other",
-              "plan",
-              "project_graph",
-              "reflection_doc",
-              "reflection_lens_doc",
-              "report",
-              "result"
-            ],
-            "title": "Role"
-          },
-          "target_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Id of the claim, experiment, review, or attempt to associate to.",
-            "title": "Target Id"
-          },
-          "target_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Association target kind. Provide the trio (target_type, target_id, role) together to associate the registered/observed resource(s).",
-            "enum": [
-              "attempt",
-              "claim",
-              "experiment",
-              "reflection",
-              "review"
-            ],
-            "title": "Target Type"
-          },
-          "title": {
-            "default": "",
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "type": "object"
-      },
-      "name": "resource.register",
-      "plane": "data"
-    },
-    {
-      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for repo resources, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
+      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -539,7 +401,7 @@
       "plane": "data"
     },
     {
-      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before resource.register or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before registering results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
+      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before submitting results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
