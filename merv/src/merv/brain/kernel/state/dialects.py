@@ -176,6 +176,21 @@ class PostgresStateStore(BaseStateStore):
                 conn.execute("ROLLBACK")
             raise
 
+    def _has_table(self, *, conn: Any, table: str) -> bool:
+        # The base probe tries sqlite_master first and swallows the failure —
+        # harmless on autocommit, but inside _migration_scope's BEGIN that
+        # failed statement aborts the whole transaction. Go straight to
+        # information_schema here.
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = ?
+            """,
+            (table,),
+        ).fetchone()
+        return row is not None
+
     def _has_column(self, *, conn: Any, table: str, column: str) -> bool:
         row = conn.execute(
             """
