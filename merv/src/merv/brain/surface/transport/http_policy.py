@@ -8,6 +8,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class HostedToolPolicy:
     telemetry_from_review_request: bool = False
+    telemetry_from_review_session: bool = False
 
 
 @dataclass(frozen=True)
@@ -39,4 +40,7 @@ HOSTED_CONTROL_TOOL_POLICIES = {
     "project": HostedToolPolicy(),
     "project.list": HostedToolPolicy(),
     "review.start": HostedToolPolicy(telemetry_from_review_request=True),
+    # INV-9: a review session resolves its own project, so an mk_ key cannot
+    # ride a foreign session id to mutate another project's review.
+    "review.submit": HostedToolPolicy(telemetry_from_review_session=True),
 }

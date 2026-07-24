@@ -1184,6 +1184,93 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_precreated_table_with_missing_ledger_row_converges(self) -> None:
+        # INV-16 (FIX 4): the schema CREATE IF NOT EXISTS commits SEPARATELY from
+        # the migration ledger — executescript(SCHEMA) autocommits before the
+        # ledger rows land in _initialize's later BEGIN IMMEDIATE. A crash in
+        # that window leaves the project_api_keys table present but its ledger
+        # row (migration 26) missing. This is NOT single-transaction atomicity of
+        # the schema change with its ledger row; it is a WINDOW that CONVERGES,
+        # because the migration-26 handler is _has_table-gated: the next migrate
+        # no-ops the DDL and re-inserts the ledger row (the shipped 24/25
+        # pattern), so no error is raised and the schema never drifts.
+        StateStore(db_path=self.db)  # fresh: creates the table and ledger row 26
+        with sqlite3.connect(self.db) as conn:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='project_api_keys'"
+                ).fetchone()
+            )
+            # Reproduce the crash-between state: table kept, ledger row 26 gone.
+            conn.execute("DELETE FROM schema_migrations WHERE version = 26")
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = 26"
+                ).fetchone()
+            )
+            conn.commit()
+
+        StateStore(db_path=self.db)  # converges cleanly (no error)
+        store = StateStore(db_path=self.db)  # idempotent second boot
+        conn = store.connect()
+        try:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type='table' AND name='project_api_keys'"
+                ).fetchone()
+            )
+            row = conn.execute(
+                "SELECT name FROM schema_migrations WHERE version = 26"
+            ).fetchone()
+            self.assertEqual(row["name"], "add_project_api_keys")
+        finally:
+            conn.close()
+
+
+class UserHfTokenStoreTest(unittest.TestCase):
+    """no-dataplane Phase C: write-only per-user Hugging Face token store."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / ".research_plugin" / "state.sqlite"
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        self.store = StateStore(db_path=self.db)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_fresh_db_has_user_hf_tokens_table(self) -> None:
+        conn = self.store.connect()
+        try:
+            self.assertTrue(self.store._has_table(conn=conn, table="user_hf_tokens"))
+        finally:
+            conn.close()
+
+    def test_set_resolve_upsert_and_clear(self) -> None:
+        self.assertEqual(self.store.user_hf_token(user_id="u1"), "")
+        self.store.set_user_hf_token(user_id="u1", token="hf_first")
+        self.assertEqual(self.store.user_hf_token(user_id="u1"), "hf_first")
+        # Upsert (one row per user) — the second set replaces, not appends.
+        self.store.set_user_hf_token(user_id="u1", token="hf_second")
+        self.assertEqual(self.store.user_hf_token(user_id="u1"), "hf_second")
+        conn = self.store.connect()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM user_hf_tokens WHERE user_id = ?", ("u1",)
+            ).fetchone()
+            self.assertEqual(int(count["n"]), 1)
+        finally:
+            conn.close()
+        self.store.clear_user_hf_token(user_id="u1")
+        self.assertEqual(self.store.user_hf_token(user_id="u1"), "")
+
+    def test_resolve_is_scoped_per_user_and_empty_for_unknown(self) -> None:
+        self.store.set_user_hf_token(user_id="a", token="hf_a")
+        self.assertEqual(self.store.user_hf_token(user_id="b"), "")
+        self.assertEqual(self.store.user_hf_token(user_id=""), "")
+
 
 if __name__ == "__main__":
     unittest.main()

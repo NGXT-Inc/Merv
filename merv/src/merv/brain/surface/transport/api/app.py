@@ -12,18 +12,21 @@ from ..data_plane_http import register_data_plane_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
-from . import artifacts, claims, events, experiments, litreview, meta, projects, reflections, reviews, sandboxes, storage
+from . import artifacts, claims, events, experiments, litreview, mcp_preauth, meta, oauth, projects, reflections, reviews, sandboxes, storage, user_settings
 from .context import ApiRouteContext
 from .dependencies import HttpDependencies
 from .gateway import (
     ProjectAuthorizer,
     RequestAuthenticator,
     ToolInvocationGateway,
-    install_activity_middleware,
     install_auth_routes,
+    install_request_middleware,
+)
+from .sandbox_control import KEY_SANDBOX_CONTROL_TOOLS
+from .middleware import (
+    install_activity_middleware,
     install_cors,
     install_error_handlers,
-    install_request_middleware,
 )
 def create_fastapi_app(
     app: HttpDependencies | None = None,
@@ -33,24 +36,26 @@ def create_fastapi_app(
     tenant_counters: Any | None = None,
     surface_policy: HttpSurfacePolicy | None = None,
     auth: Any | None = None,
+    oauth_service: Any | None = None,
     ui_base_url: str = "",
+    oauth_resource_uri: str = "",
 ) -> FastAPI:
     """Compose transport adapters around an already-built backend."""
     if app is None:
         raise ValueError("provide app")
+    if oauth_service is not None and not oauth_resource_uri:
+        raise ValueError("oauth_resource_uri is required when OAuth is enabled")
     surface = surface_policy or HttpSurfacePolicy.for_surface(
         restrict_cors=False, hosted_control=False
     )
     api = app
     authorizer = ProjectAuthorizer(projects=api.projects)
     gateway = ToolInvocationGateway(
-        tools=api.tools,
-        reviews=api.reviews,
-        sandboxes=api.sandboxes,
-        surface=surface,
-        projects=authorizer,
-    )
-    authenticator = RequestAuthenticator(surface=surface, verifier=auth)
+        tools=api.tools, reviews=api.reviews, sandboxes=api.sandboxes,
+        surface=surface, projects=authorizer)
+    authenticator = RequestAuthenticator(
+        surface=surface, verifier=auth, oauth_enabled=oauth_service is not None,
+        canonical_mcp_resource=oauth_resource_uri)
     http = FastAPI(title="Merv API", version=__version__)
 
     install_request_middleware(http, authenticator=authenticator, authorizer=authorizer)
@@ -58,20 +63,18 @@ def create_fastapi_app(
     # Registered last so CORS decorates middleware short-circuits as well.
     install_cors(http, allowed_origins=allowed_origins, surface=surface)
     install_error_handlers(http)
-    install_auth_routes(http, verifier=auth, allowed_origins=allowed_origins, ui_base_url=ui_base_url)
+    install_auth_routes(http, verifier=auth, allowed_origins=allowed_origins,
+                        ui_base_url=ui_base_url, owner_key_audience=oauth_resource_uri)
+    oauth.install_routes(http, service=oauth_service, allowed_origins=allowed_origins or [],
+                         ui_base_url=ui_base_url, canonical_mcp_resource=oauth_resource_uri)
 
     ctx = ApiRouteContext(surface=surface, route_call_tool=gateway.call,
                           auth_meta=auth.meta() if auth is not None else None)
     routers = (
-        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls),
+        meta.build_router(ctx, activity_log=api.activity, tool_calls=api.tool_calls, projects=api.projects),
         projects.build_router(
-            ctx,
-            projects=api.projects,
-            dashboard=api.dashboard,
-            workflow=api.workflow,
-            timeline=api.timeline,
-            sandboxes=api.sandboxes,
-        ),
+            ctx, projects=api.projects, dashboard=api.dashboard,
+            workflow=api.workflow, timeline=api.timeline, sandboxes=api.sandboxes),
         claims.build_router(ctx),
         experiments.build_router(
             ctx,
@@ -89,6 +92,7 @@ def create_fastapi_app(
         reviews.build_router(ctx, review_delivery=api.reviews),
         sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),
         events.build_router(timeline=api.timeline),
+        user_settings.build_router(user_settings=api.user_settings),
     )
     for router in routers:
         http.include_router(router)
@@ -99,10 +103,14 @@ def create_fastapi_app(
         activity=api.activity,
     )
     register_mcp_routes(
-        http,
-        list_tools=api.tools.list_tools,
-        call_tool=gateway.call_mcp,
-        allow_tool=lambda tool: tool.get("plane") != "data",
+        http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
+        # Data tools stay proxy-only over MCP except the key-sandbox surface an
+        # mk_ key reaches over control (Phase C); the gateway gates who is served.
+        allow_tool=lambda tool: tool.get("plane") != "data"
+        or tool.get("name") in KEY_SANDBOX_CONTROL_TOOLS,
+        authorize_scope=mcp_preauth.build_mcp_preauthorizer(
+            authorizer=authorizer, reviews=api.reviews,
+            hosted=surface.use_hosted_tool_policies),
     )
     register_data_plane_routes(
         http,

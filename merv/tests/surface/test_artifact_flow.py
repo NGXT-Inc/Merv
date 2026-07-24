@@ -388,6 +388,38 @@ class ArtifactFlowTest(unittest.TestCase):
             )
 
 
+class CappedReadOrderingTest(unittest.TestCase):
+    """INV-6 (FIX 3): the token-PUT reader rejects on the projected size before
+    it extends the buffer, so one huge ASGI chunk is never allocated past the
+    cap. A chunk that reports its length but explodes if iterated proves that
+    bytearray.extend is unreachable once the cap would be exceeded."""
+
+    def test_read_capped_checks_projected_size_before_extending(self) -> None:
+        import asyncio
+
+        from merv.brain.surface.transport.api.artifacts import _read_capped
+
+        class _UniterableChunk:
+            def __len__(self) -> int:
+                return 17
+
+            def __iter__(self):  # bytearray.extend falls back to iteration
+                raise AssertionError("chunk was buffered before the cap check")
+
+        async def _stream(chunks):
+            for chunk in chunks:
+                yield chunk
+
+        class _FakeRequest:
+            headers: dict[str, str] = {}  # no content-length → streaming path
+
+            def stream(self):
+                return _stream([_UniterableChunk()])
+
+        result = asyncio.run(_read_capped(_FakeRequest(), cap=16))
+        self.assertIsNone(result)
+
+
 class UploadRouteAuthExemptionTest(unittest.TestCase):
     def _request(self, path: str) -> SimpleNamespace:
         return SimpleNamespace(

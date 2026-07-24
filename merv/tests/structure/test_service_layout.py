@@ -1065,10 +1065,13 @@ class ServiceLayoutTest(unittest.TestCase):
 
         self.assertEqual(
             set(HOSTED_CONTROL_TOOL_POLICIES),
-            {"project", "project.list", "review.start"},
+            {"project", "project.list", "review.start", "review.submit"},
         )
         self.assertTrue(
             HOSTED_CONTROL_TOOL_POLICIES["review.start"].telemetry_from_review_request
+        )
+        self.assertTrue(
+            HOSTED_CONTROL_TOOL_POLICIES["review.submit"].telemetry_from_review_session
         )
         self.assertNotIn("tenant_id_fallback", policy_source)
         self.assertNotIn("class _HostedToolPolicy", source)
@@ -1078,6 +1081,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "project",
             "project.list",
             "review.start",
+            "review.submit",
         ):
             self.assertIn(f'"{tool_name}": HostedToolPolicy', policy_source)
             self.assertNotIn(
@@ -1141,6 +1145,7 @@ class ServiceLayoutTest(unittest.TestCase):
                 "fastapi",
                 "fastapi.concurrency",
                 "kernel.utils",
+                "mcp_streamable_http",
             },
         )
         self.assertIn("register_mcp_routes(", source)

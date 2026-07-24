@@ -290,6 +290,32 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(tokens.get("MLFLOW_TRACKING_PASSWORD"), "rr_sk_agent")
         self.assertNotIn("MLFLOW_TRACKING_URI", tokens)
 
+    def test_mlflow_credentials_absent_from_sandbox_env_while_suspended(self) -> None:
+        # INV-2 (suspension era): with the kill-switch on, NO MLFLOW_TRACKING_*
+        # value may enter any sandbox env or Modal secret set, even when the
+        # agent key is configured. The pair is suppressed at the source.
+        from merv.brain.sandbox.execution.vm_ssh import sandbox_tokens
+
+        with unittest.mock.patch.dict(
+            os.environ,
+            {
+                "RESEARCH_PLUGIN_MLFLOW_AGENT_KEY": "rr_sk_agent",
+                "MERV_MLFLOW_SUSPENDED": "1",
+            },
+            clear=False,
+        ):
+            secrets = self.backend._sandbox_secrets(FakeModal)
+            tokens = sandbox_tokens()
+
+        # No Modal secret carries the MLflow pair (HF_TOKEN is unset here, so
+        # the whole secret list is empty).
+        self.assertEqual(secrets, [])
+        for leaked in (secrets, tokens):
+            self.assertNotIn("MLFLOW_TRACKING_USERNAME", repr(leaked))
+            self.assertNotIn("MLFLOW_TRACKING_PASSWORD", repr(leaked))
+        self.assertNotIn("MLFLOW_TRACKING_USERNAME", tokens)
+        self.assertNotIn("MLFLOW_TRACKING_PASSWORD", tokens)
+
     def test_boot_script_has_no_sandbox_mlflow_or_tensorboard_server(self) -> None:
         # The image layering writes the boot script as a heredoc into the
         # image; the embedded module-level BOOT_SCRIPT is the source of truth.
@@ -324,18 +350,33 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertIn("ln -sf /usr/bin/fdfind /usr/local/bin/fd || true", cuda.commands)
 
     def test_huggingface_token_is_passed_as_secret_env(self) -> None:
-        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_test_secret"}, clear=False):
-            self.backend.acquire(request=self._request())
-            env_info = self.backend.sandbox_environment()
+        # Per-user (no-dataplane Phase C): the provisioning user's token rides on
+        # the request; the deployment-wide HF_TOKEN env fallback is retired.
+        request = SandboxRequest(
+            experiment_id="exp1",
+            project_id="proj1",
+            public_key="ssh-ed25519 AAAA",
+            gpu="A100",
+            time_limit=1234,
+            hf_token="hf_test_secret",
+        )
+        self.backend.acquire(request=request)
 
         secrets = FakeSandboxClass.created[-1]["kwargs"]["secrets"]
-        self.assertEqual(secrets[0]["local_environ"], ["HF_TOKEN"])
         secret = secrets[0]["secret"]
         self.assertEqual(secret["HF_TOKEN"], "hf_test_secret")
-        self.assertNotIn("HUGGING_FACE_HUB_TOKEN", secret)
+        self.assertEqual(secret["HUGGING_FACE_HUB_TOKEN"], "hf_test_secret")
+        # Never in the plaintext sandbox env dict — only the Modal Secret.
         self.assertNotIn("HF_TOKEN", FakeSandboxClass.created[-1]["kwargs"]["env"])
-        self.assertIn("HF_TOKEN", env_info["available_tokens"])
-        self.assertNotIn("hf_test_secret", str(env_info))
+
+    def test_no_user_token_injects_no_hf_secret(self) -> None:
+        # No token from the provisioning user => public models only, no crash,
+        # and no deployment env is read even when HF_TOKEN is set in the process.
+        with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_deployment"}, clear=False):
+            self.backend.acquire(request=self._request())  # _request carries no hf_token
+        secrets = FakeSandboxClass.created[-1]["kwargs"].get("secrets", [])
+        self.assertNotIn("HF_TOKEN", str(secrets))
+        self.assertNotIn("hf_deployment", str(secrets))
 
     def test_acquire_invokes_phase_and_created_callbacks(self) -> None:
         phases: list[str] = []

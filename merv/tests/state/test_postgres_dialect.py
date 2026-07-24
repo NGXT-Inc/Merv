@@ -197,6 +197,20 @@ def _schema_without_sandbox_tenant() -> str:
     return legacy
 
 
+def _schema_without_user_hf_tokens() -> str:
+    """SCHEMA before the no-dataplane Phase C table: no user_hf_tokens."""
+    legacy = re.sub(
+        r"\n-- Per-user Hugging Face access token.*?"
+        r"CREATE TABLE IF NOT EXISTS user_hf_tokens \(.*?\n\);\n",
+        "\n",
+        SCHEMA,
+        flags=re.DOTALL,
+    )
+    if legacy == SCHEMA or "user_hf_tokens" in legacy:
+        raise AssertionError("failed to build the pre-user-hf-tokens schema")
+    return legacy
+
+
 def _schema_with_legacy_sandbox_identity() -> str:
     """SCHEMA as it stood before the decoupling refactor: sandboxes keyed by
     experiment_id, before tables whose foreign keys require sandbox_uid."""
@@ -239,6 +253,57 @@ def _schema_without_review_synopsis() -> str:
         raise AssertionError("failed to remove reviews.synopsis")
     if "synopsis" in legacy:
         raise AssertionError("failed to remove reviews.synopsis")
+    return legacy
+
+
+def _schema_without_project_keys() -> str:
+    """SCHEMA before the agent-anywhere Phase-A tables: no project_api_keys
+    table and no sandbox_generations.key_id column. The Phase-B OAuth tables
+    are stripped too — oauth_refresh_tokens FKs project_api_keys, so a schema
+    predating project_api_keys cannot carry them without a dangling reference."""
+    legacy = re.sub(
+        r"\n-- Surface-owned project credentials.*?"
+        r"CREATE TABLE IF NOT EXISTS project_api_keys \(.*?\n\);\n",
+        "\n",
+        _schema_without_oauth_tables(),
+        flags=re.DOTALL,
+    )
+    legacy = re.sub(
+        r"\n  -- Provisioning credential attribution.*?\n  key_id TEXT,",
+        "",
+        legacy,
+        flags=re.DOTALL,
+    )
+    if (
+        legacy == SCHEMA
+        or "CREATE TABLE IF NOT EXISTS project_api_keys" in legacy
+        or "key_id" in legacy
+    ):
+        raise AssertionError("failed to build the pre-project-keys schema")
+    return legacy
+
+
+def _schema_without_oauth_tables() -> str:
+    """SCHEMA before the agent-anywhere Phase-B tables: no oauth_clients,
+    oauth_authorization_codes, or oauth_refresh_tokens. The three tables are
+    consecutive (with interleaved comments), so one DOTALL sweep from the first
+    OAuth comment through the refresh-token block's terminator removes them."""
+    legacy = re.sub(
+        r"\n-- OAuth 2\.1 public DCR registrations.*?"
+        r"CREATE TABLE IF NOT EXISTS oauth_refresh_tokens \(.*?\n\);\n",
+        "\n",
+        SCHEMA,
+        flags=re.DOTALL,
+    )
+    if legacy == SCHEMA or any(
+        table in legacy
+        for table in (
+            "oauth_clients",
+            "oauth_authorization_codes",
+            "oauth_refresh_tokens",
+        )
+    ):
+        raise AssertionError("failed to build the pre-oauth schema")
     return legacy
 
 
@@ -558,6 +623,177 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
             )
         finally:
             conn.close()
+
+    def test_legacy_postgres_store_gains_project_keys_and_generation_key_id(self) -> None:
+        """Old-DB upgrade through the agent-anywhere Phase-A block: replay ledger
+        rows < 26 against a schema with neither project_api_keys nor
+        sandbox_generations.key_id, re-open, and confirm migrations 26/27 add
+        both without disturbing an existing generation row.
+
+        The guarantee is idempotent convergence, NOT one-transaction atomicity of
+        the schema change with its ledger row. `CREATE TABLE IF NOT EXISTS`
+        (translate_schema_to_postgres(SCHEMA)) runs first in its own autocommit,
+        separately from the ledger; each migration's `_has_table`/`_has_column`-
+        gated handler then commits with its ledger row inside `_migration_scope`.
+        Because the handlers are gated, a crash that commits the schema change
+        before the ledger row heals on the next migrate (the gated handler
+        no-ops, the missing ledger row is (re)inserted) — the shipped 24/25
+        pattern. See the SQLite convergence test in test_store_migrations.py."""
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_project_keys()
+        created = now_iso()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            for version, name, _statement in MIGRATIONS:
+                if version >= 26:
+                    continue
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) "
+                    "VALUES (%s, %s, %s)",
+                    (version, name, created),
+                )
+            conn.execute(
+                "INSERT INTO projects (id, name, summary, created_at) "
+                "VALUES (%s, %s, %s, %s)",
+                ("proj_keys_old", "Old", "", created),
+            )
+            conn.execute(
+                """
+                INSERT INTO sandbox_generations
+                  (id, experiment_id, project_id, tenant_id,
+                   price_usd_per_hour, started_at, created_seq)
+                VALUES ('sbg_old', 'exp_old', 'proj_keys_old', 'local', 1.0, %s, 1)
+                """,
+                (created,),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            self.assertTrue(store._has_table(conn=conn, table="project_api_keys"))
+            for column in ("audience", "oauth_family_id", "sandbox_seconds_ceiling"):
+                self.assertTrue(
+                    store._has_column(
+                        conn=conn, table="project_api_keys", column=column
+                    ),
+                    column,
+                )
+            self.assertTrue(
+                store._has_column(
+                    conn=conn, table="sandbox_generations", column="key_id"
+                )
+            )
+            key_id = conn.execute(
+                "SELECT key_id FROM sandbox_generations WHERE id = 'sbg_old'"
+            ).fetchone()
+            self.assertIsNone(key_id["key_id"])  # pre-existing row keeps NULL
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
+
+    def test_legacy_postgres_store_gains_oauth_tables(self) -> None:
+        """Old-DB upgrade through the agent-anywhere Phase-B block: replay ledger
+        rows < 28 against a schema with none of the three OAuth tables, re-open,
+        and confirm migrations 28/29/30 create each. Each `_has_table`-gated
+        handler commits with its ledger row inside `_migration_scope`; the
+        schema CREATE IF NOT EXISTS ran earlier in its own autocommit, so
+        convergence — not one-transaction schema+ledger atomicity — is what
+        heals a crash between the two. The FK order (clients before
+        codes/refresh, refresh before project_api_keys of migration 26) must
+        apply cleanly on Postgres."""
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_oauth_tables()
+        created = now_iso()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            for version, name, _statement in MIGRATIONS:
+                if version >= 28:
+                    continue
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) "
+                    "VALUES (%s, %s, %s)",
+                    (version, name, created),
+                )
+            conn.execute(
+                "INSERT INTO projects (id, name, summary, created_at) "
+                "VALUES (%s, %s, %s, %s)",
+                ("proj_oauth_old", "Old", "", created),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            for table in (
+                "oauth_clients",
+                "oauth_authorization_codes",
+                "oauth_refresh_tokens",
+            ):
+                self.assertTrue(
+                    store._has_table(conn=conn, table=table), table
+                )
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
+
+    def test_legacy_postgres_store_gains_user_hf_tokens(self) -> None:
+        """Old-DB upgrade through the no-dataplane Phase C block: replay ledger
+        rows < 31 against a schema without user_hf_tokens, re-open, and confirm
+        migration 31 creates the table (migration + ledger row inside one
+        transaction on the autocommit connection). The write-only round trip
+        (set -> resolve) works on the Postgres dialect too."""
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_user_hf_tokens()
+        created = now_iso()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            for version, name, _statement in MIGRATIONS:
+                if version >= 31:
+                    continue
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) "
+                    "VALUES (%s, %s, %s)",
+                    (version, name, created),
+                )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            self.assertTrue(store._has_table(conn=conn, table="user_hf_tokens"))
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
+
+        # Write-only round trip: set, resolve (internal), clear, resolve empty.
+        store.set_user_hf_token(user_id="user_pg", token="hf_pg_secret")
+        self.assertEqual(store.user_hf_token(user_id="user_pg"), "hf_pg_secret")
+        store.set_user_hf_token(user_id="user_pg", token="hf_pg_rotated")  # upsert
+        self.assertEqual(store.user_hf_token(user_id="user_pg"), "hf_pg_rotated")
+        store.clear_user_hf_token(user_id="user_pg")
+        self.assertEqual(store.user_hf_token(user_id="user_pg"), "")
 
     def test_legacy_postgres_sandboxes_gain_uid_and_attachments(self) -> None:
         dsn = _reset_database()

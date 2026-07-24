@@ -362,14 +362,27 @@ class HostedControlSurfaceTest(unittest.TestCase):
             raise_server_exceptions=False,
         )
 
-        ok = client.post("/api/admin/cleanup")
-        self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertEqual(ok.json()["cleaned"], {"ok": True})
-        self.assertEqual(cleanup.calls, 1)
-        counters = client.get("/api/admin/tenants/acme/counters")
-        self.assertEqual(counters.status_code, 200, counters.text)
-        self.assertEqual(counters.json(), {"tenant_id": "acme", "tool_calls": 7})
-        self.assertEqual(counter_calls, ["acme"])
+        # OPEN hosted mode still operator-gates global mutators: the deploy's
+        # cleanup cron must send MERV_ADMIN_TOKEN even on a private surface.
+        import os
+
+        bare = client.post("/api/admin/cleanup")
+        self.assertEqual(bare.status_code, 403, bare.text)
+        self.assertEqual(cleanup.calls, 0)
+        with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+            ok = client.post(
+                "/api/admin/cleanup", headers={"X-Admin-Token": "op-secret"}
+            )
+            self.assertEqual(ok.status_code, 200, ok.text)
+            self.assertEqual(ok.json()["cleaned"], {"ok": True})
+            self.assertEqual(cleanup.calls, 1)
+            counters = client.get(
+                "/api/admin/tenants/acme/counters",
+                headers={"X-Admin-Token": "op-secret"},
+            )
+            self.assertEqual(counters.status_code, 200, counters.text)
+            self.assertEqual(counters.json(), {"tenant_id": "acme", "tool_calls": 7})
+            self.assertEqual(counter_calls, ["acme"])
 
     def test_data_plane_submission_endpoint_is_private_but_not_token_gated(self) -> None:
         client = TestClient(

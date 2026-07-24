@@ -38,9 +38,11 @@ async def _read_capped(request: Request, *, cap: int) -> bytes | None:
         return None
     data = bytearray()
     async for chunk in request.stream():
-        data.extend(chunk)
-        if len(data) > cap:
+        # INV-6: reject on the PROJECTED size before extending, so one huge ASGI
+        # chunk is never allocated past the cap (mirrors request_body.py).
+        if len(data) + len(chunk) > cap:
             return None
+        data.extend(chunk)
     return bytes(data)
 
 

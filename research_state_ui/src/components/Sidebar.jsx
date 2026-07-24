@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useProjectStore, useProjectHref, selectStats, selectSandboxes } from '../store/useProjectStore';
-import { CLIENT_VERSION } from '../api';
+import { CLIENT_VERSION, api } from '../api';
 import { useTheme } from '../store/useTheme';
 import { useBackdrop, setBackdrop } from '../store/useBackdrop';
 import { setSurfaceOverride } from '../store/useViewport';
@@ -19,7 +19,33 @@ function AccountFoot({ onRefresh }) {
   const backdropOn = useBackdrop();
   const [email, setEmail] = useState(getAuthEmail());
   const [open, setOpen] = useState(false);
+  // Write-only Hugging Face token: the value is sent to the backend and never
+  // read back, so the field only ever holds what the user is currently typing.
+  const [hfOpen, setHfOpen] = useState(false);
+  const [hfToken, setHfToken] = useState('');
+  const [hfBusy, setHfBusy] = useState(false);
+  const [hfStatus, setHfStatus] = useState('');
   const footRef = useRef(null);
+  const saveHfToken = async () => {
+    setHfBusy(true); setHfStatus('');
+    try {
+      await api.setHfToken(hfToken.trim());
+      setHfToken('');
+      setHfStatus('Saved. It is write-only and never shown again.');
+    } catch (e) {
+      setHfStatus(e?.message || 'Could not save token.');
+    } finally { setHfBusy(false); }
+  };
+  const clearHfToken = async () => {
+    setHfBusy(true); setHfStatus('');
+    try {
+      await api.clearHfToken();
+      setHfToken('');
+      setHfStatus('Cleared.');
+    } catch (e) {
+      setHfStatus(e?.message || 'Could not clear token.');
+    } finally { setHfBusy(false); }
+  };
   useEffect(() => onAuthChange(() => setEmail(getAuthEmail())), []);
   // Close on any press outside the chip/menu (same pattern as the project chip).
   useEffect(() => {
@@ -54,6 +80,52 @@ function AccountFoot({ onRefresh }) {
           <button type="button" className="account-menu-item" onClick={() => setBackdrop(!backdropOn)}>
             Backdrop · {backdropOn ? 'on' : 'off'}
           </button>
+          {email && (
+            <>
+              <button
+                type="button"
+                className="account-menu-item"
+                onClick={() => { setHfStatus(''); setHfOpen(v => !v); }}
+                title="Set a personal Hugging Face token for gated model downloads in your sandboxes"
+              >
+                Hugging Face token · {hfOpen ? 'hide' : 'set'}
+              </button>
+              {hfOpen && (
+                <div className="account-menu-hf" style={{ padding: '4px 10px 8px' }}>
+                  <input
+                    type="password"
+                    value={hfToken}
+                    onChange={(e) => setHfToken(e.target.value)}
+                    placeholder="hf_…"
+                    aria-label="Hugging Face token"
+                    autoComplete="off"
+                    style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
+                  />
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="account-menu-item"
+                      style={{ flex: 1, textAlign: 'center' }}
+                      disabled={hfBusy || !hfToken.trim()}
+                      onClick={saveHfToken}
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      className="account-menu-item"
+                      style={{ flex: 1, textAlign: 'center' }}
+                      disabled={hfBusy}
+                      onClick={clearHfToken}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  {hfStatus && <div className="account-menu-note">{hfStatus}</div>}
+                </div>
+              )}
+            </>
+          )}
           <div className="account-menu-sep" />
           {email ? (
             <button type="button" className="account-menu-item" onClick={() => { setOpen(false); signOut(); }}>
@@ -128,6 +200,9 @@ export default function Sidebar({ onRefresh, onHide }) {
   // The /home payload's `mlflow` health block gates the nav row; the dedicated
   // page (/p/<id>/mlflow) renders the project's runs, curves, and embedded UI.
   const mlflowConfigured = home?.mlflow?.configured;
+  // Suspension is a distinct, explicit state — keep the row visible (muted)
+  // rather than letting MLflow silently vanish from the nav.
+  const mlflowSuspended = home?.mlflow?.suspended;
   const px = useProjectHref();
 
   const dotClass = lastSyncError ? 'sync-dot stale' : (isPolling ? 'sync-dot' : 'sync-dot paused');
@@ -187,9 +262,10 @@ export default function Sidebar({ onRefresh, onHide }) {
         <NavLink to={px('/litreview')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           Lit Review
         </NavLink>
-        {mlflowConfigured && (
+        {(mlflowConfigured || mlflowSuspended) && (
           <NavLink to={px('/mlflow')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-            MLflow
+            <span>MLflow</span>
+            {mlflowSuspended && <span className="sidebar-link-note">suspended</span>}
           </NavLink>
         )}
         {/* The substrate research runs on: files, objects, machines. */}
@@ -219,6 +295,11 @@ export default function Sidebar({ onRefresh, onHide }) {
         </NavLink>
         <NavLink to={px('/activity')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           Traffic &amp; Tool I/O
+        </NavLink>
+
+        <div className="sidebar-section">Project</div>
+        <NavLink to={px('/settings')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
+          Settings
         </NavLink>
       </nav>
 

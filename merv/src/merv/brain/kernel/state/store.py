@@ -102,6 +102,84 @@ CREATE TABLE IF NOT EXISTS project_members (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+-- Surface-owned project credentials (agent-anywhere). The presented mk_ secret
+-- is returned once at mint; only its SHA-256 digest is authoritative here. One
+-- key binds one project immutably; there is no update path for project scope.
+-- Ceilings are stored but not yet enforced (enforcement is a later phase).
+CREATE TABLE IF NOT EXISTS project_api_keys (
+  id TEXT PRIMARY KEY,
+  secret_digest TEXT NOT NULL UNIQUE,
+  owner_user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  -- OAuth access keys bind this to their full RFC 8707 resource URI. Direct
+  -- project keys keep NULL and retain their existing REST + MCP authority.
+  audience TEXT,
+  -- Stable grant identity for OAuth access-key rotations. Direct project keys
+  -- keep NULL and use their immutable key id for idempotency instead.
+  oauth_family_id TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT,
+  parent_key_id TEXT,
+  sandbox_seconds_ceiling BIGINT CHECK (sandbox_seconds_ceiling IS NULL OR sandbox_seconds_ceiling >= 0),
+  blob_bytes_ceiling BIGINT CHECK (blob_bytes_ceiling IS NULL OR blob_bytes_ceiling >= 0),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(parent_key_id) REFERENCES project_api_keys(id)
+);
+
+-- OAuth 2.1 public DCR registrations (agent-anywhere Phase B). Append-only:
+-- a repeated registration mints a fresh client_id, so the Cursor double-DCR
+-- race is safe. Only public clients (token_endpoint_auth_method=none) exist,
+-- so no client secret is stored.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id TEXT PRIMARY KEY,
+  client_name TEXT NOT NULL,
+  redirect_uris_json TEXT NOT NULL,
+  grant_types_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- OAuth authorization codes are opaque one-shot credentials. Only a digest
+-- is stored; every security-relevant request value is bound into the row.
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+  code_digest TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  FOREIGN KEY(client_id) REFERENCES oauth_clients(client_id),
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+-- Refresh tokens rotate once. Their opaque value is never persisted, and the
+-- current project-key link makes the existing key revocation path authoritative
+-- for refresh authority as well as direct bearer use.
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+  id TEXT PRIMARY KEY,
+  family_id TEXT NOT NULL,
+  secret_digest TEXT NOT NULL UNIQUE,
+  client_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  current_key_id TEXT NOT NULL,
+  parent_token_id TEXT,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  consumed_at TEXT,
+  revoked_at TEXT,
+  FOREIGN KEY(client_id) REFERENCES oauth_clients(client_id),
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(current_key_id) REFERENCES project_api_keys(id),
+  FOREIGN KEY(parent_token_id) REFERENCES oauth_refresh_tokens(id)
+);
+
 CREATE TABLE IF NOT EXISTS claims (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -475,6 +553,9 @@ CREATE TABLE IF NOT EXISTS sandbox_generations (
   instance_type TEXT NOT NULL DEFAULT '',
   gpu TEXT NOT NULL DEFAULT '',
   price_usd_per_hour REAL NOT NULL DEFAULT 0,
+  -- Provisioning credential attribution (agent-anywhere spend). NULL for every
+  -- JWT/rr_sk_/local write; set to the project_api_keys.id that provisioned it.
+  key_id TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
   created_seq INTEGER NOT NULL DEFAULT 0
@@ -562,6 +643,20 @@ CREATE TABLE IF NOT EXISTS paper_links (
   UNIQUE(project_id, paper_id, target_type, target_id),
   FOREIGN KEY(project_id) REFERENCES projects(id),
   FOREIGN KEY(paper_id) REFERENCES papers(id)
+);
+
+-- Per-user Hugging Face access token (no-dataplane Phase C). Keyed by the
+-- Supabase auth.users UUID; a member brings their own token so no deployment-
+-- wide HF secret exists. WRITE-ONLY by contract: the value is set/cleared over
+-- the API and read back only internally at sandbox provisioning to inject
+-- HF_TOKEN into the provisioning user's sandbox — no API ever returns it. Cross-
+-- member exposure WITHIN a shared project is accepted (a teammate can read a
+-- sandbox the token was placed in); cross-project exposure is closed because no
+-- shared secret exists. Absence = public-models-only graceful degrade.
+CREATE TABLE IF NOT EXISTS user_hf_tokens (
+  user_id TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 """
 
@@ -677,6 +772,32 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # so FK enforcement never blocks. resources_migrate is the transient
     # rebuild table from the retired pre-ledger UNIQUE migration.
     (25, "drop_resource_tables", ""),
+    # Agent-anywhere Phase A (July 2026): an authoritative, project-scoped
+    # credential table (mk_ keys). SCHEMA creates it before this ledger runs;
+    # the handler runs the SCHEMA-extracted DDL so ledger and SCHEMA cannot
+    # drift. audience + oauth_family_id are folded into the initial DDL (no
+    # separate ALTER migrations) and stay NULL for direct project keys.
+    (26, "add_project_api_keys", ""),
+    # Spend attribution for project-key sandbox generations. Nullable keeps
+    # every JWT, rr_sk_, and local write on its historical row shape.
+    (27, "add_sandbox_generation_key_id", ""),
+    # Agent-anywhere Phase B (July 2026): the OAuth 2.1 DCR + PKCE + rotating-
+    # refresh state. SCHEMA creates the three tables before this ledger runs;
+    # the handlers execute the SCHEMA-extracted DDL (_schema_table_ddl) so
+    # ledger and SCHEMA cannot drift. Each is guarded on _has_table so an
+    # existing store gains the tables and a fresh store is a no-op. The audience
+    # + oauth_family_id columns these bearers ride live in migration 26's DDL
+    # already, so no separate audience/family migration is needed here. Order:
+    # clients first (codes + refresh tokens FK it; refresh tokens also FK
+    # project_api_keys from migration 26).
+    (28, "add_oauth_clients", ""),
+    (29, "add_oauth_authorization_codes", ""),
+    (30, "add_oauth_refresh_tokens", ""),
+    # No-dataplane Phase C (July 2026): per-user Hugging Face token. Fresh
+    # schemas create user_hf_tokens above; the handler runs the SCHEMA-extracted
+    # DDL so ledger and SCHEMA cannot drift (32 the feed lane, 33 the storage
+    # lane — reserved elsewhere, never here).
+    (31, "add_user_hf_tokens", ""),
 )
 
 
@@ -835,8 +956,31 @@ class BaseStateStore:
             self._add_artifacts_tables(conn=conn)
         elif name == "drop_resource_tables":
             self._drop_resource_tables(conn=conn)
+        elif name == "add_project_api_keys":
+            if not self._has_table(conn=conn, table="project_api_keys"):
+                conn.execute(_schema_table_ddl(table="project_api_keys"))
+        elif name == "add_sandbox_generation_key_id":
+            self._ensure_sandbox_generation_key_id(conn=conn)
+        elif name == "add_oauth_clients":
+            if not self._has_table(conn=conn, table="oauth_clients"):
+                conn.execute(_schema_table_ddl(table="oauth_clients"))
+        elif name == "add_oauth_authorization_codes":
+            if not self._has_table(conn=conn, table="oauth_authorization_codes"):
+                conn.execute(_schema_table_ddl(table="oauth_authorization_codes"))
+        elif name == "add_oauth_refresh_tokens":
+            if not self._has_table(conn=conn, table="oauth_refresh_tokens"):
+                conn.execute(_schema_table_ddl(table="oauth_refresh_tokens"))
+        elif name == "add_user_hf_tokens":
+            if not self._has_table(conn=conn, table="user_hf_tokens"):
+                conn.execute(_schema_table_ddl(table="user_hf_tokens"))
         else:
             conn.execute(statement)
+
+    def _ensure_sandbox_generation_key_id(self, *, conn: Connection) -> None:
+        if not self._has_column(
+            conn=conn, table="sandbox_generations", column="key_id"
+        ):
+            conn.execute("ALTER TABLE sandbox_generations ADD COLUMN key_id TEXT")
 
     def _ensure_project_settings_json(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="projects", column="settings_json"):
@@ -1514,6 +1658,42 @@ class BaseStateStore:
                 "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
                 (project_id, user_id),
             )
+
+    def set_user_hf_token(self, *, user_id: str, token: str) -> None:
+        """Upsert a user's Hugging Face token (no-dataplane Phase C).
+
+        Write-only by contract: this + ``clear_user_hf_token`` are the only
+        mutators, and no read method returns the value to an API — ``resolve``
+        below is internal-only (sandbox provisioning). Dialect-neutral upsert
+        (``excluded`` works on both SQLite >= 3.24 and Postgres)."""
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_hf_tokens (user_id, token, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id) DO UPDATE
+                  SET token = excluded.token, updated_at = excluded.updated_at
+                """,
+                (user_id, token, now_iso()),
+            )
+
+    def clear_user_hf_token(self, *, user_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "DELETE FROM user_hf_tokens WHERE user_id = ?", (user_id,)
+            )
+
+    def user_hf_token(self, *, user_id: str) -> str:
+        """Resolve a user's HF token for sandbox provisioning. INTERNAL ONLY —
+        never surface this through an API. Empty when unset/unauthenticated,
+        which the sandbox path treats as public-models-only graceful degrade."""
+        if not user_id:
+            return ""
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                "SELECT token FROM user_hf_tokens WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return str(row["token"]) if row and row["token"] else ""
 
     def is_project_member(self, *, project_id: str, user_id: str) -> bool:
         with closing(self.connect()) as conn:

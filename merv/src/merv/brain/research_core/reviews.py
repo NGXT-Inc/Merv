@@ -590,6 +590,21 @@ class ReviewService:
             ).fetchone()
             return str(row["project_id"]) if row else None
 
+    def session_project_id(self, *, review_session_id: Any) -> str | None:
+        if not review_session_id:
+            return None
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT rr.project_id AS project_id
+                FROM review_sessions rs
+                JOIN review_requests rr ON rr.id = rs.request_id
+                WHERE rs.id = ?
+                """,
+                (str(review_session_id),),
+            ).fetchone()
+            return str(row["project_id"]) if row else None
+
     def assert_session_in_project(
         self, *, project_id: str | None, review_session_id: Any
     ) -> None:

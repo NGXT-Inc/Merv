@@ -506,11 +506,19 @@ class ControlAppTest(unittest.TestCase):
                 old_daemon_poll.json().get("error_code"), "daemon_retired"
             )
 
-            admin_cleanup = client.post("/api/admin/cleanup")
-            self.assertEqual(admin_cleanup.status_code, 200, admin_cleanup.text)
+            # Even the private/no-verifier control surface operator-gates
+            # global mutators; the deploy cron must send MERV_ADMIN_TOKEN.
+            import os
 
-            counters = client.get("/api/admin/tenants/local/counters")
-            self.assertEqual(counters.status_code, 200, counters.text)
+            bare_cleanup = client.post("/api/admin/cleanup")
+            self.assertEqual(bare_cleanup.status_code, 403, bare_cleanup.text)
+            with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+                op = {"X-Admin-Token": "op-secret"}
+                admin_cleanup = client.post("/api/admin/cleanup", headers=op)
+                self.assertEqual(admin_cleanup.status_code, 200, admin_cleanup.text)
+
+                counters = client.get("/api/admin/tenants/local/counters", headers=op)
+                self.assertEqual(counters.status_code, 200, counters.text)
 
             old_proxy = client.get(
                 "/api/projects",

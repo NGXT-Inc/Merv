@@ -35,6 +35,7 @@ from ..config import (
     resolve_allowed_origins,
     resolve_mgmt_key_path,
     resolve_mgmt_public_key,
+    resolve_oauth_resource_uri,
     resolve_ui_base_url,
 )
 from .brain_dirs import resolve_brain_state_root, resolve_local_brain_staging
@@ -50,6 +51,10 @@ from ..auth import (
     SUPABASE_URL_ENV_VAR,
     SupabaseVerifier,
 )
+from ..project_keys import ProjectKeys
+from ..project_key_store import SqlProjectKeyRepository
+from ..oauth import OAuthService
+from ..oauth_store import SqlOAuthRepository
 from ...mlflow import CentralMlflowService
 from ...mlflow.config import MLFLOW_TRACKING_URI_ENV_VAR
 from ...object_storage.service import StorageLedgerService
@@ -200,7 +205,8 @@ def build_control_server(
             ALLOWED_ORIGINS_ENV_VAR,
         )
     cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage)
-    auth = SupabaseVerifier.from_env(env)
+    project_keys = ProjectKeys(repository=SqlProjectKeyRepository(store=app._store))
+    auth = SupabaseVerifier.from_env(env, project_keys=project_keys)
     _validate_auth_requirement(auth=auth, env=env)
     if auth is None:
         LOGGER.warning(
@@ -210,6 +216,19 @@ def build_control_server(
             SUPABASE_JWT_SECRET_ENV_VAR,
             REQUIRE_AUTH_ENV_VAR,
         )
+    oauth_resource_uri = resolve_oauth_resource_uri(env)
+    # OAuth needs a verifier (browser Supabase sessions drive consent) and the
+    # canonical /mcp resource URI; without either it is not mounted and cloud
+    # agents authenticate with directly minted mk_ keys only.
+    oauth_service = (
+        OAuthService(
+            repository=SqlOAuthRepository(store=app._store),
+            project_keys=project_keys,
+            is_project_member=app.http.projects.is_member,
+        )
+        if auth is not None and oauth_resource_uri
+        else None
+    )
     fastapi_app = create_fastapi_app(
         app=app.http,
         allowed_origins=origins,
@@ -217,7 +236,9 @@ def build_control_server(
         tenant_counters=app.tenant_counters_query,
         surface_policy=surface,
         auth=auth,
+        oauth_service=oauth_service,
         ui_base_url=resolve_ui_base_url(env),
+        oauth_resource_uri=oauth_resource_uri,
     )
     return ControlPlaneServer(
         app=app,
