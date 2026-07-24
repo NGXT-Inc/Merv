@@ -89,6 +89,26 @@ depends on them:
   responses include compact receipts; `sandbox.runs` is the authoritative
   status/readback call.
 
+## Verify a connection
+
+Every platform reaches the brain over the same Streamable-HTTP MCP wire, so one
+platform-neutral probe validates any of them. [`scripts/mcp_conformance.py`](../scripts/mcp_conformance.py)
+speaks JSON-RPC to `POST /mcp` with nothing but the standard library:
+
+```bash
+# Anonymous half — validates the OAuth native-connect surface (no key needed):
+python3 scripts/mcp_conformance.py
+
+# Full keyed loop (initialize -> tools/list -> project(current) -> status_and_next):
+MERV_MCP_KEY=mk_... python3 scripts/mcp_conformance.py
+
+# Against a local or self-hosted brain:
+python3 scripts/mcp_conformance.py --base http://127.0.0.1:8787
+```
+
+A green keyed run is the exact signal any platform's MCP client sees, so it
+isolates setup problems (key, endpoint, network) from platform-specific config.
+
 ## Reviewer handoff per client
 
 `workflow.status_and_next` reports the active review gate and tells the main
