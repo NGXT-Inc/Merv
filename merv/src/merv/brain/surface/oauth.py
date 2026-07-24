@@ -13,7 +13,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.utils import NotFoundError, iso_after, new_id, now_iso, parse_iso
-from .project_keys import ProjectKeyControl
+from .project_keys import GRANT_SCOPES, PROJECT_GRANT, ProjectKeyControl
 
 AUTHORIZATION_CODE_TTL_SECONDS = 60
 ACCESS_TOKEN_TTL_SECONDS = 3600
@@ -58,6 +58,7 @@ class AuthorizationCode:
     redirect_uri: str
     owner_user_id: str
     project_id: str
+    grant_scope: str
     code_challenge: str
     resource: str
     created_at: str
@@ -73,6 +74,7 @@ class RefreshToken:
     client_id: str
     owner_user_id: str
     project_id: str
+    grant_scope: str
     resource: str
     current_key_id: str
     parent_token_id: str | None
@@ -226,6 +228,7 @@ class OAuthService:
         owner_user_id: str,
         project_id: str,
         approved: bool,
+        grant_scope: str = PROJECT_GRANT,
     ) -> str:
         request = self._authorization_request(
             params=params, canonical_resource=canonical_resource
@@ -237,6 +240,16 @@ class OAuthService:
                 state=request.state,
                 error="access_denied",
             )
+        if grant_scope not in GRANT_SCOPES:
+            return authorization_redirect(
+                redirect_uri=request.redirect_uri,
+                issuer=issuer,
+                state=request.state,
+                error="invalid_request",
+            )
+        # An account grant still names a home project, and membership in it is
+        # still proven here: consent can never reach beyond the consenting
+        # user's own membership, whichever scope they picked.
         if (
             not project_id
             or not owner_user_id
@@ -256,6 +269,7 @@ class OAuthService:
                 redirect_uri=request.redirect_uri,
                 owner_user_id=owner_user_id,
                 project_id=project_id,
+                grant_scope=grant_scope,
                 code_challenge=request.code_challenge,
                 resource=request.resource,
                 created_at=now_iso(),
@@ -307,6 +321,7 @@ class OAuthService:
             parent_key_id=None,
             audience=code.resource,
             oauth_family_id=refresh_family_id,
+            grant_scope=code.grant_scope,
         )
         return self._token_response(
             client=client,
@@ -314,6 +329,7 @@ class OAuthService:
             resource=code.resource,
             owner_user_id=code.owner_user_id,
             project_id=code.project_id,
+            grant_scope=code.grant_scope,
             parent_refresh_token_id=None,
             refresh_family_id=refresh_family_id,
         )
@@ -362,6 +378,7 @@ class OAuthService:
                 blob_bytes_ceiling=None,
                 audience=token.resource,
                 oauth_family_id=token.family_id,
+                grant_scope=token.grant_scope,
             )
         except NotFoundError as exc:
             raise OAuthError("invalid_grant", "refresh token is invalid") from exc
@@ -371,6 +388,7 @@ class OAuthService:
             resource=token.resource,
             owner_user_id=token.owner_user_id,
             project_id=token.project_id,
+            grant_scope=token.grant_scope,
             parent_refresh_token_id=token.id,
             refresh_family_id=token.family_id,
         )
@@ -444,6 +462,7 @@ class OAuthService:
         parent_key_id: str | None,
         audience: str,
         oauth_family_id: str,
+        grant_scope: str,
     ) -> dict[str, Any]:
         return self._project_keys.create(
             project_id=project_id,
@@ -454,6 +473,7 @@ class OAuthService:
             blob_bytes_ceiling=None,
             audience=audience,
             oauth_family_id=oauth_family_id,
+            grant_scope=grant_scope,
         )
 
     def _token_response(
@@ -464,6 +484,7 @@ class OAuthService:
         resource: str,
         owner_user_id: str,
         project_id: str,
+        grant_scope: str,
         parent_refresh_token_id: str | None,
         refresh_family_id: str | None = None,
     ) -> dict[str, Any]:
@@ -483,6 +504,7 @@ class OAuthService:
             client_id=client.client_id,
             owner_user_id=owner_user_id,
             project_id=project_id,
+            grant_scope=grant_scope,
             resource=resource,
             current_key_id=str(key["id"]),
             parent_token_id=parent_refresh_token_id,

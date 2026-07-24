@@ -21,7 +21,7 @@ import httpx
 
 from ..kernel.identity import LOCAL_TENANT_ID
 from .identity import Principal
-from .project_keys import PROJECT_KEY_PREFIX, ProjectKeyControl
+from .project_keys import PROJECT_GRANT, PROJECT_KEY_PREFIX, ProjectKeyControl
 
 SUPABASE_URL_ENV_VAR = "SUPABASE_URL"
 SUPABASE_JWT_SECRET_ENV_VAR = "SUPABASE_JWT_SECRET"
@@ -159,7 +159,13 @@ class SupabaseVerifier:
             client_id=f"project-key:{record.id}",
             user_id=record.owner_user_id,
             key_id=record.id,
-            key_project_id=record.project_id,
+            # key_project_id means "the one project this credential is confined
+            # to", so an account grant carries none: its reach is the owner's
+            # membership, which require_member already enforces per call. The
+            # key stays identifiable as external via key_id.
+            key_project_id=(
+                record.project_id if record.grant_scope == PROJECT_GRANT else None
+            ),
             audience=record.audience,
             oauth_family_id=record.oauth_family_id,
             key_sandbox_seconds_ceiling=record.sandbox_seconds_ceiling,

@@ -13,14 +13,23 @@ from fastapi import APIRouter, Body, Request
 
 from ....kernel.utils import ValidationError
 from ...identity import HumanSessionRequiredError
-from ...project_keys import ProjectKeyControl
+from ...project_keys import PROJECT_GRANT, ProjectKeyControl
 from .shared import JsonBody
 
 # The only optional fields a JWT owner may supply when minting a key; audience
 # is server-set. Anything else (e.g. a de-profiled ``profile``) is a 400 rather
 # than a silently-ignored 201.
 _CREATE_KEY_FIELDS = frozenset(
-    {"expires_at", "parent_key_id", "sandbox_seconds_ceiling", "blob_bytes_ceiling"}
+    {
+        "expires_at",
+        "parent_key_id",
+        "sandbox_seconds_ceiling",
+        "blob_bytes_ceiling",
+        # "account" mints a key that reaches every project this owner belongs
+        # to; the path project_id becomes its home project. Absent = "project",
+        # so an older client keeps minting exactly what it minted before.
+        "grant_scope",
+    }
 )
 
 
@@ -46,6 +55,7 @@ def build_router(*, keys: ProjectKeyControl, audience: str = "") -> APIRouter:
             sandbox_seconds_ceiling=payload.get("sandbox_seconds_ceiling"),
             blob_bytes_ceiling=payload.get("blob_bytes_ceiling"),
             audience=owner_key_audience,
+            grant_scope=payload.get("grant_scope") or PROJECT_GRANT,
         )
 
     @router.get("/api/projects/{project_id}/keys")

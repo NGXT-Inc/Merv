@@ -10,6 +10,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ...oauth import OAuthControl, OAuthError, oauth_error_redirect
+from ...project_keys import PROJECT_GRANT
 from ..request_body import RequestBodyTooLarge, read_limited_body
 
 _NO_STORE = dict((("Cache-Control", "no-store"), ("Pra" + "gma", "no-cache")))
@@ -234,6 +235,9 @@ def build_router(
             )
         decision = str(body.pop("decision", ""))
         project_id = str(body.pop("project_id", ""))
+        # Absent means the old one-project consent, so an older UI build keeps
+        # minting exactly what it minted before.
+        grant_scope = str(body.pop("grant_scope", "") or PROJECT_GRANT)
         if decision not in ("approve", "deny") or any(
             not isinstance(key, str) or not isinstance(value, str)
             for key, value in body.items()
@@ -250,6 +254,7 @@ def build_router(
                 owner_user_id=_session_owner(request),
                 project_id=project_id,
                 approved=decision == "approve",
+                grant_scope=grant_scope,
             )
         except OAuthError as exc:
             return _oauth_json_error(exc)

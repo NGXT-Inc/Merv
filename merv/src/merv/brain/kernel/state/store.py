@@ -103,8 +103,8 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 
 -- Surface-owned project credentials (agent-anywhere). The presented mk_ secret
--- is returned once at mint; only its SHA-256 digest is authoritative here. One
--- key binds one project immutably; there is no update path for project scope.
+-- is returned once at mint; only its SHA-256 digest is authoritative here. Key
+-- scope is immutable: there is no update path for either scope column.
 -- Ceilings are stored but not yet enforced (enforcement is a later phase).
 CREATE TABLE IF NOT EXISTS project_api_keys (
   id TEXT PRIMARY KEY,
@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS project_api_keys (
   owner_user_id TEXT NOT NULL,
   tenant_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
+  -- 'project' confines the credential to project_id. 'account' authorizes
+  -- every project the owner is a member of, and project_id is then only the
+  -- home project the key is administered from (listed and revoked under the
+  -- existing /api/projects/{id}/keys routes), never a limit on its reach.
+  grant_scope TEXT NOT NULL DEFAULT 'project'
+    CHECK (grant_scope IN ('project', 'account')),
   -- OAuth access keys bind this to their full RFC 8707 resource URI. Direct
   -- project keys keep NULL and retain their existing REST + MCP authority.
   audience TEXT,
@@ -148,6 +154,10 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
   redirect_uri TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
+  -- Carries the consent decision through to the minted key (see
+  -- project_api_keys.grant_scope).
+  grant_scope TEXT NOT NULL DEFAULT 'project'
+    CHECK (grant_scope IN ('project', 'account')),
   code_challenge TEXT NOT NULL,
   resource TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -167,6 +177,10 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   client_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
+  -- Preserved across every rotation so a refreshed key keeps the scope the
+  -- user consented to (see project_api_keys.grant_scope).
+  grant_scope TEXT NOT NULL DEFAULT 'project'
+    CHECK (grant_scope IN ('project', 'account')),
   resource TEXT NOT NULL,
   current_key_id TEXT NOT NULL,
   parent_token_id TEXT,
@@ -851,6 +865,21 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # SCHEMA creates it on fresh DBs; the handler runs the SCHEMA-extracted DDL
     # so ledger and SCHEMA cannot drift.
     (33, "add_storage_completion_tokens", ""),
+    # Agent-anywhere multi-project (July 2026): a credential may be scoped to
+    # its owner's whole membership rather than to one project. `grant_scope` is
+    # the discriminator on all three credential tables. `project_id` stays NOT
+    # NULL — for an account grant it is the home project the credential is
+    # administered from — so every existing key route, revocation predicate,
+    # and foreign key keeps working untouched. Existing rows are all
+    # project-scoped, which is exactly what the column default states.
+    (34, "add_grant_scope", ""),
+)
+
+# Credential tables that carry a scope discriminator (migration 34).
+GRANT_SCOPE_TABLES = (
+    "project_api_keys",
+    "oauth_authorization_codes",
+    "oauth_refresh_tokens",
 )
 
 
@@ -1032,8 +1061,21 @@ class BaseStateStore:
         elif name == "add_storage_completion_tokens":
             if not self._has_table(conn=conn, table="storage_completion_tokens"):
                 conn.execute(_schema_table_ddl(table="storage_completion_tokens"))
+        elif name == "add_grant_scope":
+            self._ensure_grant_scope(conn=conn)
         else:
             conn.execute(statement)
+
+    def _ensure_grant_scope(self, *, conn: Connection) -> None:
+        # Same column definition the SCHEMA declares, so a migrated database
+        # and a fresh one are identical (CHECK included: both dialects accept
+        # it on ADD COLUMN).
+        for table in GRANT_SCOPE_TABLES:
+            if not self._has_column(conn=conn, table=table, column="grant_scope"):
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN grant_scope TEXT NOT NULL "
+                    "DEFAULT 'project' CHECK (grant_scope IN ('project', 'account'))"
+                )
 
     def _ensure_sandbox_generation_key_id(self, *, conn: Connection) -> None:
         if not self._has_column(

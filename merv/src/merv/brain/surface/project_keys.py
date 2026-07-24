@@ -1,10 +1,12 @@
-"""Project-scoped API-key lifecycle and verification policy.
+"""``mk_`` key lifecycle and verification policy.
 
-One ``mk_`` key binds one project immutably; the presented secret is returned
-once at mint and only its digest is stored. There is no local/cloud profile:
-the key carries project + audience + (stored, unenforced) ceilings, nothing
-else. ``verify_secret`` reads the database fresh on every call so a revoke is
-effective immediately (INV-4).
+A key's scope is immutable and is one of two shapes. A ``project`` grant binds
+one project. An ``account`` grant authorizes every project its owner belongs
+to, and its ``project_id`` names only the home project it is administered
+from. The presented secret is returned once at mint and only its digest is
+stored. There is no local/cloud profile: the key carries scope + audience +
+(stored, unenforced) ceilings, nothing else. ``verify_secret`` reads the
+database fresh on every call so a revoke is effective immediately (INV-4).
 """
 
 from __future__ import annotations
@@ -18,6 +20,12 @@ from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso, pars
 
 PROJECT_KEY_PREFIX = "mk_"
 
+# A credential is confined to one project, or reaches its owner's whole
+# membership. Mirrors the CHECK constraint on every credential table.
+PROJECT_GRANT = "project"
+ACCOUNT_GRANT = "account"
+GRANT_SCOPES = (PROJECT_GRANT, ACCOUNT_GRANT)
+
 
 @dataclass(frozen=True, slots=True)
 class ProjectKeyRecord:
@@ -26,6 +34,7 @@ class ProjectKeyRecord:
     owner_user_id: str
     tenant_id: str
     project_id: str
+    grant_scope: str
     audience: str | None
     oauth_family_id: str | None
     created_at: str
@@ -82,6 +91,7 @@ class ProjectKeys:
         blob_bytes_ceiling: int | None = None,
         audience: str | None = None,
         oauth_family_id: str | None = None,
+        grant_scope: str = PROJECT_GRANT,
     ) -> dict[str, object]:
         record, secret = self._new_record(
             project_id=project_id,
@@ -92,6 +102,7 @@ class ProjectKeys:
             blob_bytes_ceiling=blob_bytes_ceiling,
             audience=audience,
             oauth_family_id=oauth_family_id,
+            grant_scope=grant_scope,
         )
         self._repository.insert(record=record)
         return {"key": _public_record(record), "secret": secret}
@@ -107,6 +118,7 @@ class ProjectKeys:
         blob_bytes_ceiling: int | None = None,
         audience: str | None = None,
         oauth_family_id: str | None = None,
+        grant_scope: str = PROJECT_GRANT,
     ) -> dict[str, object]:
         """Atomically revoke one active parent while inserting its child."""
         record, secret = self._new_record(
@@ -118,6 +130,7 @@ class ProjectKeys:
             blob_bytes_ceiling=blob_bytes_ceiling,
             audience=audience,
             oauth_family_id=oauth_family_id,
+            grant_scope=grant_scope,
         )
         if not self._repository.rotate(record=record, revoked_at=now_iso()):
             raise NotFoundError(f"project key not found: {parent_key_id}")
@@ -134,9 +147,11 @@ class ProjectKeys:
         blob_bytes_ceiling: int | None,
         audience: str | None,
         oauth_family_id: str | None,
+        grant_scope: str,
     ) -> tuple[ProjectKeyRecord, str]:
         project_id = _required(project_id, field="project_id")
         owner_user_id = _required(owner_user_id, field="owner_user_id")
+        grant_scope = _grant_scope(grant_scope)
         expires_at = _expiry(expires_at)
         sandbox_seconds_ceiling = _ceiling(
             sandbox_seconds_ceiling, field="sandbox_seconds_ceiling"
@@ -149,6 +164,8 @@ class ProjectKeys:
                 parent is None
                 or parent.project_id != project_id
                 or parent.owner_user_id != owner_user_id
+                # A rotation inherits scope; it can never widen or narrow it.
+                or parent.grant_scope != grant_scope
             ):
                 raise NotFoundError(f"project key not found: {parent_key_id}")
         secret = mint_secret(prefix=PROJECT_KEY_PREFIX, nbytes=32)
@@ -158,6 +175,7 @@ class ProjectKeys:
             owner_user_id=owner_user_id,
             tenant_id=self._repository.project_tenant(project_id=project_id),
             project_id=project_id,
+            grant_scope=grant_scope,
             audience=str(audience or "").strip() or None,
             oauth_family_id=str(oauth_family_id or "").strip() or None,
             created_at=now_iso(),
@@ -236,6 +254,16 @@ def _public_record(record: ProjectKeyRecord) -> dict[str, object]:
     return result
 
 
+def _grant_scope(value: object) -> str:
+    text = str(value or "").strip() or PROJECT_GRANT
+    if text not in GRANT_SCOPES:
+        raise ValidationError(
+            f"grant_scope must be one of {', '.join(GRANT_SCOPES)}",
+            details={"field": "grant_scope"},
+        )
+    return text
+
+
 def _required(value: object, *, field: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -274,6 +302,9 @@ def _expiry(value: object) -> str | None:
 
 
 __all__ = [
+    "ACCOUNT_GRANT",
+    "GRANT_SCOPES",
+    "PROJECT_GRANT",
     "PROJECT_KEY_PREFIX",
     "ProjectKeyControl",
     "ProjectKeyLookup",

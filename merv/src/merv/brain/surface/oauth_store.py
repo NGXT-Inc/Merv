@@ -8,6 +8,7 @@ from typing import Any
 
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from .oauth import AuthorizationCode, OAuthClient, RefreshToken
+from .project_keys import PROJECT_GRANT
 
 
 class SqlOAuthRepository:
@@ -54,8 +55,9 @@ class SqlOAuthRepository:
                 """
                 INSERT INTO oauth_authorization_codes (
                   code_digest, client_id, redirect_uri, owner_user_id, project_id,
-                  code_challenge, resource, created_at, expires_at, consumed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  grant_scope, code_challenge, resource, created_at, expires_at,
+                  consumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     code.code_digest,
@@ -63,6 +65,7 @@ class SqlOAuthRepository:
                     code.redirect_uri,
                     code.owner_user_id,
                     code.project_id,
+                    code.grant_scope,
                     code.code_challenge,
                     code.resource,
                     code.created_at,
@@ -86,6 +89,7 @@ class SqlOAuthRepository:
             redirect_uri=str(data["redirect_uri"]),
             owner_user_id=str(data["owner_user_id"]),
             project_id=str(data["project_id"]),
+            grant_scope=str(data.get("grant_scope") or PROJECT_GRANT),
             code_challenge=str(data["code_challenge"]),
             resource=str(data["resource"]),
             created_at=str(data["created_at"]),
@@ -119,9 +123,9 @@ class SqlOAuthRepository:
                 """
                 INSERT INTO oauth_refresh_tokens (
                   id, family_id, secret_digest, client_id, owner_user_id, project_id,
-                  resource, current_key_id, parent_token_id, created_at,
-                  expires_at, consumed_at, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  grant_scope, resource, current_key_id, parent_token_id,
+                  created_at, expires_at, consumed_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token.id,
@@ -130,6 +134,7 @@ class SqlOAuthRepository:
                     token.client_id,
                     token.owner_user_id,
                     token.project_id,
+                    token.grant_scope,
                     token.resource,
                     token.current_key_id,
                     token.parent_token_id,
@@ -216,6 +221,7 @@ def _refresh_token(row: Any) -> RefreshToken | None:
         client_id=str(data["client_id"]),
         owner_user_id=str(data["owner_user_id"]),
         project_id=str(data["project_id"]),
+        grant_scope=str(data.get("grant_scope") or PROJECT_GRANT),
         resource=str(data["resource"]),
         current_key_id=str(data["current_key_id"]),
         parent_token_id=(

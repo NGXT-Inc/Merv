@@ -7,7 +7,7 @@ from typing import Any
 
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import NotFoundError
-from .project_keys import ProjectKeyRecord
+from .project_keys import PROJECT_GRANT, ProjectKeyRecord
 
 
 class SqlProjectKeyRepository:
@@ -131,10 +131,10 @@ class SqlProjectKeyRepository:
 
 _INSERT_SQL = """
 INSERT INTO project_api_keys (
-  id, secret_digest, owner_user_id, tenant_id, project_id,
+  id, secret_digest, owner_user_id, tenant_id, project_id, grant_scope,
   audience, oauth_family_id, created_at, expires_at, revoked_at, parent_key_id,
   sandbox_seconds_ceiling, blob_bytes_ceiling
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -145,6 +145,7 @@ def _insert_params(record: ProjectKeyRecord) -> tuple[Any, ...]:
         record.owner_user_id,
         record.tenant_id,
         record.project_id,
+        record.grant_scope,
         record.audience,
         record.oauth_family_id,
         record.created_at,
@@ -166,6 +167,7 @@ def _record(row: Any) -> ProjectKeyRecord | None:
         owner_user_id=str(data["owner_user_id"]),
         tenant_id=str(data["tenant_id"]),
         project_id=str(data["project_id"]),
+        grant_scope=str(data.get("grant_scope") or PROJECT_GRANT),
         audience=str(data["audience"]) if data.get("audience") else None,
         oauth_family_id=(
             str(data["oauth_family_id"]) if data.get("oauth_family_id") else None
