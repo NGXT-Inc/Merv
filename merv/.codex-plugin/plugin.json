@@ -14,7 +14,7 @@
   "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Merv",
-    "shortDescription": "Project-scoped claims, experiments, resources, reviews, and cloud sandboxes",
+    "shortDescription": "Project-scoped claims, experiments, typed artifacts, reviews, and cloud sandboxes",
     "longDescription": "A research-state plug-in where Codex operates through skills and the Merv HTTP MCP endpoint. A brain running locally or as a hosted service owns durable records, workflow policy, review gates, submissions, and cloud sandbox lifecycle. Every client authenticates with a project-bound MERV_MCP_KEY.",
     "developerName": "RapidReview",
     "category": "Productivity",

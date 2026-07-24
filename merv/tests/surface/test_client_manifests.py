@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import tomllib
 import unittest
 
 from merv.brain import __version__ as BACKEND_VERSION
@@ -61,6 +63,18 @@ class HttpMcpManifestTest(unittest.TestCase):
         )
         self.assertEqual(codex["name"], "merv")
         self.assertEqual(codex["mcpServers"], "./.mcp.codex.json")
+
+    def test_release_version_lockstep(self) -> None:
+        # One release number everywhere: a UI or package left behind produces
+        # a permanent false "reload this UI" compat banner against /api/meta.
+        pyproject = tomllib.loads((PLUGIN_ROOT / "pyproject.toml").read_text())
+        self.assertEqual(pyproject["project"]["version"], BACKEND_VERSION)
+        api_js = (PLUGIN_ROOT.parent / "research_state_ui" / "src" / "api.js").read_text()
+        match = re.search(r"CLIENT_VERSION = '([^']+)'", api_js)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), BACKEND_VERSION)
+        codex = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text())
+        self.assertTrue(codex["version"].startswith(BACKEND_VERSION))
 
 
 if __name__ == "__main__":
