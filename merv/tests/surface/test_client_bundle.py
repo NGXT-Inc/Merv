@@ -99,17 +99,31 @@ class ClientBundleTest(unittest.TestCase):
         # Any ./assets or ./file path a bundled manifest points at must be in the
         # bundle, so the installed plugin has no dangling reference.
         bundled = set(self.manifest)
-        for mrel in (".codex-plugin/plugin.json", "gemini-extension.json"):
+        for mrel in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json",
+                     ".cursor-plugin/plugin.json", "gemini-extension.json"):
             data = json.loads((PLUGIN_ROOT / mrel).read_text())
             for value in _string_values(data):
-                if not value.startswith("./") or "/" not in value[2:]:
+                if not value.startswith("./"):
                     continue
                 ref = value[2:]
+                if not ref:
+                    continue
                 if ref.endswith("/"):  # directory reference — some file under it
                     ok = any(b.startswith(ref) for b in bundled)
-                else:  # file reference — exact
+                else:  # file reference (root-level or nested) — exact
                     ok = ref in bundled
                 self.assertTrue(ok, f"{mrel} references unbundled {ref}")
+
+    def test_forbidden_check_is_checkout_location_independent(self) -> None:
+        # Regression: the guard must key on the merv/-relative path, so a checkout
+        # physically under /tests/, /brain/, /deploy/, or a merv-http directory
+        # cannot poison every file, while a real backend/test path is still caught.
+        forbidden_hit = build_client_bundle.forbidden_hit
+        self.assertIsNone(forbidden_hit("skills/research-workflow/SKILL.md"))
+        self.assertIsNone(forbidden_hit("src/merv/client/cli.py"))
+        self.assertEqual(forbidden_hit("src/merv/brain/x.py"), "/brain/")
+        self.assertEqual(forbidden_hit("tests/x.py"), "/tests/")
+        self.assertEqual(forbidden_hit("bin/merv-http"), "merv-http")
 
     def test_all_skills_and_reviewer_agents_included(self) -> None:
         # Every skill directory and reviewer agent on disk must reach the bundle,

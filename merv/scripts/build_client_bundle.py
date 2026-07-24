@@ -61,6 +61,16 @@ INCLUDE = (
 FORBIDDEN_SUBSTRINGS = ("/brain/", "/tests/", "/deploy/", "merv-http")
 
 
+def forbidden_hit(root_relative: str) -> str | None:
+    """Return the forbidden marker a merv/-relative path matches, else None.
+
+    Operates on the path *relative to the plugin root* so the build is unaffected
+    by where the checkout physically lives (a clone under /tests/… or a directory
+    named merv-http must not poison every file's absolute path)."""
+    probe = "/" + root_relative.lstrip("/")
+    return next((s for s in FORBIDDEN_SUBSTRINGS if s in probe), None)
+
+
 def iter_files(rel: str):
     src = MERV_ROOT / rel
     # Symlinks are skipped entirely: a symlink inside an included directory could
@@ -91,13 +101,19 @@ def build(out: Path) -> int:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    root = MERV_ROOT.resolve()
     count = 0
     for rel in manifest():
-        # Guard both the declared path and the real (resolved) path, so neither a
-        # forbidden name nor a symlink resolving into the backend can slip in.
+        # Resolve symlinks, confirm the target stays inside the plugin root, then
+        # apply the forbidden check to the root-relative path (never the absolute
+        # one — the checkout's own location must not affect the result).
         real = (MERV_ROOT / rel).resolve()
-        for probe in (f"/{rel}", str(real)):
-            bad = next((s for s in FORBIDDEN_SUBSTRINGS if s in probe), None)
+        try:
+            real_rel = real.relative_to(root).as_posix()
+        except ValueError:
+            raise SystemExit(f"build_client_bundle: {rel!r} resolves outside the plugin root")
+        for probe_rel in (rel, real_rel):
+            bad = forbidden_hit(probe_rel)
             if bad:
                 raise SystemExit(f"build_client_bundle: {rel!r} matches forbidden {bad!r}")
         dst = out / rel
