@@ -339,6 +339,55 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         )
         self.assertEqual(minted.status_code, 404, minted.text)
 
+    def test_streamable_mcp_stops_it_at_a_non_member_project(self) -> None:
+        # The preflight path denies before the SSE stream can open, so the
+        # membership edge has to hold on /mcp as well as /mcp/call.
+        outsider = self.app.projects.create(
+            name="Not Mine", user_id=USER_B_ID
+        )["id"]
+        response = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow.status_and_next",
+                    "arguments": {"project_id": outsider},
+                },
+            },
+            headers={**self._bearer(self.key), "Accept": "application/json"},
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(
+            response.json()["error"]["data"]["error_code"], "not_found"
+        )
+
+    def test_a_rotation_cannot_change_the_scope_it_inherited(self) -> None:
+        # Defence in depth behind the OAuth path: even a direct rotate call
+        # cannot turn an account grant into a project grant or the reverse.
+        from merv.brain.kernel.utils import NotFoundError
+
+        listed = self.client.get(
+            f"/api/projects/{self.project_a}/keys", headers=self._bearer(self.jwt)
+        )
+        parent_id = listed.json()["keys"][0]["id"]
+
+        with self.assertRaises(NotFoundError):
+            self.keys.rotate(
+                project_id=self.project_a,
+                owner_user_id=USER_A,
+                parent_key_id=parent_id,
+                grant_scope="project",  # parent is account-scoped
+            )
+        rotated = self.keys.rotate(
+            project_id=self.project_a,
+            owner_user_id=USER_A,
+            parent_key_id=parent_id,
+            grant_scope="account",
+        )
+        self.assertEqual(rotated["key"]["grant_scope"], "account")
+
     def test_it_is_still_barred_from_creating_projects(self) -> None:
         response = self.client.post(
             "/mcp/call",
@@ -363,10 +412,21 @@ class GrantScopeMigrationTest(unittest.TestCase):
             path = Path(tmp) / "state.sqlite"
             StateStore(db_path=path).connect().close()
             # Simulate a database from before 34 by dropping the column back
-            # off every credential table, then re-running migrations.
+            # off every credential table, then re-running migrations. A real
+            # pre-migration key row rides along, so the backfill is observed
+            # rather than assumed.
             with sqlite3.connect(path) as conn:
                 for table in GRANT_SCOPE_TABLES:
                     conn.execute(f"ALTER TABLE {table} DROP COLUMN grant_scope")
+                conn.execute(
+                    "INSERT INTO projects (id, name, summary, tenant_id, "
+                    "created_at) VALUES ('proj_old', 'Legacy', '', 'local', 'then')"
+                )
+                conn.execute(
+                    "INSERT INTO project_api_keys (id, secret_digest, "
+                    "owner_user_id, tenant_id, project_id, created_at) VALUES "
+                    "('mkey_old', 'digest', 'owner', 'local', 'proj_old', 'then')"
+                )
                 conn.execute("DELETE FROM schema_migrations WHERE version = 34")
                 conn.commit()
 
@@ -388,6 +448,12 @@ class GrantScopeMigrationTest(unittest.TestCase):
                     "SELECT name FROM schema_migrations WHERE version = 34"
                 ).fetchone()
                 self.assertEqual(applied["name"], "add_grant_scope")
+                # The row that predates the column reads as project-scoped --
+                # no pre-existing credential silently widens.
+                upgraded = conn.execute(
+                    "SELECT grant_scope FROM project_api_keys WHERE id = 'mkey_old'"
+                ).fetchone()
+                self.assertEqual(upgraded["grant_scope"], "project")
                 # The CHECK survives ALTER TABLE ADD COLUMN, so a migrated
                 # database cannot drift to a scope the enforcement layer does
                 # not understand. (Raw sqlite3 leaves foreign_keys OFF, so the

@@ -162,6 +162,7 @@ class OAuthSurfaceTest(unittest.TestCase):
         project_id: str | None = None,
         token: str | None = None,
         params: dict[str, str] | None = None,
+        grant_scope: str | None = None,
     ) -> tuple[str, dict[str, list[str]]]:
         params = params or self._authorization_params(client_id)
         response = self.client.post(
@@ -170,6 +171,7 @@ class OAuthSurfaceTest(unittest.TestCase):
                 **params,
                 "decision": "approve",
                 "project_id": project_id or self.project_a,
+                **({"grant_scope": grant_scope} if grant_scope else {}),
             },
             headers=_bearer(token or self.jwt_a),
         )
@@ -196,6 +198,21 @@ class OAuthSurfaceTest(unittest.TestCase):
                 "resource": RESOURCE,
             },
         )
+
+    def _mcp_overview(self, access_token: str, project_id: str) -> int:
+        return self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "project",
+                    "arguments": {"action": "overview", "project_id": project_id},
+                },
+            },
+            headers={**_bearer(access_token), "Accept": "application/json"},
+        ).status_code
 
     def _mint_oauth_tokens(self) -> tuple[dict, dict]:
         registration = self._register()
@@ -558,6 +575,105 @@ class OAuthSurfaceTest(unittest.TestCase):
             },
         )
         self.assertEqual(revoked_refresh.json()["error"], "invalid_grant")
+
+    def test_account_consent_survives_rotation_and_reaches_every_project(
+        self,
+    ) -> None:
+        """consent(account) -> code -> key -> refresh -> replay, end to end.
+
+        The scope the user agreed to has to survive every hop: it is persisted
+        on the code, carried onto the minted key, inherited by each rotation,
+        and killed with the family on replay.
+        """
+        project_b = self._create_project("OAuth Project B", self.jwt_a)
+        registration = self._register()
+        _redirect, query = self._authorize(
+            registration["client_id"], grant_scope="account"
+        )
+        first = self._exchange(
+            client_id=registration["client_id"], code=query["code"][0]
+        ).json()
+
+        # The access key carries no project confinement...
+        principal = self.verifier.verify_bearer(f"Bearer {first['access_token']}")
+        self.assertIsNotNone(principal.key_id)
+        self.assertIsNone(principal.key_project_id)
+        # ...so it reaches a project that is not the consented home project.
+        # OAuth bearers are audience-bound to /mcp (INV-7), so reach is
+        # exercised there rather than over REST.
+        self.assertEqual(
+            self._mcp_overview(first["access_token"], project_b), 200
+        )
+
+        refreshed = self.client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": registration["client_id"],
+                "refresh_token": first["refresh_token"],
+                "resource": RESOURCE,
+            },
+        )
+        self.assertEqual(refreshed.status_code, 200, refreshed.text)
+        second = refreshed.json()
+
+        # The rotation inherited the scope rather than narrowing to home.
+        rotated = self.verifier.verify_bearer(f"Bearer {second['access_token']}")
+        self.assertIsNone(rotated.key_project_id)
+        self.assertEqual(
+            self._mcp_overview(second["access_token"], project_b), 200
+        )
+
+        # Replaying the consumed refresh kills the whole family, both scopes
+        # alike -- revocation keys on the unchanged home project and owner.
+        replay = self.client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": registration["client_id"],
+                "refresh_token": first["refresh_token"],
+                "resource": RESOURCE,
+            },
+        )
+        self.assertEqual(replay.status_code, 400, replay.text)
+        self.assertEqual(
+            self._mcp_overview(second["access_token"], project_b), 401
+        )
+
+    def test_project_consent_still_confines_the_minted_key(self) -> None:
+        # The default is unchanged: absent grant_scope means one project.
+        project_b = self._create_project("OAuth Project B", self.jwt_a)
+        registration = self._register()
+        _redirect, query = self._authorize(registration["client_id"])
+        minted = self._exchange(
+            client_id=registration["client_id"], code=query["code"][0]
+        ).json()
+
+        principal = self.verifier.verify_bearer(f"Bearer {minted['access_token']}")
+        self.assertEqual(principal.key_project_id, self.project_a)
+        self.assertEqual(
+            self._mcp_overview(minted["access_token"], project_b), 403
+        )
+        self.assertEqual(
+            self._mcp_overview(minted["access_token"], self.project_a), 200
+        )
+
+    def test_consent_rejects_an_unknown_grant_scope(self) -> None:
+        registration = self._register()
+        response = self.client.post(
+            "/oauth/authorize",
+            json={
+                **self._authorization_params(registration["client_id"]),
+                "decision": "approve",
+                "project_id": self.project_a,
+                "grant_scope": "everything",
+            },
+            headers=_bearer(self.jwt_a),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        query = parse_qs(urlsplit(response.json()["redirect_to"]).query)
+        self.assertEqual(query["error"], ["invalid_request"])
+        self.assertNotIn("code", query)
 
     def test_oauth_access_keys_of_one_grant_share_the_oauth_family(self) -> None:
         """Rotation keeps a single stable oauth_family_id across access keys —
