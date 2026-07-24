@@ -22,3 +22,6 @@ deprecated/
 .merv/
 
 /graphify-out
+
+# Generated client plugin bundle (scripts/build_client_bundle.py)
+dist/

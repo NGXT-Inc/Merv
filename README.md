@@ -94,12 +94,15 @@ openhands mcp add merv --transport http --header "Authorization: Bearer $MERV_MC
 
 **Replit** / **claude.ai** — add a custom MCP server at `https://experiments.rapidreview.io/mcp` and approve the OAuth sign-in.
 
-**Cursor** — no local-plugin registry, so copy the bundle in, then enable **merv** on Cursor's Customize page:
+**Cursor** — no local-plugin registry, so build the client bundle straight into
+Cursor's local-plugin dir, then enable **merv** on Cursor's Customize page:
 
 ```bash
 git clone https://github.com/NGXT-Inc/Merv.git ~/Merv
-rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' ~/Merv/merv/ ~/.cursor/plugins/local/merv/
+python3 ~/Merv/merv/scripts/build_client_bundle.py --out ~/.cursor/plugins/local/merv
 ```
+
+Re-run the same command (after `git -C ~/Merv pull`) to update.
 
 Full per-platform notes: [CLIENTS.md](merv/docs/CLIENTS.md).
 

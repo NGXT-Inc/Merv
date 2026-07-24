@@ -89,6 +89,30 @@ depends on them:
   responses include compact receipts; `sandbox.runs` is the authoritative
   status/readback call.
 
+## Packaging the client bundle (maintainers)
+
+The plugin root (`merv/`) doubles as the monorepo — it carries the full backend
+(`src/merv/brain`) and the test suite (`tests/`) that a thin HTTP-MCP client
+never runs. Claude Code copies a plugin's whole `source` tree on install (there
+is no `.claudeignore`), so clients should install a *slim* bundle instead.
+
+[`scripts/build_client_bundle.py`](../scripts/build_client_bundle.py) assembles
+that bundle (39 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
++ its self-contained `src/merv/{client,shared}`, and the conformance probe) from
+the real sources — nothing is duplicated in git, and
+`tests/surface/test_client_bundle.py` fails if the backend or tests ever leak in
+or a new skill/agent is left out.
+
+```bash
+python3 scripts/build_client_bundle.py --out dist/plugin   # gitignored
+```
+
+To publish: run the build in the release pipeline and point the marketplace
+entry's `source` at the built bundle (Claude Code marketplaces accept a
+subdirectory `source`). The Cursor and self-host paths already build or clone
+directly. The hosted `rapidreview.io` marketplace manifest is a separate deploy
+artifact — repoint its `source` when the pipeline serves the built bundle.
+
 ## Verify a connection
 
 Every platform reaches the brain over the same Streamable-HTTP MCP wire, so one
@@ -181,12 +205,19 @@ The plugin ships a Cursor plugin bundle: [.cursor-plugin/plugin.json](../.cursor
 plus [mcp.json](../mcp.json) at plugin root; `skills/` and `agents/` are
 auto-discovered from the same locations all other clients use.
 
-For local development, **copy** the plugin directory into
-`~/.cursor/plugins/local/merv`, then enable it in Cursor. Cursor rejects
-symlinks whose target is outside `~/.cursor/plugins/local` (you will see
-`loadUserLocalPlugin merv rejected: symlink target ... is outside ...` in
-the Cursor Plugins log). Re-`rsync` after editing the checkout, or keep a
-real directory under `plugins/local` as your working tree.
+Build the slim client bundle straight into Cursor's local-plugin directory,
+then enable it in Cursor:
+
+```bash
+python3 /path/to/merv/scripts/build_client_bundle.py --out ~/.cursor/plugins/local/merv
+```
+
+This copies only what a client needs (skills, agents, MCP config, onboarding
+CLI) — not the backend or test suite. Re-run the same command after
+`git pull` to update. Cursor rejects symlinks whose target is outside
+`~/.cursor/plugins/local` (you would see `loadUserLocalPlugin merv rejected:
+symlink target ... is outside ...` in the Cursor Plugins log), so the bundle
+is copied as a real directory rather than symlinked.
 
 Two Cursor-specific notes:
 
