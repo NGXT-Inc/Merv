@@ -498,6 +498,16 @@ class StorageSubmitInput(ProjectScopedInput):
     source_uri: str = ""
     notes: str = ""
 
+    @field_validator("content_type")
+    @classmethod
+    def _content_type_has_no_control_chars(cls, value: str) -> str:
+        # content_type rides into a shell one-liner (shell-quoted there) and an
+        # HTTP header; reject control chars so it can never inject a header line
+        # or a raw newline into the returned curl command.
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+            raise ValueError("content_type must not contain control characters")
+        return value
+
 
 class StorageCompleteUploadInput(ProjectScopedInput):
     upload_id: str

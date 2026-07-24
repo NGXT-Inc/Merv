@@ -140,6 +140,42 @@ class StorageHttpApiTest(unittest.TestCase):
         replay = self.client.post(f"/api/storage/u/{token}/complete")
         self.assertEqual(replay.status_code, 404, replay.text)
 
+    def test_storage_submit_content_type_cannot_inject_shell_commands(self) -> None:
+        # content_type is caller-controlled and rides into the `run` one-liner
+        # the agent executes verbatim. A quote-breakout payload must NOT become a
+        # separate shell word — the whole header stays one shell-quoted token.
+        import shlex
+
+        from merv.brain.object_storage.service import storage_submit_command
+
+        payload = "application/x' ; touch /tmp/pwned ; echo '"
+        run = storage_submit_command(
+            base_url="https://x", path="f.bin",
+            presigned_url="https://s3/put", checksum_b64="YWJj",
+            content_type=payload, token="tok",
+        )
+        put_cmd = run.split(" && ", 1)[0]
+        tokens = shlex.split(put_cmd)
+        # The injected command names never surface as standalone shell words.
+        self.assertNotIn("touch", tokens)
+        self.assertNotIn(";", tokens)
+        # The Content-Type header survives intact as a single argument.
+        self.assertIn(f"Content-Type: {payload}", tokens)
+
+    def test_storage_submit_rejects_control_chars_in_content_type(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.app.call_tool(
+                "storage.submit",
+                {
+                    "project_id": self.project_id,
+                    "path": "f.bin",
+                    "kind": "other",
+                    "sha256": hashlib.sha256(b"x").hexdigest(),
+                    "size_bytes": 1,
+                    "content_type": "text/plain\r\nX-Injected: 1",
+                },
+            )
+
     def test_storage_submit_dedup_needs_no_upload(self) -> None:
         data = b"dedup me"
         sha = hashlib.sha256(data).hexdigest()

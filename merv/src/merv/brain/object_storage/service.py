@@ -66,12 +66,17 @@ def storage_submit_command(
     bound into the presigned PUT's SigV4 signature, so the curl MUST send both
     headers verbatim or S3 rejects the upload with SignatureDoesNotMatch."""
     base = (base_url or _LOCAL_API_BASE).rstrip("/")
+    # content_type is caller-supplied free text, so the header MUST be
+    # _shell_quote'd as a whole (not wrapped in literal quotes) or a value like
+    # `x' ; rm -rf ~ ; echo '` injects commands into the one-liner the agent
+    # runs verbatim. The checksum is base64 (shell-safe) but quoted for symmetry.
+    checksum_header = _shell_quote(f"x-amz-checksum-sha256:{checksum_b64}")
+    content_type_header = _shell_quote(f"Content-Type: {content_type}")
     put = (
-        f"curl -sf -X PUT -H 'x-amz-checksum-sha256:{checksum_b64}' "
-        f"-H 'Content-Type: {content_type}' "
+        f"curl -sf -X PUT -H {checksum_header} -H {content_type_header} "
         f"-T {_shell_quote(path)} {_shell_quote(presigned_url)}"
     )
-    complete = f"curl -sf -X POST '{base}/api/storage/u/{token}/complete'"
+    complete = f"curl -sf -X POST {_shell_quote(f'{base}/api/storage/u/{token}/complete')}"
     return f"{put} && {complete}"
 
 
