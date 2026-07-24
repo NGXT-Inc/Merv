@@ -46,8 +46,8 @@ MGMT_KEY_PATH_ENV_VAR = "MERV_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "MERV_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "MERV_ALLOWED_ORIGINS"
 CONTROL_RESTRICT_CORS_ENV_VAR = "MERV_CONTROL_RESTRICT_CORS"
-# Where the device-flow sign-in page lives. Unlike a CORS origin this may
-# carry a path (e.g. https://rapidreview.io/merv) for path-mounted UIs.
+# Where the hosted UI's OAuth consent page lives. Unlike a CORS origin this
+# may carry a path (e.g. https://rapidreview.io/merv) for path-mounted UIs.
 UI_BASE_URL_ENV_VAR = "MERV_UI_BASE_URL"
 # Canonical RFC 8707 resource URI for the /mcp audience. Owner-minted project
 # keys carry it so they are audience-bound once OAuth enforcement lands; unset

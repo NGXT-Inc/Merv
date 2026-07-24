@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import os
 import tempfile
 import time
@@ -23,7 +22,6 @@ import jwt
 from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
-from merv.brain.surface.config import UI_BASE_URL_ENV_VAR, resolve_ui_base_url
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier, UnauthorizedError
 from merv.brain.surface.transport.http_api import create_fastapi_app
@@ -53,20 +51,7 @@ def _bearer(sub: str = USER_A, **overrides) -> dict[str, str]:
 
 
 def _postgrest_mock(request: httpx.Request) -> httpx.Response:
-    # Fake Supabase: api_keys lookups (only the known hash resolves) plus the
-    # GoTrue refresh grant used by the device-flow refresh proxy.
-    if "/auth/v1/token" in str(request.url):
-        body = json.loads(request.content.decode("utf-8"))
-        if body.get("refresh_token") == "refresh-ok":
-            return httpx.Response(
-                200,
-                json={
-                    "access_token": _token(),
-                    "refresh_token": "refresh-next",
-                    "expires_in": 3600,
-                },
-            )
-        return httpx.Response(400, json={"error": "invalid_grant"})
+    # Fake Supabase: api_keys lookups — only the known hash resolves.
     if f"eq.{KNOWN_KEY_HASH}" in str(request.url):
         return httpx.Response(200, json=[{"user_id": USER_B}])
     return httpx.Response(200, json=[])
@@ -395,104 +380,6 @@ class AuthedSurfaceTest(unittest.TestCase):
             "/api/projects", headers={"Authorization": f"Bearer {KNOWN_KEY}"}
         ).json()
         self.assertEqual([p["id"] for p in listed["projects"]], [project_id])
-
-    def test_device_flow_hands_tokens_to_the_polling_cli(self) -> None:
-        # The CLI is unauthenticated when it starts the flow.
-        created = self.client.post("/api/sdk/auth/session")
-        self.assertEqual(created.status_code, 200, created.text)
-        session_id = created.json()["session_id"]
-        self.assertTrue(
-            created.json()["auth_url"].startswith(
-                "https://ui.example/auth/sdk?session="
-            )
-        )
-        # Pending until the browser completes.
-        pending = self.client.post(
-            "/api/sdk/auth/session/poll", json={"session_id": session_id}
-        )
-        self.assertEqual(pending.json(), {"status": "pending"})
-        # The signed-in browser posts its Supabase session; a bogus token is
-        # rejected before it can ever reach a terminal.
-        bogus = self.client.post(
-            "/api/sdk/auth/session/complete",
-            json={"session_id": session_id, "access_token": "garbage"},
-        )
-        self.assertEqual(bogus.status_code, 401, bogus.text)
-        done = self.client.post(
-            "/api/sdk/auth/session/complete",
-            json={
-                "session_id": session_id,
-                "access_token": _token(),
-                "refresh_token": "refresh-ok",
-                "expires_in": 3600,
-                "email": "founder@example.com",
-            },
-        )
-        self.assertEqual(done.status_code, 200, done.text)
-        # One-shot handoff: the first poll gets the tokens, the second finds
-        # the session gone.
-        handed = self.client.post(
-            "/api/sdk/auth/session/poll", json={"session_id": session_id}
-        ).json()
-        self.assertEqual(handed["status"], "complete")
-        self.assertEqual(handed["email"], "founder@example.com")
-        self.assertEqual(handed["refresh_token"], "refresh-ok")
-        replay = self.client.post(
-            "/api/sdk/auth/session/poll", json={"session_id": session_id}
-        )
-        self.assertEqual(replay.status_code, 400, replay.text)
-
-    def test_device_flow_ui_base_url_beats_first_origin(self) -> None:
-        # A path-mounted UI (rapidreview.io/merv) cannot be a CORS origin, so
-        # the env-configured base URL must win over allowed_origins[0].
-        client = TestClient(
-            create_fastapi_app(
-                self.app.http,
-                allowed_origins=["https://ui.example"],
-                surface_policy=HttpSurfacePolicy.for_surface(
-                    restrict_cors=True, hosted_control=True
-                ),
-                auth=_verifier(),
-                ui_base_url=resolve_ui_base_url(
-                    {UI_BASE_URL_ENV_VAR: "https://rapidreview.io/merv/"}
-                ),
-            ),
-            raise_server_exceptions=False,
-        )
-        created = client.post("/api/sdk/auth/session")
-        self.assertEqual(created.status_code, 200, created.text)
-        self.assertTrue(
-            created.json()["auth_url"].startswith(
-                "https://rapidreview.io/merv/auth/sdk?session="
-            )
-        )
-
-    def test_refresh_proxies_to_supabase(self) -> None:
-        ok = self.client.post(
-            "/api/sdk/auth/refresh", json={"refresh_token": "refresh-ok"}
-        )
-        self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertEqual(ok.json()["refresh_token"], "refresh-next")
-        rejected = self.client.post(
-            "/api/sdk/auth/refresh", json={"refresh_token": "stale"}
-        )
-        self.assertEqual(rejected.status_code, 401, rejected.text)
-
-    def test_local_surface_has_no_device_flow_routes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            app = TestBrain(
-                repo_root=repo,
-                db_path=repo / "state.sqlite",
-                execution_backend=FakeSandboxBackend(),
-            )
-            try:
-                client = TestClient(
-                    create_fastapi_app(app.http), raise_server_exceptions=False
-                )
-                self.assertEqual(client.post("/api/sdk/auth/session").status_code, 404)
-            finally:
-                app.shutdown()
 
     def test_mlflow_gate_challenges_and_admits(self) -> None:
         challenged = self.client.get("/internal/auth/mlflow")

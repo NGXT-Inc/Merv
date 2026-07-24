@@ -27,7 +27,7 @@ from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (GLOBAL_MUTATOR_PREFIXES, is_local_origin,
                      open_hosted_operator_denial, operator_denial)
-from . import oauth, project_keys, sdk_auth
+from . import oauth, project_keys
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class RequestAuthenticator:
         request.state.authenticated = False
         path = request.url.path
         # Token-bearer routes carry their own credential (INV-12).
-        exempt = ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/",
+        exempt = ("/api/artifacts/u/", "/api/artifacts/f/",
                   "/api/feed/u/", "/api/storage/u/")
         if (path in ("/health", "/api/meta", "/internal/auth/mlflow")
                 or path.startswith(exempt)
@@ -342,19 +342,10 @@ def install_auth_routes(
     http: FastAPI,
     *,
     verifier: Any | None,
-    allowed_origins: list[str] | None,
-    ui_base_url: str,
     owner_key_audience: str = "",
 ) -> None:
     if verifier is None:
         return
-    http.include_router(
-        sdk_auth.build_router(
-            verifier=verifier,
-            allowed_origins=allowed_origins or [],
-            ui_base_url=ui_base_url,
-        )
-    )
     if getattr(verifier, "project_keys", None) is not None:
         http.include_router(
             project_keys.build_router(

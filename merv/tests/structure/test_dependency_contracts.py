@@ -66,7 +66,6 @@ surface/transport/admin_http.py | register_admin_routes | cleanup | Any | None
 surface/transport/admin_http.py | register_admin_routes | tenant_counters | Any | None
 surface/transport/api/context.py | ApiRouteContext | route_call_tool | Callable[..., dict[str, Any]]
 surface/transport/api/gateway.py | RequestAuthenticator | verifier | Any | None
-surface/transport/api/sdk_auth.py | build_router | verifier | Any
 surface/transport/mcp_http.py | register_mcp_routes | list_tools | ToolCatalog
 surface/transport/mcp_http.py | register_mcp_routes | call_tool | ToolCaller
 surface/transport/mcp_http.py | register_mcp_routes | allow_tool | ToolFilter | None

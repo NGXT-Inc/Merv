@@ -188,31 +188,6 @@ class SupabaseVerifier:
             raise UnauthorizedError("unknown API key")
         return str(rows[0]["user_id"])
 
-    def refresh_session(self, refresh_token: str) -> dict[str, object]:
-        """Exchange a refresh token for a fresh session via Supabase Auth REST.
-
-        Proxied by the brain (public anon key) so CLI clients never talk to
-        Supabase directly — the same contract the RapidReview backend exposes.
-        """
-        if not self.anon_key:
-            raise UnauthorizedError("session refresh is not enabled on this deployment")
-        try:
-            response = self._client().post(
-                f"{self.supabase_url}/auth/v1/token",
-                params={"grant_type": "refresh_token"},
-                json={"refresh_token": refresh_token},
-                headers={"apikey": self.anon_key},
-            )
-        except Exception as exc:
-            raise UnauthorizedError("credential service unavailable") from exc
-        if response.status_code != 200:
-            raise UnauthorizedError("refresh token rejected")
-        payload = response.json()
-        return {
-            "access_token": str(payload.get("access_token") or ""),
-            "refresh_token": str(payload.get("refresh_token") or refresh_token),
-            "expires_in": int(payload.get("expires_in") or 3600),
-        }
 
     def _client(self) -> httpx.Client:
         if self._http is None:

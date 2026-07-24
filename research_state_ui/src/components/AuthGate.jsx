@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { api, request } from '../api';
+import { api } from '../api';
 import OAuthConsent from './OAuthConsent';
 import {
   getAuthToken,
-  getSessionTokens,
   initAuth,
   onAuthChange,
   resetPassword,
@@ -63,49 +62,7 @@ export default function AuthGate({ children }) {
   // access (the lane that mints the project key). Sits above the router — the
   // /oauth/authorize path is served by the backend, not an in-app route.
   if (state.required && location.pathname === '/oauth/authorize') return <OAuthConsent />;
-  // CLI device-flow handoff: once signed in, /auth/sdk posts this browser's
-  // session to the brain for the polling terminal — instead of the app,
-  // which may still be booting (this route must work with zero projects).
-  // useLocation is basename-relative, so this also matches /merv/auth/sdk.
-  if (state.required && location.pathname === '/auth/sdk') return <SdkHandoff />;
   return children;
-}
-
-function SdkHandoff() {
-  const [status, setStatus] = useState('working');
-  useEffect(() => {
-    const sessionId = new URLSearchParams(window.location.search).get('session');
-    if (!sessionId) {
-      setStatus('missing');
-      return;
-    }
-    (async () => {
-      try {
-        const tokens = await getSessionTokens();
-        if (!tokens) throw new Error('no session');
-        await request('/api/sdk/auth/session/complete', {
-          method: 'POST',
-          body: { session_id: sessionId, ...tokens },
-        });
-        setStatus('done');
-      } catch {
-        setStatus('failed');
-      }
-    })();
-  }, []);
-  const message = {
-    working: 'Completing sign-in…',
-    done: 'Signed in — return to your terminal. You can close this tab.',
-    missing: 'Missing login session. Rerun merv-client login and use the fresh link.',
-    failed: 'Could not complete the sign-in. Rerun merv-client login and try again.',
-  }[status];
-  return (
-    <div className="auth-gate">
-      <div className="auth-modal auth-modal--center">
-        <p className="auth-modal-sub">{message}</p>
-      </div>
-    </div>
-  );
 }
 
 // Sign-in gate — the RapidReview account modal shared with the maps product:

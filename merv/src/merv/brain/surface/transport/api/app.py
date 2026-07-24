@@ -61,8 +61,7 @@ def create_fastapi_app(
     # Registered last so CORS decorates middleware short-circuits as well.
     install_cors(http, allowed_origins=allowed_origins, surface=surface)
     install_error_handlers(http)
-    install_auth_routes(http, verifier=auth, allowed_origins=allowed_origins,
-                        ui_base_url=ui_base_url, owner_key_audience=oauth_resource_uri)
+    install_auth_routes(http, verifier=auth, owner_key_audience=oauth_resource_uri)
     oauth.install_routes(http, service=oauth_service, allowed_origins=allowed_origins or [],
                          ui_base_url=ui_base_url, canonical_mcp_resource=oauth_resource_uri)
 

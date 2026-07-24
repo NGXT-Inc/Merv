@@ -66,8 +66,7 @@ graph:
 
 The control surface supports optional Supabase-backed end-user authentication
 (`SupabaseVerifier` in `services/auth.py`, attached per-request in
-`transport/api/app.py`, with device-flow sign-in under `/api/sdk/auth/*` and a
-membership gate that 404s foreign projects). It is off by default locally —
+`transport/api/app.py`, with a membership gate that 404s foreign projects). It is off by default locally —
 booting an unauthenticated hosted surface logs an "OPEN" warning — and
 `MERV_REQUIRE_AUTH=1` makes missing auth config a startup failure; the hosted
 deployment runs with it required. CORS and the client-version floor are still
