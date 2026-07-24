@@ -298,7 +298,8 @@ transcript for it. Launch it as
 `ssh ... 'merv_run <label> -- <command>'` (e.g. `merv_run seed0 -- python train.py
 --seed 0`): the run detaches, survives disconnects, logs to
 `.runs/<label>/log.txt`, and writes an `exit_code` sentinel when it finishes.
-Then either long-poll `sandbox.runs(wait_seconds=...)` within the session (one
+Then either long-poll `sandbox.runs(project_id, experiment_id, wait_seconds=...)`
+within the session (one
 slow call instead of N transcript polls; keep `wait_seconds<=45` unless your
 client's tool timeout allows more), or simply end the turn and call
 `sandbox.runs` when next attending the experiment. Every sandbox.* response
@@ -317,7 +318,8 @@ before requesting or attaching the replacement sandbox. This keeps the same atte
 records why execution is being rerun; use a planned retry only when the design
 itself needs to change. The transition response carries the MLflow run to use:
 a still-open run is resumed in place, while one you already finalized (for
-example with `mlflow.finalize_run(status="FAILED")` after the crash) is
+example with `mlflow.finalize_run(project_id, experiment_id, status="FAILED")`
+after the crash) is
 replaced by a fresh run — always take `MLFLOW_RUN_ID` from the retry response
 rather than reusing an old value.
 
