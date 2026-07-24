@@ -63,10 +63,9 @@ def _folder_contract_note(
         "This sandbox is an EPHEMERAL SSH window: nothing is copied for you, and "
         "when it is released or reaped the VM and everything on it is destroyed. "
         "So pull anything you want to keep BEFORE then with "
-        "sandbox.pull_outputs — it copies the light retained files into "
-        f"{local_destination} without clobbering existing local files "
-        "(kept files are reported as files_kept_stale; pass overwrite=true to "
-        "replace them) — and then submit the gated docs with artifact.submit. "
+        "sandbox.pull_outputs — it returns an rsync command for pulling the "
+        f"light retained files into {local_destination} — and then submit the "
+        "gated docs with artifact.submit. "
         + heavy_note
         + "Keep caches and scratch data under "
         f"$RP_DATASET_DIR, outside the {folder_label}. "
@@ -306,13 +305,8 @@ def agent_summary(*, row: dict[str, Any]) -> dict[str, Any]:
 def sandbox_row_view(
     *,
     row: dict[str, Any],
-    local_sync_dir: str,
 ) -> dict[str, Any]:
-    """Canonical sandbox-row projection (workflow status + HTTP/UI).
-
-    ``local_sync_dir`` is machine-local data-plane enrichment: callers resolve
-    it through the worker (it no longer lives in the row).
-    """
+    """Canonical sandbox-row projection (workflow status + HTTP/UI)."""
     active_experiment_ids = list(row.get("active_experiment_ids") or [])
     remote_dir, data_dir = _sandbox_dirs(row=row)
     view = {
@@ -337,10 +331,8 @@ def sandbox_row_view(
         "ssh_port": row.get("ssh_port"),
         "ssh_user": row.get("ssh_user"),
         "workdir": row.get("workdir"),
-        # Stable API names: `sync_dir` is the remote experiment directory, and
-        # `local_sync_dir` is where explicitly copied files should land.
+        # Stable API name: `sync_dir` is the remote experiment directory.
         "sync_dir": remote_dir,
-        "local_sync_dir": local_sync_dir,
         "sandbox_data_dir": data_dir,
         "volume_name": row.get("volume_name"),
         "requested_at": row.get("requested_at"),

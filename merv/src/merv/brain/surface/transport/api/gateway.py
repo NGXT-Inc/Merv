@@ -195,10 +195,11 @@ class ToolInvocationGateway:
                 details={"field": "context.repo_root",
                          "reason": "repo_root_not_supported"},
             )
-        for scope in (arguments.get("project_id"), project_scope):
-            self.projects.require_member(project_id=scope, principal=principal)
         user_id = self.projects.user_id(principal)
         key_project_id = self.projects.key_project_id(principal)
+        self.projects.require_member(project_id=key_project_id or None, principal=principal)
+        for scope in (arguments.get("project_id"), project_scope):
+            self.projects.require_member(project_id=scope, principal=principal)
         if key_project_id and name == "project" and arguments.get("action") == "create":
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})

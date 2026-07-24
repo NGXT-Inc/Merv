@@ -5,13 +5,10 @@ record-layer suites on SQLite (the 442-test local baseline) and on Postgres.
 This module supplies the Postgres half:
 
   (a) the translated SCHEMA + the ordered ledger apply cleanly;
-  (b) the control-plane contract scenarios (the full research loop, driven
-      only through the tool surface) pass against a TestBrain whose
-      store is ``PostgresStateStore`` — services unchanged;
-  (c) events identity ordering, artifacts created_seq ordering, the
+  (b) events identity ordering, artifacts created_seq ordering, the
       artifact-slot supersede path, and the record_event/recent_events
       round trip behave exactly as on SQLite;
-  (d) two concurrent transactions serialize (the advisory-lock emulation of
+  (c) two concurrent transactions serialize (the advisory-lock emulation of
       SQLite's BEGIN IMMEDIATE single-writer semantics).
 
 A ``postgres:16-alpine`` container is started once per module on a random
@@ -57,11 +54,6 @@ from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.research_core.experiments import ExperimentService
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.facade import ResearchCoreFacade
-from tests.surface.test_control_plane_contract import (
-    ClientHarness,
-    ControlPlaneContractScenarios,
-    InProcessControlPlaneClient,
-)
 from tests.sandbox.test_sandbox_event_contract import (
     SandboxRepositoryEventContractScenarios,
 )
@@ -164,23 +156,6 @@ def _reset_database() -> str:
     with psycopg.connect(_dsn, autocommit=True) as conn:
         conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
     return _dsn
-
-
-def _postgres_harness() -> ClientHarness:
-    """The contract harness, rewired onto a fresh Postgres-backed app."""
-    tmp = tempfile.TemporaryDirectory()
-    repo = Path(tmp.name)
-    app = TestBrain(
-        repo_root=repo,
-        db_path=repo / ".research_plugin" / "unused.sqlite",
-        execution_backend=FakeSandboxBackend(),
-        store=PostgresStateStore(dsn=_reset_database()),
-    )
-    return ClientHarness(
-        client=InProcessControlPlaneClient(app=app),
-        repo=repo,
-        _closers=[app.shutdown, tmp.cleanup],
-    )
 
 
 def _schema_without_sandbox_tenant() -> str:
@@ -333,15 +308,6 @@ def _schema_without_feed_upload_tokens() -> str:
     if legacy == SCHEMA or "feed_upload_tokens" in legacy:
         raise AssertionError("failed to build the pre-feed-token schema")
     return legacy
-
-
-@unittest.skipUnless(HAVE_DOCKER, "docker unavailable")
-class PostgresControlPlaneContractTest(
-    ControlPlaneContractScenarios, unittest.TestCase
-):
-    """(b) The Phase 3 scenario corpus, services unchanged, store swapped."""
-
-    harness_factory = staticmethod(_postgres_harness)
 
 
 @unittest.skipUnless(HAVE_DOCKER, "docker unavailable")

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import threading
-from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from ...kernel.state.tool_call_stats import by_tool, tool_call_totals
@@ -16,7 +14,7 @@ from ...kernel.state.activity import (
     payload_chars,
     redact_sensitive,
 )
-from ...kernel.utils import ValidationError, now_iso, parse_iso
+from ...kernel.utils import now_iso, parse_iso
 
 
 class ControlActivitySink(ToolActivityEmitter):
@@ -196,57 +194,6 @@ class ControlToolCallSink:
                 if str(row.get("project_id") or "") not in allowed
             ]
             return {"cleared": before - len(self._calls)}
-
-
-class ControlSandboxWorker:
-    """Brain-side adapter for machine-local sandbox enrichment.
-
-    The brain never owns caller-side keys or connection files, so the worker
-    exposes neutral empty enrichment while provider endpoint refresh remains a
-    control-plane operation.
-    """
-
-    def repo_relative(self, path: str | Path) -> str:
-        return str(path)
-
-    def local_experiment_dir(self, **_: Any) -> Path:
-        return Path("")
-
-    def ensure_keypair(self, **_: Any) -> tuple[str, Path]:
-        raise ValidationError(
-            "control mode cannot mint data-plane user SSH keys; pass public_key "
-            "through the local MCP proxy"
-        )
-
-    def sandbox_enrichment(self, **_: Any) -> dict[str, Any]:
-        return {}
-
-
-class ControlTaskChannel:
-    """Neutral brain task channel for sandbox lifecycle callbacks.
-
-    The brain updates sandbox rows and reapers through the neutral SandboxBackend
-    protocol; caller-machine conn-file work lives in the local MCP proxy.
-    """
-
-    def __init__(self) -> None:
-        self.history: list[tuple[str, dict[str, Any]]] = []
-
-    def submit(
-        self,
-        *,
-        task_type: str,
-        payload: dict[str, Any],
-        deadline: str | None = None,
-        tenant_id: str | None = None,
-    ) -> Any:
-        del deadline, tenant_id
-        self.history.append((task_type, deepcopy(payload)))
-        if task_type == "conn_refresh":
-            return {}
-        if task_type == "teardown":
-            return None
-        raise ValidationError(f"unknown task type: {task_type}")
 
 
 def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

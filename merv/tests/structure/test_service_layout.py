@@ -508,9 +508,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"dataclasses", "typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
-            "sandbox_worker.py": {"pathlib", "typing"},
             "reflection_writers.py": {"typing"},
-            "task_channel.py": {"typing"},
         }
         for name, allowed_imports in expected_imports.items():
             with self.subTest(module=name):
@@ -529,6 +527,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse((PORTS_ROOT / "workflow_readers.py").exists())
         # The resource-observation port died with the resource system.
         self.assertFalse((PORTS_ROOT / "resource_records.py").exists())
+        self.assertFalse((PORTS_ROOT / "sandbox_worker.py").exists())
+        self.assertFalse((PORTS_ROOT / "task_channel.py").exists())
         reflection_writer_path = PORTS_ROOT / "reflection_writers.py"
         self.assertEqual(
             _class_method_names(reflection_writer_path, "ReflectionClaimWriter"),

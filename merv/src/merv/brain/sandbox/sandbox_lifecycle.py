@@ -9,8 +9,8 @@ the invariants in one place:
     `liveness`); a row is stranded as terminated only once the provider
     confirms the VM is not alive — a terminated row over a live VM bills
     invisibly forever, and no sweep revisits terminated rows;
-  - a terminal mark always runs teardown (mgmt-key removal + the data-plane
-    teardown task), regardless of which caller marked it;
+  - a terminal mark always removes its management key, regardless of which
+    caller marked it;
   - a live provisioning job owns its row at any age — only the lifecycle's
     job probe decides whether "provisioning" means in-flight or wedged.
 
@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
-from ..kernel.ports.task_channel import TaskChannel
 from .sandbox_backend import SandboxBackend
 from .lifecycle_reducer import LifecycleDecision, reap_decision, reconcile_decision
 from .sandbox_support import ACTIVE_SANDBOX_STATUSES, parse_iso
@@ -46,12 +45,10 @@ class SandboxLifecycle:
         repository: SandboxRepository,
         backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
-        tasks: TaskChannel,
     ) -> None:
         self.repository = repository
         self.backend = backend
         self.mgmt_keys = mgmt_keys
-        self.tasks = tasks
         self.job_probe: JobProbe | None = None
 
     # ---------- liveness ----------
@@ -97,33 +94,12 @@ class SandboxLifecycle:
         self._teardown(experiment_id=experiment_id, facts=facts)
 
     def _teardown(self, *, experiment_id: str, facts: dict[str, Any]) -> None:
-        """Tear down a terminal row's runtime attachments.
-
-        The management keypair dies with the sandbox (per-sandbox keys):
-        control-side custody, dropped here. Conn files and tunnels are
-        data-plane property, released via a ``teardown`` task — in split mode
-        the daemon executes it from its task loop. ``sandbox_id`` is None when
-        the row itself was missing; the task then skips tunnel teardown but
-        still drops the conn file. All best-effort: teardown must never block
-        or abort the terminal mark.
-        """
+        """Drop a terminal sandbox's control-side management key."""
+        _ = experiment_id
         sandbox_uid = str(facts.get("sandbox_uid") or "")
         if sandbox_uid:
             with suppress(Exception):  # key cleanup must never block the mark
                 self.mgmt_keys.remove(sandbox_uid=sandbox_uid)
-        with suppress(Exception):  # best-effort; never block the mark
-            self.tasks.submit(
-                task_type="teardown",
-                payload={
-                    "experiment_id": experiment_id,
-                    "sandbox_id": facts.get("sandbox_id"),
-                    "sandbox_uid": sandbox_uid,
-                    "remove_experiment_alias": True,
-                },
-                tenant_id=self.repository.tenant_for_sandbox(
-                    experiment_id=experiment_id, sandbox_uid=sandbox_uid
-                ),
-            )
 
     # ---------- VM termination ----------
 
@@ -321,21 +297,6 @@ class SandboxLifecycle:
             ssh_port=port,
         )
         fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
-        # The agent's conn file must follow the endpoint: a conn_refresh task
-        # re-renders it through the data plane. Best-effort, like the refresh
-        # itself — the next agent view re-renders it anyway.
-        with suppress(Exception):  # refresh must never break the caller
-            self.tasks.submit(
-                task_type="conn_refresh",
-                payload={
-                    "row": fresh,
-                    "name": f"sandbox-{sandbox_uid[:12]}",
-                    "use_sandbox_uid_command": True,
-                },
-                tenant_id=self.repository.tenant_for_project(
-                    project_id=str(fresh.get("project_id") or "")
-                ),
-            )
         self.repository.emit_event(
             project_id=str(row.get("project_id")),
             event_type="sandbox.endpoint_refreshed",

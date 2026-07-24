@@ -72,7 +72,6 @@ CONTROL_MODULES = (
     SURFACE_ROOT / "control" / "record_core.py",
     SURFACE_ROOT / "control" / "control_app.py",
     SURFACE_ROOT / "control" / "control_runtime.py",
-    SURFACE_ROOT / "control" / "control_client.py",
     BACKEND_ROOT / "kernel" / "state" / "store.py",
     BACKEND_ROOT / "kernel" / "state" / "dialects.py",
     BACKEND_ROOT / "sandbox" / "managed_mgmt_keys.py",
@@ -82,6 +81,7 @@ CONTROL_MODULES = (
 CONTROL_FORBIDDEN_SEGMENTS = {
     "dataplane",
     "proxy",
+    "sandbox_worker",
     "sandbox_conn",
     "subprocess",
     "workspace",
@@ -487,6 +487,9 @@ load("subprocess")
             "local_runtime.py",
             "composition/local_mode.py",
             "surface/composition/local_mode.py",
+            "kernel/ports/sandbox_worker.py",
+            "kernel/ports/task_channel.py",
+            "surface/control/control_client.py",
             "dataplane/worker.py",
             "dataplane/tasks.py",
             "dataplane/state.py",
@@ -497,6 +500,73 @@ load("subprocess")
         ):
             with self.subTest(rel=rel):
                 self.assertFalse((BACKEND_ROOT / rel).exists())
+
+    def test_no_stale_moved_module_paths_in_executable_tree(self) -> None:
+        forbidden = (
+            "merv.brain." + "dataplane",
+            "merv.brain." + "workspace",
+            "merv.brain.kernel.ports." + "sandbox_worker",
+            "merv.brain.kernel.ports." + "task_channel",
+            "merv.brain.surface.control." + "control_client",
+            "tests.surface." + "test_control_plane_contract",
+            "merv.brain.object_storage." + "file_transfer",
+            "merv.brain.object_storage." + "storage_guidance",
+            "merv.brain.feed." + "feed_embeds",
+            "merv.brain.feed." + "feed_images",
+            "merv.brain.artifacts." + "markdown_images",
+            "merv.brain.artifacts." + "roles",
+            "merv/brain/" + "dataplane",
+            "merv/brain/" + "workspace.py",
+            "merv/brain/kernel/ports/" + "sandbox_worker.py",
+            "merv/brain/kernel/ports/" + "task_channel.py",
+            "merv/brain/surface/control/" + "control_client.py",
+            "tests/surface/" + "test_control_plane_contract.py",
+            "merv/brain/object_storage/" + "file_transfer.py",
+            "merv/brain/object_storage/" + "storage_guidance.py",
+            "merv/brain/feed/" + "feed_embeds.py",
+            "merv/brain/feed/" + "feed_images.py",
+            "merv/brain/artifacts/" + "markdown_images.py",
+            "merv/brain/artifacts/" + "roles.py",
+            "merv.brain." + "tools",
+            "merv.brain." + "transport",
+            "merv.brain." + "composition",
+            "merv.brain." + "control",
+            "merv.brain." + "services",
+            "merv.brain." + "config",
+            "merv.brain." + "observability",
+            "merv.brain." + "client_cli",
+            "merv/brain/" + "tools/",
+            "merv/brain/" + "transport/",
+            "merv/brain/" + "composition/",
+            "merv/brain/" + "control/",
+            "merv/brain/" + "services/",
+            "merv/brain/" + "config.py",
+            "merv/brain/" + "observability.py",
+            "merv/brain/" + "client_cli.py",
+        )
+        roots = (
+            IMPORT_ROOT,
+            IMPORT_ROOT.parent / "tests",
+            IMPORT_ROOT.parent / "scripts",
+            IMPORT_ROOT.parent / "bin",
+            IMPORT_ROOT.parent / "deploy",
+            IMPORT_ROOT.parent / "clients",
+        )
+        stale: list[str] = []
+        for root in roots:
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                for target in forbidden:
+                    if target in source:
+                        stale.append(
+                            f"{path.relative_to(IMPORT_ROOT.parent)}: {target}"
+                        )
+        self.assertFalse(stale, "stale moved paths: " + ", ".join(stale))
 
     def test_control_app_uses_record_core_builder_for_record_services(self) -> None:
         app_source = (SURFACE_ROOT / "control" / "control_app.py").read_text(

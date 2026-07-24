@@ -41,7 +41,7 @@ class TestBrain:
     _PRIVATE_ALIASES = {
         "store": "_store", "blobs": "_blobs", "storage": "_storage",
         "execution_backend": "_execution_backend", "mlflow_tracking": "_tracking",
-        "worker": "_worker", "sandbox_runtime": "_sandbox_runtime",
+        "sandbox_runtime": "_sandbox_runtime",
     }
 
     def __init__(
@@ -53,7 +53,6 @@ class TestBrain:
         store: Any | None = None,
         blobs: Any | None = None,
         storage: Any | None = None,
-        task_channel: Any | None = None,
         mlflow_tracking: Any | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
@@ -82,11 +81,9 @@ class TestBrain:
             store=self._store,
             blobs=self._blobs,
             storage=storage,
-            task_channel=task_channel,
             mlflow_tracking=mlflow_tracking,
         )
         self._app = self.server.app
-        self.task_channel = self.server.task_channel
         self.fastapi_app = self.server.fastapi_app
         self._client = TestClient(self.fastapi_app)
 

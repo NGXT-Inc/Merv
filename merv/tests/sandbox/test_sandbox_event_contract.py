@@ -18,10 +18,10 @@ from merv.brain.sandbox.facade import SandboxFacade
 
 
 PUBLIC_SIGNATURES = {
-    "request": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, gpu: 'str | None' = None, cpu: 'float | None' = None, memory: 'int | None' = None, time_limit: 'int | None' = None, instance_type: 'str | None' = None, region: 'str | None' = None, provider: 'str | None' = None, public_key: 'str | None' = None, public_key_override: 'str | None' = None, include_data_plane_enrichment: 'bool' = True, additional: 'bool' = False, sandbox_uid: 'str | None' = None, provisioning_user_id: 'str' = '', provisioning_key_id: 'str' = '') -> 'dict[str, Any]'",
+    "request": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, gpu: 'str | None' = None, cpu: 'float | None' = None, memory: 'int | None' = None, time_limit: 'int | None' = None, instance_type: 'str | None' = None, region: 'str | None' = None, provider: 'str | None' = None, public_key: 'str | None' = None, public_key_override: 'str | None' = None, include_data_plane_enrichment: 'bool' = False, additional: 'bool' = False, sandbox_uid: 'str | None' = None, provisioning_user_id: 'str' = '', provisioning_key_id: 'str' = '') -> 'dict[str, Any]'",
     "pull_outputs_command": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, paths: 'list[str] | None' = None) -> 'dict[str, Any]'",
-    "get": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, include_data_plane_enrichment: 'bool' = True) -> 'dict[str, Any]'",
-    "attach": "(self, *, experiment_id: 'str', project_id: 'str | None' = None, sandbox_uid: 'str', include_data_plane_enrichment: 'bool' = True, public_key_override: 'str | None' = None) -> 'dict[str, Any]'",
+    "get": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, include_data_plane_enrichment: 'bool' = False) -> 'dict[str, Any]'",
+    "attach": "(self, *, experiment_id: 'str', project_id: 'str | None' = None, sandbox_uid: 'str', include_data_plane_enrichment: 'bool' = False, public_key_override: 'str | None' = None) -> 'dict[str, Any]'",
     "extend": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, seconds: 'int' = 1800) -> 'dict[str, Any]'",
     "options": "(self, *, project_id: 'str | None' = None, gpu: 'str | None' = None, region: 'str | None' = None) -> 'dict[str, Any]'",
     "list_sandboxes": "(self, *, project_id: 'str | None' = None) -> 'dict[str, Any]'",

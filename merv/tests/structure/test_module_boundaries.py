@@ -146,7 +146,6 @@ FILE_LAYERS = {
     "surface/transport/http_server.py": BOOTSTRAP,
     "surface/control/control_app.py": BOOTSTRAP,
     "surface/control/record_core.py": BOOTSTRAP,
-    "surface/control/control_client.py": ADAPTER,
     "surface/control/control_runtime.py": ADAPTER,
     "surface/project_keys.py": APPLICATION_LAYER,
     "surface/project_key_store.py": ADAPTER,

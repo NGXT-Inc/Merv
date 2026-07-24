@@ -41,7 +41,6 @@ from ..config import (
 )
 from .brain_dirs import resolve_brain_state_root, resolve_local_brain_staging
 from ..control.control_app import ControlApp
-from ..control.control_runtime import ControlTaskChannel
 from ...kernel.env import env_bool, env_value
 from ...kernel.ports.blob_store import BlobStore
 from ...sandbox.execution import build_sandbox_backend
@@ -73,21 +72,19 @@ _UNSET = object()
 class ControlPlaneServer:
     """A running brain app plus its FastAPI surface.
 
-    Holds the record/policy app, task channel, cleanup service, and FastAPI app
-    that serves ``/mcp/*`` and ``/api/*``. Both deployment presets use it.
-    ``fastapi_app`` is what uvicorn serves.
+    Holds the record/policy app, cleanup service, and FastAPI app that serves
+    ``/mcp/*`` and ``/api/*``. Both deployment presets use it. ``fastapi_app``
+    is what uvicorn serves.
     """
 
     def __init__(
         self,
         *,
         app: ControlApp,
-        task_channel: ControlTaskChannel,
         cleanup: CleanupService,
         fastapi_app: FastAPI,
     ) -> None:
         self.app = app
-        self.task_channel = task_channel
         # Broader cleanup sweeps are built but NOT scheduled here — a managed
         # cron or sidecar tick calls ``cleanup.run_all(now=...)``. The owned
         # expiry reaper lives in the composition-owned SandboxRuntime; this is
@@ -107,12 +104,11 @@ def build_control_app(
     store: Any | None = None,
     blobs: BlobStore | None = None,
     storage: Any = _UNSET,
-    task_channel: Any | None = None,
     mgmt_keys: Any | None = None,
     mlflow_tracking: CentralMlflowService | None = None,
     local_deployment: bool = False,
-) -> tuple[ControlApp, ControlTaskChannel]:
-    """Build the unified brain app and its neutral task channel.
+) -> ControlApp:
+    """Build the unified brain app.
 
     ``repo_root`` is an explicit dev/test staging dir for SQLite/blob defaults;
     production omits it and must provide DB_URL + BLOB_BUCKET + a mounted
@@ -144,7 +140,6 @@ def build_control_app(
             if objects
             else None
         )
-    task_channel = task_channel if task_channel is not None else ControlTaskChannel()
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
     mlflow_tracking = (
@@ -158,7 +153,6 @@ def build_control_app(
         store=store,
         blobs=blobs,
         storage=storage,
-        task_channel=task_channel,
         execution_backend=execution_backend,
         mgmt_keys=(
             mgmt_keys
@@ -177,7 +171,7 @@ def build_control_app(
     # A brain restart with live VMs must re-acquire reaping. ControlApp has
     # already started its SandboxRuntime; this reconciles rows left running.
     _resume_active_sandboxes(app=app)
-    return app, task_channel
+    return app
 
 
 def _validate_auth_requirement(
@@ -203,7 +197,7 @@ def build_control_server(
     allowed_origins: list[str] | None = None,
 ) -> ControlPlaneServer:
     """Build the hosted-control FastAPI brain."""
-    app, task_channel = build_control_app(repo_root=repo_root, env=env)
+    app = build_control_app(repo_root=repo_root, env=env)
     origins = (
         resolve_allowed_origins(env) if allowed_origins is None else allowed_origins
     )
@@ -251,7 +245,6 @@ def build_control_server(
     )
     return ControlPlaneServer(
         app=app,
-        task_channel=task_channel,
         cleanup=cleanup,
         fastapi_app=fastapi_app,
     )
@@ -266,20 +259,18 @@ def build_local_server(
     store: Any | None = None,
     blobs: BlobStore | None = None,
     storage: Any = _UNSET,
-    task_channel: Any | None = None,
     mgmt_keys: Any | None = None,
     mlflow_tracking: CentralMlflowService | None = None,
 ) -> ControlPlaneServer:
     """Build the localhost brain using the same ControlApp composition."""
     root = _local_brain_root(state_dir=state_dir, env=env)
-    app, task_channel = build_control_app(
+    app = build_control_app(
         repo_root=root,
         env=env,
         execution_backend=execution_backend,
         store=store,
         blobs=blobs,
         storage=storage,
-        task_channel=task_channel,
         mgmt_keys=mgmt_keys,
         mlflow_tracking=mlflow_tracking,
         local_deployment=True,
@@ -294,7 +285,6 @@ def build_local_server(
     )
     return ControlPlaneServer(
         app=app,
-        task_channel=task_channel,
         cleanup=cleanup,
         fastapi_app=fastapi_app,
     )

@@ -24,9 +24,9 @@ class CreateExperiment:
         )
         state["folder_guidance"] = (
             f"Use {state['folder']} as the experiment's one local folder. "
-            "Data-plane actions create it on demand; work in it from the start: "
-            "plan.md, scripts, configs, retained results, report, and graph all "
-            "live there. This local folder is not uploaded to a sandbox "
+            "Create it yourself before working in it: plan.md, scripts, configs, "
+            "retained results, report, and graph all live there. This local folder "
+            "is not uploaded to a sandbox "
             "automatically: create, fetch, or explicitly transfer sandbox inputs "
             "after provisioning. Pull selected light outputs back with "
             "sandbox.pull_outputs, or upload heavy outputs to configured object "

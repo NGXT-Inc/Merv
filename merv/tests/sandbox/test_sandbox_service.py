@@ -697,10 +697,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(got["ssh"]["host"], old_host)
         self.assertEqual(got["ssh"]["host"], "r999.modal.host")
         self.assertEqual(got["ssh"]["port"], 55555)
-        task_type, payload = self.app.sandboxes.tasks.history[-1]
-        self.assertEqual(task_type, "conn_refresh")
-        self.assertEqual(payload["row"]["ssh_host"], "r999.modal.host")
-        self.assertEqual(payload["row"]["ssh_port"], 55555)
 
     # ---- sandbox response guidance ----
 

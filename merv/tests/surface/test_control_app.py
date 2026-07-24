@@ -48,7 +48,7 @@ class ControlAppTest(unittest.TestCase):
     def test_control_app_records_scoped_activity_without_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -114,7 +114,7 @@ class ControlAppTest(unittest.TestCase):
     def test_hosted_control_cors_allows_authorized_ui_requests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -163,7 +163,7 @@ class ControlAppTest(unittest.TestCase):
         # this must assert on the actual gated GET, not just the preflight.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -200,7 +200,7 @@ class ControlAppTest(unittest.TestCase):
             root = Path(tmp)
             env = _mounted_mgmt_key_env(root)
             key_path = Path(env[MGMT_KEY_PATH_ENV_VAR])
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root / "staging",
                 env=env,
                 execution_backend=FakeSandboxBackend(),
@@ -234,36 +234,10 @@ class ControlAppTest(unittest.TestCase):
                 )
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_ignores_legacy_task_result_timeout_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            app, _queue = build_control_app(
-                repo_root=root,
-                env={
-                    **_mounted_mgmt_key_env(root),
-                    "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "2.5",
-                },
-                execution_backend=FakeSandboxBackend(),
-            )
-            self.addCleanup(app.shutdown)
-            self.assertEqual(app.sandboxes.tasks.history, [])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            app, _queue = build_control_app(
-                repo_root=root,
-                env={
-                    **_mounted_mgmt_key_env(root),
-                    "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "bad",
-                },
-                execution_backend=FakeSandboxBackend(),
-            )
-            self.addCleanup(app.shutdown)
-
     def test_control_app_reads_mlflow_from_injected_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env={
                     **_mounted_mgmt_key_env(root),
@@ -337,7 +311,7 @@ class ControlAppTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env={
                     **_mounted_mgmt_key_env(root),
@@ -403,7 +377,7 @@ class ControlAppTest(unittest.TestCase):
                     return_value=blobs,
                 ) as blob_factory,
             ):
-                app, _queue = build_control_app(
+                app = build_control_app(
                     repo_root=None,
                     env=env,
                     execution_backend=FakeSandboxBackend(),

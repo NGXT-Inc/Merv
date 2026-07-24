@@ -39,11 +39,15 @@ def build_mcp_preauthorizer(
 
     def preauthorize(request: Request, name: str, arguments: dict[str, Any]) -> None:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
+        key_project_id = authorizer.key_project_id(principal)
+        authorizer.require_member(
+            project_id=key_project_id or None,
+            principal=principal,
+        )
         authorizer.require_member(
             project_id=str(arguments.get("project_id") or "") or None,
             principal=principal,
         )
-        key_project_id = authorizer.key_project_id(principal)
         if key_project_id and name == "project" and arguments.get("action") == "create":
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from ..kernel.env import env_float
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
-from ..kernel.ports.task_channel import TaskChannel
 from ..kernel.state.store import BaseStateStore
 from .repository import SandboxRepository
 from .sandbox_backend import SandboxBackend
@@ -42,7 +41,6 @@ def build_sandbox_runtime(
     store: BaseStateStore,
     backend: SandboxBackend,
     mgmt_keys: MgmtKeyStore,
-    tasks: TaskChannel,
     stale_provision_seconds: float | None = None,
     force_expiry_reaper: bool = False,
 ) -> SandboxRuntime:
@@ -59,7 +57,6 @@ def build_sandbox_runtime(
         repository=repository,
         backend=backend,
         mgmt_keys=mgmt_keys,
-        tasks=tasks,
     )
     provisioner = SandboxProvisioner(
         repository=repository,
