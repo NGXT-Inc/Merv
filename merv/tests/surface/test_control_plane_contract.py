@@ -6,10 +6,8 @@ the single in-process client; Phase 8 adds ``HttpControlPlaneClient`` as a
 second ``harness_factory`` and runs the same scenarios over the wire with
 identical results (the plane-seam analog of test_sandbox_backend_contract.py).
 
-The harness writes artifact files into a throwaway repo: the HTTP harness
-routes data-plane tools through a proxy-side LocalDataPlane against the live
-server (production's routing), so file reads stay a client-side concern —
-the brain never touches the repo.
+The harness writes artifact files into a throwaway repo while all tools are
+served by the control plane; artifact bytes use the token upload channel.
 """
 
 from __future__ import annotations
@@ -22,16 +20,12 @@ import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Protocol
-from urllib import error as urllib_error
 from urllib.request import Request, urlopen
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain, upload_token
 from merv.brain.surface.control.control_client import HttpControlPlaneClient
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.surface.tools.contracts import DATA_PLANE_TOOL_NAMES
 from merv.brain.surface.transport.http_server import make_http_server
-from merv.brain.kernel.utils import NotFoundError, ValidationError
-from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 
 # Artifact bodies that satisfy the gate lints (plan spine, report spine,
 # graph envelope), so the loop exercises gates as passes.
@@ -86,73 +80,19 @@ class InProcessControlPlaneClient:
 
 
 class ProxyRoutedHttpClient:
-    """Split-mode wiring exactly as production runs it: control tools go over
-    the wire; data-plane tools execute proxy-side via LocalDataPlane against
-    the same live server — the stdio proxy's routing, minus stdio."""
+    """Split-mode wiring exactly as production runs it: tools go over the wire."""
 
     def __init__(self, *, base_url: str, repo: Path) -> None:
         self._control = HttpControlPlaneClient(base_url=base_url)
-        self._base_url = base_url.rstrip("/")
-        self._active_project_id: str | None = None
-        self._data_plane = LocalDataPlane(
-            repo_root=repo,
-            project_id_resolver=self._resolve_project_id,
-            control_api_post=self._api_post,
-            control_tool_call=lambda name, arguments: self._control.call(name, arguments),
-        )
+        del repo
 
     def call(
         self, name: str, arguments: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         args = dict(arguments or {})
-        if name in DATA_PLANE_TOOL_NAMES:
-            if name == "sandbox.request":
-                args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
-            # The proxy resolves project identity itself (args are never
-            # trusted); scope the resolver like TestBrain does.
-            self._active_project_id = str(args.get("project_id") or "") or None
-            try:
-                return self._data_plane.call_tool(name=name, arguments=args)
-            except LocalDataPlaneError as exc:
-                raise ValidationError(exc.message, details=exc.details) from exc
-            finally:
-                self._active_project_id = None
+        if name == "sandbox.request":
+            args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
         return self._control.call(name, args)
-
-    def _resolve_project_id(self) -> str | None:
-        if self._active_project_id:
-            return self._active_project_id
-        with urlopen(f"{self._base_url}/api/projects", timeout=10) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        projects = body.get("projects") or []
-        return str(projects[0]["id"]) if len(projects) == 1 else None
-
-    def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        req = Request(
-            f"{self._base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urlopen(req, timeout=10) as response:
-                body = json.loads(response.read().decode("utf-8") or "{}")
-                return body if isinstance(body, dict) else {}
-        except urllib_error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", "replace")
-            try:
-                body = json.loads(raw)
-            except ValueError:
-                body = {"detail": raw}
-            detail = str(body.get("detail") or body.get("message") or raw)
-            details = {
-                key: value
-                for key, value in body.items()
-                if key not in {"detail", "message", "error_code"}
-            }
-            if exc.code == 404:
-                raise NotFoundError(detail, details=details) from exc
-            raise ValidationError(detail, details=details) from exc
 
 
 @dataclass
@@ -186,14 +126,7 @@ def in_process_harness() -> ClientHarness:
 
 
 def http_harness() -> ClientHarness:
-    """Split-mode wiring: a real HTTP server fronts the brain, and the SAME
-    scenarios run through production's routing — control tools over the wire,
-    data-plane tools proxy-side via LocalDataPlane reading the throwaway repo.
-
-    This proves the plane seam: identical results to the in-process client,
-    confirming the contract holds across a process/network boundary with the
-    brain never reading a repo file.
-    """
+    """A real HTTP server fronts the brain for the same scenario corpus."""
     tmp = tempfile.TemporaryDirectory()
     repo = Path(tmp.name)
     app = TestBrain(

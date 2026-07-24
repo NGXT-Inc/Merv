@@ -15,7 +15,6 @@ from merv.brain.surface.tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     DATA_PLANE_TOOL_NAMES,
     MCP_HIDDEN_TOOL_NAMES,
-    ExperimentMaterializeFoldersInput,
     ArtifactFindInput,
     ArtifactSubmitInput,
     MlflowFinalizeRunInput,
@@ -23,11 +22,11 @@ from merv.brain.surface.tools.contracts import (
     SandboxPullOutputsInput,
     SandboxRequestInput,
     StorageCompleteUploadInput,
-    StorageDownloadFileInput,
+    StorageFetchInput,
     StorageFindInput,
     StorageObjectInput,
     StoragePutObjectInput,
-    StorageUploadFileInput,
+    StorageSubmitInput,
     STORAGE_TOOL_NAMES,
     TOOL_CONTRACTS,
     TOOL_MANIFEST,
@@ -39,7 +38,6 @@ from merv.brain.surface.tools.contracts import (
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
 from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
-from merv.proxy.local_data_plane import LocalDataPlane
 
 
 class _HandlerTarget:
@@ -109,14 +107,14 @@ class ToolContractRegistryTest(unittest.TestCase):
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
 
-    def test_live_local_split_composes_control_and_proxy_data_planes(self) -> None:
+    def test_live_app_serves_every_available_tool_on_control_plane(self) -> None:
         control = set(self.app._app.tools._tools)
         available = available_tool_names(storage_enabled=False)
         data = DATA_PLANE_TOOL_NAMES & available
         self.assertEqual(control, CONTROL_PLANE_TOOL_NAMES & available)
-        self.assertIsInstance(self.app._data_plane, LocalDataPlane)
         self.assertEqual(control | data, available)
         self.assertFalse(control & data)
+        self.assertFalse(data)
 
     def test_static_catalog_matches_app_list_tools(self) -> None:
         # The static catalog is what the router serves without instantiating an
@@ -190,16 +188,16 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
         self.assertIn("retention checklist", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
-        self.assertIn("local experiment folder", tools["sandbox.pull_outputs"]["description"])
+        self.assertIn("calling agent", tools["sandbox.pull_outputs"]["description"])
         self.assertIn("object storage", tools["sandbox.pull_outputs"]["description"])
         self.assertIn("sandbox.release", tools["sandbox.pull_outputs"]["description"])
 
     def test_storage_tools_registered_with_expected_input_models(self) -> None:
         expected = {
             "storage.put_object": (StoragePutObjectInput, "control"),
-            "storage.upload_file": (StorageUploadFileInput, "data"),
+            "storage.submit": (StorageSubmitInput, "control"),
             "storage.complete_upload": (StorageCompleteUploadInput, "control"),
-            "storage.download_file": (StorageDownloadFileInput, "data"),
+            "storage.fetch": (StorageFetchInput, "control"),
             "storage.find": (StorageFindInput, "control"),
             "storage.object": (StorageObjectInput, "control"),
         }
@@ -220,7 +218,7 @@ class ToolContractRegistryTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, TOOL_CONTRACTS)
         self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
-        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.upload_file"].description)
+        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.submit"].description)
 
     def test_storage_find_enforces_resolve_vs_list_mode(self) -> None:
         # List mode: neither selector.
@@ -287,12 +285,16 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(parsed.lens_id, "amplify")
 
-    def test_sandbox_pull_outputs_is_data_plane(self) -> None:
+    def test_sandbox_pull_outputs_is_control_plane(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["sandbox.pull_outputs"].input_model,
             SandboxPullOutputsInput,
         )
-        self.assertEqual(tool_plane("sandbox.pull_outputs"), "data")
+        self.assertEqual(tool_plane("sandbox.pull_outputs"), "control")
+        schema = SandboxPullOutputsInput.model_json_schema()
+        self.assertNotIn("key_path", schema["properties"])
+        self.assertNotIn("destination_path", schema["properties"])
+        self.assertNotIn("overwrite", schema["properties"])
 
     def test_sandbox_request_accepts_caller_public_key(self) -> None:
         parsed = SandboxRequestInput.model_validate(
@@ -323,15 +325,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(tool_plane("sandbox.extend"), "control")
 
-    def test_experiment_materialize_folders_is_data_plane(self) -> None:
-        self.assertIs(
-            TOOL_CONTRACTS["experiment.materialize_folders"].input_model,
-            ExperimentMaterializeFoldersInput,
-        )
-        self.assertEqual(
-            tool_plane("experiment.materialize_folders"),
-            "data",
-        )
+    def test_experiment_materialize_folders_is_deleted(self) -> None:
+        # D6: folder layout is now a skill instruction, not a tool.
+        self.assertNotIn("experiment.materialize_folders", TOOL_CONTRACTS)
 
     def test_review_request_and_start_is_removed(self) -> None:
         # Removed: it started the reviewer session server-side, letting the

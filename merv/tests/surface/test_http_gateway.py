@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 from fastapi import Request
 
-from merv.brain.kernel.utils import DataPlaneRequiredError, NotFoundError
+from merv.brain.kernel.utils import NotFoundError
 from merv.brain.surface.identity import Principal, ProjectKeyScopeError
+from merv.brain.surface.tools.tool_facade import ToolDispatcher
 from merv.brain.surface.transport.api.gateway import (
     ProjectAuthorizer,
     ToolInvocationGateway,
@@ -141,7 +142,7 @@ class HttpGatewayTest(unittest.TestCase):
         gateway.call(name="project.list", principal=USER)
         self.assertEqual(backend.calls[0]["internal_kwargs"], {"user_id": USER.user_id})
 
-    def test_catalog_plane_allows_hybrid_project_but_rejects_local_data_tools(
+    def test_sandbox_request_uses_normal_control_dispatch(
         self,
     ) -> None:
         backend = _Backend()
@@ -152,12 +153,20 @@ class HttpGatewayTest(unittest.TestCase):
             principal=USER,
         )
         self.assertEqual(backend.calls[0]["name"], "project")
-        with self.assertRaises(DataPlaneRequiredError):
-            gateway.call(
-                name="storage.upload_file",
-                arguments={"project_id": "proj-a", "path": "model.bin", "kind": "model"},
-                principal=USER,
-            )
+        gateway.call(
+            name="sandbox.request",
+            arguments={"project_id": "proj-a", "public_key": _PUBKEY},
+            principal=USER,
+        )
+        self.assertEqual(backend.calls[1]["name"], "sandbox.request")
+        self.assertEqual(
+            backend.calls[1]["internal_kwargs"],
+            {
+                "provisioning_user_id": "user-a",
+                "provisioning_key_id": "",
+                "include_data_plane_enrichment": False,
+            },
+        )
 
 
 class _Sandboxes:
@@ -183,8 +192,41 @@ class _Sandboxes:
         return {"rsync": "rsync ..."}
 
 
+class _NoopPermissions:
+    def reject_reviewer_mutation(self, **_kwargs) -> None:
+        return None
+
+
+class _NoopActivity:
+    def tool_ok(self, **_kwargs) -> None:
+        return None
+
+    def tool_error(self, **_kwargs) -> None:
+        return None
+
+
+class _NoopToolCalls:
+    def record(self, **_kwargs) -> None:
+        return None
+
+
+def _sandbox_dispatch(sandboxes: _Sandboxes) -> ToolDispatcher:
+    names = {"sandbox.request", "sandbox.attach", "sandbox.pull_outputs"}
+    return ToolDispatcher(
+        handlers={
+            "sandbox.request": sandboxes.request,
+            "sandbox.attach": sandboxes.attach,
+            "sandbox.pull_outputs": sandboxes.pull_outputs_command,
+        },
+        permissions=_NoopPermissions(),
+        activity=_NoopActivity(),
+        tool_calls=_NoopToolCalls(),
+        tool_names=names,
+    )
+
+
 class KeySandboxControlPathTest(unittest.TestCase):
-    """Phase C: an mk_ key reaches the sandbox data-plane surface over control."""
+    """Sandbox lifecycle tools use the ordinary scoped control dispatch."""
 
     def setUp(self) -> None:
         def member_lookup(*, project_id: str, user_id: str) -> bool:
@@ -195,7 +237,7 @@ class KeySandboxControlPathTest(unittest.TestCase):
         )
         self.sandboxes = _Sandboxes()
         self.gateway = ToolInvocationGateway(
-            tools=_Backend(),
+            tools=_sandbox_dispatch(self.sandboxes),
             reviews=SimpleNamespace(request_project_id=lambda **_k: "proj-a"),
             sandboxes=self.sandboxes,
             surface=HttpSurfacePolicy.for_surface(
@@ -230,6 +272,9 @@ class KeySandboxControlPathTest(unittest.TestCase):
             principal=KEY,
         )
         self.assertEqual(self.sandboxes.calls[-1][0], "attach")
+        self.assertFalse(
+            self.sandboxes.calls[-1][1]["include_data_plane_enrichment"]
+        )
         # attach does NOT install the caller's key — no public_key is forwarded.
         self.assertNotIn("public_key", self.sandboxes.calls[-1][1])
         self.assertNotIn("public_key_override", self.sandboxes.calls[-1][1])
@@ -241,24 +286,48 @@ class KeySandboxControlPathTest(unittest.TestCase):
         self.assertEqual(self.sandboxes.calls[-1][0], "pull_outputs_command")
 
     def test_key_principal_cannot_reach_a_different_project(self) -> None:
+        calls = (
+            ("sandbox.request", {"project_id": "proj-b", "public_key": _PUBKEY}),
+            (
+                "sandbox.attach",
+                {
+                    "project_id": "proj-b",
+                    "experiment_id": "exp1",
+                    "sandbox_uid": "uid1",
+                },
+            ),
+            (
+                "sandbox.pull_outputs",
+                {"project_id": "proj-b", "sandbox_uid": "uid1"},
+            ),
+        )
+        for name, arguments in calls:
+            with self.subTest(tool=name), self.assertRaises(ProjectKeyScopeError):
+                self.gateway.call(name=name, arguments=arguments, principal=KEY)
+        self.assertEqual(self.sandboxes.calls, [])
+
+    def test_project_scope_is_checked_in_addition_to_argument_scope(self) -> None:
         with self.assertRaises(ProjectKeyScopeError):
             self.gateway.call(
-                name="sandbox.request",
-                arguments={"project_id": "proj-b", "public_key": _PUBKEY},
+                name="sandbox.pull_outputs",
+                arguments={"project_id": "proj-a", "sandbox_uid": "uid1"},
+                project_scope="proj-b",
                 principal=KEY,
             )
         self.assertEqual(self.sandboxes.calls, [])
 
-    def test_non_key_principal_keeps_the_local_data_plane_path(self) -> None:
-        # A raw JWT (no key_id) is NOT served over control — the local proxy
-        # still owns sandbox.request until Phase D.
-        with self.assertRaises(DataPlaneRequiredError):
-            self.gateway.call(
-                name="sandbox.request",
-                arguments={"project_id": "proj-a", "public_key": _PUBKEY},
-                principal=USER,
-            )
-        self.assertEqual(self.sandboxes.calls, [])
+    def test_jwt_member_is_served_over_control(self) -> None:
+        result = self.gateway.call(
+            name="sandbox.request",
+            arguments={"project_id": "proj-a", "public_key": _PUBKEY},
+            principal=USER,
+        )
+        self.assertEqual(result, {"status": "running"})
+        name, kwargs = self.sandboxes.calls[-1]
+        self.assertEqual(name, "request")
+        self.assertEqual(kwargs["provisioning_user_id"], "user-a")
+        self.assertEqual(kwargs["provisioning_key_id"], "")
+        self.assertFalse(kwargs["include_data_plane_enrichment"])
 
 
 if __name__ == "__main__":

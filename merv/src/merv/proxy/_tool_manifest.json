@@ -531,67 +531,6 @@
       "visibility": "public"
     },
     {
-      "description": "Create canonical local experiment folders under experiments/<name>/ for a project. Use after reflection publish or experiment.create when planned experiments exist in state but their local folders do not yet exist.",
-      "executionStrategy": "local-orchestration",
-      "featureRequirements": [],
-      "handlerIdentity": "local.materialize_experiment_folders",
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "experiment_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Optional experiment id. When provided, materialize only that experiment's folder regardless of status.",
-            "title": "Experiment Id"
-          },
-          "project_id": {
-            "description": "Explicit project scope. Project-local MCP adapters may fill this from hidden repo context before the call reaches core services.",
-            "title": "Project Id",
-            "type": "string"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "planned",
-                  "design_review",
-                  "ready_to_run",
-                  "running",
-                  "experiment_review",
-                  "complete",
-                  "failed",
-                  "abandoned"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": "planned",
-            "description": "When experiment_id is omitted, materialize experiments with this status. Null materializes every experiment in the project.",
-            "title": "Status"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "type": "object"
-      },
-      "localHandlerIdentity": null,
-      "name": "experiment.materialize_folders",
-      "plane": "data",
-      "scopeStrategy": "linked-project",
-      "visibility": "public"
-    },
-    {
       "description": "Apply an allowed experiment transition. See experiment.get_state.allowed_transitions for valid transitions and their preconditions from the current status. When a transition starts the experiment running, the result includes an 'mlflow' connection block for quantitative logging and, when the backend MLflow write URI is configured, a plugin-created run id to resume. Use retry_running only for infrastructure/interruption reruns where the experiment should stay running on the same attempt. At submit_results the system evaluates the attempt's metrics exhibit (up to the newest 50 attempt-window MLflow runs plus eligible pinned result JSON, each entry with provenance). It pins the exhibit when matching runs are found, or when MLflow is unavailable after a plugin-created run; when pinned, report.md must reference it. Runs logged after submit_results remain in MLflow but are outside the finalized attempt exhibit.",
       "executionStrategy": "control",
       "featureRequirements": [],
@@ -1433,12 +1372,12 @@
       "visibility": "internal"
     },
     {
-      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
-      "executionStrategy": "local-orchestration",
+      "description": "Register a heavy file and get a one-line `run` command to upload it. Compute the file's sha256 and size, call this, then execute the returned command verbatim \u2014 it PUTs the bytes straight to object storage and finalizes the ledger object (bytes never pass through the agent context or the brain). Omit name to use the path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
+      "executionStrategy": "control",
       "featureRequirements": [
         "storage"
       ],
-      "handlerIdentity": "local.upload_storage_file",
+      "handlerIdentity": "storage.submit",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1458,7 +1397,7 @@
           },
           "name": {
             "default": "",
-            "description": "Optional storage object name. Defaults to the repo-relative path.",
+            "description": "Optional storage object name. Defaults to the path.",
             "title": "Name",
             "type": "string"
           },
@@ -1468,7 +1407,7 @@
             "type": "string"
           },
           "path": {
-            "description": "Repo-relative file path to upload ('..' and absolute paths are rejected).",
+            "description": "Local file path to upload. Embedded verbatim into the returned `curl -T` command (which you run) and the default object name.",
             "title": "Path",
             "type": "string"
           },
@@ -1487,6 +1426,17 @@
             "title": "Project Id",
             "type": "string"
           },
+          "sha256": {
+            "description": "Client-computed SHA-256 (hex) of the file. Feeds name+sha dedup and is bound into the presigned checksum; identity is re-verified on completion.",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "File size in bytes; presigns the upload and enforces the size cap.",
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
           "source_uri": {
             "default": "",
             "title": "Source Uri",
@@ -1496,13 +1446,15 @@
         "required": [
           "project_id",
           "path",
-          "kind"
+          "kind",
+          "sha256",
+          "size_bytes"
         ],
         "type": "object"
       },
       "localHandlerIdentity": null,
-      "name": "storage.upload_file",
-      "plane": "data",
+      "name": "storage.submit",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -1691,12 +1643,12 @@
       "visibility": "public"
     },
     {
-      "description": "Resolve a storage object and download it to a local file, verifying size and sha256 before replacing the destination.",
-      "executionStrategy": "local-orchestration",
+      "description": "Resolve a storage object and get a one-line `run` command to download it. Pass object_id or name (with optional version), then execute the returned command verbatim \u2014 it curls the bytes to your path and verifies the stored sha256.",
+      "executionStrategy": "control",
       "featureRequirements": [
         "storage"
       ],
-      "handlerIdentity": "local.download_storage_file",
+      "handlerIdentity": "storage.fetch",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1724,14 +1676,8 @@
             "default": null,
             "title": "Object Id"
           },
-          "overwrite": {
-            "default": false,
-            "description": "Refuse to replace an existing local file unless true.",
-            "title": "Overwrite",
-            "type": "boolean"
-          },
           "path": {
-            "description": "Repo-relative destination path ('..' and absolute paths are rejected).",
+            "description": "Local destination path. Embedded verbatim into the returned `curl -o` command, which you run.",
             "title": "Path",
             "type": "string"
           },
@@ -1761,8 +1707,8 @@
         "type": "object"
       },
       "localHandlerIdentity": null,
-      "name": "storage.download_file",
-      "plane": "data",
+      "name": "storage.fetch",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -2025,10 +1971,10 @@
       "visibility": "internal"
     },
     {
-      "description": "Procure (reuse or create) a project sandbox, optionally attached to an experiment, and return SSH details plus runtime guidance for the remote work folder, expiry, copy-out, and durable storage. On Thunder Compute or Lambda Labs, omit instance_type to receive a live menu of available machines to pick from. SSH key custody: the sandbox authorizes a caller-side public key. The primary path is bring-your-own-key \u2014 the requesting agent generates its own ephemeral ed25519 keypair (ssh-keygen), keeps the private key to itself in a location only it can read, and passes only the single-line OpenSSH PUBLIC key as public_key so it gets authorized on the VM. Never send private-key material. The response's persisted public_key_source is 'caller' for new requests; legacy 'managed' rows remain readable/releasable. ssh.key_path appears only when a local proxy enrichment knows the private key path.",
-      "executionStrategy": "local-orchestration",
+      "description": "Procure (reuse or create) a project sandbox, optionally attached to an experiment, and return SSH details plus runtime guidance for the remote work folder, expiry, copy-out, and durable storage. On Thunder Compute or Lambda Labs, omit instance_type to receive a live menu of available machines to pick from. SSH key custody: the sandbox authorizes a caller-side public key. The primary path is bring-your-own-key \u2014 the requesting agent generates its own ephemeral ed25519 keypair (ssh-keygen), keeps the private key to itself in a location only it can read, and passes only the single-line OpenSSH PUBLIC key as public_key so it gets authorized on the VM. Never send private-key material. The response's persisted public_key_source is 'caller' for new requests; legacy 'managed' rows remain readable/releasable.",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.request_sandbox",
+      "handlerIdentity": "sandboxes.request",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2161,7 +2107,7 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.request",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -2269,9 +2215,9 @@
     },
     {
       "description": "Associate an existing running sandbox with an experiment without changing the VM, workdir, SSH connection, or lifecycle. A live sandbox can be associated with multiple active experiments.",
-      "executionStrategy": "local-orchestration",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.attach_sandbox",
+      "handlerIdentity": "sandboxes.attach",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2300,24 +2246,18 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.attach",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
     {
-      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before submitting results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
-      "executionStrategy": "local-orchestration",
+      "description": "Return a filled rsync command for selected files or directories under a running sandbox's experiment_dir. The calling agent runs the command itself with its own SSH key and local destination; bytes move directly from the sandbox to the caller. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs.",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.pull_sandbox_outputs",
+      "handlerIdentity": "sandboxes.pull_outputs_command",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "destination_path": {
-            "default": "",
-            "description": "Repo-relative local destination directory. Defaults to the sandbox's local_experiment_dir.",
-            "title": "Destination Path",
-            "type": "string"
-          },
           "experiment_id": {
             "anyOf": [
               {
@@ -2331,20 +2271,8 @@
             "description": "Experiment whose running sandbox should be copied from. Omit when sandbox_uid is supplied.",
             "title": "Experiment Id"
           },
-          "key_path": {
-            "default": "",
-            "description": "Local private key path for the caller-owned public_key authorized on the sandbox. Required when sandbox.get does not include an ssh.key_path enrichment.",
-            "title": "Key Path",
-            "type": "string"
-          },
-          "overwrite": {
-            "default": false,
-            "description": "When false, existing local files are preserved/refused. Set true only when replacing local retained outputs is intentional.",
-            "title": "Overwrite",
-            "type": "boolean"
-          },
           "paths": {
-            "description": "Repo-relative paths under the sandbox experiment_dir to pull. Omit to pull existing common outputs: results/, figures/, report.md, graph.json, metrics.json, and results.json.",
+            "description": "Paths under the sandbox experiment_dir to include in the returned rsync command. Omit to use common retained outputs: results/, figures/, report.md, graph.json, metrics.json, and results.json.",
             "items": {
               "type": "string"
             },
@@ -2377,7 +2305,7 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.pull_outputs",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -2725,10 +2653,10 @@
       "visibility": "public"
     },
     {
-      "description": "Post a brief, high-signal aha-moment to the project's social feed for the human to glance at \u2014 a surprising result, a bottleneck, an exciting direction, a hunch worth surfacing. NOT one post per experiment: post only what genuinely stands out. Keep it short with a high-value visual where you can. Posts are permanent (no edit or delete \u2014 correct a post by posting again).",
-      "executionStrategy": "local-orchestration",
+      "description": "Post a brief, high-signal aha-moment to the project's social feed for the human to glance at \u2014 a surprising result, a bottleneck, an exciting direction, a hunch worth surfacing. NOT one post per experiment: post only what genuinely stands out. Keep it short with a high-value visual where you can. A text/link-only post lands immediately; attaching image_path/html_path returns a one-time `run` curl to push the bytes, and that upload finalizes the post. Posts are permanent (no edit or delete \u2014 correct a post by posting again).",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.post_feed",
+      "handlerIdentity": "feed.post",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2747,7 +2675,7 @@
               }
             ],
             "default": null,
-            "description": "Optional repo-relative path to a self-contained interactive HTML file to embed (e.g. a plotly chart) \u2014 under 512KB. Served sandboxed (scripts run, but isolated: no same-origin, no top navigation). Mutually exclusive with image_path.",
+            "description": "Optional path to a self-contained interactive HTML file to embed (e.g. a plotly chart) \u2014 under 512KB. Served sandboxed (scripts run, but isolated: no same-origin, no top navigation). Passing it returns a one-time `run` curl instead of posting immediately; run it verbatim to push the file's bytes, and the PUT finalizes the post. Mutually exclusive with image_path.",
             "title": "Html Path"
           },
           "image_path": {
@@ -2760,7 +2688,7 @@
               }
             ],
             "default": null,
-            "description": "Optional repo-relative path to an image to attach (a training plot, a generated graphic, a document excerpt). Most posts should carry a visual. Stored server-side; the file is read once. Mutually exclusive with html_path.",
+            "description": "Optional path to an image to attach (a training plot, a generated graphic, a document excerpt) \u2014 png/jpeg/gif/webp/svg, under 10MB. Most posts should carry a visual. Passing it returns a one-time `run` curl instead of posting immediately; run it verbatim to push the file's bytes, and the PUT finalizes the post. Mutually exclusive with html_path.",
             "title": "Image Path"
           },
           "in_reply_to": {
@@ -2843,7 +2771,7 @@
       },
       "localHandlerIdentity": null,
       "name": "feed.post",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },

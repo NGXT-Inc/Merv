@@ -334,33 +334,24 @@ class ToolPlanePartitionTest(unittest.TestCase):
         # The routing table from docs/CONTROL_DATA_PLANE_SPLIT.md. Changing
         # these is changing where a tool is served in split mode — do it in the
         # phase diff that moves the behavior, not casually.
-        self.assertEqual(
-            DATA_PLANE_TOOL_NAMES,
-            {
-                "experiment.materialize_folders",
-                "storage.upload_file",
-                "storage.download_file",
-                "sandbox.request",
-                "sandbox.attach",
-                "sandbox.pull_outputs",
-                # feed.post reads a local image file before recording the post,
-                # so it lives on the data plane; find/delete are pure control
-                # records. Artifact submission is control-plane: bytes travel
-                # over the agent's own curl, not through the proxy.
-                "feed.post",
-            },
-        )
+        # feed.post/storage.submit/storage.fetch (token-curl) and
+        # experiment.materialize_folders (deleted — folder layout is now a skill
+        # instruction) left this set in the no-dataplane transition. The sandbox
+        # lifecycle family now returns commands/facts over control as well.
+        self.assertEqual(DATA_PLANE_TOOL_NAMES, set())
+        for name in ("sandbox.request", "sandbox.attach", "sandbox.pull_outputs"):
+            self.assertIn(name, CONTROL_PLANE_TOOL_NAMES)
         self.assertIn("sandbox.health", CONTROL_PLANE_TOOL_NAMES)
         self.assertIn("sandbox.get", CONTROL_PLANE_TOOL_NAMES)
 
-    def test_local_repo_file_readers_are_data_plane(self) -> None:
-        self.assertLessEqual(
-            {
-                "storage.upload_file",
-                "feed.post",
-            },
-            DATA_PLANE_TOOL_NAMES,
-        )
+    def test_content_movers_are_control_plane_after_no_dataplane(self) -> None:
+        # feed.post (Phase D.1) and storage.submit/fetch (Phase D storage) used
+        # to read/write local files server-side and so were data-plane. The
+        # no-dataplane transition made all three control tools: the agent's own
+        # curl pushes the bytes to a token-bearer route, never through the proxy.
+        for name in ("feed.post", "storage.submit", "storage.fetch"):
+            self.assertNotIn(name, DATA_PLANE_TOOL_NAMES)
+            self.assertIn(name, CONTROL_PLANE_TOOL_NAMES)
 
     def test_proxy_local_data_plane_dispatches_contract_plane_sets(self) -> None:
         proxy = PROXY_ROOT / "proxy.py"

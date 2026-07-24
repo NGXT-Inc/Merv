@@ -11,8 +11,22 @@ from merv.brain.kernel.state.activity import (
     RESULT_LOG_MAX_BYTES,
     ActivityLogger,
     cap_result,
+    redact_sensitive,
+    scrub_secret_text,
 )
 from merv.brain.surface.control.control_runtime import ControlActivitySink
+
+# A realistic storage.submit result: bytes go direct to S3 via a presigned PUT,
+# and the ledger is finalized through the one-time completion token — both live
+# inside the `run` command string value.
+_PRESIGNED = (
+    "https://bucket.s3.amazonaws.com/proj/abc?"
+    "X-Amz-Algorithm=AWS4-HMAC-SHA256&"
+    "X-Amz-Credential=AKIAEXAMPLE%2F20260723%2Fus-east-1%2Fs3%2Faws4_request&"
+    "X-Amz-Date=20260723T000000Z&X-Amz-Expires=3600&"
+    "X-Amz-SignedHeaders=host&X-Amz-Signature=deadbeefcafef00dsignature"
+)
+_S3_SIG_PARAMS = ("X-Amz-Signature=", "X-Amz-Credential=", "X-Amz-Security-Token=")
 
 
 class CapResultTest(unittest.TestCase):
@@ -42,6 +56,53 @@ class CapResultTest(unittest.TestCase):
             },
         )
         self.assertNotIn("repo_root", cap_result(value=value))
+
+    def test_presigned_url_signature_scrubbed_from_result_values(self) -> None:
+        # INV-12 value-level scrubbing: a presigned S3 URL is a ~1-hour
+        # replayable credential; its SigV4 signature params must never reach the
+        # activity log even when embedded in a string value like `run`.
+        run = (
+            "curl -sf -X PUT -H 'x-amz-checksum-sha256:aGVsbG8=' -T 'model.bin' "
+            f"'{_PRESIGNED}' && curl -sf -X POST "
+            "'http://127.0.0.1:8787/api/storage/u/tok_SECRET/complete'"
+        )
+        value = {"object": {"id": "sto_1"}, "run": run, "upload_id": "upload_1"}
+        scrubbed = cap_result(value=value)
+        serialized = json.dumps(scrubbed)
+        for param in _S3_SIG_PARAMS:
+            self.assertNotIn(param, serialized)
+        # The signed access key id and the completion token are both gone.
+        self.assertNotIn("AKIAEXAMPLE", serialized)
+        self.assertNotIn("tok_SECRET", serialized)
+        # The command structure survives so the log stays legible.
+        self.assertIn("/api/storage/u/<redacted>/complete", scrubbed["run"])
+        self.assertIn("x-amz-checksum-sha256:aGVsbG8=", scrubbed["run"])
+        self.assertEqual(scrubbed["object"], {"id": "sto_1"})
+
+    def test_scrub_secret_text_is_precise(self) -> None:
+        # The SigV4 params are dropped entirely; the URL host/key survives, and
+        # non-token /api paths pass through untouched.
+        cleaned = scrub_secret_text(_PRESIGNED)
+        self.assertNotIn("X-Amz-Signature=", cleaned)
+        self.assertNotIn("X-Amz-Credential=", cleaned)
+        self.assertNotIn("AKIAEXAMPLE", cleaned)
+        self.assertIn("<redacted>", cleaned)
+        self.assertIn("bucket.s3.amazonaws.com/proj/abc", cleaned)
+        self.assertEqual(
+            scrub_secret_text("/api/artifacts/u/tok_x"), "/api/artifacts/u/<redacted>"
+        )
+        # feed.post returns its one-time upload token inside `run`; the value
+        # scrubber must cover /api/feed/u the same as the HTTP-path scrubber, or
+        # the bearer token persists unredacted in tool telemetry (INV-12).
+        self.assertEqual(
+            scrub_secret_text("/api/feed/u/tok_feed"), "/api/feed/u/<redacted>"
+        )
+        self.assertEqual(
+            scrub_secret_text("/api/projects/p_1/storage"), "/api/projects/p_1/storage"
+        )
+        # A plain string with no secrets is returned unchanged (fast path).
+        self.assertEqual(scrub_secret_text("nothing to see"), "nothing to see")
+        self.assertIsInstance(redact_sensitive(value="nothing to see"), str)
 
     def test_truncated_preview_does_not_embed_local_fields(self) -> None:
         value = {

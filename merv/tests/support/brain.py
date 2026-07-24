@@ -13,13 +13,8 @@ from merv.brain.surface.composition import build_local_server
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
-from merv.brain.surface.tools.contracts import (
-    DATA_PLANE_TOOL_NAMES,
-    available_tool_names,
-    static_tool_catalog,
-)
+from merv.brain.surface.tools.contracts import available_tool_names, static_tool_catalog
 from merv.brain.kernel.utils import NotFoundError, ValidationError
-from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 
 
 DEFAULT_PUBLIC_KEY = "ssh-ed25519 " + ("A" * 48) + " test-brain@local"
@@ -31,12 +26,11 @@ def upload_token(run_command: str) -> str:
 
 
 class TestBrain:
-    """Unified localhost brain plus an in-process proxy-local data plane.
+    """Unified localhost brain with test conveniences around control dispatch.
 
     Tests keep the old repo_root/db_path construction convenience, while the
     record/lifecycle brain is the production ControlApp path built by
-    build_local_server. Data-plane tools are routed through LocalDataPlane, the
-    same code the stdio MCP proxy uses on a caller machine.
+    build_local_server.
     """
 
     __test__ = False
@@ -72,7 +66,6 @@ class TestBrain:
         # does not).
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.workspace = SimpleNamespace(repo_root=self.repo_root)
-        self._active_project_id: str | None = None
         self._store = store if store is not None else StateStore(db_path=self.db_path)
         self._blobs = (
             blobs
@@ -97,12 +90,6 @@ class TestBrain:
         self.task_channel = self.server.task_channel
         self.fastapi_app = self.server.fastapi_app
         self._client = TestClient(self.fastapi_app)
-        self._data_plane = LocalDataPlane(
-            repo_root=self.repo_root,
-            project_id_resolver=self._resolve_project_id,
-            control_api_post=self._control_api_post,
-            control_tool_call=self._control_tool_call,
-        )
 
     def _brain_root(self) -> Path:
         if self.db_path.parent.name in PROJECT_STATE_DIR_NAMES:
@@ -132,19 +119,17 @@ class TestBrain:
         telemetry_project_id: str | None = None,
     ) -> dict[str, Any]:
         args = dict(arguments or {})
-        if name in DATA_PLANE_TOOL_NAMES:
-            if name == "sandbox.request":
-                args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
-            with self._project_scope(args.get("project_id")):
-                try:
-                    return self._data_plane.call_tool(name=name, arguments=args)
-                except LocalDataPlaneError as exc:
-                    raise ValidationError(exc.message, details=exc.details) from exc
+        effective_internal_kwargs = dict(internal_kwargs or {})
+        if name == "sandbox.request":
+            args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
+            effective_internal_kwargs.setdefault("include_data_plane_enrichment", False)
+        if name == "sandbox.attach":
+            effective_internal_kwargs.setdefault("include_data_plane_enrichment", False)
         return self._app.tools.call_tool(
             name=name,
             arguments=args,
             activity_source=activity_source,
-            internal_kwargs=internal_kwargs,
+            internal_kwargs=effective_internal_kwargs or None,
             telemetry_project_id=telemetry_project_id,
         )
 
@@ -185,28 +170,35 @@ class TestBrain:
         response = self._client.put(f"/api/artifacts/{kind}/{token}", content=data)
         return self._response_json(response)
 
-    @contextlib.contextmanager
-    def _project_scope(self, project_id: Any):
-        previous = self._active_project_id
-        self._active_project_id = str(project_id) if project_id else None
-        try:
-            yield
-        finally:
-            self._active_project_id = previous
+    def post_feed_media(
+        self,
+        *,
+        project_id: str,
+        handle: str,
+        text: str,
+        data: bytes,
+        image_path: str | None = None,
+        html_path: str | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """The production media-post flow: feed.post mints a token -> curl PUT."""
+        args: dict[str, Any] = {
+            "project_id": project_id,
+            "handle": handle,
+            "text": text,
+            **extra,
+        }
+        if image_path is not None:
+            args["image_path"] = image_path
+        if html_path is not None:
+            args["html_path"] = html_path
+        pending = self.call_tool("feed.post", args)
+        result = self.upload_feed_bytes(token=upload_token(pending["run"]), data=data)
+        return {**result, "post_id": pending["post_id"]}
 
-    def _resolve_project_id(self) -> str | None:
-        if self._active_project_id:
-            return self._active_project_id
-        projects = self._app.http.projects.list_projects()["projects"]
-        if len(projects) == 1:
-            return str(projects[0]["id"])
-        return None
-
-    def _control_tool_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._app.tools.call_tool(name=name, arguments=arguments)
-
-    def _control_api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._response_json(self._client.post(path, json=payload))
+    def upload_feed_bytes(self, *, token: str, data: bytes) -> dict[str, Any]:
+        response = self._client.put(f"/api/feed/u/{token}", content=data)
+        return self._response_json(response)
 
     @staticmethod
     def _response_json(response: Any) -> dict[str, Any]:

@@ -170,7 +170,10 @@ class ToolDispatcher:
             except PydanticValidationError as exc:
                 raise ToolValidationError(
                     _contract_error_message(exc=exc),
-                    details={"tool": name, "errors": exc.errors()},
+                    details={
+                        "tool": name,
+                        "errors": exc.errors(include_context=False),
+                    },
                 ) from exc
             duration_ms = monotonic_ms() - started
             self.activity.tool_ok(

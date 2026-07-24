@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
+import shlex
 import threading
 from contextlib import closing, contextmanager, suppress
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator
 
 from . import sandbox_views
@@ -40,15 +42,61 @@ _DEFAULT_PULL_OUTPUTS = (
     "results.json",
 )
 
+# The path is sent through two command parsers: the caller's local shell and,
+# with legacy rsync argument handling, the sandbox's SSH command shell. Keep
+# caller-controlled names inside a deliberately small, shell-inert ASCII set
+# instead of relying on either rsync peer's version or configuration.
+_SAFE_PULL_OUTPUT_PATH_RE = re.compile(r"[A-Za-z0-9/._-]+\Z")
+_SAFE_SSH_USER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
+
 # Command template a non-local (key) caller runs itself to pull outputs over
 # SSH/rsync. host/port/user/remote-path are filled from sandbox facts; the
 # caller fills <key_path> (its own private key) and <local-destination>. The
 # brain never runs rsync or touches local files (no-dataplane Phase C).
+# --protect-args is the pre-3.2.4 name accepted since rsync 3.0, so it protects
+# remote arguments on older peers that do not yet recognize --secluded-args.
 _RSYNC_PULL_OUTPUTS_TEMPLATE = (
     "rsync -az --itemize-changes --no-links --no-devices --no-specials "
+    "--protect-args "
     '-e "ssh -i <key_path> -p {port} -o StrictHostKeyChecking=no '
-    '-o UserKnownHostsFile=/dev/null" {user}@{host}:{remote} <local-destination>'
+    '-o UserKnownHostsFile=/dev/null" -- {remote_sources} <local-destination>'
 )
+
+
+def _pull_output_sources(
+    *, remote_dir: str, user: str, host: str, paths: list[str]
+) -> list[str]:
+    """Validated, individually shell-quoted rsync remote source arguments."""
+    if user.startswith("-") or _SAFE_SSH_USER_RE.fullmatch(user) is None:
+        raise ValidationError(
+            "sandbox.pull_outputs SSH user must be non-empty and contain only "
+            "ASCII letters, digits, '.', '_', or '-', and must not start with '-'"
+        )
+    root = PurePosixPath(remote_dir)
+    sources: list[str] = []
+    for raw_path in paths:
+        path = str(raw_path)
+        relative = PurePosixPath(path)
+        if not path or relative.is_absolute() or ".." in relative.parts:
+            raise ValidationError(
+                "sandbox.pull_outputs paths must be non-empty relative paths "
+                "without '..' components"
+            )
+        if _SAFE_PULL_OUTPUT_PATH_RE.fullmatch(path) is None:
+            raise ValidationError(
+                "sandbox.pull_outputs paths may contain only ASCII letters, "
+                "digits, '/', '.', '_', and '-' (no whitespace, backslashes, "
+                "or shell metacharacters)"
+            )
+        resolved = root.joinpath(relative)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValidationError(
+                f"sandbox.pull_outputs path escapes experiment_dir: {path}"
+            ) from exc
+        sources.append(shlex.quote(f"{user}@{host}:{resolved}"))
+    return sources
 
 
 class SandboxFacade:
@@ -821,7 +869,7 @@ class SandboxFacade:
             "pending_release": pending,
             "hint": f"Not released yet. This will permanently destroy {count} {noun} and everything on the VM. First confirm you have retained everything you need: rsync the light files you want off the box yourself over SSH into the local work folder"
             + (
-                f", and storage.upload_file for durable heavy artifacts. {self.storage_hint}"
+                f", and storage.submit for durable heavy artifacts. {self.storage_hint}"
                 if self.storage_enabled
                 else "; heavy-file storage is not enabled on this backend"
             )
@@ -920,13 +968,15 @@ class SandboxFacade:
                     "sandbox to reach status 'running', then re-call."
                 ),
             }
-        wanted = [str(p).strip() for p in (paths or []) if str(p).strip()] or list(
-            _DEFAULT_PULL_OUTPUTS
+        wanted = list(paths) if paths else list(_DEFAULT_PULL_OUTPUTS)
+        remote_sources = _pull_output_sources(
+            remote_dir=remote_dir,
+            user=user,
+            host=host,
+            paths=wanted,
         )
-        remote_spec = " ".join(f"{remote_dir}/{p.lstrip('/')}" for p in wanted)
-        quoted_remote = f"'{remote_spec}'" if len(wanted) > 1 else remote_spec
         rsync = _RSYNC_PULL_OUTPUTS_TEMPLATE.format(
-            port=port, user=user, host=host, remote=quoted_remote
+            port=port, remote_sources=" ".join(remote_sources)
         )
         view = {
             "sandbox_uid": facts.get("sandbox_uid"),

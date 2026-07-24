@@ -19,7 +19,7 @@ from ....kernel.utils import (
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
 from ...auth import UnauthorizedError
 from ...identity import (
-    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key, is_local_principal,
+    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_local_principal,
 )
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.tool_facade import ToolDispatcher
@@ -29,7 +29,6 @@ from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (GLOBAL_MUTATOR_PREFIXES, is_local_origin,
                      open_hosted_operator_denial, operator_denial)
 from . import oauth, project_keys, sdk_auth
-from .sandbox_control import KEY_SANDBOX_CONTROL_TOOLS, serve_key_sandbox
 
 
 @dataclass(frozen=True)
@@ -48,11 +47,12 @@ class RequestAuthenticator:
         request.state.principal = LOCAL_PRINCIPAL
         request.state.authenticated = False
         path = request.url.path
-        if (
-            path in ("/health", "/api/meta", "/internal/auth/mlflow")
-            or path.startswith(("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/"))
-            or oauth.public_request(request, enabled=self.oauth_enabled)
-        ):
+        # Token-bearer routes carry their own credential (INV-12).
+        exempt = ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/",
+                  "/api/feed/u/", "/api/storage/u/")
+        if (path in ("/health", "/api/meta", "/internal/auth/mlflow")
+                or path.startswith(exempt)
+                or oauth.public_request(request, enabled=self.oauth_enabled)):
             return None
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
         if (
@@ -196,24 +196,6 @@ class ToolInvocationGateway:
                 details={"field": "context.repo_root",
                          "reason": "repo_root_hidden_from_cloud"},
             )
-        if contract is not None and contract.plane == "data":
-            # A project-scoped mk_ key reaches sandbox request/attach/pull_outputs
-            # over the control path (project-shared ruling 7): a cloud agent has
-            # no local proxy. Every other data tool (storage/feed/materialize)
-            # still requires the proxy until Phase D.
-            if name in KEY_SANDBOX_CONTROL_TOOLS and is_external_key(principal):
-                return serve_key_sandbox(
-                    sandboxes=self.sandboxes,
-                    projects=self.projects,
-                    name=name,
-                    arguments=arguments,
-                    principal=principal,
-                )
-            raise DataPlaneRequiredError(
-                f"{name} requires the local MCP proxy; hosted control mode cannot read "
-                "local files, hold user SSH keys, or run rsync",
-                details={"tool": name, "reason": "requires_local_data_plane"},
-            )
         for scope in (arguments.get("project_id"), project_scope):
             self.projects.require_member(project_id=scope, principal=principal)
         user_id = self.projects.user_id(principal)
@@ -224,10 +206,21 @@ class ToolInvocationGateway:
         internal_kwargs = None
         if user_id and name in ("project", "project.list"):
             internal_kwargs = {"user_id": user_id}
-            if key_project_id and name == "project.list":
-                internal_kwargs["project_id"] = key_project_id  # bound project only
-        if name == "artifact.submit" and base_url:
+            if key_project_id:  # list -> scope to bound project; project -> pass through
+                internal_kwargs["project_id" if name == "project.list" else "key_project_id"] = key_project_id
+        if name in ("artifact.submit", "feed.post", "storage.submit") and base_url:
+            # Each renders a token-curl one-liner against the caller-reachable base.
             internal_kwargs = {"base_url": base_url}
+        if name == "sandbox.request":
+            internal_kwargs = {
+                "provisioning_user_id": user_id,
+                "provisioning_key_id": str(
+                    getattr(principal, "key_id", "") or ""
+                ),
+                "include_data_plane_enrichment": False,
+            }
+        if name == "sandbox.attach":
+            internal_kwargs = {"include_data_plane_enrichment": False}
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if self.surface.use_hosted_tool_policies

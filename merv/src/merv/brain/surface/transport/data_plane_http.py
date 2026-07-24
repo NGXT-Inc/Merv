@@ -7,13 +7,11 @@ import binascii
 from typing import Any
 
 from fastapi import Body, Request
-from merv.shared.tool_validation import validate_openssh_public_key
 from merv.shared.feed_embeds import MAX_FEED_EMBED_BYTES
 from merv.shared.feed_images import MAX_FEED_IMAGE_BYTES
 
 from ...feed.facade import FeedDelivery
 from ...kernel.utils import ValidationError
-from ...sandbox.facade import SandboxFacade
 from .api.dependencies import AuthorizeProject
 
 JsonBody = dict[str, Any] | None
@@ -52,7 +50,6 @@ def register_data_plane_routes(
     *,
     authorize_project: AuthorizeProject,
     feed: FeedDelivery,
-    sandboxes: SandboxFacade,
 ) -> None:
     @http.post("/api/data-plane/feed/validate-post")
     def data_plane_validate_feed_post(
@@ -68,53 +65,6 @@ def register_data_plane_routes(
             ref=payload.get("ref"),
             kind=payload.get("kind"),
             in_reply_to=payload.get("in_reply_to"),
-        )
-
-    @http.post("/api/data-plane/sandboxes/request")
-    def data_plane_request_sandbox(
-        request: Request, body: JsonBody = Body(default=None)
-    ) -> dict[str, Any]:
-        payload = body or {}
-        project_id = _required_text(payload, "project_id")
-        public_key = validate_openssh_public_key(_required_text(payload, "public_key"))
-        if not public_key:
-            raise ValidationError("public_key is required for sandbox.request")
-        experiment_id = str(payload.get("experiment_id") or "").strip()
-        authorize_project(request, project_id)
-        return sandboxes.request_from_data_plane(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            public_key=public_key,
-            gpu=payload.get("gpu"),
-            cpu=payload.get("cpu"),
-            memory=payload.get("memory"),
-            time_limit=payload.get("time_limit"),
-            instance_type=payload.get("instance_type"),
-            region=payload.get("region"),
-            provider=payload.get("provider"),
-            additional=bool(payload.get("additional")),
-            sandbox_uid=payload.get("sandbox_uid"),
-            # Resolve the local-proxy user's own HF token (no-dataplane Phase C);
-            # the deployment-wide HF fallback is gone.
-            provisioning_user_id=str(
-                getattr(getattr(request.state, "principal", None), "user_id", "") or ""
-            ),
-        )
-
-    @http.post("/api/data-plane/sandboxes/attach")
-    def data_plane_attach_sandbox(
-        request: Request, body: JsonBody = Body(default=None)
-    ) -> dict[str, Any]:
-        payload = body or {}
-        project_id = _required_text(payload, "project_id")
-        experiment_id = _required_text(payload, "experiment_id")
-        sandbox_uid = _required_text(payload, "sandbox_uid")
-        authorize_project(request, project_id)
-        return sandboxes.attach_from_data_plane(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            sandbox_uid=sandbox_uid,
-            public_key=str(payload.get("public_key") or ""),
         )
 
     @http.post("/api/data-plane/feed/post")

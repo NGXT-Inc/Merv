@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import secrets
 from contextlib import closing
 from datetime import datetime
 from typing import Any
@@ -31,14 +33,74 @@ STORAGE_KINDS = {"dataset", "model", "other"}
 STORAGE_STATUSES = {"uploading", "completing", "available", "expired", "deleted"}
 STORAGE_DEFAULT_TTL_SECONDS = 60 * 24 * 3600
 PRESIGN_TTL_SECONDS = 3600
+# S3's hard per-object single-PUT limit. storage.submit's token-curl command is
+# one presigned PUT, so anything larger is rejected (multipart orchestration is a
+# documented v1 non-goal).
+SINGLE_PUT_MAX_BYTES = 5 * 1024 * 1024 * 1024
+# Absolute server-side upload ceiling; composition overrides from the env.
+DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024 * 1024
+# One-time completion token lifetime — outlives the 1-hour presigned PUT window
+# plus the trailing completion POST.
+COMPLETION_TOKEN_TTL_SECONDS = PRESIGN_TTL_SECONDS + 3600
+_LOCAL_API_BASE = "http://127.0.0.1:8787"
+
+
+def _shell_quote(value: str) -> str:
+    """POSIX single-quote — the agent runs the command verbatim in a shell."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _checksum_sha256_b64(sha256: str) -> str:
+    """base64(SHA-256 raw bytes): the value S3 binds into the presigned PUT and
+    the agent must echo in the x-amz-checksum-sha256 header."""
+    return base64.b64encode(bytes.fromhex(sha256)).decode("ascii")
+
+
+def storage_submit_command(
+    *, base_url: str, path: str, presigned_url: str, checksum_b64: str,
+    content_type: str, token: str
+) -> str:
+    """Compound one-liner: push the bytes straight to S3, then finalize the
+    ledger object through the auth-exempt completion token. Bytes go direct to
+    S3 — never through the brain. Both the checksum AND the Content-Type are
+    bound into the presigned PUT's SigV4 signature, so the curl MUST send both
+    headers verbatim or S3 rejects the upload with SignatureDoesNotMatch."""
+    base = (base_url or _LOCAL_API_BASE).rstrip("/")
+    # content_type is caller-supplied free text, so the header MUST be
+    # _shell_quote'd as a whole (not wrapped in literal quotes) or a value like
+    # `x' ; rm -rf ~ ; echo '` injects commands into the one-liner the agent
+    # runs verbatim. The checksum is base64 (shell-safe) but quoted for symmetry.
+    checksum_header = _shell_quote(f"x-amz-checksum-sha256:{checksum_b64}")
+    content_type_header = _shell_quote(f"Content-Type: {content_type}")
+    put = (
+        f"curl -sf -X PUT -H {checksum_header} -H {content_type_header} "
+        f"-T {_shell_quote(path)} {_shell_quote(presigned_url)}"
+    )
+    complete = f"curl -sf -X POST {_shell_quote(f'{base}/api/storage/u/{token}/complete')}"
+    return f"{put} && {complete}"
+
+
+def storage_fetch_command(*, path: str, presigned_url: str, sha256: str) -> str:
+    """Download straight from S3, then verify the sha256 the ledger already
+    holds. Zero new server capability."""
+    fetch = f"curl -sf -o {_shell_quote(path)} {_shell_quote(presigned_url)}"
+    verify = f"printf '%s  %s\\n' {sha256} {_shell_quote(path)} | shasum -a 256 -c"
+    return f"{fetch} && {verify}"
 
 
 class StorageLedgerService:
     """Ledger + lifecycle owner for project-scoped heavy objects."""
 
-    def __init__(self, *, store: BaseStateStore, objects: ObjectStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: BaseStateStore,
+        objects: ObjectStore,
+        max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
+    ) -> None:
         self.store = store
         self.objects = objects
+        self.max_upload_bytes = int(max_upload_bytes)
 
     def put_object(
         self,
@@ -137,39 +199,72 @@ class StorageLedgerService:
         upload_id: str,
         parts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        recovering = False
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            # Reserve the row before touching bytes so delete cannot orphan a completion.
-            cursor = conn.execute(
-                """
-                UPDATE storage_objects
-                SET status = 'completing', updated_at = ?
-                WHERE project_id = ? AND upload_id = ? AND status = 'uploading'
-                """,
-                (now_iso(), project_id, upload_id),
-            )
-            if int(getattr(cursor, "rowcount", 0)) != 1:
-                raise NotFoundError(
-                    f"upload not found in project {project_id}: {upload_id}"
-                )
             row = self._get_by_upload(
                 conn=conn, project_id=project_id, upload_id=upload_id
             )
-        try:
-            stat = self.objects.complete_upload(upload_id=upload_id, parts=parts)
-        except Exception:
-            with self.store.transaction() as conn:
-                project_id = self.store.require_project_id(
-                    conn=conn, project_id=project_id
-                )
-                conn.execute(
+            status = str(row["status"])
+            if status == "uploading":
+                # Reserve the row before touching bytes so delete cannot orphan
+                # a completion.
+                cursor = conn.execute(
                     """
                     UPDATE storage_objects
-                    SET status = 'uploading', updated_at = ?
-                    WHERE project_id = ? AND upload_id = ? AND status = 'completing'
+                    SET status = 'completing', updated_at = ?
+                    WHERE project_id = ? AND upload_id = ? AND status = 'uploading'
                     """,
                     (now_iso(), project_id, upload_id),
                 )
+                if int(getattr(cursor, "rowcount", 0)) != 1:
+                    raise NotFoundError(
+                        f"upload not found in project {project_id}: {upload_id}"
+                    )
+                row = self._get_by_upload(
+                    conn=conn, project_id=project_id, upload_id=upload_id
+                )
+            elif status == "completing":
+                recovering = True
+            else:
+                raise NotFoundError(
+                    f"upload not found in project {project_id}: {upload_id}"
+                )
+        try:
+            if recovering:
+                # The provider may already have verified the immutable object
+                # and consumed its upload sidecar before a process crash. Re-stat
+                # by ledger identity so a retry can converge without that
+                # single-use sidecar.
+                stat = self.objects.stat(
+                    namespace=str(row["namespace"]),
+                    sha256=str(row["content_sha256"]),
+                )
+                if stat is None:
+                    raise NotFoundError(
+                        f"completed object not found for upload: {upload_id}"
+                    )
+                if int(stat.size_bytes) != int(row["size_bytes"]):
+                    raise ValidationError(
+                        f"completed object size mismatch for upload {upload_id}: "
+                        f"{stat.size_bytes} != {row['size_bytes']} bytes"
+                    )
+            else:
+                stat = self.objects.complete_upload(upload_id=upload_id, parts=parts)
+        except Exception:
+            if not recovering:
+                with self.store.transaction() as conn:
+                    project_id = self.store.require_project_id(
+                        conn=conn, project_id=project_id
+                    )
+                    conn.execute(
+                        """
+                        UPDATE storage_objects
+                        SET status = 'uploading', updated_at = ?
+                        WHERE project_id = ? AND upload_id = ? AND status = 'completing'
+                        """,
+                        (now_iso(), project_id, upload_id),
+                    )
             raise
         if str(stat.namespace) != str(row["namespace"]) or str(stat.sha256) != str(
             row["content_sha256"]
@@ -221,6 +316,146 @@ class StorageLedgerService:
                 sha256=str(row["content_sha256"]),
             )
             raise
+
+    def submit(
+        self,
+        *,
+        project_id: str | None,
+        path: str,
+        kind: str,
+        sha256: str,
+        size_bytes: int,
+        name: str = "",
+        content_type: str = "",
+        created_by: str = "agent",
+        producing_experiment_id: str = "",
+        producing_run: str = "",
+        source_uri: str = "",
+        notes: str = "",
+        base_url: str = "",
+    ) -> dict[str, Any]:
+        """Register a heavy object and return the token-curl command that pushes
+        its bytes straight to S3 and finalizes the ledger row.
+
+        The advisory client sha feeds the existing name+sha dedup; identity is
+        still enforced server-side by the presigned checksum and the completion
+        head-verify. Bytes never transit the brain (fatal for multi-GB)."""
+        if not str(path).strip():
+            raise ValidationError("path is required (the local file to upload)")
+        self._enforce_upload_size(size_bytes=int(size_bytes))
+        content_type = content_type or "application/octet-stream"
+        registered = self.put_object(
+            project_id=project_id,
+            name=str(name).strip() or str(path).strip(),
+            kind=kind,
+            sha256=sha256,
+            size_bytes=int(size_bytes),
+            content_type=content_type,
+            created_by=created_by,
+            producing_experiment_id=producing_experiment_id,
+            producing_run=producing_run,
+            source_uri=source_uri,
+            notes=notes,
+        )
+        obj = registered["object"]
+        upload = registered.get("upload")
+        if upload is None:
+            # The advisory sha matched content already present (name+sha or
+            # physical dedup): the object is available, nothing to upload.
+            return {
+                "object": obj,
+                "uploaded": True,
+                "deduped": bool(registered.get("deduped")),
+                "idempotent": bool(registered.get("idempotent")),
+                "run": "",
+            }
+        if "url" not in upload:
+            # The single-PUT command cannot drive a multipart presign; the size
+            # guard should have caught this, so only a store configured with a
+            # sub-5 GiB multipart threshold reaches here.
+            raise ValidationError(
+                "this object needs a multipart upload, unsupported by the v1 "
+                "token-curl command — reduce the file below the single-PUT "
+                "ceiling or configure the store for single-PUT",
+                details={"size_bytes": int(size_bytes)},
+            )
+        token = self._mint_completion_token(
+            project_id=str(obj["project_id"]),
+            object_id=str(obj["id"]),
+            upload_id=str(upload["upload_id"]),
+        )
+        run = storage_submit_command(
+            base_url=base_url,
+            path=str(path),
+            presigned_url=str(upload["url"]),
+            checksum_b64=_checksum_sha256_b64(sha256),
+            content_type=str(upload.get("content_type") or content_type),
+            token=token,
+        )
+        return {
+            "object": obj,
+            "upload_id": str(upload["upload_id"]),
+            "uploaded": False,
+            "run": run,
+        }
+
+    def fetch(
+        self,
+        *,
+        project_id: str | None,
+        path: str,
+        object_id: str | None = None,
+        name: str | None = None,
+        version: int | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a storage object and return the curl-download + sha256-verify
+        command, built entirely from the ledger row (content_sha256 is already
+        stored). Zero new server capability."""
+        if not str(path).strip():
+            raise ValidationError("path is required (the local destination file)")
+        resolved = self.resolve(
+            project_id=project_id,
+            object_id=object_id,
+            name=name,
+            version=version,
+            include_download=True,
+        )
+        obj = resolved["object"]
+        run = storage_fetch_command(
+            path=str(path),
+            presigned_url=str(resolved["download"]["url"]),
+            sha256=str(obj["content_sha256"]),
+        )
+        return {"object": obj, "run": run}
+
+    def complete_via_token(self, *, token: str) -> dict[str, Any]:
+        """Finalize a pending upload named by a one-time completion token.
+
+        Token-first: an unknown/expired/consumed token raises NotFoundError (404)
+        before any object work. Single-use: the row is deleted once the
+        head-verify completion succeeds, so a transient pre-upload failure can be
+        retried within the TTL. This is the ONLY wire-reachable completion for a
+        key agent — storage.complete_upload stays internal + MCP-403'd."""
+        self._sweep_completion_tokens()
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT project_id, upload_id
+                FROM storage_completion_tokens
+                WHERE token = ? AND status = 'pending' AND expires_at > ?
+                """,
+                (token, now_iso()),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("unknown, used, or expired storage completion token")
+        completed = self.complete_upload(
+            project_id=str(row["project_id"]), upload_id=str(row["upload_id"])
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM storage_completion_tokens WHERE token = ?", (token,)
+            )
+        return {"object": completed}
 
     def list_objects(
         self,
@@ -631,6 +866,53 @@ class StorageLedgerService:
             },
         )
 
+    def _enforce_upload_size(self, *, size_bytes: int) -> None:
+        if size_bytes < 0:
+            raise ValidationError("size_bytes must be non-negative")
+        if size_bytes > self.max_upload_bytes:
+            raise ValidationError(
+                f"upload is {size_bytes} bytes; the maximum is "
+                f"{self.max_upload_bytes} bytes on this backend",
+                details={"size_bytes": size_bytes, "max_bytes": self.max_upload_bytes},
+            )
+        if size_bytes > SINGLE_PUT_MAX_BYTES:
+            raise ValidationError(
+                f"upload is {size_bytes} bytes; single-PUT storage submission "
+                f"supports up to {SINGLE_PUT_MAX_BYTES} bytes — multipart uploads "
+                "for larger objects are unsupported in v1",
+                details={"size_bytes": size_bytes, "max_bytes": SINGLE_PUT_MAX_BYTES},
+            )
+
+    def _mint_completion_token(
+        self, *, project_id: str, object_id: str, upload_id: str
+    ) -> str:
+        token = secrets.token_urlsafe(24)
+        with self.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO storage_completion_tokens
+                  (token, project_id, object_id, upload_id, status, expires_at, created_at)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    token,
+                    project_id,
+                    object_id,
+                    upload_id,
+                    iso_after(seconds=COMPLETION_TOKEN_TTL_SECONDS),
+                    now_iso(),
+                ),
+            )
+        return token
+
+    def _sweep_completion_tokens(self) -> None:
+        """Own transaction so the sweep survives a failing completion path."""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM storage_completion_tokens WHERE expires_at < ?",
+                (now_iso(),),
+            )
+
     def _namespace(self, *, project_id: str) -> str:
         # Tenant-prefixing belongs to Phase 3 composition/config wiring.
         return project_id
@@ -676,8 +958,13 @@ class StorageLedgerService:
 
 
 __all__ = [
+    "COMPLETION_TOKEN_TTL_SECONDS",
+    "DEFAULT_MAX_UPLOAD_BYTES",
     "PRESIGN_TTL_SECONDS",
+    "SINGLE_PUT_MAX_BYTES",
     "STORAGE_DEFAULT_TTL_SECONDS",
     "STORAGE_KINDS",
     "StorageLedgerService",
+    "storage_fetch_command",
+    "storage_submit_command",
 ]

@@ -139,10 +139,10 @@ class ProjectInput(ContractModel):
     @model_validator(mode="after")
     def _check_action(self) -> "ProjectInput":
         if self.action in ("current", "overview"):
-            # Neither carries an agent payload. current is fully proxy-served;
-            # overview is proxy-served too but the proxy injects the resolved
-            # project_id as scope before forwarding, so project_id is the one
-            # field overview tolerates (the agent still never supplies it).
+            # Neither carries an agent payload. A local proxy resolves both from
+            # its folder link; a keyed cloud caller reaches the brain, which
+            # resolves them from the key's bound project. overview tolerates an
+            # explicit project_id (the agent still never supplies it locally).
             forbidden = ["name", "summary", "overwrite"]
             if self.action == "current":
                 forbidden = ["project_id", *forbidden]
@@ -265,35 +265,6 @@ class ExperimentGetStateInput(ProjectScopedInput):
 
 class ExperimentExhibitInput(ProjectScopedInput):
     experiment_id: str
-
-
-class ExperimentMaterializeFoldersInput(ProjectScopedInput):
-    experiment_id: str | None = Field(
-        default=None,
-        description=(
-            "Optional experiment id. When provided, materialize only that "
-            "experiment's folder regardless of status."
-        ),
-    )
-    status: (
-        Literal[
-            "planned",
-            "design_review",
-            "ready_to_run",
-            "running",
-            "experiment_review",
-            "complete",
-            "failed",
-            "abandoned",
-        ]
-        | None
-    ) = Field(
-        default="planned",
-        description=(
-            "When experiment_id is omitted, materialize experiments with this "
-            "status. Null materializes every experiment in the project."
-        ),
-    )
 
 
 class ExperimentTransitionInput(ProjectScopedInput):
@@ -469,23 +440,44 @@ class StoragePutObjectInput(ProjectScopedInput):
     notes: str = ""
 
 
-class StorageUploadFileInput(ProjectScopedInput):
+class StorageSubmitInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Repo-relative file path to upload ('..' and absolute paths are "
-            "rejected)."
+            "Local file path to upload. Embedded verbatim into the returned "
+            "`curl -T` command (which you run) and the default object name."
         )
     )
     kind: Literal["dataset", "model", "other"]
+    sha256: str = Field(
+        description=(
+            "Client-computed SHA-256 (hex) of the file. Feeds name+sha dedup and "
+            "is bound into the presigned checksum; identity is re-verified on "
+            "completion."
+        )
+    )
+    size_bytes: int = Field(
+        ge=0,
+        description="File size in bytes; presigns the upload and enforces the size cap.",
+    )
     name: str = Field(
         default="",
-        description="Optional storage object name. Defaults to the repo-relative path.",
+        description="Optional storage object name. Defaults to the path.",
     )
     content_type: str = ""
     producing_experiment_id: str = ""
     producing_run: str = ""
     source_uri: str = ""
     notes: str = ""
+
+    @field_validator("content_type")
+    @classmethod
+    def _content_type_has_no_control_chars(cls, value: str) -> str:
+        # content_type rides into a shell one-liner (shell-quoted there) and an
+        # HTTP header; reject control chars so it can never inject a header line
+        # or a raw newline into the returned curl command.
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+            raise ValueError("content_type must not contain control characters")
+        return value
 
 
 class StorageCompleteUploadInput(ProjectScopedInput):
@@ -527,19 +519,16 @@ class StorageFindInput(ProjectScopedInput):
         return self
 
 
-class StorageDownloadFileInput(ProjectScopedInput):
+class StorageFetchInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Repo-relative destination path ('..' and absolute paths are " "rejected)."
+            "Local destination path. Embedded verbatim into the returned "
+            "`curl -o` command, which you run."
         )
     )
     object_id: str | None = None
     name: str | None = None
     version: int | None = Field(default=None, ge=1)
-    overwrite: bool = Field(
-        default=False,
-        description="Refuse to replace an existing local file unless true.",
-    )
 
 
 class StorageObjectInput(ProjectScopedInput):
@@ -759,31 +748,9 @@ class SandboxPullOutputsInput(ProjectScopedInput):
     paths: list[str] = Field(
         default_factory=list,
         description=(
-            "Repo-relative paths under the sandbox experiment_dir to pull. Omit "
-            "to pull existing common outputs: results/, figures/, report.md, "
-            "graph.json, metrics.json, and results.json."
-        ),
-    )
-    key_path: str = Field(
-        default="",
-        description=(
-            "Local private key path for the caller-owned public_key authorized "
-            "on the sandbox. Required when sandbox.get does not include an "
-            "ssh.key_path enrichment."
-        ),
-    )
-    destination_path: str = Field(
-        default="",
-        description=(
-            "Repo-relative local destination directory. Defaults to the "
-            "sandbox's local_experiment_dir."
-        ),
-    )
-    overwrite: bool = Field(
-        default=False,
-        description=(
-            "When false, existing local files are preserved/refused. Set true "
-            "only when replacing local retained outputs is intentional."
+            "Paths under the sandbox experiment_dir to include in the returned "
+            "rsync command. Omit to use common retained outputs: results/, "
+            "figures/, report.md, graph.json, metrics.json, and results.json."
         ),
     )
 
@@ -1130,17 +1097,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "any plugin-created 'mlflow_run' identity for quantitative logging."
         ),
     ),
-    "experiment.materialize_folders": ToolContract(
-        handler_identity="local.materialize_experiment_folders",
-        execution_strategy="local-orchestration",
-        input_model=ExperimentMaterializeFoldersInput,
-        description=(
-            "Create canonical local experiment folders under experiments/<name>/ "
-            "for a project. Use after reflection publish or experiment.create "
-            "when planned experiments exist in state but their local folders do "
-            "not yet exist."
-        ),
-    ),
     "experiment.transition": ToolContract(
         handler_identity="experiment_transition.agent",
         input_model=ExperimentTransitionInput,
@@ -1320,15 +1276,16 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             f"{STORAGE_RULE_OF_THUMB}"
         ),
     ),
-    "storage.upload_file": ToolContract(
-        handler_identity="local.upload_storage_file",
-        execution_strategy="local-orchestration",
+    "storage.submit": ToolContract(
+        handler_identity="storage.submit",
         feature_requirements=("storage",),
-        input_model=StorageUploadFileInput,
+        input_model=StorageSubmitInput,
         description=(
-            "Upload a local file to durable storage and complete the ledger "
-            "object in one call. Relative paths are resolved against the "
-            "project repo root; omit name to use the repo-relative path. "
+            "Register a heavy file and get a one-line `run` command to upload it. "
+            "Compute the file's sha256 and size, call this, then execute the "
+            "returned command verbatim — it PUTs the bytes straight to object "
+            "storage and finalizes the ledger object (bytes never pass through "
+            "the agent context or the brain). Omit name to use the path. "
             f"{STORAGE_RULE_OF_THUMB}"
         ),
     ),
@@ -1352,14 +1309,15 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "pass compact=true for a lean projection."
         ),
     ),
-    "storage.download_file": ToolContract(
-        handler_identity="local.download_storage_file",
-        execution_strategy="local-orchestration",
+    "storage.fetch": ToolContract(
+        handler_identity="storage.fetch",
         feature_requirements=("storage",),
-        input_model=StorageDownloadFileInput,
+        input_model=StorageFetchInput,
         description=(
-            "Resolve a storage object and download it to a local file, verifying "
-            "size and sha256 before replacing the destination."
+            "Resolve a storage object and get a one-line `run` command to "
+            "download it. Pass object_id or name (with optional version), then "
+            "execute the returned command verbatim — it curls the bytes to your "
+            "path and verifies the stored sha256."
         ),
     ),
     "storage.object": ToolContract(
@@ -1422,8 +1380,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "sandbox.request": ToolContract(
-        handler_identity="local.request_sandbox",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.request",
+        execution_strategy="control",
         input_model=SandboxRequestInput,
         description=(
             "Procure (reuse or create) a project sandbox, optionally attached to "
@@ -1438,9 +1396,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "only the single-line OpenSSH PUBLIC key as public_key so it gets "
             "authorized on the VM. Never send private-key material. "
             "The response's persisted public_key_source is 'caller' for new "
-            "requests; legacy 'managed' rows remain readable/releasable. "
-            "ssh.key_path appears only when a local proxy enrichment knows the "
-            "private key path."
+            "requests; legacy 'managed' rows remain readable/releasable."
         ),
     ),
     "sandbox.options": ToolContract(
@@ -1467,8 +1423,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         hosted_control_sandbox_lookup=True,
     ),
     "sandbox.attach": ToolContract(
-        handler_identity="local.attach_sandbox",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.attach",
+        execution_strategy="control",
         input_model=SandboxAttachInput,
         description=(
             "Associate an existing running sandbox with an experiment without "
@@ -1477,22 +1433,16 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "sandbox.pull_outputs": ToolContract(
-        handler_identity="local.pull_sandbox_outputs",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.pull_outputs_command",
+        execution_strategy="control",
         input_model=SandboxPullOutputsInput,
         description=(
-            "Copy selected files or directories from a running sandbox's remote "
-            "experiment_dir into the local experiment folder over SSH/rsync. "
-            "This is a proxy-local data tool: pass key_path for the caller-owned "
-            "private key when sandbox.get does not already include ssh.key_path. "
-            "Use object storage tools for heavy artifacts. Use this before "
-            "artifact.submit or sandbox.release; "
-            "omit paths to pull common retained outputs. "
-            "Existing local files are kept unless overwrite=true — ones that "
-            "differ from the sandbox are reported in files_kept_stale, so check "
-            "it before submitting results from a re-run. Remote symlinks and "
-            "device nodes are never recreated locally. One failing path is "
-            "reported in errors/paths_failed without discarding the rest."
+            "Return a filled rsync command for selected files or directories "
+            "under a running sandbox's experiment_dir. The calling agent runs "
+            "the command itself with its own SSH key and local destination; "
+            "bytes move directly from the sandbox to the caller. Use object "
+            "storage tools for heavy artifacts. Use this before artifact.submit "
+            "or sandbox.release; omit paths to pull common retained outputs."
         ),
     ),
     "sandbox.list": ToolContract(

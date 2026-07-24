@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -15,8 +13,7 @@ from tests.support.brain import TestBrain
 from merv.brain.surface.control.control_runtime import ControlTaskChannel
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
-from merv.shared.errors import ValidationError
-from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
+from merv.proxy.errors import UpstreamError
 from merv.proxy.project_links import ProjectLinks
 from merv.proxy.proxy import HttpProxyMcpServer, ProxyConfig
 
@@ -40,7 +37,17 @@ class _ControlHarness:
         self, *, url: str, payload: dict, is_cloud: bool, timeout=None
     ) -> dict:  # noqa: ANN001, ARG002
         response = self.client.post(urlsplit(url).path, json=payload)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            body = response.json()
+            raise UpstreamError(
+                str(body.get("detail") or response.text),
+                error_code=str(body.get("error_code") or "upstream_http_error"),
+                details={
+                    key: value
+                    for key, value in body.items()
+                    if key not in {"detail", "error_code"}
+                },
+            )
         return response.json()
 
 
@@ -53,17 +60,7 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _plane(
-        self, *, api_post=None, tool_call=None
-    ) -> LocalDataPlane:  # noqa: ANN001
-        return LocalDataPlane(
-            repo_root=self.repo,
-            project_id_resolver=lambda: self.project_id,
-            control_api_post=api_post or (lambda _path, _payload: {}),
-            control_tool_call=tool_call or (lambda _name, _args: {}),
-        )
-
-    def test_proxy_local_catalog_advertises_data_and_enriched_control_tools(
+    def test_proxy_local_catalog_advertises_only_enriched_control_tools(
         self,
     ) -> None:
         proxy = HttpProxyMcpServer(
@@ -75,92 +72,10 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
         local_names = {tool["name"] for tool in proxy._local_tool_catalog()}
 
         self.assertIn("sandbox.get", local_names)
-        self.assertIn("sandbox.pull_outputs", local_names)
+        self.assertNotIn("sandbox.request", local_names)
+        self.assertNotIn("sandbox.attach", local_names)
+        self.assertNotIn("sandbox.pull_outputs", local_names)
         self.assertNotIn("claim.create", local_names)
-
-    def test_experiment_materialize_folders_uses_linked_project(self) -> None:
-        captured: list[tuple[str, dict]] = []
-
-        def tool_call(name: str, args: dict) -> dict:
-            captured.append((name, args))
-            return {
-                "experiments": [
-                    {"id": "exp_1", "name": "alpha", "status": "planned"},
-                    {"id": "exp_2", "name": "beta", "status": "complete"},
-                ]
-            }
-
-        result = self._plane(tool_call=tool_call).call_tool(
-            name="experiment.materialize_folders",
-            arguments={"status": "planned"},
-        )
-
-        self.assertEqual(
-            captured, [("experiment.list", {"project_id": self.project_id})]
-        )
-        self.assertEqual(
-            result["folders"],
-            [
-                {
-                    "experiment_id": "exp_1",
-                    "name": "alpha",
-                    "status": "planned",
-                    "folder": "experiments/alpha/",
-                    "created": True,
-                }
-            ],
-        )
-        self.assertTrue((self.repo / "experiments" / "alpha").is_dir())
-
-    def test_pull_outputs_runs_rsync_helper_with_caller_key_path(self) -> None:
-        def tool_call(name: str, args: dict) -> dict:
-            self.assertEqual(name, "sandbox.get")
-            return {
-                "experiment_id": "exp_1",
-                "sandbox_uid": args["sandbox_uid"],
-                "status": "running",
-                "experiment_dir": "/remote/exp",
-                "ssh": {"host": "example.test", "port": 22, "user": "root"},
-            }
-
-        with patch(
-            "merv.proxy.dataplane.sandbox_outputs.pull_sandbox_outputs",
-            return_value={"ok": True, "copied": []},
-        ) as pull:
-            result = self._plane(tool_call=tool_call).call_tool(
-                name="sandbox.pull_outputs",
-                arguments={"sandbox_uid": "sbx_1", "key_path": "/tmp/rp-test-key"},
-            )
-
-        self.assertTrue(result["ok"])
-        self.assertIn("--no-links --no-devices --no-specials", result["rsync"])
-        self.assertEqual(
-            pull.call_args.kwargs["sandbox"]["ssh"]["key_path"],
-            "/tmp/rp-test-key",
-        )
-
-    def test_sandbox_request_requires_public_key_before_control_submit(self) -> None:
-        plane = self._plane(
-            api_post=lambda _path, _payload: self.fail("unexpected HTTP")
-        )
-
-        with self.assertRaises(LocalDataPlaneError) as ctx:
-            plane.call_tool(name="sandbox.request", arguments={})
-
-        self.assertEqual(ctx.exception.error_code, "public_key_required")
-
-    def test_sandbox_request_rejects_private_key_before_control_submit(self) -> None:
-        plane = self._plane(
-            api_post=lambda _path, _payload: self.fail("unexpected HTTP")
-        )
-
-        with self.assertRaises(LocalDataPlaneError) as ctx:
-            plane.call_tool(
-                name="sandbox.request",
-                arguments={"public_key": "-----BEGIN OPENSSH PRIVATE KEY-----"},
-            )
-
-        self.assertIn("private-key", str(ctx.exception).lower())
 
     def test_control_task_teardown_noops_without_conn_file(self) -> None:
         channel = ControlTaskChannel()
@@ -172,96 +87,12 @@ class ProxyLocalDataPlaneSmokeTest(unittest.TestCase):
             )
         )
 
-    def test_feed_post_reads_image_locally_and_submits_bytes(self) -> None:
-        (self.repo / "figures").mkdir()
-        (self.repo / "figures" / "plot.png").write_bytes(b"png-bytes")
-        calls: list[tuple[str, dict]] = []
+    # feed.post is a control tool since the no-dataplane transition (Phase D.1):
+    # the proxy forwards it to /mcp unchanged and carries no feed media handler,
+    # so the former local-read smoke tests (which drove /api/data-plane/feed/*)
+    # are gone. feed-media upload is covered by tests/workflow/test_feed.py's
+    # token-PUT flow.
 
-        def api_post(path: str, payload: dict) -> dict:
-            calls.append((path, payload))
-            return {"ok": True, "post_id": "feed_1"}
-
-        result = self._plane(api_post=api_post).call_tool(
-            name="feed.post",
-            arguments={
-                "handle": "codex",
-                "text": "Image from split proxy",
-                "image_path": "figures/plot.png",
-            },
-        )
-
-        self.assertEqual(result["post_id"], "feed_1")
-        self.assertEqual(calls[0][0], "/api/data-plane/feed/validate-post")
-        self.assertEqual(calls[1][0], "/api/data-plane/feed/post")
-        self.assertEqual(
-            base64.b64decode(calls[1][1]["image"]["data_b64"].encode("ascii")),
-            b"png-bytes",
-        )
-
-    def test_feed_post_preflights_before_reading_image(self) -> None:
-        calls: list[str] = []
-
-        def api_post(path: str, payload: dict) -> dict:
-            calls.append(path)
-            if path.endswith("/validate-post"):
-                raise LocalDataPlaneError("bad feed intent")
-            return {}
-
-        with self.assertRaises(LocalDataPlaneError):
-            self._plane(api_post=api_post).call_tool(
-                name="feed.post",
-                arguments={
-                    "handle": "codex",
-                    "text": "will fail preflight",
-                    "image_path": "missing.png",
-                },
-            )
-
-        self.assertEqual(calls, ["/api/data-plane/feed/validate-post"])
-
-    def test_feed_post_reads_embed_locally_and_submits_bytes(self) -> None:
-        (self.repo / "figures").mkdir()
-        (self.repo / "figures" / "chart.html").write_bytes(
-            b"<html><body>chart</body></html>"
-        )
-        calls: list[tuple[str, dict]] = []
-
-        def api_post(path: str, payload: dict) -> dict:
-            calls.append((path, payload))
-            return {"ok": True, "post_id": "feed_2"}
-
-        result = self._plane(api_post=api_post).call_tool(
-            name="feed.post",
-            arguments={
-                "handle": "codex",
-                "text": "Embed from split proxy",
-                "html_path": "figures/chart.html",
-            },
-        )
-
-        self.assertEqual(result["post_id"], "feed_2")
-        self.assertEqual(calls[0][0], "/api/data-plane/feed/validate-post")
-        self.assertEqual(calls[1][0], "/api/data-plane/feed/post")
-        self.assertEqual(
-            base64.b64decode(calls[1][1]["html"]["data_b64"].encode("ascii")),
-            b"<html><body>chart</body></html>",
-        )
-
-    def test_feed_post_rejects_image_and_html_path_together(self) -> None:
-        (self.repo / "figures").mkdir()
-        (self.repo / "figures" / "plot.png").write_bytes(b"png-bytes")
-        (self.repo / "figures" / "chart.html").write_bytes(b"<html></html>")
-
-        with self.assertRaises(LocalDataPlaneError):
-            self._plane().call_tool(
-                name="feed.post",
-                arguments={
-                    "handle": "codex",
-                    "text": "both",
-                    "image_path": "figures/plot.png",
-                    "html_path": "figures/chart.html",
-                },
-            )
 
 class PrivateSplitProxyTest(unittest.TestCase):
     def test_split_proxy_sends_project_id_not_repo_context(self) -> None:
@@ -353,8 +184,8 @@ class SplitModeSmokeTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(response["error"]["data"]["error_code"], "public_key_required")
-        self.assertIn("requires public_key", response["error"]["message"])
+        self.assertEqual(response["error"]["data"]["error_code"], "validation_error")
+        self.assertIn("public_key is required", response["error"]["message"])
 
     def test_sandbox_request_rejects_private_key_material(self) -> None:
         response = self.proxy.handle(

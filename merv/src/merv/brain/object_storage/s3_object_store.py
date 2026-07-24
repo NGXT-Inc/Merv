@@ -13,7 +13,12 @@ from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
 
 _UPLOAD_PREFIX = ".uploads/"
-DEFAULT_MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024
+# Token-curl uploads (no-dataplane Phase D) are a single presigned PUT, which S3
+# accepts up to its 5 GiB hard limit. storage.submit caps at that limit and
+# rejects larger objects (multipart command orchestration is a documented
+# follow-on), so the default store single-PUTs the entire allowed range; a
+# smaller threshold stays configurable for the multipart contract path.
+DEFAULT_MULTIPART_THRESHOLD_BYTES = 5 * 1024 * 1024 * 1024
 DEFAULT_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 
 
@@ -159,6 +164,7 @@ class S3CompatibleObjectStore:
                     namespace=str(sidecar["namespace"]), sha256=str(sidecar["sha256"])
                 )
                 assert stat is not None
+                self._delete_sidecar(upload_id=upload_id)
                 return stat
             head = self._head(key=key, checksum=True)
             if head is None:
@@ -176,9 +182,14 @@ class S3CompatibleObjectStore:
                 namespace=str(sidecar["namespace"]), sha256=str(sidecar["sha256"])
             )
             assert stat is not None
-            return stat
-        finally:
+            # Delete the sidecar ONLY on success: a transient completion failure
+            # (bytes not yet landed) must leave it so the still-valid completion
+            # token can resolve the upload on retry (INV: token + sidecar share a
+            # lifetime). Genuinely-bad uploads leak a small sidecar until GC.
             self._delete_sidecar(upload_id=upload_id)
+            return stat
+        except Exception:
+            raise
 
     def presign_download(
         self, *, namespace: str, sha256: str, expires_in: int
