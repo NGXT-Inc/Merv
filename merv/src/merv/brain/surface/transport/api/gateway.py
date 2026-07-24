@@ -18,7 +18,7 @@ from ....kernel.utils import (
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
 from ...auth import UnauthorizedError
 from ...identity import (
-    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_local_principal,
+    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key, is_local_principal,
 )
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.tool_facade import ToolDispatcher
@@ -121,7 +121,10 @@ class ProjectAuthorizer:
 
     def http_denial(self, request: Request) -> JSONResponse | None:
         path = request.url.path
-        if self.key_project_id(request.state.principal) and path.startswith(
+        # Keyed on the credential SHAPE, not on its project binding: an
+        # account-scoped (mk_) key carries no key_project_id, so a binding
+        # test would fail open here (INV-11).
+        if is_external_key(request.state.principal) and path.startswith(
             self._operator_diagnostic_prefixes
         ):
             return JSONResponse(
@@ -200,7 +203,9 @@ class ToolInvocationGateway:
         self.projects.require_member(project_id=key_project_id or None, principal=principal)
         for scope in (arguments.get("project_id"), project_scope):
             self.projects.require_member(project_id=scope, principal=principal)
-        if key_project_id and name == "project" and arguments.get("action") == "create":
+        if is_external_key(principal) and name == "project" and arguments.get("action") == "create":
+            # Shape, not binding: account-scoped keys are still machine
+            # credentials and stay barred from creating projects.
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})
         internal_kwargs = None

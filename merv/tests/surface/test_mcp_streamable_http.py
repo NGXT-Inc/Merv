@@ -523,7 +523,13 @@ class McpStreamablePreflightTest(unittest.TestCase):
         )
 
         app = FastAPI()
-        holder = {"principal": SimpleNamespace(user_id="u1", key_project_id="p_bound")}
+        # A real mk_ principal always carries key_id alongside key_project_id
+        # (auth.py _verify_project_key); the deny-rules key on that shape.
+        holder = {
+            "principal": SimpleNamespace(
+                user_id="u1", key_id="mkey_bound", key_project_id="p_bound"
+            )
+        }
 
         @app.middleware("http")
         async def bind_principal(request, call_next):
@@ -557,7 +563,9 @@ class McpStreamablePreflightTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403, response.text)
         # A plain user's foreign review request is a membership miss: 404.
-        holder["principal"] = SimpleNamespace(user_id="u2", key_project_id="")
+        holder["principal"] = SimpleNamespace(
+            user_id="u2", key_id=None, key_project_id=""
+        )
         response = mcp.request(
             "tools/call",
             {"name": "review.start",

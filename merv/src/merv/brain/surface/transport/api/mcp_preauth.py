@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 
 from fastapi import Request
 
-from ...identity import LOCAL_PRINCIPAL, ProjectKeyScopeError
+from ...identity import LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES
 
 Preauthorizer = Callable[[Request, str, dict[str, Any]], None]
@@ -48,7 +48,9 @@ def build_mcp_preauthorizer(
             project_id=str(arguments.get("project_id") or "") or None,
             principal=principal,
         )
-        if key_project_id and name == "project" and arguments.get("action") == "create":
+        if is_external_key(principal) and name == "project" and arguments.get("action") == "create":
+            # Mirrors the gateway: keyed on credential shape so an
+            # account-scoped key (no key_project_id) cannot slip through.
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})
         policy = HOSTED_CONTROL_TOOL_POLICIES.get(name) if hosted else None
