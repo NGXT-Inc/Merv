@@ -37,13 +37,16 @@ Shared invariants across all clients:
   `tools/list`); there is no checked-in client-side tool catalog. The
   `merv-client` onboarding CLI, `merv-http`, and brain remain Python 3.11+; a
   venv is needed only for those surfaces when the machine does not already
-  provide 3.11+. Agent-run byte transfers — the presigned `curl` for
-  `artifact.submit` / `storage.*` and the `rsync` for `sandbox.pull_outputs` —
+  provide 3.11+. Agent-run byte transfers — the token/presigned `curl` for
+  `artifact.submit`, attachment-bearing `feed.post`, `storage.submit`, and
+  `storage.fetch` (download), plus the `rsync` for `sandbox.pull_outputs` —
   rely on the machine's `curl`, OpenSSH client, and `rsync`.
 - Skills follow the cross-tool Agent Skills layout (`skills/<name>/SKILL.md`
   with `name` + `description` frontmatter), which Claude Code, Codex, Cursor,
-  Gemini CLI, and OpenCode all read natively. OpenHands uses repository files
-  at `.agents/skills/*.md`; copy the relevant canonical skill content into that
+  Gemini CLI, and OpenCode all read natively. OpenHands loads repository skill
+  directories at `.agents/skills/<name>/SKILL.md` as on-demand AgentSkills
+  (keyword activation needs explicit `triggers` frontmatter, which Merv's
+  canonical skills do not carry); copy the relevant skill directories into that
   layout when needed. Replit's account connection does not install Merv skills.
 - Shared agent files in `agents/` keep frontmatter to the common subset
   (`name`, `description`) so Claude Code, Cursor, and Gemini CLI can all load
@@ -163,7 +166,8 @@ Two Cursor-specific notes:
    project's `.cursor/mcp.json`.
 
 2. **Tool ceiling.** Cursor's approximately 40-tool limit applies across all
-   active MCP servers. Merv's 36-tool catalog nearly fills it. Merv hides
+   active MCP servers. Merv's catalog (38 public tools with optional storage
+   enabled; 34 without) nearly fills it. Merv hides
    UI/internal tools such as `project.list` and `review.status` from the
    agent-facing catalog; if tools disappear when several MCP servers are
    enabled, disable servers or tools that are not in use.
@@ -223,8 +227,8 @@ Notes:
 
 ## Use with OpenHands
 
-OpenHands uses Streamable HTTP. For a local installation, put the server in
-`config.toml`:
+OpenHands uses Streamable HTTP. For the Local GUI/config-file surface, put the
+server in `config.toml`:
 
 ```toml
 [mcp]
@@ -235,15 +239,25 @@ shttp_servers = [
 
 The `api_key` value is sent exactly as `Authorization: Bearer <value>`.
 Environment-variable interpolation in that TOML value is unconfirmed, so paste
-the project key minted in the RapidReview UI. `openhands mcp add` is the CLI
-alternative. For OAuth, replace `api_key` with `auth = "oauth"`; the interactive
-browser flow is unsuitable headless, so prefer the project key.
+the project key minted in the RapidReview UI. The CLI is a separate surface
+with its own store (`~/.openhands/mcp.json`):
+
+```bash
+openhands mcp add merv --transport http \
+  --header "Authorization: Bearer <project-key>" \
+  https://experiments.rapidreview.io/mcp
+```
+
+For OAuth, replace `api_key` with `auth = "oauth"` (TOML) or `--header` with
+`--auth oauth` (CLI); the interactive browser flow is unsuitable headless, so
+prefer the project key.
 
 On OpenHands Cloud, **Settings → MCP** is the only setup path. The MCP
 connection cannot be shipped in a repository. Repository-root
 [AGENTS.md](../AGENTS.md) supplies always-on Merv context, and research repos
-may copy canonical skill content into keyword-triggered
-`.agents/skills/*.md`. Full steps:
+may copy canonical skill directories into `.agents/skills/<name>/SKILL.md`
+(on-demand AgentSkills; keyword activation needs explicit `triggers`
+frontmatter). Full steps:
 [clients/openhands/README.md](../clients/openhands/README.md).
 
 ## Use with Replit Agent

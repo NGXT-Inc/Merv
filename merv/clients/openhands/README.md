@@ -27,10 +27,18 @@ shttp_servers = [
 
 OpenHands sends an `api_key` value exactly as `Authorization: Bearer <value>`.
 Environment-variable interpolation in this TOML value is unconfirmed, so paste
-the key value rather than writing `${MERV_MCP_KEY}` there.
+the key value rather than writing `${MERV_MCP_KEY}` there. The TOML file is the
+Local GUI/config-file surface.
 
-As a CLI alternative, run `openhands mcp add` and enter the same server URL and
-project key.
+The CLI is a separate surface with its own store (`~/.openhands/mcp.json`):
+
+```bash
+openhands mcp add merv --transport http \
+  --header "Authorization: Bearer <project-key>" \
+  https://experiments.rapidreview.io/mcp
+```
+
+(Use `--auth oauth` instead of `--header` for the attended OAuth variant.)
 
 For an attended OAuth setup, the local TOML variant is:
 
@@ -58,10 +66,12 @@ OpenHands always reads a repository-root `AGENTS.md`; it also recognizes the
 same content through `CLAUDE.md` and `GEMINI.md` compatibility variants. This
 adapter ships [AGENTS.md](../../AGENTS.md) as the platform-neutral Merv context.
 
-OpenHands keyword-triggers repository skills from `.agents/skills/*.md` files
-with `name` and `description` frontmatter. Research repositories may copy the
-relevant content from [Merv's canonical skills](../../skills/) into that
-layout. OpenHands does not auto-discover Merv reviewer subagents; hand a fresh
+OpenHands loads repository skill directories in the AgentSkills form
+`.agents/skills/<name>/SKILL.md` as on-demand skills; keyword activation
+additionally requires explicit `triggers` frontmatter, which Merv's canonical
+skills do not carry. Research repositories may copy the relevant skill
+directories from [Merv's canonical skills](../../skills/) into that layout
+(adding `triggers` only if keyword activation is wanted). OpenHands does not auto-discover Merv reviewer subagents; hand a fresh
 `review.request` prompt to a second session or agent following the matching
 review skill, or perform the handoff inline when separate execution is
 unavailable.
