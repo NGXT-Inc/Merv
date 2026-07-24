@@ -948,7 +948,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     "workflow.status_and_next": ToolContract(
         handler_identity="workflow.status_and_next_agent",
         input_model=WorkflowStatusAndNextInput,
-        description="Orient Codex from durable project/experiment state.",
+        description="Orient the agent from durable project/experiment state.",
     ),
     "project": ToolContract(
         handler_identity="operations.project",
