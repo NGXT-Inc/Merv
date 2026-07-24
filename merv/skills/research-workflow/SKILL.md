@@ -340,8 +340,9 @@ compact evidence under `$MERV_EXPERIMENT_DIR`.
 Before submitting result artifacts, call `sandbox.pull_outputs`
 for light retained files, passing the caller-owned private `key_path` when
 `sandbox.get` did not return an `ssh.key_path` enrichment. Upload heavy artifacts
-with `storage.upload_file` when durable storage is enabled. Artifact uploads
-read local files, so remote sandbox paths cannot be submitted until you
+with `storage.submit` when durable storage is enabled — it returns a one-line
+`curl` command you run to push the bytes straight to object storage. Artifact
+uploads read local files, so remote sandbox paths cannot be submitted until you
 have pulled the files back locally. Do this before `sandbox.release`; release
 and expiry destroy the VM and anything you did not retain. Release is two-step:
 the first call returns a retention checklist without deleting, and only a second
