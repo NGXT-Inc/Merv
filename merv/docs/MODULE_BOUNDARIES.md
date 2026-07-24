@@ -48,7 +48,7 @@ The exact component import matrix is:
 | Importer | May import |
 |---|---|
 | Kernel | Kernel |
-| Research | Research, Artifacts, Kernel |
+| Research | Research, Artifact ports, Kernel |
 | Artifacts | Artifacts, Kernel |
 | Sandbox | Sandbox, Kernel |
 | Feed | Feed, Kernel |
@@ -58,12 +58,13 @@ The exact component import matrix is:
 | Surface | any component; its independent layer classification still applies |
 
 Outside bootstrap, code enters another component only through its declared
-`facade.py` or `ports/**` entrypoint. This is the executable form of “one stable
-public facade”; it prevents a new use case or adapter from depending on internal
-services. The legacy public-entrypoint exception ledger is now empty: every
-cross-component import must enter through a facade or port. Workflow reads use
-`ResearchSnapshots` and `SandboxReads`; Sandbox commands use the separately
-declared `Sandbox` facade.
+`facade.py` or `ports/**` entrypoint. Research is deliberately narrower: it may
+enter Artifacts through `artifacts/ports/**` only, never the Artifacts facade.
+This is the executable form of “one stable public facade”; it prevents a new use
+case or adapter from depending on internal services. The legacy
+public-entrypoint exception ledger is now empty: every cross-component import
+must enter through a facade or port. Workflow reads use `ResearchSnapshots` and
+`SandboxReads`; Sandbox commands use the separately declared `Sandbox` facade.
 
 Research reaches immutable artifact evidence only through semantic DTOs on
 `artifacts/ports/EvidenceReader`; it never sees persistence rows, Artifact

@@ -1325,8 +1325,9 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=SandboxRequestInput,
         description=(
             "Procure (reuse or create) a project sandbox, optionally attached to "
-            "an experiment, and return SSH details plus runtime guidance for the "
-            "remote work folder, expiry, copy-out, and durable storage. "
+            "an experiment, and return SSH details plus a brain-composed hint "
+            "with runtime guidance for the remote work folder, expiry, copy-out, "
+            "and durable storage. "
             "On Thunder Compute or Lambda Labs, omit instance_type to "
             "receive a live menu of available machines to pick from. "
             "SSH key custody: the sandbox authorizes a caller-side public key. "
@@ -1352,7 +1353,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=SandboxGetInput,
         description=(
             "Get sandbox status, SSH details, expiry, and polling/runtime "
-            "guidance by sandbox_uid or by an experiment's active sandbox "
+            "guidance in the brain-composed hint by sandbox_uid or by an "
+            "experiment's active sandbox "
             "association. Use it to poll provisioning and inspect terminated "
             "or expired sandboxes. Includes public_key_source so callers know "
             "whether the VM authorized a caller-supplied public key or a "

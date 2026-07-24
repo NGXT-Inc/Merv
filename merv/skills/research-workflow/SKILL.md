@@ -274,11 +274,12 @@ SSH. Once the experiment is `ready_to_run` (or already `running`), generate or
 select a caller-owned SSH keypair and call `sandbox.request(project_id,
 experiment_id?, instance_type?, region?, gpu?, cpu?, memory?, time_limit?,
 public_key, additional?)`, passing only the single-line OpenSSH public key. Keep the private
-key local. Follow the returned `hint`; `sandbox.request`/`sandbox.get` are the
-source of truth for provider selection, polling, expiry, SSH facts, and the
-remote work folder. A sandbox can also be created unattached and addressed by
-`sandbox_uid`; `additional: true` requests another machine instead of reusing
-an experiment's attached live sandbox.
+key local. Follow the returned brain-composed `hint`;
+`sandbox.request`/`sandbox.get` are the source of truth for provider selection,
+polling, expiry, SSH facts, the remote work folder, and copy-out safety. A
+sandbox can also be created unattached and addressed by `sandbox_uid`;
+`additional: true` requests another machine instead of reusing an experiment's
+attached live sandbox.
 
 Use the smallest viable machine. On fixed-SKU providers such as Lambda Labs or
 Thunder Compute, use `sandbox.options` or omit `instance_type` to get the live

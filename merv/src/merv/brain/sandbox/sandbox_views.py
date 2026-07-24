@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Any
 
 from .sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
-from .sandbox_support import POLL_AFTER_SECONDS
+from .sandbox_support import ACTIVE_SANDBOX_STATUSES, POLL_AFTER_SECONDS
+
 
 def _sandbox_dirs(*, row: dict[str, Any]) -> tuple[str, str]:
     experiment_id = str(row.get("experiment_id") or "")
@@ -32,6 +33,62 @@ def _sandbox_dirs(*, row: dict[str, Any]) -> tuple[str, str]:
         row.get("sandbox_data_dir") or row.get("unsynced_dir") or DEFAULT_DATA_DIR
     )
     return remote_dir, data_dir
+
+
+def _runtime_hint(
+    *,
+    status: str,
+    ssh: dict[str, Any],
+    remote_dir: str,
+    expires_at: Any,
+    storage_enabled: bool,
+) -> str:
+    """Brain-composed lifecycle guidance using only durable sandbox facts."""
+    expiry = (
+        f" This sandbox expires at {expires_at}; retain valuable output before "
+        "that deadline or before release."
+        if expires_at
+        else ""
+    )
+    retention = (
+        " Nothing is copied out automatically. Use sandbox.pull_outputs for "
+        "selected light files, then artifact.submit for gated documents"
+        + (
+            ", and storage.submit for durable heavy artifacts."
+            if storage_enabled
+            else "; durable heavy-artifact storage is not configured."
+        )
+    )
+    if status == "provisioning":
+        return (
+            "Provisioning is in progress. Poll sandbox.get after "
+            f"{POLL_AFTER_SECONDS} seconds until status is running; do not "
+            "re-call sandbox.request as a poll. Once running, connect using "
+            "the returned ssh.host, ssh.port, and ssh.user with the "
+            "caller-owned private key."
+            + expiry
+            + retention
+        )
+    if status == "failed":
+        return (
+            "Provisioning failed; inspect error, correct the request or "
+            "provider issue, then call sandbox.request to retry."
+        )
+    if (
+        status in ACTIVE_SANDBOX_STATUSES
+        and ssh.get("host")
+        and ssh.get("port")
+    ):
+        return (
+            "Connect using the returned ssh.host, ssh.port, and ssh.user with "
+            "the caller-owned private key. Work in the remote experiment_dir "
+            f"({remote_dir}); use merv_run for long jobs and sandbox.runs for "
+            "their receipts."
+            + expiry
+            + retention
+            + " Call sandbox.get once if the SSH endpoint becomes stale."
+        )
+    return "No live sandbox found; call sandbox.request to create one."
 
 
 def agent_row_facts(
@@ -76,6 +133,13 @@ def agent_row_facts(
         "expires_at": row.get("expires_at"),
         "storage_enabled": bool(storage_enabled),
     }
+    facts["hint"] = _runtime_hint(
+        status=str(status),
+        ssh=facts["ssh"],
+        remote_dir=remote_dir,
+        expires_at=row.get("expires_at"),
+        storage_enabled=bool(storage_enabled),
+    )
     if env_info.get("available_tokens"):
         facts["environment"] = env_info
     if status == "provisioning":

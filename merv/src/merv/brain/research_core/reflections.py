@@ -40,8 +40,9 @@ from .domain.reflection_policy import (
     reflection_signal_state,
 )
 from .domain.artifact_evidence import (
-    preferred_associated_artifact,
     artifact_state_record,
+    artifact_submission_recency_key,
+    preferred_associated_artifact,
 )
 from ..artifacts.ports import EvidenceReader, SubmittedDocument
 from .domain.review_snapshot import review_snapshot_id
@@ -169,15 +170,23 @@ class ReflectionService:
             target_ids=tuple(str(experiment["id"]) for experiment in experiments),
         )
         for experiment in experiments:
+            authoritative: dict[str, dict[str, Any]] = {}
+            for evidence in experiment_artifacts.get(str(experiment["id"]), ()):
+                if (
+                    evidence.attempt_index != int(experiment["attempt_index"])
+                    or evidence.role not in {"report", "graph"}
+                ):
+                    continue
+                artifact = artifact_state_record(evidence)
+                current = authoritative.get(evidence.role)
+                if current is None or artifact_submission_recency_key(
+                    artifact
+                ) > artifact_submission_recency_key(current):
+                    authoritative[evidence.role] = artifact
             experiment["artifacts"] = [
-                self._artifact_content_ref(
-                    artifact=artifact_state_record(evidence)
-                )
-                for evidence in experiment_artifacts.get(
-                    str(experiment["id"]), ()
-                )
-                if evidence.attempt_index == int(experiment["attempt_index"])
-                and evidence.role in {"report", "graph"}
+                self._artifact_content_ref(artifact=authoritative[role])
+                for role in ("report", "graph")
+                if role in authoritative
             ]
         previous = self.latest_published(conn=conn, project_id=project_id)
         covered = covered_terminal_ids(
@@ -223,6 +232,7 @@ class ReflectionService:
                         "artifact_id": lens["artifact_id"],
                         "path": lens["path"],
                         "role": lens["role"],
+                        "submitted_order": lens["submitted_order"],
                     }
                     for lens in previous["reflection_coverage"]["lenses"]
                     if lens.get("covered")
@@ -291,18 +301,11 @@ class ReflectionService:
                 data["corpus"] = self._hydrate_corpus_content(
                     corpus=data["corpus"]
                 )
-                data["current_attempt_artifacts"] = [
-                    self._hydrate_artifact_content(artifact=artifact)
-                    if artifact.get("role")
-                    in {
-                        REFLECTION_LENS_DOC_ROLE,
-                        PROJECT_GRAPH_ROLE,
-                        "reflection_doc",
-                        "change_spec",
-                    }
-                    else artifact
-                    for artifact in data["current_attempt_artifacts"]
-                ]
+                data["current_attempt_artifacts"] = (
+                    self._hydrate_current_attempt_artifacts(
+                        artifacts=data["current_attempt_artifacts"]
+                    )
+                )
             claim_rows = conn.execute(
                 """
                 SELECT sc.reflection_id, sc.claim_id, sc.op, sc.claim_key,
@@ -360,6 +363,7 @@ class ReflectionService:
             "artifact_id": artifact.get("id"),
             "path": artifact.get("path"),
             "role": artifact.get("role"),
+            "submitted_order": artifact.get("submitted_order"),
         }
 
     def _hydrate_artifact_content(
@@ -374,6 +378,45 @@ class ReflectionService:
             "content_available": result.content is not None,
             "content_truncated": result.truncated,
         }
+
+    def _hydrate_current_attempt_artifacts(
+        self, *, artifacts: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        latest_lens_docs: dict[str, dict[str, Any]] = {}
+        for artifact in artifacts:
+            if artifact.get("role") != REFLECTION_LENS_DOC_ROLE:
+                continue
+            lens_id = str(artifact.get("lens_id") or "")
+            current = latest_lens_docs.get(lens_id)
+            if current is None or artifact_submission_recency_key(
+                artifact
+            ) > artifact_submission_recency_key(current):
+                latest_lens_docs[lens_id] = artifact
+
+        authoritative_lens_ids = {
+            str(artifact.get("id") or "")
+            for artifact in latest_lens_docs.values()
+        }
+        hydrated: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            role = artifact.get("role")
+            if (
+                role == REFLECTION_LENS_DOC_ROLE
+                and str(artifact.get("id") or "") not in authoritative_lens_ids
+            ):
+                continue
+            hydrated.append(
+                self._hydrate_artifact_content(artifact=artifact)
+                if role
+                in {
+                    REFLECTION_LENS_DOC_ROLE,
+                    PROJECT_GRAPH_ROLE,
+                    "reflection_doc",
+                    "change_spec",
+                }
+                else artifact
+            )
+        return hydrated
 
     def _hydrate_corpus_content(self, *, corpus: dict[str, Any]) -> dict[str, Any]:
         hydrated = dict(corpus)

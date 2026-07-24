@@ -64,7 +64,7 @@ FILE_COMPONENTS = {
 # to Application.  Surface is the outer delivery/composition component.
 ALLOWED_COMPONENT_EDGES = (
     {(KERNEL, KERNEL)}
-    | {(RESEARCH_CORE, dependency) for dependency in (RESEARCH_CORE, ARTIFACTS, KERNEL)}
+    | {(RESEARCH_CORE, dependency) for dependency in (RESEARCH_CORE, KERNEL)}
     | {(ARTIFACTS, dependency) for dependency in (ARTIFACTS, KERNEL)}
     | {(SANDBOX, dependency) for dependency in (SANDBOX, KERNEL)}
     | {(FEED, dependency) for dependency in (FEED, KERNEL)}
@@ -395,8 +395,16 @@ def _component_violations() -> set[tuple[str, str]]:
     return {
         (importer, target)
         for importer, target in _import_pairs()
-        if (_component(importer), _component(target)) not in ALLOWED_COMPONENT_EDGES
+        if not _component_edge_allowed(importer=importer, target=target)
     }
+
+
+def _component_edge_allowed(*, importer: str, target: str) -> bool:
+    importer_component = _component(importer)
+    target_component = _component(target)
+    if importer_component == RESEARCH_CORE and target_component == ARTIFACTS:
+        return target.startswith(f"{ARTIFACTS}/ports/")
+    return (importer_component, target_component) in ALLOWED_COMPONENT_EDGES
 
 
 def _layer_violations() -> set[tuple[str, str]]:
@@ -419,6 +427,14 @@ def _public_entrypoint_violations() -> set[tuple[str, str]]:
         ):
             continue
         relative_target = target.removeprefix(f"{target_component}/")
+        if (
+            importer_component == RESEARCH_CORE
+            and target_component == ARTIFACTS
+        ):
+            if relative_target.startswith("ports/"):
+                continue
+            violations.add((importer, target))
+            continue
         if relative_target == "facade.py" or relative_target.startswith("ports/"):
             continue
         violations.add((importer, target))
@@ -787,6 +803,19 @@ class ModuleBoundaryTest(unittest.TestCase):
             ),
         )
 
+    def test_research_enters_artifacts_through_ports_only(self) -> None:
+        importer = "research_core/reflections.py"
+        self.assertTrue(
+            _component_edge_allowed(
+                importer=importer, target="artifacts/ports/evidence.py"
+            )
+        )
+        self.assertFalse(
+            _component_edge_allowed(
+                importer=importer, target="artifacts/facade.py"
+            )
+        )
+
     def test_no_new_layer_boundary_violations(self) -> None:
         new = sorted(_layer_violations() - LAYER_EXCEPTIONS)
         self.assertFalse(
@@ -858,11 +887,12 @@ class ModuleBoundaryTest(unittest.TestCase):
         )
 
     def test_cross_component_imports_use_public_entrypoints(self) -> None:
-        """All non-bootstrap cross-component imports enter via facade/port."""
+        """Cross-component imports use public entrypoints; Research uses ports."""
         violations = sorted(_public_entrypoint_violations())
         self.assertFalse(
             violations,
-            "cross-component internal import; use facade.py or ports/**: "
+            "cross-component internal import; use facade.py or ports/** "
+            "(Research may enter Artifacts through ports/** only): "
             + ", ".join(f"{source} -> {target}" for source, target in violations),
         )
 

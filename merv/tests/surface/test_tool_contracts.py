@@ -150,11 +150,13 @@ class ToolContractRegistryTest(unittest.TestCase):
         tools = {tool["name"]: tool for tool in self.app.list_tools()}
         self.assertNotIn("MLflow", tools["sandbox.request"]["description"])
         self.assertNotIn("TensorBoard", tools["sandbox.request"]["description"])
+        self.assertIn("brain-composed hint", tools["sandbox.request"]["description"])
         self.assertIn("durable storage", tools["sandbox.request"]["description"])
         self.assertIn("public_key", tools["sandbox.request"]["description"])
         self.assertIn("public_key_source", tools["sandbox.request"]["description"])
         self.assertIn("expiry", tools["sandbox.get"]["description"])
         self.assertIn("poll provisioning", tools["sandbox.get"]["description"])
+        self.assertIn("brain-composed hint", tools["sandbox.get"]["description"])
         self.assertIn("public_key_source", tools["sandbox.get"]["description"])
         self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
         self.assertIn("retention checklist", tools["sandbox.release"]["description"])

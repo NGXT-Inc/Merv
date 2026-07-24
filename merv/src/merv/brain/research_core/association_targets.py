@@ -1,7 +1,7 @@
 """Research-core resolution of artifact-association targets.
 
 Injected into the artifacts module at composition so artifacts never names
-research-core tables (import law allows research_core -> artifacts only).
+research-core tables (Research reaches Artifacts through ports only).
 """
 
 from __future__ import annotations

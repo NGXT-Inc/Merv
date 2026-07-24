@@ -7,6 +7,18 @@ from typing import Any
 from ...artifacts.ports import AssociatedEvidence
 
 
+def artifact_submission_recency_key(
+    artifact: dict[str, Any],
+) -> tuple[int, str, str, str]:
+    """Stable newest-submission ordering for immutable artifact evidence."""
+    return (
+        int(artifact.get("submitted_order") or 0),
+        str(artifact.get("updated_at") or artifact.get("created_at") or ""),
+        str(artifact.get("id") or artifact.get("artifact_id") or ""),
+        str(artifact.get("path") or ""),
+    )
+
+
 def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
     """Project one submitted artifact into the public Research record shape.
 
@@ -48,14 +60,25 @@ def preferred_associated_artifact(
         for artifact in candidates
         if artifact.get("attempt_index") == attempt
     ]
+    eligible = current or candidates
     role_rank = {role: index for index, role in enumerate(roles)}
-    return min(
-        current or candidates,
-        key=lambda artifact: (
-            role_rank.get(str(artifact.get("role")), len(roles)),
-            -(artifact.get("submitted_order") or 0),
+    preferred_rank = min(
+        role_rank.get(str(artifact.get("role")), len(roles))
+        for artifact in eligible
+    )
+    return max(
+        (
+            artifact
+            for artifact in eligible
+            if role_rank.get(str(artifact.get("role")), len(roles))
+            == preferred_rank
         ),
+        key=artifact_submission_recency_key,
     )
 
 
-__all__ = ["artifact_state_record", "preferred_associated_artifact"]
+__all__ = [
+    "artifact_state_record",
+    "artifact_submission_recency_key",
+    "preferred_associated_artifact",
+]

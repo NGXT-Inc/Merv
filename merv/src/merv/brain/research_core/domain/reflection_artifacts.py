@@ -16,7 +16,10 @@ from typing import Any, Callable
 from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLE
 from merv.shared.markdown_images import markdown_image_links
 
-from .artifact_evidence import preferred_associated_artifact
+from .artifact_evidence import (
+    artifact_submission_recency_key,
+    preferred_associated_artifact,
+)
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
     ACTIVE_EXPERIMENT_CAP,
@@ -159,14 +162,20 @@ def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
     for res in reflection.get("current_attempt_artifacts", []):
         if res.get("role") != REFLECTION_LENS_DOC_ROLE:
             continue
-        by_lens.setdefault(
-            str(res.get("lens_id") or ""),
-            {
-                "path": str(res.get("path") or ""),
-                "artifact_id": res.get("id"),
-                "role": res.get("role"),
-            },
-        )
+        lens_id = str(res.get("lens_id") or "")
+        current = by_lens.get(lens_id)
+        if current is not None and artifact_submission_recency_key(
+            current
+        ) >= artifact_submission_recency_key(res):
+            continue
+        by_lens[lens_id] = {
+            "id": res.get("id"),
+            "path": str(res.get("path") or ""),
+            "artifact_id": res.get("id"),
+            "role": res.get("role"),
+            "submitted_order": res.get("submitted_order"),
+            "updated_at": res.get("updated_at"),
+        }
     lenses = []
     missing = []
     for lens in reflection.get("roster", []):
@@ -179,6 +188,9 @@ def reflection_coverage_for(*, reflection: dict[str, Any]) -> dict[str, Any]:
                 "path": entry["path"] if entry else None,
                 "artifact_id": entry.get("artifact_id") if entry else None,
                 "role": entry.get("role") if entry else None,
+                "submitted_order": (
+                    entry.get("submitted_order") if entry else None
+                ),
             }
         )
         if entry is None:

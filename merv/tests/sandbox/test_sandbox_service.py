@@ -700,14 +700,21 @@ class SandboxServiceTest(unittest.TestCase):
 
     # ---- sandbox response guidance ----
 
-    def test_request_has_no_sandbox_dashboard_or_mlflow_context(self) -> None:
+    def test_request_has_brain_runtime_hint_without_deleted_enrichment(self) -> None:
         exp_id = self._experiment()
         result = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
         self.assertNotIn("dashboards", result)
         self.assertNotIn("mlflow", result)
-        self.assertNotIn("hint", result)
+        self.assertIn("hint", result)
+        self.assertIn("Nothing is copied out automatically", result["hint"])
+        self.assertIn("sandbox.pull_outputs", result["hint"])
+        self.assertIn(str(result["expires_at"]), result["hint"])
+        self.assertNotIn("command", result["ssh"])
+        self.assertNotIn("raw_command", result["ssh"])
+        self.assertNotIn("key_path", result["ssh"])
+        self.assertNotIn("local_experiment_dir", result)
 
     # ---- status / liveness ----
 

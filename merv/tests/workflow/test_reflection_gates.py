@@ -1537,6 +1537,57 @@ class ReflectionGateTest(unittest.TestCase):
                 MAX_SUBMITTED_TEXT_BYTES,
             )
 
+    def test_lens_resubmission_at_new_path_is_authoritative_everywhere(self) -> None:
+        syn_id = self._create_wave()
+        old = self._submit_file(
+            syn_id=syn_id,
+            path=f"reflections/{syn_id}/reflections/amplify-old.md",
+            role="reflection_lens_doc",
+            body="# amplify\nOld lens content.\n",
+            lens_id="amplify",
+        )
+        new = self._submit_file(
+            syn_id=syn_id,
+            path=f"reflections/{syn_id}/reflections/amplify-new.md",
+            role="reflection_lens_doc",
+            body="# amplify\nNew authoritative lens content.\n",
+            lens_id="amplify",
+        )
+        for lens_id in ALL_LENS_IDS[1:]:
+            self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
+
+        state = self._state(syn_id)
+        amplify_docs = [
+            artifact
+            for artifact in state["current_attempt_artifacts"]
+            if artifact["role"] == "reflection_lens_doc"
+            and artifact["lens_id"] == "amplify"
+        ]
+        self.assertEqual(len(amplify_docs), 1)
+        self.assertEqual(amplify_docs[0]["id"], new["artifact_id"])
+        self.assertEqual(
+            amplify_docs[0]["path"],
+            f"reflections/{syn_id}/reflections/amplify-new.md",
+        )
+        self.assertEqual(
+            amplify_docs[0]["content"],
+            "# amplify\nNew authoritative lens content.\n",
+        )
+        self.assertNotEqual(amplify_docs[0]["id"], old["artifact_id"])
+        self.assertGreater(amplify_docs[0]["submitted_order"], 0)
+
+        amplify_coverage = next(
+            lens
+            for lens in state["reflection_coverage"]["lenses"]
+            if lens["lens_id"] == "amplify"
+        )
+        self.assertEqual(amplify_coverage["artifact_id"], new["artifact_id"])
+        self.assertEqual(amplify_coverage["path"], amplify_docs[0]["path"])
+        self.assertEqual(
+            amplify_coverage["submitted_order"],
+            amplify_docs[0]["submitted_order"],
+        )
+
 
 class ReflectionSignalTest(unittest.TestCase):
     """The drift signal behind project reflection nudges and create blocks."""
@@ -1688,6 +1739,7 @@ class ReflectionSignalTest(unittest.TestCase):
             self.assertEqual(artifact["content"], f"{lens_id} findings\n")
             self.assertTrue(artifact["content_available"])
             self.assertFalse(artifact["content_truncated"])
+            self.assertGreater(artifact["submitted_order"], 0)
             self.assertLessEqual(
                 len(artifact["content"].encode("utf-8")),
                 MAX_SUBMITTED_TEXT_BYTES,
@@ -1706,10 +1758,78 @@ class ReflectionSignalTest(unittest.TestCase):
         for artifact in previous_artifacts.values():
             self.assertTrue(artifact["artifact_id"].startswith("art_"))
             self.assertTrue(artifact["content_available"])
+            self.assertGreater(artifact["submitted_order"], 0)
             self.assertLessEqual(
                 len(artifact["content"].encode("utf-8")),
                 MAX_SUBMITTED_TEXT_BYTES,
             )
+
+    def test_corpus_hydrates_only_latest_report_submitted_at_a_new_path(self) -> None:
+        exp = self.call(
+            "experiment.create",
+            name="authoritative-report",
+            project_id=self.project_id,
+            intent="Verify reflection corpus evidence selection.",
+        )
+        old = self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="report",
+            path="reports/old-report.md",
+            body="Old report content.\n",
+        )
+        new = self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="report",
+            path="reports/new-report.md",
+            body="New authoritative report content.\n",
+        )
+        self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="graph",
+            path="graphs/current-graph.json",
+            body='{"version": 1, "nodes": [], "edges": []}\n',
+        )
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+            transition="abandon",
+        )
+
+        reflection = self.call(
+            "reflection.create",
+            project_id=self.project_id,
+            title="Authoritative evidence wave",
+            lenses=full_roster(),
+        )
+        corpus_experiment = next(
+            item
+            for item in reflection["corpus"]["terminal_experiments"]
+            if item["id"] == exp["id"]
+        )
+        reports = [
+            artifact
+            for artifact in corpus_experiment["artifacts"]
+            if artifact["role"] == "report"
+        ]
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["artifact_id"], new["artifact_id"])
+        self.assertNotEqual(reports[0]["artifact_id"], old["artifact_id"])
+        self.assertEqual(reports[0]["path"], "reports/new-report.md")
+        self.assertEqual(
+            reports[0]["content"], "New authoritative report content.\n"
+        )
+        self.assertGreater(reports[0]["submitted_order"], 0)
+        self.assertNotIn(
+            "Old report content.",
+            json.dumps(corpus_experiment["artifacts"]),
+        )
 
     def test_quiet_before_threshold_then_first_reflection_nudge(self) -> None:
         for i in range(REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD - 1):
