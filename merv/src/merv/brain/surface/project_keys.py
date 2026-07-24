@@ -201,14 +201,30 @@ class ProjectKeys:
     def revoke(
         self, *, project_id: str, key_id: str, owner_user_id: str
     ) -> dict[str, object]:
+        """Revoke this key AND every rotation descendant of it.
+
+        Revoking one row would not be a kill switch: OAuth refresh rotates the
+        underlying key, so the id an owner just read may already have been
+        superseded, and the live successor would survive. Killing the lineage
+        also stops refresh, because rotation requires an unrevoked parent.
+        """
+        project_id = _required(project_id, field="project_id")
+        key_id = _required(key_id, field="key_id")
+        owner_user_id = _required(owner_user_id, field="owner_user_id")
         record = self._repository.revoke(
-            project_id=_required(project_id, field="project_id"),
-            key_id=_required(key_id, field="key_id"),
-            owner_user_id=_required(owner_user_id, field="owner_user_id"),
+            project_id=project_id,
+            key_id=key_id,
+            owner_user_id=owner_user_id,
             revoked_at=now_iso(),
         )
         if record is None:
             raise NotFoundError(f"project key not found: {key_id}")
+        self._repository.revoke_lineage(
+            project_id=project_id,
+            key_id=key_id,
+            owner_user_id=owner_user_id,
+            revoked_at=now_iso(),
+        )
         return {"key": _public_record(record)}
 
     def revoke_lineage(

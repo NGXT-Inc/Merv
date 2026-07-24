@@ -23,10 +23,12 @@ function keyState(k) {
 /**
  * Project settings — MCP keys.
  *
- * Mint, list, and revoke the project-scoped `mk_` keys that connect an MCP
- * client (Claude, Codex, …) to this one project. Every route is owner-only and
- * needs a hosted browser session, so in local/API-key mode the list can't load
- * — we say so plainly rather than surfacing a raw 401.
+ * Mint, list, and revoke the `mk_` keys that connect an MCP client (Claude,
+ * Codex, …) to Merv. A key is scoped either to this one project or to every
+ * project you belong to; an account-scoped key is administered here, under the
+ * project it was minted from, but its reach is not limited to it. Every route
+ * is owner-only and needs a hosted browser session, so in local/API-key mode
+ * the list can't load — we say so plainly rather than surfacing a raw 401.
  */
 export default function Settings() {
   const projectId = useProjectStore((s) => s.projectId);
@@ -36,6 +38,8 @@ export default function Settings() {
   const [loading, setLoading] = useState(hosted);
   const [error, setError] = useState('');
   const [minting, setMinting] = useState(false);
+  // Reaching every project is the common case, so it is the default here too.
+  const [grantScope, setGrantScope] = useState('account');
   // The mk_ secret is held here for exactly one view. It lives only in this
   // component's state — navigating away (or dismissing) drops it for good.
   const [minted, setMinted] = useState(null);
@@ -64,7 +68,7 @@ export default function Settings() {
     setMinting(true);
     setError('');
     try {
-      const res = await api.createProjectKey(projectId);
+      const res = await api.createProjectKey(projectId, { grant_scope: grantScope });
       setMinted(res); // { key, secret }
       setCopied(false);
       setKeys((prev) => [res.key, ...prev]);
@@ -108,12 +112,25 @@ export default function Settings() {
           <div>
             <h1 className="page-title">MCP keys</h1>
             <p className="page-summary page-summary--lead">
-              A key connects an MCP client to this project. It is bearer-equivalent
-              to full project access — anyone holding it can act as this project.
+              A key connects an MCP client to Merv. It is bearer-equivalent to
+              everything it is scoped to — anyone holding it can act as you
+              there, so treat it like a password.
             </p>
           </div>
           {hosted && (
             <div className="page-actions">
+              <label className="mcpk-scope-pick">
+                <select
+                  className="auth-input"
+                  aria-label="Key scope"
+                  value={grantScope}
+                  onChange={(e) => setGrantScope(e.target.value)}
+                  disabled={minting}
+                >
+                  <option value="account">All my projects</option>
+                  <option value="project">This project only</option>
+                </select>
+              </label>
               <button type="button" className="btn btn--primary" onClick={mint} disabled={minting}>
                 {minting ? 'Minting…' : 'Mint MCP key'}
               </button>
@@ -143,8 +160,11 @@ export default function Settings() {
             </button>
           </div>
           <p className="mcpk-reveal-warn">
-            This is the only time the secret is shown. It grants full access to this
-            project — store it like a password. Once you leave this page it cannot be
+            This is the only time the secret is shown. It grants full access to
+            {minted.key?.grant_scope === 'account'
+              ? ' every project you belong to'
+              : ' this project'}
+            {' '}— store it like a password. Once you leave this page it cannot be
             recovered; mint a new key if you lose it.
           </p>
         </div>
@@ -162,6 +182,7 @@ export default function Settings() {
             <div className="mcpk-table" role="table" aria-label="Project MCP keys">
               <div className="mcpk-row mcpk-row--head" role="row">
                 <span className="th" role="columnheader">Key</span>
+                <span className="th" role="columnheader">Scope</span>
                 <span className="th" role="columnheader">Created</span>
                 <span className="th" role="columnheader">Expires</span>
                 <span className="th" role="columnheader">State</span>
@@ -172,6 +193,9 @@ export default function Settings() {
                 return (
                   <div className="mcpk-row" role="row" key={k.id}>
                     <span className="mcpk-id mono" role="cell" title={k.id}>{k.id}</span>
+                    <span className="mcpk-scope" role="cell">
+                      {k.grant_scope === 'account' ? 'All my projects' : 'This project'}
+                    </span>
                     <span className="mcpk-when" role="cell">{fmtWhen(k.created_at) || '—'}</span>
                     <span className="mcpk-when" role="cell">{fmtWhen(k.expires_at) || 'Never'}</span>
                     <span className="mcpk-cell" role="cell">

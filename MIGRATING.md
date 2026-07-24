@@ -113,10 +113,10 @@ empty project list.
 
 Then, once per machine:
 
-1. Open [RapidReview](https://rapidreview.io/map), sign in, and open the
-   project this client should be bound to.
-2. Create a key for that project and copy it when shown — it is displayed
-   once.
+1. Open [rapidreview.io/merv](https://rapidreview.io/merv), sign in, and open
+   any project you belong to.
+2. Mint a key — leave the scope on **All my projects** unless this client
+   should be confined to one — and copy it when shown; it is displayed once.
 3. Export it where the agent runs:
 
 ```bash
@@ -124,7 +124,7 @@ export MERV_MCP_KEY=mk_...
 ```
 
 The committed MCP config reads the key from that env var and never inlines
-it. A key binds one immutable project and is bearer-equivalent to full
+it. A key is bearer-equivalent to full
 access to it, so treat it like a password. Details:
 [HOSTED_CLIENT_QUICKSTART.md](merv/docs/HOSTED_CLIENT_QUICKSTART.md).
 

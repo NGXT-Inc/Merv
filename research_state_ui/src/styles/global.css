@@ -4972,7 +4972,7 @@ a.spend-row-name:hover { color: var(--active); }
 .mcpk-table { border-top: 1px solid var(--line-soft); }
 .mcpk-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) 130px 130px 90px auto;
+  grid-template-columns: minmax(0, 1.4fr) 120px 130px 130px 90px auto;
   align-items: center;
   gap: var(--space-4);
   padding: 11px 4px;
@@ -4998,7 +4998,7 @@ a.spend-row-name:hover { color: var(--active); }
 @media (max-width: 720px) {
   .mcpk-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
   .mcpk-row--head { display: none; }
-  .mcpk-when { display: none; }
+  .mcpk-when, .mcpk-scope { display: none; }
 }
 
 /* --- OAUTH CONSENT --------------------------------------------------- */
@@ -5011,6 +5011,10 @@ a.spend-row-name:hover { color: var(--active); }
 .oauth-consent-error { margin: 0; color: var(--refutes); font-size: var(--text-sm); }
 .oauth-consent-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .oauth-scope-choices { display: flex; flex-direction: column; gap: 8px; }
+.mcpk-scope-pick { display: inline-flex; align-items: center; }
+.mcpk-scope-pick .auth-input { width: auto; min-width: 150px; }
+.page-actions .btn { white-space: nowrap; }
+.mcpk-scope { font-size: var(--text-xs); color: var(--muted); }
 .oauth-scope-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
 .oauth-scope-choice.is-selected { border-color: var(--active); }
 .oauth-scope-choice input { margin-top: 3px; }

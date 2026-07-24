@@ -78,11 +78,12 @@ Every client connects directly to the brain's `/mcp` endpoint over HTTP,
 authenticated by a project-scoped key (`Authorization: Bearer <key>`). The
 committed `.mcp.json` uses `type:"http"` and reads the key from the
 `MERV_MCP_KEY` environment variable — the key is never inlined, because it is
-bearer-equivalent to full access to its one bound project. There is no local
+bearer-equivalent to full access to everything it is scoped to. There is no local
 proxy and no local data plane: one wire protocol serves a local agent, a cloud
 agent, and a browser-driven agent identically.
 
-The key binds one immutable project. The gateway does not inject that project:
+The key is scoped to one project or to its owner's whole account, immutably.
+The gateway does not inject a project:
 it requires the agent to pass `project_id` on project-scoped tools and enforces
 that it equals the key-bound project — a mismatched `project_id` is rejected and
 omitting it is an error — so an agent calls `project` (`action="current"`) once

@@ -109,7 +109,8 @@ GET   /api/projects/{project_id}/status?experiment_id={experiment_id}
 ```
 
 Create projects with `name` and `summary`. Do not send a repo path: projects are
-never tied to a checkout, and each agent key binds one immutable project.
+never tied to a checkout; each agent key carries an immutable scope (one
+project, or the owner's whole account).
 
 `/home` is the primary UI bootstrap. It returns `project`, `claims`, the full
 `experiments` list, `artifacts`, `reviews`, `recent_events`, `stats`, `workflow`,

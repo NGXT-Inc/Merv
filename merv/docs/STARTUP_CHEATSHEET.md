@@ -106,7 +106,7 @@ project(action="current")
 workflow.status_and_next(project_id)
 ```
 
-The project-scoped key already binds one immutable project, so
+The key already carries its own scope, so
 `project(action="current")` resolves it directly and returns its id. Pass that
 id as `project_id` explicitly on project-scoped calls; the brain receives only
 the project id, never the folder path.

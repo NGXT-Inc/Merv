@@ -16,9 +16,10 @@ committed config files (`.mcp.json`, `.mcp.codex.json`, `mcp.json`) use
 `headers.Authorization:"Bearer ${MERV_MCP_KEY}"`; the key is read from the
 `MERV_MCP_KEY` env var and is never inlined into a committed file.
 
-A key is scoped either to one project or to its owner's whole account; an
-account-scoped caller names the project per call and finds the ids with
-`project(action="list")`. The gateway does not inject or hide
+A key is scoped either to one project or to its owner's whole account. Either
+way the caller names the project per call; ids come from
+`project(action="list")`, whose actions are list / current / create / overview.
+The gateway does not inject or hide
 `project_id`: agents pass `project_id` explicitly on every project-scoped tool,
 and the gateway enforces that it equals the key-bound project — a mismatched
 `project_id` is rejected, and omitting it raises `project_id is required`. Agents

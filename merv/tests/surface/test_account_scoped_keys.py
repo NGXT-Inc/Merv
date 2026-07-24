@@ -363,6 +363,49 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
             response.json()["error"]["data"]["error_code"], "not_found"
         )
 
+    def test_revoking_a_rotated_key_kills_its_successors_too(self) -> None:
+        """Revoke must mean "this grant is dead", not "this row is dead".
+
+        OAuth refresh rotates the underlying key, so an owner who lists a key
+        and then revokes it can easily be naming a link that refresh has
+        already superseded. If only that row died, the successor would stay
+        live -- and for an account grant that successor reaches every project
+        the owner has.
+        """
+        listed = self.client.get(
+            f"/api/projects/{self.project_a}/keys", headers=self._bearer(self.jwt)
+        )
+        stale_id = listed.json()["keys"][0]["id"]
+
+        # What an OAuth refresh does between the list and the revoke.
+        rotated = self.keys.rotate(
+            project_id=self.project_a,
+            owner_user_id=USER_A,
+            parent_key_id=stale_id,
+            grant_scope="account",
+        )
+        successor = str(rotated["secret"])
+        self.assertEqual(
+            self.client.get(
+                f"/api/projects/{self.project_b}", headers=self._bearer(successor)
+            ).status_code,
+            200,
+        )
+
+        revoked = self.client.post(
+            f"/api/projects/{self.project_a}/keys/{stale_id}/revoke",
+            headers=self._bearer(self.jwt),
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+
+        # The successor the owner never saw must be dead as well.
+        self.assertEqual(
+            self.client.get(
+                f"/api/projects/{self.project_b}", headers=self._bearer(successor)
+            ).status_code,
+            401,
+        )
+
     def test_a_rotation_cannot_change_the_scope_it_inherited(self) -> None:
         # Defence in depth behind the OAuth path: even a direct rotate call
         # cannot turn an account grant into a project grant or the reverse.

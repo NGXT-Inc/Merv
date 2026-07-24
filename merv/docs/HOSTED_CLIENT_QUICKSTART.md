@@ -32,7 +32,7 @@ Pick a scope when you mint it:
 
 Mint one in the UI:
 
-1. Open [RapidReview](https://rapidreview.io/map) and sign in.
+1. Open [rapidreview.io/merv](https://rapidreview.io/merv) and sign in.
 2. Open any project you belong to (an account-scoped key is simply listed here).
 3. Create a key, choose its scope, and copy it when shown.
 

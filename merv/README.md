@@ -29,7 +29,8 @@ Then:
 3. Open your research repo and start a session:
 
 ```text
-Use Merv. Start with project(action="current"), then workflow.status_and_next.
+Use Merv. Start with project(action="list"), pick the project, then
+workflow.status_and_next(project_id).
 ```
 
 Each client connects straight to the hosted brain's `/mcp` endpoint. The committed

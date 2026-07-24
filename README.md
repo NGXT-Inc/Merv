@@ -53,16 +53,17 @@ Connect any agent platform to the **hosted brain** in two steps: mint a project
 key, then register the endpoint. No proxy, no daemon, no `pip` install. Running
 your own brain instead? See [Self-hosting](#self-hosting).
 
-### 1. Mint a project key
+### 1. Mint a key
 
-At [rapidreview.io/map](https://rapidreview.io/map): sign in, open or create a
-project, and mint a key (shown once). Export it where the agent runs:
+At [rapidreview.io/merv](https://rapidreview.io/merv): sign in, open or create
+a project, and mint a key (shown once). Leave the scope on **All my projects**
+so one key covers everything you belong to. Export it where the agent runs:
 
 ```bash
 export MERV_MCP_KEY=mk_...
 ```
 
-One key binds one project and is bearer-equivalent to full access — treat it
+A key is bearer-equivalent to full access to everything it is scoped to — treat it
 like a password. Browser platforms (claude.ai, Replit) use OAuth instead.
 
 ### 2. Connect your platform

@@ -44,8 +44,8 @@ SERVER_INSTRUCTIONS = (
     "Merv is a research-suite backend. Work is organized into projects, and "
     "one credential may reach several of them.\n\n"
     'Call project(action="list") first when you do not already know which '
-    "project the user means: it returns every project you can reach with its "
-    "id, name, summary, and creation date. Most other tools require an "
+    "project the user means: it returns every project you can work in with "
+    "its id, name, summary, and creation date. Most other tools require an "
     "explicit project_id, so carry the id from that list into each call. "
     "Never guess a project id.\n\n"
     'If your credential is bound to a single project, project(action="current") '

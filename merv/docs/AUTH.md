@@ -64,9 +64,9 @@ Any member can manage members (two-trusted-users model; no roles).
   `required: false` and the UI never loads supabase-js.
 - **MCP clients** (local Claude Code, cloud Codex, Replit, browser-driven):
   every agent connects directly to the brain's `POST /mcp` endpoint. Sign in
-  at [RapidReview Maps](https://rapidreview.io/map), open **Account →
-  Settings → API Keys**, mint a project-scoped key, and export it as
-  `MERV_MCP_KEY`. The committed `.mcp.json` uses `type: "http"`,
+  at [rapidreview.io/merv](https://rapidreview.io/merv), open a project's
+  **MCP keys**, mint a key (scope **All my projects** unless you deliberately
+  want it confined), and export it as `MERV_MCP_KEY`. The committed `.mcp.json` uses `type: "http"`,
   `url: "https://experiments.rapidreview.io/mcp"`, and
   `headers.Authorization: "Bearer ${MERV_MCP_KEY}"` — the key is read from the
   env var and is **never** inlined into a committed file (it is

@@ -57,8 +57,8 @@ class ProjectScopedInput(ContractModel):
     project_id: str = Field(
         description=(
             "Explicit project scope. Discover the id with "
-            'project(action="list"), which returns every project you can '
-            "reach with names and dates. A credential bound to a single "
+            'project(action="list"), which returns the projects you can work '
+            "in with names and dates. A credential bound to a single "
             "project may only pass that one; otherwise pass whichever project "
             "the user is asking about."
         )
@@ -74,8 +74,8 @@ class ProjectInput(ContractModel):
 
     action: Literal["list", "current", "create", "overview"] = Field(
         description=(
-            "list = every project you can reach, with names, summaries, and "
-            "creation dates — start here to pick a project_id; "
+            "list = every project you can work in, with names, summaries, "
+            "and creation dates — start here to pick a project_id; "
             "current = the project this credential is bound to, if it is "
             "bound to exactly one; "
             "overview = the whole-project read — every claim (incl. "
@@ -971,8 +971,9 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ProjectInput,
         description=(
             "Project navigation for this credential, dispatched on 'action'. "
-            'action=list returns every project you can reach — id, name, '
-            "summary, and creation date — and is how you pick the project_id "
+            "action=list returns every project you can work in — id, name, "
+            "summary, and creation date, minus any the user has stashed — and "
+            "is how you pick the project_id "
             "that most other tools require; call it first when you do not "
             "already know which project the user means. "
             "action=current returns the single project this credential is "

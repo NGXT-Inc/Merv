@@ -71,8 +71,8 @@ class ControlToolOperations:
             if not resolved:
                 raise ValidationError(
                     "project_id is required: this credential is not bound to a "
-                    'single project. Call project(action="list") to see every '
-                    "project you can reach, then pass project_id explicitly.",
+                    'single project. Call project(action="list") to see the '
+                    "projects you can work in, then pass project_id explicitly.",
                     details={"field": "project_id"},
                 )
             project = self.projects.get(project_id=resolved)
@@ -88,11 +88,13 @@ class ControlToolOperations:
         raise ValidationError(f'project action="{action}" is not recognized')
 
     def _reachable(self, *, user_id: str, key_project_id: str) -> dict[str, Any]:
-        """Every project this caller may address, newest identity last.
+        """Every project this caller may work in.
 
         ``key_project_id`` is set only for a credential confined to one
         project, and narrows the list to it. An account-scoped credential
-        passes none and sees its owner's whole membership.
+        passes none and sees its owner's whole membership. Stashed (hidden)
+        projects are omitted, matching the UI picker -- they stay reachable by
+        id, so this is a decluttered view rather than the authorization edge.
         """
         listed = self.projects.list_projects(
             user_id=user_id, project_id=key_project_id

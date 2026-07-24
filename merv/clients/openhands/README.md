@@ -7,9 +7,9 @@ instructions.
 
 ## Mint a project key
 
-Open [RapidReview](https://rapidreview.io/map), sign in, open or create the
+Open [rapidreview.io/merv](https://rapidreview.io/merv), sign in, open or create the
 project, and mint a key in the UI. Copy it when shown. The key is the bearer
-credential for exactly one immutable project; treat it like a password.
+credential for everything it is scoped to; treat it like a password.
 
 See the [hosted client quickstart](../../docs/HOSTED_CLIENT_QUICKSTART.md) for
 the full key flow.

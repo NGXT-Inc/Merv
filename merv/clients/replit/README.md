@@ -22,7 +22,7 @@ the client automatically before guiding sign-in.
 ## Bearer-header fallback
 
 For a static project key, first mint one in the UI at
-[RapidReview](https://rapidreview.io/map); see the
+[rapidreview.io/merv](https://rapidreview.io/merv); see the
 [hosted client quickstart](../../docs/HOSTED_CLIENT_QUICKSTART.md). Then open
 the server's advanced settings and add a custom header:
 

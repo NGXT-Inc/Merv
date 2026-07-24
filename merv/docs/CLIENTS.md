@@ -69,7 +69,7 @@ Shared invariants across all clients:
   `http://127.0.0.1:8787/mcp` and start `bin/merv-http`. Export `MERV_MCP_KEY`
   in your shell before launching a client and keep it out of version control —
   the key is never inlined into a committed manifest, and it is
-  bearer-equivalent to full access to its one bound project. OpenHands cannot
+  bearer-equivalent to full access to everything it is scoped to. OpenHands cannot
   ship the MCP connection in a repository, and Replit connections are
   account-scoped; configure those once through their documented setup surface.
 
