@@ -1812,10 +1812,20 @@ class UploadTokenRedactionTest(unittest.TestCase):
             redact_upload_tokens("/api/feed/u/tok_SECRET"),
             "/api/feed/u/<redacted>",
         )
+        # The storage completion token is scrubbed too (INV-12), keeping the
+        # /complete suffix so the route stays legible in the access log.
+        self.assertEqual(
+            redact_upload_tokens("/api/storage/u/tok_SECRET/complete"),
+            "/api/storage/u/<redacted>/complete",
+        )
         # Non-token routes pass through untouched.
         self.assertEqual(
             redact_upload_tokens("/api/projects/p_1/artifacts/art_1/content"),
             "/api/projects/p_1/artifacts/art_1/content",
+        )
+        self.assertEqual(
+            redact_upload_tokens("/api/projects/p_1/storage/sto_1"),
+            "/api/projects/p_1/storage/sto_1",
         )
 
 

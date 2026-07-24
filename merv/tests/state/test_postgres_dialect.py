@@ -307,6 +307,20 @@ def _schema_without_oauth_tables() -> str:
     return legacy
 
 
+def _schema_without_storage_completion_tokens() -> str:
+    """SCHEMA before the no-dataplane Phase-D storage completion-token table."""
+    legacy = re.sub(
+        r"\n-- Token-curl upload completion.*?"
+        r"CREATE TABLE IF NOT EXISTS storage_completion_tokens \(.*?\n\);\n",
+        "\n",
+        SCHEMA,
+        flags=re.DOTALL,
+    )
+    if legacy == SCHEMA or "storage_completion_tokens" in legacy:
+        raise AssertionError("failed to build the pre-completion-token schema")
+    return legacy
+
+
 def _schema_without_feed_upload_tokens() -> str:
     """SCHEMA before the no-dataplane Phase-D.1 feed-media token table."""
     legacy = re.sub(
@@ -852,6 +866,78 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         self.assertEqual(store.user_hf_token(user_id="user_pg"), "hf_pg_rotated")
         store.clear_user_hf_token(user_id="user_pg")
         self.assertEqual(store.user_hf_token(user_id="user_pg"), "")
+
+    def test_legacy_postgres_store_gains_storage_completion_tokens(self) -> None:
+        """Old-DB upgrade through no-dataplane Phase D: replay ledger rows < 33
+        against a schema without storage_completion_tokens, re-open, and confirm
+        migration 33 creates the table (SCHEMA-extracted DDL gated by
+        _has_table) without disturbing an existing storage object."""
+        dsn = _reset_database()
+        import psycopg
+
+        legacy_schema = _schema_without_storage_completion_tokens()
+        created = now_iso()
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(translate_schema_to_postgres(legacy_schema))
+            for version, name, _statement in MIGRATIONS:
+                if version >= 33:
+                    continue
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) "
+                    "VALUES (%s, %s, %s)",
+                    (version, name, created),
+                )
+            conn.execute(
+                "INSERT INTO projects (id, name, summary, created_at) "
+                "VALUES (%s, %s, %s, %s)",
+                ("proj_tok_old", "Old", "", created),
+            )
+            conn.execute(
+                """
+                INSERT INTO storage_objects
+                  (id, project_id, name, version, kind, content_sha256, size_bytes,
+                   namespace, status, created_at, updated_at)
+                VALUES ('sto_old', 'proj_tok_old', 'datasets/x', 1, 'dataset',
+                        'a' , 4, 'proj_tok_old', 'available', %s, %s)
+                """,
+                (created, created),
+            )
+
+        store = PostgresStateStore(dsn=dsn)
+        conn = store.connect()
+        try:
+            self.assertTrue(
+                store._has_table(conn=conn, table="storage_completion_tokens")
+            )
+            for column in (
+                "token",
+                "project_id",
+                "object_id",
+                "upload_id",
+                "status",
+                "expires_at",
+                "created_at",
+            ):
+                self.assertTrue(
+                    store._has_column(
+                        conn=conn, table="storage_completion_tokens", column=column
+                    ),
+                    column,
+                )
+            # The pre-existing storage object is untouched by the table add.
+            obj = conn.execute(
+                "SELECT status FROM storage_objects WHERE id = 'sto_old'"
+            ).fetchone()
+            self.assertEqual(str(obj["status"]), "available")
+            ledger = conn.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            self.assertEqual(
+                [(int(r["version"]), str(r["name"])) for r in ledger],
+                [(version, name) for version, name, _statement in MIGRATIONS],
+            )
+        finally:
+            conn.close()
 
     def test_legacy_postgres_sandboxes_gain_uid_and_attachments(self) -> None:
         dsn = _reset_database()

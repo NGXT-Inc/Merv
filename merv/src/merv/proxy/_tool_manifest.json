@@ -1433,12 +1433,12 @@
       "visibility": "internal"
     },
     {
-      "description": "Upload a local file to durable storage and complete the ledger object in one call. Relative paths are resolved against the project repo root; omit name to use the repo-relative path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
-      "executionStrategy": "local-orchestration",
+      "description": "Register a heavy file and get a one-line `run` command to upload it. Compute the file's sha256 and size, call this, then execute the returned command verbatim \u2014 it PUTs the bytes straight to object storage and finalizes the ledger object (bytes never pass through the agent context or the brain). Omit name to use the path. Use storage for files that are too large or noisy for the repo or artifact submission, or expensive to regenerate: checkpoints/models, precious datasets, dataset shards, parquet/archive outputs, generated caches that must survive, and logs/traces over about 10 MB.",
+      "executionStrategy": "control",
       "featureRequirements": [
         "storage"
       ],
-      "handlerIdentity": "local.upload_storage_file",
+      "handlerIdentity": "storage.submit",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1458,7 +1458,7 @@
           },
           "name": {
             "default": "",
-            "description": "Optional storage object name. Defaults to the repo-relative path.",
+            "description": "Optional storage object name. Defaults to the path.",
             "title": "Name",
             "type": "string"
           },
@@ -1468,7 +1468,7 @@
             "type": "string"
           },
           "path": {
-            "description": "Repo-relative file path to upload ('..' and absolute paths are rejected).",
+            "description": "Local file path to upload. Embedded verbatim into the returned `curl -T` command (which you run) and the default object name.",
             "title": "Path",
             "type": "string"
           },
@@ -1487,6 +1487,17 @@
             "title": "Project Id",
             "type": "string"
           },
+          "sha256": {
+            "description": "Client-computed SHA-256 (hex) of the file. Feeds name+sha dedup and is bound into the presigned checksum; identity is re-verified on completion.",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "File size in bytes; presigns the upload and enforces the size cap.",
+            "minimum": 0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
           "source_uri": {
             "default": "",
             "title": "Source Uri",
@@ -1496,13 +1507,15 @@
         "required": [
           "project_id",
           "path",
-          "kind"
+          "kind",
+          "sha256",
+          "size_bytes"
         ],
         "type": "object"
       },
       "localHandlerIdentity": null,
-      "name": "storage.upload_file",
-      "plane": "data",
+      "name": "storage.submit",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -1691,12 +1704,12 @@
       "visibility": "public"
     },
     {
-      "description": "Resolve a storage object and download it to a local file, verifying size and sha256 before replacing the destination.",
-      "executionStrategy": "local-orchestration",
+      "description": "Resolve a storage object and get a one-line `run` command to download it. Pass object_id or name (with optional version), then execute the returned command verbatim \u2014 it curls the bytes to your path and verifies the stored sha256.",
+      "executionStrategy": "control",
       "featureRequirements": [
         "storage"
       ],
-      "handlerIdentity": "local.download_storage_file",
+      "handlerIdentity": "storage.fetch",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1724,14 +1737,8 @@
             "default": null,
             "title": "Object Id"
           },
-          "overwrite": {
-            "default": false,
-            "description": "Refuse to replace an existing local file unless true.",
-            "title": "Overwrite",
-            "type": "boolean"
-          },
           "path": {
-            "description": "Repo-relative destination path ('..' and absolute paths are rejected).",
+            "description": "Local destination path. Embedded verbatim into the returned `curl -o` command, which you run.",
             "title": "Path",
             "type": "string"
           },
@@ -1761,8 +1768,8 @@
         "type": "object"
       },
       "localHandlerIdentity": null,
-      "name": "storage.download_file",
-      "plane": "data",
+      "name": "storage.fetch",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },

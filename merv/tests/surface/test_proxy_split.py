@@ -541,9 +541,9 @@ class ProxyIdentityResolutionTest(unittest.TestCase):
                 return {}
 
         proxy._local_data_plane = _Executor()  # type: ignore[assignment]
-        proxy._call_local_data(name="storage.upload_file", arguments={"project_id": "proj_evil"})
+        proxy._call_local_data(name="feed.post", arguments={"project_id": "proj_evil"})
 
-        self.assertEqual(captured["name"], "storage.upload_file")
+        self.assertEqual(captured["name"], "feed.post")
         self.assertNotIn("project_id", captured["arguments"])
 
 

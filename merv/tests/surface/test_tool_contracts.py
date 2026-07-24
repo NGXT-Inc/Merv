@@ -23,11 +23,11 @@ from merv.brain.surface.tools.contracts import (
     SandboxPullOutputsInput,
     SandboxRequestInput,
     StorageCompleteUploadInput,
-    StorageDownloadFileInput,
+    StorageFetchInput,
     StorageFindInput,
     StorageObjectInput,
     StoragePutObjectInput,
-    StorageUploadFileInput,
+    StorageSubmitInput,
     STORAGE_TOOL_NAMES,
     TOOL_CONTRACTS,
     TOOL_MANIFEST,
@@ -197,9 +197,9 @@ class ToolContractRegistryTest(unittest.TestCase):
     def test_storage_tools_registered_with_expected_input_models(self) -> None:
         expected = {
             "storage.put_object": (StoragePutObjectInput, "control"),
-            "storage.upload_file": (StorageUploadFileInput, "data"),
+            "storage.submit": (StorageSubmitInput, "control"),
             "storage.complete_upload": (StorageCompleteUploadInput, "control"),
-            "storage.download_file": (StorageDownloadFileInput, "data"),
+            "storage.fetch": (StorageFetchInput, "control"),
             "storage.find": (StorageFindInput, "control"),
             "storage.object": (StorageObjectInput, "control"),
         }
@@ -220,7 +220,7 @@ class ToolContractRegistryTest(unittest.TestCase):
         ):
             self.assertNotIn(removed, TOOL_CONTRACTS)
         self.assertIn("checkpoints/models", TOOL_CONTRACTS["storage.put_object"].description)
-        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.upload_file"].description)
+        self.assertIn("logs/traces over about 10 MB", TOOL_CONTRACTS["storage.submit"].description)
 
     def test_storage_find_enforces_resolve_vs_list_mode(self) -> None:
         # List mode: neither selector.

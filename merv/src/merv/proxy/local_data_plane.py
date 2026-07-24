@@ -7,9 +7,6 @@ shared helpers are imported lazily inside methods to keep startup light.
 
 from __future__ import annotations
 
-import mimetypes
-import uuid
-from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -215,111 +212,6 @@ class LocalDataPlane:
         return materialize_experiment_folders(
             repo_root=self.repo_root, experiments=experiments
         )
-
-    def _upload_storage_file(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
-        from merv.shared.file_transfer import file_digest, upload_file_to_target
-
-        project_id = self._project_id()
-        file_path = self._resolve_local_path(path=self._required_arg(arguments, "path"))
-        if not file_path.exists():
-            raise LocalDataPlaneError(f"storage upload file not found: {file_path}")
-        if not file_path.is_file():
-            raise LocalDataPlaneError(f"storage upload path is not a file: {file_path}")
-        sha256, size_bytes = file_digest(file_path)
-        content_type = (
-            str(arguments.get("content_type") or "")
-            or mimetypes.guess_type(str(file_path))[0]
-            or "application/octet-stream"
-        )
-        payload = {
-            "project_id": project_id,
-            "name": str(arguments.get("name") or "")
-            or file_path.relative_to(self.repo_root).as_posix(),
-            "kind": self._required_arg(arguments, "kind"),
-            "sha256": sha256,
-            "size_bytes": size_bytes,
-            "content_type": content_type,
-            "producing_experiment_id": str(
-                arguments.get("producing_experiment_id") or ""
-            ),
-            "producing_run": str(arguments.get("producing_run") or ""),
-            "source_uri": str(arguments.get("source_uri") or ""),
-            "notes": str(arguments.get("notes") or ""),
-        }
-        registered = self._control_tool_call("storage.put_object", payload)
-        result: dict[str, Any] = {
-            key: value for key, value in registered.items() if key != "upload"
-        }
-        result["path"] = str(file_path)
-        result["sha256"] = sha256
-        result["size_bytes"] = size_bytes
-        result["uploaded"] = False
-        upload = registered.get("upload")
-        if not upload:
-            return result
-        completed_parts = upload_file_to_target(
-            upload=upload,
-            file_path=file_path,
-            size_bytes=size_bytes,
-            content_type=content_type,
-        )
-        completed = self._control_tool_call(
-            "storage.complete_upload",
-            {
-                "project_id": project_id,
-                "upload_id": str(upload["upload_id"]),
-                "parts": completed_parts,
-            },
-        )
-        result["object"] = completed
-        result["uploaded"] = True
-        return result
-
-    def _download_storage_file(self, *, arguments: dict[str, Any]) -> dict[str, Any]:
-        from merv.shared.file_transfer import download_target_to_file, file_digest
-
-        project_id = self._project_id()
-        target = self._resolve_local_path(path=self._required_arg(arguments, "path"))
-        if target.exists() and not bool(arguments.get("overwrite")):
-            raise LocalDataPlaneError(
-                f"download target already exists; pass overwrite=true to replace: {target}"
-            )
-        resolved = self._control_tool_call(
-            "storage.find",
-            {
-                "project_id": project_id,
-                "object_id": arguments.get("object_id"),
-                "name": arguments.get("name"),
-                "version": arguments.get("version"),
-                "include_download": True,
-            },
-        )
-        obj = resolved["object"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.tmp-{uuid.uuid4().hex}")
-        try:
-            download_target_to_file(download=resolved["download"], path=tmp)
-            sha256, size_bytes = file_digest(tmp)
-            if sha256 != str(obj["content_sha256"]):
-                raise LocalDataPlaneError(
-                    "downloaded storage object checksum mismatch: "
-                    f"{sha256} != {obj['content_sha256']}"
-                )
-            if size_bytes != int(obj["size_bytes"]):
-                raise LocalDataPlaneError(
-                    "downloaded storage object size mismatch: "
-                    f"{size_bytes} != {obj['size_bytes']} bytes"
-                )
-            tmp.replace(target)
-        finally:
-            with suppress(FileNotFoundError):
-                tmp.unlink()
-        return {
-            "object": obj,
-            "path": str(target),
-            "downloaded": True,
-            "bytes_written": int(obj["size_bytes"]),
-        }
 
     def _project_id(self) -> str:
         project_id = self._project_id_resolver()

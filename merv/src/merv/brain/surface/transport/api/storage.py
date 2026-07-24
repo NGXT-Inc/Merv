@@ -16,6 +16,18 @@ def build_router(*, storage: ObjectStorage | None) -> APIRouter:
             raise NotFoundError("storage is not enabled on this backend")
         return storage
 
+    @api_router.post("/api/storage/u/{token}/complete")
+    def complete_storage_upload(token: str) -> dict[str, Any]:
+        # Auth-exempt (see RequestAuthenticator) and bodyless: the one-time
+        # completion token minted by storage.submit is the whole credential.
+        # Token-first — an unknown/expired/used token 404s before any object
+        # work — and single-use. Server-side it runs the internal
+        # complete_upload head-verify, so a key agent (barred from that internal
+        # tool over MCP) still finalizes its direct-to-S3 upload.
+        if storage is None:
+            raise NotFoundError("storage is not enabled on this backend")
+        return storage.complete_via_token(token=token)
+
     @api_router.get("/api/projects/{project_id}/storage")
     def list_storage(
         project_id: str,

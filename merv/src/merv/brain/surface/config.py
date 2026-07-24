@@ -22,7 +22,7 @@ from merv.shared.client_config import (
     resolve_client_config_path,
 )
 
-from ..kernel.env import env_value
+from ..kernel.env import env_int, env_value
 from ..kernel.ports.blob_store import BlobStore
 from ..kernel.utils import ValidationError
 
@@ -47,6 +47,7 @@ STORAGE_ENDPOINT_URL_ENV_VAR = "MERV_STORAGE_ENDPOINT_URL"
 STORAGE_REGION_ENV_VAR = "MERV_STORAGE_REGION"
 STORAGE_ACCESS_KEY_ID_ENV_VAR = "MERV_STORAGE_ACCESS_KEY_ID"
 STORAGE_SECRET_ACCESS_KEY_ENV_VAR = "MERV_STORAGE_SECRET_ACCESS_KEY"
+STORAGE_MAX_UPLOAD_BYTES_ENV_VAR = "MERV_STORAGE_MAX_UPLOAD_BYTES"
 MGMT_KEY_PATH_ENV_VAR = "MERV_MGMT_KEY_PATH"
 MGMT_PUBLIC_KEY_ENV_VAR = "MERV_MGMT_PUBLIC_KEY"
 ALLOWED_ORIGINS_ENV_VAR = "MERV_ALLOWED_ORIGINS"
@@ -152,6 +153,19 @@ def resolve_storage_provider(env: Mapping[str, str] | None = None) -> str | None
 
 def resolve_storage_bucket(env: Mapping[str, str] | None = None) -> str | None:
     return env_value(STORAGE_BUCKET_ENV_VAR, env=env)
+
+
+def resolve_storage_max_upload_bytes(env: Mapping[str, str] | None = None) -> int:
+    """Absolute server-side ceiling for a storage.submit upload (default 50 GB).
+    A non-integer value falls back to the default rather than failing startup."""
+    from ..object_storage.service import DEFAULT_MAX_UPLOAD_BYTES
+
+    return env_int(
+        STORAGE_MAX_UPLOAD_BYTES_ENV_VAR,
+        DEFAULT_MAX_UPLOAD_BYTES,
+        env=env,
+        strict=False,
+    )
 
 
 def resolve_storage_endpoint_url(env: Mapping[str, str] | None = None) -> str | None:

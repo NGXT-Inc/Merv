@@ -243,6 +243,24 @@ CREATE TABLE IF NOT EXISTS storage_objects (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+-- Token-curl upload completion (no-dataplane Phase D). storage.submit mints a
+-- one-time, expiring token bound to a pending upload; the auth-exempt bodyless
+-- POST /api/storage/u/<token>/complete is the ONLY wire-reachable completion for
+-- a key agent (storage.complete_upload is internal and rejected over MCP), so
+-- without it a direct-to-S3 object stays uploading forever. Single-use: the row
+-- is deleted once a head-verified completion succeeds.
+CREATE TABLE IF NOT EXISTS storage_completion_tokens (
+  token TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  upload_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id),
+  FOREIGN KEY(object_id) REFERENCES storage_objects(id)
+);
+
 CREATE TABLE IF NOT EXISTS review_requests (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -828,6 +846,11 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # runs the SCHEMA-extracted DDL behind a _has_table gate so ledger and
     # SCHEMA cannot drift.
     (32, "add_feed_upload_tokens", ""),
+    # No-dataplane Phase D (storage token-curl): the one-time completion-token
+    # table backing the auth-exempt POST /api/storage/u/<token>/complete route.
+    # SCHEMA creates it on fresh DBs; the handler runs the SCHEMA-extracted DDL
+    # so ledger and SCHEMA cannot drift.
+    (33, "add_storage_completion_tokens", ""),
 )
 
 
@@ -1006,6 +1029,9 @@ class BaseStateStore:
         elif name == "add_feed_upload_tokens":
             if not self._has_table(conn=conn, table="feed_upload_tokens"):
                 conn.execute(_schema_table_ddl(table="feed_upload_tokens"))
+        elif name == "add_storage_completion_tokens":
+            if not self._has_table(conn=conn, table="storage_completion_tokens"):
+                conn.execute(_schema_table_ddl(table="storage_completion_tokens"))
         else:
             conn.execute(statement)
 

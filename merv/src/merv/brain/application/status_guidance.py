@@ -560,7 +560,7 @@ class StatusGuidancePolicy:
     def _result_artifact_guidance(self) -> dict[str, Any]:
         heavy_retention = (
             "copy light files out over SSH into the local experiment folder "
-            "or upload heavy files with storage.upload_file, then submit the "
+            "or upload heavy files with storage.submit, then submit the "
             "retained metrics JSON with artifact.submit (role 'result')."
             if self.storage_guidance.get("enabled")
             else (

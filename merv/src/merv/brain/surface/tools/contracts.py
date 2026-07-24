@@ -469,17 +469,28 @@ class StoragePutObjectInput(ProjectScopedInput):
     notes: str = ""
 
 
-class StorageUploadFileInput(ProjectScopedInput):
+class StorageSubmitInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Repo-relative file path to upload ('..' and absolute paths are "
-            "rejected)."
+            "Local file path to upload. Embedded verbatim into the returned "
+            "`curl -T` command (which you run) and the default object name."
         )
     )
     kind: Literal["dataset", "model", "other"]
+    sha256: str = Field(
+        description=(
+            "Client-computed SHA-256 (hex) of the file. Feeds name+sha dedup and "
+            "is bound into the presigned checksum; identity is re-verified on "
+            "completion."
+        )
+    )
+    size_bytes: int = Field(
+        ge=0,
+        description="File size in bytes; presigns the upload and enforces the size cap.",
+    )
     name: str = Field(
         default="",
-        description="Optional storage object name. Defaults to the repo-relative path.",
+        description="Optional storage object name. Defaults to the path.",
     )
     content_type: str = ""
     producing_experiment_id: str = ""
@@ -527,19 +538,16 @@ class StorageFindInput(ProjectScopedInput):
         return self
 
 
-class StorageDownloadFileInput(ProjectScopedInput):
+class StorageFetchInput(ProjectScopedInput):
     path: str = Field(
         description=(
-            "Repo-relative destination path ('..' and absolute paths are " "rejected)."
+            "Local destination path. Embedded verbatim into the returned "
+            "`curl -o` command, which you run."
         )
     )
     object_id: str | None = None
     name: str | None = None
     version: int | None = Field(default=None, ge=1)
-    overwrite: bool = Field(
-        default=False,
-        description="Refuse to replace an existing local file unless true.",
-    )
 
 
 class StorageObjectInput(ProjectScopedInput):
@@ -1320,15 +1328,16 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             f"{STORAGE_RULE_OF_THUMB}"
         ),
     ),
-    "storage.upload_file": ToolContract(
-        handler_identity="local.upload_storage_file",
-        execution_strategy="local-orchestration",
+    "storage.submit": ToolContract(
+        handler_identity="storage.submit",
         feature_requirements=("storage",),
-        input_model=StorageUploadFileInput,
+        input_model=StorageSubmitInput,
         description=(
-            "Upload a local file to durable storage and complete the ledger "
-            "object in one call. Relative paths are resolved against the "
-            "project repo root; omit name to use the repo-relative path. "
+            "Register a heavy file and get a one-line `run` command to upload it. "
+            "Compute the file's sha256 and size, call this, then execute the "
+            "returned command verbatim — it PUTs the bytes straight to object "
+            "storage and finalizes the ledger object (bytes never pass through "
+            "the agent context or the brain). Omit name to use the path. "
             f"{STORAGE_RULE_OF_THUMB}"
         ),
     ),
@@ -1352,14 +1361,15 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "pass compact=true for a lean projection."
         ),
     ),
-    "storage.download_file": ToolContract(
-        handler_identity="local.download_storage_file",
-        execution_strategy="local-orchestration",
+    "storage.fetch": ToolContract(
+        handler_identity="storage.fetch",
         feature_requirements=("storage",),
-        input_model=StorageDownloadFileInput,
+        input_model=StorageFetchInput,
         description=(
-            "Resolve a storage object and download it to a local file, verifying "
-            "size and sha256 before replacing the destination."
+            "Resolve a storage object and get a one-line `run` command to "
+            "download it. Pass object_id or name (with optional version), then "
+            "execute the returned command verbatim — it curls the bytes to your "
+            "path and verifies the stored sha256."
         ),
     ),
     "storage.object": ToolContract(

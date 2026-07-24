@@ -222,11 +222,13 @@ class HostedControlSurfaceTest(unittest.TestCase):
         # agent's own curl), so it is MCP-visible like artifact.submit.
         self.assertIn("feed.post", names)
 
+        # experiment.materialize_folders still requires the local proxy (it
+        # writes the repo tree), so hosted control refuses it over MCP.
         rejected = self.client.post(
             "/mcp/call",
             json={
-                "name": "storage.upload_file",
-                "arguments": {"path": "x.bin", "kind": "model"},
+                "name": "experiment.materialize_folders",
+                "arguments": {"project_id": "p_x", "experiment_id": "exp_x"},
             },
         )
         self.assertEqual(rejected.status_code, 400, rejected.text)

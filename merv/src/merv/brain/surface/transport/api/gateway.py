@@ -48,12 +48,12 @@ class RequestAuthenticator:
         request.state.principal = LOCAL_PRINCIPAL
         request.state.authenticated = False
         path = request.url.path
-        if (
-            path in ("/health", "/api/meta", "/internal/auth/mlflow")
-            or path.startswith(("/api/sdk/auth/", "/api/artifacts/u/",
-                                "/api/artifacts/f/", "/api/feed/u/"))
-            or oauth.public_request(request, enabled=self.oauth_enabled)
-        ):
+        # Token-bearer routes carry their own credential (INV-12).
+        exempt = ("/api/sdk/auth/", "/api/artifacts/u/", "/api/artifacts/f/",
+                  "/api/feed/u/", "/api/storage/u/")
+        if (path in ("/health", "/api/meta", "/internal/auth/mlflow")
+                or path.startswith(exempt)
+                or oauth.public_request(request, enabled=self.oauth_enabled)):
             return None
         client_version = request.headers.get(CLIENT_VERSION_HEADER)
         if (
@@ -227,8 +227,8 @@ class ToolInvocationGateway:
             internal_kwargs = {"user_id": user_id}
             if key_project_id and name == "project.list":
                 internal_kwargs["project_id"] = key_project_id  # bound project only
-        if name in ("artifact.submit", "feed.post") and base_url:
-            # Both render a token-curl one-liner against the caller-reachable base.
+        if name in ("artifact.submit", "feed.post", "storage.submit") and base_url:
+            # Each renders a token-curl one-liner against the caller-reachable base.
             internal_kwargs = {"base_url": base_url}
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)

@@ -33,9 +33,10 @@ UI_CORS_HEADERS = [
 UI_CORS_EXPOSE_HEADERS = ["ETag"]
 
 # Upload tokens are bearer credentials living in the URL path; the activity log
-# must never persist them. Shared choke-point across every auth-exempt token PUT
-# (INV-12): artifact document/figure uploads and feed-media uploads today.
-_UPLOAD_TOKEN_PATH_RE = re.compile(r"(/api/(?:artifacts/[uf]|feed/u)/)[^/?]+")
+# must never persist them. Shared choke-point across every auth-exempt token
+# route (INV-12): artifact document/figure PUTs, feed-media PUTs, and the
+# storage completion POST.
+_UPLOAD_TOKEN_PATH_RE = re.compile(r"(/api/(?:artifacts/[uf]|feed/u|storage/u)/)[^/?]+")
 
 
 def redact_upload_tokens(path: str) -> str:
