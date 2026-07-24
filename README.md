@@ -31,7 +31,7 @@ After a set of experiments is complete, the plugin drives a project-wide reflect
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/system-architecture-dark.svg">
-  <img alt="System architecture: agent platforms connect directly to the brain over HTTP MCP with a project key; the brain owns durable records and workflow gates and provisions cloud sandboxes; agents run SSH commands and pull retained outputs themselves. The frontend supervises the brain." src="assets/system-architecture-light.svg">
+  <img alt="System architecture: agent platforms connect directly to the brain over HTTP MCP with a bearer key; the brain owns durable records and workflow gates and provisions cloud sandboxes; agents run SSH commands and pull retained outputs themselves. The frontend supervises the brain." src="assets/system-architecture-light.svg">
 </picture>
 
 Merv has three main pieces:
@@ -49,9 +49,11 @@ Brain management keys remain separate operational credentials.
 
 ## Set up
 
-Connect any agent platform to the **hosted brain** in two steps: mint a project
-key, then register the endpoint. No proxy, no daemon, no `pip` install. Running
-your own brain instead? See [Self-hosting](#self-hosting).
+Connect any agent platform to the **hosted brain** in two steps: mint a key,
+then register the endpoint. No proxy, no daemon, no `pip` install. One key
+covers every project you belong to, on every platform — local and cloud alike —
+so this is a one-time setup, not a per-project one. Running your own brain
+instead? See [Self-hosting](#self-hosting).
 
 ### 1. Mint a key
 
@@ -63,8 +65,13 @@ so one key covers everything you belong to. Export it where the agent runs:
 export MERV_MCP_KEY=mk_...
 ```
 
-A key is bearer-equivalent to full access to everything it is scoped to — treat it
-like a password. Browser platforms (claude.ai, Replit) use OAuth instead.
+A key is bearer-equivalent to full access to everything it is scoped to — treat
+it like a password. It never expires, and it follows your project membership as
+that changes, so there is nothing to rotate when you join or leave a project.
+
+Browser platforms (claude.ai, Replit) use OAuth instead: approve **All my
+projects** at the consent screen and the platform refreshes itself from then
+on. Revoke either kind any time from a project's **MCP keys** page.
 
 ### 2. Connect your platform
 
@@ -109,8 +116,10 @@ Full per-platform notes: [CLIENTS.md](merv/docs/CLIENTS.md).
 
 ### 3. First run
 
-Ask the agent to call `project(action="list")` to see the projects it can reach,
-then `workflow.status_and_next(project_id)`. Follow along at
+Ask the agent to call `project(action="list")` — it comes back with the
+projects you can work in, by name — then `workflow.status_and_next(project_id)`
+for the one you mean. Switching projects later is just a different id in the
+call; there is no reconnecting. Follow along at
 [rapidreview.io/merv](https://rapidreview.io/merv).
 
 ## Self-hosting
