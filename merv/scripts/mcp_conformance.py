@@ -3,7 +3,8 @@
 
 Every agent platform — Claude Code, Codex, Cursor, Replit, OpenHands, claude.ai —
 reaches the brain the same way: a Streamable-HTTP MCP client speaking JSON-RPC to
-``POST /mcp`` with a project-scoped bearer key, or the OAuth 2.1 browser flow. This
+``POST /mcp`` with an ``mk_`` bearer key (project- or account-scoped), or the
+OAuth 2.1 browser flow. This
 script exercises that exact wire with nothing but the standard library, so a green
 run here is the same signal any platform's MCP client would see.
 
@@ -175,7 +176,8 @@ def keyed_checks(base: str, key: str, c: Checks) -> None:
         c.fail("tools/list", f"HTTP {status}; body={result}")
         return
 
-    # project(action="current") is how an agent learns its key-bound project id.
+    # How an agent learns a project id. A project-scoped key answers with its
+    # one binding; an account-scoped key has no single "current", so it lists.
     status, result, _ = _post_mcp(
         base,
         {
@@ -189,6 +191,14 @@ def keyed_checks(base: str, key: str, c: Checks) -> None:
     project_id = _tool_field(result, "project", "id") or _tool_field(result, None, "project_id")
     if status == 200 and project_id:
         c.ok("project(current)", f"bound project {project_id}")
+    elif status == 200:
+        projects = _tool_field(result, None, "projects") or []
+        if projects:
+            project_id = str(projects[0].get("id") or "")
+            c.ok("project(list)", f"{len(projects)} reachable; using {project_id}")
+        else:
+            c.fail("project(list)", f"no reachable projects; body={_short(result)}")
+            return
     else:
         c.fail("project(current)", f"HTTP {status}; body={_short(result)}")
         return
