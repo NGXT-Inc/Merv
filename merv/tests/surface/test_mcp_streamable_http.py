@@ -486,21 +486,31 @@ class McpStreamablePreflightTest(unittest.TestCase):
 
     def test_key_create_and_review_scope_deny_before_the_stream(self) -> None:
         """The BUILT preauthorizer (not a fake) must deny a key principal's
-        project-create and a foreign review session synchronously, so the
-        denial is a transport error even with a slow executor."""
+        project-create, a key's foreign review session (403: key equality
+        first, like production), and a plain user's foreign review request
+        (404: membership miss) — all synchronously, so the denial is a
+        transport error even with a slow executor."""
         from types import SimpleNamespace
 
+        from merv.brain.surface.identity import ProjectKeyScopeError
         from merv.brain.surface.transport.api.mcp_preauth import (
             build_mcp_preauthorizer,
         )
         from merv.shared.errors import NotFoundError
 
         class _Authorizer:
+            """Mirrors production ordering: key equality BEFORE membership."""
+
             @staticmethod
             def key_project_id(principal):
                 return getattr(principal, "key_project_id", "")
 
             def require_member(self, *, project_id, principal):
+                key = self.key_project_id(principal)
+                if key and project_id and project_id != key:
+                    raise ProjectKeyScopeError(
+                        "project API key cannot access a different project"
+                    )
                 if project_id == "p_foreign":
                     raise NotFoundError(f"project not found: {project_id}")
 
@@ -513,12 +523,11 @@ class McpStreamablePreflightTest(unittest.TestCase):
         )
 
         app = FastAPI()
+        holder = {"principal": SimpleNamespace(user_id="u1", key_project_id="p_bound")}
 
         @app.middleware("http")
-        async def bind_key_principal(request, call_next):
-            request.state.principal = SimpleNamespace(
-                user_id="u1", key_project_id="p_bound"
-            )
+        async def bind_principal(request, call_next):
+            request.state.principal = holder["principal"]
             return await call_next(request)
 
         def call_tool(name, arguments, context, request):
@@ -527,7 +536,9 @@ class McpStreamablePreflightTest(unittest.TestCase):
 
         register_mcp_routes(
             app,
-            list_tools=lambda: [{"name": "project"}, {"name": "review.submit"}],
+            list_tools=lambda: [
+                {"name": "project"}, {"name": "review.start"}, {"name": "review.submit"},
+            ],
             call_tool=call_tool,
             authorize_scope=preauthorize,
         )
@@ -538,10 +549,19 @@ class McpStreamablePreflightTest(unittest.TestCase):
             {"name": "project", "arguments": {"action": "create", "name": "evil"}},
         )
         self.assertEqual(response.status_code, 403, response.text)
+        # A key riding a foreign session id hits key equality first: 403.
         response = mcp.request(
             "tools/call",
             {"name": "review.submit",
              "arguments": {"review_session_id": "rs_foreign"}},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+        # A plain user's foreign review request is a membership miss: 404.
+        holder["principal"] = SimpleNamespace(user_id="u2", key_project_id="")
+        response = mcp.request(
+            "tools/call",
+            {"name": "review.start",
+             "arguments": {"review_request_id": "rr_foreign"}},
         )
         self.assertEqual(response.status_code, 404, response.text)
         self.assertTrue(

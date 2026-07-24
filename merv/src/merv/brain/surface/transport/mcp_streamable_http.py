@@ -80,7 +80,7 @@ class ScopeAuthorizer(Protocol):
     """Resolves every pre-flight denial for a tool call (key-project equality,
     membership, key create block, review-derived scope), raising
     ProjectKeyScopeError / NotFoundError. Runs synchronously so a slow denial
-    is a transport 403, never a mid-stream error."""
+    is a transport 403/404, never a mid-stream error."""
 
     def __call__(self, request: Request, name: str, arguments: dict[str, Any]) -> None: ...
 
@@ -382,8 +382,9 @@ class McpStreamableHttp:
     ) -> JSONResponse | None:
         """INV-5/INV-11 (FIX 6): resolve project scope and the internal-tool block
         SYNCHRONOUSLY — before the SSE stream can commit a 200 — so a slow scope
-        or visibility denial is always a transport 403, never a mid-stream error.
-        Tool execution alone runs behind the stream."""
+        or visibility denial is always a transport 403 (404 for membership
+        misses), never a mid-stream error. Tool execution alone runs behind
+        the stream."""
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
         try:
             if self._authorize_scope is not None:

@@ -3,8 +3,9 @@
 Mirrors every gateway dispatch check that can deny a call WITHOUT running the
 tool — project scope (key equality + membership), the key project-create
 block, and review-request/session-derived scope (INV-9) — so denials always
-commit as transport 403s before the SSE stream can open with a 200. The
-gateway dispatch path keeps the same checks and stays authoritative.
+commit as transport errors (403 for scope/visibility, 404 for membership
+misses) before the SSE stream can open with a 200. The gateway dispatch path
+keeps the same checks and stays authoritative.
 """
 
 from __future__ import annotations
