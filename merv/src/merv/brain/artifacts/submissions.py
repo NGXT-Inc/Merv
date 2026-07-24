@@ -50,6 +50,8 @@ from .association_policy import validate_artifact_association
 from .ports import (
     AssociatedEvidence,
     AssociationTargetResolver,
+    MAX_SUBMITTED_TEXT_BYTES,
+    SubmittedContent,
     SubmittedDocument,
     SubmittedEvidence,
 )
@@ -570,6 +572,62 @@ class ArtifactSubmissionService:
             path=path,
             role=str(row["role"]),
             figure_links=figure_links,
+        )
+
+    def bounded_text_for_artifact(self, *, artifact_id: str) -> SubmittedContent:
+        """Best-effort submitted text capped to the gated-content endpoint limit."""
+        artifact_id = str(artifact_id)
+        if not artifact_id or self.blobs is None:
+            return SubmittedContent(
+                artifact_id=artifact_id,
+                content=None,
+                size_bytes=0,
+                truncated=False,
+            )
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT project_id, content_sha256, size_bytes
+                FROM artifacts
+                WHERE id = ? AND status = 'complete'
+                """,
+                (artifact_id,),
+            ).fetchone()
+        if row is None:
+            return SubmittedContent(
+                artifact_id=artifact_id,
+                content=None,
+                size_bytes=0,
+                truncated=False,
+            )
+        size_bytes = int(row["size_bytes"] or 0)
+        try:
+            data = self.blobs.get(
+                namespace=str(row["project_id"]),
+                sha256=str(row["content_sha256"]),
+            )
+        except NotFoundError:
+            return SubmittedContent(
+                artifact_id=artifact_id,
+                content=None,
+                size_bytes=size_bytes,
+                truncated=False,
+            )
+        bounded = data[:MAX_SUBMITTED_TEXT_BYTES]
+        text = bounded.decode("utf-8", errors="replace")
+        # Replacement characters can encode to more bytes than the invalid
+        # source byte they replace. Re-trim the decoded form so the response
+        # bound is exact even for malformed legacy content.
+        encoded = text.encode("utf-8")
+        if len(encoded) > MAX_SUBMITTED_TEXT_BYTES:
+            text = encoded[:MAX_SUBMITTED_TEXT_BYTES].decode(
+                "utf-8", errors="ignore"
+            )
+        return SubmittedContent(
+            artifact_id=artifact_id,
+            content=text,
+            size_bytes=size_bytes,
+            truncated=len(data) > MAX_SUBMITTED_TEXT_BYTES,
         )
 
     def submitted_evidence(

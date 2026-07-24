@@ -122,15 +122,23 @@ class SharedDualEnvValueTest(unittest.TestCase):
         import contextlib
         import io
 
-        with mock.patch.dict(os.environ, {"RESEARCH_PLUGIN_API_KEY": "rr_sk_x"}):
-            os.environ.pop("MERV_API_KEY", None)
+        with mock.patch.dict(
+            os.environ, {"RESEARCH_PLUGIN_CONTROL_URL": "https://legacy.example"}
+        ):
+            os.environ.pop("MERV_CONTROL_URL", None)
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
-                self.assertEqual(dual_env_value("MERV_API_KEY"), "rr_sk_x")
-                self.assertEqual(dual_env_value("MERV_API_KEY"), "rr_sk_x")
+                self.assertEqual(
+                    dual_env_value("MERV_CONTROL_URL"), "https://legacy.example"
+                )
+                self.assertEqual(
+                    dual_env_value("MERV_CONTROL_URL"), "https://legacy.example"
+                )
             output = stderr.getvalue()
-            self.assertEqual(output.count("RESEARCH_PLUGIN_API_KEY is deprecated"), 1)
-            self.assertIn("MERV_API_KEY", output)
+            self.assertEqual(
+                output.count("RESEARCH_PLUGIN_CONTROL_URL is deprecated"), 1
+            )
+            self.assertIn("MERV_CONTROL_URL", output)
 
 
 class EnvCoercionTest(unittest.TestCase):

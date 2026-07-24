@@ -21,7 +21,10 @@ class DevHttpReloadTest(unittest.TestCase):
     def test_port_in_use_detects_listener(self) -> None:
         module = load_dev_http_reload()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("127.0.0.1", 0))
+            try:
+                sock.bind(("127.0.0.1", 0))
+            except PermissionError:
+                self.skipTest("localhost listeners are blocked in this test environment")
             sock.listen()
             port = sock.getsockname()[1]
             self.assertTrue(module.port_in_use("127.0.0.1", port))

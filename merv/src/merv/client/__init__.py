@@ -1,1 +1,1 @@
-"""Client-side CLI package: login/configure for the hosted brain."""
+"""Client-side CLI package for configuring the hosted brain connection."""

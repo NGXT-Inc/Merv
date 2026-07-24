@@ -102,7 +102,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         tail: int | None = None,
         ssh_host: str = "",
         ssh_port: int = 0,
-        ssh_user: str = "",  # noqa: ARG002 — the management channel uses its own principal, not the row data-plane ssh_user
+        ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> TranscriptTail:
         """Tail the rec.sh transcript over the management SSH channel.
@@ -114,8 +114,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         fixed decision 4); the read logs in as the dedicated management
         principal, which bootstrap exempts from the rec.sh ForceCommand — so
         polling the transcript is never itself recorded as a command and never
-        depends on the user's machine. The row's data-plane ``ssh_user`` is
-        ignored.
+        depends on the caller's machine. The row's caller ``ssh_user`` is ignored.
         """
         return read_transcript_via_mgmt_ssh(
             ssh_runner=self._ssh_runner,
@@ -135,7 +134,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         sandbox_id: str,
         ssh_host: str = "",
         ssh_port: int = 0,
-        ssh_user: str = "",  # noqa: ARG002 — the management channel uses its own principal, not the row data-plane ssh_user
+        ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> dict[str, Any] | None:
         """Sample live VM usage (CPU/RAM/GPU) over the management SSH channel.
@@ -161,7 +160,7 @@ class VmSshSandboxBackend(SandboxBackendBase):
         workdir: str,
         ssh_host: str = "",
         ssh_port: int = 0,
-        ssh_user: str = "",  # noqa: ARG002 — the management channel uses its own principal, not the row data-plane ssh_user
+        ssh_user: str = "",  # noqa: ARG002 — management uses its own principal, not the caller SSH user
         key_path: str = "",
     ) -> list[dict[str, Any]] | None:
         """List merv_run receipts under workdir/.runs over the management channel.

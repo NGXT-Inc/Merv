@@ -109,7 +109,6 @@ class ControlRestartTest(unittest.TestCase):
     _ENV = {
         "RESEARCH_PLUGIN_SANDBOX_REAPER_INTERVAL": "3600",
         "RESEARCH_PLUGIN_MODE": "control",
-        "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "2",
     }
 
     def setUp(self) -> None:

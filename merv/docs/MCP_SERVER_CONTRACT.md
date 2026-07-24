@@ -62,8 +62,8 @@ sandbox.runs                 sandbox.terminal
 feed.register                feed.list
 ```
 
-Every tool is a control tool served by the brain; the data-plane tool set is
-empty. `storage.submit`, `storage.fetch`, and `feed.post` are control tools that
+Every available tool is served by the brain over the hosted HTTP MCP surface.
+`storage.submit`, `storage.fetch`, and `feed.post` are brain tools that
 return a one-line command the agent runs to move bytes over a presigned URL;
 `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs` are served by the
 brain.

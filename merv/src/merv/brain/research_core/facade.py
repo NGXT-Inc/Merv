@@ -309,7 +309,9 @@ class ResearchCoreFacade:
         self, *, project_id: str, reflection_id: str
     ) -> dict[str, Any]:
         return self._reflection_service().get_state(
-            project_id=project_id, reflection_id=reflection_id
+            project_id=project_id,
+            reflection_id=reflection_id,
+            include_content=True,
         )
 
     def reflection_overview(self, *, project_id: str) -> dict[str, Any]:

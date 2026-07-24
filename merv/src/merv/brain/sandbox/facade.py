@@ -48,10 +48,10 @@ _DEFAULT_PULL_OUTPUTS = (
 _SAFE_PULL_OUTPUT_PATH_RE = re.compile(r"[A-Za-z0-9/._-]+\Z")
 _SAFE_SSH_USER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
-# Command template a non-local (key) caller runs itself to pull outputs over
+# Command template a key-authenticated caller runs itself to pull outputs over
 # SSH/rsync. host/port/user/remote-path are filled from sandbox facts; the
 # caller fills <key_path> (its own private key) and <local-destination>. The
-# brain never runs rsync or touches local files (no-dataplane Phase C).
+# brain never runs rsync or chooses the caller's destination.
 # --protect-args is the pre-3.2.4 name accepted since rsync 3.0, so it protects
 # remote arguments on older peers that do not yet recognize --secluded-args.
 _RSYNC_PULL_OUTPUTS_TEMPLATE = (
@@ -229,19 +229,11 @@ class SandboxFacade:
         *,
         row: dict[str, Any],
         reused: bool | None,
-        include_data_plane_enrichment: bool,
-        use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
         row = self._with_active_experiment_ids(row=row)
-        view = (
-            self._agent_view(
-                row=row, reused=reused, use_sandbox_uid_command=use_sandbox_uid_command
-            )
-            if include_data_plane_enrichment
-            else self._agent_facts(row=row, reused=reused)
-        )
         return self._with_runs_nudge(
-            view=view, sandbox_uid=str(row.get("sandbox_uid") or "")
+            view=self._agent_facts(row=row, reused=reused),
+            sandbox_uid=str(row.get("sandbox_uid") or ""),
         )
 
     def _with_runs_nudge(
@@ -265,19 +257,6 @@ class SandboxFacade:
             env_info=self._sandbox_environment(),
             reused=reused,
             storage_enabled=self.storage_enabled,
-        )
-
-    def _agent_view(
-        self,
-        *,
-        row: dict[str, Any],
-        reused: bool | None,
-        use_sandbox_uid_command: bool = True,
-    ) -> dict[str, Any]:
-        _ = use_sandbox_uid_command
-        facts = self._agent_facts(row=row, reused=reused)
-        return sandbox_views.merge_agent_view(
-            facts=facts, enrichment={}, storage_hint=self.storage_hint
         )
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
@@ -386,7 +365,6 @@ class SandboxFacade:
         provider: str | None = None,
         public_key: str | None = None,
         public_key_override: str | None = None,
-        include_data_plane_enrichment: bool = False,
         additional: bool = False,
         sandbox_uid: str | None = None,
         provisioning_user_id: str = "",
@@ -474,8 +452,6 @@ class SandboxFacade:
                 result = self._agent_result(
                     row=row,
                     reused=True,
-                    include_data_plane_enrichment=include_data_plane_enrichment,
-                    use_sandbox_uid_command=True,
                 )
                 result["public_key_source"] = public_key_source
                 return result
@@ -539,8 +515,6 @@ class SandboxFacade:
         result = self._agent_result(
             row=row,
             reused=reused,
-            include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=True,
         )
         result["public_key_source"] = public_key_source
         return result
@@ -552,14 +526,12 @@ class SandboxFacade:
         project_id: str | None = None,
         tenant_id: str | None = None,
         sandbox_uid: str | None = None,
-        include_data_plane_enrichment: bool = False,
     ) -> dict[str, Any]:
         return self.queries.execute_get(
             experiment_id=experiment_id,
             project_id=project_id,
             tenant_id=tenant_id,
             sandbox_uid=sandbox_uid,
-            include_data_plane_enrichment=include_data_plane_enrichment,
         )
 
     def attach(
@@ -568,7 +540,6 @@ class SandboxFacade:
         experiment_id: str,
         project_id: str | None = None,
         sandbox_uid: str,
-        include_data_plane_enrichment: bool = False,
         public_key_override: str | None = None,
     ) -> dict[str, Any]:
         _ = public_key_override
@@ -611,8 +582,6 @@ class SandboxFacade:
         result = self._agent_result(
             row=row,
             reused=True,
-            include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=True,
         )
         result["active_experiment_ids"] = active_experiment_ids
         return result
@@ -704,8 +673,6 @@ class SandboxFacade:
         view = self._agent_result(
             row=updated,
             reused=None,
-            include_data_plane_enrichment=False,
-            use_sandbox_uid_command=True,
         )
         view["extended"] = True
         view["old_expires_at"] = old_expires_at
@@ -869,20 +836,16 @@ class SandboxFacade:
         sandbox_uid: str | None = None,
         paths: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Return a filled rsync command a non-local (key) caller runs itself.
+        """Return a filled rsync command the caller runs itself.
 
-        The control plane never touches local files or runs rsync (no-dataplane
-        Phase C): a cloud agent has no local checkout, so it copies outputs off
-        the box with its OWN SSH key. host/port/user/remote-path are filled from
-        the project-scoped sandbox facts; the caller fills <key_path> and
-        <local-destination>. Bytes go agent<->box directly, never through the
-        brain. This is the key-principal counterpart to the proxy's local
-        pull_outputs; the local data-plane path is unchanged."""
+        The brain never runs rsync or owns the caller's private key. It fills
+        host/port/user/remote-path from project-scoped sandbox facts; the caller
+        supplies <key_path> and a chosen <local-destination>. Bytes move
+        agent-to-sandbox directly, never through the brain."""
         facts = self.get(
             experiment_id=experiment_id,
             project_id=project_id,
             sandbox_uid=sandbox_uid,
-            include_data_plane_enrichment=False,
         )
         ssh = facts.get("ssh") or {}
         host = str(ssh.get("host") or "")

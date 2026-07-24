@@ -29,10 +29,7 @@ from ...application.tool_commands import ControlToolOperations
 from ...artifacts.facade import ArtifactsFacade
 from ...research_core.facade import ResearchCoreFacade
 from ...research_core.snapshots import ResearchSnapshotReader
-from ..tools.contracts import (
-    CONTROL_PLANE_TOOL_NAMES,
-    available_tool_names,
-)
+from ..tools.contracts import available_tool_names
 from .control_runtime import ControlActivitySink, ControlToolCallSink
 from ..observability import StructuredLogger
 from ..user_settings import UserHfTokenSettings
@@ -212,8 +209,7 @@ class ControlApp:
             source=store,
         )
         self.user_settings = UserHfTokenSettings(store=store)
-        control_tool_names = set(CONTROL_PLANE_TOOL_NAMES)
-        control_tool_names &= available_tool_names(storage_enabled=storage is not None)
+        tool_names = available_tool_names(storage_enabled=storage is not None)
         self.tools = ToolDispatcher(
             handlers=build_control_tool_handlers(
                 workflow=self.workflow,
@@ -238,7 +234,7 @@ class ControlApp:
             permissions=core.permissions,
             activity=self.activity,
             tool_calls=self.tool_calls,
-            tool_names=control_tool_names,
+            tool_names=tool_names,
         )
         self.http = HttpDependencies(
             projects=core.projects,

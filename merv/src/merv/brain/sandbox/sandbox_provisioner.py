@@ -409,8 +409,9 @@ class SandboxProvisioner:
         Two independent guards keep it from killing a healthy in-flight provision:
         the in-process live-job check (covers local mode, where the job runs
         here — Lambda's 5-15 min cold boot must not be reaped from under itself)
-        and the wall-clock deadline (covers the control plane, which cannot see
-        the data-plane job thread). Idempotent and best-effort per row; returns
+        and the wall-clock deadline (covers a restarted brain, which cannot see
+        the prior process's provisioning job thread). Idempotent and
+        best-effort per row; returns
         how many were reaped.
         """
         reaped = 0

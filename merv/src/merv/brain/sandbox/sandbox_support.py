@@ -33,7 +33,7 @@ DEFAULT_REQUEST_WAIT_SECONDS = 45.0
 # and returns early on any terminal transition. The CAP is a server ceiling for
 # clients with generous tool timeouts; clients at the common ~60s MCP floor
 # (see DEFAULT_REQUEST_WAIT_SECONDS above) should pass wait_seconds<=45. The
-# proxy stretches its HTTP timeout past the requested wait (proxy.py).
+# HTTP MCP caller must allow the requested long-poll window.
 RUNS_WAIT_CAP_SECONDS = 300.0
 RUNS_WAIT_POLL_SECONDS = 5.0
 # Backstop: a `provisioning` row this old whose job is no longer in this process

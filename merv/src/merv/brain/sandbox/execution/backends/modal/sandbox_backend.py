@@ -88,9 +88,8 @@ MERV_EXPERIMENT_DIR="${MERV_EXPERIMENT_DIR:-$RP_WORKDIR}"
 RP_SANDBOX_DATA_DIR="${RP_SANDBOX_DATA_DIR:-/workspace/data}"
 mkdir -p "$MERV_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$MERV_EXPERIMENT_DIR/artifacts_to_keep"
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
-# Two keys, two duties (plan Phase 5, fixed decision 4): the user key is the
-# data plane's (rsync, sbx dispatcher); the management key is the control
-    # plane's transcript/metrics operations.
+# Two keys, two duties: the caller key handles SSH/rsync, while the brain's
+# management key handles transcript and metrics operations.
 : > /root/.ssh/authorized_keys
 if [ -n "${RP_AUTHORIZED_KEY:-}" ]; then
   printf '%s\n' "$RP_AUTHORIZED_KEY" >> /root/.ssh/authorized_keys

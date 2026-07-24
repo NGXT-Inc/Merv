@@ -181,13 +181,10 @@ class DependencyContractTest(unittest.TestCase):
         roots = {
             contract.handler_identity.split(".", 1)[0]
             for contract in TOOL_MANIFEST.values()
-            if contract.plane == "control"
         }
         parameters = set(inspect.signature(build_control_tool_handlers).parameters)
         self.assertLessEqual(roots, parameters)
         for contract in TOOL_MANIFEST.values():
-            if contract.plane != "control":
-                continue
             root, method = contract.handler_identity.split(".", 1)
             annotation = hints[root]
             candidates = tuple(arg for arg in get_args(annotation) if arg is not NoneType)

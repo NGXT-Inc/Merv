@@ -46,7 +46,6 @@ class LitreviewToolsTest(unittest.TestCase):
     def test_contract_placement(self) -> None:
         for name in ("litreview.view", "litreview.edit", "litreview.cite"):
             tool = TOOL_MANIFEST[name]
-            self.assertEqual(tool.plane, "control", name)
             self.assertEqual(tool.visibility, "public", name)
             self.assertEqual(tool.scope_strategy, "linked-project", name)
 

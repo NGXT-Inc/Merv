@@ -9,6 +9,7 @@ from merv.brain.artifacts.submissions import (
     ArtifactSubmissionService,
     UPLOAD_TOKEN_TTL_SECONDS,
 )
+from merv.brain.artifacts.ports import MAX_SUBMITTED_TEXT_BYTES
 from merv.shared.markdown_images import MARKDOWN_FIGURE_MAX_BYTES
 from merv.brain.kernel.state import StateStore
 from merv.brain.kernel.utils import (
@@ -375,6 +376,26 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
             [item.artifact_id for item in evidence], [repinned["artifact_id"]]
         )
         self.assertNotEqual(pinned["artifact_id"], repinned["artifact_id"])
+
+    def test_bounded_text_port_never_exceeds_gated_content_limit(self) -> None:
+        pinned = self.service.pin_system_artifact(
+            path="experiments/test/large-exhibit.json",
+            target_type="experiment",
+            target_id=self.experiment_id,
+            role="exhibit",
+            content_bytes=b"x" * (MAX_SUBMITTED_TEXT_BYTES + 100),
+            title="Large exhibit",
+            project_id=self.project_id,
+        )
+        content = self.service.bounded_text_for_artifact(
+            artifact_id=pinned["artifact_id"]
+        )
+        self.assertTrue(content.truncated)
+        self.assertEqual(content.size_bytes, MAX_SUBMITTED_TEXT_BYTES + 100)
+        self.assertIsNotNone(content.content)
+        self.assertLessEqual(
+            len(content.content.encode("utf-8")), MAX_SUBMITTED_TEXT_BYTES
+        )
 
     def test_submitted_document_requires_a_complete_artifact(self) -> None:
         with self.assertRaises(WorkflowError):

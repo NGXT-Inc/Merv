@@ -19,8 +19,6 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-# Every agent-facing tool is served by the brain over HTTP.
-ToolPlane = Literal["control"]
 ToolVisibility = Literal["public", "internal"]
 ToolScopeStrategy = Literal["linked-project", "caller-selected", "capability", "none"]
 ToolFeature = Literal["storage"]
@@ -28,7 +26,7 @@ ToolFeature = Literal["storage"]
 
 @dataclass(frozen=True)
 class ToolManifest:
-    """One tool's complete public contract and runtime placement metadata."""
+    """One tool's complete public contract and routing metadata."""
 
     input_model: type[ContractModel]
     description: str
@@ -46,11 +44,6 @@ class ToolManifest:
                 else "none"
             )
             object.__setattr__(self, "scope_strategy", inferred)
-
-    @property
-    def plane(self) -> ToolPlane:
-        return "control"
-
 
 # Compatibility name for code that describes only the schema/description half.
 ToolContract = ToolManifest
@@ -1115,7 +1108,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "why_distinct) and snapshots the corpus of finished experiments "
             "the wave covers — including new_terminal_experiments (the new "
             "signal since the last published wave) and each lens's previous "
-            "reflection path. One wave may be open at a time. See the "
+            "reflection artifact id and bounded submitted content. One wave "
+            "may be open at a time. See the "
             "project-reflection skill."
         ),
     ),
@@ -1124,7 +1118,9 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ReflectionGetInput,
         description=(
             "Get one reflection wave state: roster, per-lens "
-            "reflection coverage, current-attempt artifacts, reviews, and "
+            "reflection coverage, bounded content for current-attempt "
+            "reflection artifacts, prior published graph/reflection content, "
+            "snapshotted terminal-experiment report/graph content, reviews, and "
             "allowed_transitions with preconditions. Includes gate_checklist "
             "for missing lenses/artifacts/review state, and project_graph_diff "
             "when a submitted project graph can be compared with the previous "
@@ -1475,9 +1471,6 @@ TOOL_CONTRACTS = TOOL_MANIFEST
 STORAGE_TOOL_NAMES = {
     name for name, tool in TOOL_MANIFEST.items() if "storage" in tool.feature_requirements
 }
-TOOL_PLANE_REGISTRY: dict[str, ToolPlane] = {
-    name: tool.plane for name, tool in TOOL_MANIFEST.items()
-}
 MCP_HIDDEN_TOOL_NAMES = frozenset(
     name for name, tool in TOOL_MANIFEST.items() if tool.visibility == "internal"
 )
@@ -1500,12 +1493,3 @@ PROJECT_SCOPED_TOOL_NAMES = {
     for name, tool in TOOL_MANIFEST.items()
     if tool.scope_strategy == "linked-project"
 }
-
-
-def tool_plane(name: str) -> ToolPlane:
-    return TOOL_MANIFEST[name].plane
-
-
-# Kept as explicit structure laws during the final transition phase.
-CONTROL_PLANE_TOOL_NAMES = frozenset(TOOL_MANIFEST)
-DATA_PLANE_TOOL_NAMES: frozenset[str] = frozenset()

@@ -217,10 +217,7 @@ class ToolInvocationGateway:
                 "provisioning_key_id": str(
                     getattr(principal, "key_id", "") or ""
                 ),
-                "include_data_plane_enrichment": False,
             }
-        if name == "sandbox.attach":
-            internal_kwargs = {"include_data_plane_enrichment": False}
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if self.surface.use_hosted_tool_policies
@@ -280,7 +277,6 @@ class ToolInvocationGateway:
                 project_id=request.project_id,
                 tenant_id=None,
                 sandbox_uid=request.sandbox_uid,
-                include_data_plane_enrichment=False,
             )
         return self.tools.call_tool(
             name=name,

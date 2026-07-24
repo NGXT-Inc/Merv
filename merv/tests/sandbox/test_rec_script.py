@@ -33,7 +33,20 @@ from merv.brain.sandbox.execution.bootstrap_tools import (
     REC_EXEC_CORE,
 )
 
-HAVE_TMUX = shutil.which("tmux") is not None
+def _tmux_usable() -> bool:
+    executable = shutil.which("tmux")
+    if executable is None:
+        return False
+    probe = subprocess.run(
+        [executable, "list-sessions"],
+        capture_output=True,
+        text=True,
+    )
+    error = (probe.stderr or "").lower()
+    return "operation not permitted" not in error and "permission denied" not in error
+
+
+HAVE_TMUX = _tmux_usable()
 
 
 class RecScriptHarness(unittest.TestCase):
@@ -95,7 +108,7 @@ class RecScriptHarness(unittest.TestCase):
 
 
 class TmuxSupervisorTest(RecScriptHarness):
-    @unittest.skipUnless(HAVE_TMUX, "tmux not installed")
+    @unittest.skipUnless(HAVE_TMUX, "tmux unavailable in test environment")
     def test_short_command_synchronous_output_and_exit_code(self) -> None:
         result = self.run_rec("echo hello-from-sandbox; exit 7")
         self.assertEqual(result.returncode, 7)
@@ -107,7 +120,7 @@ class TmuxSupervisorTest(RecScriptHarness):
         self.assertIn("$ echo hello-from-sandbox; exit 7", log)
         self.assertIn("(exit 7)", log)
 
-    @unittest.skipUnless(HAVE_TMUX, "tmux not installed")
+    @unittest.skipUnless(HAVE_TMUX, "tmux unavailable in test environment")
     def test_run_dir_records_cmd_output_exit_code(self) -> None:
         self.run_rec("printf abc")
         runs = list((self.data_dir / ".merv_runs").iterdir())
@@ -117,13 +130,13 @@ class TmuxSupervisorTest(RecScriptHarness):
         self.assertEqual((run_dir / "out").read_text(), "abc")
         self.assertEqual((run_dir / "exit_code").read_text().strip(), "0")
 
-    @unittest.skipUnless(HAVE_TMUX, "tmux not installed")
+    @unittest.skipUnless(HAVE_TMUX, "tmux unavailable in test environment")
     def test_in_command_heredoc_still_works(self) -> None:
         result = self.run_rec('python3 - <<"PY"\nprint(6 * 7)\nPY')
         self.assertEqual(result.returncode, 0)
         self.assertIn("42", result.stdout)
 
-    @unittest.skipUnless(HAVE_TMUX, "tmux not installed")
+    @unittest.skipUnless(HAVE_TMUX, "tmux unavailable in test environment")
     def test_command_survives_foreground_kill(self) -> None:
         """Kill the SSH-side wrapper mid-run; the command must finish anyway."""
         env = self.env()
@@ -164,7 +177,7 @@ class TmuxSupervisorTest(RecScriptHarness):
 class ModalRecScriptTest(RecScriptHarness):
     rec_script = MODAL_REC_SCRIPT
 
-    @unittest.skipUnless(HAVE_TMUX, "tmux not installed")
+    @unittest.skipUnless(HAVE_TMUX, "tmux unavailable in test environment")
     def test_short_command_synchronous_output_and_exit_code(self) -> None:
         result = self.run_rec("echo modal-cmd; exit 4")
         self.assertEqual(result.returncode, 4)

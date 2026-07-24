@@ -289,8 +289,8 @@ loop.
 
 When `status` is `running`, construct the SSH invocation from the returned
 `ssh.host`, `ssh.port`, and `ssh.user` facts plus the caller-owned private key.
-Some sandbox responses may also return `ssh.command`, `ssh.raw_command`, or
-`ssh.key_path` conveniences, but the brain/sandbox path does not guarantee them.
+Only host, port, and user are returned; the caller always constructs SSH and
+supplies its own private-key path.
 
 **Anything expected to run longer than ~5 minutes goes through `merv_run`** —
 never babysit a long command over a foreground SSH channel or poll the

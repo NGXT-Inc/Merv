@@ -1,7 +1,6 @@
 """Local brain state-directory resolution: ``.merv`` fresh, legacy-wins.
 
-The brain-side sibling of ``src/merv/shared/project_dirs.py``. Two
-layers resolve per call and are never cached:
+Two layers resolve per call and are never cached:
 
 * the home staging root — ``~/.merv/brain`` unless the legacy brain state
   exists, in which case ``~/.research_plugin/brain`` wins forever;

@@ -16,7 +16,7 @@ from contextlib import closing
 import json
 from typing import Any
 
-from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE
+from merv.shared.artifact_roles import PROJECT_GRAPH_ROLE, REFLECTION_LENS_DOC_ROLE
 
 from .domain.experiment_names import validate_experiment_name
 from .domain.experiment_policy import (
@@ -145,7 +145,9 @@ class ReflectionService:
                     "corpus_terminal_experiments": len(corpus["terminal_experiments"]),
                 },
             )
-            return self.get_state(reflection_id=reflection_id, conn=conn)
+            return self.get_state(
+                reflection_id=reflection_id, conn=conn, include_content=True
+            )
 
     def _corpus_snapshot(self, *, conn, project_id: str) -> dict[str, Any]:
         terminal = ", ".join(f"'{s}'" for s in sorted(EXPERIMENT_TERMINAL_STATUSES))
@@ -162,14 +164,45 @@ class ReflectionService:
             (project_id,),
         ).fetchall()
         experiments = rows_to_dicts(rows=exp_rows)
+        experiment_artifacts = self.evidence_reader.artifacts_for_targets(
+            target_type="experiment",
+            target_ids=tuple(str(experiment["id"]) for experiment in experiments),
+        )
+        for experiment in experiments:
+            experiment["artifacts"] = [
+                self._artifact_content_ref(
+                    artifact=artifact_state_record(evidence)
+                )
+                for evidence in experiment_artifacts.get(
+                    str(experiment["id"]), ()
+                )
+                if evidence.attempt_index == int(experiment["attempt_index"])
+                and evidence.role in {"report", "graph"}
+            ]
         previous = self.latest_published(conn=conn, project_id=project_id)
         covered = covered_terminal_ids(
             None if previous is None else (previous.get("corpus") or {})
         )
+        previous_artifacts: dict[str, dict[str, Any]] = {}
+        if previous is not None:
+            graph = self._project_graph_artifact(reflection=previous)
+            reflection_doc = preferred_associated_artifact(
+                artifacts=previous.get("artifacts") or [],
+                attempt=previous.get("attempt_index"),
+                roles=("reflection_doc",),
+            )
+            for role, artifact in (
+                (PROJECT_GRAPH_ROLE, graph),
+                ("reflection_doc", reflection_doc),
+            ):
+                if artifact is not None:
+                    previous_artifacts[role] = self._artifact_content_ref(
+                        artifact=artifact
+                    )
         # The wave's new signal: terminal experiments the last published wave
         # never saw. The reflection still reads the whole project; these name
-        # why it is happening now. Previous lens-reflection paths let a lens
-        # learn from its own prior round without the orchestrator digging.
+        # why it is happening now. Prior artifacts are pinned by id in the
+        # snapshot and their immutable bytes are hydrated only on focused reads.
         return {
             "captured_at": now_iso(),
             "terminal_experiments": experiments,
@@ -186,24 +219,42 @@ class ReflectionService:
                 {}
                 if previous is None
                 else {
-                    str(lens["lens_id"]): lens["path"]
+                    str(lens["lens_id"]): {
+                        "artifact_id": lens["artifact_id"],
+                        "path": lens["path"],
+                        "role": lens["role"],
+                    }
                     for lens in previous["reflection_coverage"]["lenses"]
                     if lens.get("covered")
                 }
             ),
+            "previous_published_artifacts": previous_artifacts,
         }
 
     # ---- read ----
 
     def get_state(
-        self, *, reflection_id: str, project_id: str | None = None, conn=None
+        self,
+        *,
+        reflection_id: str,
+        project_id: str | None = None,
+        conn=None,
+        include_content: bool = False,
     ) -> dict[str, Any]:
         return self.get_state_with_gate(
-            reflection_id=reflection_id, project_id=project_id, conn=conn
+            reflection_id=reflection_id,
+            project_id=project_id,
+            conn=conn,
+            include_content=include_content,
         )[0]
 
     def get_state_with_gate(
-        self, *, reflection_id: str, project_id: str | None = None, conn=None
+        self,
+        *,
+        reflection_id: str,
+        project_id: str | None = None,
+        conn=None,
+        include_content: bool = False,
     ) -> tuple[dict[str, Any], GateEvaluation]:
         owns_conn = conn is None
         if conn is None:
@@ -236,6 +287,22 @@ class ReflectionService:
                 for res in data["artifacts"]
                 if res.get("attempt_index") == data["attempt_index"]
             ]
+            if include_content:
+                data["corpus"] = self._hydrate_corpus_content(
+                    corpus=data["corpus"]
+                )
+                data["current_attempt_artifacts"] = [
+                    self._hydrate_artifact_content(artifact=artifact)
+                    if artifact.get("role")
+                    in {
+                        REFLECTION_LENS_DOC_ROLE,
+                        PROJECT_GRAPH_ROLE,
+                        "reflection_doc",
+                        "change_spec",
+                    }
+                    else artifact
+                    for artifact in data["current_attempt_artifacts"]
+                ]
             claim_rows = conn.execute(
                 """
                 SELECT sc.reflection_id, sc.claim_id, sc.op, sc.claim_key,
@@ -286,6 +353,61 @@ class ReflectionService:
         finally:
             if owns_conn:
                 conn.close()
+
+    @staticmethod
+    def _artifact_content_ref(*, artifact: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "artifact_id": artifact.get("id"),
+            "path": artifact.get("path"),
+            "role": artifact.get("role"),
+        }
+
+    def _hydrate_artifact_content(
+        self, *, artifact: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = self.evidence_reader.bounded_text_for_artifact(
+            artifact_id=str(artifact.get("artifact_id") or artifact.get("id") or "")
+        )
+        return {
+            **artifact,
+            "content": result.content,
+            "content_available": result.content is not None,
+            "content_truncated": result.truncated,
+        }
+
+    def _hydrate_corpus_content(self, *, corpus: dict[str, Any]) -> dict[str, Any]:
+        hydrated = dict(corpus)
+        previous_lenses: dict[str, dict[str, Any]] = {}
+        for lens_id, raw in (corpus.get("previous_lens_reflections") or {}).items():
+            reference = (
+                dict(raw)
+                if isinstance(raw, dict)
+                else {"artifact_id": None, "path": str(raw), "role": REFLECTION_LENS_DOC_ROLE}
+            )
+            previous_lenses[str(lens_id)] = self._hydrate_artifact_content(
+                artifact=reference
+            )
+        hydrated["previous_lens_reflections"] = previous_lenses
+        hydrated["previous_published_artifacts"] = {
+            str(role): self._hydrate_artifact_content(artifact=dict(reference))
+            for role, reference in (
+                corpus.get("previous_published_artifacts") or {}
+            ).items()
+            if isinstance(reference, dict)
+        }
+        hydrated["terminal_experiments"] = [
+            {
+                **experiment,
+                "artifacts": [
+                    self._hydrate_artifact_content(artifact=dict(reference))
+                    for reference in experiment.get("artifacts") or []
+                    if isinstance(reference, dict)
+                ],
+            }
+            for experiment in corpus.get("terminal_experiments") or []
+            if isinstance(experiment, dict)
+        ]
+        return hydrated
 
     def list_reflections(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:
@@ -711,7 +833,9 @@ class ReflectionService:
                 target_id=reflection_id,
                 payload={"from": status, "to": next_status, "transition": transition},
             )
-            return self.get_state(reflection_id=reflection_id, conn=conn)
+            return self.get_state(
+                reflection_id=reflection_id, conn=conn, include_content=True
+            )
 
     def _run_validator(self, *, conn, reflection: dict[str, Any], name: str) -> None:
         if name == "graph":

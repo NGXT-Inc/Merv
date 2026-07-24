@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain, upload_token
+from merv.brain.artifacts.ports import MAX_SUBMITTED_TEXT_BYTES
 from merv.brain.research_core.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
 from merv.brain.research_core.domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
@@ -1515,6 +1516,27 @@ class ReflectionGateTest(unittest.TestCase):
         self.assertIn("requires", trans["submit_reflections"])
         self.assertIn("abandon", trans)
 
+    def test_get_hydrates_current_lens_content_with_a_hard_bound(self) -> None:
+        syn_id = self._drive_to_synthesizing()
+        state = self._state(syn_id)
+        lens_docs = {
+            artifact["lens_id"]: artifact
+            for artifact in state["current_attempt_artifacts"]
+            if artifact["role"] == "reflection_lens_doc"
+        }
+        self.assertEqual(set(lens_docs), set(ALL_LENS_IDS))
+        for lens_id, artifact in lens_docs.items():
+            self.assertEqual(
+                artifact["content"],
+                f"# {lens_id}\nFindings through the {lens_id} lens.\n",
+            )
+            self.assertTrue(artifact["content_available"])
+            self.assertFalse(artifact["content_truncated"])
+            self.assertLessEqual(
+                len(artifact["content"].encode("utf-8")),
+                MAX_SUBMITTED_TEXT_BYTES,
+            )
+
 
 class ReflectionSignalTest(unittest.TestCase):
     """The drift signal behind project reflection nudges and create blocks."""
@@ -1640,6 +1662,7 @@ class ReflectionSignalTest(unittest.TestCase):
         )
         self.assertIsNone(corpus1["previous_published_reflection_id"])
         self.assertEqual(corpus1["previous_lens_reflections"], {})
+        self.assertEqual(corpus1["previous_published_artifacts"], {})
 
         second = self._finish_experiment(intent="second signal")
         corpus2 = self.call(
@@ -1654,13 +1677,39 @@ class ReflectionSignalTest(unittest.TestCase):
             [exp["id"] for exp in corpus2["new_terminal_experiments"]], [second]
         )
         self.assertEqual(corpus2["previous_published_reflection_id"], wave1_id)
+        previous_lenses = corpus2["previous_lens_reflections"]
+        self.assertEqual(set(previous_lenses), set(ALL_LENS_IDS))
+        for lens_id, artifact in previous_lenses.items():
+            self.assertTrue(artifact["artifact_id"].startswith("art_"))
+            self.assertEqual(
+                artifact["path"],
+                f"reflections/{wave1_id}/reflections/{lens_id}.md",
+            )
+            self.assertEqual(artifact["content"], f"{lens_id} findings\n")
+            self.assertTrue(artifact["content_available"])
+            self.assertFalse(artifact["content_truncated"])
+            self.assertLessEqual(
+                len(artifact["content"].encode("utf-8")),
+                MAX_SUBMITTED_TEXT_BYTES,
+            )
+        previous_artifacts = corpus2["previous_published_artifacts"]
         self.assertEqual(
-            corpus2["previous_lens_reflections"],
-            {
-                lens_id: f"reflections/{wave1_id}/reflections/{lens_id}.md"
-                for lens_id in ALL_LENS_IDS
-            },
+            set(previous_artifacts), {"project_graph", "reflection_doc"}
         )
+        self.assertEqual(
+            previous_artifacts["project_graph"]["content"], VALID_PROJECT_GRAPH
+        )
+        self.assertEqual(
+            previous_artifacts["reflection_doc"]["content"],
+            VALID_REFLECTION_DOC,
+        )
+        for artifact in previous_artifacts.values():
+            self.assertTrue(artifact["artifact_id"].startswith("art_"))
+            self.assertTrue(artifact["content_available"])
+            self.assertLessEqual(
+                len(artifact["content"].encode("utf-8")),
+                MAX_SUBMITTED_TEXT_BYTES,
+            )
 
     def test_quiet_before_threshold_then_first_reflection_nudge(self) -> None:
         for i in range(REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD - 1):

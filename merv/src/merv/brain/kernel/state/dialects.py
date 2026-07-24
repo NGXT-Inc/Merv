@@ -13,8 +13,8 @@ Single-writer semantics: SQLite gets them from ``BEGIN IMMEDIATE``; here a
 The UI's recent activity/tool-I/O rings are process-local diagnostics and are
 not part of this record-store dialect.
 
-psycopg is imported lazily so the stdlib-only proxy and local SQLite paths do
-not import it.
+psycopg is imported lazily so SQLite-backed test and development compositions
+do not import it.
 """
 
 from __future__ import annotations

@@ -165,15 +165,14 @@ function sandboxPath(pid, eid, sandboxUid, suffix = '') {
 }
 
 export const api = {
-  // Server identity + compat floor (version handshake). Also reports mode and
-  // capabilities so hosted-control UIs can hide local data-plane actions.
+  // Server identity + compat floor (version handshake).
   getMeta: () => request('/api/meta'),
 
   // Projects
   listProjects: () => request('/api/projects'),
-  createProject: ({ name, summary, repo_root }) => request('/api/projects', {
+  createProject: ({ name, summary }) => request('/api/projects', {
     method: 'POST',
-    body: { name, summary: summary || '', ...(repo_root ? { repo_root } : {}) },
+    body: { name, summary: summary || '' },
   }),
   patchProject: (pid, patch) => request(`/api/projects/${encodeURIComponent(pid)}`, { method: 'PATCH', body: patch }),
   getHome: (pid, signal) => request(`/api/projects/${encodeURIComponent(pid)}/home`, { signal }),
@@ -280,11 +279,11 @@ export const api = {
   listEvents: (pid, limit = 100) =>
     request(`/api/projects/${encodeURIComponent(pid)}/events?limit=${limit}`),
 
-  // Activity ring — project-scoped, cross-project MCP tool-call telemetry.
+  // Activity ring — project-scoped, cross-project HTTP-MCP tool-call telemetry.
   // Returns { activity_log, events, summary } oldest-first. This is the source
   // for the merged Traffic & Tool I/O page (/activity): the ring carries every
-  // project's tool calls, whereas tool_calls.sqlite only holds the local
-  // workspace's. The `source` filter is applied server-side BEFORE `limit`.
+  // project's tool calls. The `source` filter is applied server-side BEFORE
+  // `limit`.
   listActivity: (limit = 200, source = null, projectId = null) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
@@ -292,25 +291,6 @@ export const api = {
     if (projectId) params.set('project_id', projectId);
     return request(`/api/activity?${params.toString()}`);
   },
-
-  // Tool-call I/O analyzer (legacy, sqlite-backed). Per-tool aggregate plus a
-  // sortable slice of calls, each drillable to its FULL raw request/response.
-  // Local-workspace only — retained for full-payload drill-down.
-  toolCallStats: ({ minutes, source, status, tool, projectId, limit = 300, sort = 'ts', order = 'desc' } = {}) => {
-    const p = new URLSearchParams();
-    if (minutes) p.set('minutes', String(minutes));
-    if (source && source !== 'all') p.set('source', source);
-    if (status && status !== 'all') p.set('status', status);
-    if (tool) p.set('tool', tool);
-    if (projectId) p.set('project_id', projectId);
-    p.set('limit', String(limit));
-    p.set('sort', sort);
-    p.set('order', order);
-    return request(`/api/debug/tool-calls?${p.toString()}`);
-  },
-  // Full raw record for one call, with args/result parsed back to native JSON.
-  getToolCall: (id) => request(`/api/debug/tool-calls/${encodeURIComponent(id)}`),
-  clearToolCalls: () => request(`/api/debug/tool-calls/clear`, { method: 'POST' }),
 
   // Sandboxes (cloud-backed; agent drives execution over SSH — see sandboxes.py).
   // The UI observes; it does not procure sandboxes (that is an agent MCP action).

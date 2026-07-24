@@ -78,8 +78,7 @@ export const useProjectStore = create((set, get) => ({
   },
 
   async loadProjects() {
-    // Fetch capabilities before first render so hosted-control UIs do not
-    // briefly expose local-file actions.
+    // Fetch version metadata before the first project render.
     await get().checkMeta();
     try {
       const data = await api.listProjects();
@@ -110,8 +109,8 @@ export const useProjectStore = create((set, get) => ({
 
   dismissCompat() { set({ compat: null, compatDismissed: true }); },
 
-  async createProject({ name, summary, repo_root }) {
-    const created = await api.createProject({ name, summary, repo_root });
+  async createProject({ name, summary }) {
+    const created = await api.createProject({ name, summary });
     const projectRow = created.project || created;
     await get().loadProjects();
     get().setProjectId(projectRow.id);
@@ -210,9 +209,6 @@ export const selectActiveProcesses = (s) => s.home?.active_processes || EMPTY_AR
 export const selectSandboxes = (s) => s.sandboxes || EMPTY_ARR;
 export const selectEventsAll = (s) => s.events || EMPTY_ARR;
 export const selectProject = (s) => s.home?.project || null;
-export const selectServerCapabilities = (s) => s.serverMeta?.capabilities || EMPTY_OBJ;
-export const selectIsHostedControl = (s) =>
-  s.serverMeta?.mode === 'control' || s.serverMeta?.capabilities?.hosted_control === true;
 
 /**
  * Project-scoped routing. The active project id lives in the URL under

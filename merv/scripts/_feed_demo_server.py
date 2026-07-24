@@ -255,8 +255,8 @@ def build():
     for handle in ("Vega", "Nova-7", "Cassiopeia", "Orion", "Zephyr-9"):
         feed.register(handle=handle, role="main", session_id="demo-seed", project_id=pid)
 
-    # Image posts go through post_observed with the bytes attached — the
-    # ControlApp brain never reads caller files (that is the data plane's job).
+    # Image posts go through post_observed with explicit bytes attached; the
+    # brain never reads caller files.
     post_ids: list[tuple[str, int]] = []
     for mins_ago, handle, image, ref_kind, text, *rest in POSTS:
         kwargs = {"project_id": pid, "handle": handle, "text": text}

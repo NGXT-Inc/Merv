@@ -15,12 +15,7 @@ import unittest
 from pathlib import Path
 from typing import Protocol, get_type_hints
 
-from merv.brain.surface.tools.contracts import (
-    CONTROL_PLANE_TOOL_NAMES,
-    DATA_PLANE_TOOL_NAMES,
-    TOOL_CONTRACTS,
-    TOOL_PLANE_REGISTRY,
-)
+from merv.brain.surface.tools.contracts import TOOL_CONTRACTS
 from tests.paths import (
     ARTIFACTS_ROOT,
     BACKEND_ROOT,
@@ -246,15 +241,21 @@ def _imports_management_key_adapter(path: Path) -> bool:
 
 
 
-class BrainToolPlaneTest(unittest.TestCase):
-    def test_every_tool_has_a_plane(self) -> None:
-        self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
-        for name, plane in TOOL_PLANE_REGISTRY.items():
-            self.assertEqual(plane, "control", name)
-
-    def test_every_tool_is_control(self) -> None:
-        self.assertEqual(DATA_PLANE_TOOL_NAMES, frozenset())
-        self.assertEqual(CONTROL_PLANE_TOOL_NAMES, frozenset(TOOL_CONTRACTS))
+class BrainToolManifestTest(unittest.TestCase):
+    def test_one_valued_plane_abstraction_stays_deleted(self) -> None:
+        source = (SURFACE_ROOT / "tools" / "contracts.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertTrue(TOOL_CONTRACTS)
+        for removed in (
+            "ToolPlane",
+            "def plane(",
+            "TOOL_PLANE_REGISTRY",
+            "CONTROL_PLANE_TOOL_NAMES",
+            "DATA_PLANE_TOOL_NAMES",
+            "def tool_plane(",
+        ):
+            self.assertNotIn(removed, source)
 
 
 
@@ -393,19 +394,18 @@ load("subprocess")
             f"sandbox backend port imports backend layers: {sorted(forbidden)}",
         )
 
-    def test_telemetry_sinks_are_store_independent(self) -> None:
-        # ActivityLogger and ToolCallStore are config-injected, machine-local
-        # sinks (plan §3.2): they take explicit paths from the composition and
-        # never reach into the record store.
-        for name in ("activity.py", "tool_calls.py"):
-            with self.subTest(module=name):
-                source = (BACKEND_ROOT / "kernel" / "state" / name).read_text(
-                    encoding="utf-8"
-                )
-                self.assertNotIn(
-                    "store", _imports(BACKEND_ROOT / "kernel" / "state" / name)
-                )
-                self.assertNotIn("StateStore", source)
+    def test_checkout_local_diagnostic_adapters_stay_deleted(self) -> None:
+        activity = (BACKEND_ROOT / "kernel" / "state" / "activity.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertFalse(
+            (BACKEND_ROOT / "kernel" / "state" / "tool_calls.py").exists()
+        )
+        self.assertFalse(
+            (IMPORT_ROOT / "merv" / "shared" / "project_dirs.py").exists()
+        )
+        self.assertNotIn("class ActivityLogger", activity)
+        self.assertNotIn("project_dirs", activity)
 
     def test_services_package_init_is_import_light(self) -> None:
         # Importing a control-safe service submodule executes services/__init__.
@@ -607,9 +607,8 @@ load("subprocess")
         self.assertIn("class ControlApp:", source)
         self.assertIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
-        self.assertIn("control_tool_names = set(CONTROL_PLANE_TOOL_NAMES)", source)
-        self.assertIn("available_tool_names(storage_enabled=", source)
-        self.assertIn("tool_names=control_tool_names", source)
+        self.assertIn("tool_names = available_tool_names(storage_enabled=", source)
+        self.assertIn("tool_names=tool_names", source)
         self.assertNotIn("class ControlActivitySink", source)
         self.assertNotIn("class ControlToolCallSink", source)
         self.assertNotIn("class ControlSandboxWorker", source)

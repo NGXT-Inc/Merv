@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
+# Matches every gated artifact upload/content endpoint ceiling. Kept explicit
+# so this cross-component port remains a dependency-free value contract.
+MAX_SUBMITTED_TEXT_BYTES = 16_000
+
+
 @dataclass(frozen=True, slots=True)
 class AssociatedEvidence:
     """One complete submitted artifact expressed without persistence names."""
@@ -53,6 +58,16 @@ class SubmittedEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class SubmittedContent:
+    """Bounded best-effort text for one immutable submitted artifact."""
+
+    artifact_id: str
+    content: str | None
+    size_bytes: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AssociationTarget:
     project_id: str | None
     attempt_index: int
@@ -73,6 +88,8 @@ class EvidenceReader(Protocol):
     def submitted_document(
         self, *, artifact_id: str | None, what: str
     ) -> SubmittedDocument: ...
+
+    def bounded_text_for_artifact(self, *, artifact_id: str) -> SubmittedContent: ...
 
     def submitted_evidence(
         self,
@@ -98,6 +115,8 @@ __all__ = [
     "AssociationTarget",
     "AssociationTargetResolver",
     "EvidenceReader",
+    "MAX_SUBMITTED_TEXT_BYTES",
+    "SubmittedContent",
     "SubmittedDocument",
     "SubmittedEvidence",
 ]

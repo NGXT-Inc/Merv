@@ -4,9 +4,8 @@ import ObjId from '../components/ObjId';
 
 /**
  * MobileProjects — read-only project switcher. The desktop page exposes
- * rename + create (both mutations, and "create" needs a server-local directory
- * path you can't type from a phone). Here you only switch. Create/rename live
- * on desktop.
+ * rename + create mutations. Here you only switch; create/rename live on
+ * desktop.
  */
 export default function MobileProjects() {
   const navigate = useNavigate();
@@ -46,7 +45,6 @@ export default function MobileProjects() {
               {p.summary && <div className="mcard-sub">{p.summary}</div>}
               <div className="mcard-meta">
                 <ObjId id={p.id} strong />
-                {p.repo_root && <span className="mono">{p.repo_root}</span>}
               </div>
             </button>
           ))}

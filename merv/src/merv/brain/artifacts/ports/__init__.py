@@ -5,6 +5,8 @@ from .evidence import (
     AssociationTarget,
     AssociationTargetResolver,
     EvidenceReader,
+    MAX_SUBMITTED_TEXT_BYTES,
+    SubmittedContent,
     SubmittedDocument,
     SubmittedEvidence,
 )
@@ -14,6 +16,8 @@ __all__ = [
     "AssociationTarget",
     "AssociationTargetResolver",
     "EvidenceReader",
+    "MAX_SUBMITTED_TEXT_BYTES",
+    "SubmittedContent",
     "SubmittedDocument",
     "SubmittedEvidence",
 ]

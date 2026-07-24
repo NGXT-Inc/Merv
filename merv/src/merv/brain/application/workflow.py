@@ -564,8 +564,6 @@ def _artifact_link(
         ),
         "artifact_id": artifact.get("id"),
         "path": artifact.get("path"),
-        "read_with": "artifact.find",
-        "read_args": {"artifact_id": artifact.get("id")},
     }
 
 

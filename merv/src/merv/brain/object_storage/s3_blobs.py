@@ -5,8 +5,8 @@ The cloud implementation of the same ``BlobStore`` protocol as
 against a dockerized minio). ``S3BlobStore.presign_put`` returns a real
 single-use HTTPS PUT URL for off-process producers.
 
-boto3 is imported lazily so the stdlib-only proxy and local-directory blob path
-do not import it.
+boto3 is imported lazily so lightweight brain compositions and the
+local-directory blob path do not import it.
 
 Layout, keyed ``tenant/sha256`` like the local store:
 - ``<namespace>/<sha256>`` — the content-addressed object.

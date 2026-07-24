@@ -43,7 +43,6 @@ class SandboxQueryHandler:
         project_id: str | None = None,
         tenant_id: str | None = None,
         sandbox_uid: str | None = None,
-        include_data_plane_enrichment: bool = False,
     ) -> dict[str, Any]:
         experiment_id = (experiment_id or "").strip()
         if not experiment_id and (not (sandbox_uid or "").strip()):
@@ -70,8 +69,6 @@ class SandboxQueryHandler:
         return self._agent_result(
             row=row,
             reused=None,
-            include_data_plane_enrichment=include_data_plane_enrichment,
-            use_sandbox_uid_command=True,
         )
 
     def execute_options(

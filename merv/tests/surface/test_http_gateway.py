@@ -160,7 +160,6 @@ class HttpGatewayTest(unittest.TestCase):
             {
                 "provisioning_user_id": "user-a",
                 "provisioning_key_id": "",
-                "include_data_plane_enrichment": False,
             },
         )
 
@@ -251,8 +250,7 @@ class KeySandboxControlPathTest(unittest.TestCase):
         self.assertEqual(result, {"status": "running"})
         name, kwargs = self.sandboxes.calls[-1]
         self.assertEqual(name, "request")
-        # Plain control path: no local_dir enrichment; key attribution flows.
-        self.assertFalse(kwargs["include_data_plane_enrichment"])
+        self.assertNotIn("include_data_plane_enrichment", kwargs)
         self.assertEqual(kwargs["provisioning_key_id"], "k1")
         self.assertEqual(kwargs["provisioning_user_id"], "user-a")
         self.assertEqual(kwargs["project_id"], "proj-a")
@@ -268,8 +266,8 @@ class KeySandboxControlPathTest(unittest.TestCase):
             principal=KEY,
         )
         self.assertEqual(self.sandboxes.calls[-1][0], "attach")
-        self.assertFalse(
-            self.sandboxes.calls[-1][1]["include_data_plane_enrichment"]
+        self.assertNotIn(
+            "include_data_plane_enrichment", self.sandboxes.calls[-1][1]
         )
         # attach does NOT install the caller's key — no public_key is forwarded.
         self.assertNotIn("public_key", self.sandboxes.calls[-1][1])
@@ -323,7 +321,7 @@ class KeySandboxControlPathTest(unittest.TestCase):
         self.assertEqual(name, "request")
         self.assertEqual(kwargs["provisioning_user_id"], "user-a")
         self.assertEqual(kwargs["provisioning_key_id"], "")
-        self.assertFalse(kwargs["include_data_plane_enrichment"])
+        self.assertNotIn("include_data_plane_enrichment", kwargs)
 
 
 if __name__ == "__main__":

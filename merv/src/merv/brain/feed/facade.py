@@ -13,7 +13,7 @@ class Feed(Protocol):
 
 
 class FeedDelivery(Protocol):
-    """Public single-component API used by HTTP and the local data plane."""
+    """Public single-component API used by HTTP routes and MCP handlers."""
 
     def register(self, **kwargs: Any) -> dict[str, Any]: ...
     def post(self, **kwargs: Any) -> dict[str, Any]: ...

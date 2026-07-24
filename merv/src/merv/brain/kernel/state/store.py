@@ -1858,9 +1858,9 @@ class BaseStateStore:
 class StateStore(BaseStateStore):
     """The SQLite dialect — local mode's store, and the historical default.
 
-    Records only — the store does not know where the repository checkout
-    lives. Local paths belong to the data plane (``LocalWorkspace`` and the
-    ``DataPlaneWorker``), so the same record layer can serve a cloud DB.
+    Records only — the store does not know where a caller's checkout lives.
+    The same record layer serves SQLite-backed test composition and hosted
+    Postgres without receiving caller filesystem context.
     The Postgres dialect lives in ``dialects.PostgresStateStore``; the name
     ``StateStore`` stays on the SQLite class so every existing call site and
     test keeps working unchanged (``SqliteStateStore`` is an alias).

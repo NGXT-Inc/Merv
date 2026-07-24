@@ -44,6 +44,7 @@ from merv.brain.artifacts.facade import MetricFileSource
 from merv.brain.artifacts.ports import (
     AssociatedEvidence,
     AssociationTarget,
+    SubmittedContent,
     SubmittedDocument,
     SubmittedEvidence,
 )
@@ -183,6 +184,12 @@ SAMPLES: dict[type, object] = {
         order=7,
     ),
     AssociationTarget: AssociationTarget("proj_1", 2),
+    SubmittedContent: SubmittedContent(
+        artifact_id="art_1",
+        content="# Report",
+        size_bytes=8,
+        truncated=False,
+    ),
     SubmittedDocument: SubmittedDocument(
         text="# Report",
         artifact_id="art_1",

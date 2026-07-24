@@ -85,24 +85,3 @@ def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
     if not isinstance(parsed, dict):
         return {}
     return {str(key): str(value) for key, value in parsed.items() if value is not None}
-
-
-def read_secret_file(path: str | Path | None, *, keys: tuple[str, ...] = ("token",)) -> str | None:
-    if not path:
-        return None
-    try:
-        raw = Path(path).expanduser().read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return raw
-    if isinstance(parsed, dict):
-        for key in keys:
-            value = parsed.get(key)
-            if value:
-                return str(value)
-    return raw

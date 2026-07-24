@@ -1,9 +1,8 @@
 """Tool-call dispatch, contract validation, and telemetry.
 
-The dispatcher is intentionally independent of local workspace and data-plane
-construction. Composition roots provide handlers and telemetry sinks; this
-module owns the external tool contract machinery shared by local and control
-apps.
+The dispatcher is intentionally independent of HTTP transport construction.
+Composition roots provide handlers and telemetry sinks; this module owns the
+tool contract machinery shared by HTTP MCP and trusted internal calls.
 """
 
 from __future__ import annotations

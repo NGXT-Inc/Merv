@@ -410,7 +410,14 @@ class ComponentFacadeTest(unittest.TestCase):
             reflections.calls,
             [
                 ("create", {"project_id": "proj_1", "title": "Wave", "lenses": []}),
-                ("get_state", {"project_id": "proj_1", "reflection_id": "syn_1"}),
+                (
+                    "get_state",
+                    {
+                        "project_id": "proj_1",
+                        "reflection_id": "syn_1",
+                        "include_content": True,
+                    },
+                ),
                 ("list_reflections", {"project_id": "proj_1"}),
                 (
                     "transition",

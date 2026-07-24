@@ -1,4 +1,4 @@
-"""Record-plane service composition, independent of local data-plane wiring."""
+"""Brain record-service composition, independent of HTTP transport wiring."""
 
 from __future__ import annotations
 

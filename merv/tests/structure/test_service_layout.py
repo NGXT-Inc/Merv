@@ -970,7 +970,7 @@ class ServiceLayoutTest(unittest.TestCase):
         block = source[start:end]
         self.assertIn("tenant_id=None", block)
         self.assertIn("self.sandboxes.get", block)
-        self.assertIn("include_data_plane_enrichment=False", block)
+        self.assertNotIn("include_data_plane_enrichment", block)
         self.assertNotIn(".store.transaction", block)
         self.assertNotIn("require_project_id", block)
 

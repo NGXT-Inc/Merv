@@ -7,8 +7,6 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from merv.shared.project_dirs import PROJECT_STATE_DIR_NAMES
-
 from merv.brain.surface.composition import build_local_server
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
@@ -88,7 +86,7 @@ class TestBrain:
         self._client = TestClient(self.fastapi_app)
 
     def _brain_root(self) -> Path:
-        if self.db_path.parent.name in PROJECT_STATE_DIR_NAMES:
+        if self.db_path.parent.name in {".merv", ".research_plugin"}:
             return self.db_path.parent.parent
         return self.db_path.parent
 
@@ -116,9 +114,6 @@ class TestBrain:
         effective_internal_kwargs = dict(internal_kwargs or {})
         if name == "sandbox.request":
             args.setdefault("public_key", DEFAULT_PUBLIC_KEY)
-            effective_internal_kwargs.setdefault("include_data_plane_enrichment", False)
-        if name == "sandbox.attach":
-            effective_internal_kwargs.setdefault("include_data_plane_enrichment", False)
         return self._app.tools.call_tool(
             name=name,
             arguments=args,

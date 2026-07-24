@@ -18,7 +18,7 @@ what worked, what didn't, and what to do next. It reads everything — every
 experiment, claim, review, and per-experiment logic graph — and produces
 three reviewed reflection artifacts:
 
-- the **project logic graph** (role `project_graph`): one living JSON file, the
+- the **project logic graph** (role `project_graph`): one living JSON artifact, the
   current *logic state* of the whole project — what is established, what was
   ruled out and why, what is open — within the same 16-node budget as
   experiment graphs;
@@ -98,16 +98,22 @@ Spawn five subagents in parallel. Each gets:
   the new experiments;
 - **for the three core lenses, the lens's previous reflection** —
   `corpus.previous_lens_reflections[<lens_id>]`, once a wave has published.
-  Hand the path over as private context, not source material: it shows what
+  This is a hydrated object with `artifact_id`, provenance `path`, and bounded
+  submitted `content`. Hand its content over as private context: it shows what
   this lens concluded last time, so the agent can learn from its own prior
   round — what held up, what broke, what deserves different weight now. The
   researcher sees only the current wave's reflection, so it must stand alone:
   no "as noted last wave", no references to the previous document, and no
   conclusion carried forward without re-verifying it against the current
   records. (Authored lenses are wave-specific and start fresh.);
-- read-only project access (claims, experiments and their logic graphs,
-  reports, reviews, artifacts — via MCP reads and repo files);
-- the instruction to write its reflection to a local file (e.g.
+- read-only project access through MCP. Use `project(action="overview")` for
+  claims and experiment state, the wave's
+  `corpus.terminal_experiments[].artifacts[]` for the snapshotted report and
+  logic-graph artifact IDs plus bounded submitted content, and MCP review
+  reads for verdict history. Do not read a repository checkout and do not use
+  `artifact.find` as a content reader; it returns metadata only;
+- the instruction to write its reflection to a caller-side temporary file
+  (the provenance `path` may be
   `reflections/<syn_id>/reflections/<lens_id>.md`), then submit it with
   `artifact.submit` (pass the `path`, `target_type: "reflection"`, the wave id
   as `target_id`, `role: "reflection_lens_doc"`, and `lens_id: "<lens_id>"` —
@@ -165,7 +171,12 @@ missing.
 
 ## Step 3 — synthesize
 
-Read all five reflections, then:
+Call `reflection.get` and read all five current-attempt
+`reflection_lens_doc` entries from `current_attempt_artifacts[].content`.
+Their artifact IDs pin the exact inputs you are reconciling. Also read
+`corpus.previous_published_artifacts.project_graph.content` and
+`.reflection_doc.content` when present; these are the prior published bytes,
+not files from a checkout. Then:
 
 > Treat them as **unverified and possibly conflicting inputs, not as ground
 > truth**. Where a reflection asserts something, check it against the actual
@@ -176,16 +187,17 @@ Read all five reflections, then:
 
 Produce three artifacts and submit each to the reflection wave (artifact.submit):
 
-1. **The project logic graph** (role `project_graph`) — edit the living file (e.g.
-   `project/logic_graph.json`) in place; same envelope as experiment graphs
+1. **The project logic graph** (role `project_graph`) — revise the hydrated
+   prior `project_graph` content when it exists, or author the first graph from
+   scratch; same envelope as experiment graphs
    (valid JSON `version: 1`, ≤16 nodes, DAG — see
    `skills/research-workflow/graph-template.md`). You design it: nodes are
    whatever the project's logic state needs — lessons, themes, dead-end
    patterns, open questions — in your own vocabulary. The budget forces
    pruning; retiring stale or superseded nodes or folding multiple nodes to make room is part of
    telling the current story. Node `refs` may point at `exp_` / `claim_` /
-   `rev_` / `syn_` ids or repo files (reflections included), so keep nodes
-   brief and link the detail.
+   `rev_` / `syn_` / `art_` ids, so keep nodes brief and let immutable
+   artifact IDs carry the detail.
 2. **The reflection document** (role `reflection_doc`) — see
    `reflection-artifacts-template.md`. This markdown file is the orchestrator's compact
    critical reading of the five reflections. It should not be a long report:
@@ -233,9 +245,9 @@ graph, all five reflections, and your reflection artifacts — and verdicts rout
 - `pass` → call `reflection.transition(publish)`. The wave pins the graph
   version it published, applies the approved claim changes, and creates the
   approved planned experiments. Read `post_publish_guidance`: it names the new
-  experiment folders; create those directories yourself before writing into
-  them because there is no `experiment.materialize_folders` tool. The living
-  graph file remains for the next wave to edit.
+  experiment records. Future work should orient from those records and submit
+  selected evidence bytes through MCP; no checkout materialization tool or
+  persistent local project-graph file is part of this workflow.
 - `needs_changes` with `return_to: "synthesizing"` → the reflections stand;
   revise the graph, reflection doc, and/or change spec and resubmit.
 - `needs_changes` with `return_to: "reflecting"` → the attempt bumps and

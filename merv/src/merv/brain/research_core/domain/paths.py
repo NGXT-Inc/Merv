@@ -1,4 +1,4 @@
-"""Pure logical path names shared by control and data-plane code."""
+"""Pure logical provenance paths shared by brain workflows."""
 
 from __future__ import annotations
 

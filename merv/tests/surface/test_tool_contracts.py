@@ -12,8 +12,6 @@ from pydantic import ValidationError as PydanticValidationError
 from tests.support.brain import TestBrain
 from merv.brain.surface.config import STORAGE_PROVIDER_ENV_VAR
 from merv.brain.surface.tools.contracts import (
-    CONTROL_PLANE_TOOL_NAMES,
-    DATA_PLANE_TOOL_NAMES,
     MCP_HIDDEN_TOOL_NAMES,
     ArtifactFindInput,
     ArtifactSubmitInput,
@@ -30,9 +28,7 @@ from merv.brain.surface.tools.contracts import (
     STORAGE_TOOL_NAMES,
     TOOL_CONTRACTS,
     TOOL_MANIFEST,
-    TOOL_PLANE_REGISTRY,
     available_tool_names,
-    tool_plane,
 )
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
@@ -106,18 +102,10 @@ class ToolContractRegistryTest(unittest.TestCase):
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
 
-    def test_live_app_serves_every_available_tool_on_control_plane(self) -> None:
-        control = set(self.app._app.tools._tools)
+    def test_live_app_serves_every_available_manifest_tool(self) -> None:
+        dispatched = set(self.app._app.tools._tools)
         available = available_tool_names(storage_enabled=False)
-        data = DATA_PLANE_TOOL_NAMES & available
-        self.assertEqual(control, CONTROL_PLANE_TOOL_NAMES & available)
-        self.assertEqual(control | data, available)
-        self.assertFalse(control & data)
-        self.assertFalse(data)
-
-    def test_plane_registry_classifies_every_tool(self) -> None:
-        self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
-        self.assertEqual(set(TOOL_PLANE_REGISTRY.values()), {"control"})
+        self.assertEqual(dispatched, available)
 
     def test_manifest_owns_all_routing_and_handler_metadata(self) -> None:
         self.assertIs(TOOL_CONTRACTS, TOOL_MANIFEST)
@@ -130,7 +118,6 @@ class ToolContractRegistryTest(unittest.TestCase):
             )
             self.assertTrue(tool.handler_identity, name)
             self.assertLessEqual(set(tool.feature_requirements), {"storage"}, name)
-        self.assertEqual(TOOL_MANIFEST["project"].plane, "control")
 
     def test_hidden_tools_stay_in_catalog_with_hidden_flag(self) -> None:
         # Internal tools remain dispatchable for trusted in-process callers,
@@ -178,19 +165,18 @@ class ToolContractRegistryTest(unittest.TestCase):
 
     def test_storage_tools_registered_with_expected_input_models(self) -> None:
         expected = {
-            "storage.put_object": (StoragePutObjectInput, "control"),
-            "storage.submit": (StorageSubmitInput, "control"),
-            "storage.complete_upload": (StorageCompleteUploadInput, "control"),
-            "storage.fetch": (StorageFetchInput, "control"),
-            "storage.find": (StorageFindInput, "control"),
-            "storage.object": (StorageObjectInput, "control"),
+            "storage.put_object": StoragePutObjectInput,
+            "storage.submit": StorageSubmitInput,
+            "storage.complete_upload": StorageCompleteUploadInput,
+            "storage.fetch": StorageFetchInput,
+            "storage.find": StorageFindInput,
+            "storage.object": StorageObjectInput,
         }
         self.assertEqual(
             STORAGE_TOOL_NAMES, set(expected), "storage surface must be exactly these 6 tools"
         )
-        for name, (model, plane) in expected.items():
+        for name, model in expected.items():
             self.assertIs(TOOL_CONTRACTS[name].input_model, model)
-            self.assertEqual(tool_plane(name), plane)
         # The removed tools must be gone from the registry entirely.
         for removed in (
             "storage.list",
@@ -241,11 +227,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertEqual(TOOL_CONTRACTS["storage.find"].visibility, "public")
         self.assertEqual(TOOL_CONTRACTS["storage.object"].visibility, "public")
 
-    def test_artifact_tools_are_control_plane(self) -> None:
+    def test_artifact_tools_are_manifested(self) -> None:
         self.assertIs(TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput)
         self.assertIs(TOOL_CONTRACTS["artifact.find"].input_model, ArtifactFindInput)
-        self.assertEqual(tool_plane("artifact.submit"), "control")
-        self.assertEqual(tool_plane("artifact.find"), "control")
         # The whole resource-tracking tool family died with the resource cut.
         for removed in ("resource.register", "resource.find", "resource.delete"):
             self.assertNotIn(removed, TOOL_CONTRACTS)
@@ -268,12 +252,11 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(parsed.lens_id, "amplify")
 
-    def test_sandbox_pull_outputs_is_control_plane(self) -> None:
+    def test_sandbox_pull_outputs_contract(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["sandbox.pull_outputs"].input_model,
             SandboxPullOutputsInput,
         )
-        self.assertEqual(tool_plane("sandbox.pull_outputs"), "control")
         schema = SandboxPullOutputsInput.model_json_schema()
         self.assertNotIn("key_path", schema["properties"])
         self.assertNotIn("destination_path", schema["properties"])
@@ -301,12 +284,11 @@ class ToolContractRegistryTest(unittest.TestCase):
                         {"project_id": "proj_1", "public_key": public_key}
                     )
 
-    def test_sandbox_extend_is_control_plane(self) -> None:
+    def test_sandbox_extend_contract(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["sandbox.extend"].input_model,
             SandboxExtendInput,
         )
-        self.assertEqual(tool_plane("sandbox.extend"), "control")
 
     def test_experiment_materialize_folders_is_deleted(self) -> None:
         # D6: folder layout is now a skill instruction, not a tool.
@@ -318,17 +300,16 @@ class ToolContractRegistryTest(unittest.TestCase):
         # handoff is the sanctioned one-call path.
         self.assertNotIn("review.request_and_start", TOOL_CONTRACTS)
 
-    def test_mlflow_finalize_run_is_control_plane(self) -> None:
+    def test_mlflow_finalize_run_contract(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["mlflow.finalize_run"].input_model,
             MlflowFinalizeRunInput,
         )
-        self.assertEqual(tool_plane("mlflow.finalize_run"), "control")
 
 
 class ToolDispatcherTest(unittest.TestCase):
-    def test_dispatcher_can_expose_a_control_subset(self) -> None:
-        tool_names = CONTROL_PLANE_TOOL_NAMES
+    def test_dispatcher_can_expose_the_manifest(self) -> None:
+        tool_names = set(TOOL_MANIFEST)
         handlers = {name: (lambda **_: {}) for name in tool_names}
         dispatcher = ToolDispatcher(
             handlers=handlers,
@@ -340,15 +321,13 @@ class ToolDispatcherTest(unittest.TestCase):
 
         listed_names = {tool["name"] for tool in dispatcher.list_tools()}
         self.assertEqual(listed_names, tool_names)
-        self.assertFalse(listed_names & DATA_PLANE_TOOL_NAMES)
 
 
 class ToolHandlerRegistryTest(unittest.TestCase):
-    def test_control_handlers_exclude_data_plane_tools(self) -> None:
+    def test_handlers_match_manifest(self) -> None:
         handlers = build_control_tool_handlers(**_handler_targets())
 
-        self.assertEqual(set(handlers), CONTROL_PLANE_TOOL_NAMES)
-        self.assertFalse(set(handlers) & DATA_PLANE_TOOL_NAMES)
+        self.assertEqual(set(handlers), set(TOOL_MANIFEST))
 
     def test_control_handlers_omit_storage_when_disabled(self) -> None:
         targets = _handler_targets()

@@ -3,18 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { useProjectStore, projectPath } from '../store/useProjectStore';
 import ObjId from './ObjId';
 
-// Left-to-Right Mark: prepended to the repo path so the rtl left-truncation in
-// .proj-pop-row-path keeps the distinguishing folder tail visible without the
-// leading "/" jumping to the visual end.
-const LRM = String.fromCharCode(0x200e);
-
 /**
  * Sidebar project chip + popover.
  *
  * Always visible (even with one project) so the multi-project nature of the
- * backend is discoverable. The popover lists projects (name · path · summary),
- * links to /projects, and offers "+ New project". The path is shown so projects
- * with similar names stay distinguishable and folders are easy to scan.
+ * backend is discoverable. The popover lists projects, links to /projects,
+ * and offers "+ New project".
  */
 export default function ProjectSwitcher() {
   const navigate = useNavigate();
@@ -73,9 +67,6 @@ export default function ProjectSwitcher() {
                 onClick={() => pick(p.id)}
               >
                 <span className="proj-pop-row-name">{p.name || p.id}</span>
-                {p.repo_root && (
-                  <span className="proj-pop-row-path mono" title={p.repo_root}>{LRM + p.repo_root}</span>
-                )}
               </button>
             ))}
           </div>

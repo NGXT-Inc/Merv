@@ -194,7 +194,6 @@ TABLE_OWNERS = {
     "events": KERNEL,
     "schema_migrations": KERNEL,
     "tenants": KERNEL,
-    "tool_calls": KERNEL,
     "experiments": RESEARCH_CORE,
     "experiment_claims": RESEARCH_CORE,
     "claims": RESEARCH_CORE,

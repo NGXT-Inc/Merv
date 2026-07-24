@@ -810,14 +810,12 @@ class SandboxServiceTest(unittest.TestCase):
                 sandbox_uid=sandbox_uid,
                 project_id=project_id,
                 tenant_id="tenant_b",
-                include_data_plane_enrichment=False,
             )
         with self.assertRaises(ValidationError):
             self.app.sandboxes.get(
                 experiment_id="exp_tenant",
                 sandbox_uid=sandbox_uid,
                 tenant_id="tenant_b",
-                include_data_plane_enrichment=False,
             )
 
         got = self.app.sandboxes.get(
@@ -825,7 +823,6 @@ class SandboxServiceTest(unittest.TestCase):
             sandbox_uid=sandbox_uid,
             project_id=project_id,
             tenant_id="tenant_a",
-            include_data_plane_enrichment=False,
         )
         self.assertEqual(got["experiment_id"], "exp_tenant")
         self.assertEqual(got["sandbox_id"], "sbx_tenant")

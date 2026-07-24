@@ -18,8 +18,8 @@ import { useProjectStore, selectExperiments, useProjectHref } from '../store/use
  *   - MICRO: a live, newest-first call stream (2s auto-refresh, Pause, slow/
  *     heavy coloring, entity chip) — expand any row for its request/response.
  *
- * (tool_calls.sqlite holds fuller payloads but only for the local workspace, so
- * it can't back a cross-project view — hence the ring.)
+ * The brain's bounded activity ring is the canonical cross-project diagnostic
+ * source.
  */
 const POLL_MS = 2000;
 const RING_LIMIT = 1000;             // backend caps /api/activity at 1000
