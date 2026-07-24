@@ -206,36 +206,6 @@ class SplitProxyLocalDataTest(unittest.TestCase):
         self.assertEqual(result["error_code"], "brain_not_running")
         self.assertTrue(down["result"].get("isError"))
 
-    def test_pull_outputs_runs_proxy_local_rsync_helper(self) -> None:
-        def fake_cloud(*, name: str, arguments: dict) -> dict:
-            self.assertEqual(name, "sandbox.get")
-            return {
-                "experiment_id": "exp_1",
-                "sandbox_uid": arguments["sandbox_uid"],
-                "status": "running",
-                "experiment_dir": "/remote/exp",
-                "ssh": {"host": "example.test", "port": 22, "user": "root"},
-            }
-
-        with (
-            patch.object(self.proxy, "_call_cloud", side_effect=fake_cloud),
-            patch(
-                "merv.proxy.dataplane.sandbox_outputs.pull_sandbox_outputs",
-                return_value={"ok": True, "copied": []},
-            ) as pull,
-        ):
-            result = self._call(
-                "sandbox.pull_outputs",
-                {"sandbox_uid": "sbx_1", "key_path": "/tmp/rp-test-key"},
-            )
-
-        self.assertTrue(result["ok"])
-        self.assertIn("rsync -az --itemize-changes", result["rsync"])
-        self.assertIn("Use storage", result["storage_guidance"])
-        sandbox = pull.call_args.kwargs["sandbox"]
-        self.assertEqual(sandbox["ssh"]["key_path"], "/tmp/rp-test-key")
-
-
 class ProjectConnectToolTest(unittest.TestCase):
     """project action=connect writes the folder→project link from the MCP session."""
 

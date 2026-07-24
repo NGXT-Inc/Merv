@@ -22,7 +22,6 @@ from .gateway import (
     install_auth_routes,
     install_request_middleware,
 )
-from .sandbox_control import KEY_SANDBOX_CONTROL_TOOLS
 from .middleware import (
     install_activity_middleware,
     install_cors,
@@ -104,10 +103,7 @@ def create_fastapi_app(
     )
     register_mcp_routes(
         http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
-        # Data tools stay proxy-only over MCP except the key-sandbox surface an
-        # mk_ key reaches over control (Phase C); the gateway gates who is served.
-        allow_tool=lambda tool: tool.get("plane") != "data"
-        or tool.get("name") in KEY_SANDBOX_CONTROL_TOOLS,
+        allow_tool=lambda tool: tool.get("plane") != "data",
         authorize_scope=mcp_preauth.build_mcp_preauthorizer(
             authorizer=authorizer, reviews=api.reviews,
             hosted=surface.use_hosted_tool_policies),
@@ -116,7 +112,6 @@ def create_fastapi_app(
         http,
         authorize_project=gateway.authorize_data_plane_project,
         feed=api.feed,
-        sandboxes=api.sandboxes,
     )
     register_admin_routes(
         http,

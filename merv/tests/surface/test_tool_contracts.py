@@ -38,7 +38,6 @@ from merv.brain.surface.tools.contracts import (
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.tools.tool_facade import ToolDispatcher
 from merv.brain.surface.tools.tool_handlers import build_control_tool_handlers
-from merv.proxy.local_data_plane import LocalDataPlane
 
 
 class _HandlerTarget:
@@ -108,14 +107,14 @@ class ToolContractRegistryTest(unittest.TestCase):
             self.assertTrue(contract.description.strip(), name)
             self.assertEqual(tools[name]["description"], contract.description)
 
-    def test_live_local_split_composes_control_and_proxy_data_planes(self) -> None:
+    def test_live_app_serves_every_available_tool_on_control_plane(self) -> None:
         control = set(self.app._app.tools._tools)
         available = available_tool_names(storage_enabled=False)
         data = DATA_PLANE_TOOL_NAMES & available
         self.assertEqual(control, CONTROL_PLANE_TOOL_NAMES & available)
-        self.assertIsInstance(self.app._data_plane, LocalDataPlane)
         self.assertEqual(control | data, available)
         self.assertFalse(control & data)
+        self.assertFalse(data)
 
     def test_static_catalog_matches_app_list_tools(self) -> None:
         # The static catalog is what the router serves without instantiating an
@@ -189,7 +188,7 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertIn("confirm_retained", tools["sandbox.release"]["description"])
         self.assertIn("retention checklist", tools["sandbox.release"]["description"])
         self.assertIn("metrics snapshot", tools["sandbox.release"]["description"])
-        self.assertIn("local experiment folder", tools["sandbox.pull_outputs"]["description"])
+        self.assertIn("calling agent", tools["sandbox.pull_outputs"]["description"])
         self.assertIn("object storage", tools["sandbox.pull_outputs"]["description"])
         self.assertIn("sandbox.release", tools["sandbox.pull_outputs"]["description"])
 
@@ -286,12 +285,16 @@ class ToolContractRegistryTest(unittest.TestCase):
         )
         self.assertEqual(parsed.lens_id, "amplify")
 
-    def test_sandbox_pull_outputs_is_data_plane(self) -> None:
+    def test_sandbox_pull_outputs_is_control_plane(self) -> None:
         self.assertIs(
             TOOL_CONTRACTS["sandbox.pull_outputs"].input_model,
             SandboxPullOutputsInput,
         )
-        self.assertEqual(tool_plane("sandbox.pull_outputs"), "data")
+        self.assertEqual(tool_plane("sandbox.pull_outputs"), "control")
+        schema = SandboxPullOutputsInput.model_json_schema()
+        self.assertNotIn("key_path", schema["properties"])
+        self.assertNotIn("destination_path", schema["properties"])
+        self.assertNotIn("overwrite", schema["properties"])
 
     def test_sandbox_request_accepts_caller_public_key(self) -> None:
         parsed = SandboxRequestInput.model_validate(

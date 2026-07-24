@@ -98,14 +98,6 @@ class ToolGateway:
         )
         return self._result_dict(body=body)
 
-    def _call_control_api(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._http.post(
-            url=f"{self._require_control_url()}{path}",
-            payload=payload,
-            is_cloud=True,
-            timeout=self.config.timeout_seconds,
-        )
-
     def _call_local_data(
         self,
         *,
@@ -232,7 +224,6 @@ class ToolGateway:
             self._local_data_plane = LocalDataPlane(
                 repo_root=self.config.repo_root,
                 project_id_resolver=self._resolve_project_id,
-                control_api_post=self._call_control_api,
                 control_tool_call=lambda tool, args: self._call_cloud(
                     name=tool, arguments=args
                 ),

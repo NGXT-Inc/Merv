@@ -1171,7 +1171,7 @@ class ServiceLayoutTest(unittest.TestCase):
         imports = _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py")
         self.assertNotIn("artifacts.facade", imports)
         self.assertIn("feed.facade", imports)
-        self.assertIn("sandbox.facade", imports)
+        self.assertNotIn("sandbox.facade", imports)
         self.assertNotIn("feed.feed", imports)
         self.assertIn("register_data_plane_routes(", source)
         self.assertIn("authorize_data_plane_project", source)
@@ -1182,12 +1182,12 @@ class ServiceLayoutTest(unittest.TestCase):
         for route in (
             '"/api/data-plane/feed/validate-post"',
             '"/api/data-plane/feed/post"',
-            '"/api/data-plane/sandboxes/request"',
-            '"/api/data-plane/sandboxes/attach"',
         ):
             with self.subTest(route=route):
                 self.assertIn(route, data_plane_source)
                 self.assertNotIn(route, source)
+        self.assertNotIn('"/api/data-plane/sandboxes/request"', data_plane_source)
+        self.assertNotIn('"/api/data-plane/sandboxes/attach"', data_plane_source)
         # The resource submission routes died with the resource system.
         self.assertNotIn("/api/data-plane/resources/", data_plane_source)
 

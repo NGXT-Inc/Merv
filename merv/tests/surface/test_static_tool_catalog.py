@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from merv.brain.surface.tools.contracts import STORAGE_TOOL_NAMES, TOOL_CONTRACTS
-from merv.proxy.local_data_plane import LocalDataPlane, LocalDataPlaneError
 from merv.proxy.proxy import (
     _STATIC_CATALOG_PATH,
     _PROXY_MANIFEST_PATH,
@@ -222,39 +221,13 @@ class BarePythonProxyTest(unittest.TestCase):
 
         self.assertEqual(bare, live)
         names = {tool["name"] for tool in bare}
-        self.assertIn("sandbox.pull_outputs", names)
-        # The bare/offline catalog is the data-plane half only. The merged
+        self.assertIn("sandbox.get", names)
+        self.assertNotIn("sandbox.pull_outputs", names)
+        # The bare/offline catalog is the locally enriched half only. The
         # `project` tool is control-plane (brain-served), so with the brain
-        # unreachable it is not listed offline — a documented consequence of the
-        # merge (connect was cloud-validated anyway).
+        # unreachable it is not listed offline.
         self.assertNotIn("project", names)
         self.assertNotIn("project.connect", names)
-
-    def test_sandbox_request_without_brain_or_pydantic_uses_shared_validation(
-        self,
-    ) -> None:
-        captured: dict = {}
-
-        def control_api_post(path: str, payload: dict) -> dict:
-            captured["path"] = path
-            captured["payload"] = payload
-            return {"ok": True}
-
-        plane = LocalDataPlane(
-            repo_root=self.repo,
-            project_id_resolver=lambda: "proj_bare",
-            control_api_post=control_api_post,
-            control_tool_call=lambda tool, args: {},
-        )
-        with _without_brain_or_pydantic():
-            result = plane.call_tool(
-                name="sandbox.request",
-                arguments={"public_key": "ssh-ed25519 " + ("A" * 48) + " bare-client"},
-            )
-
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(captured["path"], "/api/data-plane/sandboxes/request")
-        self.assertEqual(captured["payload"]["project_id"], "proj_bare")
 
 
 if __name__ == "__main__":

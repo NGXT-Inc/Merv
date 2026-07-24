@@ -748,31 +748,9 @@ class SandboxPullOutputsInput(ProjectScopedInput):
     paths: list[str] = Field(
         default_factory=list,
         description=(
-            "Repo-relative paths under the sandbox experiment_dir to pull. Omit "
-            "to pull existing common outputs: results/, figures/, report.md, "
-            "graph.json, metrics.json, and results.json."
-        ),
-    )
-    key_path: str = Field(
-        default="",
-        description=(
-            "Local private key path for the caller-owned public_key authorized "
-            "on the sandbox. Required when sandbox.get does not include an "
-            "ssh.key_path enrichment."
-        ),
-    )
-    destination_path: str = Field(
-        default="",
-        description=(
-            "Repo-relative local destination directory. Defaults to the "
-            "sandbox's local_experiment_dir."
-        ),
-    )
-    overwrite: bool = Field(
-        default=False,
-        description=(
-            "When false, existing local files are preserved/refused. Set true "
-            "only when replacing local retained outputs is intentional."
+            "Paths under the sandbox experiment_dir to include in the returned "
+            "rsync command. Omit to use common retained outputs: results/, "
+            "figures/, report.md, graph.json, metrics.json, and results.json."
         ),
     )
 
@@ -1402,8 +1380,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "sandbox.request": ToolContract(
-        handler_identity="local.request_sandbox",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.request",
+        execution_strategy="control",
         input_model=SandboxRequestInput,
         description=(
             "Procure (reuse or create) a project sandbox, optionally attached to "
@@ -1418,9 +1396,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "only the single-line OpenSSH PUBLIC key as public_key so it gets "
             "authorized on the VM. Never send private-key material. "
             "The response's persisted public_key_source is 'caller' for new "
-            "requests; legacy 'managed' rows remain readable/releasable. "
-            "ssh.key_path appears only when a local proxy enrichment knows the "
-            "private key path."
+            "requests; legacy 'managed' rows remain readable/releasable."
         ),
     ),
     "sandbox.options": ToolContract(
@@ -1447,8 +1423,8 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         hosted_control_sandbox_lookup=True,
     ),
     "sandbox.attach": ToolContract(
-        handler_identity="local.attach_sandbox",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.attach",
+        execution_strategy="control",
         input_model=SandboxAttachInput,
         description=(
             "Associate an existing running sandbox with an experiment without "
@@ -1457,22 +1433,16 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "sandbox.pull_outputs": ToolContract(
-        handler_identity="local.pull_sandbox_outputs",
-        execution_strategy="local-orchestration",
+        handler_identity="sandboxes.pull_outputs_command",
+        execution_strategy="control",
         input_model=SandboxPullOutputsInput,
         description=(
-            "Copy selected files or directories from a running sandbox's remote "
-            "experiment_dir into the local experiment folder over SSH/rsync. "
-            "This is a proxy-local data tool: pass key_path for the caller-owned "
-            "private key when sandbox.get does not already include ssh.key_path. "
-            "Use object storage tools for heavy artifacts. Use this before "
-            "artifact.submit or sandbox.release; "
-            "omit paths to pull common retained outputs. "
-            "Existing local files are kept unless overwrite=true — ones that "
-            "differ from the sandbox are reported in files_kept_stale, so check "
-            "it before submitting results from a re-run. Remote symlinks and "
-            "device nodes are never recreated locally. One failing path is "
-            "reported in errors/paths_failed without discarding the rest."
+            "Return a filled rsync command for selected files or directories "
+            "under a running sandbox's experiment_dir. The calling agent runs "
+            "the command itself with its own SSH key and local destination; "
+            "bytes move directly from the sandbox to the caller. Use object "
+            "storage tools for heavy artifacts. Use this before artifact.submit "
+            "or sandbox.release; omit paths to pull common retained outputs."
         ),
     ),
     "sandbox.list": ToolContract(

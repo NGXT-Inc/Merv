@@ -1971,10 +1971,10 @@
       "visibility": "internal"
     },
     {
-      "description": "Procure (reuse or create) a project sandbox, optionally attached to an experiment, and return SSH details plus runtime guidance for the remote work folder, expiry, copy-out, and durable storage. On Thunder Compute or Lambda Labs, omit instance_type to receive a live menu of available machines to pick from. SSH key custody: the sandbox authorizes a caller-side public key. The primary path is bring-your-own-key \u2014 the requesting agent generates its own ephemeral ed25519 keypair (ssh-keygen), keeps the private key to itself in a location only it can read, and passes only the single-line OpenSSH PUBLIC key as public_key so it gets authorized on the VM. Never send private-key material. The response's persisted public_key_source is 'caller' for new requests; legacy 'managed' rows remain readable/releasable. ssh.key_path appears only when a local proxy enrichment knows the private key path.",
-      "executionStrategy": "local-orchestration",
+      "description": "Procure (reuse or create) a project sandbox, optionally attached to an experiment, and return SSH details plus runtime guidance for the remote work folder, expiry, copy-out, and durable storage. On Thunder Compute or Lambda Labs, omit instance_type to receive a live menu of available machines to pick from. SSH key custody: the sandbox authorizes a caller-side public key. The primary path is bring-your-own-key \u2014 the requesting agent generates its own ephemeral ed25519 keypair (ssh-keygen), keeps the private key to itself in a location only it can read, and passes only the single-line OpenSSH PUBLIC key as public_key so it gets authorized on the VM. Never send private-key material. The response's persisted public_key_source is 'caller' for new requests; legacy 'managed' rows remain readable/releasable.",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.request_sandbox",
+      "handlerIdentity": "sandboxes.request",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2107,7 +2107,7 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.request",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
@@ -2215,9 +2215,9 @@
     },
     {
       "description": "Associate an existing running sandbox with an experiment without changing the VM, workdir, SSH connection, or lifecycle. A live sandbox can be associated with multiple active experiments.",
-      "executionStrategy": "local-orchestration",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.attach_sandbox",
+      "handlerIdentity": "sandboxes.attach",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -2246,24 +2246,18 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.attach",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },
     {
-      "description": "Copy selected files or directories from a running sandbox's remote experiment_dir into the local experiment folder over SSH/rsync. This is a proxy-local data tool: pass key_path for the caller-owned private key when sandbox.get does not already include ssh.key_path. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs. Existing local files are kept unless overwrite=true \u2014 ones that differ from the sandbox are reported in files_kept_stale, so check it before submitting results from a re-run. Remote symlinks and device nodes are never recreated locally. One failing path is reported in errors/paths_failed without discarding the rest.",
-      "executionStrategy": "local-orchestration",
+      "description": "Return a filled rsync command for selected files or directories under a running sandbox's experiment_dir. The calling agent runs the command itself with its own SSH key and local destination; bytes move directly from the sandbox to the caller. Use object storage tools for heavy artifacts. Use this before artifact.submit or sandbox.release; omit paths to pull common retained outputs.",
+      "executionStrategy": "control",
       "featureRequirements": [],
-      "handlerIdentity": "local.pull_sandbox_outputs",
+      "handlerIdentity": "sandboxes.pull_outputs_command",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
-          "destination_path": {
-            "default": "",
-            "description": "Repo-relative local destination directory. Defaults to the sandbox's local_experiment_dir.",
-            "title": "Destination Path",
-            "type": "string"
-          },
           "experiment_id": {
             "anyOf": [
               {
@@ -2277,20 +2271,8 @@
             "description": "Experiment whose running sandbox should be copied from. Omit when sandbox_uid is supplied.",
             "title": "Experiment Id"
           },
-          "key_path": {
-            "default": "",
-            "description": "Local private key path for the caller-owned public_key authorized on the sandbox. Required when sandbox.get does not include an ssh.key_path enrichment.",
-            "title": "Key Path",
-            "type": "string"
-          },
-          "overwrite": {
-            "default": false,
-            "description": "When false, existing local files are preserved/refused. Set true only when replacing local retained outputs is intentional.",
-            "title": "Overwrite",
-            "type": "boolean"
-          },
           "paths": {
-            "description": "Repo-relative paths under the sandbox experiment_dir to pull. Omit to pull existing common outputs: results/, figures/, report.md, graph.json, metrics.json, and results.json.",
+            "description": "Paths under the sandbox experiment_dir to include in the returned rsync command. Omit to use common retained outputs: results/, figures/, report.md, graph.json, metrics.json, and results.json.",
             "items": {
               "type": "string"
             },
@@ -2323,7 +2305,7 @@
       },
       "localHandlerIdentity": null,
       "name": "sandbox.pull_outputs",
-      "plane": "data",
+      "plane": "control",
       "scopeStrategy": "linked-project",
       "visibility": "public"
     },

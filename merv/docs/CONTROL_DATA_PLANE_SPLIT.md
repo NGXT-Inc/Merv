@@ -18,9 +18,9 @@ USER MACHINE
       │ stdio
       ▼
   merv-mcp
-      ├─ local data tools: repo reads, hashes, validation, folder mkdir,
-      │                    rsync output pulls, project_links.sqlite
-      └─ control tools/data submissions over HTTP
+      ├─ local enrichment: sandbox.get checkout path, health
+      ├─ project_links.sqlite
+      └─ control tools over HTTP
                               │
                               ▼
                          Brain service
@@ -42,24 +42,20 @@ local upstream path.
 | Workflow gates | `research_core/next_action.py`, validators | Pure policy over a bulk Research snapshot and Sandbox read facade. |
 | Sandbox lifecycle | `sandbox/*`, `sandbox/execution/backends/*` | Provider credentials, VM lifecycle, quotas, reapers. |
 | State and audit | `kernel/state/*` | SQLite locally, Postgres/durable stores hosted. |
-| Blob/storage records | `object_storage/*`, blob stores | Submitted artifacts and optional heavy objects sent explicitly through data-plane flows. |
-| UI/API surface | `transport/api/*` | Browser/control endpoints plus private proxy-submission routes under `/api/data-plane/*`; browsers do not perform checkout-local operations. |
+| Blob/storage records | `object_storage/*`, blob stores | Submitted artifacts and optional heavy objects uploaded through explicit token or presigned-URL flows. |
+| UI/API surface | `transport/api/*` | Browser/control endpoints plus byte-upload routes; browsers do not perform checkout-local operations. |
 
 The brain may serve `/api/*` for the UI and `/mcp/*` for control-tool calls, but
-repo bytes enter only through explicit proxy-local tool submissions. It does not
-inspect paths under a checkout.
+repo bytes enter only through explicit uploads run by the calling agent. It
+does not inspect paths under a checkout.
 
-## Proxy-local data-plane responsibilities
+## Proxy-local responsibilities
 
 | Component | Modules | Why proxy-side |
 |---|---|---|
-| Experiment folders | `src/merv/proxy/dataplane/experiment_folders.py`, `src/merv/proxy/workspace.py` | Creates `experiments/<name>/` in the checkout. |
-| Feed attachments | `src/merv/proxy/dataplane/feed_images.py`, `src/merv/proxy/dataplane/feed_embeds.py` | Reads local images and HTML embeds submitted with feed posts. |
-| Repo paths | `src/merv/proxy/dataplane/repo_paths.py` | Normalizes and bounds checkout-relative paths. |
-| Storage transfer and guidance | `src/merv/shared/file_transfer.py`, `src/merv/shared/storage_guidance.py`, called by `src/merv/proxy/local_data_plane.py` | Hashes and transfers local checkout files through presigned object-store URLs while sharing stable guidance with the brain. |
-| Sandbox output pulls | `src/merv/proxy/dataplane/sandbox_outputs.py` | Runs safe `rsync` from the sandbox into the local experiment folder. |
+| Sandbox read enrichment | `src/merv/proxy/local_data_plane.py`, `src/merv/proxy/workspace.py` | Adds a checkout-local experiment directory to `sandbox.get`; lifecycle facts remain brain-owned. |
 | Project links | `src/merv/proxy/project_links.py` | Maps checkout folders to brain project ids in `project_links.sqlite`. |
-| Caller SSH custody | client/proxy environment | `sandbox.request` requires caller `public_key`; the caller owns the private key and supplies its path only for local rsync operations. |
+| Caller SSH custody | agent environment | `sandbox.request` requires caller `public_key`; the caller owns the private key and runs commands returned by sandbox tools itself. |
 
 The proxy has a hard zero-brain-import invariant, for both ordinary and dynamic
 imports. It may import only the standard library, `merv.proxy`, and
@@ -72,14 +68,12 @@ travel over the agent's own curl against the token-bearer upload routes.
 
 ## Tool split
 
-Control tools go to the brain. Data tools run in the proxy and submit explicit
-facts or bytes to the brain:
+Every tool is now control-plane: `DATA_PLANE_TOOL_NAMES` is empty. Tools that
+move bytes return commands or upload URLs for the calling agent to execute, so
+the brain and proxy never read the caller's checkout. The proxy retains only
+two control-plus-local-enrichment tools (`sandbox.get` and internal
+`sandbox.health`) and its project-link routing:
 
-- `experiment.materialize_folders`
-- `storage.upload_file` and `storage.download_file`
-- `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs`
-- `feed.post` (captures an optional local image or HTML embed before recording
-  the post)
 - `project` with `action: "connect"` — served by the proxy process itself: it
   validates (or creates) the project on the brain, then writes the
   folder→project link to `project_links.sqlite`. The one call where `project_id`
@@ -102,11 +96,11 @@ composition edge. Composite
 `sandbox.get` performs one control read and passes those facts into its local
 enricher, so the merge does not repeat the brain lookup.
 
-`sandbox.pull_outputs` is proxy-local in every deployment. It asks the brain for
-the current sandbox record, uses the caller's private key path supplied by the
-client/proxy side, and reuses the safe rsync logic from
-`src/merv/proxy/dataplane/sandbox_outputs.py`. Heavy artifacts should still go through durable
-storage tools instead of being copied into the repo.
+`sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs` use ordinary
+project-scoped control dispatch. `sandbox.pull_outputs` returns a filled rsync
+command with key-path and destination placeholders; the caller runs it with its
+own private key. Heavy artifacts should still go through durable storage tools
+instead of being copied into the repo.
 
 ## Sandbox key custody
 
@@ -121,8 +115,8 @@ brain-side operational credentials.
 
 | Deployment | Brain URL | State/blob defaults | Auth/CORS | Proxy role |
 |---|---|---|---|---|
-| Hosted (default) | `https://experiments.rapidreview.io` | durable DB + submitted-byte blob store; optional heavy-object store | Supabase-backed end-user auth (required in production via `MERV_REQUIRE_AUTH=1`) | same thick data plane |
-| Local | `http://127.0.0.1:8787` | SQLite + local-dir blobs | auth off by default; foreign browser origins rejected | same thick data plane |
+| Hosted (default) | `https://experiments.rapidreview.io` | durable DB + submitted-byte blob store; optional heavy-object store | Supabase-backed end-user auth (required in production via `MERV_REQUIRE_AUTH=1`) | project links + local enrichment |
+| Local | `http://127.0.0.1:8787` | SQLite + local-dir blobs | auth off by default; foreign browser origins rejected | project links + local enrichment |
 
 `MERV_MODE` names the preset used to start the brain. It does not
 create a second composition path.

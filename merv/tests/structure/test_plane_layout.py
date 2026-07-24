@@ -336,16 +336,11 @@ class ToolPlanePartitionTest(unittest.TestCase):
         # phase diff that moves the behavior, not casually.
         # feed.post/storage.submit/storage.fetch (token-curl) and
         # experiment.materialize_folders (deleted — folder layout is now a skill
-        # instruction) left this set in the no-dataplane transition. Only the
-        # sandbox family remains, and it is key-servable over control.
-        self.assertEqual(
-            DATA_PLANE_TOOL_NAMES,
-            {
-                "sandbox.request",
-                "sandbox.attach",
-                "sandbox.pull_outputs",
-            },
-        )
+        # instruction) left this set in the no-dataplane transition. The sandbox
+        # lifecycle family now returns commands/facts over control as well.
+        self.assertEqual(DATA_PLANE_TOOL_NAMES, set())
+        for name in ("sandbox.request", "sandbox.attach", "sandbox.pull_outputs"):
+            self.assertIn(name, CONTROL_PLANE_TOOL_NAMES)
         self.assertIn("sandbox.health", CONTROL_PLANE_TOOL_NAMES)
         self.assertIn("sandbox.get", CONTROL_PLANE_TOOL_NAMES)
 

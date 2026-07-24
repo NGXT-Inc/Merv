@@ -110,12 +110,6 @@ class HttpControlPlaneClient:
     def validate_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post(path="/api/data-plane/feed/validate-post", payload=payload)
 
-    def request_sandbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/sandboxes/request", payload=payload)
-
-    def attach_sandbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/sandboxes/attach", payload=payload)
-
     def submit_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post(path="/api/data-plane/feed/post", payload=payload)
 

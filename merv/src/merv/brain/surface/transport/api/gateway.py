@@ -19,7 +19,7 @@ from ....kernel.utils import (
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
 from ...auth import UnauthorizedError
 from ...identity import (
-    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_external_key, is_local_principal,
+    LOCAL_PRINCIPAL, ProjectKeyScopeError, is_local_principal,
 )
 from ...tools.contracts import TOOL_MANIFEST
 from ...tools.tool_facade import ToolDispatcher
@@ -29,7 +29,6 @@ from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (GLOBAL_MUTATOR_PREFIXES, is_local_origin,
                      open_hosted_operator_denial, operator_denial)
 from . import oauth, project_keys, sdk_auth
-from .sandbox_control import KEY_SANDBOX_CONTROL_TOOLS, serve_key_sandbox
 
 
 @dataclass(frozen=True)
@@ -197,24 +196,6 @@ class ToolInvocationGateway:
                 details={"field": "context.repo_root",
                          "reason": "repo_root_hidden_from_cloud"},
             )
-        if contract is not None and contract.plane == "data":
-            # A project-scoped mk_ key reaches sandbox request/attach/pull_outputs
-            # over the control path (project-shared ruling 7): a cloud agent has
-            # no local proxy. The sandbox family is the only data plane left; a
-            # non-key data-plane call still needs the proxy.
-            if name in KEY_SANDBOX_CONTROL_TOOLS and is_external_key(principal):
-                return serve_key_sandbox(
-                    sandboxes=self.sandboxes,
-                    projects=self.projects,
-                    name=name,
-                    arguments=arguments,
-                    principal=principal,
-                )
-            raise DataPlaneRequiredError(
-                f"{name} requires the local MCP proxy; hosted control mode cannot read "
-                "local files, hold user SSH keys, or run rsync",
-                details={"tool": name, "reason": "requires_local_data_plane"},
-            )
         for scope in (arguments.get("project_id"), project_scope):
             self.projects.require_member(project_id=scope, principal=principal)
         user_id = self.projects.user_id(principal)
@@ -230,6 +211,16 @@ class ToolInvocationGateway:
         if name in ("artifact.submit", "feed.post", "storage.submit") and base_url:
             # Each renders a token-curl one-liner against the caller-reachable base.
             internal_kwargs = {"base_url": base_url}
+        if name == "sandbox.request":
+            internal_kwargs = {
+                "provisioning_user_id": user_id,
+                "provisioning_key_id": str(
+                    getattr(principal, "key_id", "") or ""
+                ),
+                "include_data_plane_enrichment": False,
+            }
+        if name == "sandbox.attach":
+            internal_kwargs = {"include_data_plane_enrichment": False}
         policy = (
             HOSTED_CONTROL_TOOL_POLICIES.get(name)
             if self.surface.use_hosted_tool_policies

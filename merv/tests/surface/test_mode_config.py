@@ -212,7 +212,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
         self.assertNotIn("repo_root", body)
         self.assertNotIn("store", body)
 
-    def test_control_mcp_hides_and_rejects_data_plane_tools(self) -> None:
+    def test_control_mcp_serves_sandbox_lifecycle_tools(self) -> None:
         tools = self.client.get("/mcp/tools")
         self.assertEqual(tools.status_code, 200, tools.text)
         names = {tool["name"] for tool in tools.json()["tools"]}
@@ -221,18 +221,56 @@ class HostedControlSurfaceTest(unittest.TestCase):
         # feed.post is control-plane since Phase D.1 (media bytes ride the
         # agent's own curl), so it is MCP-visible like artifact.submit.
         self.assertIn("feed.post", names)
+        for name in ("sandbox.request", "sandbox.attach", "sandbox.pull_outputs"):
+            self.assertIn(name, names)
 
-        # sandbox.pull_outputs is the remaining data plane; a keyless caller
-        # (no external key) has no local proxy, so hosted control refuses it.
-        rejected = self.client.post(
+        project = self.client.post("/api/projects", json={"name": "Control Sandbox"})
+        self.assertEqual(project.status_code, 201, project.text)
+        project_id = project.json()["id"]
+        experiment = self.app.call_tool(
+            "experiment.create",
+            {
+                "project_id": project_id,
+                "name": "control-sandbox",
+                "intent": "Exercise sandbox tools through normal MCP control dispatch.",
+            },
+        )
+        requested = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "sandbox.request",
+                "arguments": {
+                    "project_id": project_id,
+                    "public_key": "ssh-ed25519 " + ("A" * 48) + " caller@test",
+                },
+            },
+        )
+        self.assertEqual(requested.status_code, 200, requested.text)
+        sandbox_uid = requested.json()["result"]["sandbox_uid"]
+        attached = self.client.post(
+            "/mcp/call",
+            json={
+                "name": "sandbox.attach",
+                "arguments": {
+                    "project_id": project_id,
+                    "experiment_id": experiment["id"],
+                    "sandbox_uid": sandbox_uid,
+                },
+            },
+        )
+        self.assertEqual(attached.status_code, 200, attached.text)
+        pulled = self.client.post(
             "/mcp/call",
             json={
                 "name": "sandbox.pull_outputs",
-                "arguments": {"project_id": "p_x", "sandbox_uid": "sb_x"},
+                "arguments": {
+                    "project_id": project_id,
+                    "sandbox_uid": sandbox_uid,
+                },
             },
         )
-        self.assertEqual(rejected.status_code, 400, rejected.text)
-        self.assertEqual(rejected.json()["error_code"], "data_plane_required")
+        self.assertEqual(pulled.status_code, 200, pulled.text)
+        self.assertIn("rsync", pulled.json()["result"])
 
     def test_control_rejects_repo_root_context(self) -> None:
         project = self.client.post(
