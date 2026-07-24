@@ -448,6 +448,10 @@ class GrantScopeMigrationTest(unittest.TestCase):
                     "SELECT name FROM schema_migrations WHERE version = 34"
                 ).fetchone()
                 self.assertEqual(applied["name"], "add_grant_scope")
+                # This exact ALTER was also run against the production
+                # PostgreSQL 33 schema in a scratch database: it applied,
+                # backfilled to 'project', accepted 'account', and rejected an
+                # unknown scope on the CHECK.
                 # The row that predates the column reads as project-scoped --
                 # no pre-existing credential silently widens.
                 upgraded = conn.execute(
