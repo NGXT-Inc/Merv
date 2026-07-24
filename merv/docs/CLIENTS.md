@@ -97,7 +97,7 @@ never runs. Claude Code copies a plugin's whole `source` tree on install (there
 is no `.claudeignore`), so clients should install a *slim* bundle instead.
 
 [`scripts/build_client_bundle.py`](../scripts/build_client_bundle.py) assembles
-that bundle (39 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
+that bundle (40 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
 + its self-contained `src/merv/{client,shared}`, and the conformance probe) from
 the real sources — nothing is duplicated in git, and
 `tests/surface/test_client_bundle.py` fails if the backend or tests ever leak in
@@ -107,11 +107,15 @@ or a new skill/agent is left out.
 python3 scripts/build_client_bundle.py --out dist/plugin   # gitignored
 ```
 
-To publish: run the build in the release pipeline and point the marketplace
-entry's `source` at the built bundle (Claude Code marketplaces accept a
-subdirectory `source`). The Cursor and self-host paths already build or clone
-directly. The hosted `rapidreview.io` marketplace manifest is a separate deploy
-artifact — repoint its `source` when the pipeline serves the built bundle.
+To publish: run the build in the release pipeline and commit/push the output to
+a **git-retrievable** location, then point the marketplace entry's `source` at
+it. Claude Code only fetches `marketplace.json` from a plain URL marketplace, so
+a relative `"source": "./dist/plugin"` requires either a git-cloned marketplace
+(the plugin path resolves within the clone) or an explicit `git-subdir` source
+pointing at the built subdirectory/ref — a direct-URL marketplace cannot serve a
+relative path. The Cursor and self-host paths already build or clone directly.
+The hosted `rapidreview.io` marketplace manifest is a separate deploy artifact —
+repoint its `source` when the pipeline serves the built bundle.
 
 ## Verify a connection
 

@@ -42,6 +42,8 @@ INCLUDE = (
     "GEMINI.md",
     "AGENTS.md",
     "README.md",
+    # Codex manifest declares composerIcon: ./assets/icon.svg
+    "assets",
     # Skills + reviewer agents (auto-discovered by every platform)
     "skills",
     "agents",
@@ -61,11 +63,17 @@ FORBIDDEN_SUBSTRINGS = ("/brain/", "/tests/", "/deploy/", "merv-http")
 
 def iter_files(rel: str):
     src = MERV_ROOT / rel
+    # Symlinks are skipped entirely: a symlink inside an included directory could
+    # otherwise resolve to the backend/tests and slip past the path check below.
+    if src.is_symlink():
+        raise SystemExit(f"build_client_bundle: refusing symlinked source {rel!r}")
     if src.is_file():
         yield src
     elif src.is_dir():
         for path in sorted(src.rglob("*")):
-            if path.is_file() and "__pycache__" not in path.parts:
+            if path.is_symlink() or "__pycache__" in path.parts:
+                continue
+            if path.is_file():
                 yield path
     else:
         raise SystemExit(f"build_client_bundle: missing source {rel!r}")
@@ -85,9 +93,13 @@ def build(out: Path) -> int:
     out.mkdir(parents=True)
     count = 0
     for rel in manifest():
-        bad = next((s for s in FORBIDDEN_SUBSTRINGS if s in f"/{rel}"), None)
-        if bad:
-            raise SystemExit(f"build_client_bundle: {rel!r} matches forbidden {bad!r}")
+        # Guard both the declared path and the real (resolved) path, so neither a
+        # forbidden name nor a symlink resolving into the backend can slip in.
+        real = (MERV_ROOT / rel).resolve()
+        for probe in (f"/{rel}", str(real)):
+            bad = next((s for s in FORBIDDEN_SUBSTRINGS if s in probe), None)
+            if bad:
+                raise SystemExit(f"build_client_bundle: {rel!r} matches forbidden {bad!r}")
         dst = out / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(MERV_ROOT / rel, dst)
