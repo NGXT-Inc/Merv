@@ -28,6 +28,7 @@ from merv.brain import __version__
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.mcp_http import register_mcp_routes
+from merv.brain.surface.transport.mcp_streamable_http import SERVER_INSTRUCTIONS
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -128,9 +129,20 @@ class McpStreamableHttpProtocolTest(unittest.TestCase):
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "merv", "version": __version__},
+                    "instructions": SERVER_INSTRUCTIONS,
                 },
             },
         )
+
+    def test_initialize_orients_a_client_that_has_no_repo_or_skills(self) -> None:
+        # claude.ai, Codex cloud, and Replit read the wire and nothing else, so
+        # the multi-project convention has to survive here.
+        initialized = self.http.post(
+            "/mcp", json=_initialize_payload(8), headers={"Accept": MCP_ACCEPT}
+        )
+        instructions = initialized.json()["result"]["instructions"]
+        self.assertIn('project(action="list")', instructions)
+        self.assertIn("project_id", instructions)
         session_id = initialized.headers.get("mcp-session-id", "")
         self.assertTrue(session_id and session_id.isascii() and session_id.isprintable())
 

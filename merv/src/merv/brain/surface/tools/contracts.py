@@ -56,9 +56,11 @@ class EmptyInput(ContractModel):
 class ProjectScopedInput(ContractModel):
     project_id: str = Field(
         description=(
-            "Explicit project scope. Pass the project id learned from "
-            'project(action="current"); for key-authenticated callers the '
-            "gateway requires it to equal the key's bound project."
+            "Explicit project scope. Discover the id with "
+            'project(action="list"), which returns every project you can '
+            "reach with names and dates. A credential bound to a single "
+            "project may only pass that one; otherwise pass whichever project "
+            "the user is asking about."
         )
     )
 
@@ -68,11 +70,14 @@ class WorkflowStatusAndNextInput(ProjectScopedInput):
 
 
 class ProjectInput(ContractModel):
-    """The one agent-facing project tool: current / create / overview."""
+    """The one agent-facing project tool: list / current / create / overview."""
 
-    action: Literal["current", "create", "overview"] = Field(
+    action: Literal["list", "current", "create", "overview"] = Field(
         description=(
-            "current = return the project bound to the caller's MCP key; "
+            "list = every project you can reach, with names, summaries, and "
+            "creation dates — start here to pick a project_id; "
+            "current = the project this credential is bound to, if it is "
+            "bound to exactly one; "
             "overview = the whole-project read — every claim (incl. "
             "settled/abandoned) and every experiment (incl. terminal) — for "
             "orienting or re-grounding; create = create a project."
@@ -96,7 +101,17 @@ class ProjectInput(ContractModel):
     )
     @model_validator(mode="after")
     def _check_action(self) -> "ProjectInput":
-        if self.action in ("current", "overview"):
+        if self.action == "list":
+            extras = [
+                field
+                for field in ("project_id", "name", "summary")
+                if getattr(self, field)
+            ]
+            if extras:
+                raise ValueError(
+                    f"action=list takes no other fields; got {', '.join(extras)}"
+                )
+        elif self.action in ("current", "overview"):
             # Both default to the project bound to the caller's MCP key;
             # overview also tolerates an explicit project_id.
             forbidden = ["name", "summary"]
@@ -955,9 +970,14 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         scope_strategy="caller-selected",
         input_model=ProjectInput,
         description=(
-            "Project identity for this MCP key, dispatched on 'action'. "
-            "action=current returns the key-bound project, or exists=false "
-            "when the caller has no bound project. "
+            "Project navigation for this credential, dispatched on 'action'. "
+            'action=list returns every project you can reach — id, name, '
+            "summary, and creation date — and is how you pick the project_id "
+            "that most other tools require; call it first when you do not "
+            "already know which project the user means. "
+            "action=current returns the single project this credential is "
+            "bound to; a credential that reaches several returns exists=false "
+            "and the same list, because there is no one current project. "
             "action=overview is the whole-project read for orienting or "
             "re-grounding: every claim (including settled/abandoned) and every "
             "experiment (including terminal), independent of what "

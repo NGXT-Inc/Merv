@@ -99,11 +99,81 @@ class ControlToolOperationsTest(unittest.TestCase):
         )
         self.projects.get.assert_called_once_with(project_id="proj_bound")
 
-    def test_project_current_without_a_bound_project_reports_exists_false(self) -> None:
-        result = self.operations.project(action="current")
+    def test_project_current_without_a_bound_project_lists_what_it_can_reach(
+        self,
+    ) -> None:
+        self.projects.list_projects.return_value = {
+            "projects": [
+                {
+                    "id": "proj_1", "name": "One", "summary": "First",
+                    "status": "active", "created_at": "2026-07-01T00:00:00Z",
+                },
+                {
+                    "id": "proj_2", "name": "Two", "summary": "Second",
+                    "status": "active", "created_at": "2026-07-02T00:00:00Z",
+                },
+            ]
+        }
+
+        result = self.operations.project(action="current", user_id="user_1")
 
         self.assertFalse(result["exists"])
-        self.assertIn("web app", result["hint"])
+        # The old response told the agent to go mint a per-project key. An
+        # unbound credential is now the normal case, so it gets the list.
+        self.assertNotIn("Mint", result["hint"])
+        self.assertEqual([p["id"] for p in result["projects"]], ["proj_1", "proj_2"])
+        self.projects.get.assert_not_called()
+        self.projects.list_projects.assert_called_once_with(
+            user_id="user_1", project_id=""
+        )
+
+    def test_project_list_returns_names_dates_and_summaries(self) -> None:
+        self.projects.list_projects.return_value = {
+            "projects": [
+                {
+                    "id": "proj_1", "name": "One", "summary": "First",
+                    "status": "active", "created_at": "2026-07-01T00:00:00Z",
+                    "settings": {"require_verified_reviews": True},
+                }
+            ]
+        }
+
+        result = self.operations.project(action="list", user_id="user_1")
+
+        self.assertEqual(
+            result["projects"],
+            [
+                {
+                    "id": "proj_1",
+                    "name": "One",
+                    "summary": "First",
+                    "status": "active",
+                    "created_at": "2026-07-01T00:00:00Z",
+                }
+            ],
+        )
+        # Policy knobs are not the agent's business.
+        self.assertNotIn("settings", result["projects"][0])
+
+    def test_project_list_from_a_bound_key_stays_narrowed_to_that_project(
+        self,
+    ) -> None:
+        self.projects.list_projects.return_value = {"projects": []}
+
+        self.operations.project(
+            action="list", user_id="user_1", key_project_id="proj_bound"
+        )
+
+        self.projects.list_projects.assert_called_once_with(
+            user_id="user_1", project_id="proj_bound"
+        )
+
+    def test_project_overview_without_any_project_fails_closed(self) -> None:
+        with self.assertRaises(ValidationError) as caught:
+            self.operations.project(action="overview", user_id="user_1")
+
+        # Names the fix rather than guessing which project was meant.
+        self.assertIn('action="list"', str(caught.exception))
         self.projects.get.assert_not_called()
 
     def test_project_overview_defaults_to_the_bound_project(self) -> None:

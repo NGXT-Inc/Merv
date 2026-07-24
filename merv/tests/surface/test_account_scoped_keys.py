@@ -238,6 +238,51 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
                     response.json()["error_code"], "project_scope_forbidden"
                 )
 
+    def _tool(self, name: str, arguments: dict):
+        return self.client.post(
+            "/mcp/call",
+            json={"name": name, "arguments": arguments},
+            headers=self._bearer(self.key),
+        )
+
+    def _result(self, name: str, arguments: dict) -> dict:
+        response = self._tool(name, arguments)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["result"]
+
+    def test_it_can_self_navigate_to_every_project_it_reaches(self) -> None:
+        projects = self._result("project", {"action": "list"})["projects"]
+
+        by_name = {project["name"]: project for project in projects}
+        self.assertEqual(
+            set(by_name), {"Account Project A", "Account Project B"}
+        )
+        # Requirement: not just ids -- enough to choose between them.
+        for project in projects:
+            self.assertTrue(project["id"])
+            self.assertTrue(project["created_at"])
+            self.assertIn("summary", project)
+
+        # And an id taken from that list is immediately usable.
+        chosen = by_name["Account Project B"]["id"]
+        overview = self._result(
+            "project", {"action": "overview", "project_id": chosen}
+        )
+        self.assertEqual(overview["project"]["id"], chosen)
+
+    def test_current_hands_back_the_list_instead_of_a_mint_nudge(self) -> None:
+        body = self._result("project", {"action": "current"})
+        self.assertFalse(body["exists"])
+        self.assertNotIn("Mint", body["hint"])
+        self.assertEqual(len(body["projects"]), 2)
+
+    def test_overview_without_a_project_id_fails_closed_naming_the_fix(self) -> None:
+        response = self._tool("project", {"action": "overview"})
+        self.assertEqual(response.status_code, 400, response.text)
+        body = response.json()
+        self.assertEqual(body["error_code"], "validation_error")
+        self.assertIn('project(action="list")', body["detail"])
+
     def test_it_is_still_barred_from_creating_projects(self) -> None:
         response = self.client.post(
             "/mcp/call",

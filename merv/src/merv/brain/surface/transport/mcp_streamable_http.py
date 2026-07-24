@@ -35,6 +35,22 @@ from .request_body import RequestBodyTooLarge, read_limited_body
 
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
+
+# Sent in the initialize result. This is the only orientation a client with no
+# repo and no skills files ever sees -- claude.ai, Codex cloud, and Replit read
+# the wire and nothing else -- so the multi-project convention has to live here
+# rather than in AGENTS.md.
+SERVER_INSTRUCTIONS = (
+    "Merv is a research-suite backend. Work is organized into projects, and "
+    "one credential may reach several of them.\n\n"
+    'Call project(action="list") first when you do not already know which '
+    "project the user means: it returns every project you can reach with its "
+    "id, name, summary, and creation date. Most other tools require an "
+    "explicit project_id, so carry the id from that list into each call. "
+    "Never guess a project id.\n\n"
+    'If your credential is bound to a single project, project(action="current") '
+    "returns it and that id is the only one you may pass."
+)
 # The streamable-HTTP protocol revisions this stateless server actually speaks;
 # initialize only ever negotiates MCP_PROTOCOL_VERSION, so that is the sole
 # version served. A supplied-but-unsupported MCP-Protocol-Version header is a
@@ -315,6 +331,7 @@ class McpStreamableHttp:
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "merv", "version": __version__},
+                    "instructions": SERVER_INSTRUCTIONS,
                 },
             ),
             # Opaque, unstored session id for client conformance only.

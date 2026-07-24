@@ -32,14 +32,24 @@ class ControlToolOperations:
         user_id: str = "",
         key_project_id: str = "",
     ) -> dict[str, Any]:
-        # The key carries project identity for every HTTP MCP caller.
+        """List / current / create / overview for the calling credential."""
+        if action == "list":
+            return self._reachable(user_id=user_id, key_project_id=key_project_id)
+        # A credential bound to one project carries that identity; one scoped
+        # to the whole account has no single "current", so it gets the list.
         if action == "current":
             if not key_project_id:
+                reachable = self._reachable(
+                    user_id=user_id, key_project_id=key_project_id
+                )
                 return {
                     "exists": False,
-                    "hint": "This MCP key is not bound to a project. Mint a "
-                    "project key from the RapidReview web app (Settings → MCP "
-                    "keys) and reconnect with it.",
+                    "hint": (
+                        "This credential reaches every project listed here, so "
+                        "there is no single current project. Pass project_id "
+                        "explicitly on each call."
+                    ),
+                    **reachable,
                 }
             project = self.projects.get(project_id=key_project_id)
             return {
@@ -55,8 +65,16 @@ class ControlToolOperations:
                 name=name, summary=summary, tenant_id=tenant_id, user_id=user_id
             )
         if action == "overview":
-            # A key defaults to its bound project; a caller may still name one.
+            # A bound key defaults to its project; anyone else must name one.
+            # Fail closed rather than guess which project was meant.
             resolved = project_id or key_project_id
+            if not resolved:
+                raise ValidationError(
+                    "project_id is required: this credential is not bound to a "
+                    'single project. Call project(action="list") to see every '
+                    "project you can reach, then pass project_id explicitly.",
+                    details={"field": "project_id"},
+                )
             project = self.projects.get(project_id=resolved)
             return {
                 "project": {
@@ -68,6 +86,29 @@ class ControlToolOperations:
                 "experiments": self.experiment_list(project_id=resolved)["experiments"],
             }
         raise ValidationError(f'project action="{action}" is not recognized')
+
+    def _reachable(self, *, user_id: str, key_project_id: str) -> dict[str, Any]:
+        """Every project this caller may address, newest identity last.
+
+        ``key_project_id`` is set only for a credential confined to one
+        project, and narrows the list to it. An account-scoped credential
+        passes none and sees its owner's whole membership.
+        """
+        listed = self.projects.list_projects(
+            user_id=user_id, project_id=key_project_id
+        )["projects"]
+        return {
+            "projects": [
+                {
+                    "id": project["id"],
+                    "name": project["name"],
+                    "summary": project.get("summary", ""),
+                    "status": project.get("status", ""),
+                    "created_at": project.get("created_at", ""),
+                }
+                for project in listed
+            ]
+        }
 
     def storage_find(
         self,

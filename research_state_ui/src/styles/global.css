@@ -5010,3 +5010,9 @@ a.spend-row-name:hover { color: var(--active); }
 .oauth-consent-resource { margin: 0; font: var(--text-xs)/1.5 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
 .oauth-consent-error { margin: 0; color: var(--refutes); font-size: var(--text-sm); }
 .oauth-consent-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.oauth-scope-choices { display: flex; flex-direction: column; gap: 8px; }
+.oauth-scope-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); cursor: pointer; }
+.oauth-scope-choice.is-selected { border-color: var(--active); }
+.oauth-scope-choice input { margin-top: 3px; }
+.oauth-scope-choice strong { display: block; font-size: var(--text-sm); }
+.oauth-scope-detail { display: block; margin-top: 2px; font-size: var(--text-xs); color: var(--muted); }
