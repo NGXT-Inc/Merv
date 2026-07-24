@@ -127,6 +127,34 @@ The session ids are supplied by the clients, so this is workflow-level
 separation rather than cryptographic proof of separate execution. See
 [REVIEW_IDENTITY.md](REVIEW_IDENTITY.md).
 
+## Use with Codex
+
+Codex reads the same marketplace manifest as Claude Code, so the full plugin —
+skills plus the MCP server registration from
+[.codex-plugin/plugin.json](../.codex-plugin/plugin.json) /
+[.mcp.codex.json](../.mcp.codex.json) — installs in two commands:
+
+```bash
+codex plugin marketplace add NGXT-Inc/Merv
+codex plugin add merv@rapidreview
+```
+
+All six `merv:` skills are then discoverable in Codex sessions (verified with
+`codex exec`). The plugin registers the hosted `/mcp` endpoint, but Codex does
+not carry the manifest's `Authorization` header wiring — the server shows as
+"Not logged in" until auth is added per machine, either the key route:
+
+```bash
+codex mcp add merv --url https://experiments.rapidreview.io/mcp \
+  --bearer-token-env-var MERV_MCP_KEY
+```
+
+or the browser OAuth flow: `codex mcp login merv`. The `codex mcp add` line
+alone is also a valid MCP-only setup (no skills). Headless `codex exec` runs
+need `default_tools_approval_mode="approve"` on the server entry or tool calls
+die on the approval prompt; headless cloud tasks must expose `MERV_MCP_KEY` to
+the task environment.
+
 ## Use with Cursor
 
 The plugin ships a Cursor plugin bundle: [.cursor-plugin/plugin.json](../.cursor-plugin/plugin.json)
