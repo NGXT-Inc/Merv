@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import threading
 from contextlib import closing, contextmanager, suppress
@@ -41,14 +42,24 @@ _DEFAULT_PULL_OUTPUTS = (
     "results.json",
 )
 
+# The path is sent through two command parsers: the caller's local shell and,
+# with legacy rsync argument handling, the sandbox's SSH command shell. Keep
+# caller-controlled names inside a deliberately small, shell-inert ASCII set
+# instead of relying on either rsync peer's version or configuration.
+_SAFE_PULL_OUTPUT_PATH_RE = re.compile(r"[A-Za-z0-9/._-]+\Z")
+_SAFE_SSH_USER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
+
 # Command template a non-local (key) caller runs itself to pull outputs over
 # SSH/rsync. host/port/user/remote-path are filled from sandbox facts; the
 # caller fills <key_path> (its own private key) and <local-destination>. The
 # brain never runs rsync or touches local files (no-dataplane Phase C).
+# --protect-args is the pre-3.2.4 name accepted since rsync 3.0, so it protects
+# remote arguments on older peers that do not yet recognize --secluded-args.
 _RSYNC_PULL_OUTPUTS_TEMPLATE = (
     "rsync -az --itemize-changes --no-links --no-devices --no-specials "
+    "--protect-args "
     '-e "ssh -i <key_path> -p {port} -o StrictHostKeyChecking=no '
-    '-o UserKnownHostsFile=/dev/null" {remote_sources} <local-destination>'
+    '-o UserKnownHostsFile=/dev/null" -- {remote_sources} <local-destination>'
 )
 
 
@@ -56,15 +67,26 @@ def _pull_output_sources(
     *, remote_dir: str, user: str, host: str, paths: list[str]
 ) -> list[str]:
     """Validated, individually shell-quoted rsync remote source arguments."""
+    if user.startswith("-") or _SAFE_SSH_USER_RE.fullmatch(user) is None:
+        raise ValidationError(
+            "sandbox.pull_outputs SSH user must be non-empty and contain only "
+            "ASCII letters, digits, '.', '_', or '-', and must not start with '-'"
+        )
     root = PurePosixPath(remote_dir)
     sources: list[str] = []
     for raw_path in paths:
-        path = str(raw_path).strip()
+        path = str(raw_path)
         relative = PurePosixPath(path)
         if not path or relative.is_absolute() or ".." in relative.parts:
             raise ValidationError(
                 "sandbox.pull_outputs paths must be non-empty relative paths "
                 "without '..' components"
+            )
+        if _SAFE_PULL_OUTPUT_PATH_RE.fullmatch(path) is None:
+            raise ValidationError(
+                "sandbox.pull_outputs paths may contain only ASCII letters, "
+                "digits, '/', '.', '_', and '-' (no whitespace, backslashes, "
+                "or shell metacharacters)"
             )
         resolved = root.joinpath(relative)
         try:

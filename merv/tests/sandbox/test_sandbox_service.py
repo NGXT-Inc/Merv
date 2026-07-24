@@ -116,32 +116,68 @@ class SandboxServiceTest(unittest.TestCase):
         )
         self.assertEqual(state["status"], "ready_to_run")
 
-    def test_pull_outputs_shell_quotes_each_remote_path(self) -> None:
+    def test_pull_outputs_protects_and_shell_quotes_safe_remote_paths(self) -> None:
         exp_id = self._experiment()
         sandbox = self.call(
             "sandbox.request", project_id=self.project_id, experiment_id=exp_id
         )
-        malicious = "results/x; touch /tmp/pwned; #"
-        quoted_name = "results/researcher's chart.txt"
+        paths = ["results", "figures/chart-01.png", "reports/run_2.metrics.json"]
 
-        pulled = self.call(
-            "sandbox.pull_outputs",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-            paths=[malicious, quoted_name, "figures/chart one.png"],
-        )
-
-        tokens = shlex.split(pulled["rsync"])
         expected_sources = [
             (
                 f"{sandbox['ssh']['user']}@{sandbox['ssh']['host']}:"
                 f"{sandbox['experiment_dir']}/{path}"
             )
-            for path in (malicious, quoted_name, "figures/chart one.png")
+            for path in paths
         ]
-        self.assertEqual(tokens[-4:-1], expected_sources)
+        with mock.patch(
+            "merv.brain.sandbox.facade.shlex.quote", wraps=shlex.quote
+        ) as quote:
+            pulled = self.call(
+                "sandbox.pull_outputs",
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                paths=paths,
+            )
+        quote.assert_has_calls([mock.call(source) for source in expected_sources])
+
+        tokens = shlex.split(pulled["rsync"])
+        self.assertIn("--protect-args", tokens)
+        terminator = tokens.index("--")
+        self.assertEqual(tokens[terminator + 1 : -1], expected_sources)
+        quoted_sources = [shlex.quote(source) for source in expected_sources]
+        self.assertEqual(
+            pulled["rsync"].split("-- ", 1)[1],
+            " ".join([*quoted_sources, "<local-destination>"]),
+        )
         self.assertEqual(tokens[-1], "<local-destination>")
-        self.assertNotIn("touch", tokens)
+
+        defaults = self.call(
+            "sandbox.pull_outputs",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+        self.assertEqual(
+            defaults["paths"],
+            [
+                "results",
+                "figures",
+                "report.md",
+                "graph.json",
+                "metrics.json",
+                "results.json",
+            ],
+        )
+        self.assertEqual(
+            shlex.split(defaults["rsync"])[-7:-1],
+            [
+                (
+                    f"{sandbox['ssh']['user']}@{sandbox['ssh']['host']}:"
+                    f"{sandbox['experiment_dir']}/{path}"
+                )
+                for path in defaults["paths"]
+            ],
+        )
 
     def test_pull_outputs_rejects_paths_outside_experiment_dir(self) -> None:
         exp_id = self._experiment()
@@ -157,6 +193,53 @@ class SandboxServiceTest(unittest.TestCase):
                     experiment_id=exp_id,
                     paths=[path],
                 )
+
+    def test_pull_outputs_rejects_remote_shell_unsafe_paths(self) -> None:
+        exp_id = self._experiment()
+        self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+
+        unsafe_paths = (
+            "results/$(touch${IFS}/tmp/pwn)",
+            "results/`id`",
+            "results/x;touch",
+            "results/x|touch",
+            "results/chart one.png",
+            r"results\escape",
+            r"..\/..\/tmp/secret",
+        )
+        for path in unsafe_paths:
+            with (
+                self.subTest(path=path),
+                self.assertRaisesRegex(ValidationError, "shell metacharacters"),
+            ):
+                self.call(
+                    "sandbox.pull_outputs",
+                    project_id=self.project_id,
+                    experiment_id=exp_id,
+                    paths=[path],
+                )
+
+    def test_pull_outputs_rejects_unsafe_server_ssh_user(self) -> None:
+        exp_id = self._experiment()
+        created = self.call(
+            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
+        )
+
+        for user in ("-server-option", "root;touch", "root user"):
+            with self.subTest(user=user):
+                with self.app.store.transaction() as conn:
+                    conn.execute(
+                        "UPDATE sandboxes SET ssh_user = ? WHERE sandbox_uid = ?",
+                        (user, created["sandbox_uid"]),
+                    )
+                with self.assertRaisesRegex(ValidationError, "SSH user"):
+                    self.call(
+                        "sandbox.pull_outputs",
+                        project_id=self.project_id,
+                        experiment_id=exp_id,
+                    )
 
     def test_request_without_experiment_creates_standalone_sandbox(self) -> None:
         result = self.call("sandbox.request", project_id=self.project_id)
