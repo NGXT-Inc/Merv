@@ -35,7 +35,7 @@ Use Merv. Start with project(action="current"), then workflow.status_and_next.
 Each client connects straight to the hosted brain's `/mcp` endpoint. The committed
 `.mcp.json` uses `type: "http"` and sends your key as `Authorization: Bearer
 ${MERV_MCP_KEY}`, so export `MERV_MCP_KEY` and keep it out of version control — a
-key is bearer-equivalent to full access to its one bound project, so never inline
+key is bearer-equivalent to full access to everything it is scoped to, so never inline
 it into a committed file. That key binds a single immutable project; the brain
 scopes every call to it, with no per-folder linking or terminal setup. Details:
 [docs/HOSTED_CLIENT_QUICKSTART.md](docs/HOSTED_CLIENT_QUICKSTART.md).

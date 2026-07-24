@@ -19,11 +19,20 @@ dispatched by prefix (RapidReview's contract, reimplemented in
   (direct `/mcp` clients, agents, MLflow, curl). sha256-hashed and looked up in
   the shared `api_keys` table over PostgREST (`SUPABASE_SERVICE_KEY`), cached 60s.
   These keys are minted/revoked in RapidReview.
-- **`mk_` project key** — minted/revoked **in this repo** via the key-mint UI and
-  stored in the `project_api_keys` table. Each key binds one immutable project,
-  and the gateway rejects any request whose `project_id` argument does not equal
-  the key's bound project. OAuth (DCR + PKCE) mints audience-confined `mk_`
-  access tokens (+ `mrt_` refresh) for cloud platforms (Codex, Replit).
+- **`mk_` key** — minted/revoked **in this repo** via the key-mint UI and
+  stored in the `project_api_keys` table. Its `grant_scope` is immutable and is
+  one of two shapes:
+  - `project` — binds one project. The gateway rejects any request whose
+    `project_id` argument does not equal that project.
+  - `account` — reaches every project its owner is a member of. It carries no
+    project confinement, so membership is the only gate; its `project_id`
+    column names the *home* project it is listed and revoked under, which is
+    never a limit on its reach.
+
+  Either way the key is external, so it can never create projects or touch
+  operator diagnostics. OAuth (DCR + PKCE) mints audience-confined `mk_`
+  access tokens (+ `mrt_` refresh) for cloud platforms (Codex, Replit); the
+  consent screen chooses the scope, and every rotation inherits it.
 
 Enforcement lives in the `attach_principal` middleware
 (`src/merv/brain/surface/transport/api/app.py`): OPTIONS, `/health`, `/api/meta`, and
@@ -61,14 +70,15 @@ Any member can manage members (two-trusted-users model; no roles).
   `url: "https://experiments.rapidreview.io/mcp"`, and
   `headers.Authorization: "Bearer ${MERV_MCP_KEY}"` — the key is read from the
   env var and is **never** inlined into a committed file (it is
-  bearer-equivalent to full access to its one bound project, so export it in
+  bearer-equivalent to full access to everything it is scoped to, so export it in
   your shell and keep any local key file `.gitignore`d). `merv-client
   configure` writes the machine config and `merv-client env` prints that
   `.mcp.json` snippet; see the
   [hosted client quickstart](HOSTED_CLIENT_QUICKSTART.md) for the full
-  walkthrough. A key binds one immutable project; the agent passes `project_id`
-  explicitly and the gateway enforces that it equals the key's bound project,
-  while project membership still controls authorization.
+  walkthrough. The agent passes `project_id` explicitly on every call: an
+  account-scoped key discovers the ids with `project(action="list")`, and a
+  project-scoped key may only pass its one bound project. Project membership
+  controls authorization in both cases.
 - **Agents / MLflow**: `mlflow.context` env blocks carry
   `MLFLOW_TRACKING_USERNAME/PASSWORD` (the key in the password slot) when
   `MERV_MLFLOW_AGENT_KEY` is set; sandbox provisioning also

@@ -283,6 +283,62 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         self.assertEqual(body["error_code"], "validation_error")
         self.assertIn('project(action="list")', body["detail"])
 
+    def test_it_stays_revokable_after_the_owner_leaves_its_home_project(self) -> None:
+        """An account key must never outlive the owner's ability to kill it.
+
+        The home project is where the key is administered, not a limit on its
+        reach -- so losing membership there shrinks what the key can touch but
+        must not strand it live and unrevokable. Any member can remove any
+        member, so this is reachable without an attacker.
+        """
+        listed = self.client.get(
+            f"/api/projects/{self.project_a}/keys", headers=self._bearer(self.jwt)
+        )
+        key_id = listed.json()["keys"][0]["id"]
+
+        removed = self.client.delete(
+            f"/api/projects/{self.project_a}/members/{USER_A}",
+            headers=self._bearer(self.jwt),
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+
+        # The key legitimately still works against the owner's other projects.
+        still_live = self.client.get(
+            f"/api/projects/{self.project_b}", headers=self._bearer(self.key)
+        )
+        self.assertEqual(still_live.status_code, 200, still_live.text)
+
+        # ...so the owner must still be able to see it and revoke it.
+        relisted = self.client.get(
+            f"/api/projects/{self.project_a}/keys", headers=self._bearer(self.jwt)
+        )
+        self.assertEqual(relisted.status_code, 200, relisted.text)
+        self.assertIn(key_id, [key["id"] for key in relisted.json()["keys"]])
+
+        revoked = self.client.post(
+            f"/api/projects/{self.project_a}/keys/{key_id}/revoke",
+            headers=self._bearer(self.jwt),
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.text)
+
+        dead = self.client.get(
+            f"/api/projects/{self.project_b}", headers=self._bearer(self.key)
+        )
+        self.assertEqual(dead.status_code, 401, dead.text)
+
+    def test_losing_membership_still_blocks_minting_under_that_project(self) -> None:
+        # The revocation exemption must not extend to creation.
+        self.client.delete(
+            f"/api/projects/{self.project_a}/members/{USER_A}",
+            headers=self._bearer(self.jwt),
+        )
+        minted = self.client.post(
+            f"/api/projects/{self.project_a}/keys",
+            json={},
+            headers=self._bearer(self.jwt),
+        )
+        self.assertEqual(minted.status_code, 404, minted.text)
+
     def test_it_is_still_barred_from_creating_projects(self) -> None:
         response = self.client.post(
             "/mcp/call",

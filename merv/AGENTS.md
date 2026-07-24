@@ -2,7 +2,8 @@
 
 This repository uses one Merv MCP surface backed by a single brain. The agent
 connects directly to `POST /mcp` with `Authorization: Bearer <key>`, where the
-key is an `mk_` project key bound to one immutable project. The brain owns durable
+key is an `mk_` key scoped either to one project or to the owner's whole
+account (chosen when it is minted). The brain owns durable
 research records, workflow policy, reviews, sandbox lifecycle, provider
 credentials, blobs, and optional heavy storage.
 
@@ -11,13 +12,15 @@ The agent submits explicit metadata and selected evidence bytes through MCP.
 
 ## Project scope
 
-Call `project(action="current")` once to learn the project the key is bound to
-and its `project_id`. That is the only project the key can ever act on.
+Call `project(action="list")` to see every project this key can reach, with
+names, summaries, and creation dates. Pick the one the user means and pass its
+`project_id` explicitly on every project-scoped tool.
 
-Then pass that `project_id` explicitly on every project-scoped tool. The gateway
-requires it and enforces that it equals the key-bound project: a mismatched
-`project_id` is rejected, and omitting it on a project-scoped tool raises
-"project_id is required". There is no linking step and no `connect` action. Use
+If the key is scoped to a single project, `project(action="current")` returns
+it and that is the only project the key can ever act on; a mismatched
+`project_id` is rejected. Omitting `project_id` on a project-scoped tool raises
+"project_id is required" — never guess an id, call `project(action="list")`.
+There is no linking step and no `connect` action. Use
 `project(action="overview")` for the full claim and experiment history.
 
 ## Operating rules

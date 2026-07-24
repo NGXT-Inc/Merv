@@ -108,7 +108,7 @@ Full per-platform notes: [CLIENTS.md](merv/docs/CLIENTS.md).
 
 ### 3. First run
 
-Ask the agent to call `project(action="current")` for its bound project id,
+Ask the agent to call `project(action="list")` to see the projects it can reach,
 then `workflow.status_and_next(project_id)`. Follow along at
 [rapidreview.io/merv](https://rapidreview.io/merv).
 

@@ -8,7 +8,8 @@ Codex, Cursor, Gemini CLI, OpenCode, OpenHands, and Replit Agent — connects
 directly to the brain's `POST /mcp` endpoint. Bundled clients authenticate with
 a project-scoped key sent as `Authorization: Bearer <key>` from
 `MERV_MCP_KEY`; browser-configured clients may instead use the hosted OAuth
-flow or a pasted project key. A key binds one immutable project; the gateway
+flow or a pasted key. A key is scoped to one project or to the owner's whole
+account (chosen at mint/consent time); for a project-scoped key the gateway
 enforces that any project_id an agent passes equals the key-bound project (an
 agent learns it once via `project current`, then passes it explicitly), so
 agents never send a checkout root. Each client gets a thin adapter on top of the same `bin/`,
@@ -26,11 +27,18 @@ agents never send a checkout root. Each client gets a thin adapter on top of the
 
 Shared invariants across all clients:
 
-- The project is bound by the key, not by a checkout path: a `MERV_MCP_KEY`
-  binds one immutable project, and the gateway enforces that the project_id an
-  agent passes matches the key-bound project (learned once via `project current`,
-  then passed explicitly on every project-scoped call). Agents never send a repo
-  root, and no client needs to point Merv at a project directory.
+- The project comes from the credential and the call, never from a checkout
+  path. An agent passes `project_id` explicitly on every project-scoped call.
+  Where it learns that id depends on the key's scope: an account-scoped key
+  calls `project(action="list")` and picks from the result (ids with names,
+  summaries, and creation dates); a project-scoped key learns its one project
+  via `project current` and may pass no other. Agents never send a repo root,
+  and no client needs to point Merv at a project directory.
+- One credential is enough for every project you belong to, on every platform.
+  Mint an account-scoped key once (or approve "All my projects" at OAuth
+  consent) and the same credential serves local Codex and Codex cloud, Claude
+  Code and claude.ai. OAuth access tokens last an hour and refresh silently on
+  a rolling 30-day window, so a client that stays in use never re-consents.
 - The MCP connection is plain HTTP, so a client needs no local Merv runtime to
   reach the brain — just an HTTP MCP server entry. The brain is the single
   source of truth for tool schemas (`contracts.py` TOOL_MANIFEST, served via

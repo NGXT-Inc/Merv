@@ -91,6 +91,13 @@ class ProjectAuthorizer:
     _query_scoped_prefixes = ("/api/activity", "/api/debug/")
     # Operator/tenant diagnostics an mk_ key must never reach (INV-11).
     _operator_diagnostic_prefixes = ("/api/activity", "/api/debug/", "/api/admin")
+    # Owner-only key list/revoke, by method: owner_user_id-scoped in SQL, so
+    # membership adds nothing and gating on it would strand an account key
+    # live-but-unrevokable once its owner leaves home. Minting stays gated.
+    _owner_key_routes = {
+        "GET": re.compile(r"^/api/projects/[^/]+/keys$"),
+        "POST": re.compile(r"^/api/projects/[^/]+/keys/[^/]+/revoke$"),
+    }
 
     @staticmethod
     def user_id(principal: Any) -> str:
@@ -121,9 +128,8 @@ class ProjectAuthorizer:
 
     def http_denial(self, request: Request) -> JSONResponse | None:
         path = request.url.path
-        # Keyed on the credential SHAPE, not on its project binding: an
-        # account-scoped (mk_) key carries no key_project_id, so a binding
-        # test would fail open here (INV-11).
+        # Credential SHAPE, not binding: an account key has no
+        # key_project_id, so a binding test fails open here (INV-11).
         if is_external_key(request.state.principal) and path.startswith(
             self._operator_diagnostic_prefixes
         ):
@@ -152,7 +158,9 @@ class ProjectAuthorizer:
                 {"detail": exc.message, "error_code": exc.error_code, **exc.details},
                 status_code=403,
             )
-        if project_id and not self.projects.is_member(
+        owner_key = self._owner_key_routes.get(request.method)
+        gated = project_id and not (owner_key and owner_key.match(path))
+        if gated and not self.projects.is_member(
             project_id=project_id, user_id=self.user_id(request.state.principal)
         ):
             return JSONResponse(
@@ -204,8 +212,7 @@ class ToolInvocationGateway:
         for scope in (arguments.get("project_id"), project_scope):
             self.projects.require_member(project_id=scope, principal=principal)
         if is_external_key(principal) and name == "project" and arguments.get("action") == "create":
-            # Shape, not binding: account-scoped keys are still machine
-            # credentials and stay barred from creating projects.
+            # Shape, not binding: account keys are machine credentials too.
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})
         internal_kwargs = None

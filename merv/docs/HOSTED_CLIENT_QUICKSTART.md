@@ -16,21 +16,28 @@ tests run on Python 3.11+; a project environment is needed only for those
 surfaces when 3.11+ is not already available. Sandbox SSH and explicit output
 pulls use the system OpenSSH client and `rsync`.
 
-## Authenticate with a project key
+## Authenticate with a key
 
-Each agent client authenticates to the hosted brain with a **project-scoped
-key**. A key binds one immutable project: the agent learns its id once with
-`project(action="current")` and passes it explicitly on every project-scoped
-call — the gateway enforces that it equals the key-bound project — so agents
-never send a checkout path and the brain never receives one. Mint a key in the
-UI:
+Each agent client authenticates to the hosted brain with an `mk_` key. Agents
+never send a checkout path and the brain never receives one: the project comes
+from the credential and the call.
+
+Pick a scope when you mint it:
+
+- **All my projects** (recommended) — one key for every project you belong to,
+  on every machine and platform. The agent calls `project(action="list")` and
+  passes the `project_id` it wants on each call.
+- **One project** — the key is locked to a single project. The agent learns the
+  id with `project(action="current")` and may pass no other.
+
+Mint one in the UI:
 
 1. Open [RapidReview](https://rapidreview.io/map) and sign in.
-2. Open the project you want this client bound to.
-3. Create a key for that project and copy it when shown.
+2. Open any project you belong to (an account-scoped key is simply listed here).
+3. Create a key, choose its scope, and copy it when shown.
 
-A key is bearer-equivalent to full access to its one bound project, so treat it
-like a password. Export it as `MERV_MCP_KEY` rather than storing it in a shared
+A key is bearer-equivalent to full access to everything it is scoped to, so
+treat it like a password. Export it as `MERV_MCP_KEY` rather than storing it in a shared
 config, and keep it out of shell history:
 
 ```bash
@@ -76,7 +83,7 @@ It emits the committed-config shape used by `.mcp.json` (and its
 
 The key stays in the `MERV_MCP_KEY` env var and is never written into the file,
 so the config is safe to commit while the key is not. Start an agent session
-from any checkout: the gateway resolves the bound project from the key, so the
+from any checkout: the project comes from the credential and the call, so the
 same config works from every folder and the checkout path never leaves the
 machine.
 
