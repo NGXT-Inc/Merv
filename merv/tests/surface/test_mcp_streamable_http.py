@@ -458,10 +458,10 @@ class McpStreamablePreflightTest(unittest.TestCase):
             time.sleep(0.3)  # far past the 50ms fast-call window
             return {"ok": True, "name": name}
 
-        def authorize_scope(request, project_id):
+        def authorize_scope(request, name, arguments):
             raise ProjectKeyScopeError(
                 "project API key cannot access a different project",
-                details={"requested_project_id": project_id},
+                details={"requested_project_id": arguments.get("project_id")},
             )
 
         register_mcp_routes(
@@ -482,6 +482,70 @@ class McpStreamablePreflightTest(unittest.TestCase):
         )
         self.assertEqual(
             response.json()["error"]["data"]["error_code"], "project_scope_forbidden"
+        )
+
+    def test_key_create_and_review_scope_deny_before_the_stream(self) -> None:
+        """The BUILT preauthorizer (not a fake) must deny a key principal's
+        project-create and a foreign review session synchronously, so the
+        denial is a transport error even with a slow executor."""
+        from types import SimpleNamespace
+
+        from merv.brain.surface.transport.api.mcp_preauth import (
+            build_mcp_preauthorizer,
+        )
+        from merv.shared.errors import NotFoundError
+
+        class _Authorizer:
+            @staticmethod
+            def key_project_id(principal):
+                return getattr(principal, "key_project_id", "")
+
+            def require_member(self, *, project_id, principal):
+                if project_id == "p_foreign":
+                    raise NotFoundError(f"project not found: {project_id}")
+
+        reviews = SimpleNamespace(
+            request_project_id=lambda review_request_id: "p_foreign",
+            session_project_id=lambda review_session_id: "p_foreign",
+        )
+        preauthorize = build_mcp_preauthorizer(
+            authorizer=_Authorizer(), reviews=reviews, hosted=True
+        )
+
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def bind_key_principal(request, call_next):
+            request.state.principal = SimpleNamespace(
+                user_id="u1", key_project_id="p_bound"
+            )
+            return await call_next(request)
+
+        def call_tool(name, arguments, context, request):
+            time.sleep(0.3)  # far past the fast-call window
+            return {"ok": True}
+
+        register_mcp_routes(
+            app,
+            list_tools=lambda: [{"name": "project"}, {"name": "review.submit"}],
+            call_tool=call_tool,
+            authorize_scope=preauthorize,
+        )
+        mcp = _McpClient(TestClient(app))
+        mcp.initialize()
+        response = mcp.request(
+            "tools/call",
+            {"name": "project", "arguments": {"action": "create", "name": "evil"}},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+        response = mcp.request(
+            "tools/call",
+            {"name": "review.submit",
+             "arguments": {"review_session_id": "rs_foreign"}},
+        )
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertTrue(
+            response.headers["content-type"].startswith("application/json")
         )
 
 

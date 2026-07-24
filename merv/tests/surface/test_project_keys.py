@@ -522,6 +522,46 @@ class ProjectKeySurfaceTest(unittest.TestCase):
                 )
                 self.assertEqual(allowed.status_code, 200, allowed.text)
 
+    def test_open_hosted_mode_still_operator_gates_global_mutators(self) -> None:
+        """Hosted control WITHOUT a verifier (OPEN misconfiguration) must not
+        leave /api/admin/* open to the network: callers are unauthenticated,
+        not trusted LOCAL, so the operator token is required unconditionally."""
+        import os
+        from unittest.mock import patch
+
+        class _Cleanup:
+            def run_all(self) -> "_Cleanup":
+                return self
+
+            def as_dict(self) -> dict[str, int]:
+                return {"swept": 1}
+
+        open_client = TestClient(
+            create_fastapi_app(
+                self.app.http,
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=True, hosted_control=True
+                ),
+                auth=None,
+                cleanup=_Cleanup(),
+                tenant_counters=lambda *, tenant_id: {"tenant_id": tenant_id},
+            ),
+            raise_server_exceptions=False,
+        )
+        for path, method in (
+            ("/api/admin/cleanup", open_client.post),
+            ("/api/admin/tenants/local/counters", open_client.get),
+            ("/api/debug/tool-calls/clear", open_client.post),
+        ):
+            denied = method(path)
+            self.assertEqual(denied.status_code, 403, path)
+            self.assertEqual(denied.json()["error_code"], "operator_forbidden")
+            with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+                allowed = method(path, headers={"X-Admin-Token": "op-secret"})
+                self.assertEqual(allowed.status_code, 200, allowed.text)
+        # The gate covers only global mutators; open mode otherwise serves.
+        self.assertEqual(open_client.get("/api/meta").status_code, 200)
+
     def test_mlflow_gate_rejects_project_key_but_allows_other_audiences(self) -> None:
         denied = self.client.get("/internal/auth/mlflow", headers=_bearer(self.key))
         self.assertEqual(denied.status_code, 403, denied.text)

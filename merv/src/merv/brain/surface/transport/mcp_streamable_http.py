@@ -23,7 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ... import __version__
-from ...kernel.utils import ResearchPluginError, ValidationError
+from ...kernel.utils import NotFoundError, ResearchPluginError, ValidationError
 from ..identity import (
     LOCAL_PRINCIPAL,
     ProjectKeyScopeError,
@@ -77,11 +77,12 @@ class Authorizer(Protocol):
 
 
 class ScopeAuthorizer(Protocol):
-    """Resolves project scope (key-project equality + membership) for a request,
-    raising ProjectKeyScopeError / NotFoundError. Used for the synchronous
-    pre-flight so a slow denial is a transport 403, never a mid-stream error."""
+    """Resolves every pre-flight denial for a tool call (key-project equality,
+    membership, key create block, review-derived scope), raising
+    ProjectKeyScopeError / NotFoundError. Runs synchronously so a slow denial
+    is a transport 403, never a mid-stream error."""
 
-    def __call__(self, request: Request, project_id: str) -> None: ...
+    def __call__(self, request: Request, name: str, arguments: dict[str, Any]) -> None: ...
 
 
 def _is_request_id(value: object) -> bool:
@@ -386,7 +387,7 @@ class McpStreamableHttp:
         principal = getattr(request.state, "principal", LOCAL_PRINCIPAL)
         try:
             if self._authorize_scope is not None:
-                self._authorize_scope(request, str(arguments.get("project_id") or ""))
+                self._authorize_scope(request, name, arguments)
             contract = TOOL_MANIFEST.get(name)
             if (
                 contract is not None
@@ -398,9 +399,10 @@ class McpStreamableHttp:
                     details={"tool": name, "visibility": "internal"},
                 )
         except ResearchPluginError as exc:
-            return _json_response(
-                _dispatcher_error(request_id, exc), status_code=_error_status(exc)
-            )
+            # Preflight denials are always transport-visible: membership misses
+            # are 404 here even though a tool-raised NotFoundError stays 200.
+            status = 404 if isinstance(exc, NotFoundError) else _error_status(exc)
+            return _json_response(_dispatcher_error(request_id, exc), status_code=status)
         return None
 
     @staticmethod

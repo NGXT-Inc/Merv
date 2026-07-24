@@ -12,7 +12,7 @@ from ..data_plane_http import register_data_plane_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
-from . import artifacts, claims, events, experiments, litreview, meta, oauth, projects, reflections, reviews, sandboxes, storage, user_settings
+from . import artifacts, claims, events, experiments, litreview, mcp_preauth, meta, oauth, projects, reflections, reviews, sandboxes, storage, user_settings
 from .context import ApiRouteContext
 from .dependencies import HttpDependencies
 from .gateway import (
@@ -108,7 +108,9 @@ def create_fastapi_app(
         # mk_ key reaches over control (Phase C); the gateway gates who is served.
         allow_tool=lambda tool: tool.get("plane") != "data"
         or tool.get("name") in KEY_SANDBOX_CONTROL_TOOLS,
-        authorize_scope=gateway.authorize_data_plane_project,
+        authorize_scope=mcp_preauth.build_mcp_preauthorizer(
+            authorizer=authorizer, reviews=api.reviews,
+            hosted=surface.use_hosted_tool_policies),
     )
     register_data_plane_routes(
         http,

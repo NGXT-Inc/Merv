@@ -26,7 +26,8 @@ from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import is_local_origin, operator_denial
+from .shared import (GLOBAL_MUTATOR_PREFIXES, is_local_origin,
+                     open_hosted_operator_denial, operator_denial)
 from . import oauth, project_keys, sdk_auth
 from .sandbox_control import KEY_SANDBOX_CONTROL_TOOLS, serve_key_sandbox
 
@@ -91,8 +92,6 @@ class ProjectAuthorizer:
     _query_scoped_prefixes = ("/api/activity", "/api/debug/")
     # Operator/tenant diagnostics an mk_ key must never reach (INV-11).
     _operator_diagnostic_prefixes = ("/api/activity", "/api/debug/", "/api/admin")
-    # Global mutators/aggregates: operator-token-only in hosted mode (FIX 1).
-    _global_mutator_prefixes = ("/api/admin", "/api/debug/tool-calls/clear")
 
     @staticmethod
     def user_id(principal: Any) -> str:
@@ -131,7 +130,7 @@ class ProjectAuthorizer:
                  "error_code": "project_scope_forbidden"},
                 status_code=403,
             )
-        if path.startswith(self._global_mutator_prefixes):
+        if path.startswith(GLOBAL_MUTATOR_PREFIXES):
             # Operator token replaces membership scoping here (local keeps access).
             return operator_denial(request)
         match = self._project_path.match(path)
@@ -340,6 +339,9 @@ def install_request_middleware(
         denied = authenticator.authenticate(request)
         if denied is None and getattr(request.state, "authenticated", False):
             denied = authorizer.http_denial(request)
+        elif denied is None and authenticator.surface.hosted_control:
+            # OPEN hosted mode (no verifier): still operator-gate global mutators.
+            denied = open_hosted_operator_denial(request)
         return denied if denied is not None else await call_next(request)
 
 
