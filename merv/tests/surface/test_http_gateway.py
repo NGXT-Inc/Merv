@@ -112,7 +112,7 @@ class HttpGatewayTest(unittest.TestCase):
                 name="claim.list", arguments={"project_id": "proj-b"}, principal=USER
             )
         with self.assertRaisesRegex(NotFoundError, "project not found: proj-b"):
-            gateway.authorize_data_plane_project(
+            gateway.authorize_project(
                 _request("/api/data-plane/x"), "proj-b"
             )
 

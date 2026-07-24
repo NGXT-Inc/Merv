@@ -13,7 +13,6 @@ from merv.brain.surface.composition import build_local_server
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
-from merv.brain.surface.tools.contracts import available_tool_names, static_tool_catalog
 from merv.brain.kernel.utils import NotFoundError, ValidationError
 
 
@@ -105,9 +104,7 @@ class TestBrain:
         return self._app.project_dashboard_query.current_project(tenant_id=tenant_id)
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return static_tool_catalog(
-            tool_names=available_tool_names(storage_enabled=self.storage is not None)
-        )
+        return self._app.tools.list_tools()
 
     def call_tool(
         self,

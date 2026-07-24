@@ -8,7 +8,6 @@ PLUGIN_ROOT = TESTS_ROOT.parent
 # The sys.path/PYTHONPATH entry that makes the shipped packages importable.
 IMPORT_ROOT = PLUGIN_ROOT / "src"
 BACKEND_ROOT = IMPORT_ROOT / "merv" / "brain"
-PROXY_ROOT = IMPORT_ROOT / "merv" / "proxy"
 SHARED_ROOT = IMPORT_ROOT / "merv" / "shared"
 ARTIFACTS_ROOT = BACKEND_ROOT / "artifacts"
 FEED_ROOT = BACKEND_ROOT / "feed"

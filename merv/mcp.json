@@ -1,12 +1,10 @@
 {
   "mcpServers": {
     "merv": {
-      "type": "stdio",
-      "command": "${userHome}/.cursor/plugins/local/merv/bin/merv-mcp",
-      "args": [],
-      "env": {
-        "MERV_REPO_ROOT": "${workspaceFolder}",
-        "MERV_CONTROL_URL": ""
+      "type": "http",
+      "url": "https://experiments.rapidreview.io/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MERV_MCP_KEY}"
       }
     }
   }

@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError as PydanticValidationError
 
-from .contracts import ContractModel, TOOL_CONTRACTS, static_tool_catalog
+from .contracts import ContractModel, TOOL_CONTRACTS
 from ..identity import ToolVisibilityError
 from ...kernel.state.activity import monotonic_ms
 from ...kernel.utils import ResearchPluginError
@@ -122,11 +122,21 @@ class ToolDispatcher:
         }
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return [
-            tool
-            for tool in static_tool_catalog(tool_names=set(self._tool_names))
-            if tool.get("name") in self._tool_names
-        ]
+        tools: list[dict[str, Any]] = []
+        for name, contract in TOOL_CONTRACTS.items():
+            if name not in self._tool_names:
+                continue
+            schema = contract.input_model.model_json_schema()
+            schema.pop("title", None)
+            tool: dict[str, Any] = {
+                "name": name,
+                "description": contract.description,
+                "inputSchema": schema,
+            }
+            if contract.visibility == "internal":
+                tool["hidden"] = True
+            tools.append(tool)
+        return tools
 
     def call_tool(
         self,

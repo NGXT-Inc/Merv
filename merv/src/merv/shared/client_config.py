@@ -1,11 +1,9 @@
-"""Machine client config and secret-file helpers shared by launchers.
+"""Machine client configuration helpers.
 
 Env-var names resolve dual-spelled here exactly as in ``merv.brain.kernel.env``:
 ``MERV_X`` primary, ``RESEARCH_PLUGIN_X`` legacy fallback (non-empty wins;
 empty counts as unset). The logic is duplicated tiny rather than imported —
-this package must stay stdlib-only with no backend imports (the zero-install
-stdio proxy ships it), and the proxy may only ever write warnings to stderr
-because stdout carries the JSON-RPC stream.
+this package stays stdlib-only with no backend imports.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ def dual_env_value(
 
     When the legacy spelling is the effective source from the real process
     environment, one stderr deprecation line per variable per process names
-    the new spelling. stderr only: the proxy's stdout is the MCP stream.
+    the new spelling.
     """
     primary, legacy = env_name_pair(name)
     source = env if env is not None else os.environ
@@ -62,24 +60,15 @@ def dual_env_value(
 
 CLIENT_CONFIG_ENV_VAR = "MERV_CLIENT_CONFIG"
 CONTROL_URL_ENV_VAR = "MERV_CONTROL_URL"
-# RapidReview API key (rr_sk_...) for the hosted brain; env beats the
-# client.json "api_key" field, mirroring the control_url chain.
-API_KEY_ENV_VAR = "MERV_API_KEY"
-DAEMON_STATE_DIR_ENV_VAR = "MERV_DAEMON_STATE_DIR"
 # Brain URL defaults: unconfigured machines dial the hosted brain; local
 # deployments opt in via `merv-client configure` or the env var.
 HOSTED_CONTROL_URL = "https://experiments.rapidreview.io"
 LOCAL_BRAIN_URL = "http://127.0.0.1:8787"
-DAEMON_SECRET_FILE_NAME = "daemon_secret"
 
 
 def default_client_config_path() -> Path:
     """Default machine config path; resolved per call (see machine_dirs)."""
     return resolve_machine_state_dir() / "client.json"
-
-
-def default_daemon_secret_path() -> Path:
-    return resolve_machine_state_dir() / DAEMON_SECRET_FILE_NAME
 
 
 def resolve_client_config_path(env: Mapping[str, str] | None = None) -> Path:

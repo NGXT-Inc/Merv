@@ -1,4 +1,4 @@
-"""Pure path-name helpers shared by the brain and stdio proxy."""
+"""Pure path-name helpers shared across Merv layers."""
 
 from __future__ import annotations
 

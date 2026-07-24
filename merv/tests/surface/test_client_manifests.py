@@ -1,102 +1,66 @@
-"""Per-client adapter manifests stay consistent with the shared content tree.
-
-One canonical tree (bin/, skills/, agents/) is exposed to five clients through
-thin adapters. These tests pin the adapter contracts: every manifest parses,
-points at a launcher that exists, supplies the project root the way that
-client needs it, and carries the package version. See docs/CLIENTS.md.
-"""
+"""Shipped client adapters all use the same bearer-authenticated HTTP MCP."""
 
 from __future__ import annotations
 
 import json
-import os
 import unittest
-from pathlib import Path
 
 from merv.brain import __version__ as BACKEND_VERSION
 from tests.paths import PLUGIN_ROOT
 
 
-def _executable(path: Path) -> bool:
-    return path.exists() and os.access(path, os.X_OK)
+HOSTED_MCP_URL = "https://experiments.rapidreview.io/mcp"
+AUTHORIZATION = "Bearer ${MERV_MCP_KEY}"
 
 
-class ControlUrlResolutionTest(unittest.TestCase):
-    def test_no_shipped_manifest_pins_a_control_url(self) -> None:
-        # A pinned URL in a manifest env block shadows the machine config
-        # written by `merv-client configure`. Empty (or absent)
-        # keeps resolution at env > machine config > hosted default.
-        manifests = {
-            ".mcp.json": ("mcpServers", "env"),
-            "mcp.json": ("mcpServers", "env"),
-            ".mcp.codex.json": ("mcpServers", "env"),
-            "gemini-extension.json": ("mcpServers", "env"),
-        }
-        for name, (servers_key, env_key) in manifests.items():
+class HttpMcpManifestTest(unittest.TestCase):
+    def test_generic_codex_and_cursor_manifests_match(self) -> None:
+        for name in (".mcp.json", ".mcp.codex.json", "mcp.json"):
             with self.subTest(manifest=name):
                 config = json.loads((PLUGIN_ROOT / name).read_text())
-                server = config[servers_key]["merv"]
-                self.assertEqual(server.get(env_key, {}).get("MERV_CONTROL_URL", ""), "")
-        opencode = json.loads(
-            (PLUGIN_ROOT / "clients" / "opencode" / "opencode.json.example").read_text()
-        )
-        environment = opencode["mcp"]["merv"].get("environment", {})
-        self.assertEqual(environment.get("MERV_CONTROL_URL", ""), "")
+                server = config["mcpServers"]["merv"]
+                self.assertEqual(server["type"], "http")
+                self.assertEqual(server["url"], HOSTED_MCP_URL)
+                self.assertEqual(
+                    server["headers"]["Authorization"],
+                    AUTHORIZATION,
+                )
+                serialized = json.dumps(server)
+                self.assertNotIn("mk_", serialized)
+                self.assertNotIn("merv-mcp", serialized)
 
-
-class CursorAdapterTest(unittest.TestCase):
-    def test_plugin_manifest(self) -> None:
-        manifest = json.loads((PLUGIN_ROOT / ".cursor-plugin" / "plugin.json").read_text())
-        self.assertEqual(manifest["name"], "merv")
-        self.assertEqual(manifest["version"], BACKEND_VERSION)
-
-    def test_mcp_config_supplies_workspace_root(self) -> None:
-        # Cursor does not spawn stdio servers in the workspace, so the repo
-        # root must arrive via ${workspaceFolder}, never via cwd.
-        config = json.loads((PLUGIN_ROOT / "mcp.json").read_text())
-        server = config["mcpServers"]["merv"]
-        self.assertEqual(server["env"]["MERV_REPO_ROOT"], "${workspaceFolder}")
-        # Cursor resolves stdio commands against PATH or as full paths only —
-        # no plugin-relative resolution — so the bundle addresses the launcher
-        # through its documented install location under ${userHome}.
-        command = server["command"]
-        install_prefix = "${userHome}/.cursor/plugins/local/merv/"
-        self.assertTrue(command.startswith(install_prefix))
-        self.assertTrue(_executable(PLUGIN_ROOT / command.removeprefix(install_prefix)))
-
-
-class GeminiAdapterTest(unittest.TestCase):
-    def test_extension_manifest(self) -> None:
+    def test_gemini_uses_the_same_http_endpoint_and_key(self) -> None:
         manifest = json.loads((PLUGIN_ROOT / "gemini-extension.json").read_text())
         self.assertEqual(manifest["name"], "merv")
         self.assertEqual(manifest["version"], BACKEND_VERSION)
-        self.assertTrue((PLUGIN_ROOT / manifest["contextFileName"]).is_file())
-
         server = manifest["mcpServers"]["merv"]
-        self.assertEqual(server["env"]["MERV_REPO_ROOT"], "${workspacePath}")
-        command = server["command"]
-        self.assertTrue(command.startswith("${extensionPath}"))
-        resolved = command.replace("${extensionPath}", str(PLUGIN_ROOT)).replace("${/}", os.sep)
-        self.assertTrue(_executable(Path(resolved)))
+        self.assertEqual(server["httpUrl"], HOSTED_MCP_URL)
+        self.assertEqual(server["headers"]["Authorization"], AUTHORIZATION)
 
-
-class OpenCodeAdapterTest(unittest.TestCase):
-    def test_installer_and_config_example(self) -> None:
-        adapter = PLUGIN_ROOT / "clients" / "opencode"
-        self.assertTrue(_executable(adapter / "install.sh"))
-
-        config = json.loads((adapter / "opencode.json.example").read_text())
+    def test_opencode_example_uses_environment_key_indirection(self) -> None:
+        config = json.loads(
+            (PLUGIN_ROOT / "clients" / "opencode" / "opencode.json.example").read_text()
+        )
         server = config["mcp"]["merv"]
-        self.assertEqual(server["type"], "local")
-        self.assertEqual(Path(server["command"][0]).name, "merv-mcp")
+        self.assertEqual(server["type"], "remote")
+        self.assertEqual(server["url"], HOSTED_MCP_URL)
+        self.assertEqual(
+            server["headers"]["Authorization"],
+            "Bearer {env:MERV_MCP_KEY}",
+        )
 
-    def test_reviewer_agents_load_matching_review_skills(self) -> None:
-        # OpenCode agents are thin wrappers: each must defer to the same-named
-        # skill so the operating procedure is never duplicated per client.
-        for agent_path in sorted((PLUGIN_ROOT / "clients" / "opencode" / "agents").glob("*.md")):
-            skill_name = agent_path.stem
-            self.assertTrue((PLUGIN_ROOT / "skills" / skill_name / "SKILL.md").is_file())
-            self.assertIn(f"`{skill_name}` skill", agent_path.read_text())
+    def test_plugin_manifests_keep_package_identity(self) -> None:
+        for directory in (".claude-plugin", ".cursor-plugin"):
+            manifest = json.loads(
+                (PLUGIN_ROOT / directory / "plugin.json").read_text()
+            )
+            self.assertEqual(manifest["name"], "merv")
+            self.assertEqual(manifest["version"], BACKEND_VERSION)
+        codex = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text()
+        )
+        self.assertEqual(codex["name"], "merv")
+        self.assertEqual(codex["mcpServers"], "./.mcp.codex.json")
 
 
 if __name__ == "__main__":

@@ -526,28 +526,24 @@ class ControlAppTest(unittest.TestCase):
             )
             self.assertEqual(old_proxy.status_code, 426, old_proxy.text)
 
-            acme_project = server.app.http.projects.create(
-                name="Acme Hosted", tenant_id="acme"
-            )
-            # A data-plane submission route stays reachable on the private
-            # surface (400 = authorization admitted, domain validation ran).
+            # The retired data-plane submission route is absent.
             data_plane_write = client.post(
                 "/api/data-plane/feed/validate-post",
                 json={
-                    "project_id": acme_project["id"],
+                    "project_id": "proj_retired",
                     "handle": "main",
                     "text": "control-surface probe",
                 },
             )
-            self.assertEqual(data_plane_write.status_code, 400, data_plane_write.text)
-            self.assertIn("not registered", data_plane_write.text)
+            self.assertEqual(data_plane_write.status_code, 404, data_plane_write.text)
 
             meta = client.get("/api/meta")
             self.assertEqual(meta.status_code, 200, meta.text)
             body = meta.json()
             self.assertEqual(body["mode"], "control")
             self.assertTrue(body["capabilities"]["hosted_control"])
-            self.assertFalse(body["capabilities"]["local_data_plane_http"])
+            self.assertTrue(body["capabilities"]["mcp"])
+            self.assertTrue(body["capabilities"]["token_uploads"])
 
             preflight = client.options(
                 "/api/projects",

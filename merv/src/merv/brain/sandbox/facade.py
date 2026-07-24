@@ -562,40 +562,6 @@ class SandboxFacade:
         result["public_key_source"] = public_key_source
         return result
 
-    def request_from_data_plane(
-        self,
-        *,
-        experiment_id: str | None = None,
-        public_key: str,
-        project_id: str | None = None,
-        gpu: str | None = None,
-        cpu: float | None = None,
-        memory: int | None = None,
-        time_limit: int | None = None,
-        instance_type: str | None = None,
-        region: str | None = None,
-        provider: str | None = None,
-        additional: bool = False,
-        sandbox_uid: str | None = None,
-        provisioning_user_id: str = "",
-    ) -> dict[str, Any]:
-        return self.request(
-            experiment_id=experiment_id,
-            project_id=project_id,
-            gpu=gpu,
-            cpu=cpu,
-            memory=memory,
-            time_limit=time_limit,
-            instance_type=instance_type,
-            region=region,
-            provider=provider,
-            public_key_override=public_key,
-            include_data_plane_enrichment=False,
-            additional=additional,
-            sandbox_uid=sandbox_uid,
-            provisioning_user_id=provisioning_user_id,
-        )
-
     def get(
         self,
         *,
@@ -667,22 +633,6 @@ class SandboxFacade:
         )
         result["active_experiment_ids"] = active_experiment_ids
         return result
-
-    def attach_from_data_plane(
-        self,
-        *,
-        experiment_id: str,
-        sandbox_uid: str,
-        public_key: str,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        return self.attach(
-            experiment_id=experiment_id,
-            project_id=project_id,
-            sandbox_uid=sandbox_uid,
-            public_key_override=public_key,
-            include_data_plane_enrichment=False,
-        )
 
     def extend(
         self,

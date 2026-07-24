@@ -3,8 +3,8 @@
 The composition wires records, workflow, reviews, blobs, MLflow, quotas, and
 sandbox lifecycle. Hosted/no-checkout control requires Postgres, a durable blob
 store, and mounted management keys; local deployment selects SQLite and local
-adapters. Checkout I/O never runs here: the stdio MCP proxy submits explicit
-facts and bounded bytes, and the brain never dials a user machine.
+adapters. Checkout I/O never runs here; agents move bounded bytes through
+token-authenticated upload routes, and the brain never dials a user machine.
 """
 
 from __future__ import annotations

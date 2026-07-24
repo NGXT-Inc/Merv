@@ -1,1 +1,1 @@
-"""Merv — research brain, stdio MCP proxy, and shared client helpers."""
+"""Merv — research brain, HTTP MCP surface, and client helpers."""

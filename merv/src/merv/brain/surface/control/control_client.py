@@ -7,8 +7,8 @@ dual-wiring contract suite (``test_control_plane_contract.py``) runs the exact
 same scenario corpus through it over a real in-process HTTP server — the
 plane-seam analog of ``test_sandbox_backend_contract.py``.
 
-Stdlib-only on purpose (urllib + json): proxy-local split-mode code reuses the
-same plumbing without importing provider SDKs.
+Stdlib-only on purpose (urllib + json) so contract tests can exercise the wire
+without importing an additional HTTP client.
 
 Error translation: the control plane returns its ``ResearchPluginError`` as a
 JSON body ``{detail, error_code, ...}`` (see ``http_api.research_error_handler``).
@@ -50,8 +50,7 @@ _ERROR_CODE_TYPES: dict[str, type[ResearchPluginError]] = {
 class ControlPlaneUnreachableError(ResearchPluginError):
     """The brain could not be reached at all (transport failure).
 
-    Distinct from a domain error returned by the brain: this is the proxy's
-    ``cloud_unreachable`` taxonomy — the remote brain being down
+    Distinct from a domain error returned by the brain: the remote brain being down
     must not be confused with a validation failure it reported.
     """
 
@@ -72,9 +71,8 @@ class HttpControlPlaneClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         extra_context: dict[str, Any] | None = None,
     ) -> None:
-        # The brain NEVER receives repo_root: extra_context is
-        # for explicit project_id / client_id only; the proxy resolves the
-        # repo→project mapping locally and attaches project_id here.
+        # The brain never receives repo_root; extra_context is for explicit
+        # project_id / client_id only.
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.extra_context = dict(extra_context or {})
@@ -106,12 +104,6 @@ class HttpControlPlaneClient:
                 details={"payload": body},
             )
         return tools
-
-    def validate_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/feed/validate-post", payload=payload)
-
-    def submit_feed_post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post(path="/api/data-plane/feed/post", payload=payload)
 
     # ---- transport (stdlib only) ----
 

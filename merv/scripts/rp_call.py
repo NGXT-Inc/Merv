@@ -1,57 +1,70 @@
 #!/usr/bin/env python3
-"""Tiny driver that calls Merv MCP tools through the real proxy.
+"""Tiny driver that calls Merv tools through the HTTP MCP endpoint.
 
-Reuses merv.proxy.proxy (the same brain routing, version, project-link, and
-checkout-local data-plane logic an MCP client uses), so this is a faithful
-stand-in for a client-launched stdio server. Usage:
+Usage:
+    rp_call.py list
+    rp_call.py schema <tool>
+    rp_call.py call <tool> '<json-args>'
 
-    rp_call.py list                       # tools/list (names + planes)
-    rp_call.py schema <tool>              # full input schema for one tool
-    rp_call.py call <tool> '<json-args>'  # tools/call, prints the result JSON
-
-Env: MERV_REPO_ROOT picks the project working dir (defaults to CWD).
-MERV_CONTROL_URL overrides the machine brain URL stored in
-the machine client config (~/.merv/client.json, or the legacy
-~/.research_plugin/client.json when that dir exists); an unconfigured machine
-uses the hosted brain.
+Set MERV_MCP_KEY to a project key. MERV_CONTROL_URL overrides the machine
+client config; an unconfigured machine uses the hosted server.
 """
+
 from __future__ import annotations
 
 import json
+import os
 import sys
-from pathlib import Path
+import urllib.error
+import urllib.request
 
 from merv.shared.client_config import (
     CLIENT_CONFIG_ENV_VAR,
+    HOSTED_CONTROL_URL,
     dual_env_value,
     read_client_config,
     resolve_client_config_path,
 )
-from merv.proxy.project_links import default_project_links_path
-from merv.proxy.proxy import DEFAULT_CONTROL_URL, HttpProxyMcpServer, ProxyConfig
 
 
-def _build_server() -> HttpProxyMcpServer:
-    repo_root = Path(dual_env_value("MERV_REPO_ROOT") or ".").resolve()
-    cfg_path = resolve_client_config_path()
-    cc = read_client_config({CLIENT_CONFIG_ENV_VAR: str(cfg_path)})
-    control_url = (
-        dual_env_value("MERV_CONTROL_URL") or cc.get("control_url", "")
-    ).rstrip("/") or DEFAULT_CONTROL_URL
-    cfg = ProxyConfig(
-        repo_root=repo_root,
-        control_url=control_url,
-        project_links_path=default_project_links_path(
-            client_config=cc,
-            config_path=cfg_path,
-        ),
+def _endpoint() -> str:
+    config_path = resolve_client_config_path()
+    config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
+    base_url = (
+        dual_env_value("MERV_CONTROL_URL")
+        or config.get("control_url")
+        or HOSTED_CONTROL_URL
     )
-    return HttpProxyMcpServer(config=cfg)
+    return f"{base_url.rstrip('/')}/mcp"
 
 
-def _rpc(server: HttpProxyMcpServer, method: str, params: dict) -> dict:
-    resp = server.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-    return resp or {}
+def _rpc(method: str, params: dict[str, object]) -> dict[str, object]:
+    key = (os.environ.get("MERV_MCP_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("MERV_MCP_KEY is required")
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    request = urllib.request.Request(
+        _endpoint(),
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+
+
+def _tools() -> list[dict[str, object]]:
+    response = _rpc("tools/list", {})
+    result = response.get("result")
+    return list(result.get("tools", [])) if isinstance(result, dict) else []
 
 
 def main() -> int:
@@ -59,33 +72,38 @@ def main() -> int:
     if not args:
         print(__doc__)
         return 2
-    server = _build_server()
-    cmd = args[0]
-    if cmd == "list":
-        resp = _rpc(server, "tools/list", {})
-        tools = (resp.get("result") or {}).get("tools", [])
-        for t in tools:
-            plane = t.get("plane") or t.get("_plane") or "?"
-            print(f"{t.get('name'):28} plane={plane}")
-        print(f"\n[{len(tools)} tools]")
-        return 0
-    if cmd == "schema":
-        resp = _rpc(server, "tools/list", {})
-        tools = (resp.get("result") or {}).get("tools", [])
-        for t in tools:
-            if t.get("name") == args[1]:
-                print(json.dumps(t, indent=2))
-                return 0
-        print(f"tool not found: {args[1]}", file=sys.stderr)
-        return 1
-    if cmd == "call":
-        name = args[1]
-        call_args = json.loads(args[2]) if len(args) > 2 and args[2] else {}
-        resp = _rpc(server, "tools/call", {"name": name, "arguments": call_args})
-        print(json.dumps(resp, indent=2, default=str))
-        return 0
-    print(f"unknown command: {cmd}", file=sys.stderr)
-    return 2
+    try:
+        command = args[0]
+        if command == "list":
+            tools = _tools()
+            for tool in tools:
+                print(str(tool.get("name") or ""))
+            print(f"\n[{len(tools)} tools]")
+            return 0
+        if command == "schema":
+            if len(args) < 2:
+                raise RuntimeError("schema requires a tool name")
+            for tool in _tools():
+                if tool.get("name") == args[1]:
+                    print(json.dumps(tool, indent=2))
+                    return 0
+            print(f"tool not found: {args[1]}", file=sys.stderr)
+            return 1
+        if command == "call":
+            if len(args) < 2:
+                raise RuntimeError("call requires a tool name")
+            arguments = json.loads(args[2]) if len(args) > 2 and args[2] else {}
+            response = _rpc(
+                "tools/call",
+                {"name": args[1], "arguments": arguments},
+            )
+            print(json.dumps(response, indent=2, default=str))
+            return 0
+        print(f"unknown command: {command}", file=sys.stderr)
+        return 2
+    except (RuntimeError, ValueError) as exc:
+        print(f"rp_call.py: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

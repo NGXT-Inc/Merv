@@ -28,14 +28,11 @@ class ControlToolOperations:
         project_id: str = "",
         name: str = "",
         summary: str = "",
-        overwrite: bool = False,
         tenant_id: str | None = None,
         user_id: str = "",
         key_project_id: str = "",
     ) -> dict[str, Any]:
-        # current/connect reach the brain ONLY for a keyed (cloud) caller: a
-        # local proxy resolves them from its folder link before the wire. The
-        # key carries project identity, so there is no folder to link.
+        # The key carries project identity for every HTTP MCP caller.
         if action == "current":
             if not key_project_id:
                 return {
@@ -53,12 +50,6 @@ class ControlToolOperations:
                     "summary": project.get("summary", ""),
                 },
             }
-        if action == "connect":
-            raise ValidationError(
-                'project action="connect" links a local folder to a project, '
-                "which does not apply to a keyed agent: your MCP key already "
-                'carries its project identity. Use action="current" to see it.'
-            )
         if action == "create":
             return self.projects.create(
                 name=name, summary=summary, tenant_id=tenant_id, user_id=user_id

@@ -1,12 +1,11 @@
 """Machine-level (per-user home) state-directory names and resolution.
 
-The sibling of ``project_dirs`` for home-scoped client state — ``client.json``,
-``project_links.sqlite``, ``daemon_secret``. A machine that already has
-``~/.research_plugin/`` keeps using it forever; a machine without one (fresh
-installs included) keeps its client state under ``~/.merv/``. Resolution is
-per-call and never cached: the legacy dir wins from the moment it exists, so
-all consumers converge on one answer within a process. Stdlib-only: the
-zero-install stdio proxy imports this package.
+The sibling of ``project_dirs`` for home-scoped ``client.json``. A machine
+that already has ``~/.research_plugin/`` keeps using it forever; a machine
+without one (fresh installs included) keeps its client state under
+``~/.merv/``. Resolution is per-call and never cached: the legacy dir wins
+from the moment it exists, so all consumers converge on one answer within a
+process.
 """
 
 from __future__ import annotations

@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from merv.shared.errors import (
     ContentUnavailableError,
-    DataPlaneRequiredError,
     NotFoundError,
     PermissionDeniedError,
     ResearchPluginError,

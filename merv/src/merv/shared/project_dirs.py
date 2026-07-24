@@ -7,7 +7,6 @@ This module is the single owner of both names — every path builder and
 exclusion filter derives from it. Resolution is per-call and never cached:
 the legacy dir wins from the moment it exists, so all consumers converge on
 one answer within a process; do not cache resolved paths across calls.
-Stdlib-only: the zero-install stdio proxy imports this package.
 """
 
 from __future__ import annotations

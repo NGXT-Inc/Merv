@@ -1,9 +1,8 @@
 """Central deployment-preset and adapter configuration for the brain.
 
 ``local`` and ``control`` use the same brain composition. The preset selects
-loopback/small-store defaults or hosted durable adapters; the stdio MCP proxy
-remains the checkout-local data plane in both cases. Unknown preset values fail
-at startup.
+loopback/small-store defaults or hosted durable adapters. Unknown preset values
+fail at startup.
 """
 
 from __future__ import annotations
@@ -15,11 +14,8 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from merv.shared.client_config import (
-    CLIENT_CONFIG_ENV_VAR,
     CONTROL_URL_ENV_VAR,
-    DAEMON_STATE_DIR_ENV_VAR,
     read_client_config,
-    resolve_client_config_path,
 )
 
 from ..kernel.env import env_int, env_value
@@ -36,9 +32,7 @@ MODE_ENV_VAR = "MERV_MODE"
 # preset. A postgres:// or postgresql:// URL selects the hosted Postgres dialect.
 DB_URL_ENV_VAR = "MERV_DB_URL"
 
-# Split-transport config. The MCP proxy sends local data-plane submissions to
-# CONTROL_URL. The brain never dials a user machine. The blob bucket/dir
-# selects the BlobStore impl per mode.
+# Blob and storage adapter configuration.
 BLOB_DIR_ENV_VAR = "MERV_BLOB_DIR"
 BLOB_BUCKET_ENV_VAR = "MERV_BLOB_BUCKET"
 STORAGE_PROVIDER_ENV_VAR = "MERV_STORAGE_PROVIDER"
@@ -100,22 +94,6 @@ def resolve_mode(env: Mapping[str, str] | None = None) -> Mode:
 def resolve_db_url(env: Mapping[str, str] | None = None) -> str | None:
     """The configured record-store URL, or None for the SQLite path default."""
     return env_value(DB_URL_ENV_VAR, env=env)
-
-
-def resolve_daemon_state_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Backward-compatible machine-local client state root.
-
-    This is not a research repo. The name is retained because existing client
-    configs store repo→project links under ``daemon_state_dir``.
-    """
-    raw = env_value(DAEMON_STATE_DIR_ENV_VAR, env=env) or ""
-    if raw:
-        return Path(raw).expanduser()
-    config = read_client_config(env)
-    raw = (config.get("daemon_state_dir") or "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return resolve_client_config_path(env).parent
 
 
 def resolve_control_url(env: Mapping[str, str] | None = None) -> str | None:

@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "merv": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/merv-mcp",
-      "args": [],
-      "env": {
-        "MERV_CONTROL_URL": ""
+      "type": "http",
+      "url": "https://experiments.rapidreview.io/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MERV_MCP_KEY}"
       }
     }
   }

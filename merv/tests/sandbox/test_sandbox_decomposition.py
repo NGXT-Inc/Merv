@@ -13,9 +13,6 @@ SandboxDaemons.
 from __future__ import annotations
 
 import ast
-import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,7 +35,7 @@ from merv.brain.sandbox.sandbox_provisioner import SandboxProvisioner
 from merv.brain.sandbox.repository import SandboxRepository
 from merv.brain.sandbox.facade import SandboxService
 from merv.brain.kernel.utils import ValidationError
-from tests.paths import BACKEND_ROOT, IMPORT_ROOT
+from tests.paths import BACKEND_ROOT
 
 FACADE = BACKEND_ROOT / "sandbox" / "facade.py"
 
@@ -259,21 +256,6 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIn("def rows_for_project(", repository)
         self.assertIn("self.repository.rows_for_experiment(", queries)
         self.assertIn("self.repository.rows_for_project(", queries)
-
-    def test_facade_import_does_not_load_proxy_modules(self) -> None:
-        code = """
-import sys
-import merv.brain.sandbox.facade
-loaded = sorted(
-    name for name in sys.modules
-    if name == "merv.proxy" or name.startswith("merv.proxy.")
-)
-if loaded:
-    raise SystemExit("brain import loaded proxy modules: " + ", ".join(loaded))
-"""
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(IMPORT_ROOT)
-        subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
     def test_service_type_hints_resolve_without_data_plane_worker(self) -> None:
         facade_hints = get_type_hints(SandboxService.__init__)

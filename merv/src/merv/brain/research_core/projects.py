@@ -182,8 +182,8 @@ class ProjectService:
                 "project": None,
                 "hint": (
                     "No Merv project exists yet. Ask the user what project "
-                    "name and short summary to use, then call the project tool with "
-                    'action="connect".'
+                    "name and short summary to use, then call the project tool "
+                    'with action="create".'
                 ),
             }
         if len(projects) > 1:

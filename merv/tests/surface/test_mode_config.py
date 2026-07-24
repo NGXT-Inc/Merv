@@ -169,7 +169,7 @@ class LocalModeParityTest(unittest.TestCase):
             },
         )
         self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["reason"], "repo_root_hidden_from_cloud")
+        self.assertEqual(resp.json()["reason"], "repo_root_not_supported")
 
 
 class HostedControlSurfaceTest(unittest.TestCase):
@@ -288,7 +288,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
             },
         )
         self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json()["reason"], "repo_root_hidden_from_cloud")
+        self.assertEqual(resp.json()["reason"], "repo_root_not_supported")
 
     def test_hosted_sandbox_get_addresses_by_sandbox_uid(self) -> None:
         # Decoupled identity: a sandbox is found by its durable sandbox_uid, not
@@ -426,7 +426,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
             self.assertEqual(counters.json(), {"tenant_id": "acme", "tool_calls": 7})
             self.assertEqual(counter_calls, ["acme"])
 
-    def test_data_plane_submission_endpoint_is_private_but_not_token_gated(self) -> None:
+    def test_data_plane_submission_endpoint_is_deleted(self) -> None:
         client = TestClient(
             create_fastapi_app(
                 self.app.http,
@@ -435,19 +435,15 @@ class HostedControlSurfaceTest(unittest.TestCase):
             raise_server_exceptions=False,
         )
 
-        project = self.app.projects.list_projects()["projects"][0]
         validated = client.post(
             "/api/data-plane/feed/validate-post",
             json={
-                "project_id": project["id"],
+                "project_id": "proj_retired",
                 "handle": "main",
                 "text": "private-surface probe",
             },
         )
-        # 400 = the route ran domain validation (unregistered handle), not an
-        # auth gate.
-        self.assertEqual(validated.status_code, 400, validated.text)
-        self.assertIn("not registered", validated.text)
+        self.assertEqual(validated.status_code, 404, validated.text)
 
 
 class SecretStoreCredentialsTest(unittest.TestCase):
@@ -540,6 +536,7 @@ class VersionHandshakeTest(unittest.TestCase):
 
     def test_meta_returns_server_version_floors_and_capabilities(self) -> None:
         from merv.brain.kernel.version import (
+            MCP_CATALOG_VERSION,
             MIN_PROXY_VERSION,
             SERVER_VERSION,
         )
@@ -550,14 +547,17 @@ class VersionHandshakeTest(unittest.TestCase):
         self.assertEqual(body["server_version"], SERVER_VERSION)
         self.assertNotIn("min_daemon_version", body)
         self.assertEqual(body["min_proxy_version"], MIN_PROXY_VERSION)
+        self.assertEqual(body["catalog_version"], MCP_CATALOG_VERSION)
         self.assertEqual(body["mode"], "control")
         self.assertTrue(body["capabilities"]["hosted_control"])
-        self.assertFalse(body["capabilities"]["local_data_plane_http"])
+        self.assertTrue(body["capabilities"]["mcp"])
+        self.assertTrue(body["capabilities"]["token_uploads"])
 
         local = self.local_client.get("/api/meta")
         self.assertEqual(local.status_code, 200, local.text)
         self.assertEqual(local.json()["mode"], "local")
-        self.assertFalse(local.json()["capabilities"]["local_data_plane_http"])
+        self.assertTrue(local.json()["capabilities"]["mcp"])
+        self.assertTrue(local.json()["capabilities"]["token_uploads"])
 
     def test_in_range_client_passes_and_below_floor_is_rejected(self) -> None:
         from merv.brain.kernel.version import SERVER_VERSION
@@ -581,16 +581,6 @@ class VersionHandshakeTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.text)
 
-    def test_proxy_header_literal_matches_backend_constant(self) -> None:
-        from merv.brain.kernel.version import CLIENT_VERSION_HEADER
-        from tests.paths import PROXY_ROOT
-
-        credential_src = (PROXY_ROOT / "credential_provider.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(f'"{CLIENT_VERSION_HEADER}"', credential_src)
-
-
 class ModeCompositionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -599,7 +589,7 @@ class ModeCompositionTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_control_server_builds_private_surface_and_data_plane_submission(self) -> None:
+    def test_control_server_builds_http_mcp_and_token_uploads(self) -> None:
         from merv.brain.surface.composition import build_control_server
 
         server = build_control_server(
@@ -608,7 +598,7 @@ class ModeCompositionTest(unittest.TestCase):
         )
         self.addCleanup(server.shutdown)
         paths = {getattr(r, "path", "") for r in server.fastapi_app.routes}
-        self.assertIn("/api/data-plane/feed/post", paths)
+        self.assertNotIn("/api/data-plane/feed/post", paths)
         self.assertNotIn("/api/daemon/tasks", paths)
         self.assertIn("/mcp/call", paths)
         client = TestClient(server.fastapi_app, raise_server_exceptions=False)
