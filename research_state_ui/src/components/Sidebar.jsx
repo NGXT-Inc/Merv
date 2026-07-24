@@ -26,6 +26,7 @@ function AccountFoot({ onRefresh }) {
   const [hfBusy, setHfBusy] = useState(false);
   const [hfStatus, setHfStatus] = useState('');
   const footRef = useRef(null);
+  const px = useProjectHref();
   const saveHfToken = async () => {
     setHfBusy(true); setHfStatus('');
     try {
@@ -63,6 +64,14 @@ function AccountFoot({ onRefresh }) {
       {open && (
         <div className="account-menu" role="menu">
           <div className="account-menu-head">{email || (hosted ? 'Not signed in' : 'Local session')}</div>
+          <NavLink
+            to={px('/settings')}
+            className={() => 'account-menu-item'}
+            role="menuitem"
+            onClick={() => setOpen(false)}
+          >
+            Settings
+          </NavLink>
           <button type="button" className="account-menu-item" onClick={() => { setOpen(false); onRefresh?.(); }}>
             Refresh now
           </button>
@@ -255,10 +264,6 @@ export default function Sidebar({ onRefresh, onHide }) {
           <span>Experiments</span>
           <span className="sidebar-link-count">{stats.experiments ?? home?.experiments?.length ?? 0}</span>
         </NavLink>
-        <NavLink to={px('/reviews')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-          <span>Reviews</span>
-          <span className="sidebar-link-count">{stats.open_reviews ?? stats.reviews ?? 0}</span>
-        </NavLink>
         <NavLink to={px('/litreview')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           Lit Review
         </NavLink>
@@ -295,11 +300,6 @@ export default function Sidebar({ onRefresh, onHide }) {
         </NavLink>
         <NavLink to={px('/activity')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
           Traffic &amp; Tool I/O
-        </NavLink>
-
-        <div className="sidebar-section">Project</div>
-        <NavLink to={px('/settings')} className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}>
-          Settings
         </NavLink>
       </nav>
 
