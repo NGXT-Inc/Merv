@@ -26,4 +26,5 @@ logs/
 /dev_docs/
 
 /outputs/
+/architecture_companion/
 merv/src/*.egg-info/
