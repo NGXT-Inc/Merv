@@ -281,6 +281,37 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         self.assertEqual(admin.status_code, 403, admin.text)
         self.assertEqual(admin.json()["error_code"], "project_scope_forbidden")
 
+    def test_removed_key_owner_cannot_read_implicit_bound_project(self) -> None:
+        self.app.projects.remove_member(project_id=self.project_a, user_id=USER_A)
+        self.assertEqual(
+            self.verifier.verify_bearer(f"Bearer {self.key}").key_id, self.key_id
+        )
+
+        for action in ("current", "overview"):
+            call = {"name": "project", "arguments": {"action": action}}
+            with self.subTest(transport="legacy", action=action):
+                legacy = self.client.post(
+                    "/mcp/call", json=call, headers=_bearer(self.key)
+                )
+                self.assertEqual(legacy.status_code, 404, legacy.text)
+                self.assertEqual(legacy.json()["error_code"], "not_found")
+
+            with self.subTest(transport="streamable", action=action):
+                streamable = self.client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 20,
+                        "method": "tools/call",
+                        "params": call,
+                    },
+                    headers={**_bearer(self.key), "Accept": "application/json"},
+                )
+                self.assertEqual(streamable.status_code, 404, streamable.text)
+                self.assertEqual(
+                    streamable.json()["error"]["data"]["error_code"], "not_found"
+                )
+
     def test_internal_tool_forbidden_over_mcp_for_key(self) -> None:
         # Same project, but claim.list is internal → refused over both transports.
         legacy = self.client.post(

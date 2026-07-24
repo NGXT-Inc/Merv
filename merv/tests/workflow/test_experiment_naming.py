@@ -10,7 +10,6 @@ from pathlib import Path
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.kernel.utils import ValidationError
-from merv.proxy.workspace import local_experiment_dir
 
 
 class ExperimentNamingTest(unittest.TestCase):
@@ -80,17 +79,6 @@ class ExperimentNamingTest(unittest.TestCase):
             intent="Project two baseline.",
         )
         self.assertEqual(exp["name"], "baseline")
-
-    def test_sandbox_local_experiment_dir_follows_the_name(self) -> None:
-        exp = self._create(name="cifar-opt", intent="Optimize CIFAR.")
-        local = local_experiment_dir(
-            repo_root=self.repo, experiment_id=exp["id"], name=exp["name"]
-        )
-        # resolve(): tempdirs on macOS live behind the /var -> /private/var symlink.
-        self.assertEqual(
-            local.resolve(), (self.repo / "experiments" / "cifar-opt").resolve()
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

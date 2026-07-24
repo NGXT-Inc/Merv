@@ -4,28 +4,20 @@ Behavior is covered by test_sandbox_service.py; this file guards the
 *structure* so the machinery doesn't quietly grow back into the facade:
 the facade owns the public verbs and delegates rows to SandboxRepository,
 job threads to SandboxProvisioner, every destructive decision (liveness
-policy, VM termination, terminal marks + teardown, reconcile, reaping) to
-SandboxLifecycle — the single owner of status transitions — control-owned task
-signals to the neutral ControlTaskChannel, and the background loops to
-SandboxDaemons.
+policy, VM termination, terminal marks + management-key cleanup, reconcile,
+reaping) to SandboxLifecycle — the single owner of status transitions — and
+the background loops to SandboxDaemons.
 """
 
 from __future__ import annotations
 
 import ast
-import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import get_type_hints
 
 from tests.support.brain import TestBrain
-from merv.brain.surface.control.control_runtime import (
-    ControlSandboxWorker,
-    ControlTaskChannel,
-)
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
 from merv.brain.sandbox.sandbox_heartbeat import (
@@ -38,7 +30,7 @@ from merv.brain.sandbox.sandbox_provisioner import SandboxProvisioner
 from merv.brain.sandbox.repository import SandboxRepository
 from merv.brain.sandbox.facade import SandboxService
 from merv.brain.kernel.utils import ValidationError
-from tests.paths import BACKEND_ROOT, IMPORT_ROOT
+from tests.paths import BACKEND_ROOT
 
 FACADE = BACKEND_ROOT / "sandbox" / "facade.py"
 
@@ -74,7 +66,6 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIsInstance(service.repository, SandboxRepository)
         self.assertIsInstance(service.lifecycle, SandboxLifecycle)
         self.assertIsInstance(service.provisioner, SandboxProvisioner)
-        self.assertIsInstance(service.worker, ControlSandboxWorker)
         self.assertIsInstance(service.metrics, SandboxMetrics)
         self.assertIsInstance(service.daemons, SandboxDaemons)
         self.assertIsInstance(service.daemons.heartbeat, SandboxHeartbeatMonitor)
@@ -94,11 +85,10 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIs(service.daemons.lifecycle, service.lifecycle)
         self.assertIs(service.daemons.heartbeat.repository, service.repository)
         self.assertIs(service.metrics.repository, service.repository)
-        self.assertIs(service.worker, self.app.worker)
 
     def test_lifecycle_is_the_only_writer_of_terminal_marks(self) -> None:
-        # Every repository.mark_* call outside the lifecycle would skip teardown
-        # (mgmt-key removal + the data-plane teardown task); every direct
+        # Every repository.mark_* call outside the lifecycle would skip
+        # management-key removal; every direct
         # backend.terminate outside it would skip the liveness confirmation
         # that keeps billing VMs from being stranded behind terminated rows.
         lifecycle_src = (FACADE.parent / "sandbox_lifecycle.py").read_text(
@@ -121,13 +111,8 @@ class SandboxDecompositionTest(unittest.TestCase):
                 module,
             )
 
-    def test_facade_wires_the_task_seam(self) -> None:
-        # One channel carries explicit control signals for endpoint refresh and
-        # teardown. Unified local mode uses the same neutral control channel as
-        # hosted control; conn-file mutation is not in-process anymore.
+    def test_facade_wires_control_collaborators(self) -> None:
         service = self.app.sandboxes
-        self.assertIsInstance(service.tasks, ControlTaskChannel)
-        self.assertIs(service.tasks, service.runtime.lifecycle.tasks)
         self.assertIs(service.store, service.runtime.repository.store)
         self.assertIs(service.backend, service.runtime.lifecycle.backend)
         self.assertIs(service.mgmt_keys, service.runtime.lifecycle.mgmt_keys)
@@ -136,7 +121,6 @@ class SandboxDecompositionTest(unittest.TestCase):
     def test_facade_requires_explicit_quota_admission(self) -> None:
         with self.assertRaisesRegex(ValidationError, "quotas is required"):
             SandboxService(
-                worker=self.app.worker,
                 runtime=self.app.sandbox_runtime,
             )
 
@@ -145,7 +129,6 @@ class SandboxDecompositionTest(unittest.TestCase):
             ValidationError, "quotas.check_admission is required"
         ):
             SandboxService(
-                worker=self.app.worker,
                 runtime=self.app.sandbox_runtime,
                 quotas=object(),
             )
@@ -159,7 +142,6 @@ class SandboxDecompositionTest(unittest.TestCase):
             ValidationError, "quotas.check_lifetime_extension is required"
         ):
             SandboxService(
-                worker=self.app.worker,
                 runtime=self.app.sandbox_runtime,
                 quotas=PartialQuota(),
             )
@@ -170,7 +152,7 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertNotIn("threading.Thread(", source)
         self.assertNotIn("subprocess", source)
         self.assertNotIn("httpx", source)
-        # Local IO (conn files and local paths) lives behind the worker.
+        # Local IO (conn files and local paths) is absent.
         self.assertNotIn("SandboxConnFiles", source)
         self.assertNotIn("ssh_rsync", source)
         self.assertNotIn("SshRsyncSyncer", source)
@@ -192,11 +174,8 @@ class SandboxDecompositionTest(unittest.TestCase):
             "sync_sessions",
             _import_modules(FACADE.parent / "sandbox_provisioner.py"),
         )
-        # Control-owned collaborators are injected explicitly by composition;
-        # the facade must not derive them from the local worker.
-        self.assertNotIn("worker.workspace", source)
-        self.assertNotIn("worker.metrics_archive", source)
-        self.assertNotIn("worker.client_id()", source)
+        self.assertNotIn("sandbox_worker", source)
+        self.assertNotIn("self.worker", source)
         self.assertNotIn("_metrics_cache", source)
         self.assertNotIn("_metrics_lock", source)
         self.assertNotIn("_metrics_persisted_at", source)
@@ -248,7 +227,6 @@ class SandboxDecompositionTest(unittest.TestCase):
             "daemons",
             "runs_ledger",
             "transcript_cache",
-            "tasks",
         ):
             self.assertIn(f"self.{attribute} =", source)
 
@@ -260,26 +238,11 @@ class SandboxDecompositionTest(unittest.TestCase):
         self.assertIn("self.repository.rows_for_experiment(", queries)
         self.assertIn("self.repository.rows_for_project(", queries)
 
-    def test_facade_import_does_not_load_proxy_modules(self) -> None:
-        code = """
-import sys
-import merv.brain.sandbox.facade
-loaded = sorted(
-    name for name in sys.modules
-    if name == "merv.proxy" or name.startswith("merv.proxy.")
-)
-if loaded:
-    raise SystemExit("brain import loaded proxy modules: " + ", ".join(loaded))
-"""
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(IMPORT_ROOT)
-        subprocess.run([sys.executable, "-c", code], check=True, env=env)
-
-    def test_service_type_hints_resolve_without_data_plane_worker(self) -> None:
+    def test_service_type_hints_have_no_data_plane_worker(self) -> None:
         facade_hints = get_type_hints(SandboxService.__init__)
         provisioner_hints = get_type_hints(SandboxProvisioner.__init__)
 
-        self.assertEqual(facade_hints["worker"].__name__, "SandboxWorker")
+        self.assertNotIn("worker", facade_hints)
         self.assertNotIn("worker", provisioner_hints)
 
     def test_repository_module_stays_dependency_free(self) -> None:
@@ -297,9 +260,8 @@ if loaded:
             self.assertNotIn(forbidden, source)
 
     def test_views_module_stays_pure_projection(self) -> None:
-        # The agent-view decomposition (cloud plan §3.3): row facts are pure;
-        # conn files and local paths arrive as worker enrichment. The views
-        # module must not grow them back.
+        # Row projections are pure; conn files and local paths must not grow
+        # back into the views module.
         source = (FACADE.parent / "sandbox_views.py").read_text(encoding="utf-8")
         for forbidden in ("sandbox_conn", "subprocess", "repo_root", "workspace"):
             self.assertNotIn(forbidden, source)

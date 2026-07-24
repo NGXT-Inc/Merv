@@ -8,7 +8,6 @@ from fastapi import FastAPI
 
 from .... import __version__
 from ..admin_http import register_admin_routes
-from ..data_plane_http import register_data_plane_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
@@ -98,20 +97,15 @@ def create_fastapi_app(
     register_feed_routes(
         http,
         feed_api=api.feed,
-        authorize_project=gateway.authorize_data_plane_project,
+        authorize_project=gateway.authorize_project,
         activity=api.activity,
     )
     register_mcp_routes(
         http, list_tools=api.tools.list_tools, call_tool=gateway.call_mcp,
-        allow_tool=lambda tool: tool.get("plane") != "data",
+        allow_tool=lambda _tool: True,
         authorize_scope=mcp_preauth.build_mcp_preauthorizer(
             authorizer=authorizer, reviews=api.reviews,
             hosted=surface.use_hosted_tool_policies),
-    )
-    register_data_plane_routes(
-        http,
-        authorize_project=gateway.authorize_data_plane_project,
-        feed=api.feed,
     )
     register_admin_routes(
         http,

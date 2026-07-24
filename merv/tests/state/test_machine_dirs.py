@@ -1,8 +1,8 @@
 """Resolution of the machine-level (home) client-state dir.
 
 Machines configured before v0.0014 keep ``~/.research_plugin/``; fresh
-machines get ``~/.merv/``. All home-scoped client paths (client.json,
-project_links.sqlite, daemon_secret) follow one resolution.
+machines get ``~/.merv/``. The home-scoped client config follows that
+resolution.
 """
 
 from __future__ import annotations
@@ -19,10 +19,8 @@ from merv.shared.machine_dirs import (
 )
 from merv.shared.client_config import (
     default_client_config_path,
-    default_daemon_secret_path,
     resolve_client_config_path,
 )
-from merv.proxy.project_links import default_project_links_path
 
 
 class ResolveMachineStateDirTest(unittest.TestCase):
@@ -61,7 +59,7 @@ class ResolveMachineStateDirTest(unittest.TestCase):
 
 
 class MachineStatePathDefaultsTest(unittest.TestCase):
-    """client.json / daemon_secret / project_links follow the one resolution."""
+    """client.json follows the one machine-state resolution."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -74,20 +72,12 @@ class MachineStatePathDefaultsTest(unittest.TestCase):
     def test_fresh_machine_defaults_land_under_merv(self) -> None:
         merv = self.home / MACHINE_STATE_DIR
         self.assertEqual(default_client_config_path(), merv / "client.json")
-        self.assertEqual(default_daemon_secret_path(), merv / "daemon_secret")
-        self.assertEqual(
-            default_project_links_path(), merv / "project_links.sqlite"
-        )
         self.assertEqual(resolve_client_config_path(env={}), merv / "client.json")
 
     def test_legacy_machine_defaults_stay_put(self) -> None:
         legacy = self.home / LEGACY_MACHINE_STATE_DIR
         legacy.mkdir()
         self.assertEqual(default_client_config_path(), legacy / "client.json")
-        self.assertEqual(default_daemon_secret_path(), legacy / "daemon_secret")
-        self.assertEqual(
-            default_project_links_path(), legacy / "project_links.sqlite"
-        )
         self.assertEqual(resolve_client_config_path(env={}), legacy / "client.json")
 
     def test_explicit_env_override_bypasses_detection(self) -> None:

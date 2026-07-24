@@ -13,7 +13,6 @@ from typing import Any, Callable, Iterator
 from . import sandbox_views
 from ..kernel.env import env_float
 from ..kernel.ports.quota_admission import AdmissionRequest, QuotaAdmission
-from ..kernel.ports.sandbox_worker import SandboxWorker
 from ..kernel.state.store import Connection
 from ..kernel.utils import NotFoundError, ValidationError, format_iso, parse_iso
 from .lifecycle_reducer import release_decision
@@ -105,7 +104,6 @@ class SandboxFacade:
     def __init__(
         self,
         *,
-        worker: SandboxWorker,
         runtime: SandboxRuntime,
         request_wait_seconds: float | None = None,
         quotas: QuotaAdmission | None = None,
@@ -120,7 +118,6 @@ class SandboxFacade:
         if not callable(getattr(quotas, "check_lifetime_extension", None)):
             raise ValidationError("quotas.check_lifetime_extension is required")
         self.quotas = quotas
-        self.worker = worker
         self.storage_enabled = bool(storage_enabled)
         self.storage_hint = str(storage_hint or "")
         self.attachment_check = attachment_check
@@ -150,7 +147,6 @@ class SandboxFacade:
         self.lifecycle = runtime.lifecycle
         self.backend = self.lifecycle.backend
         self.mgmt_keys = self.lifecycle.mgmt_keys
-        self.tasks = self.lifecycle.tasks
         self.provisioner = runtime.provisioner
         self.daemons = runtime.daemons
         self.transcript_cache = runtime.transcripts
@@ -278,14 +274,10 @@ class SandboxFacade:
         reused: bool | None,
         use_sandbox_uid_command: bool = True,
     ) -> dict[str, Any]:
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        view_name = f"sandbox-{sandbox_uid[:12]}"
+        _ = use_sandbox_uid_command
         facts = self._agent_facts(row=row, reused=reused)
-        enrichment = self.worker.sandbox_enrichment(
-            row=row, name=view_name, use_sandbox_uid_command=use_sandbox_uid_command
-        )
         return sandbox_views.merge_agent_view(
-            facts=facts, enrichment=enrichment, storage_hint=self.storage_hint
+            facts=facts, enrichment={}, storage_hint=self.storage_hint
         )
 
     def _agent_summary(self, *, row: dict[str, Any]) -> dict[str, Any]:
@@ -296,18 +288,9 @@ class SandboxFacade:
     def _row_view(
         self, *, row: dict[str, Any], conn: Connection | None = None
     ) -> dict[str, Any]:
+        _ = conn
         row = self._with_active_experiment_ids(row=row)
-        sandbox_uid = str(row.get("sandbox_uid") or "")
-        local_key = sandbox_uid
-        local_name = f"sandbox-{sandbox_uid[:12]}"
-        return sandbox_views.sandbox_row_view(
-            row=row,
-            local_sync_dir=str(
-                self.worker.local_experiment_dir(
-                    experiment_id=local_key, name=local_name
-                )
-            ),
-        )
+        return sandbox_views.sandbox_row_view(row=row)
 
     def _active_experiment_ids_for_row(self, *, row: dict[str, Any]) -> list[str]:
         raw = row.get("active_experiment_ids")
@@ -403,7 +386,7 @@ class SandboxFacade:
         provider: str | None = None,
         public_key: str | None = None,
         public_key_override: str | None = None,
-        include_data_plane_enrichment: bool = True,
+        include_data_plane_enrichment: bool = False,
         additional: bool = False,
         sandbox_uid: str | None = None,
         provisioning_user_id: str = "",
@@ -562,40 +545,6 @@ class SandboxFacade:
         result["public_key_source"] = public_key_source
         return result
 
-    def request_from_data_plane(
-        self,
-        *,
-        experiment_id: str | None = None,
-        public_key: str,
-        project_id: str | None = None,
-        gpu: str | None = None,
-        cpu: float | None = None,
-        memory: int | None = None,
-        time_limit: int | None = None,
-        instance_type: str | None = None,
-        region: str | None = None,
-        provider: str | None = None,
-        additional: bool = False,
-        sandbox_uid: str | None = None,
-        provisioning_user_id: str = "",
-    ) -> dict[str, Any]:
-        return self.request(
-            experiment_id=experiment_id,
-            project_id=project_id,
-            gpu=gpu,
-            cpu=cpu,
-            memory=memory,
-            time_limit=time_limit,
-            instance_type=instance_type,
-            region=region,
-            provider=provider,
-            public_key_override=public_key,
-            include_data_plane_enrichment=False,
-            additional=additional,
-            sandbox_uid=sandbox_uid,
-            provisioning_user_id=provisioning_user_id,
-        )
-
     def get(
         self,
         *,
@@ -603,7 +552,7 @@ class SandboxFacade:
         project_id: str | None = None,
         tenant_id: str | None = None,
         sandbox_uid: str | None = None,
-        include_data_plane_enrichment: bool = True,
+        include_data_plane_enrichment: bool = False,
     ) -> dict[str, Any]:
         return self.queries.execute_get(
             experiment_id=experiment_id,
@@ -619,7 +568,7 @@ class SandboxFacade:
         experiment_id: str,
         project_id: str | None = None,
         sandbox_uid: str,
-        include_data_plane_enrichment: bool = True,
+        include_data_plane_enrichment: bool = False,
         public_key_override: str | None = None,
     ) -> dict[str, Any]:
         _ = public_key_override
@@ -667,22 +616,6 @@ class SandboxFacade:
         )
         result["active_experiment_ids"] = active_experiment_ids
         return result
-
-    def attach_from_data_plane(
-        self,
-        *,
-        experiment_id: str,
-        sandbox_uid: str,
-        public_key: str,
-        project_id: str | None = None,
-    ) -> dict[str, Any]:
-        return self.attach(
-            experiment_id=experiment_id,
-            project_id=project_id,
-            sandbox_uid=sandbox_uid,
-            public_key_override=public_key,
-            include_data_plane_enrichment=False,
-        )
 
     def extend(
         self,

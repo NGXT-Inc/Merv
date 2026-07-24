@@ -14,7 +14,6 @@ from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities, SandboxRequest
 from merv.brain.kernel.utils import NotFoundError, ValidationError, parse_iso
-from merv.proxy.workspace import local_experiment_dir
 
 
 class SandboxServiceTest(unittest.TestCase):
@@ -668,32 +667,6 @@ class SandboxServiceTest(unittest.TestCase):
         )
         self.assertEqual(state["status"], "ready_to_run")
 
-    def test_additional_sandbox_gets_a_distinct_local_dir(self) -> None:
-        # Regression (F2): parallel sandboxes must NOT share one local experiment
-        # folder, or explicit retained-file copies would collide.
-        exp_id = self._experiment()
-        primary = self.call(
-            "sandbox.request", project_id=self.project_id, experiment_id=exp_id
-        )
-        extra = self.call(
-            "sandbox.request",
-            project_id=self.project_id,
-            experiment_id=exp_id,
-            additional=True,
-        )
-        primary_dir = local_experiment_dir(
-            repo_root=self.repo,
-            experiment_id=primary["sandbox_uid"],
-            name=f"sandbox-{primary['sandbox_uid'][:12]}",
-        )
-        extra_dir = local_experiment_dir(
-            repo_root=self.repo,
-            experiment_id=extra["sandbox_uid"],
-            name=f"sandbox-{extra['sandbox_uid'][:12]}",
-        )
-        self.assertNotEqual(primary_dir, extra_dir)
-        self.assertTrue(str(extra_dir).endswith(extra["sandbox_uid"][:12]))
-
     def test_request_recreates_after_death(self) -> None:
         exp_id = self._experiment()
         first = self.call(
@@ -724,10 +697,6 @@ class SandboxServiceTest(unittest.TestCase):
         self.assertNotEqual(got["ssh"]["host"], old_host)
         self.assertEqual(got["ssh"]["host"], "r999.modal.host")
         self.assertEqual(got["ssh"]["port"], 55555)
-        task_type, payload = self.app.sandboxes.tasks.history[-1]
-        self.assertEqual(task_type, "conn_refresh")
-        self.assertEqual(payload["row"]["ssh_host"], "r999.modal.host")
-        self.assertEqual(payload["row"]["ssh_port"], 55555)
 
     # ---- sandbox response guidance ----
 

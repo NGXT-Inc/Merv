@@ -78,7 +78,7 @@ def build_control_tool_handlers(
     available = available_tool_names(storage_enabled=storage is not None)
     handlers: dict[str, ToolHandler] = {}
     for name, tool in TOOL_MANIFEST.items():
-        if name not in available or tool.plane != "control":
+        if name not in available:
             continue
         owner_name, method_name = tool.handler_identity.split(".", 1)
         handlers[name] = getattr(owners[owner_name], method_name)

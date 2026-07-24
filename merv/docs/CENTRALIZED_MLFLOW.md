@@ -92,12 +92,13 @@ workflow gate.
 
 ## Agent contract
 
-The stdio proxy resolves the linked project and injects its `project_id`; agents
-do not pass project scope themselves. Use:
+Pass the key-bound `project_id` explicitly (learned once from
+`project(action="current")`); the gateway enforces that it equals the key's
+bound project. Use:
 
 ```text
-mlflow.context()
-mlflow.context(experiment_id="exp_...")
+mlflow.context(project_id="proj_...")
+mlflow.context(project_id="proj_...", experiment_id="exp_...")
 ```
 
 Project scope returns the tracking URI, dashboard URL, namespace prefix, and a
@@ -125,8 +126,8 @@ returns the exact experiment name and environment variables for a run:
 }
 ```
 
-`experiment.transition(transition="start_running")` returns the same
-experiment-scoped block. When both `TRACKING_URI` and `SERVER_URI` are
+`experiment.transition(project_id, experiment_id, transition="start_running")`
+returns the same experiment-scoped block. When both `TRACKING_URI` and `SERVER_URI` are
 configured, the brain makes a best-effort attempt to create an initial MLflow
 run and persist its identity on the experiment. On success, the response
 includes `mlflow.run.run_id`, and the environment includes `MLFLOW_RUN_ID` and
@@ -158,7 +159,7 @@ attempt.
 After a quantitative command finishes, call:
 
 ```text
-mlflow.finalize_run(experiment_id="exp_...")
+mlflow.finalize_run(project_id="proj_...", experiment_id="exp_...")
 ```
 
 By default the tool uses the plugin-owned run id, requests `FINISHED` through

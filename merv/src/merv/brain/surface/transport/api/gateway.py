@@ -12,7 +12,6 @@ from pydantic import ValidationError as PydanticValidationError
 
 from ....kernel.env import mlflow_suspended
 from ....kernel.utils import (
-    DataPlaneRequiredError,
     NotFoundError,
     ValidationError,
 )
@@ -190,16 +189,17 @@ class ToolInvocationGateway:
             principal
         )
         if context.get("repo_root"):
-            raise DataPlaneRequiredError(
-                "repo_root context is local data-plane state; hosted control "
-                "requires the local MCP proxy to resolve and send project_id",
+            raise ValidationError(
+                "repo_root context is not supported; send project_id explicitly "
+                "or authenticate with a project-bound MCP key",
                 details={"field": "context.repo_root",
-                         "reason": "repo_root_hidden_from_cloud"},
+                         "reason": "repo_root_not_supported"},
             )
-        for scope in (arguments.get("project_id"), project_scope):
-            self.projects.require_member(project_id=scope, principal=principal)
         user_id = self.projects.user_id(principal)
         key_project_id = self.projects.key_project_id(principal)
+        self.projects.require_member(project_id=key_project_id or None, principal=principal)
+        for scope in (arguments.get("project_id"), project_scope):
+            self.projects.require_member(project_id=scope, principal=principal)
         if key_project_id and name == "project" and arguments.get("action") == "create":
             raise ProjectKeyScopeError("project API keys cannot create projects",
                                        details={"key_project_id": key_project_id})
@@ -303,7 +303,7 @@ class ToolInvocationGateway:
             base_url=str(request.base_url).rstrip("/"),  # caller-reachable base
         )
 
-    def authorize_data_plane_project(self, request: Request, project_id: str) -> None:
+    def authorize_project(self, request: Request, project_id: str) -> None:
         self.projects.require_member(project_id=project_id,
             principal=getattr(request.state, "principal", LOCAL_PRINCIPAL))
 

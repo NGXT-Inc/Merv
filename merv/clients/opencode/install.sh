@@ -33,18 +33,16 @@ Done. Register the MCP server in your research repo's opencode.json
 {
   "mcp": {
     "merv": {
-      "type": "local",
-      "command": ["$PLUGIN_DIR/bin/merv-mcp"],
+      "type": "remote",
+      "url": "https://experiments.rapidreview.io/mcp",
       "enabled": true,
-      "environment": {
-        "MERV_CONTROL_URL": ""
+      "headers": {
+        "Authorization": "Bearer {env:MERV_MCP_KEY}"
       }
     }
   }
 }
 
-OpenCode spawns local MCP servers with cwd = project root, which is exactly
-what the proxy needs for checkout-local operations. An empty control URL uses
-the configured/default hosted brain. For a local deployment, set it to
-http://127.0.0.1:8787 and start $PLUGIN_DIR/bin/merv-http first.
+Export MERV_MCP_KEY before starting OpenCode. For a local deployment, replace
+the URL with http://127.0.0.1:8787/mcp and start $PLUGIN_DIR/bin/merv-http first.
 EOF

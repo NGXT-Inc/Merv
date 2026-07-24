@@ -19,19 +19,10 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-# Which plane serves each tool in the brain/local-proxy topology
-# (docs/CONTROL_DATA_PLANE_SPLIT.md).
-# "control" = record/gate/lifecycle work, cloud-servable. "data" = touches the
-# local filesystem or local processes, must run on the user's machine.
-ToolPlane = Literal["control", "data"]
+# Every agent-facing tool is served by the brain over HTTP.
+ToolPlane = Literal["control"]
 ToolVisibility = Literal["public", "internal"]
 ToolScopeStrategy = Literal["linked-project", "caller-selected", "capability", "none"]
-ToolExecutionStrategy = Literal[
-    "control",
-    "local",
-    "control-plus-local-enrichment",
-    "local-orchestration",
-]
 ToolFeature = Literal["storage"]
 
 
@@ -44,10 +35,7 @@ class ToolManifest:
     handler_identity: str
     visibility: ToolVisibility = "public"
     scope_strategy: ToolScopeStrategy | None = None
-    execution_strategy: ToolExecutionStrategy = "control"
-    catalog_plane: ToolPlane | None = None
     feature_requirements: tuple[ToolFeature, ...] = ()
-    local_handler_identity: str | None = None
     hosted_control_sandbox_lookup: bool = False
 
     def __post_init__(self) -> None:
@@ -61,9 +49,7 @@ class ToolManifest:
 
     @property
     def plane(self) -> ToolPlane:
-        if self.catalog_plane is not None:
-            return self.catalog_plane
-        return "data" if self.execution_strategy in {"local", "local-orchestration"} else "control"
+        return "control"
 
 
 # Compatibility name for code that describes only the schema/description half.
@@ -77,8 +63,9 @@ class EmptyInput(ContractModel):
 class ProjectScopedInput(ContractModel):
     project_id: str = Field(
         description=(
-            "Explicit project scope. Project-local MCP adapters may fill this "
-            "from hidden repo context before the call reaches core services."
+            "Explicit project scope. Pass the project id learned from "
+            'project(action="current"); for key-authenticated callers the '
+            "gateway requires it to equal the key's bound project."
         )
     )
 
@@ -88,62 +75,38 @@ class WorkflowStatusAndNextInput(ProjectScopedInput):
 
 
 class ProjectInput(ContractModel):
-    """The one agent-facing project tool: current / connect / create.
+    """The one agent-facing project tool: current / create / overview."""
 
-    Deliberately NOT ProjectScopedInput — project_id here is the caller's
-    explicit choice of which hosted project to link (action=connect), never
-    hidden repo context resolved by the proxy.
-    """
-
-    action: Literal["current", "connect", "create", "overview"] = Field(
+    action: Literal["current", "create", "overview"] = Field(
         description=(
-            "current = return the brain project linked to this folder, or "
-            "exists=false when no local link exists; "
+            "current = return the project bound to the caller's MCP key; "
             "overview = the whole-project read — every claim (incl. "
             "settled/abandoned) and every experiment (incl. terminal) — for "
-            "orienting or re-grounding; connect = link this folder to a brain "
-            "project (pass project_id for an existing one, or name/summary to "
-            "create and link in one step); create = create a project WITHOUT "
-            "linking this folder (rare — connect is the normal bootstrap)."
+            "orienting or re-grounding; create = create a project."
         )
     )
     project_id: str = Field(
         default="",
-        description=(
-            "action=connect: existing hosted project id to link this folder "
-            "to. Leave empty when creating a new project via name."
-        ),
+        description="Optional explicit project id for action=overview.",
     )
     name: str = Field(
         default="",
         description=(
             "User-confirmed project name, at least 3 characters. Required for "
-            "action=create; for action=connect supply it (with project_id "
-            "empty) to create a new project and link it. Do not infer a "
-            "placeholder from the folder name unless the user explicitly "
-            "asked for that."
+            "action=create. Do not infer a placeholder unless the user "
+            "explicitly asked for it."
         ),
     )
     summary: str = Field(
         default="",
         description="Short user-confirmed project purpose or scope.",
     )
-    overwrite: bool = Field(
-        default=False,
-        description=(
-            "action=connect only: must be true to re-link a folder that is "
-            "already linked to a different project."
-        ),
-    )
-
     @model_validator(mode="after")
     def _check_action(self) -> "ProjectInput":
         if self.action in ("current", "overview"):
-            # Neither carries an agent payload. A local proxy resolves both from
-            # its folder link; a keyed cloud caller reaches the brain, which
-            # resolves them from the key's bound project. overview tolerates an
-            # explicit project_id (the agent still never supplies it locally).
-            forbidden = ["name", "summary", "overwrite"]
+            # Both default to the project bound to the caller's MCP key;
+            # overview also tolerates an explicit project_id.
+            forbidden = ["name", "summary"]
             if self.action == "current":
                 forbidden = ["project_id", *forbidden]
             extras = [field for field in forbidden if getattr(self, field)]
@@ -155,14 +118,6 @@ class ProjectInput(ContractModel):
         elif self.action == "create":
             if len(self.name) < 3:
                 raise ValueError("action=create requires name (at least 3 characters)")
-        elif self.action == "connect":
-            if not self.project_id and not self.name:
-                raise ValueError(
-                    "action=connect requires project_id (link an existing "
-                    "project) or name (create a new project and link it)"
-                )
-            if self.name and len(self.name) < 3:
-                raise ValueError("name must be at least 3 characters")
         return self
 
 
@@ -1005,27 +960,17 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     "project": ToolContract(
         handler_identity="operations.project",
         scope_strategy="caller-selected",
-        execution_strategy="local-orchestration",
-        # Preserve the legacy catalog plane: the brain still owns its schema
-        # and the create/overview actions, while the proxy dispatches by action.
-        catalog_plane="control",
         input_model=ProjectInput,
         description=(
-            "Project identity for this folder, dispatched on 'action'. "
-            "action=current returns the brain project linked to this folder, "
-            "or exists=false when no local link exists. "
+            "Project identity for this MCP key, dispatched on 'action'. "
+            "action=current returns the key-bound project, or exists=false "
+            "when the caller has no bound project. "
             "action=overview is the whole-project read for orienting or "
             "re-grounding: every claim (including settled/abandoned) and every "
             "experiment (including terminal), independent of what "
             "workflow.status_and_next chooses to embed. "
-            "action=connect links this folder so every later tool call "
-            "resolves to it: pass project_id to link an existing project, or "
-            "a user-confirmed name (+ summary) to create AND link in one step "
-            "(the normal bootstrap); ask the user which project first, never "
-            "guess an id. The folder link is stored on this machine only; the "
-            "brain never sees the folder path, and re-linking requires "
-            "overwrite=true. action=create creates a project WITHOUT linking "
-            "this folder (rare)."
+            "action=create creates a project from a user-confirmed name and "
+            "summary."
         ),
     ),
     "project.update": ToolContract(
@@ -1381,7 +1326,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "sandbox.request": ToolContract(
         handler_identity="sandboxes.request",
-        execution_strategy="control",
         input_model=SandboxRequestInput,
         description=(
             "Procure (reuse or create) a project sandbox, optionally attached to "
@@ -1409,8 +1353,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "sandbox.get": ToolContract(
         handler_identity="sandboxes.get",
-        local_handler_identity="local.sandbox_get_enrichment",
-        execution_strategy="control-plus-local-enrichment",
         input_model=SandboxGetInput,
         description=(
             "Get sandbox status, SSH details, expiry, and polling/runtime "
@@ -1424,7 +1366,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "sandbox.attach": ToolContract(
         handler_identity="sandboxes.attach",
-        execution_strategy="control",
         input_model=SandboxAttachInput,
         description=(
             "Associate an existing running sandbox with an experiment without "
@@ -1434,7 +1375,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "sandbox.pull_outputs": ToolContract(
         handler_identity="sandboxes.pull_outputs_command",
-        execution_strategy="control",
         input_model=SandboxPullOutputsInput,
         description=(
             "Return a filled rsync command for selected files or directories "
@@ -1515,9 +1455,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "sandbox.health": ToolContract(
         handler_identity="sandboxes.health",
-        local_handler_identity="local.health",
         visibility="internal",
-        execution_strategy="control-plus-local-enrichment",
         input_model=EmptyInput,
         description="Check the execution backend is reachable.",
     ),
@@ -1525,15 +1463,14 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
 
 # Social feed (Feed_PRD.md) registers its tools from its own module so the feed
 # stays a liftable feature: this is the single integration point with the tool
-# manifest. The merge happens before the derived sets below so routing/catalog
-# include the feed tools. (feed_contracts imports the base classes above; this
+# manifest. The merge happens before the derived sets below so the brain tool
+# surface includes the feed tools. (feed_contracts imports the base classes above; this
 # bottom-of-section import is safe because they are already defined.)
 from .feed_contracts import FEED_TOOL_CONTRACTS  # noqa: E402
 
 TOOL_MANIFEST.update(FEED_TOOL_CONTRACTS)
 
-# Compatibility projections. New code reads TOOL_MANIFEST; these names keep
-# older adapters and SDK imports source-compatible without duplicating policy.
+# Compatibility name for callers that describe the manifest as contracts.
 TOOL_CONTRACTS = TOOL_MANIFEST
 STORAGE_TOOL_NAMES = {
     name for name, tool in TOOL_MANIFEST.items() if "storage" in tool.feature_requirements
@@ -1569,65 +1506,6 @@ def tool_plane(name: str) -> ToolPlane:
     return TOOL_MANIFEST[name].plane
 
 
-# Plane route sets, derived so the routing table and registry cannot drift.
-# The proxy uses these to keep brain calls separate from checkout-local calls.
-CONTROL_PLANE_TOOL_NAMES = frozenset(
-    name for name, tool in TOOL_MANIFEST.items() if tool.plane == "control"
-)
-DATA_PLANE_TOOL_NAMES = frozenset(
-    name for name, tool in TOOL_MANIFEST.items() if tool.plane == "data"
-)
-
-
-def static_tool_catalog(
-    *, tool_names: set[str] | None = None, storage_enabled: bool = False
-) -> list[dict[str, Any]]:
-    """The MCP tool catalog, derived purely from contracts.
-
-    Same shape as the control app's ``list_tools()`` (top-level ``title``
-    popped from each schema) so tool listing never needs an app instance —
-    and therefore has no filesystem side effects.
-    """
-    selected = (
-        available_tool_names(storage_enabled=storage_enabled)
-        if tool_names is None
-        else set(tool_names)
-    )
-    catalog: list[dict[str, Any]] = []
-    for name, contract in TOOL_MANIFEST.items():
-        if name not in selected:
-            continue
-        schema = contract.input_model.model_json_schema()
-        schema.pop("title", None)
-        tool: dict[str, Any] = {
-            "name": name,
-            "description": contract.description,
-            "inputSchema": schema,
-            # The routing source of truth: the stdlib-only proxy reads this
-            # from the served catalog to route brain versus checkout-local
-            # calls, without importing the pydantic-bound contracts module.
-            "plane": contract.plane,
-        }
-        if contract.visibility == "internal":
-            tool["hidden"] = True
-        catalog.append(tool)
-    return catalog
-
-
-def proxy_tool_manifest() -> list[dict[str, Any]]:
-    """Stdlib-client projection used for routing and offline tool listing."""
-    catalog = {
-        tool["name"]: tool for tool in static_tool_catalog(storage_enabled=True)
-    }
-    return [
-        {
-            **catalog[name],
-            "visibility": tool.visibility,
-            "scopeStrategy": tool.scope_strategy,
-            "executionStrategy": tool.execution_strategy,
-            "featureRequirements": list(tool.feature_requirements),
-            "handlerIdentity": tool.handler_identity,
-            "localHandlerIdentity": tool.local_handler_identity,
-        }
-        for name, tool in TOOL_MANIFEST.items()
-    ]
+# Kept as explicit structure laws during the final transition phase.
+CONTROL_PLANE_TOOL_NAMES = frozenset(TOOL_MANIFEST)
+DATA_PLANE_TOOL_NAMES: frozenset[str] = frozenset()

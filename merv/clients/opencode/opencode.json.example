@@ -2,11 +2,11 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "merv": {
-      "type": "local",
-      "command": ["/absolute/path/to/merv/bin/merv-mcp"],
+      "type": "remote",
+      "url": "https://experiments.rapidreview.io/mcp",
       "enabled": true,
-      "environment": {
-        "MERV_CONTROL_URL": ""
+      "headers": {
+        "Authorization": "Bearer {env:MERV_MCP_KEY}"
       }
     }
   }

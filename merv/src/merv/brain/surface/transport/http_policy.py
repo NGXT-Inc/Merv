@@ -15,7 +15,6 @@ class HostedToolPolicy:
 class HttpSurfacePolicy:
     restrict_cors: bool
     hosted_control: bool
-    allow_data_plane_http: bool
     use_hosted_tool_policies: bool
 
     @classmethod
@@ -28,7 +27,6 @@ class HttpSurfacePolicy:
         return cls(
             restrict_cors=restrict_cors,
             hosted_control=hosted_control,
-            allow_data_plane_http=False,
             use_hosted_tool_policies=hosted_control,
         )
 

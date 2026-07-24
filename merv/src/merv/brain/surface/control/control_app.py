@@ -33,11 +33,7 @@ from ..tools.contracts import (
     CONTROL_PLANE_TOOL_NAMES,
     available_tool_names,
 )
-from .control_runtime import (
-    ControlActivitySink,
-    ControlSandboxWorker,
-    ControlToolCallSink,
-)
+from .control_runtime import ControlActivitySink, ControlToolCallSink
 from ..observability import StructuredLogger
 from ..user_settings import UserHfTokenSettings
 from ...kernel.ports.mgmt_keys import MgmtKeyStore
@@ -66,7 +62,6 @@ class ControlApp:
         blobs: EvidenceBlobStore,
         storage: StorageLedgerService | None,
         execution_backend: SandboxBackend,
-        task_channel: Any,
         mgmt_keys: MgmtKeyStore,
         mlflow_tracking: CentralMlflowService | None = None,
         force_expiry_reaper: bool = False,
@@ -84,7 +79,6 @@ class ControlApp:
             if mlflow_tracking is not None
             else CentralMlflowService.from_env()
         )
-        self._worker = ControlSandboxWorker()
         core = self._record_core = build_record_core(store=store, blobs=blobs)
 
         self.research_core = ResearchCoreFacade(
@@ -155,11 +149,9 @@ class ControlApp:
             store=store,
             backend=execution_backend,
             mgmt_keys=mgmt_keys,
-            tasks=task_channel,
             force_expiry_reaper=force_expiry_reaper,
         )
         self.sandboxes = SandboxFacade(
-            worker=self._worker,
             runtime=self._sandbox_runtime,
             quotas=core.quotas,
             storage_enabled=storage is not None,

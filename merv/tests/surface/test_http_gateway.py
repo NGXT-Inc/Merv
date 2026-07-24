@@ -82,7 +82,7 @@ class HttpGatewayTest(unittest.TestCase):
             projects=self.projects,
         )
 
-    def test_one_authorizer_covers_path_query_tool_and_data_plane_scopes(self) -> None:
+    def test_one_authorizer_covers_path_query_and_tool_scopes(self) -> None:
         self.assertIsNone(
             self.projects.http_denial(_request("/api/projects/proj-a/home"))
         )
@@ -110,10 +110,6 @@ class HttpGatewayTest(unittest.TestCase):
         with self.assertRaisesRegex(NotFoundError, "project not found: proj-b"):
             gateway.call(
                 name="claim.list", arguments={"project_id": "proj-b"}, principal=USER
-            )
-        with self.assertRaisesRegex(NotFoundError, "project not found: proj-b"):
-            gateway.authorize_data_plane_project(
-                _request("/api/data-plane/x"), "proj-b"
             )
 
     def test_indirect_review_scope_uses_the_same_membership_boundary(self) -> None:

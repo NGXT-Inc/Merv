@@ -37,20 +37,20 @@ def build_router(
     @api_router.get("/health")
     def health() -> dict[str, Any]:
         # Surface hygiene: /health is liveness only and never exposes host
-        # paths or local data-plane details.
+        # paths or deployment details.
         return {"ok": True, "version": __version__}
 
     @api_router.get("/api/meta")
     def server_meta() -> dict[str, Any]:
-        # Version/compat handshake (cloud plan Phase 9): the server version plus
-        # the minimum MCP proxy versions it will serve. Floors are code
-        # constants; mode/capabilities tell browser clients which local
-        # data-plane actions to hide before requests start getting rejected.
+        # Version/compat handshake: server and catalog versions plus the
+        # retained minimum proxy floor. Capabilities advertise the universal
+        # HTTP MCP and token-upload paths.
         payload = meta()
         payload["mode"] = "control" if surface.hosted_control else "local"
         payload["capabilities"] = {
             "hosted_control": surface.hosted_control,
-            "local_data_plane_http": surface.allow_data_plane_http,
+            "mcp": True,
+            "token_uploads": True,
         }
         # Auth handshake: tells the UI whether to show a login and which
         # Supabase project to sign in against (public values only).
@@ -68,10 +68,8 @@ def build_router(
         return {
             "error_code": "daemon_retired",
             "message": (
-                "The local thin-pipe daemon path was removed in plugin 0.0010; "
-                "the stdio MCP proxy now performs local file work itself and "
-                "dials MERV_CONTROL_URL. Stop this daemon and "
-                "upgrade the merv package."
+                "The local thin-pipe daemon path was removed in plugin 0.0010. "
+                "Stop this daemon and upgrade the merv package."
             ),
         }
 

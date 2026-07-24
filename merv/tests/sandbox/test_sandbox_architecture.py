@@ -28,10 +28,8 @@ FACADE_INTERNALS = {
     "store",
     "storage_enabled",
     "storage_hint",
-    "tasks",
     "transcript_cache",
     "request_wait_seconds",
-    "worker",
 }
 
 

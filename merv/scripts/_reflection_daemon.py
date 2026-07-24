@@ -5,8 +5,7 @@ scripts/_feed_demo_server.py) backed by the in-memory FakeSandboxBackend in
 *bundled-hardware selection mode*, so an agent experiences the
 needs_selection / sandbox.options menu without provisioning a real, paid VM.
 State lives in a private --state-dir; the user's live brain and its :8787
-port are never touched. The brain is repo-blind — there is no repo_root here;
-checkout-local work belongs to the merv-mcp data plane.
+port are never touched. The brain is repo-blind — there is no repo_root here.
 
 Usage:
     python3 scripts/_reflection_daemon.py --state-dir /tmp/merv-reflection --port 9911

@@ -48,7 +48,7 @@ class ControlAppTest(unittest.TestCase):
     def test_control_app_records_scoped_activity_without_local_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -114,7 +114,7 @@ class ControlAppTest(unittest.TestCase):
     def test_hosted_control_cors_allows_authorized_ui_requests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -163,7 +163,7 @@ class ControlAppTest(unittest.TestCase):
         # this must assert on the actual gated GET, not just the preflight.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
@@ -200,7 +200,7 @@ class ControlAppTest(unittest.TestCase):
             root = Path(tmp)
             env = _mounted_mgmt_key_env(root)
             key_path = Path(env[MGMT_KEY_PATH_ENV_VAR])
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root / "staging",
                 env=env,
                 execution_backend=FakeSandboxBackend(),
@@ -234,36 +234,10 @@ class ControlAppTest(unittest.TestCase):
                 )
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_ignores_legacy_task_result_timeout_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            app, _queue = build_control_app(
-                repo_root=root,
-                env={
-                    **_mounted_mgmt_key_env(root),
-                    "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "2.5",
-                },
-                execution_backend=FakeSandboxBackend(),
-            )
-            self.addCleanup(app.shutdown)
-            self.assertEqual(app.sandboxes.tasks.history, [])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            app, _queue = build_control_app(
-                repo_root=root,
-                env={
-                    **_mounted_mgmt_key_env(root),
-                    "RESEARCH_PLUGIN_TASK_RESULT_TIMEOUT": "bad",
-                },
-                execution_backend=FakeSandboxBackend(),
-            )
-            self.addCleanup(app.shutdown)
-
     def test_control_app_reads_mlflow_from_injected_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env={
                     **_mounted_mgmt_key_env(root),
@@ -337,7 +311,7 @@ class ControlAppTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app, _queue = build_control_app(
+            app = build_control_app(
                 repo_root=root,
                 env={
                     **_mounted_mgmt_key_env(root),
@@ -403,7 +377,7 @@ class ControlAppTest(unittest.TestCase):
                     return_value=blobs,
                 ) as blob_factory,
             ):
-                app, _queue = build_control_app(
+                app = build_control_app(
                     repo_root=None,
                     env=env,
                     execution_backend=FakeSandboxBackend(),
@@ -526,28 +500,24 @@ class ControlAppTest(unittest.TestCase):
             )
             self.assertEqual(old_proxy.status_code, 426, old_proxy.text)
 
-            acme_project = server.app.http.projects.create(
-                name="Acme Hosted", tenant_id="acme"
-            )
-            # A data-plane submission route stays reachable on the private
-            # surface (400 = authorization admitted, domain validation ran).
+            # The retired data-plane submission route is absent.
             data_plane_write = client.post(
                 "/api/data-plane/feed/validate-post",
                 json={
-                    "project_id": acme_project["id"],
+                    "project_id": "proj_retired",
                     "handle": "main",
                     "text": "control-surface probe",
                 },
             )
-            self.assertEqual(data_plane_write.status_code, 400, data_plane_write.text)
-            self.assertIn("not registered", data_plane_write.text)
+            self.assertEqual(data_plane_write.status_code, 404, data_plane_write.text)
 
             meta = client.get("/api/meta")
             self.assertEqual(meta.status_code, 200, meta.text)
             body = meta.json()
             self.assertEqual(body["mode"], "control")
             self.assertTrue(body["capabilities"]["hosted_control"])
-            self.assertFalse(body["capabilities"]["local_data_plane_http"])
+            self.assertTrue(body["capabilities"]["mcp"])
+            self.assertTrue(body["capabilities"]["token_uploads"])
 
             preflight = client.options(
                 "/api/projects",

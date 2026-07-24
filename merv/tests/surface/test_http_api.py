@@ -13,7 +13,7 @@ from tests.support.brain import TestBrain, upload_token
 from merv.brain.mlflow import CentralMlflowService
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.proxy.time_utils import now_iso
+from merv.brain.kernel.utils import now_iso
 
 
 class ResearchPluginHttpApiTest(unittest.TestCase):

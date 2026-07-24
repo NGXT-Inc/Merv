@@ -79,13 +79,13 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _build(self, *, alive_ids: tuple[str, ...] = ()):
-        app, channel = build_control_app(
+        app = build_control_app(
             repo_root=self.staging,
             env=_mounted_mgmt_key_env(self.staging),
             execution_backend=_reaper_capable_backend(alive_ids=alive_ids),
         )
         self._apps.append(app)
-        return app, channel
+        return app
 
     def _seed_expired_running_sandbox(self, app) -> tuple[str, str, str]:
         # Seed a running, already-expired sandbox row directly (the provision
@@ -116,7 +116,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         return project_id, exp_id, sandbox_uid
 
     def test_control_restart_resumes_reaping_of_running_rows(self) -> None:
-        first, _q = self._build()
+        first = self._build()
         project_id, _exp_id, sandbox_uid = self._seed_expired_running_sandbox(first)
         first.shutdown()
         self._apps.remove(first)
@@ -126,7 +126,7 @@ class ControlReaperRecoveryTest(unittest.TestCase):
         # the reaper, kicking one reap off-thread. The VM is still up
         # (alive_ids), so reconcile keeps the row running and the resumed reaper
         # reaps it on its expiry deadline.
-        restarted, _q2 = self._build(alive_ids=("sb-recovery",))
+        restarted = self._build(alive_ids=("sb-recovery",))
         # Reaping no longer mutates experiment status, so wait on the sandbox
         # row itself.
         self._await(

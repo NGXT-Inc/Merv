@@ -1,33 +1,24 @@
 from __future__ import annotations
 
 import io
-import os
-import sys
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from merv.client.cli import (
-    HOSTED_CONTROL_URL,
-    configure_client,
-    main,
-)
-from merv.brain.surface.config import (
+from merv.brain.surface.config import resolve_control_url
+from merv.shared.client_config import (
     CLIENT_CONFIG_ENV_VAR,
     CONTROL_URL_ENV_VAR,
     read_client_config,
-    resolve_control_url,
-    resolve_daemon_state_dir,
 )
-import merv.proxy.__main__ as mcp_entrypoint
-from merv.proxy.__main__ import _repo_is_linked
-from merv.proxy.project_links import ProjectLinks
+from merv.client.cli import HOSTED_CONTROL_URL, configure_client, main
 
 
 class ClientConfigTest(unittest.TestCase):
-    def test_configure_writes_machine_config(self) -> None:
+    def test_configure_writes_only_the_machine_control_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "client.json"
             config = configure_client(
@@ -35,133 +26,80 @@ class ClientConfigTest(unittest.TestCase):
                 control_url="https://control.example.test/",
             )
 
-            self.assertEqual(config["control_url"], "https://control.example.test")
-            self.assertTrue(config_path.exists())
+            self.assertEqual(config, {"control_url": "https://control.example.test"})
             self.assertEqual(
-                read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})["control_url"],
-                "https://control.example.test",
+                read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)}),
+                config,
             )
-            self.assertEqual(
-                resolve_daemon_state_dir({CLIENT_CONFIG_ENV_VAR: str(config_path)}).resolve(),
-                config_path.parent.resolve(),
-            )
-            self.assertEqual(
-                resolve_control_url({CLIENT_CONFIG_ENV_VAR: str(config_path)}),
-                "https://control.example.test",
-            )
+            self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
 
     def test_explicit_env_overrides_machine_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "client.json"
-            configured = configure_client(
+            configure_client(
                 config_path=config_path,
                 control_url="https://configured.example.test",
             )
-
             env = {
                 CLIENT_CONFIG_ENV_VAR: str(config_path),
                 CONTROL_URL_ENV_VAR: "https://override.example.test",
             }
             self.assertEqual(resolve_control_url(env), "https://override.example.test")
-            self.assertEqual(configured["control_url"], "https://configured.example.test")
 
-    def test_configure_defaults_to_hosted_control_url(self) -> None:
+    def test_configure_defaults_to_hosted_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "client.json"
-            config = configure_client(
-                config_path=config_path,
-                control_url="",
-            )
-
-            self.assertEqual(config["control_url"], HOSTED_CONTROL_URL)
-            self.assertNotIn("daemon_url", config)
-            self.assertNotIn("daemon_secret_file", config)
-
-    def test_connect_configures_and_links_without_daemon_start(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "client.json"
-            repo = Path(tmp) / "repo"
-            repo.mkdir()
-            with patch("merv.client.cli.link_repo", return_value={"linked": True}) as link:
-                with redirect_stdout(io.StringIO()):
-                    code = main(
-                        [
-                            "--config",
-                            str(config_path),
-                            "connect",
-                            "--control-url",
-                            "https://control.example.test",
-                            "--project-id",
-                            "proj_123",
-                            "--repo",
-                            str(repo),
-                        ]
-                    )
-
+            with redirect_stdout(io.StringIO()):
+                code = main(["--config", str(config_path), "configure"])
             self.assertEqual(code, 0)
-            self.assertTrue(config_path.exists())
-            link.assert_called_once()
-            self.assertEqual(link.call_args.kwargs["project_id"], "proj_123")
-            self.assertEqual(link.call_args.kwargs["repo_root"], repo.resolve())
-
-    def test_mcp_hosted_config_is_scoped_to_linked_repos(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            linked = root / "linked"
-            unlinked = root / "unlinked"
-            linked.mkdir()
-            unlinked.mkdir()
-            links = ProjectLinks(db_path=root / "project_links.sqlite")
-            links.link(repo_root=str(linked), project_id="proj_123")
-
-            self.assertTrue(
-                _repo_is_linked(db_path=root / "project_links.sqlite", repo_root=linked)
-            )
-            self.assertFalse(
-                _repo_is_linked(db_path=root / "project_links.sqlite", repo_root=unlinked)
+            self.assertEqual(
+                json.loads(config_path.read_text()),
+                {"control_url": HOSTED_CONTROL_URL},
             )
 
-    def test_mcp_launcher_uses_machine_transport_config_for_unlinked_repo(self) -> None:
+    def test_env_prints_http_mcp_snippet_with_key_indirection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "client.json"
-            unlinked = root / "unlinked"
-            unlinked.mkdir()
+            config_path = Path(tmp) / "client.json"
             configure_client(
                 config_path=config_path,
-                control_url="https://control.example.test",
+                control_url="https://control.example.test/",
             )
-            captured = {}
-
-            class FakeProxy:
-                def __init__(self, *, config):
-                    captured["config"] = config
-
-                def serve(self) -> None:
-                    return None
-
-            env = {
-                CLIENT_CONFIG_ENV_VAR: str(config_path),
-                "RESEARCH_PLUGIN_CONTROL_URL": "",
-            }
-            argv = [
-                "merv-mcp",
-                "--repo",
-                str(unlinked),
-            ]
             with (
-                patch.dict(os.environ, env, clear=False),
-                patch.object(sys, "argv", argv),
-                patch.object(mcp_entrypoint, "HttpProxyMcpServer", FakeProxy),
+                patch.dict(
+                    "os.environ",
+                    {CONTROL_URL_ENV_VAR: "", "RESEARCH_PLUGIN_CONTROL_URL": ""},
+                    clear=False,
+                ),
+                redirect_stdout(io.StringIO()) as stdout,
             ):
-                self.assertEqual(mcp_entrypoint.main(), 0)
+                code = main(["--config", str(config_path), "env"])
 
-            proxy_config = captured["config"]
-            self.assertEqual(proxy_config.control_url, "https://control.example.test")
+            self.assertEqual(code, 0)
+            snippet = json.loads(stdout.getvalue())
             self.assertEqual(
-                proxy_config.project_links_path.resolve(),
-                (root / "project_links.sqlite").resolve(),
+                snippet,
+                {
+                    "mcpServers": {
+                        "merv": {
+                            "type": "http",
+                            "url": "https://control.example.test/mcp",
+                            "headers": {
+                                "Authorization": "Bearer ${MERV_MCP_KEY}",
+                            },
+                        },
+                    },
+                },
             )
+
+    def test_retired_commands_are_not_in_help(self) -> None:
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(io.StringIO()) as stdout:
+                main(["--help"])
+        help_text = stdout.getvalue()
+        for command in ("login", "link", "route", "links", "unlink", "connect"):
+            self.assertNotIn(command, help_text)
+        self.assertIn("configure", help_text)
+        self.assertIn("env", help_text)
 
 
 if __name__ == "__main__":

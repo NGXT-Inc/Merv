@@ -119,7 +119,7 @@ class BrainCompositionLayoutTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def _build(self):
-        app, _queue = control_mode.build_control_app(
+        app = control_mode.build_control_app(
             repo_root=self.root,
             env=_mounted_mgmt_key_env(self.root),
             execution_backend=FakeSandboxBackend(),

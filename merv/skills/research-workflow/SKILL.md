@@ -119,34 +119,28 @@ durable object storage instead of into the repo.
 
 ## Workflow
 
-1. Call `project` with `action: "current"` first. In project-local MCP this
-   returns the project for the current folder, or `exists: false` if the folder
-   does not have a project yet. If `exists` is false, do not invent a
-   placeholder project. Ask the user whether to link an existing project (they
-   give its project id) or start a new one (they give a name and short summary),
-   unless the current user request already provided that information, then call
-   `project` with `action: "connect"` — it validates or creates the project and
-   links this folder to it. A keyed/cloud agent is already bound to the project
-   encoded by its key: it must not call `project` with `action: "connect"`
-   (keyed connect is rejected). If `exists` is true, `current` returns the bound
-   project identity. When you need the full project picture — every claim
+1. Call `project` with `action: "current"` first. Your key binds one immutable
+   project, and `current` returns that bound project — its id is the `project.id`
+   field of the result. Learn that id here once, then pass it as `project_id`
+   explicitly on every subsequent project-scoped tool. When you need the full project picture — every claim
    including settled or abandoned ones, every experiment including terminal
    ones — call `project` with `action: "overview"` rather than expecting an
    `at_a_glance` block from `current` or inferring state from
    `workflow.status_and_next`'s active-only view.
-2. Ask MCP for `workflow.status_and_next(experiment_id?)` before acting.
+2. Ask MCP for `workflow.status_and_next(project_id, experiment_id?)` before
+   acting.
 3. Identify the claim or experiment being worked on. Before creating a new
    claim, check `project` `action: "overview"` so you do not recreate a
    settled or abandoned one; before creating an experiment, use overview to see
    the siblings (name the contrast with them, and do not recreate a dead one).
 4. Follow MCP's `next_action`, allowed actions, blocked actions, and gate state.
 5. Use MCP for all claim, experiment, artifact, review, and workflow mutations.
-6. Do not invent or pass project scope to normal agent-facing tools. Their
-   schemas hide `project_id`: the local proxy injects the project linked to the
-   checkout, while a keyed/cloud caller is bound to the project encoded by its
-   key. The merged `project` tool accepts `action: "connect"` only for local
-   checkout linking; keyed/cloud agents never call it. `current` and `overview`
-   take no agent-supplied scope in either mode.
+6. Pass `project_id` explicitly on every project-scoped tool — the value you
+   learned from `project current`. The gateway requires it and enforces that it
+   equals the key's bound project: omitting it raises `project_id is required`,
+   and a mismatched id is rejected. The `project` tool is the exception — its
+   `current` and `overview` actions resolve the bound project from the key and
+   take no `project_id` argument.
 7. Edit local files only for implementation, notes, plans, configs, and results.
 8. Run lightweight commands locally when safe.
 9. For quantitative ML work, follow Quantitative observability whether running
@@ -164,11 +158,9 @@ durable object storage instead of into the repo.
 14. Propose conclusions or claim updates only after required artifacts and reviews exist.
 
 If conversation memory is unclear, call `project` with `action: "current"`
-again. If `exists` is true, ask MCP for `workflow.status_and_next(experiment_id?)`;
-if `exists` is false in project-local MCP, ask the user what project to link or
-create before calling `project` with `action: "connect"` unless they already
-supplied that information. A keyed/cloud caller does not use `connect`; its
-project comes from its key. Do not reconstruct workflow state from memory.
+again to re-learn the bound project and its id, then ask MCP for
+`workflow.status_and_next(project_id, experiment_id?)`. Do not reconstruct
+workflow state from memory.
 
 ## Quantitative observability
 
@@ -177,8 +169,9 @@ where metrics drive the conclusion — use MLflow for params, metrics, and
 artifacts, and save compact plot/table evidence under the experiment folder.
 Do not require MLflow for qualitative experiments, literature work, code-only
 probes, or planning tasks.
-Before a sandbox or local run, call `mlflow.context` with `experiment_id` or use
-the `mlflow` block returned by `experiment.transition(start_running)`:
+Before a sandbox or local run, call `mlflow.context` with `project_id` and
+`experiment_id`, or use the `mlflow` block returned by
+`experiment.transition(start_running)`:
 
 ```sh
 export MLFLOW_TRACKING_URI="<from mlflow.context.env>"
@@ -278,9 +271,9 @@ Consequences:
 
 Expensive or isolated work can run in a **cloud sandbox** that you drive directly over
 SSH. Once the experiment is `ready_to_run` (or already `running`), generate or
-select a caller-owned SSH keypair and call `sandbox.request(experiment_id?,
-instance_type?, region?, gpu?, cpu?, memory?, time_limit?, public_key,
-additional?)`, passing only the single-line OpenSSH public key. Keep the private
+select a caller-owned SSH keypair and call `sandbox.request(project_id,
+experiment_id?, instance_type?, region?, gpu?, cpu?, memory?, time_limit?,
+public_key, additional?)`, passing only the single-line OpenSSH public key. Keep the private
 key local. Follow the returned `hint`; `sandbox.request`/`sandbox.get` are the
 source of truth for provider selection, polling, expiry, SSH facts, and the
 remote work folder. A sandbox can also be created unattached and addressed by
@@ -296,8 +289,8 @@ loop.
 
 When `status` is `running`, construct the SSH invocation from the returned
 `ssh.host`, `ssh.port`, and `ssh.user` facts plus the caller-owned private key.
-Some local enrichments may also return `ssh.command`, `ssh.raw_command`, or
-`ssh.key_path` conveniences, but the split proxy does not guarantee them.
+Some sandbox responses may also return `ssh.command`, `ssh.raw_command`, or
+`ssh.key_path` conveniences, but the brain/sandbox path does not guarantee them.
 
 **Anything expected to run longer than ~5 minutes goes through `merv_run`** —
 never babysit a long command over a foreground SSH channel or poll the
@@ -305,7 +298,8 @@ transcript for it. Launch it as
 `ssh ... 'merv_run <label> -- <command>'` (e.g. `merv_run seed0 -- python train.py
 --seed 0`): the run detaches, survives disconnects, logs to
 `.runs/<label>/log.txt`, and writes an `exit_code` sentinel when it finishes.
-Then either long-poll `sandbox.runs(wait_seconds=...)` within the session (one
+Then either long-poll `sandbox.runs(project_id, experiment_id, wait_seconds=...)`
+within the session (one
 slow call instead of N transcript polls; keep `wait_seconds<=45` unless your
 client's tool timeout allows more), or simply end the turn and call
 `sandbox.runs` when next attending the experiment. Every sandbox.* response
@@ -313,18 +307,19 @@ carries a compact `runs` line while runs exist. Labels are one-shot — pick a
 new label per launch. Finished-run receipts survive box death, but logs and
 outputs do not: pull what you need before release/expiry.
 
-Use `sandbox.terminal(experiment_id)` to inspect transcript output
+Use `sandbox.terminal(project_id, experiment_id)` to inspect transcript output
 and the structured `last_command` status before re-running anything long. If
 `command_status_stale` is true, the transcript read failed and `last_command` is
 the last successful snapshot, which is still useful for recovery decisions.
 If the sandbox died, expired, or the command was interrupted by infrastructure
 while the approved plan still stands, call
-`experiment.transition(transition="retry_running", evidence={...})` before
-requesting or attaching the replacement sandbox. This keeps the same attempt and
+`experiment.transition(project_id, experiment_id, transition="retry_running", evidence={...})`
+before requesting or attaching the replacement sandbox. This keeps the same attempt and
 records why execution is being rerun; use a planned retry only when the design
 itself needs to change. The transition response carries the MLflow run to use:
 a still-open run is resumed in place, while one you already finalized (for
-example with `mlflow.finalize_run(status="FAILED")` after the crash) is
+example with `mlflow.finalize_run(project_id, experiment_id, status="FAILED")`
+after the crash) is
 replaced by a fresh run — always take `MLFLOW_RUN_ID` from the retry response
 rather than reusing an old value.
 
@@ -364,11 +359,15 @@ Prefer the minimal MCP shape:
 
 ```json
 {
+  "project_id": "proj_...",
   "name": "lora-rank-sweep",
   "intent": "One concise statement of what the experiment will test.",
   "tested_claim_ids": ["claim_..."]
 }
 ```
+
+`project_id` is the id you learned from `project current` (the result's
+`project.id`); it is required here as on every project-scoped tool.
 
 `name` is **required**: a short, folder-safe name (letters, digits, `.`, `_`,
 `-`; max 48 characters) that becomes the experiment folder
@@ -521,8 +520,9 @@ To submit a gated document or result file:
 - write the file locally FIRST (if the experiment ran in a sandbox, pull
   retained files off the box with `sandbox.pull_outputs` first; uploads read
   local files and cannot reach remote sandbox paths)
-- call `artifact.submit {target_type, target_id, role, path}` with the file's
-  relative path — pass `lens_id` when the role is `reflection_lens_doc` — and
+- call `artifact.submit {project_id, target_type, target_id, role, path}` with
+  the file's relative path — pass `lens_id` when the role is
+  `reflection_lens_doc` — and
   run the returned one-line upload command **verbatim** (one-time token,
   expires in ~15 min)
 - for markdown with relative image links, the upload response returns one

@@ -32,7 +32,6 @@ from merv.brain.surface.tools.contracts import (
     TOOL_MANIFEST,
     TOOL_PLANE_REGISTRY,
     available_tool_names,
-    static_tool_catalog,
     tool_plane,
 )
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
@@ -116,14 +115,9 @@ class ToolContractRegistryTest(unittest.TestCase):
         self.assertFalse(control & data)
         self.assertFalse(data)
 
-    def test_static_catalog_matches_app_list_tools(self) -> None:
-        # The static catalog is what the router serves without instantiating an
-        # app; it must be indistinguishable from a live app's listing.
-        self.assertEqual(static_tool_catalog(), self.app.list_tools())
-
     def test_plane_registry_classifies_every_tool(self) -> None:
         self.assertEqual(set(TOOL_PLANE_REGISTRY), set(TOOL_CONTRACTS))
-        self.assertLessEqual(set(TOOL_PLANE_REGISTRY.values()), {"control", "data"})
+        self.assertEqual(set(TOOL_PLANE_REGISTRY.values()), {"control"})
 
     def test_manifest_owns_all_routing_and_handler_metadata(self) -> None:
         self.assertIs(TOOL_CONTRACTS, TOOL_MANIFEST)
@@ -134,20 +128,13 @@ class ToolContractRegistryTest(unittest.TestCase):
                 {"linked-project", "caller-selected", "capability", "none"},
                 name,
             )
-            self.assertIn(
-                tool.execution_strategy,
-                {"control", "local", "control-plus-local-enrichment", "local-orchestration"},
-                name,
-            )
             self.assertTrue(tool.handler_identity, name)
             self.assertLessEqual(set(tool.feature_requirements), {"storage"}, name)
-        self.assertEqual(TOOL_MANIFEST["project"].execution_strategy, "local-orchestration")
         self.assertEqual(TOOL_MANIFEST["project"].plane, "control")
 
     def test_hidden_tools_stay_in_catalog_with_hidden_flag(self) -> None:
-        # UI/proxy-internal tools remain dispatchable and keep their catalog
-        # entry (the proxy routes off plane/schema) but carry hidden=True so
-        # the proxy's tools/list drops them from the agent surface.
+        # Internal tools remain dispatchable for trusted in-process callers,
+        # while the HTTP MCP catalog hides them from agents.
         self.assertLessEqual(MCP_HIDDEN_TOOL_NAMES, set(TOOL_CONTRACTS))
         self.assertIn("project.get", MCP_HIDDEN_TOOL_NAMES)
         self.assertIn("project.update", MCP_HIDDEN_TOOL_NAMES)
@@ -166,14 +153,11 @@ class ToolContractRegistryTest(unittest.TestCase):
         ):
             self.assertIn(reader, MCP_HIDDEN_TOOL_NAMES, reader)
         self.assertNotIn("sandbox.list", MCP_HIDDEN_TOOL_NAMES)
-        # storage_enabled=True so the hidden storage primitives appear in the
-        # catalog (setUp clears the storage provider env var).
-        catalog = {tool["name"]: tool for tool in static_tool_catalog(storage_enabled=True)}
         for name in MCP_HIDDEN_TOOL_NAMES:
-            self.assertTrue(catalog[name].get("hidden"), name)
-        for name, tool in catalog.items():
+            self.assertEqual(TOOL_CONTRACTS[name].visibility, "internal", name)
+        for name, tool in TOOL_CONTRACTS.items():
             if name not in MCP_HIDDEN_TOOL_NAMES:
-                self.assertNotIn("hidden", tool, name)
+                self.assertEqual(tool.visibility, "public", name)
 
     def test_sandbox_tool_descriptions_carry_lifecycle_guidance(self) -> None:
         tools = {tool["name"]: tool for tool in self.app.list_tools()}
@@ -251,12 +235,11 @@ class ToolContractRegistryTest(unittest.TestCase):
             self.assertIn(name, MCP_HIDDEN_TOOL_NAMES, name)
             self.assertIn(name, STORAGE_TOOL_NAMES, name)
             self.assertIn(name, TOOL_CONTRACTS, name)
-        catalog = {tool["name"]: tool for tool in static_tool_catalog(storage_enabled=True)}
-        self.assertTrue(catalog["storage.put_object"].get("hidden"))
-        self.assertTrue(catalog["storage.complete_upload"].get("hidden"))
+        self.assertEqual(TOOL_CONTRACTS["storage.put_object"].visibility, "internal")
+        self.assertEqual(TOOL_CONTRACTS["storage.complete_upload"].visibility, "internal")
         # The merged tools stay visible.
-        self.assertNotIn("hidden", catalog["storage.find"])
-        self.assertNotIn("hidden", catalog["storage.object"])
+        self.assertEqual(TOOL_CONTRACTS["storage.find"].visibility, "public")
+        self.assertEqual(TOOL_CONTRACTS["storage.object"].visibility, "public")
 
     def test_artifact_tools_are_control_plane(self) -> None:
         self.assertIs(TOOL_CONTRACTS["artifact.submit"].input_model, ArtifactSubmitInput)
@@ -341,18 +324,6 @@ class ToolContractRegistryTest(unittest.TestCase):
             MlflowFinalizeRunInput,
         )
         self.assertEqual(tool_plane("mlflow.finalize_run"), "control")
-
-
-class StaticCatalogNoSideEffectTest(unittest.TestCase):
-    def test_static_tool_listing_creates_no_template_repo(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch.dict(os.environ, {STORAGE_PROVIDER_ENV_VAR: ""}):
-                tools = static_tool_catalog(storage_enabled=False)
-            self.assertEqual(
-                {tool["name"] for tool in tools},
-                available_tool_names(storage_enabled=False),
-            )
-            self.assertFalse((Path(tmp) / "_tool_schema").exists())
 
 
 class ToolDispatcherTest(unittest.TestCase):

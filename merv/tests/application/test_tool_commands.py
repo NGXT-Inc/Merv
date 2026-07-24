@@ -37,7 +37,6 @@ class ControlToolOperationsTest(unittest.TestCase):
             project_id="ignored",
             name="Project",
             summary="Summary",
-            overwrite=True,
             tenant_id="tenant_1",
             user_id="user_1",
         )
@@ -117,12 +116,6 @@ class ControlToolOperationsTest(unittest.TestCase):
         self.assertEqual(result["project"]["id"], "proj_bound")
         self.projects.get.assert_called_once_with(project_id="proj_bound")
         self.claims.list_claims.assert_called_once_with(project_id="proj_bound")
-
-    def test_project_connect_is_rejected_for_a_keyed_caller(self) -> None:
-        with self.assertRaises(ValidationError) as raised:
-            self.operations.project(action="connect", project_id="proj_1")
-
-        self.assertIn("does not apply to a keyed agent", str(raised.exception))
 
     def test_storage_find_preserves_resolve_and_list_modes(self) -> None:
         self.storage.resolve.return_value = {"object": {"id": "so_1"}}

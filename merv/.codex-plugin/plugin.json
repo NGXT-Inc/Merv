@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "Merv",
     "shortDescription": "Project-scoped claims, experiments, resources, reviews, and cloud sandboxes",
-    "longDescription": "A research-state plug-in where Codex operates through skills and a checkout-local MCP proxy. A brain running on localhost or as a hosted service owns durable records, workflow policy, review gates, pinned submissions, and cloud sandbox lifecycle; the proxy owns checkout IO, folder links, and explicit output pulls. Agents use project(action=\"current\") for folder context, pull retained sandbox outputs with sandbox.pull_outputs, and register repo artifacts with resource.register.",
+    "longDescription": "A research-state plug-in where Codex operates through skills and the Merv HTTP MCP endpoint. A brain running locally or as a hosted service owns durable records, workflow policy, review gates, submissions, and cloud sandbox lifecycle. Every client authenticates with a project-bound MERV_MCP_KEY.",
     "developerName": "RapidReview",
     "category": "Productivity",
     "capabilities": [
@@ -25,8 +25,8 @@
     ],
     "defaultPrompt": [
       "Use Merv. Start with project(action=\"current\"), then workflow.status_and_next.",
-      "Use Merv to run this experiment in a sandbox, pull selected retained outputs with sandbox.pull_outputs, and register the local result files.",
-      "Use Merv to register and associate the relevant resources, review the experiment, and update claims."
+      "Use Merv to run this experiment in a sandbox, retain selected outputs, and submit the result files.",
+      "Use Merv to associate the relevant artifacts, review the experiment, and update claims."
     ],
     "composerIcon": "./assets/icon.svg"
   }

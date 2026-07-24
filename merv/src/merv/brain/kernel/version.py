@@ -1,18 +1,15 @@
 """Version + client-compatibility floors.
 
-The control plane publishes its own version and the MINIMUM MCP proxy version
-it will serve at ``GET /api/meta``; clients stamp their version on every request
-in ``X-RP-Client-Version``; the control plane rejects below-floor clients with
-an actionable upgrade error (control mode only — local mode never enforces
-this).
+The server publishes its own version and the retained minimum legacy-proxy
+version at ``GET /api/meta``. Versioned clients stamp requests with
+``X-RP-Client-Version``; hosted mode rejects explicitly below-floor clients
+with an actionable upgrade error.
 
 Floors are plain constants bumped by hand when a wire change makes an older
 client unsafe to serve. The floor moves rarely; it exists so a breaking change has
-a refusal mechanism instead of a confusing partial failure. The header is the
-client-version channel for stdio proxy /mcp + /api forwards.
-
-Kept tiny and dependency-free so the stdlib-only proxy could read it if it ever
-needs to (it currently only SENDS its version, sourced from its own package).
+a refusal mechanism instead of a confusing partial failure. The compatibility
+floor remains during the retirement telemetry window for already-shipped
+proxies.
 """
 
 from __future__ import annotations
@@ -33,6 +30,10 @@ SERVER_VERSION = __version__
 # 0.0013 fences pre-key-era proxies (Checkpoint 1): older stdio clients predate
 # the artifact-submit + mk_-key surface and get the clean 426 "upgrade" error.
 MIN_PROXY_VERSION = "0.0013"
+
+# Bump only when the agent-facing MCP catalog changes incompatibly. Unlike the
+# retired proxy catalogs, this is a deployment-drift signal, not a file digest.
+MCP_CATALOG_VERSION = "2026-07-24"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -60,4 +61,5 @@ def meta() -> dict[str, str]:
     return {
         "server_version": SERVER_VERSION,
         "min_proxy_version": MIN_PROXY_VERSION,
+        "catalog_version": MCP_CATALOG_VERSION,
     }

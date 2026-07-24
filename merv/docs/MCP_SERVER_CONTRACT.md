@@ -7,34 +7,36 @@ the active deployment.
 
 ## Authority and topology
 
-The brain is the authority for durable research state and workflow policy. The
-agent client launches a local stdio MCP proxy that:
+The brain is the authority for durable research state and workflow policy. Every
+agent client — local Claude Code, cloud Codex, Replit, browser-driven — connects
+the same way: directly to the brain's stateless `POST /mcp` HTTP endpoint,
+authenticated by a project-scoped key sent as `Authorization: Bearer <key>`. The
+committed config files (`.mcp.json`, `.mcp.codex.json`, `mcp.json`) use
+`type:"http"`, `url:"https://experiments.rapidreview.io/mcp"`, and
+`headers.Authorization:"Bearer ${MERV_MCP_KEY}"`; the key is read from the
+`MERV_MCP_KEY` env var and is never inlined into a committed file.
 
-- resolves the research checkout;
-- maps that checkout to a brain project id;
-- merges the brain and local tool catalogs;
-- injects project scope into project-scoped calls;
-- forwards control tools to one brain URL;
-- executes checkout-sensitive data tools locally.
-
-The proxy never forwards `repo_root`. Brain services and HTTP routes receive an
-explicit `project_id`; the proxy hides that field from agent schemas when the
-machine-local checkout link supplies it.
+A key binds one immutable project. The gateway does not inject or hide
+`project_id`: agents pass `project_id` explicitly on every project-scoped tool,
+and the gateway enforces that it equals the key-bound project — a mismatched
+`project_id` is rejected, and omitting it raises `project_id is required`. Agents
+never send `repo_root`; the brain never receives a checkout root.
 
 The normal session bootstrap is:
 
 ```text
-project(action="current")
-project(action="connect", project_id=... | name=..., summary=...)?
-workflow.status_and_next(experiment_id?)
+project(action="current")            # returns the bound project; its id is project.id
+workflow.status_and_next(project_id, experiment_id?)
 ```
 
-`project(action="current")` returns the linked project or `exists: false`.
-`action="connect"` is the only operation where a caller-selected project id is
-authoritative: the proxy validates the existing project, or creates one from
-`name` and `summary`, and then stores the local folder link. `action="overview"`
-reads every claim and experiment for the linked project. `action="create"`
-creates a project without linking the folder.
+`project(action="current")` is the one tool that resolves the project from the
+key without a `project_id` argument: it returns the bound project, whose id is
+the result's `project.id` field.
+Learn that id once, then pass it explicitly on every subsequent project-scoped
+tool. `action="overview"` returns the bound project's full claim and experiment
+history. The action enum is exactly `current | create | overview`;
+`action="create"` is forbidden to a project-bound key, because projects are
+created in the UI before a key is minted.
 
 ## Tool catalog
 
@@ -54,63 +56,65 @@ litreview.cite
 artifact.submit              artifact.find
 storage.find                 storage.object
 review.request               review.start               review.submit
-sandbox.options              sandbox.get
+sandbox.options              sandbox.get                 sandbox.list
 sandbox.release              sandbox.extend
 sandbox.runs                 sandbox.terminal
 feed.register                feed.list
 ```
 
-Since the no-dataplane transition there are no proxy-local data tools.
-`storage.submit`, `storage.fetch`, and `feed.post` are control tools that return
-a one-line command the agent runs to move bytes over a presigned URL;
+Every tool is a control tool served by the brain; the data-plane tool set is
+empty. `storage.submit`, `storage.fetch`, and `feed.post` are control tools that
+return a one-line command the agent runs to move bytes over a presigned URL;
 `sandbox.request`, `sandbox.attach`, and `sandbox.pull_outputs` are served by the
-brain. The proxy only forwards control tools and enriches `sandbox.get` locally.
+brain.
 
 Storage is optional. When no object store is configured, every `storage.*` tool
 is omitted instead of advertising an unavailable feature.
 
-These tools remain dispatchable for HTTP views or proxy composition but are
-hidden from agent `tools/list`:
+These tools remain dispatchable for HTTP views but are hidden from agent
+`tools/list`:
 
 ```text
 project.get                  project.update              project.list
 claim.list                   experiment.list             reflection.list
 storage.put_object           storage.complete_upload
 review.status
-sandbox.list                 sandbox.health
+sandbox.health
 ```
 
-The proxy's checked-in local catalog is regenerated from the same contracts and
-tested byte-for-byte. If the brain is unreachable, `tools/list` can still expose
-the local half; control tools are unavailable until the brain responds.
+The manifest is built in code as `TOOL_MANIFEST` in
+`src/merv/brain/surface/tools/contracts.py` and exposed via `tools/list`; there is
+no checked-in catalog JSON file. Because every tool is brain-served, `tools/list`
+is unavailable until the brain responds.
 
 ## Project scope
 
-An unlinked checkout cannot call project-scoped tools. The proxy returns
-`project_not_linked` and instructs the agent to use `project(action="connect")`.
-Supplying an arbitrary `project_id` to another project-scoped tool does not
-switch projects: the proxy removes it and injects the linked id.
+The project is fixed by the bearer key, so a project-scoped call can never target
+another project. Agents pass the key-bound `project_id` on every project-scoped
+tool; supplying a different `project_id` does not switch projects — the gateway
+rejects it as outside the key's scope.
 
-Core services never infer an active project. Scope inference exists only in the
-proxy adapter.
+Core services never infer an active project. Scope enforcement exists only at the
+gateway.
 
 ## Artifact submissions
 
-`artifact.submit {target_type, target_id, role, path, lens_id?, title?}` is a
-control tool: the brain validates legality and workflow-state guards, mints a
-pending artifact with a one-time upload token, and returns
+`artifact.submit {project_id, target_type, target_id, role, path, lens_id?, title?}`
+is a control tool: the brain validates legality and workflow-state guards, mints
+a pending artifact with a one-time upload token, and returns
 `{artifact_id, run}` where `run` is a ready-to-run
 `curl -sf -T <path> '<base>/api/artifacts/u/<token>'` line the agent executes
 verbatim. The token-bearer PUT enforces the role byte cap, pins the bytes, and
 (for gated markdown) returns one follow-up `run` line per relative image link.
-Bytes travel over the agent's own shell, never through the proxy or MCP.
+Bytes travel over the agent's own shell, never through the brain or MCP.
 
 Workflow lints and reviews read the submitted bytes, never a later live edit.
 There is no background checkout scan. Resubmit a changed file to replace the
 slot (a new artifact id is minted, invalidating review snapshots).
 
-`artifact.find(artifact_id=...)` resolves one artifact; without `artifact_id`,
-it lists the project's complete artifacts filtered by target and role.
+`artifact.find(project_id, artifact_id=...)` resolves one artifact; without
+`artifact_id`, it lists the project's complete artifacts filtered by target and
+role.
 
 ## Experiment workflow
 
@@ -186,10 +190,13 @@ use their matching reviewer roles.
 The current protocol is:
 
 ```text
-review.request(target_type, target_id, role, reason?, producer_session_id?)
+review.request(project_id, target_type, target_id, role, reason?, producer_session_id?)
 review.start(review_request_id, reviewer_capability, caller_session_id, declared_agent?)
 review.submit(review_session_id, verdict, synopsis, return_to?, notes?, findings?, evidence?)
 ```
+
+`review.start` and `review.submit` are capability-addressed and take no
+`project_id`.
 
 For the three workflow reviewer roles, `review.request` validates the active
 gate. `human` and `automated_check` are gate-exempt and may be requested outside
@@ -227,7 +234,9 @@ multiple active sandboxes.
 and authorizes the public key; caller private-key material never enters brain
 state. The response and `sandbox.get` expose SSH facts such as host, port, and
 user. The agent client constructs and runs SSH commands. `sandbox.pull_outputs`
-requires a caller-supplied `key_path` when pulling retained files.
+takes no key argument: it returns a filled rsync command with a `<key_path>`
+placeholder the caller substitutes with its own private-key path when running
+the command.
 
 The sandbox workdir is machine-owned, independent of experiment attachment, and
 defaults under `/workspace`; provider-specific `MERV_*_WORKDIR`
@@ -253,9 +262,10 @@ or expiry destroys anything not explicitly retained.
 
 ## MLflow, storage, and feed
 
-- `mlflow.context(experiment_id?)` returns the centralized tracking endpoint,
-  namespace, and environment for direct MLflow clients.
-- `mlflow.finalize_run` closes or refreshes the plugin-associated run.
+- `mlflow.context(project_id, experiment_id?)` returns the centralized tracking
+  endpoint, namespace, and environment for direct MLflow clients.
+- `mlflow.finalize_run(project_id, experiment_id)` closes or refreshes the
+  plugin-associated run.
 - `storage.submit` and `storage.fetch` return a one-line command the agent runs
   to transfer bytes over a presigned URL; `storage.find` and `storage.object`
   operate on the brain's ledger.
@@ -265,7 +275,7 @@ or expiry destroys anything not explicitly retained.
 ## HTTP transport and errors
 
 The brain exposes `/mcp/tools` and `/mcp/call`, plus the stateless `/mcp`
-endpoint remote agents use. It rejects `repo_root` context. Byte transfers no
+endpoint every agent client connects to. It rejects `repo_root` context. Byte transfers no
 longer ride MCP: a tool returns a command that hits a one-time token endpoint
 (`/api/artifacts/*`, `/api/storage/u/*`, `/api/feed/u/*`) directly.
 
@@ -287,9 +297,8 @@ The brain selects its record and blob adapters at composition time:
 - control preset: Postgres and an S3-compatible submitted-byte blob store;
 - optional heavy-object storage: a separate S3-compatible bucket.
 
-The checkout never contains the brain database. The proxy owns only
-machine-local routing state in `project_links.sqlite`; project files remain
-ordinary checkout files until explicitly submitted.
+The checkout never contains the brain database. There is no machine-local routing
+state; project files remain ordinary checkout files until explicitly submitted.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md),
 [WORKFLOW_AND_REVIEW.md](WORKFLOW_AND_REVIEW.md), and

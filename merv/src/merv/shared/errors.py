@@ -1,4 +1,4 @@
-"""Dependency-free error types shared by the brain and stdio proxy."""
+"""Dependency-free error types shared across Merv layers."""
 
 from __future__ import annotations
 
@@ -31,12 +31,6 @@ class WorkflowError(ResearchPluginError):
 
 
 class ContentUnavailableError(ResearchPluginError):
-    """A file's bytes are not reachable from the current plane."""
+    """A file's bytes are not available from the current deployment."""
 
     error_code = "content_unavailable"
-
-
-class DataPlaneRequiredError(ResearchPluginError):
-    """The requested mutation must be performed by the local data plane."""
-
-    error_code = "data_plane_required"

@@ -15,7 +15,6 @@ from tests.paths import (
     FEED_ROOT,
     PLUGIN_ROOT,
     PORTS_ROOT,
-    PROXY_ROOT,
     RESEARCH_CORE_ROOT,
     SERVICES_ROOT,
     SURFACE_ROOT,
@@ -33,7 +32,6 @@ RESEARCH_CORE_DOMAIN = RESEARCH_CORE / "domain"
 UI_SRC = PLUGIN_ROOT.parent / "research_state_ui" / "src"
 HTTP_TRANSPORT_MODULES = (
     SURFACE_ROOT / "transport" / "admin_http.py",
-    SURFACE_ROOT / "transport" / "data_plane_http.py",
     SURFACE_ROOT / "transport" / "feed_http.py",
     SURFACE_ROOT / "transport" / "http_api.py",
     SURFACE_ROOT / "transport" / "mcp_http.py",
@@ -510,9 +508,7 @@ class ServiceLayoutTest(unittest.TestCase):
             "mgmt_keys.py": {"pathlib", "typing"},
             "quota_admission.py": {"dataclasses", "typing"},
             "sandbox_lifecycle.py": {"datetime", "typing"},
-            "sandbox_worker.py": {"pathlib", "typing"},
             "reflection_writers.py": {"typing"},
-            "task_channel.py": {"typing"},
         }
         for name, allowed_imports in expected_imports.items():
             with self.subTest(module=name):
@@ -531,6 +527,8 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertFalse((PORTS_ROOT / "workflow_readers.py").exists())
         # The resource-observation port died with the resource system.
         self.assertFalse((PORTS_ROOT / "resource_records.py").exists())
+        self.assertFalse((PORTS_ROOT / "sandbox_worker.py").exists())
+        self.assertFalse((PORTS_ROOT / "task_channel.py").exists())
         reflection_writer_path = PORTS_ROOT / "reflection_writers.py"
         self.assertEqual(
             _class_method_names(reflection_writer_path, "ReflectionClaimWriter"),
@@ -774,22 +772,6 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("pathlib", source)
         self.assertNotIn("os.path", source)
 
-        repo_paths = PROXY_ROOT / "dataplane" / "repo_paths.py"
-        # merv.shared.project_dirs is the stdlib-only single owner
-        # of the checkout state-dir names the guard excludes.
-        self.assertEqual(
-            _import_module_names(repo_paths),
-            {
-                "pathlib",
-                "typing",
-                "merv.shared.errors",
-                "merv.shared.project_dirs",
-            },
-        )
-        repo_path_source = repo_paths.read_text(encoding="utf-8")
-        self.assertIn("def resolve_repo_path", repo_path_source)
-        self.assertIn("def repo_relative_path", repo_path_source)
-
     def test_kernel_error_reexports_preserve_shared_identity(self) -> None:
         from merv.brain.kernel import utils as kernel_utils
         from merv.shared import errors as shared_errors
@@ -801,7 +783,6 @@ class ServiceLayoutTest(unittest.TestCase):
             "ValidationError",
             "WorkflowError",
             "ContentUnavailableError",
-            "DataPlaneRequiredError",
         ):
             with self.subTest(error=name):
                 self.assertIs(getattr(kernel_utils, name), getattr(shared_errors, name))
@@ -1038,7 +1019,6 @@ class ServiceLayoutTest(unittest.TestCase):
         for field_name in (
             "restrict_cors",
             "hosted_control",
-            "allow_data_plane_http",
             "use_hosted_tool_policies",
         ):
             with self.subTest(field_name=field_name):
@@ -1160,36 +1140,18 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertIn("arguments must be an object", mcp_source)
         self.assertIn("context must be an object", mcp_source)
 
-    def test_control_data_plane_http_routes_are_lifted_out_of_main_factory(
-        self,
-    ) -> None:
+    def test_control_data_plane_http_routes_are_deleted(self) -> None:
         source = _api_app_source()
-        data_plane_source = (
-            SURFACE_ROOT / "transport" / "data_plane_http.py"
-        ).read_text(encoding="utf-8")
-
-        imports = _import_module_names(SURFACE_ROOT / "transport" / "data_plane_http.py")
-        self.assertNotIn("artifacts.facade", imports)
-        self.assertIn("feed.facade", imports)
-        self.assertNotIn("sandbox.facade", imports)
-        self.assertNotIn("feed.feed", imports)
-        self.assertIn("register_data_plane_routes(", source)
-        self.assertIn("authorize_data_plane_project", source)
-        self.assertNotIn("task_queue=", source)
-        self.assertNotIn("def _required_text", source)
-        self.assertNotIn("def _decode_b64_field", source)
-        self.assertNotIn("base64", source)
+        self.assertFalse(
+            (SURFACE_ROOT / "transport" / "data_plane_http.py").exists()
+        )
+        self.assertNotIn("register_data_plane_routes", source)
         for route in (
             '"/api/data-plane/feed/validate-post"',
             '"/api/data-plane/feed/post"',
         ):
             with self.subTest(route=route):
-                self.assertIn(route, data_plane_source)
                 self.assertNotIn(route, source)
-        self.assertNotIn('"/api/data-plane/sandboxes/request"', data_plane_source)
-        self.assertNotIn('"/api/data-plane/sandboxes/attach"', data_plane_source)
-        # The resource submission routes died with the resource system.
-        self.assertNotIn("/api/data-plane/resources/", data_plane_source)
 
     def test_transport_delegates_artifact_content_to_submissions(self) -> None:
         self.assertFalse((HTTP_API_PACKAGE / "resources.py").exists())

@@ -16,15 +16,11 @@ from unittest import mock
 from merv.shared.project_dirs import (
     LEGACY_PROJECT_STATE_DIR,
     PROJECT_STATE_DIR,
-    PROJECT_STATE_DIR_NAMES,
     ensure_project_state_dir,
     resolve_project_state_dir,
 )
 
-from merv.proxy.dataplane.repo_paths import repo_relative_path
 from merv.brain.kernel.state.activity import ActivityLogger
-from merv.brain.kernel.utils import ValidationError
-from merv.proxy.workspace import LocalWorkspace
 
 
 class ResolveProjectStateDirTest(unittest.TestCase):
@@ -75,7 +71,7 @@ class ResolveProjectStateDirTest(unittest.TestCase):
         self.assertEqual(state, legacy)
         self.assertEqual((legacy / ".gitignore").read_text(), "keys/\n")
 
-    def test_workspace_and_activity_log_route_through_the_resolver(self) -> None:
+    def test_activity_log_routes_through_the_resolver(self) -> None:
         for state_dir, prepare in (
             (PROJECT_STATE_DIR, lambda: None),
             (
@@ -88,13 +84,7 @@ class ResolveProjectStateDirTest(unittest.TestCase):
             ), tempfile.TemporaryDirectory() as tmp:
                 self.repo = Path(tmp)
                 prepare()
-                workspace = LocalWorkspace(repo_root=self.repo)
                 resolved = self.repo.resolve() / state_dir
-                self.assertEqual(workspace.research_dir, resolved)
-                self.assertEqual(
-                    workspace.sessions_dir(experiment_id="exp_1", sandbox_id="sb_1"),
-                    resolved / "sessions" / "exp_1" / "sb_1",
-                )
                 env = {
                     k: v
                     for k, v in os.environ.items()
@@ -109,23 +99,6 @@ class ResolveProjectStateDirTest(unittest.TestCase):
                 )
                 logger.emit(event_type="test.event", payload={})
                 self.assertTrue((self.repo / state_dir / "activity.jsonl").is_file())
-
-
-class ProjectStateDirExclusionTest(unittest.TestCase):
-    def test_repo_relative_path_rejects_both_names(self) -> None:
-        for state_dir in PROJECT_STATE_DIR_NAMES:
-            with self.subTest(state_dir=state_dir):
-                with self.assertRaises(ValidationError):
-                    repo_relative_path(path=f"{state_dir}/anything.txt")
-
-    def test_repo_relative_path_allows_lookalike_names(self) -> None:
-        # Only the exact first path part is excluded; superstring dirnames
-        # (the in-VM `.research_plugin_sessions` convention) pass through.
-        self.assertEqual(
-            repo_relative_path(path=".research_plugin_sessions/x.txt"),
-            ".research_plugin_sessions/x.txt",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

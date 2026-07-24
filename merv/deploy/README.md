@@ -9,17 +9,17 @@ The reference stack contains:
 
 | Service | Responsibility |
 |---|---|
-| `control` | FastAPI brain: research records, workflow gates, reviews, sandbox lifecycle, UI API, and private proxy submission routes |
+| `control` | FastAPI brain: research records, workflow gates, reviews, sandbox lifecycle, UI API, and token-authorized upload routes |
 | `postgres` | Research records and a separate MLflow database |
 | `minio` | Submitted-byte blobs, optional heavy-file storage, and MLflow artifacts |
 | `mlflow` | Central tracking server |
 | `mgmtkey` | Generates a development-only brain management SSH key |
 
-The MCP proxy still runs on each agent machine. It reads the checkout, validates
-and hashes files, uses the caller-provided SSH key path for explicit local
-transfers without minting or persisting that key, and sends
-only explicit metadata or bounded submitted bytes to the brain. The browser UI
-is deployed separately and talks directly to the brain.
+Each agent (local Claude Code, cloud Codex, Replit) connects directly to the
+brain's `POST /mcp` endpoint with an `Authorization: Bearer <key>` project key.
+There is no local MCP proxy on agent machines, and agents never send a checkout
+root; they send only explicit metadata or bounded submitted bytes to the brain.
+The browser UI is deployed separately and talks directly to the brain.
 
 ## Start the reference stack
 
@@ -53,9 +53,9 @@ the control container **record-only**:
 - sandbox provider credentials are empty, so provisioning is unavailable.
 
 Configure both before treating the stack as run-ready. Remote sandboxes must be
-able to reach the MLflow tracking URL. Heavy-storage presigned URLs are used by
-client-side MCP proxies (and the doctor), so they must be reachable from those
-clients; they do not need to be reachable from sandbox execution.
+able to reach the MLflow tracking URL. Heavy-storage presigned URLs are run by
+agent clients (and the doctor), so they must be reachable from those machines;
+they do not need to be reachable from sandbox execution.
 
 Run the active readiness sweep after a deploy or restart:
 
@@ -104,8 +104,8 @@ it differently:
 Set `MERV_REQUIRE_AGENT_MLFLOW=1` to reject startup without an agent
 tracking URL. Set `MERV_REQUIRE_SANDBOX_BACKEND=1` to reject startup
 when the selected provider is unhealthy. Provider credentials and the brain
-management key belong only in the hosted secret store; they are never shipped
-to the MCP proxy.
+management key belong only in the hosted secret store; they are never sent to
+agent clients.
 
 See `.env.example` for the supported variables.
 
@@ -133,15 +133,19 @@ is exposed under `/mlflow`, set
 `--static-prefix`. Route MLflow's tracking, artifact, UI, and `ajax-api` paths
 consistently. The Python brain itself does not read this variable.
 
-There is currently no end-user authentication or effective tenant isolation on
-the HTTP surface. CORS restrictions and the MCP client-version floor are not
-authentication. Keep the brain, MLflow, storage endpoints, and admin routes on
-a trusted operator network; do not expose the reference compose stack directly
-to the public internet.
+The reference compose stack ships with authentication off by default. Hosted
+control can enforce end-user authentication (set `MERV_REQUIRE_AUTH=1` with
+Supabase configuration), with `project_members` tenant isolation and
+project-scoped `mk_` keys (the gateway enforces that a key can only act on its
+bound project), but the reference stack leaves it disabled. CORS restrictions
+and the MCP client-version floor are not authentication. Keep the auth-off
+reference stack — the brain, MLflow, storage endpoints, and admin routes — on a
+trusted operator network; do not expose it directly to the public internet.
 
-The UI may call control/lifecycle routes, but checkout-local data-plane
-mutations remain private proxy routes. The brain never receives a checkout root
-and cannot serve arbitrary live checkout files.
+The UI may call control/lifecycle routes, but byte transfers — artifact,
+storage, and feed uploads, and sandbox output pulls — run agent-side over
+presigned or token URLs. The brain never receives a checkout root and cannot
+serve arbitrary live checkout files.
 
 ## Operations
 

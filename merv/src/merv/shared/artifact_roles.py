@@ -3,7 +3,7 @@
 The artifacts module owns what an artifact may be called (roles), what it may
 attach to (target types), and the per-role upload byte caps. This module is
 deliberately dependency-free so research_core gates, surface adapters, and the
-data plane can all share it without pulling services across feature boundaries.
+artifact upload path can share it without crossing feature boundaries.
 """
 
 from __future__ import annotations
