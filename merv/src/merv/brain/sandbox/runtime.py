@@ -69,6 +69,8 @@ def build_sandbox_runtime(
         ),
     )
     lifecycle.job_probe = provisioner.job_is_live
+    lifecycle.observe_runs = runs.final_observe
+    lifecycle.stamp_runs_observed = runs.mark_final_observed
     daemons = SandboxDaemons(
         repository=repository,
         backend=backend,

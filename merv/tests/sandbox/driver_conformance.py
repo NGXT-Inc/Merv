@@ -162,8 +162,11 @@ def exercise_offline_driver(case: TestCase, fixture: OfflineDriverFixture) -> No
     )
     fixture.set_runs(
         provisioned.sandbox_id,
-        '===MERV_RUN train\n{"label":"train","command":"python train.py"}\n'
-        "===EXIT 0\n===FIN 2026-07-19T12:00:00Z\n",
+        # Every field is base64'd on the box — see runs_listing_command: the
+        # sandbox controls all of them, so raw framing is forgeable.
+        "===MERV_RUN dHJhaW4=\n"
+        "===META eyJsYWJlbCI6InRyYWluIiwiY29tbWFuZCI6InB5dGhvbiB0cmFpbi5weSJ9\n"
+        "===EXIT MA==\n===FIN MjAyNi0wNy0xOVQxMjowMDowMFo=\n",
     )
     runs = backend.read_runs(
         sandbox_id=provisioned.sandbox_id,

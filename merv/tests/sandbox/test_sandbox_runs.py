@@ -6,19 +6,29 @@ wire parser plus the ledger — the same path a Lambda/Modal listing takes.
 
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
 def listing(*runs: dict) -> str:
-    """Raw on-box listing text, exactly as runs_listing_command emits it."""
+    """Raw on-box listing text, exactly as runs_listing_command emits it.
+
+    Every field is base64'd on the box, because every one of them is
+    attacker-controlled — see runs_listing_command.
+    """
     blocks = []
     for run in runs:
         meta = json.dumps(
@@ -31,9 +41,10 @@ def listing(*runs: dict) -> str:
         )
         exit_code = run.get("exit_code")
         blocks.append(
-            f"===MERV_RUN {run['label']}\n{meta}\n"
-            f"===EXIT {'' if exit_code is None else exit_code}\n"
-            f"===FIN {run.get('finished_at', '')}\n"
+            f"===MERV_RUN {_b64(run['label'])}\n"
+            f"===META {_b64(meta)}\n"
+            f"===EXIT {_b64('' if exit_code is None else str(exit_code))}\n"
+            f"===FIN {_b64(run.get('finished_at', ''))}\n"
         )
     return "".join(blocks)
 
@@ -89,6 +100,27 @@ class SandboxRunsTest(unittest.TestCase):
         args.update(arguments or {})
         return self.app.call_tool("sandbox.runs", args)
 
+    def test_runs_refuses_an_experiment_from_another_project(self) -> None:
+        """A caller authorized for one project cannot read another's receipts.
+
+        execute_runs swallows the scoped lookup's NotFoundError so that an
+        experiment with no sandboxes answers empty rather than 404 — which,
+        without an ownership assertion above it, also let any authorized
+        caller read a foreign experiment's run labels, command strings and
+        exit codes by passing its id.
+        """
+        self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
+        self._runs()
+        other_project = self.app.call_tool(
+            "project", {"action": "create", "name": "Someone Else"}
+        )["id"]
+        with self.assertRaises(Exception) as caught:
+            self.app.call_tool(
+                "sandbox.runs",
+                {"project_id": other_project, "experiment_id": self.experiment_id},
+            )
+        self.assertNotIn("seed0", str(caught.exception))
+
     # ---------- reconciler + tool shape ----------
 
     def test_runs_tool_reports_running_and_finished(self) -> None:
@@ -132,7 +164,7 @@ class SandboxRunsTest(unittest.TestCase):
         self.assertEqual(events[0]["exit_code"], 1)
         self.assertEqual(events[0]["sandbox_uid"], self.sandbox_uid)
 
-    def test_crashed_box_marks_unfinished_runs_lost_without_event(self) -> None:
+    def test_crashed_box_marks_unfinished_runs_unknown_without_event(self) -> None:
         self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
         self._runs()
         self.fake.kill(sandbox_id=self.sandbox_id)
@@ -143,9 +175,78 @@ class SandboxRunsTest(unittest.TestCase):
             {"project_id": self.project_id, "experiment_id": self.experiment_id},
         )
         view = self._runs()
+        # `unknown`, not `lost`: the box crashed, so no receipt read ever
+        # succeeded on the way to terminal and the run's outcome is genuinely
+        # not known. Calling that `lost` reports a run that may well have
+        # succeeded as a failure, and an agent reading the status acts on it.
+        self.assertEqual(view["runs"][0]["status"], "unknown")
+        self.assertEqual(view["unknown"], 1)
+        self.assertNotIn("lost", view)
+        self.assertEqual(self._run_finished_events(), [])
+
+    def test_release_observes_receipts_before_terminating(self) -> None:
+        """A run finishing moments before release is recorded, not lost."""
+        self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
+        self._runs()
+        # The sentinel lands after the last daemon sweep but before release.
+        self.fake.run_listings[self.sandbox_id] = listing(
+            {"label": "seed0", "exit_code": 0, "finished_at": "2026-07-05T11:00:00Z"}
+        )
+        self.app.call_tool(
+            "sandbox.release",
+            {
+                "project_id": self.project_id,
+                "experiment_id": self.experiment_id,
+                "confirm_retained": True,
+            },
+        )
+        view = self._runs()
+        self.assertEqual(view["runs"][0]["status"], "finished")
+        self.assertEqual(view["runs"][0]["exit_code"], 0)
+
+    def test_failed_terminate_does_not_leave_a_stale_observation_stamp(self) -> None:
+        """`maybe_alive` leaves the row running, so its read is not final.
+
+        Stamping on that attempt would still be there when a later path takes
+        the row terminal without reading anything — turning an unobserved
+        outcome into a confident `lost`.
+        """
+        self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
+        self._runs()
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        with mock.patch.object(
+            self.app.sandboxes.lifecycle, "terminate_vm", return_value="maybe_alive"
+        ):
+            self.app.sandboxes.lifecycle.reap_row(row=row)
+        conn = self.app.sandboxes.store.connect()
+        try:
+            stamp = conn.execute(
+                "SELECT runs_final_observed_at FROM sandboxes WHERE sandbox_uid = ?",
+                (self.sandbox_uid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(stamp["runs_final_observed_at"])
+
+
+
+    def test_lost_requires_a_successful_final_observation(self) -> None:
+        """A box released while its run is still going reports `lost`, not `unknown`."""
+        self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
+        self._runs()
+        self.app.call_tool(
+            "sandbox.release",
+            {
+                "project_id": self.project_id,
+                "experiment_id": self.experiment_id,
+                "confirm_retained": True,
+            },
+        )
+        # Release read the receipts successfully and saw no sentinel, so the
+        # run is genuinely lost — the stamp is what earns that word.
+        view = self._runs()
         self.assertEqual(view["runs"][0]["status"], "lost")
         self.assertEqual(view["lost"], 1)
-        self.assertEqual(self._run_finished_events(), [])
 
     def test_receipts_outlive_the_sandbox(self) -> None:
         self.fake.run_listings[self.sandbox_id] = listing(

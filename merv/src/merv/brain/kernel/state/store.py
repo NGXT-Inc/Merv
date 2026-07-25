@@ -455,6 +455,12 @@ CREATE TABLE IF NOT EXISTS sandboxes (
   last_command_finished_at TEXT,
   last_command_output_tail TEXT NOT NULL DEFAULT '',
   last_command_snapshot_at TEXT,
+  -- Set when a receipt read SUCCEEDED while the row was still active, on the
+  -- way to terminal. It is what separates "we looked and the run was not
+  -- there" (lost) from "we never got to look" (unknown): reconcile_row
+  -- reports a dead channel, a timeout and genuine no-news identically, so
+  -- without this stamp every unfinished run on a dead box reads as lost.
+  runs_final_observed_at TEXT,
   terminated_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -873,6 +879,13 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # and foreign key keeps working untouched. Existing rows are all
     # project-scoped, which is exactly what the column default states.
     (34, "add_grant_scope", ""),
+    # Truthful run observation (July 2026): a nullable stamp recording that a
+    # receipt read SUCCEEDED while the sandbox was still active. Without it,
+    # `_run_status` calls every unfinished run on a terminal box `lost`, which
+    # is a guess — reconcile_row cannot distinguish a dead channel from a run
+    # that genuinely left no sentinel. Existing rows stay NULL, which reads as
+    # `unknown`: honest about boxes that died before this shipped.
+    (35, "add_runs_final_observed_at", ""),
 )
 
 # Credential tables that carry a scope discriminator (migration 34).
@@ -1063,6 +1076,8 @@ class BaseStateStore:
                 conn.execute(_schema_table_ddl(table="storage_completion_tokens"))
         elif name == "add_grant_scope":
             self._ensure_grant_scope(conn=conn)
+        elif name == "add_runs_final_observed_at":
+            self._ensure_runs_final_observed_at(conn=conn)
         else:
             conn.execute(statement)
 
@@ -1099,6 +1114,15 @@ class BaseStateStore:
             conn.execute(
                 "ALTER TABLE reviews ADD COLUMN synopsis TEXT NOT NULL DEFAULT ''"
             )
+
+    def _ensure_runs_final_observed_at(self, *, conn: Connection) -> None:
+        # Nullable with no default: NULL is the meaningful "never observed"
+        # value, so pre-existing rows correctly report `unknown` rather than
+        # claiming an observation that never happened.
+        if not self._has_column(
+            conn=conn, table="sandboxes", column="runs_final_observed_at"
+        ):
+            conn.execute("ALTER TABLE sandboxes ADD COLUMN runs_final_observed_at TEXT")
 
     def _ensure_sandbox_public_key_source(self, *, conn: Connection) -> None:
         if not self._has_column(conn=conn, table="sandboxes", column="public_key_source"):

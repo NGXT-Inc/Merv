@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..kernel.utils import NotFoundError, ValidationError
 from .sandbox_backend import TranscriptTail
-from .sandbox_runs import run_records_view
+from .sandbox_runs import run_records_view, run_status
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     RUNS_WAIT_CAP_SECONDS,
@@ -266,7 +266,11 @@ class SandboxQueryHandler:
             }
             if baseline_finished is None:
                 baseline_finished = finished_now
-            still_running = any((r.get("exit_code") is None for r in records))
+            # Status, not exit_code: a `lost` or `unknown` run has no exit code
+            # and never will, so keying on the column alone spins the poll to
+            # its full deadline — SSH-ing a dead box every 5s — before it can
+            # report an outcome that was already settled.
+            still_running = any(run_status(r) == "running" for r in records)
             if (
                 finished_now - baseline_finished
                 or not still_running

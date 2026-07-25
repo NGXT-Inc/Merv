@@ -19,6 +19,8 @@ VALID_GPUS: frozenset[str] = frozenset(
     {"T4", "L4", "A10G", "L40S", "A100", "A100-80GB", "H100", "B200"}
 )
 ACTIVE_SANDBOX_STATUSES: frozenset[str] = frozenset({"running"})
+# Reached the end of the line: the VM is gone and every attachment is closed.
+TERMINAL_SANDBOX_STATUSES: frozenset[str] = frozenset({"terminated", "failed"})
 MAX_TIME_LIMIT_SECONDS = 24 * 60 * 60
 MIN_TIME_LIMIT_SECONDS = 60
 DEFAULT_TIME_LIMIT_SECONDS = 3600

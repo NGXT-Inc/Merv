@@ -85,6 +85,34 @@ class SandboxRunLedger:
             self._record(row=row, listing=listing)
         return True
 
+    def final_observe(self, *, row: dict[str, Any]) -> bool:
+        """Last receipt read before a sandbox goes terminal. Does NOT stamp.
+
+        Called while the row is STILL active — `reconcile_row` refuses anything
+        else, and the provider VM is about to be destroyed, so this is the only
+        moment a run that finished seconds before termination can be recorded.
+        Stamping is deliberately a separate step (`mark_final_observed`): a
+        terminate can come back `maybe_alive` and leave the row running, and a
+        stamp written on that attempt would still be sitting there when some
+        later path takes the row terminal without reading anything — turning an
+        unobserved outcome into a confident `lost`.
+        """
+        return bool(self.reconcile_row(row=row))
+
+    def mark_final_observed(self, *, sandbox_uid: str) -> None:
+        """Record that the receipts were read successfully on the way terminal.
+
+        Only this stamp earns the word `lost`; without it `_run_status` says
+        `unknown`.
+        """
+        if not sandbox_uid:
+            return
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE sandboxes SET runs_final_observed_at = ? WHERE sandbox_uid = ?",
+                (now_iso(), sandbox_uid),
+            )
+
     def _record(
         self, *, row: dict[str, Any], listing: list[dict[str, Any]]
     ) -> None:
@@ -171,7 +199,8 @@ class SandboxRunLedger:
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 """
-                SELECT r.*, s.status AS sandbox_status
+                SELECT r.*, s.status AS sandbox_status,
+                       s.runs_final_observed_at AS runs_final_observed_at
                 FROM sandbox_runs r
                 JOIN sandboxes s ON s.sandbox_uid = r.sandbox_uid
                 WHERE r.sandbox_uid = ?
@@ -190,7 +219,8 @@ class SandboxRunLedger:
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 """
-                SELECT r.*, s.status AS sandbox_status
+                SELECT r.*, s.status AS sandbox_status,
+                       s.runs_final_observed_at AS runs_final_observed_at
                 FROM sandbox_runs r
                 JOIN sandboxes s ON s.sandbox_uid = r.sandbox_uid
                 WHERE r.sandbox_uid IN (
@@ -215,9 +245,10 @@ class SandboxRunLedger:
         if not records:
             return None
         now = datetime.now(tz=UTC)
-        live = [r for r in records if _run_status(r) == "running"]
-        finished = [r for r in records if _run_status(r) == "finished"]
-        lost = [r for r in records if _run_status(r) == "lost"]
+        live = [r for r in records if run_status(r) == "running"]
+        finished = [r for r in records if run_status(r) == "finished"]
+        lost = [r for r in records if run_status(r) == "lost"]
+        unknown = [r for r in records if run_status(r) == "unknown"]
         parts: list[str] = []
         if live:
             shown = ", ".join(
@@ -233,6 +264,8 @@ class SandboxRunLedger:
             parts.append(f"{len(finished)} finished ({shown}{more})")
         if lost:
             parts.append(f"{len(lost)} lost with the box")
+        if unknown:
+            parts.append(f"{len(unknown)} unknown (box died unread)")
         return "runs: " + " · ".join(parts) + " — sandbox.runs for detail"
 
 
@@ -250,9 +283,9 @@ def run_records_view(
     """
     multi_sandbox = len({str(r.get("sandbox_uid") or "") for r in records}) > 1
     runs: list[dict[str, Any]] = []
-    live = finished = lost = 0
+    live = finished = lost = unknown = 0
     for record in records:
-        status = _run_status(record)
+        status = run_status(record)
         view: dict[str, Any] = {
             "label": record.get("label"),
             "status": status,
@@ -265,8 +298,10 @@ def run_records_view(
             finished += 1
             view["exit_code"] = record.get("exit_code")
             view["finished_at"] = record.get("finished_at") or None
-        else:
+        elif status == "lost":
             lost += 1
+        else:
+            unknown += 1
         if multi_sandbox:
             view["sandbox_uid"] = record.get("sandbox_uid")
         runs.append(view)
@@ -278,6 +313,12 @@ def run_records_view(
     out.update({"runs": runs, "live": live, "finished": finished})
     if lost:
         out["lost"] = lost
+    if unknown:
+        out["unknown"] = unknown
+        out["unknown_hint"] = (
+            "The box died before its receipts could be read, so these runs have "
+            "no known outcome — not a failure. Treat them as unresolved."
+        )
     if not runs:
         out["hint"] = (
             "No merv_run receipts. Launch anything long with "
@@ -287,13 +328,21 @@ def run_records_view(
     return out
 
 
-def _run_status(record: dict[str, Any]) -> str:
-    """finished (sentinel present), running (box alive), lost (box died)."""
+def run_status(record: dict[str, Any]) -> str:
+    """finished (sentinel present), running (box alive), lost, or unknown.
+
+    `lost` and `unknown` both mean "no sentinel on a dead box", but only
+    `lost` is a finding: it requires that a receipt read SUCCEEDED on the way
+    to terminal and did not see one. Without that stamp the box may have died
+    with its channel already broken, and the run's outcome is simply not
+    known — which callers acting on the result (an agent deciding what to do
+    next, a reviewer reading the record) must not be told is a failure.
+    """
     if record.get("exit_code") is not None:
         return "finished"
     if record.get("sandbox_status") in ACTIVE_SANDBOX_STATUSES:
         return "running"
-    return "lost"
+    return "lost" if record.get("runs_final_observed_at") else "unknown"
 
 
 def _age(started_at: Any, now: datetime) -> str:

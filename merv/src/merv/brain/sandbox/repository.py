@@ -15,7 +15,7 @@ import json
 import uuid
 from typing import Any
 
-from .sandbox_support import ACTIVE_SANDBOX_STATUSES
+from .sandbox_support import ACTIVE_SANDBOX_STATUSES, TERMINAL_SANDBOX_STATUSES
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
@@ -180,6 +180,22 @@ class SandboxRepository:
                     """,
                     (row["sandbox_uid"], experiment_id),
                 ).fetchone()
+                if attached is None and str(row["status"]) in TERMINAL_SANDBOX_STATUSES:
+                    # Going terminal is exactly what closes every attachment,
+                    # so a dead box never has an open one — and refusing it here
+                    # makes its final receipts unreadable at the one moment they
+                    # matter: a caller naming both a terminal sandbox_uid and
+                    # its experiment would be told "not found" rather than how
+                    # the run ended. Match the HISTORICAL attachment instead of
+                    # dropping the check, so the experiment binding still holds.
+                    attached = conn.execute(
+                        """
+                        SELECT 1 FROM sandbox_attachments
+                        WHERE sandbox_uid = ? AND experiment_id = ?
+                        LIMIT 1
+                        """,
+                        (row["sandbox_uid"], experiment_id),
+                    ).fetchone()
                 if attached is None:
                     raise NotFoundError(f"no sandbox for experiment: {experiment_id}")
             if project_id is not None and row["project_id"] != project_id:

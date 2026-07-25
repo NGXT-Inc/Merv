@@ -11,12 +11,28 @@ call, no provider API.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import re
 import shlex
 from typing import Any
 
 
 RUNS_DIR_NAME = ".runs"
+
+# The exact charset merv_run itself enforces before it will create a run dir
+# (see MERV_RUN_SCRIPT's label guard). The observer re-checks it because the
+# listing is `basename` over every directory under .runs/, and NOTHING requires
+# those to have been made by merv_run: anything with write access to the
+# workdir — a pip package, a cloned repo's setup.py, a dataset extractor — can
+# mkdir a name of its choosing, and that name then flows into the run ledger,
+# tool results, logs, and the UI as if it were a run this system launched. A
+# directory merv_run would have refused to create is not a run, so it is
+# dropped here rather than parsed into one. Keep this in lockstep with the
+# launcher's guard: a label the launcher accepts must survive this filter, or
+# real runs go invisible.
+SAFE_RUN_LABEL_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 MERV_RUN_PATH = "/opt/merv/merv_run"
 
 # Installed on every sandbox next to rec.sh and symlinked onto PATH.
@@ -42,9 +58,18 @@ if ! mkdir -p "$runs" || ! mkdir "$dir" 2>/dev/null; then
   echo "merv_run: run '$label' already exists in $runs — pick a new label" >&2
   exit 2
 fi
-# tr first: a raw newline/CR/tab inside an argument would break the one-line
-# JSON receipt below (and sed is line-oriented, so it must never see them).
-esc() { printf '%s' "$1" | tr '\n\r\t' '   ' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+# tr first: JSON forbids raw control bytes in a string, so ANY of them break
+# the one-line receipt below — not just the newline/CR/tab that are easy to
+# think of. A stray \x01 in an argument used to wipe command, pid AND
+# started_at from the record. \000-\037 plus DEL covers the whole class (and
+# sed is line-oriented, so it must never see a newline either).
+# cut before the escaping, and before it can grow: ARG_MAX allows a command
+# line into the megabytes, and the observer reads this file under a byte cap —
+# a receipt truncated mid-JSON parses as nothing at all, losing command, pid
+# AND started_at. Bounding the one unbounded field here keeps the whole record
+# valid; a clipped command beats no metadata. Escaping at most doubles it, so
+# meta.json stays comfortably inside the reader's budget.
+esc() { printf '%s' "$1" | tr '\000-\037\177' ' ' | cut -c1-8000 | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # The watcher (not the command) writes the receipts: finished_at first, then
 # exit_code — the sentinel is last so its presence implies a complete record.
 WATCH='dir=$1; shift
@@ -74,13 +99,45 @@ def runs_listing_command(*, experiment_dir: str) -> str:
     observer treats that as "no runs" at the cost of one cheap ssh exec.
     """
     runs_dir = f"{experiment_dir.rstrip('/')}/{RUNS_DIR_NAME}"
+    # EVERY field here is attacker-controlled: a directory under .runs/ can be
+    # created by anything with write access to the workdir, and it supplies its
+    # own name, meta.json, exit_code and finished_at. Emitted raw, any of them
+    # could carry a newline plus a `===MERV_RUN ` line and synthesize a second
+    # block — forging a completion for a DIFFERENT, still-running label, which
+    # _record then writes onto the genuine row. base64 output is [A-Za-z0-9+/=]
+    # only, so it cannot contain the delimiter or a newline and the framing
+    # becomes unforgeable. The head -c caps stop one huge file from bloating a
+    # listing. base64 is already a hard bootstrap dependency (see
+    # merv_run_install_lines).
+    b64 = "base64 2>/dev/null | tr -d '\\n'"
     return (
         f"d={shlex.quote(runs_dir)}; [ -d \"$d\" ] || exit 0; "
-        "for r in \"$d\"/*/; do [ -d \"$r\" ] || continue; "
-        "printf '===MERV_RUN %s\\n' \"$(basename \"$r\")\"; "
-        "cat \"$r/meta.json\" 2>/dev/null; printf '\\n'; "
-        "printf '===EXIT %s\\n' \"$(cat \"$r/exit_code\" 2>/dev/null)\"; "
-        "printf '===FIN %s\\n' \"$(cat \"$r/finished_at\" 2>/dev/null)\"; "
+        # Three globs, not one: merv_run's charset permits a leading dot, so
+        # `merv_run .hidden` is a legal run that a bare */ never matches — the
+        # launcher would accept it and the observer would never see it. The
+        # `.[!.]*` and `..?*` forms cover dot-names without matching `.` or
+        # `..`; an unmatched glob stays literal and the -d test drops it.
+        "for r in \"$d\"/*/ \"$d\"/.[!.]*/ \"$d\"/..?*/; do [ -d \"$r\" ] || continue; "
+        # Parameter expansion, not basename: basename appends a newline, and
+        # `$(...)` then strips trailing newlines — which would silently
+        # normalize a directory named "seed0\n" onto the real `seed0` row, the
+        # very forgery the encoding exists to stop. ${r%/} drops the trailing
+        # slash, ${b##*/} takes the last segment, and printf '%s' emits the
+        # exact bytes.
+        f"b=${{r%/}}; b=${{b##*/}}; "
+        f"printf '===MERV_RUN %s\\n' \"$(printf '%s' \"$b\" | {b64})\"; "
+        # 64 MiB is a catastrophe bound, not a size guess. A truncated
+        # meta.json is INVALID JSON and loses command, pid AND started_at, so
+        # this must sit where no legal receipt can reach it on ANY box —
+        # including sandboxes still running the pre-fix launcher, which bounds
+        # nothing. Linux derives the argv ceiling from RLIMIT_STACK (up to
+        # ~6 MiB) and escaping can double it, so ~12 MiB is the true worst case;
+        # this leaves 5x headroom while still refusing to stream an unbounded
+        # file into memory the way an uncapped read would. Fresh boxes clip at
+        # the source (esc) and land near 16 KB.
+        f"printf '===META %s\\n' \"$(head -c 67108864 \"$r/meta.json\" 2>/dev/null | {b64})\"; "
+        f"printf '===EXIT %s\\n' \"$(head -c 32 \"$r/exit_code\" 2>/dev/null | {b64})\"; "
+        f"printf '===FIN %s\\n' \"$(head -c 64 \"$r/finished_at\" 2>/dev/null | {b64})\"; "
         "done"
     )
 
@@ -93,40 +150,64 @@ def parse_runs_listing(output: str) -> list[dict[str, Any]]:
     empty fields — the label and the sentinel are the load-bearing facts.
     """
     runs: list[dict[str, Any]] = []
-    for block in output.split("===MERV_RUN "):
-        block = block.strip()
-        if not block:
+    current: dict[str, Any] | None = None
+
+    def flush() -> None:
+        if current is not None:
+            runs.append(current)
+
+    # Line-oriented, not split-on-delimiter: every payload arrives base64'd, so
+    # no decoded byte can introduce a line or a marker. A block that opens with
+    # a label merv_run would have refused is dropped along with its fields.
+    for line in output.splitlines():
+        if line.startswith("===MERV_RUN "):
+            flush()
+            label = _decode(line[len("===MERV_RUN "):])
+            current = (
+                {
+                    "label": label,
+                    "command": "",
+                    "pid": None,
+                    "started_at": "",
+                    "exit_code": None,
+                    "finished_at": "",
+                }
+                if SAFE_RUN_LABEL_RE.fullmatch(label)
+                else None
+            )
+        elif current is None:
             continue
-        label, _, rest = block.partition("\n")
-        meta: dict[str, Any] = {}
-        exit_code: int | None = None
-        finished_at = ""
-        for line in rest.splitlines():
-            if line.startswith("===EXIT "):
-                raw = line[len("===EXIT "):].strip()
-                try:
-                    exit_code = int(raw)
-                except ValueError:
-                    exit_code = None
-            elif line.startswith("===FIN "):
-                finished_at = line[len("===FIN "):].strip()
-            elif line.startswith("{") and not meta:
-                try:
-                    parsed = json.loads(line)
-                    meta = parsed if isinstance(parsed, dict) else {}
-                except ValueError:
-                    meta = {}
-        runs.append(
-            {
-                "label": label.strip(),
-                "command": str(meta.get("command") or ""),
-                "pid": meta.get("pid"),
-                "started_at": str(meta.get("started_at") or ""),
-                "exit_code": exit_code,
-                "finished_at": finished_at,
-            }
-        )
+        elif line.startswith("===META "):
+            try:
+                parsed = json.loads(_decode(line[len("===META "):]) or "{}")
+            except ValueError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                current["command"] = str(parsed.get("command") or "")
+                current["pid"] = parsed.get("pid")
+                current["started_at"] = str(parsed.get("started_at") or "")
+        elif line.startswith("===EXIT "):
+            try:
+                current["exit_code"] = int(_decode(line[len("===EXIT "):]).strip())
+            except ValueError:
+                current["exit_code"] = None
+        elif line.startswith("===FIN "):
+            current["finished_at"] = _decode(line[len("===FIN "):]).strip()
+    flush()
     return runs
+
+
+def _decode(field: str) -> str:
+    """base64 field -> text; anything unparseable degrades to empty.
+
+    Never raises: a garbled listing must not take down the reconcile sweep.
+    """
+    try:
+        return base64.b64decode(field.strip(), validate=True).decode(
+            "utf-8", errors="replace"
+        )
+    except (ValueError, binascii.Error):
+        return ""
 
 
 def merv_run_install_lines(*, script_b64: str) -> str:

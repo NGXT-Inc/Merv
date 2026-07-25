@@ -280,6 +280,44 @@ class StoreMigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_legacy_sandboxes_gain_runs_final_observed_at_as_null(self) -> None:
+        # Migration 35: the stamp separating `lost` from `unknown`. Rows that
+        # predate it MUST come out NULL — a default would assert an
+        # observation that never happened, and every unfinished run on those
+        # boxes would be reported as a confirmed loss.
+        self._seed_legacy_db()
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.executescript(OLD_SANDBOXES_SCHEMA)
+            conn.execute(
+                """
+                INSERT INTO sandboxes (
+                  experiment_id, project_id, status, created_at, updated_at
+                )
+                VALUES ('exp_old', 'proj_old', 'terminated',
+                        '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        StateStore(db_path=self.db)  # converge, then re-boot for idempotence
+        store = StateStore(db_path=self.db)
+        conn = store.connect()
+        try:
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(sandboxes)").fetchall()
+            }
+            self.assertIn("runs_final_observed_at", columns)
+            row = conn.execute(
+                "SELECT runs_final_observed_at FROM sandboxes"
+            ).fetchone()
+            self.assertIsNone(row["runs_final_observed_at"])
+        finally:
+            conn.close()
+
     def test_storage_missing_status_migrates_to_expired(self) -> None:
         conn = sqlite3.connect(self.db)
         try:

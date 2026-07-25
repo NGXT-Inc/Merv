@@ -50,6 +50,10 @@ class SandboxLifecycle:
         self.backend = backend
         self.mgmt_keys = mgmt_keys
         self.job_probe: JobProbe | None = None
+        # Wired post-construction (like job_probe) to keep the ledger and the
+        # lifecycle peers rather than making one import the other.
+        self.observe_runs: Callable[..., bool] | None = None
+        self.stamp_runs_observed: Callable[..., None] | None = None
 
     # ---------- liveness ----------
 
@@ -151,6 +155,40 @@ class SandboxLifecycle:
                     orphan = None
             if orphan and str(orphan) not in seen:
                 self.terminate_quietly(sandbox_id=str(orphan))
+
+    def observe_runs_before_terminal(self, *, row: dict[str, Any]) -> bool:
+        """Read receipts one last time while the row is still active.
+
+        Every terminal path calls this FIRST: once the row leaves
+        ACTIVE_SANDBOX_STATUSES the ledger refuses to read it and the VM is
+        gone anyway, so a run that finished seconds earlier would be recorded
+        as never having finished. Best-effort by construction — a failure
+        simply returns False, which leaves the observation unstamped and reads
+        downstream as `unknown` rather than `lost`.
+
+        Returns whether the read succeeded. The caller stamps it (via
+        `commit_runs_observation`) only once the provider confirms the VM is
+        gone: a terminate that comes back `maybe_alive` leaves the row running,
+        and this observation must not outlive the attempt. Stamping a row that
+        is still active is harmless — `run_status` consults the status first.
+
+        Note this covers the reap and release paths. The liveness-reconcile and
+        provisioner mark paths do not observe, by design: there the provider has
+        already reported the VM gone, so there is nothing left to read and
+        `unknown` is the honest answer.
+        """
+        if self.observe_runs is None:
+            return False
+        with suppress(Exception):  # a receipt read must never block teardown
+            return bool(self.observe_runs(row=row))
+        return False
+
+    def commit_runs_observation(self, *, row: dict[str, Any], observed: bool) -> None:
+        """Stamp a successful pre-terminal read, once the row is really gone."""
+        if not observed or self.stamp_runs_observed is None:
+            return
+        with suppress(Exception):
+            self.stamp_runs_observed(sandbox_uid=str(row.get("sandbox_uid") or ""))
 
     def terminate_vm(self, *, row: dict[str, Any], try_direct: bool = True) -> str:
         """Terminate the provider VM behind a row. Returns:
@@ -349,7 +387,14 @@ class SandboxLifecycle:
         Returns False — leaving the row running so the next sweep retries —
         when the VM could not be confirmed gone.
         """
+        observed = self.observe_runs_before_terminal(row=row)
         outcome = self.terminate_vm(row=row)
+        if outcome != "maybe_alive":
+            # Stamp BEFORE the mark: the provider has confirmed the VM is gone,
+            # so no new sentinel can appear and this read is final even if the
+            # mark below raises and a later sweep completes it. A stamp on a
+            # still-active row is inert — run_status checks status first.
+            self.commit_runs_observation(row=row, observed=observed)
         self.apply(
             row=row,
             decision=reap_decision(
@@ -359,4 +404,6 @@ class SandboxLifecycle:
                 payload_extra=payload_extra,
             ),
         )
+        # maybe_alive leaves the row running for the next sweep to retry, so
+        # the read above described a live box, not a final one.
         return outcome != "maybe_alive"

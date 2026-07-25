@@ -783,6 +783,7 @@ class SandboxFacade:
         was_active = bool(
             row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES
         )
+        observed = self.lifecycle.observe_runs_before_terminal(row=row)
         outcome = self.lifecycle.terminate_vm(
             row=row,
             try_direct=bool(
@@ -795,6 +796,11 @@ class SandboxFacade:
             outcome=outcome,
             active_experiment_ids=self._active_experiment_ids_for_row(row=row),
         )
+        # Stamp before the mark: `maybe_alive` leaves the row running for a
+        # later retry and must not stamp, but once the VM is confirmed gone the
+        # read is final even if the mark below fails.
+        if outcome != "maybe_alive":
+            self.lifecycle.commit_runs_observation(row=row, observed=observed)
         self.lifecycle.apply(row=row, decision=decision)
         if outcome == "maybe_alive":
             view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
@@ -904,6 +910,13 @@ class SandboxFacade:
         sandbox_uid: str | None = None,
         wait_seconds: int = 0,
     ) -> dict[str, Any]:
+        # execute_runs deliberately tolerates "experiment has no sandboxes yet"
+        # by swallowing the scoped lookup's NotFoundError, which would otherwise
+        # also let a foreign experiment_id through and read another project's
+        # receipts. Ownership is asserted here instead, as on every other
+        # experiment-scoped entry point.
+        if experiment_id and self.attachment_check is not None:
+            self.attachment_check(attachment_id=experiment_id, project_id=project_id)
         return self.queries.execute_runs(
             experiment_id=experiment_id,
             project_id=project_id,

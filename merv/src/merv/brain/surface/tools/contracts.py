@@ -790,7 +790,9 @@ class SandboxRunsInput(ProjectScopedInput):
             "Long-poll: block up to this many seconds, returning early when "
             "any run finishes (or nothing is running). 0 answers immediately. "
             "Keep <=45 unless your MCP client's tool timeout is known to allow "
-            "more (many clients cut tool calls at ~60s)."
+            "more (many clients cut tool calls at ~60s). This spans only the "
+            "current turn: a run that finishes after you end the turn is not "
+            "noticed until you next call this."
         ),
     )
 
@@ -1441,15 +1443,22 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         handler_identity="sandboxes.runs",
         input_model=SandboxRunsInput,
         description=(
-            "List merv_run launches for a sandbox or experiment: label, status "
-            "(running/finished/lost), exit_code, started/finished timestamps, "
-            "and log path — one compact call instead of transcript polling. "
-            "Launch long work on the sandbox with `merv_run <label> -- <command>` "
-            "(detaches, survives SSH disconnect, writes an exit_code sentinel); "
-            "then either long-poll here with wait_seconds, or end the session "
-            "and call this when next attending the experiment. Receipts "
-            "outlive the sandbox: finished runs stay queryable after release "
-            "or expiry (logs/outputs do not — pull those before the box dies)."
+            "List merv_run launches for a sandbox or experiment: label, status, "
+            "exit_code, started/finished timestamps, and log path — one compact "
+            "call instead of transcript polling. Launch long work on the sandbox "
+            "with `merv_run <label> -- <command>` (detaches, survives SSH "
+            "disconnect, writes an exit_code sentinel), then long-poll here with "
+            "wait_seconds. Status is running, finished, lost, or unknown. "
+            "`unknown` means the box died before its receipts could be read, so "
+            "the run's outcome is NOT known — it may well have succeeded, and it "
+            "must never be recorded as a failure. Its logs and unpulled outputs "
+            "died with the box; check what you retained (pulled outputs, "
+            "submitted artifacts, MLflow) and re-run if nothing survived. "
+            "`lost` is a finding: the receipts WERE read and no sentinel was "
+            "there. "
+            "Receipts outlive the sandbox: finished runs stay queryable after "
+            "release or expiry (logs/outputs do not — pull those before the box "
+            "dies)."
         ),
     ),
     "sandbox.terminal": ToolContract(

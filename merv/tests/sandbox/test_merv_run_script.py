@@ -160,3 +160,61 @@ class MervRunHarness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetaJsonBoundTest(MervRunHarness):
+    """The launcher must bound the one field it records unbounded.
+
+    ARG_MAX allows a command line into the megabytes, and the observer reads
+    meta.json under a byte cap. A receipt truncated mid-JSON parses as nothing,
+    so the record loses command, pid AND started_at — a clipped command is
+    strictly better than no metadata at all.
+    """
+
+    def test_a_huge_command_still_yields_a_valid_parseable_receipt(self) -> None:
+        huge = ["--flag%d=%s" % (i, "v" * 40) for i in range(6000)]
+        raw_len = sum(len(a) + 1 for a in huge)
+        self.assertGreater(raw_len, 65536)  # would overflow the reader's cap
+        self.merv_run("big", "--", "sh", "-c", "exit 0", *huge)
+        self.wait_for_sentinel("big")
+
+        meta_path = self.experiment_dir / ".runs" / "big" / "meta.json"
+        meta = json.loads(meta_path.read_text())  # valid JSON, not truncated
+        self.assertEqual(meta["label"], "big")
+        self.assertTrue(meta["started_at"])
+        self.assertLess(meta_path.stat().st_size, 65536)
+
+        listing = subprocess.run(
+            ["sh", "-c", runs_listing_command(experiment_dir=str(self.experiment_dir))],
+            capture_output=True, text=True, timeout=10,
+        )
+        parsed = {r["label"]: r for r in parse_runs_listing(listing.stdout)}
+        self.assertIn("big", parsed)
+        self.assertTrue(parsed["big"]["command"])
+        self.assertTrue(parsed["big"]["started_at"])
+        self.assertIsNotNone(parsed["big"]["pid"])
+
+    def test_control_bytes_in_a_command_do_not_destroy_the_receipt(self) -> None:
+        """JSON forbids raw control bytes, so ANY of them break the receipt.
+
+        esc() normalized only \\n \\r \\t, so a stray \\x01 in an argument made
+        meta.json unparseable and silently wiped command, pid AND started_at
+        from the ledger row — the run looked like it had no metadata at all.
+        """
+        self.merv_run("ctrl", "--", "sh", "-c", "exit 0", "a\x01b\x07c café")
+        self.wait_for_sentinel("ctrl")
+
+        meta_path = self.experiment_dir / ".runs" / "ctrl" / "meta.json"
+        meta = json.loads(meta_path.read_text())  # must not raise
+        self.assertEqual(meta["label"], "ctrl")
+
+        listing = subprocess.run(
+            ["sh", "-c", runs_listing_command(experiment_dir=str(self.experiment_dir))],
+            capture_output=True, text=True, timeout=10,
+        )
+        parsed = {r["label"]: r for r in parse_runs_listing(listing.stdout)}
+        self.assertIn("ctrl", parsed)
+        self.assertIsNotNone(parsed["ctrl"]["pid"])
+        self.assertTrue(parsed["ctrl"]["started_at"])
+        self.assertNotIn("\x01", parsed["ctrl"]["command"])
+        self.assertIn("café", parsed["ctrl"]["command"])  # multibyte survives

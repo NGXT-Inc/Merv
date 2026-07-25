@@ -299,14 +299,37 @@ transcript for it. Launch it as
 `ssh ... 'merv_run <label> -- <command>'` (e.g. `merv_run seed0 -- python train.py
 --seed 0`): the run detaches, survives disconnects, logs to
 `.runs/<label>/log.txt`, and writes an `exit_code` sentinel when it finishes.
-Then either long-poll `sandbox.runs(project_id, experiment_id, wait_seconds=...)`
-within the session (one
-slow call instead of N transcript polls; keep `wait_seconds<=45` unless your
-client's tool timeout allows more), or simply end the turn and call
-`sandbox.runs` when next attending the experiment. Every sandbox.* response
-carries a compact `runs` line while runs exist. Labels are one-shot — pick a
-new label per launch. Finished-run receipts survive box death, but logs and
-outputs do not: pull what you need before release/expiry.
+Then long-poll `sandbox.runs(project_id, experiment_id, wait_seconds=...)`: it
+returns the moment a run reaches a terminal state, so the answer arrives within
+seconds of the run ending rather than at the next poll. Keep `wait_seconds<=45`
+unless your client's tool timeout is known to allow more.
+
+**A sandbox bills continuously, so the gap between a run finishing and you next
+looking is paid for** — one measured incident burned 62 idle minutes on an H100.
+The long-poll only spans the current turn, so if you end the turn with a run in
+flight, that gap is on the meter until you return. Prefer chaining work into one
+`merv_run` over leaving a box idle between steps.
+
+Read `status`, not just `exit_code`:
+
+| Status | Meaning |
+|---|---|
+| `finished` | the run ended and `exit_code` says how |
+| `running` | still going |
+| `lost` | the receipts **were** read on the way down and no sentinel was there |
+| `unknown` | the box died before its receipts could be read |
+
+`unknown` is not a failure. The run's outcome is genuinely not known — it may
+well have succeeded — so never record it as a failed run. Only `lost` is a
+finding. The box is gone, so its logs and unpulled outputs are gone with it;
+what survives is whatever you already retained: pulled outputs, submitted
+artifacts, and MLflow runs. Check those. If nothing was retained, you cannot
+know how the run went, and the honest move is to re-run it rather than write
+down a result you did not observe.
+
+Every sandbox.* response carries a compact `runs` line while runs exist. Labels
+are one-shot — pick a new label per launch. Finished-run receipts survive box
+death, but logs and outputs do not: pull what you need before release/expiry.
 
 Use `sandbox.terminal(project_id, experiment_id)` to inspect transcript output
 and the structured `last_command` status before re-running anything long. If
