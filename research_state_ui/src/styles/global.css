@@ -1757,7 +1757,17 @@ html { scroll-behavior: smooth; }
   font-size: 0.9em;
   color: var(--text);
   background: color-mix(in srgb, var(--text) 6%, transparent);
-  box-shadow: 0 0 0 0.16em color-mix(in srgb, var(--text) 6%, transparent);
+  /* Wider than it is tall. A single spread is uniform on both axes, which
+     turns a one-glyph span — `o`, `k`, a lone digit, all common in this prose
+     — into a near-square blob that reads as a bullet rather than a token.
+     Three stacked boxes (one centred, two offset sideways) union into a wash
+     with 0.24em of side bleed against 0.10em top and bottom, so short spans
+     get room to read and the shape says "highlighted text", not "boxed
+     character". The shorter vertical also keeps wrapped lines further apart. */
+  box-shadow:
+    0 0 0 0.10em color-mix(in srgb, var(--text) 6%, transparent),
+    0.14em 0 0 0.10em color-mix(in srgb, var(--text) 6%, transparent),
+    -0.14em 0 0 0.10em color-mix(in srgb, var(--text) 6%, transparent);
   border-radius: 2px;
   /* clone → a span that wraps keeps its wash on both fragments. Ligatures off
      so `->` / `!=` inside identifiers read as the characters they are. */
