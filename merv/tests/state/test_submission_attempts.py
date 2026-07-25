@@ -303,6 +303,76 @@ class SubmissionAttemptFlowTest(unittest.TestCase):
             "two report rounds inside one experiment attempt",
         )
 
+    def test_sealed_system_artifact_survives_the_next_rounds_pin(self) -> None:
+        """pin_system_artifact deletes by (project, target, role, attempt) with
+        no path, and never calls _supersede_slot — so without the same seal
+        immunity, re-pinning the exhibit in round 2 would destroy round 1's,
+        which is the metrics record of the round a reviewer rejected."""
+        exp_id = self.call(
+            "experiment.create",
+            project_id=self.project_id,
+            name="exhibit-history",
+            intent="Prove a sealed system artifact is not re-pinned away.",
+        )["id"]
+        artifacts = self.app.artifact_submissions
+
+        first = artifacts.pin_system_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="exhibit",
+            path="exhibit.json",
+            content_bytes=b'{"round": 1}',
+        )
+        # Freeze round 1 exactly as a forward transition would.
+        with self.app.store.transaction() as conn:
+            artifacts.seal(
+                conn=conn,
+                project_id=self.project_id,
+                target_type="experiment",
+                target_id=exp_id,
+                attempt_index=1,
+                transition="submit_results",
+            )
+        second = artifacts.pin_system_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="exhibit",
+            path="exhibit.json",
+            content_bytes=b'{"round": 2}',
+        )
+
+        rows = self._rows(
+            "SELECT id, submission_id FROM artifacts WHERE target_id = ? "
+            "AND role = 'exhibit' AND status = 'complete' ORDER BY created_seq",
+            (exp_id,),
+        )
+        self.assertEqual(
+            [r["id"] for r in rows],
+            [first["artifact_id"], second["artifact_id"]],
+            "the sealed round-1 exhibit must survive round 2's pin",
+        )
+        self.assertNotEqual(rows[0]["submission_id"], "")
+        self.assertEqual(rows[1]["submission_id"], "")
+
+        # A third pin inside the same unsealed round still replaces, so
+        # exhibits do not pile up within one round.
+        third = artifacts.pin_system_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="exhibit",
+            path="exhibit.json",
+            content_bytes=b'{"round": 2, "revised": true}',
+        )
+        rows = self._rows(
+            "SELECT id FROM artifacts WHERE target_id = ? AND role = 'exhibit' "
+            "AND status = 'complete' ORDER BY created_seq",
+            (exp_id,),
+        )
+        self.assertEqual([r["id"] for r in rows], [first["artifact_id"], third["artifact_id"]])
+
     def test_figure_chains_submissions_instead_of_stacking_them(self) -> None:
         exp_id = self.call(
             "experiment.create",

@@ -710,11 +710,17 @@ class ArtifactSubmissionService:
             )
             artifact_id = new_id(prefix="art")
             now = now_iso()
+            # Same seal immunity as _supersede_slot: replace the exhibit being
+            # assembled, never one a round already froze. Re-pinning after a
+            # send_back_to_running would otherwise delete the previous round's
+            # exhibit — the metrics record of the round a reviewer rejected.
+            # Every reader takes the newest per slot, and the exhibit path is
+            # fixed per experiment, so the survivors are history, not rivals.
             conn.execute(
                 """
                 DELETE FROM artifacts
                 WHERE project_id = ? AND target_type = ? AND target_id = ?
-                  AND role = ? AND attempt_index = ?
+                  AND role = ? AND attempt_index = ? AND submission_id = ''
                 """,
                 (project_id, target_type, target_id, role, target.attempt_index),
             )
