@@ -558,10 +558,11 @@ CREATE TABLE IF NOT EXISTS submissions (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_submissions_target
-  ON submissions(target_type, target_id, attempt_index, created_seq);
-CREATE INDEX IF NOT EXISTS idx_artifacts_submission
-  ON artifacts(target_type, target_id, attempt_index, submission_id);
+-- Both indexes are created by migration 36, never here. SCHEMA runs before the
+-- migration ladder and its CREATE TABLE IF NOT EXISTS is a no-op on a database
+-- that already has `artifacts`, so an index naming submission_id would fail on
+-- every existing deployment before the ALTER that adds the column could run.
+-- _apply_migrations executes on fresh databases too, so both paths get them.
 
 -- Figures referenced via relative image links in a gated markdown artifact.
 -- Minted pending (with their own one-time tokens) when the document upload
