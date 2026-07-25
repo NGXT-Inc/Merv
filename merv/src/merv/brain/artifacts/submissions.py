@@ -116,6 +116,7 @@ def _evidence(row: Row) -> AssociatedEvidence:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         order=int(row["created_seq"] or 0),
+        submission_id=str(row["submission_id"] or ""),
     )
 
 
@@ -709,11 +710,17 @@ class ArtifactSubmissionService:
             )
             artifact_id = new_id(prefix="art")
             now = now_iso()
+            # Same seal immunity as _supersede_slot: replace the exhibit being
+            # assembled, never one a round already froze. Re-pinning after a
+            # send_back_to_running would otherwise delete the previous round's
+            # exhibit — the metrics record of the round a reviewer rejected.
+            # Every reader takes the newest per slot, and the exhibit path is
+            # fixed per experiment, so the survivors are history, not rivals.
             conn.execute(
                 """
                 DELETE FROM artifacts
                 WHERE project_id = ? AND target_type = ? AND target_id = ?
-                  AND role = ? AND attempt_index = ?
+                  AND role = ? AND attempt_index = ? AND submission_id = ''
                 """,
                 (project_id, target_type, target_id, role, target.attempt_index),
             )
@@ -750,9 +757,15 @@ class ArtifactSubmissionService:
         attempt_index: int,
         target_type: str = "experiment",
     ) -> list[dict[str, Any]]:
-        """Metric sources for the exhibit: every complete role-'result'
-        artifact for the attempt, its JSON try-parsed (non-JSON stays with
-        data=None — the path label is a hint, never a gate)."""
+        """Metric sources for the exhibit: the newest complete role-'result'
+        artifact per path for the attempt, its JSON try-parsed (non-JSON stays
+        with data=None — the path label is a hint, never a gate).
+
+        Newest-per-path, not every row: send_back_to_running keeps the same
+        attempt_index, so once a rejected round's results.json survives as
+        sealed history both rows match here. Republishing the stale one would
+        put two contradictory values for one filename inside the
+        system-authored exhibit, which the report is then gated on."""
         if self.blobs is None:
             return []
         with closing(self.store.connect()) as conn:
@@ -765,6 +778,11 @@ class ArtifactSubmissionService:
                 """,
                 (target_type, target_id, int(attempt_index)),
             ).fetchall()
+        # ORDER BY path, created_seq → last write per (lens, path) wins.
+        newest: dict[tuple[str, str], Row] = {}
+        for row in rows:
+            newest[(str(row["lens_id"]), str(row["path"]))] = row
+        rows = list(newest.values())
         sources: list[dict[str, Any]] = []
         for row in rows:
             try:
@@ -806,6 +824,93 @@ class ArtifactSubmissionService:
         record.pop("upload_token", None)  # bearer credential, never surfaced
         return record
 
+    def seal(
+        self,
+        *,
+        conn: Connection,
+        project_id: str,
+        target_type: str,
+        target_id: str,
+        attempt_index: int,
+        transition: str,
+    ) -> str:
+        """Freeze the target's live composition as one submission attempt.
+
+        Runs on the CALLER's already-open write connection — Research owns the
+        transition transaction, and opening our own here would take a second
+        connection and deadlock against it (BEGIN IMMEDIATE on SQLite, the DSN
+        advisory lock on PostgreSQL). Same shape as the existing reverse call
+        into publish_pinned_artifact_ids.
+
+        `status = 'complete'` is required: a pending row would otherwise be
+        sealed before its bytes land, and could then never be superseded.
+        """
+        submission_id = new_id(prefix="sub")
+        conn.execute(
+            """
+            INSERT INTO submissions
+              (id, project_id, target_type, target_id, attempt_index,
+               transition, created_at, created_seq)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                submission_id, project_id, target_type, target_id,
+                int(attempt_index), transition, now_iso(),
+                next_created_seq(conn=conn, table="submissions"),
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE artifacts SET submission_id = ?
+            WHERE project_id = ? AND target_type = ? AND target_id = ?
+              AND attempt_index = ? AND status = 'complete' AND submission_id = ''
+            """,
+            (
+                submission_id, project_id, target_type, target_id,
+                int(attempt_index),
+            ),
+        )
+        return submission_id
+
+    def submissions_for_targets(
+        self, *, conn: Connection, target_type: str, target_ids: tuple[str, ...]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Sealed rounds per target, oldest first. One query for the whole
+        batch so the project dashboard stays constant-cost."""
+        if not target_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in target_ids)
+        rows = rows_to_dicts(
+            rows=conn.execute(
+                f"""
+                SELECT id, target_id, attempt_index, transition, created_at,
+                       created_seq
+                FROM submissions
+                WHERE target_type = ? AND target_id IN ({placeholders})
+                ORDER BY created_seq
+                """,
+                (target_type, *target_ids),
+            ).fetchall()
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row.pop("target_id")), []).append(row)
+        return grouped
+
+    def latest_submission_id(
+        self, *, conn: Connection, target_type: str, target_id: str, attempt_index: int
+    ) -> str:
+        """Newest sealed submission for the attempt, '' when none exists."""
+        row = conn.execute(
+            """
+            SELECT id FROM submissions
+            WHERE target_type = ? AND target_id = ? AND attempt_index = ?
+            ORDER BY created_seq DESC
+            """,
+            (target_type, target_id, int(attempt_index)),
+        ).fetchone()
+        return str(row["id"]) if row is not None else ""
+
     def _frozen_target_refusal(self, *, row: Row) -> ValidationError | None:
         """Re-run submit-time target resolution for a pending upload.
 
@@ -826,6 +931,13 @@ class ArtifactSubmissionService:
     def _supersede_slot(self, *, conn: Connection, row: Row) -> None:
         """Resubmit replaces: delete prior complete artifacts in the same slot.
 
+        Only UNSEALED rows (submission_id '') can be deleted. Once a forward
+        transition seals a round's composition, those rows are immutable
+        history: that is what keeps the report of a rejected submission
+        retrievable instead of leaving an unreachable blob behind. Within the
+        round being assembled the behaviour is unchanged — resubmit report.md
+        three times before requesting review and you still get one row.
+
         Publish-pinned project graphs are exempt — a published reflection's
         frozen comparison base must survive later submissions to the slot."""
         pinned = self.association_targets.publish_pinned_artifact_ids(conn=conn)
@@ -834,7 +946,7 @@ class ArtifactSubmissionService:
             SELECT id FROM artifacts
             WHERE project_id = ? AND target_type = ? AND target_id = ? AND role = ?
               AND attempt_index = ? AND lens_id = ? AND path = ?
-              AND status = 'complete' AND id != ?
+              AND status = 'complete' AND submission_id = '' AND id != ?
             """,
             (
                 row["project_id"], row["target_type"], row["target_id"], row["role"],

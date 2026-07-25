@@ -51,6 +51,7 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
     experiments = ExperimentService(
         store=store,
         evidence_reader=artifact_submissions,
+        submissions=artifact_submissions,
     )
     graph_refs = GraphRefResolver(store=store)
     reflection_waves = ReflectionService(
@@ -58,12 +59,14 @@ def build_record_core(*, store: BaseStateStore, blobs: EvidenceBlobStore) -> Rec
         claims=claims,
         experiment_writer=experiments,
         evidence_reader=artifact_submissions,
+        submissions=artifact_submissions,
     )
     reviews = ReviewService(
         store=store,
         experiments=experiments,
         reflections=reflection_waves,
         evidence_reader=artifact_submissions,
+        submissions=artifact_submissions,
     )
     feed = FeedService(store=store, blobs=blobs, link_unfurl=NetworkLinkUnfurl())
     literature = LiteratureService(store=store, unfurl=AllowlistedPaperUnfurl())

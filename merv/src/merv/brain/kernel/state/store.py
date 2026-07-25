@@ -336,6 +336,11 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at TEXT NOT NULL,
   -- Insertion-order column replacing rowid ordering (cloud plan Phase 6).
   created_seq INTEGER NOT NULL DEFAULT 0,
+  -- The sealed submission this verdict graded ('' on rows predating the
+  -- column, and on reviews of a target that never sealed one). It is what
+  -- lets the figure draw round 2 of a report review as a step after round 1
+  -- instead of a sibling hanging off the attempt.
+  submission_id TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(project_id) REFERENCES projects(id),
   FOREIGN KEY(request_id) REFERENCES review_requests(id),
   FOREIGN KEY(session_id) REFERENCES review_sessions(id)
@@ -525,8 +530,38 @@ CREATE TABLE IF NOT EXISTS artifacts (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   created_seq INTEGER NOT NULL DEFAULT 0,
+  submission_id TEXT NOT NULL DEFAULT '',
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
+
+-- Submission attempts (July 2026). A forward transition seals the target's
+-- live artifact composition: every complete row still carrying submission_id
+-- the empty string is stamped with the new submission id and becomes
+-- immutable, because
+-- _supersede_slot only ever deletes unsealed rows. That is what keeps the
+-- report of a rejected round retrievable as a first-class artifact instead of
+-- an unreachable blob. `experiments.attempt_index` stays the authoritative
+-- plan-level counter, so the byte-stable review snapshot never moves; a
+-- submission is the round WITHIN one attempt, which send_back_to_running
+-- deliberately does not bump. created_seq is the total order the composition
+-- query depends on — a submission's contents are every row sealed at or
+-- before it, latest-per-slot, which picks up carried-over files for free.
+CREATE TABLE IF NOT EXISTS submissions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  attempt_index INTEGER NOT NULL DEFAULT 0,
+  transition TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  created_seq INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_submissions_target
+  ON submissions(target_type, target_id, attempt_index, created_seq);
+CREATE INDEX IF NOT EXISTS idx_artifacts_submission
+  ON artifacts(target_type, target_id, attempt_index, submission_id);
 
 -- Figures referenced via relative image links in a gated markdown artifact.
 -- Minted pending (with their own one-time tokens) when the document upload
@@ -886,6 +921,13 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # that genuinely left no sentinel. Existing rows stay NULL, which reads as
     # `unknown`: honest about boxes that died before this shipped.
     (35, "add_runs_final_observed_at", ""),
+    # Submission attempts (July 2026): the round WITHIN an experiment attempt.
+    # Additive only — a new table, two seal columns, two indexes. Existing rows
+    # keep submission_id '' and stay exactly as reachable as they are today,
+    # and no review snapshot string is rewritten. Verified against production
+    # before shipping: 2,965 complete artifacts, zero duplicate slots, so
+    # latest-per-slot selects the identical set that the flat filter did.
+    (36, "add_submission_attempts", ""),
 )
 
 # Credential tables that carry a scope discriminator (migration 34).
@@ -1078,8 +1120,32 @@ class BaseStateStore:
             self._ensure_grant_scope(conn=conn)
         elif name == "add_runs_final_observed_at":
             self._ensure_runs_final_observed_at(conn=conn)
+        elif name == "add_submission_attempts":
+            self._add_submission_attempts(conn=conn)
         else:
             conn.execute(statement)
+
+    def _add_submission_attempts(self, *, conn: Connection) -> None:
+        """Migration 36: the submissions table plus the two seal columns.
+
+        Purely additive and idempotent. The indexes are issued explicitly
+        because _schema_table_ddl only extracts CREATE TABLE blocks."""
+        if not self._has_table(conn=conn, table="submissions"):
+            conn.execute(_schema_table_ddl(table="submissions"))
+        for table in ("artifacts", "reviews"):
+            if not self._has_column(conn=conn, table=table, column="submission_id"):
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN submission_id TEXT NOT NULL "
+                    "DEFAULT ''"
+                )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_submissions_target "
+            "ON submissions(target_type, target_id, attempt_index, created_seq)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_submission "
+            "ON artifacts(target_type, target_id, attempt_index, submission_id)"
+        )
 
     def _ensure_grant_scope(self, *, conn: Connection) -> None:
         # Same column definition the SCHEMA declares, so a migrated database

@@ -9,7 +9,7 @@ is required and what workflow policy applies to it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 # Matches every gated artifact upload/content endpoint ceiling. Kept explicit
@@ -35,6 +35,7 @@ class AssociatedEvidence:
     created_at: str
     updated_at: str
     order: int
+    submission_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +100,35 @@ class EvidenceReader(Protocol):
         attempt_index: int,
         roles: tuple[str, ...],
     ) -> tuple[SubmittedEvidence, ...]: ...
+
+
+@runtime_checkable
+class SubmissionSealer(Protocol):
+    """Freeze a target's live artifact composition as one submission attempt.
+
+    The only write Research asks Artifacts to make. It runs on the caller's
+    already-open transaction connection: Research owns the transition, and a
+    second connection would deadlock against it. Research decides WHEN a round
+    closes; Artifacts owns what that means to the rows."""
+
+    def seal(
+        self,
+        *,
+        conn: Any,
+        project_id: str,
+        target_type: str,
+        target_id: str,
+        attempt_index: int,
+        transition: str,
+    ) -> str: ...
+
+    def latest_submission_id(
+        self, *, conn: Any, target_type: str, target_id: str, attempt_index: int
+    ) -> str: ...
+
+    def submissions_for_targets(
+        self, *, conn: Any, target_type: str, target_ids: tuple[str, ...]
+    ) -> dict[str, list[dict[str, Any]]]: ...
 
 
 @runtime_checkable

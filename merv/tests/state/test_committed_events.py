@@ -97,7 +97,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_transition_variant_returns_committed_event_and_legacy_returns_state(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence
+            store=self.store, evidence_reader=self.evidence,
+            submissions=self.evidence
         )
         created = experiments.create(
             project_id=self.project_id, name="committed-event", intent="test"
@@ -172,7 +173,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_tracking_refresh_returns_the_exact_committed_ledger_event(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence
+            store=self.store, evidence_reader=self.evidence,
+            submissions=self.evidence
         )
         research = ResearchCoreFacade(experiments)
         created = experiments.create(
@@ -208,7 +210,8 @@ class CommittedEventTest(unittest.TestCase):
 
     def test_event_insert_failure_rolls_back_state_and_event_together(self) -> None:
         experiments = ExperimentService(
-            store=self.store, evidence_reader=self.evidence
+            store=self.store, evidence_reader=self.evidence,
+            submissions=self.evidence
         )
         created = experiments.create(
             project_id=self.project_id, name="rollback-event", intent="test"

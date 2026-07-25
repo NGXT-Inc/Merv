@@ -26,6 +26,13 @@ _ATTEMPT_TABLE_BY_TYPE = {"experiment": "experiments", "reflection": "reflection
 # base — and an abandoned one is closed; neither accepts new artifacts.
 _TERMINAL_REFLECTION_STATUSES = ("published", "abandoned")
 
+# A terminal experiment will never take another forward transition, so an
+# artifact submitted now would stay unsealed forever while still winning
+# latest-per-slot. Submitting DURING a review stays legal on purpose: it moves
+# the snapshot and invalidates the pinned verdict, which is the designed way to
+# correct work under review, and the next transition seals it.
+_CLOSED_EXPERIMENT_STATUSES = ("complete", "failed", "abandoned")
+
 
 class AssociationTargets:
     """Existence and attempt scoping for association targets (RC-owned SQL)."""
@@ -41,7 +48,7 @@ class AssociationTargets:
         if table is None:
             raise ValidationError(f"unsupported target type: {target_type}")
         attempt = ", attempt_index" if target_type in _ATTEMPT_TABLE_BY_TYPE else ""
-        status = ", status" if target_type == "reflection" else ""
+        status = ", status" if target_type in ("reflection", "experiment") else ""
         with closing(self.store.connect()) as conn:
             row = conn.execute(
                 f"SELECT project_id{attempt}{status} FROM {table} WHERE id = ?",
@@ -49,10 +56,20 @@ class AssociationTargets:
             ).fetchone()
         if row is None:
             raise NotFoundError(f"{target_type} not found: {target_id}")
-        if status and str(row["status"]) in _TERMINAL_REFLECTION_STATUSES:
+        if target_type == "reflection" and str(row["status"]) in _TERMINAL_REFLECTION_STATUSES:
             raise ValidationError(
                 f"reflection {target_id} is {row['status']} — the wave is "
                 "frozen and no longer accepts artifact submissions"
+            )
+        if target_type == "experiment" and str(row["status"]) in _CLOSED_EXPERIMENT_STATUSES:
+            # An upload accepted while a round is under review (or after the
+            # experiment ended) would land unsealed and win latest-per-slot,
+            # silently becoming the row the gate and the reviewer read — work
+            # nobody asked for, attributed to a round that already closed.
+            raise ValidationError(
+                f"experiment {target_id} is {row['status']} — it is not "
+                "accepting artifact submissions right now; wait for the "
+                "review verdict, then submit against the next round"
             )
         return AssociationTarget(
             project_id=str(row["project_id"]),

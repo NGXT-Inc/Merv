@@ -24,6 +24,7 @@ from .domain.reflection_policy import (
 )
 from .domain.review_snapshot import review_snapshot_id
 from .domain.artifact_evidence import (
+    latest_per_slot,
     preferred_associated_artifact,
     artifact_state_record,
 )
@@ -37,7 +38,12 @@ from .gate_evaluation import (
     RequirementEvaluation,
     evaluate_artifact_requirement,
 )
-from ..artifacts.ports import AssociatedEvidence, EvidenceReader, SubmittedDocument
+from ..artifacts.ports import (
+    AssociatedEvidence,
+    EvidenceReader,
+    SubmissionSealer,
+    SubmittedDocument,
+)
 from ..kernel.events import StoredEvent
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
@@ -60,9 +66,11 @@ class ExperimentService:
         *,
         store: BaseStateStore,
         evidence_reader: EvidenceReader,
+        submissions: SubmissionSealer,
     ) -> None:
         self.store = store
         self.evidence_reader = evidence_reader
+        self.submissions = submissions
 
     def create(
         self,
@@ -370,6 +378,9 @@ class ExperimentService:
         evidence = self.evidence_reader.artifacts_for_targets(
             target_type="experiment", target_ids=experiment_ids
         )
+        submissions = self.submissions.submissions_for_targets(
+            conn=conn, target_type="experiment", target_ids=experiment_ids
+        )
         return [
             self._assemble_state_with_gate(
                 conn=conn,
@@ -377,6 +388,7 @@ class ExperimentService:
                 tested_claims=claims.get(str(experiment["id"]), []),
                 evidence=evidence.get(str(experiment["id"]), ()),
                 reviews=reviews.get(str(experiment["id"]), []),
+                submissions=submissions.get(str(experiment["id"]), []),
             )
             for experiment in experiment_rows
         ]
@@ -389,15 +401,30 @@ class ExperimentService:
         tested_claims: list[dict[str, Any]],
         evidence: tuple[AssociatedEvidence, ...],
         reviews: list[dict[str, Any]],
+        submissions: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], GateEvaluation]:
         data = dict(experiment)
         data["tested_claims"] = tested_claims
         data["artifacts"] = [artifact_state_record(item) for item in evidence]
-        data["current_attempt_artifacts"] = [
-            artifact
-            for artifact in data["artifacts"]
-            if artifact.get("attempt_index") == data["attempt_index"]
-        ]
+        # Newest row per slot, not every row: sealed rounds leave the
+        # superseded report alive as history, and only the current one is
+        # "current". A no-op on rows written before submissions existed.
+        data["current_attempt_artifacts"] = latest_per_slot(
+            [
+                artifact
+                for artifact in data["artifacts"]
+                if artifact.get("attempt_index") == data["attempt_index"]
+            ]
+        )
+        data["submissions"] = (
+            submissions
+            if submissions is not None
+            else self.submissions.submissions_for_targets(
+                conn=conn,
+                target_type="experiment",
+                target_ids=(str(data["id"]),),
+            ).get(str(data["id"]), [])
+        )
         data["mlflow_run"] = self._mlflow_run_from_row(experiment=data)
         for review in reviews:
             review["findings"] = json.loads(review.pop("findings_json", "[]"))
@@ -642,6 +669,20 @@ class ExperimentService:
             status = experiment["status"]
             next_status = gate.require_transition(transition)
             now = now_iso()
+            # Seal the live composition as a submission attempt. After the gate
+            # (a refused transition seals nothing) and on this same connection
+            # — the artifacts component owns the SQL, we only say when.
+            # Every forward transition seals, not just submit_results: that is
+            # one rule instead of a maintained allowlist, and it preserves plan
+            # history at submit_design on the same terms as report history.
+            self.submissions.seal(
+                conn=conn,
+                project_id=experiment["project_id"],
+                target_type="experiment",
+                target_id=experiment_id,
+                attempt_index=int(experiment.get("attempt_index") or 1),
+                transition=transition,
+            )
             if transition == "complete":
                 conn.execute(
                     "UPDATE experiments SET status = ?, conclusion = ?, updated_at = ? WHERE id = ?",

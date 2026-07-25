@@ -9,7 +9,7 @@ from typing import Any
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE, GATED_ROLES
 
-from ..artifacts.ports import EvidenceReader
+from ..artifacts.ports import EvidenceReader, SubmissionSealer
 from ..kernel.secret_tokens import hash_secret, mint_secret, secret_digest_matches
 from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.identity import LOCAL_TENANT_ID
@@ -56,11 +56,13 @@ class ReviewService:
         experiments: ExperimentService,
         reflections: ReflectionService,
         evidence_reader: EvidenceReader,
+        submissions: SubmissionSealer,
     ) -> None:
         self.store = store
         self.experiments = experiments
         self.reflections = reflections
         self.evidence_reader = evidence_reader
+        self.submissions = submissions
 
     def request(
         self,
@@ -375,9 +377,9 @@ class ReviewService:
                 INSERT INTO reviews (
                   id, project_id, request_id, session_id, target_snapshot_id, target_type, target_id,
                   role, verdict, return_to, notes, synopsis, findings_json, evidence_json, created_at,
-                  created_seq
+                  created_seq, submission_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     review_id,
@@ -396,6 +398,20 @@ class ReviewService:
                     json.dumps(evidence or {}, sort_keys=True),
                     now_iso(),
                     next_created_seq(conn=conn, table="reviews"),
+                    # The round this verdict graded. The seal ran on the
+                    # forward transition that put the target under review, so
+                    # the newest submission for this attempt is that round.
+                    self.submissions.latest_submission_id(
+                        conn=conn,
+                        target_type=str(req["target_type"]),
+                        target_id=str(req["target_id"]),
+                        attempt_index=int(
+                            snapshot_from_id(
+                                snapshot_id=str(req["target_snapshot_id"])
+                            ).get("attempt_index")
+                            or 0
+                        ),
+                    ),
                 ),
             )
             conn.execute(
