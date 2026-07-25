@@ -41,10 +41,11 @@ from .domain.reflection_policy import (
 )
 from .domain.artifact_evidence import (
     artifact_state_record,
+    latest_per_slot,
     artifact_submission_recency_key,
     preferred_associated_artifact,
 )
-from ..artifacts.ports import EvidenceReader, SubmittedDocument
+from ..artifacts.ports import EvidenceReader, SubmissionSealer, SubmittedDocument
 from .domain.review_snapshot import review_snapshot_id
 from .domain.reflection_gates import (
     REFLECTION_GATE_TABLE,
@@ -80,11 +81,13 @@ class ReflectionService:
         claims: ReflectionClaimWriter,
         experiment_writer: ReflectionExperimentWriter,
         evidence_reader: EvidenceReader,
+        submissions: SubmissionSealer,
     ) -> None:
         self.store = store
         self.claims = claims
         self.experiment_writer = experiment_writer
         self.evidence_reader = evidence_reader
+        self.submissions = submissions
 
     # ---- create ----
 
@@ -292,11 +295,15 @@ class ReflectionService:
                     target_type="reflection", target_id=reflection_id
                 )
             ]
-            data["current_attempt_artifacts"] = [
-                res
-                for res in data["artifacts"]
-                if res.get("attempt_index") == data["attempt_index"]
-            ]
+            # Newest row per slot — the reflection wave seals on its forward
+            # transitions too, so superseded lens docs stay alive as history.
+            data["current_attempt_artifacts"] = latest_per_slot(
+                [
+                    res
+                    for res in data["artifacts"]
+                    if res.get("attempt_index") == data["attempt_index"]
+                ]
+            )
             if include_content:
                 data["corpus"] = self._hydrate_corpus_content(
                     corpus=data["corpus"]
@@ -844,6 +851,16 @@ class ReflectionService:
             status = reflection["status"]
             next_status = gate.require_transition(transition)
             now = now_iso()
+            # Same seal as the experiment FSM: freeze this round's lens docs
+            # so a re-run of the fan-out cannot delete what was reviewed.
+            self.submissions.seal(
+                conn=conn,
+                project_id=reflection["project_id"],
+                target_type="reflection",
+                target_id=reflection_id,
+                attempt_index=int(reflection.get("attempt_index") or 1),
+                transition=transition,
+            )
             if transition == "publish":
                 self._materialize_change_spec(conn=conn, reflection=reflection)
                 conn.execute(

@@ -3743,6 +3743,7 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
 .fig-edge--revised_to .react-flow__edge-path { stroke: var(--qualifies); stroke-dasharray: 6 4; }
 .fig-edge--tests .react-flow__edge-path { stroke: var(--mcp); }
 .fig-edge--ran_on .react-flow__edge-path { stroke: var(--active); }
+.fig-edge--submitted .react-flow__edge-path { stroke: var(--steel); }
 
 .fig-node {
   position: relative;
@@ -3794,6 +3795,10 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
 
 /* Type accent (left edge) */
 .fig-node--attempt    { border-left-color: var(--line-strong); }
+/* A submission is the round inside an attempt: steel reads as structure, the
+   same register as the attempt it sits under, not as a verdict. */
+.fig-node--submission { border-left-color: var(--steel); }
+.fig-node--artifact   { border-left-color: var(--ice); }
 .fig-node--resource   { border-left-color: var(--ice); }
 .fig-node--review     { border-left-color: var(--qualifies); }
 .fig-node--sandbox    { border-left-color: var(--active); }

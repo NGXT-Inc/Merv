@@ -19,6 +19,40 @@ def artifact_submission_recency_key(
     )
 
 
+def artifact_slot_key(artifact: dict[str, Any]) -> tuple[str, str, str]:
+    """The slot an artifact occupies, within a fixed target and attempt.
+
+    MUST mirror _supersede_slot's key (artifacts/submissions.py) minus the
+    target and attempt, which are already fixed by the caller. Kept in lockstep
+    by tests/state/test_submission_attempts.py."""
+    return (
+        str(artifact.get("role") or ""),
+        str(artifact.get("lens_id") or ""),
+        str(artifact.get("path") or ""),
+    )
+
+
+def latest_per_slot(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest artifact per slot, input order preserved.
+
+    Sealed rounds leave older rows alive (that is the point — a rejected
+    round's report stays retrievable), so "what is current" is the newest row
+    per slot rather than every row. On data written before submissions existed
+    this is a no-op: supersede deleted every older row, so there has only ever
+    been one row per slot and this selects the identical set — which is what
+    keeps the byte-stable review snapshot from moving."""
+    best: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for artifact in artifacts:
+        key = artifact_slot_key(artifact)
+        held = best.get(key)
+        if held is None or artifact_submission_recency_key(
+            artifact
+        ) > artifact_submission_recency_key(held):
+            best[key] = artifact
+    keep = {id(artifact) for artifact in best.values()}
+    return [artifact for artifact in artifacts if id(artifact) in keep]
+
+
 def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
     """Project one submitted artifact into the public Research record shape.
 
@@ -38,6 +72,7 @@ def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
         "role": evidence.role,
         "attempt_index": evidence.attempt_index,
         "submitted_order": evidence.order,
+        "submission_id": evidence.submission_id,
     }
 
 
@@ -78,7 +113,9 @@ def preferred_associated_artifact(
 
 
 __all__ = [
+    "artifact_slot_key",
     "artifact_state_record",
     "artifact_submission_recency_key",
+    "latest_per_slot",
     "preferred_associated_artifact",
 ]

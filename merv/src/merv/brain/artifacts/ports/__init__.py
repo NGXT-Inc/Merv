@@ -9,6 +9,7 @@ from .evidence import (
     SubmittedContent,
     SubmittedDocument,
     SubmittedEvidence,
+    SubmissionSealer,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "SubmittedContent",
     "SubmittedDocument",
     "SubmittedEvidence",
+    "SubmissionSealer",
 ]

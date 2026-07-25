@@ -1075,12 +1075,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
 
     def test_tracking_refresh_returns_exact_persisted_postgres_event(self) -> None:
         project_id = self._seed_project()
+        artifacts = ArtifactSubmissionService(
+            store=self.store,
+            association_targets=AssociationTargets(store=self.store),
+        )
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=ArtifactSubmissionService(
-                store=self.store,
-                association_targets=AssociationTargets(store=self.store),
-            ),
+            evidence_reader=artifacts,
+            submissions=artifacts,
         )
         created = experiments.create(
             project_id=project_id, name="tracking-refresh", intent="postgres"
@@ -1110,12 +1112,14 @@ class PostgresStoreBehaviorTest(unittest.TestCase):
         import psycopg
 
         project_id = self._seed_project()
+        artifacts = ArtifactSubmissionService(
+            store=self.store,
+            association_targets=AssociationTargets(store=self.store),
+        )
         experiments = ExperimentService(
             store=self.store,
-            evidence_reader=ArtifactSubmissionService(
-                store=self.store,
-                association_targets=AssociationTargets(store=self.store),
-            ),
+            evidence_reader=artifacts,
+            submissions=artifacts,
         )
         created = experiments.create(
             project_id=project_id, name="rollback-event", intent="postgres"

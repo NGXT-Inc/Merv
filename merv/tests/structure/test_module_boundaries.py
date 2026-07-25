@@ -208,6 +208,8 @@ TABLE_OWNERS = {
     "paper_links": RESEARCH_CORE,
     "artifacts": ARTIFACTS,
     "artifact_figures": ARTIFACTS,
+    # The seal writes both, and only Artifacts writes them.
+    "submissions": ARTIFACTS,
     "storage_objects": OBJECT_STORAGE,
     "storage_completion_tokens": OBJECT_STORAGE,
     "sandboxes": SANDBOX,

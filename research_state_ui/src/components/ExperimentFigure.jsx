@@ -14,6 +14,7 @@ import { useStreamAwarePoll } from '../store/useEventStream';
 
 const TYPE_GLYPH = {
   attempt: '◇',
+  submission: '▣',
   artifact: '▤',
   artifact_group: '▣',
   review: '☑',
@@ -37,6 +38,9 @@ function statusClass(node) {
       supported: 'done', weakened: 'revise', contradicted: 'failed',
       active: 'open', draft: 'neutral', abandoned: 'faded',
     }[s] || 'open';
+  }
+  if (node.type === 'submission') {
+    return { open: 'open', done: 'done', returned: 'revise', failed: 'failed' }[s] || 'done';
   }
   return {
     pending: 'neutral', active: 'open', done: 'done', failed: 'failed',
@@ -170,6 +174,13 @@ function FigurePanel({ projectId, node, onClose }) {
           <div className="fig-panel-meta">{node.label}</div>
           <Link className="btn btn--sm" to={px(`/claims/${ref.id}`)}>Open claim →</Link>
         </>
+      )}
+
+      {node.type === 'submission' && (
+        <div className="fig-panel-meta">
+          Round {meta.submission_index} of experiment attempt {meta.attempt_index}.
+          Everything submitted up to this point was frozen here.
+        </div>
       )}
 
       {ref.kind === 'review' && meta.notes && (
