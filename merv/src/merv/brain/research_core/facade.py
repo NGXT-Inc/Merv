@@ -116,7 +116,12 @@ class ResearchCore(Protocol):
         experiment_id: str,
         run: PersistedRunState,
         event_type: str | None = None,
+        delivery_id: int | None = None,
     ) -> ExperimentState: ...
+
+    def tracking_delivery_state(
+        self, *, project_id: str, experiment_id: str, delivery_id: int
+    ) -> ExperimentState | None: ...
 
     def refresh_tracking_run(
         self,
@@ -248,6 +253,7 @@ class ResearchCoreFacade:
         experiment_id: str,
         run: PersistedRunState,
         event_type: str | None = None,
+        delivery_id: int | None = None,
     ) -> ExperimentState:
         return cast(
             ExperimentState,
@@ -256,6 +262,19 @@ class ResearchCoreFacade:
                 experiment_id=experiment_id,
                 run=run,
                 event_type=event_type,
+                delivery_id=delivery_id,
+            ),
+        )
+
+    def tracking_delivery_state(
+        self, *, project_id: str, experiment_id: str, delivery_id: int
+    ) -> ExperimentState | None:
+        return cast(
+            "ExperimentState | None",
+            self._experiments.tracking_delivery_state(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                delivery_id=delivery_id,
             ),
         )
 

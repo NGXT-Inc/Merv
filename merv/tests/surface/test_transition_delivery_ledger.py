@@ -275,6 +275,10 @@ def _normalized(value: Any, *, project_id: str, experiment_id: str) -> Any:
             key: (
                 "<timestamp>"
                 if key in {"created_at", "updated_at"}
+                # The delivery key is a real event id, so it differs per
+                # transport; only its presence is comparable across them.
+                else "<delivery>"
+                if key == "delivery_id"
                 else _normalized(
                     item, project_id=project_id, experiment_id=experiment_id
                 )
@@ -319,8 +323,15 @@ def _transition_row(
 
 
 def _tracking_row(
-    experiment_id: str, *, event_type: str, status: str, previous: str
+    experiment_id: str,
+    *,
+    event_type: str,
+    status: str,
+    previous: str,
+    delivery: int | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
+    # ``delivery`` is the id of the transition event this outcome belongs to —
+    # the correlation key that makes the append-only row exact proof of commit.
     return _row(
         event_type,
         experiment_id,
@@ -330,6 +341,7 @@ def _tracking_row(
             "run_id": "run-composed",
             "run_name": f"{experiment_id}-attempt-1",
             "status": status,
+            **({} if delivery is None else {"delivery_id": delivery}),
         },
     )
 
@@ -472,7 +484,7 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
                 experiment_id=rest_experiment,
             ),
         )
-        expected = lambda experiment_id: [
+        expected = lambda experiment_id, cursor: [
             _transition_row(
                 experiment_id,
                 before="ready_to_run",
@@ -484,10 +496,12 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
                 event_type="experiment.mlflow_run_created",
                 status="RUNNING",
                 previous="",
+                # The transition event is the first row after the cursor.
+                delivery=cursor + 1,
             ),
         ]
-        self.assertEqual(mcp_rows, expected(mcp_experiment))
-        self.assertEqual(rest_rows, expected(rest_experiment))
+        self.assertEqual(mcp_rows, expected(mcp_experiment, mcp_cursor))
+        self.assertEqual(rest_rows, expected(rest_experiment, rest_cursor))
         self.assertEqual(
             _normalized(
                 mcp_rows, project_id=mcp_project, experiment_id=mcp_experiment
@@ -631,6 +645,7 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
                 event_type="experiment.mlflow_run_created",
                 status="RUNNING",
                 previous="",
+                delivery=cursor + 1,
             ),
             _row(
                 "experiment.exhibit_generated",
@@ -819,6 +834,7 @@ class TrackingOutageDegradationTest(unittest.TestCase):
                     "experiment.mlflow_run_unavailable",
                     self.experiment_id,
                     {
+                        "delivery_id": cursor + 1,
                         "error": (
                             "MLflow run creation failed: "
                             "mlflow control plane unreachable"
@@ -980,6 +996,34 @@ class LostTrackingWriteOverMcpTest(unittest.TestCase):
         self.assertEqual(row["status"], "running")
         self.assertEqual(row["mlflow_run_id"], "")
         self.assertEqual(len(self.tracking.create_calls), 1)
+
+    def test_lost_tracking_write_is_a_server_error_on_the_rest_route(self) -> None:
+        # The request was valid and its transition committed; only the server's
+        # own durable record failed. 400 would tell the agent to fix its call.
+        client = TestClient(self.app.fastapi_app, raise_server_exceptions=False)
+
+        with patch(
+            "merv.brain.research_core.experiments.ExperimentService.record_mlflow_run",
+            side_effect=RuntimeError("write-ahead log offline"),
+        ):
+            response = client.post(
+                f"/api/projects/{self.project_id}"
+                f"/experiments/{self.experiment_id}/transition",
+                json={"transition": "start_running"},
+            )
+
+        self.assertEqual(response.status_code, 500, response.text)
+        body = response.json()
+        self.assertEqual(body["error_code"], "tracking_persistence_failed")
+        for phrase in (
+            "already committed",
+            "must not be retried",
+            "may or may not exist",
+            "experiment.get_state",
+            "write-ahead log offline",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, body["detail"])
 
 
 if __name__ == "__main__":

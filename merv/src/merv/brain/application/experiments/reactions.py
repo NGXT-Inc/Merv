@@ -121,6 +121,7 @@ class ExperimentReactions:
             state, attempted = self._ensure_tracking_run(
                 state=context.state,
                 replace_terminal=transition == "retry_running",
+                delivery_id=context.event.id,
             )
         except TrackingPersistenceError:
             raise  # A durable outcome is this handler's promise; silence is worse.
@@ -147,7 +148,7 @@ class ExperimentReactions:
         return EventReaction(state=state)
 
     def _ensure_tracking_run(
-        self, *, state: ExperimentState, replace_terminal: bool
+        self, *, state: ExperimentState, replace_terminal: bool, delivery_id: int
     ) -> tuple[ExperimentState, bool]:
         """Return the state plus whether this call attempted a tracking run."""
         if self.tracking is None:
@@ -193,17 +194,19 @@ class ExperimentReactions:
             experiment_id=experiment_id,
             run=_persisted_run(created),
             adapter_failure=adapter_failure,
+            delivery_id=delivery_id,
         )
         return persisted, True
 
     def _persist_tracking_run(
         self, *, project_id: str, experiment_id: str, run: PersistedRunState,
-        adapter_failure: str = "",
+        delivery_id: int, adapter_failure: str = "",
     ) -> ExperimentState:
         """Write the tracking outcome durably, retrying once before failing loud."""
         try:
             return self.research.record_tracking_run(
-                project_id=project_id, experiment_id=experiment_id, run=run
+                project_id=project_id, experiment_id=experiment_id, run=run,
+                delivery_id=delivery_id,
             )
         except Exception as first:  # noqa: BLE001 - retryable unless it landed
             LOGGER.error(
@@ -211,20 +214,28 @@ class ExperimentReactions:
                 experiment_id, _message(first),
             )
         # A failed write can still have committed (a lost acknowledgement), and
-        # the tracking event is unconstrained: re-read before writing again so
-        # an ambiguous commit stays one durable record, not two.
+        # the tracking event is unconstrained: read the ledger for THIS
+        # delivery's key before writing again, so an ambiguous commit stays one
+        # durable record, not two.
         if (landed := self._landed_tracking_run(
-            project_id=project_id, experiment_id=experiment_id, run=run
+            project_id=project_id, experiment_id=experiment_id,
+            delivery_id=delivery_id,
         )) is not None:
+            # Name the row that is actually current: a concurrent delivery may
+            # have superseded this one, and the caller must read the database's
+            # truth rather than this delivery's intent.
             LOGGER.error(
-                "The failed MLflow tracking write for experiment %s is durable "
-                "after all; skipping the retry that would duplicate it.",
-                experiment_id,
+                "The failed MLflow tracking write for experiment %s (delivery %s) "
+                "is durable after all; skipping the retry that would duplicate "
+                "it. Current durable run: %s.",
+                experiment_id, delivery_id,
+                str((landed.get("mlflow_run") or {}).get("run_id") or "") or "none",
             )
             return landed
         try:
             return self.research.record_tracking_run(
-                project_id=project_id, experiment_id=experiment_id, run=run
+                project_id=project_id, experiment_id=experiment_id, run=run,
+                delivery_id=delivery_id,
             )
         except Exception as exc:  # noqa: BLE001 - re-raised as a server error below
             orphan = str(run.get("run_id") or "")
@@ -243,25 +254,28 @@ class ExperimentReactions:
             ) from exc
 
     def _landed_tracking_run(
-        self, *, project_id: str, experiment_id: str, run: PersistedRunState
+        self, *, project_id: str, experiment_id: str, delivery_id: int
     ) -> ExperimentState | None:
-        """Return the durable state when the failed write committed after all."""
+        """Return the durable state when THIS delivery's write committed.
+
+        Correlation is the delivery id carried in the append-only event, never
+        the mutable current row: an identical run id or adapter error from an
+        earlier delivery is not proof, and a concurrent delivery overwriting
+        the row is not disproof.
+        """
         try:
-            state = self.research.experiment_state(
-                experiment_id=experiment_id, project_id=project_id
+            return self.research.tracking_delivery_state(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                delivery_id=delivery_id,
             )
         except Exception as exc:  # noqa: BLE001 - the retry stays the fallback
             LOGGER.error(
-                "Could not re-read the MLflow tracking state of experiment %s "
+                "Could not re-read the MLflow tracking ledger of experiment %s "
                 "before retrying its write: %s",
                 experiment_id, _message(exc),
             )
             return None
-        persisted = state.get("mlflow_run") or {}
-        if run_id := str(run.get("run_id") or ""):
-            return state if str(persisted.get("run_id") or "") == run_id else None
-        error = str(run.get("error") or "")
-        return state if error and str(persisted.get("error") or "") == error else None
 
     def _finalize_tracking_run(
         self, *, state: ExperimentState, status: str

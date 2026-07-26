@@ -248,6 +248,18 @@ class RecordingTracking:
         raise AssertionError("TransitionExperiment must use its exhibit collaborator")
 
 
+class LostAck:
+    """A write that COMMITS and then fails to acknowledge.
+
+    The only honest model of an ambiguous commit: the durable event and the
+    current row both move, and the caller still sees an exception. A fake that
+    merely raises cannot distinguish a landed write from stale matching state.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
 class RecordingResearch:
     def __init__(
         self,
@@ -259,7 +271,7 @@ class RecordingResearch:
         persisted: dict[str, Any] | None = None,
         transition_error: Exception | None = None,
         persistence_error: Exception | None = None,
-        persistence_errors: list[Exception | None] | None = None,
+        persistence_errors: list[Exception | LostAck | None] | None = None,
     ) -> None:
         self.order = order
         self.before = before or _state("running", run=_open_run(), token="before")
@@ -269,12 +281,20 @@ class RecordingResearch:
         self.transition_error = transition_error
         self.persistence_error = persistence_error
         # Per-call outcomes, so a transient failure can be followed by success.
-        self.persistence_errors = list(persistence_errors or [])
+        self.persistence_errors: list[Exception | LostAck | None] = list(
+            persistence_errors or []
+        )
+        # The mutable experiments row: any delivery's write overwrites it.
+        self.current: dict[str, Any] | None = None
+        # The append-only ledger, keyed by the delivery that appended it.
+        self.ledger: dict[int, dict[str, Any]] = {}
         # Set by tests that make the durable re-read itself unavailable.
         self.state_error: Exception | None = None
+        self.ledger_error: Exception | None = None
         self.transition_committed = False
         self.transition_calls: list[dict[str, Any]] = []
         self.persist_calls: list[dict[str, Any]] = []
+        self.delivery_reads: list[int] = []
         self.verdicts: list[dict[str, Any]] = []
 
     def experiment_state(
@@ -314,6 +334,7 @@ class RecordingResearch:
         experiment_id: str,
         run: dict[str, Any],
         event_type: str | None = None,
+        delivery_id: int | None = None,
     ) -> dict[str, Any]:
         self.order.append("research.record_tracking")
         self.persist_calls.append(
@@ -322,6 +343,7 @@ class RecordingResearch:
                 "experiment_id": experiment_id,
                 "run": deepcopy(run),
                 "event_type": event_type,
+                "delivery_id": delivery_id,
             }
         )
         failure = (
@@ -329,13 +351,38 @@ class RecordingResearch:
             if self.persistence_errors
             else self.persistence_error
         )
+        if failure is None or isinstance(failure, LostAck):
+            state = self._commit(run=run, delivery_id=delivery_id)
+        if isinstance(failure, LostAck):
+            raise failure.error
         if failure is not None:
             raise failure
-        if self.persisted is not None:
-            return self.persisted
-        state = dict(self.committed)
-        state["mlflow_run"] = deepcopy(run)
         return state
+
+    def _commit(
+        self, *, run: dict[str, Any], delivery_id: int | None
+    ) -> dict[str, Any]:
+        """One write: the mutable row moves and the ledger gains one entry."""
+        if self.persisted is not None:
+            state = self.persisted
+        else:
+            state = dict(self.committed)
+            state["mlflow_run"] = deepcopy(run)
+        self.current = state
+        if delivery_id is not None:
+            self.ledger[int(delivery_id)] = state
+        return state
+
+    def tracking_delivery_state(
+        self, *, project_id: str, experiment_id: str, delivery_id: int
+    ) -> dict[str, Any] | None:
+        self.order.append("research.tracking_delivery")
+        self.delivery_reads.append(int(delivery_id))
+        if self.ledger_error is not None:
+            raise self.ledger_error
+        # A landed delivery reads back whatever the row now holds, exactly as
+        # the real re-read does — a later delivery may have superseded it.
+        return None if int(delivery_id) not in self.ledger else self.current
 
     def record_exhibit_verdict(
         self,
@@ -508,7 +555,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         create_result: dict[str, Any] | None = None,
         create_error: Exception | None = None,
         persistence_error: Exception | None = None,
-        persistence_errors: list[Exception | None] | None = None,
+        persistence_errors: list[Exception | LostAck | None] | None = None,
     ) -> tuple[
         TransitionExperiment,
         RecordingResearch,
@@ -725,15 +772,14 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         self.assertEqual(raised.exception.error_code, "tracking_persistence_failed")
 
     def test_start_persistence_failure_skips_a_retry_that_would_duplicate(self) -> None:
-        # The first write raised but committed (a lost acknowledgement); the
-        # re-read finds it, so no second write appends a duplicate event.
-        durable = _state("running", run=_open_run("run_new"), token="durable")
+        # A genuine lost acknowledgement: the write COMMITTED — the event and
+        # the row both moved — and still raised. The ledger read finds this
+        # delivery, so no second write appends a duplicate event.
         use_case, research, tracking, _feed, order = self._fixture(
             committed=_state("running", run=None),
-            before=durable,
             event=_event("start_running"),
             create_result=_created_run(),
-            persistence_error=RuntimeError("connection reset by peer"),
+            persistence_errors=[LostAck(RuntimeError("connection reset by peer"))],
         )
 
         with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
@@ -745,14 +791,122 @@ class StartAndRetryTransitionTest(unittest.TestCase):
 
         self.assertEqual(len(research.persist_calls), 1)
         self.assertEqual(len(tracking.create_calls), 1)
-        self.assertIn("research.state", order)
+        self.assertIn("research.tracking_delivery", order)
+        # The correlation key is the delivery, not the run id or the message.
+        self.assertEqual(research.persist_calls[0]["delivery_id"], 41)
+        self.assertEqual(research.delivery_reads, [41])
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
         self.assertNotIn("mlflow_warning", result)
         self.assertIn("is durable after all", "\n".join(logs.output))
 
-    def test_start_retries_when_the_reread_shows_no_durable_write(self) -> None:
-        # A re-read that cannot see the intended run means the first write
-        # really did roll back — the retry is the correct move.
+    def test_start_ignores_a_prior_deliverys_identical_run_as_proof(self) -> None:
+        # A stale identical run id from an EARLIER delivery is not this
+        # delivery's write: the first write really did roll back, so the retry
+        # is required — skipping it would return success with no durable event.
+        persisted = _state("running", run=_open_run("run_new"), token="persisted")
+        # A prior retry_running delivery left an identical run on the row.
+        stale = _state("running", run=_open_run("run_new"), token="stale")
+        use_case, research, _tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            before=stale,
+            event=_event("start_running"),
+            persisted=persisted,
+            create_result=_created_run(),
+            persistence_errors=[RuntimeError("connection reset"), None],
+        )
+        research.ledger[7] = stale
+        research.current = stale
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR"):
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="start_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 2)
+        self.assertEqual(research.delivery_reads, [41])
+        self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
+
+    def test_start_ignores_a_prior_deliverys_identical_error_as_proof(self) -> None:
+        # The production-reachable shape of the same bug: an identical adapter
+        # error string from a prior delivery must not count as this delivery's
+        # durable outcome.
+        outage = "MLflow run creation failed: tracking control plane down"
+        stale = _state(
+            "running",
+            run={"run_id": None, "status": "", "error": outage},
+            token="stale",
+        )
+        persisted = _state(
+            "running",
+            run={"run_id": None, "status": "", "error": outage},
+            token="persisted",
+        )
+        use_case, research, _tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            before=stale,
+            event=_event("retry_running"),
+            persisted=persisted,
+            create_error=RuntimeError("tracking control plane down"),
+            persistence_errors=[RuntimeError("connection reset"), None],
+        )
+        research.ledger[7] = stale
+        research.current = stale
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR"):
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="retry_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 2)
+        self.assertEqual(research.delivery_reads, [41])
+        self.assertIs(research.ledger[41], persisted)
+        self.assertEqual(result["mlflow_warning"]["error"], outage)
+
+    def test_start_does_not_double_append_when_a_rival_delivery_overwrites(
+        self,
+    ) -> None:
+        # Two concurrent retry_running deliveries: A commits but loses the ack,
+        # B overwrites the current row before A re-reads. A's own event is in
+        # the ledger, so A must not append a second one — and it reports the
+        # row that is actually current rather than resurrecting its own run.
+        rival = _state("running", run=_open_run("run_rival"), token="rival")
+        use_case, research, tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            before=rival,  # what a current-row re-read would see: not A's run
+            event=_event("retry_running"),
+            create_result=_created_run(),
+            persistence_errors=[LostAck(RuntimeError("connection reset by peer"))],
+        )
+        original_read = research.tracking_delivery_state
+
+        def rival_wins(**kwargs: Any) -> dict[str, Any] | None:
+            research.current = rival  # B's write lands between A's write and read
+            research.ledger[99] = rival
+            return original_read(**kwargs)
+
+        research.tracking_delivery_state = rival_wins  # type: ignore[method-assign]
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="retry_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 1)
+        self.assertEqual(len(tracking.create_calls), 1)
+        self.assertEqual(research.delivery_reads, [41])
+        # The durable truth, not this delivery's intent.
+        self.assertEqual(result["mlflow_run"]["run_id"], "run_rival")
+        self.assertIn("Current durable run: run_rival", "\n".join(logs.output))
+
+    def test_start_retries_when_the_ledger_shows_no_durable_write(self) -> None:
+        # A ledger with no entry for this delivery means the first write really
+        # did roll back — the retry is the correct move.
         persisted = _state("running", run=_open_run("run_new"), token="persisted")
         use_case, research, _tracking, _feed, _order = self._fixture(
             committed=_state("running", run=None),
@@ -771,6 +925,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             )
 
         self.assertEqual(len(research.persist_calls), 2)
+        self.assertEqual(research.ledger, {41: research.current})
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
 
     def test_start_reread_failure_falls_back_to_the_retry(self) -> None:
@@ -782,7 +937,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             create_result=_created_run(),
             persistence_errors=[RuntimeError("connection reset"), None],
         )
-        research.state_error = RuntimeError("read replica unavailable")
+        research.ledger_error = RuntimeError("read replica unavailable")
 
         with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
             result = use_case.execute(

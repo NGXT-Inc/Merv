@@ -80,6 +80,10 @@ class RecordingExperimentService:
             )
         return self.state
 
+    def tracking_delivery_state(self, **kwargs):
+        self.calls.append(("tracking_delivery_state", kwargs))
+        return self.state
+
     def record_exhibit_verdict(self, **kwargs):
         self.calls.append(("record_exhibit_verdict", kwargs))
 
@@ -155,6 +159,9 @@ class RecordingResearchCoreFake:
 
     def record_tracking_run(self, **kwargs):
         return {"id": kwargs["experiment_id"], "mlflow_run": kwargs["run"]}
+
+    def tracking_delivery_state(self, **kwargs):
+        return None
 
     def refresh_tracking_run(self, **kwargs):
         return _committed(
@@ -309,6 +316,13 @@ class ComponentFacadeTest(unittest.TestCase):
                 experiment_id="exp_1",
                 run=run,
                 event_type="experiment.mlflow_run_refreshed",
+                delivery_id=41,
+            ),
+            service.state,
+        )
+        self.assertIs(
+            facade.tracking_delivery_state(
+                project_id="proj_1", experiment_id="exp_1", delivery_id=41
             ),
             service.state,
         )
@@ -357,6 +371,15 @@ class ComponentFacadeTest(unittest.TestCase):
                         "experiment_id": "exp_1",
                         "run": run,
                         "event_type": "experiment.mlflow_run_refreshed",
+                        "delivery_id": 41,
+                    },
+                ),
+                (
+                    "tracking_delivery_state",
+                    {
+                        "project_id": "proj_1",
+                        "experiment_id": "exp_1",
+                        "delivery_id": 41,
                     },
                 ),
                 (

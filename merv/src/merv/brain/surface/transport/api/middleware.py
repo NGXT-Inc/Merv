@@ -2,8 +2,10 @@
 
 Split out of gateway.py so the request-aware boundaries (RequestAuthenticator,
 ProjectAuthorizer, ToolInvocationGateway) stay within their line budget. The
-error handler maps the scope/visibility/human-session refusals to 403 and the
-not-found family to 404; everything else in the domain error hierarchy is 400.
+error handler maps the scope/visibility/human-session refusals to 403, the
+not-found family to 404, and a lost tracking write to 500 (a valid request the
+server failed to record is not a client error); everything else in the domain
+error hierarchy is 400.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+from merv.shared.errors import TrackingPersistenceError
 
 from ....kernel.request_context import begin_request, reset_request
 from ....kernel.state import monotonic_ms
@@ -84,6 +88,11 @@ def install_error_handlers(http: FastAPI) -> None:
             )
             else 404
             if isinstance(exc, (NotFoundError, ContentUnavailableError))
+            # The request was valid and its transition committed; only the
+            # server's own durable record failed. The message and error_code
+            # still carry the do-not-retry instruction verbatim.
+            else 500
+            if isinstance(exc, TrackingPersistenceError)
             else 400
         )
         return JSONResponse(

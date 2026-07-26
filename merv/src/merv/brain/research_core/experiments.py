@@ -60,6 +60,14 @@ def _query(conn, sql: str, parameters: tuple[Any, ...]) -> list[dict[str, Any]]:
     return rows_to_dicts(rows=conn.execute(sql, parameters).fetchall())
 
 
+# Every event record_mlflow_run can append — the ledger a delivery is proved by.
+TRACKING_EVENT_TYPES = (
+    "experiment.mlflow_run_created",
+    "experiment.mlflow_run_unavailable",
+    "experiment.mlflow_run_refreshed",
+)
+
+
 class ExperimentService:
     def __init__(
         self,
@@ -465,11 +473,21 @@ class ExperimentService:
         run: dict[str, Any],
         event_type: str | None = None,
         return_event: bool = False,
+        delivery_id: int | None = None,
     ) -> dict[str, Any] | CommittedTrackingRunRefresh:
+        """``delivery_id`` names the committed event this tracking outcome
+        belongs to. It rides in the append-only event payload, so its presence
+        there is exact proof this delivery's write committed — the mutable
+        experiments row cannot distinguish it from an identical earlier one."""
+
         def result(
             state: dict[str, Any], event: StoredEvent
         ) -> dict[str, Any] | CommittedTrackingRunRefresh:
             return CommittedTrackingRunRefresh(state, event) if return_event else state
+
+        delivery = (
+            {} if delivery_id is None else {"delivery_id": int(delivery_id)}
+        )
 
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
@@ -505,6 +523,7 @@ class ExperimentService:
                         "run_id": str(existing.get("mlflow_run_id") or ""),
                         "error": error,
                         "previous_run_id": str(existing.get("mlflow_run_id") or ""),
+                        **delivery,
                     },
                 )
                 state = self.get_state(experiment_id=experiment_id, conn=conn)
@@ -551,10 +570,42 @@ class ExperimentService:
                     "status": status,
                     "error": "" if run_id else error,
                     "previous_run_id": existing.get("mlflow_run_id") or "",
+                    **delivery,
                 },
             )
             state = self.get_state(experiment_id=experiment_id, conn=conn)
             return result(state, event)
+
+    def tracking_delivery_state(
+        self, *, project_id: str | None = None, experiment_id: str, delivery_id: int
+    ) -> dict[str, Any] | None:
+        """The durable state when this delivery's tracking event is committed.
+
+        Answers "did THIS delivery's write land?" from the append-only ledger,
+        so a stale identical run id or adapter error from an earlier delivery
+        can never be mistaken for it.
+        """
+        with closing(self.store.connect()) as conn:
+            project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM events
+                WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
+                  AND type IN (?, ?, ?)
+                ORDER BY id DESC
+                """,
+                (project_id, experiment_id, *TRACKING_EVENT_TYPES),
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(str(row["payload_json"] or "{}"))
+                except json.JSONDecodeError:  # pragma: no cover - defensive
+                    continue
+                if payload.get("delivery_id") == int(delivery_id):
+                    return self.get_state(
+                        experiment_id=experiment_id, project_id=project_id, conn=conn
+                    )
+        return None
 
     def _evaluate_gate(self, *, conn, experiment: dict[str, Any]) -> GateEvaluation:
         """Collect current facts once for enforcement, state, and guidance."""
