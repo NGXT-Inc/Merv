@@ -942,6 +942,9 @@ class SandboxRepository:
         phase: str,
         attempts: int,
         expected_project_id: str,
+        claimed_at: str,
+        due_before: str | None = None,
+        expected_updated_at: str | None = None,
     ) -> bool:
         """Atomically take the next cleanup attempt on a parked row (CAS).
 
@@ -951,14 +954,39 @@ class SandboxRepository:
         one VM taking several terminates, and the ledger carrying several
         confirmations for a single deletion.
 
-        The attempt marker in `phase` is the claim token. This advances it to
-        `attempts + 1` only while the row is still pending AND still reads the
-        `phase` the claimant saw, so exactly one worker gets through and the
-        losers skip. Returns False when somebody else already holds it.
+        The claim advances the attempt marker in `phase` and stamps
+        `updated_at` — but advancing the phase is not by itself exclusive.
+        Workers arrive STAGGERED: one that re-reads the row after the winner's
+        bump sees the new phase and would CAS cleanly against it, land in the
+        provider call the winner is still inside, and settle the same VM twice.
+        So the claim also asserts the row has not been touched since the
+        claimant looked, in whichever form its caller can prove:
+
+        - ``due_before`` (the retry sweep) — `updated_at` must be at or before
+          the backoff cutoff for this attempt. The winner's stamp is its own
+          `now`, so a straggler is refused until that attempt's backoff has
+          elapsed: the in-flight window and the retry cadence are one window.
+        - ``expected_updated_at`` (manual release) — the exact stamp the caller
+          read. Release may jump the backoff queue, but never past a claim it
+          never saw.
+
+        Returns False when somebody else already holds the attempt.
         """
         target_uid = str(sandbox_uid or "").strip()
         if not target_uid:
             return False
+        extra_clause = " AND status = ? AND phase = ?"
+        extra_values: list[Any] = [CLEANUP_PENDING_STATUS, str(phase or "")]
+        if due_before is not None:
+            # An unstamped row has no window left to wait out — same reading
+            # `cleanup_retry_due` gives a missing last-attempt clock.
+            extra_clause += " AND (updated_at IS NULL OR updated_at <= ?)"
+            extra_values.append(due_before)
+        elif expected_updated_at:
+            extra_clause += " AND updated_at = ?"
+            extra_values.append(expected_updated_at)
+        elif expected_updated_at is not None:
+            extra_clause += " AND (updated_at IS NULL OR updated_at = '')"
         with self.store.transaction() as conn:
             return (
                 self._guarded_update(
@@ -967,11 +995,11 @@ class SandboxRepository:
                     assignments="phase = ?, updated_at = ?",
                     values=[
                         cleanup_attempt_phase(attempts=int(attempts) + 1),
-                        now_iso(),
+                        claimed_at or now_iso(),
                     ],
                     expected_project_id=expected_project_id,
-                    extra_clause=" AND status = ? AND phase = ?",
-                    extra_values=[CLEANUP_PENDING_STATUS, str(phase or "")],
+                    extra_clause=extra_clause,
+                    extra_values=extra_values,
                 )
                 == 1
             )

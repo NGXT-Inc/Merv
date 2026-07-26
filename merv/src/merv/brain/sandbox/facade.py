@@ -880,7 +880,10 @@ class SandboxFacade:
         sandbox_uid = str(row.get("sandbox_uid") or "")
         # A parked row is shared ground: the cleanup sweep retries exactly these
         # rows. Claim the attempt before terminating, or one VM takes two
-        # provider calls and the ledger carries two settlements for it.
+        # provider calls and the ledger carries two settlements for it. Release
+        # is allowed to jump the retry backoff — that is the point of asking by
+        # hand — so its claim asserts the row is unchanged since this read
+        # instead, which is what refuses an attempt already in flight.
         if not self.lifecycle.claim_cleanup(row=row):
             view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
             view["hint"] = (

@@ -427,6 +427,12 @@ class CleanupSweepTest(unittest.TestCase):
     def _row(self, sandbox_uid: str) -> dict:
         return self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
 
+    def _due_at(self, sandbox_uid: str) -> datetime:
+        """An instant at which the parked row's backoff window has elapsed."""
+        parked_at = parse_iso(self._row(sandbox_uid)["updated_at"])
+        assert parked_at is not None
+        return parked_at + timedelta(minutes=5)
+
     def _sandbox_events(self, event_type: str) -> list[dict]:
         return [
             event
@@ -966,20 +972,25 @@ class CleanupSweepTest(unittest.TestCase):
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
         snapshot = self._row(uid)  # the copy BOTH workers are holding
         self.assertEqual(snapshot["status"], "cleanup_pending")
+        due_at = self._due_at(uid)
 
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
         lifecycle = self.app.sandboxes.lifecycle
 
         self.assertTrue(
-            lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+            lifecycle._retry_one_cleanup(  # noqa: SLF001
+                row=dict(snapshot), attempts=1, now=due_at
+            )
         )
         self.assertEqual(self._row(uid)["status"], "terminated")
         terminate_calls = len(self.backend.terminated)
 
         # Worker B wakes up with the same stale snapshot.
         self.assertTrue(
-            lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+            lifecycle._retry_one_cleanup(  # noqa: SLF001
+                row=dict(snapshot), attempts=1, now=due_at
+            )
         )
 
         settled = self._row(uid)
@@ -1001,6 +1012,7 @@ class CleanupSweepTest(unittest.TestCase):
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
         snapshot = self._row(uid)  # the copy BOTH workers are holding
         self.assertEqual(snapshot["status"], "cleanup_pending")
+        due_at = self._due_at(uid)
 
         # The provider can delete again: both workers would otherwise succeed.
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
@@ -1025,7 +1037,9 @@ class CleanupSweepTest(unittest.TestCase):
         def worker() -> None:
             try:
                 confirmed.append(
-                    lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+                    lifecycle._retry_one_cleanup(  # noqa: SLF001
+                        row=dict(snapshot), attempts=1, now=due_at
+                    )
                 )
             except BaseException as exc:  # noqa: BLE001 — reported, not swallowed
                 failures.append(exc)
@@ -1046,6 +1060,105 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(self.backend.terminated.count("sb-simultaneous"), 1)
         self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
         self.assertEqual(self._row(uid)["status"], "terminated")
+
+    def test_a_staggered_worker_never_enters_a_claimed_provider_call(self) -> None:
+        # The race the barrier test cannot reach: the workers are STAGGERED, not
+        # simultaneous. A claims the attempt and blocks inside the provider
+        # call; B — already past its own eligibility check — re-reads the row
+        # only then, so it sees A's fresh attempt marker and would CAS cleanly
+        # against it. Being still-due is what refuses B: A's claim stamped the
+        # row, so its backoff window has not elapsed. One VM, one terminate,
+        # one settlement.
+        uid = "uid_staggered"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-staggered")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)
+        self.assertEqual(snapshot["status"], "cleanup_pending")
+        due_at = self._due_at(uid)  # both workers pass eligibility at this clock
+
+        real_terminate = FakeSandboxBackend.terminate.__get__(self.backend)
+        self.backend.liveness_unavailable = False
+        lifecycle = self.app.sandboxes.lifecycle
+        inside = threading.Event()
+        finish = threading.Event()
+        worker_a: threading.Thread
+
+        def gated_terminate(*, sandbox_id: str):
+            # Only A parks in the provider call; B, if it ever gets here, is
+            # allowed straight through so the duplicate shows up as a count.
+            if threading.current_thread() is worker_a:
+                inside.set()
+                finish.wait(timeout=30)
+            return real_terminate(sandbox_id=sandbox_id)
+
+        self.backend.terminate = gated_terminate  # type: ignore[assignment]
+        outcome: list[bool] = []
+        failures: list[BaseException] = []
+
+        def run_a() -> None:
+            try:
+                outcome.append(
+                    lifecycle._retry_one_cleanup(  # noqa: SLF001
+                        row=dict(snapshot), attempts=1, now=due_at
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001 — reported, not swallowed
+                failures.append(exc)
+
+        worker_a = threading.Thread(target=run_a)
+        worker_a.start()
+        try:
+            self.assertTrue(inside.wait(timeout=30), "worker A never reached the provider")
+            # B arrives while A's terminate is still outstanding.
+            self.assertFalse(
+                lifecycle._retry_one_cleanup(  # noqa: SLF001
+                    row=dict(snapshot), attempts=1, now=due_at
+                )
+            )
+            self.assertEqual(
+                self.backend.terminated.count("sb-staggered"),
+                0,
+                "the losing worker reached the provider",
+            )
+        finally:
+            finish.set()
+            worker_a.join(timeout=30)
+            self.assertFalse(worker_a.is_alive(), "worker A never finished")
+
+        self.assertEqual(failures, [])
+        self.assertEqual(outcome, [True])  # only A owned the attempt
+        self.assertEqual(self.backend.terminated.count("sb-staggered"), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_retried")), 0)
+        self.assertEqual(self._row(uid)["status"], "terminated")
+
+    def test_a_release_refuses_a_row_claimed_since_it_read_it(self) -> None:
+        # Release may jump the retry backoff — asking by hand is the point —
+        # but not an attempt already taken. The sweep has claimed this row and
+        # its provider call has not reported yet, so the row still reads
+        # `cleanup_pending`: only the stamp the release holds says otherwise.
+        uid = "uid_release_inflight"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-release-inflight")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)  # the copy the release is working from
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+
+        lifecycle = self.app.sandboxes.lifecycle
+        self.assertTrue(
+            lifecycle.claim_cleanup_due(row=dict(snapshot), now=self._due_at(uid))
+        )
+
+        view = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
+
+        self.assertEqual(self.backend.terminated.count("sb-release-inflight"), 0)
+        self.assertEqual(view["status"], "cleanup_pending")
+        self.assertIn("Nothing was sent to the provider", view["hint"])
+        self.assertEqual(len(self._sandbox_events("sandbox.released")), 0)
 
     def test_a_release_holding_the_same_parked_row_never_settles_it_twice(
         self,

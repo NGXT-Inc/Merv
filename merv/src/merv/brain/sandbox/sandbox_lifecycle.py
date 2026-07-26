@@ -22,9 +22,10 @@ daemons keep scheduling. None of them decide life or death.
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
+from ..kernel.utils import format_iso
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from .sandbox_backend import SandboxBackend
 from .lifecycle_reducer import (
@@ -43,6 +44,7 @@ from .lifecycle_reducer import (
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     CLEANUP_PENDING_STATUS,
+    CLEANUP_RETRY_BACKOFF_SECONDS,
     cleanup_attempts,
     cleanup_retry_due,
     parse_iso,
@@ -53,6 +55,13 @@ from .repository import SandboxRepository
 # Probe for an in-process provisioning job thread; wired to
 # SandboxProvisioner.job_is_live by the facade after both exist.
 JobProbe = Callable[..., bool]
+
+
+def _retry_cutoff(*, attempts: int, now: datetime) -> datetime:
+    """The newest `updated_at` still due for a retry — `cleanup_retry_due`'s
+    window expressed as a bound the claim's WHERE clause can carry."""
+    index = min(max(attempts, 1), len(CLEANUP_RETRY_BACKOFF_SECONDS)) - 1
+    return now - timedelta(seconds=CLEANUP_RETRY_BACKOFF_SECONDS[index])
 
 
 class SandboxLifecycle:
@@ -692,7 +701,7 @@ class SandboxLifecycle:
             ):
                 continue
             try:
-                if self._retry_one_cleanup(row=row, attempts=attempts):
+                if self._retry_one_cleanup(row=row, attempts=attempts, now=now_dt):
                     confirmed += 1
                 else:
                     retried += 1
@@ -707,16 +716,47 @@ class SandboxLifecycle:
         }
 
     def claim_cleanup(self, *, row: dict[str, Any]) -> bool:
-        """Take exclusive ownership of one cleanup attempt on a parked row.
+        """Claim one cleanup attempt on the parked row the CALLER read.
 
-        Every worker that is about to terminate a `cleanup_pending` VM calls
-        this first — the retry sweep and a manual `sandbox.release` alike.
-        Re-reading the row only proves it was pending a moment ago; two workers
-        can both pass that check and both call the provider. The claim is a
-        conditional write, so exactly one of them proceeds and the other backs
-        off. Rows in any other status are not claimed here: their single owner
-        is established elsewhere (a live job, the reaper's own re-read).
+        The manual `sandbox.release` path: an operator asking by hand may jump
+        the retry backoff, but must not walk into an attempt already in flight.
+        The claim therefore asserts the exact `updated_at` the caller read, so
+        a claim taken since that read — a worker that may still be inside the
+        provider call — refuses this one. Rows in any other status are not
+        claimed here: their single owner is established elsewhere (a live job,
+        the reaper's own re-read).
         """
+        return self._claim_cleanup(
+            row=row, expected_updated_at=str(row.get("updated_at") or "")
+        )
+
+    def claim_cleanup_due(self, *, row: dict[str, Any], now: datetime) -> bool:
+        """Claim one cleanup attempt for the retry sweep, if still due.
+
+        The sweep's workers are STAGGERED, not simultaneous: the second one
+        re-reads the row after the first has claimed it and blocked in the
+        provider call, so a claim that only guards the attempt marker resyncs
+        to the winner's phase and lets it through. Being due is the guard that
+        survives that: the winner's claim stamps `updated_at`, and the row is
+        not askable again until its backoff has elapsed.
+        """
+        return self._claim_cleanup(
+            row=row,
+            now=now,
+            due_before=format_iso(
+                _retry_cutoff(attempts=cleanup_attempts(phase=row.get("phase")), now=now)
+            ),
+        )
+
+    def _claim_cleanup(
+        self,
+        *,
+        row: dict[str, Any],
+        now: datetime | None = None,
+        due_before: str | None = None,
+        expected_updated_at: str | None = None,
+    ) -> bool:
+        """Shared claim: a conditional write is the only exclusive read."""
         if str(row.get("status") or "") != CLEANUP_PENDING_STATUS:
             return True
         sandbox_uid = str(row.get("sandbox_uid") or "")
@@ -727,10 +767,18 @@ class SandboxLifecycle:
             phase=str(row.get("phase") or ""),
             attempts=cleanup_attempts(phase=row.get("phase")),
             expected_project_id=str(row.get("project_id") or ""),
+            # One clock throughout: the instant this attempt is claimed is the
+            # instant the next backoff window is measured from.
+            claimed_at=format_iso(now) if now is not None else "",
+            due_before=due_before,
+            expected_updated_at=expected_updated_at,
         )
 
-    def _retry_one_cleanup(self, *, row: dict[str, Any], attempts: int) -> bool:
+    def _retry_one_cleanup(
+        self, *, row: dict[str, Any], attempts: int, now: datetime | None = None
+    ) -> bool:
         """One retry. True once the provider confirms the sandbox is gone."""
+        now_dt = now or datetime.now(tz=UTC)
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
         project_id = str(row.get("project_id") or "")
@@ -744,10 +792,11 @@ class SandboxLifecycle:
                 return True  # somebody else finished it; it is no longer pending
             row = fresh
             attempts = cleanup_attempts(phase=row.get("phase")) or attempts
-        # ...and the re-read alone only proves it WAS pending. Claim it before
-        # the provider call, or a sibling worker that read the same row settles
-        # the same VM a second time and emits a second confirmation for it.
-        if not self.claim_cleanup(row=row):
+        # ...and the re-read alone only proves it WAS pending — it even hands a
+        # straggler the winner's fresh attempt marker. Claim it, still-due, or a
+        # sibling worker settles the same VM a second time and emits a second
+        # confirmation for it.
+        if not self.claim_cleanup_due(row=row, now=now_dt):
             return False
         # The verdict this row was headed for before cleanup stalled: an origin
         # error means it was on its way to `failed`, not to a clean `terminated`.
