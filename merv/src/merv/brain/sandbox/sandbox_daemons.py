@@ -8,7 +8,9 @@ reaper (wedged pre-running rows).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import suppress
+import logging
 import threading
 import time
 from datetime import UTC, datetime
@@ -37,6 +39,8 @@ from .sandbox_heartbeat import (
 # one. Hourly is far below the reaper's own cadence and self-bounding: the
 # callback is expected to do its own batching.
 DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 3600.0
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PeriodicMaintenance(Protocol):
@@ -87,6 +91,11 @@ class SandboxDaemons:
         self.periodic_maintenance = periodic_maintenance
         self._maintenance_interval = float(maintenance_interval_seconds)
         self._maintenance_due = 0.0  # first tick runs it
+        # A callback that reports a failure is the composition's only warning
+        # that housekeeping has stopped happening, so it is counted and logged
+        # rather than discarded with the return value.
+        self.maintenance_failures = 0
+        self.last_maintenance: object = None
         self.heartbeat = SandboxHeartbeatMonitor(
             repository=repository,
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
@@ -115,7 +124,14 @@ class SandboxDaemons:
     # ---------- expiration reaper ----------
 
     def _daemon_enabled(self) -> bool:
-        return self._reaper_enabled() or self._idle_reap_threshold() > 0
+        # Housekeeping counts as a reason to run: a composition with expiry and
+        # idle reaping both off (a local no-expiry backend) still has to prune,
+        # and this thread is the only timer the process owns.
+        return (
+            self._reaper_enabled()
+            or self._idle_reap_threshold() > 0
+            or self.periodic_maintenance is not None
+        )
 
     def _reaper_enabled(self) -> bool:
         # With force_expiry_reaper (hosted control) the env off-switch is
@@ -181,13 +197,26 @@ class SandboxDaemons:
     def maintenance_tick(self, *, now: float) -> bool:
         """Run the composition's housekeeping callback when its interval is due.
 
-        Returns whether it ran, so the cadence is testable without threads.
+        Returns whether it ran, so the cadence is testable without threads. The
+        callback's own verdict is kept and logged: housekeeping that reports
+        ``ok: False`` every hour is a subsystem that has quietly stopped, and
+        swallowing the return value is what makes that invisible.
         """
         if self.periodic_maintenance is None or now < self._maintenance_due:
             return False
         self._maintenance_due = now + self._maintenance_interval
-        with suppress(Exception):  # the reaper must never die
-            self.periodic_maintenance()
+        outcome: object
+        try:
+            outcome = self.periodic_maintenance()
+        except Exception as exc:  # noqa: BLE001 -- the reaper must never die
+            outcome = {"ok": False, "error": str(exc)}
+        self.last_maintenance = outcome
+        if isinstance(outcome, Mapping) and not outcome.get("ok", True):
+            self.maintenance_failures += 1
+            LOGGER.warning(
+                "periodic maintenance reported a failure: %s",
+                outcome.get("error") or outcome,
+            )
         return True
 
     def _idle_reap_threshold(self) -> float:

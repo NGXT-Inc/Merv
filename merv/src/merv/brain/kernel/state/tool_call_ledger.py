@@ -12,9 +12,10 @@ Every write is fail-safe: a ledger failure is counted and announced through
 
 from __future__ import annotations
 
+import sqlite3
 import threading
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -31,11 +32,20 @@ DEFAULT_RETENTION_DAYS = 30
 # backlog is actually cleared instead of merely reported as `more`.
 PRUNE_BATCH_ROWS = 20_000
 PRUNE_MAX_BATCHES = 50
-# A telemetry row may never make the call it observes wait. If the writer is
-# contended past this, the row is dropped and counted — the alternative is a
-# tool call paying the store's ten-second SQLite busy timeout for a log line.
+# A telemetry row may never make the call it observes wait — and the Python
+# writer lock is only the first of three places one can hang. Each gets its own
+# deadline: the lock, the database's lock queue, and the statement itself. The
+# alternative is a tool call paying the store's ten-second SQLite busy timeout,
+# or an unbounded hosted-Postgres lock wait, for a log line.
 LEDGER_LOCK_TIMEOUT_SECONDS = 0.25
 LEDGER_BUSY_TIMEOUT_MS = 250
+LEDGER_STATEMENT_TIMEOUT_MS = 1_000
+# A retention batch is observed by nobody, so it gets a deadline sized for a
+# 20k-row DELETE rather than the per-row one.
+PRUNE_STATEMENT_TIMEOUT_MS = 30_000
+# Backstop only: retiring dead threads' handles is what actually bounds the
+# per-thread cache; this bounds a process whose threads never retire.
+LEDGER_MAX_CACHED_CONNECTIONS = 64
 
 _STATUSES = frozenset({"ok", "error", "rejected"})
 
@@ -54,6 +64,54 @@ class DroppedRowSink(Protocol):
     """Told when a row could not be written, so no drop is ever silent."""
 
     def __call__(self, error: str) -> None: ...
+
+
+def _set_statement_deadline(*, conn: Connection, timeout_ms: int) -> bool:
+    """Bound how long one statement may run; False where the dialect has none.
+
+    Postgres counts milliseconds; SQLite has no statement deadline at all, only
+    a lock wait, so there the answer is honestly "no such knob".
+    """
+    try:
+        conn.execute(f"SET SESSION statement_timeout = {int(timeout_ms)}")
+    except Exception:  # noqa: BLE001 -- SQLite simply has no such setting
+        return False
+    return True
+
+
+def _bound_connection(
+    *, conn: Connection, lock_timeout_ms: int, statement_timeout_ms: int
+) -> None:
+    """Give ONE connection its own deadlines, whichever dialect backs it.
+
+    Applied at open, on the ledger's own connection, so the bound covers the
+    database work and not merely the Python lock in front of it. The record
+    store's connections keep their patient defaults: a real write is allowed to
+    queue, a telemetry row is not.
+
+    Raises when neither dialect's knob took — an undeadlined ledger connection
+    breaks the one promise this module makes, so the caller counts a drop
+    instead of writing through it.
+    """
+    if _set_statement_deadline(conn=conn, timeout_ms=statement_timeout_ms):
+        conn.execute(f"SET SESSION lock_timeout = {int(lock_timeout_ms)}")
+        return
+    conn.execute(f"PRAGMA busy_timeout = {int(lock_timeout_ms)}")
+
+
+def _dispose(*, conn: Connection, owner: threading.Thread) -> None:
+    """Release a handle, closing it only where closing is legal.
+
+    A SQLite connection may only be closed on the thread that opened it, so
+    from anywhere else the correct disposal is to drop the last reference and
+    let refcounting do it. Every other dialect is a network handle whose close
+    IS thread-safe — and not closing a psycopg handle leaks a server session
+    for the life of the process.
+    """
+    if isinstance(conn, sqlite3.Connection) and owner is not threading.current_thread():
+        return
+    with suppress(Exception):
+        conn.close()
 
 
 class ToolCallLedger:
@@ -86,7 +144,9 @@ class ToolCallLedger:
         # to register the handle it just opened.
         self._lock = threading.RLock()
         self._local = threading.local()
-        self._open: list[Connection] = []
+        # Owner thread alongside each handle: the owner is what says whether an
+        # entry is still reachable and whether closing it here would be legal.
+        self._open: list[tuple[threading.Thread, Connection]] = []
 
     def record(
         self,
@@ -158,13 +218,18 @@ class ToolCallLedger:
         deleted = 0
         more = False
         try:
-            for _ in range(max(1, int(max_batches))):
-                batch, more = self._delete_before(cutoff=cutoff)
-                deleted += batch
-                if not more:
-                    break
+            with self._sweep_deadline():
+                for _ in range(max(1, int(max_batches))):
+                    batch, more = self._delete_before(cutoff=cutoff)
+                    deleted += batch
+                    if not more:
+                        break
         except Exception as exc:  # noqa: BLE001 -- one sweep must not abort the pass
             self.failures += 1
+            # Same discipline as _write: the handle that just failed may be a
+            # dead one, and keeping it would leave retention disabled — every
+            # later hourly tick reusing the same corpse — until process restart.
+            self._discard()
             return {
                 "deleted": deleted,
                 "ok": False,
@@ -178,9 +243,8 @@ class ToolCallLedger:
         with self._lock:
             handles, self._open = self._open, []
             self._local = threading.local()
-        for conn in handles:
-            with suppress(Exception):  # a foreign thread's SQLite handle
-                conn.close()
+        for owner, conn in handles:
+            _dispose(conn=conn, owner=owner)
 
     def _insert(
         self,
@@ -241,8 +305,9 @@ class ToolCallLedger:
         Append-only, so a plain connection is enough: no read-then-write means
         no need for the store's single-writer transaction on every call. The
         lock keeps concurrent rows from contending for the database write lock
-        with each other, and its timeout is the promise that a contended ledger
-        drops a row instead of delaying the call it was observing.
+        with each other; its timeout plus the connection's own lock/statement
+        deadlines (see ``_bound_connection``) are together the promise that a
+        contended ledger drops a row instead of delaying the call it observed.
         """
         if not self._lock.acquire(timeout=LEDGER_LOCK_TIMEOUT_SECONDS):
             raise LedgerBusy("tool-call ledger writer is busy")
@@ -258,7 +323,7 @@ class ToolCallLedger:
             self._lock.release()
 
     def _connection(self) -> Connection:
-        """This thread's cached connection, opened once and reused.
+        """This thread's cached connection, opened once, deadlined, and reused.
 
         Cached per THREAD rather than per instance because rows are written
         from the HTTP threadpool and the reaper thread, and a SQLite handle may
@@ -270,12 +335,61 @@ class ToolCallLedger:
         if conn is not None:
             return conn
         conn = self._store.connect()
-        with suppress(Exception):  # dialects without the pragma keep their own
-            conn.execute(f"PRAGMA busy_timeout = {LEDGER_BUSY_TIMEOUT_MS}")
+        try:
+            _bound_connection(
+                conn=conn,
+                lock_timeout_ms=LEDGER_BUSY_TIMEOUT_MS,
+                statement_timeout_ms=LEDGER_STATEMENT_TIMEOUT_MS,
+            )
+        except Exception:
+            # A connection that can wait forever is worse than no connection:
+            # the caller counts a drop, which is exactly the promised behavior.
+            with suppress(Exception):
+                conn.close()
+            raise
         self._local.conn = conn
         with self._lock:
-            self._open.append(conn)
+            self._retire_dead_threads()
+            self._open.append((threading.current_thread(), conn))
         return conn
+
+    def _retire_dead_threads(self) -> None:
+        """Release handles whose owning thread is gone.
+
+        A retired worker's ``threading.local`` slot dies with it, leaving this
+        list the only thing holding its connection open — on hosted Postgres,
+        one server session per thread the pool ever churned through. Swept only
+        when a NEW connection is opened, which is the one moment worker
+        turnover can have happened, so no row on the hot path pays for it.
+        """
+        live: list[tuple[threading.Thread, Connection]] = []
+        for owner, conn in self._open:
+            if owner.is_alive():
+                live.append((owner, conn))
+            else:
+                _dispose(conn=conn, owner=owner)
+        # Backstop for a process whose threads never retire. Overflow entries
+        # are forgotten, never closed: their thread is alive and still writing
+        # through them, and forgetting both bounds this map and hands disposal
+        # back to refcounting for when that thread does finally retire.
+        overflow = max(0, len(live) - LEDGER_MAX_CACHED_CONNECTIONS)
+        self._open = live[overflow:]
+
+    @contextmanager
+    def _sweep_deadline(self) -> Iterator[None]:
+        """Widen this thread's statement deadline for one retention sweep.
+
+        The per-row deadline is short because a row must never delay the call
+        it observes. A 20k-row DELETE on the reaper thread delays nobody and
+        legitimately outlives one second, so the sweep borrows a longer
+        deadline and hands it straight back.
+        """
+        conn = self._connection()
+        _set_statement_deadline(conn=conn, timeout_ms=PRUNE_STATEMENT_TIMEOUT_MS)
+        try:
+            yield
+        finally:
+            _set_statement_deadline(conn=conn, timeout_ms=LEDGER_STATEMENT_TIMEOUT_MS)
 
     def _discard(self) -> None:
         """Drop a connection that just failed so the next row reconnects."""
@@ -283,8 +397,8 @@ class ToolCallLedger:
         self._local.conn = None
         if conn is None:
             return
-        with self._lock, suppress(ValueError):
-            self._open.remove(conn)
+        with self._lock:
+            self._open = [entry for entry in self._open if entry[1] is not conn]
         with suppress(Exception):
             conn.close()
 
@@ -329,8 +443,11 @@ class ToolCallLedger:
 
 __all__ = [
     "DEFAULT_RETENTION_DAYS",
+    "LEDGER_MAX_CACHED_CONNECTIONS",
+    "LEDGER_STATEMENT_TIMEOUT_MS",
     "PRUNE_BATCH_ROWS",
     "PRUNE_MAX_BATCHES",
+    "PRUNE_STATEMENT_TIMEOUT_MS",
     "TOOL_CALL_RETENTION_DAYS_ENV_VAR",
     "LedgerBusy",
     "ToolCallLedger",

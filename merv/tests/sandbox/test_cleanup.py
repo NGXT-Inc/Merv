@@ -14,11 +14,14 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities
+from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
 from merv.brain.application.maintenance import CleanupService
 
 
@@ -311,6 +314,36 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertTrue(daemons.maintenance_tick(now=100_000.0))
         self.assertEqual(len(runs), 2)
 
+    def test_the_daemon_starts_for_retention_even_with_every_reaper_off(self) -> None:
+        """A composition with expiry AND idle reaping disabled still has to
+        prune — this thread is the only timer the process owns, so retention
+        cannot be a passenger that never boards."""
+        off = {
+            "RESEARCH_PLUGIN_SANDBOX_REAPER": "0",
+            "MERV_SANDBOX_IDLE_SECONDS": "",
+        }
+        with patch.dict(os.environ, off, clear=False):
+            daemons = SandboxDaemons(
+                repository=object(),  # type: ignore[arg-type]
+                backend=SimpleNamespace(
+                    capabilities=BackendCapabilities(name="stub", enforce_expiry=False)
+                ),  # type: ignore[arg-type]
+                provisioner=object(),  # type: ignore[arg-type]
+                lifecycle=SimpleNamespace(reap_row=lambda **_kwargs: True),  # type: ignore[arg-type]
+                sample_metrics=lambda **_kwargs: {},
+            )
+            self.addCleanup(daemons.stop)
+            self.assertFalse(daemons._reaper_enabled())  # noqa: SLF001 -- the gate under test
+            self.assertEqual(daemons._idle_reap_threshold(), 0.0)  # noqa: SLF001
+
+            daemons.start()
+            self.assertIsNone(daemons.reaper_thread, "nothing to do, nothing to run")
+
+            daemons.periodic_maintenance = lambda: {"ok": True, "deleted": 0}
+            daemons.start()
+            self.assertIsNotNone(daemons.reaper_thread)
+            self.assertTrue(daemons.reaper_thread.is_alive())
+
     def test_a_failing_maintenance_callback_never_kills_the_reaper(self) -> None:
         def explode() -> None:
             raise RuntimeError("database unreachable")
@@ -319,6 +352,29 @@ class CleanupSweepTest(unittest.TestCase):
         daemons.periodic_maintenance = explode
         daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
         self.assertTrue(daemons.maintenance_tick(now=0.0))
+        self.assertEqual(daemons.maintenance_failures, 1)
+
+    def test_a_maintenance_callback_that_reports_failure_is_not_ignored(self) -> None:
+        """The callback's verdict is the composition's only warning that
+        housekeeping has stopped; discarding the return value is what let a
+        dead connection disable retention until restart."""
+        reported = {"ok": False, "deleted": 0, "error": "connection closed"}
+        daemons = self.app.sandboxes.daemons
+        daemons.periodic_maintenance = lambda: reported
+        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
+
+        with self.assertLogs(
+            "merv.brain.sandbox.sandbox_daemons", level="WARNING"
+        ) as logs:
+            self.assertTrue(daemons.maintenance_tick(now=0.0))
+
+        self.assertEqual(daemons.maintenance_failures, 1)
+        self.assertEqual(daemons.last_maintenance, reported)
+        self.assertIn("connection closed", "\n".join(logs.output))
+
+        daemons.periodic_maintenance = lambda: {"ok": True, "deleted": 0}
+        self.assertTrue(daemons.maintenance_tick(now=100_000.0))
+        self.assertEqual(daemons.maintenance_failures, 1)
 
     def test_a_failing_blob_sweep_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingBlobs:

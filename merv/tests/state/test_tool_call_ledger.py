@@ -28,6 +28,8 @@ from merv.brain.kernel.state.store import (
 )
 from merv.brain.kernel.state.tool_call_ledger import (
     DEFAULT_RETENTION_DAYS,
+    LEDGER_BUSY_TIMEOUT_MS,
+    LEDGER_STATEMENT_TIMEOUT_MS,
     TOOL_CALL_RETENTION_DAYS_ENV_VAR,
     ToolCallLedger,
 )
@@ -43,6 +45,48 @@ class CountingStore:
     def connect(self):
         self.connects += 1
         return self._store.connect()
+
+
+class StubPostgresConnection:
+    """A connection that speaks SET SESSION and rejects PRAGMA, as PG does.
+
+    The hosted dialect is the one this module's deadlines exist for and the one
+    no test database can be, so it is stood in for at the connection seam.
+    """
+
+    def __init__(self, *, fail_write: str = "") -> None:
+        self.statements: list[str] = []
+        self.closed = False
+        self._fail_write = fail_write
+
+    def execute(self, sql, parameters=()):
+        statement = " ".join(str(sql).split())
+        if statement.startswith("PRAGMA"):
+            raise RuntimeError('syntax error at or near "PRAGMA"')
+        self.statements.append(statement)
+        if self._fail_write and statement.startswith("INSERT"):
+            raise RuntimeError(self._fail_write)
+        return self
+
+    def fetchone(self):
+        return None
+
+    def commit(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class StubPostgresStore:
+    def __init__(self, *, fail_write: str = "") -> None:
+        self.connections: list[StubPostgresConnection] = []
+        self._fail_write = fail_write
+
+    def connect(self) -> StubPostgresConnection:
+        conn = StubPostgresConnection(fail_write=self._fail_write)
+        self.connections.append(conn)
+        return conn
 
 LEDGER_INDEX_NAMES = frozenset(
     statement.split("IF NOT EXISTS ")[1].split()[0]
@@ -152,7 +196,8 @@ class Migration37Test(unittest.TestCase):
 class ToolCallLedgerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
+        self.db_path = Path(self.tmp.name) / "state.sqlite"
+        self.store = StateStore(db_path=self.db_path)
         self.ledger = ToolCallLedger(store=self.store, env={})
 
     def tearDown(self) -> None:
@@ -255,6 +300,23 @@ class ToolCallLedgerTest(unittest.TestCase):
         self.assertIn("<redacted>", str(row["tool"]))
         self.assertIn("<redacted>", str(row["error_head"]))
 
+    def test_a_short_prefixed_key_is_scrubbed_like_a_long_one(self) -> None:
+        """The verifier accepts an ``rr_sk_`` value by PREFIX alone, so the
+        scrubber may not be stricter than the thing it protects: the repo's own
+        ``rr_sk_known`` fixture is a live credential with a 5-character tail."""
+        self.ledger.reject(
+            tool="rr_sk_known",
+            source="http",
+            project_id="mk_x",
+            error="rejected key rr_sk_known",
+        )
+        (row,) = self._rows()
+        printed = str(row)
+        self.assertNotIn("rr_sk_known", printed)
+        self.assertNotIn("mk_x", printed)
+        self.assertEqual(row["tool"], "<redacted>")
+        self.assertIn("<redacted>", str(row["error_head"]))
+
     def test_control_characters_never_reach_a_label(self) -> None:
         self.ledger.reject(tool="tools/\x00call\nnext", source="mcp")
         (row,) = self._rows()
@@ -291,6 +353,123 @@ class ToolCallLedgerTest(unittest.TestCase):
         # One dial, then exactly one re-dial: the handle that failed was
         # discarded rather than cached forever, and no row re-dials needlessly.
         self.assertEqual(store.connects, 2)
+        ledger.close()
+
+    def test_a_postgres_connection_gets_lock_and_statement_deadlines_at_open(
+        self,
+    ) -> None:
+        """The bound has to cover the DATABASE, not just the Python lock: on
+        hosted Postgres a held lock would otherwise stall the in-path write and
+        therefore the tool call it was observing, forever."""
+        store = StubPostgresStore()
+        ledger = ToolCallLedger(store=store, env={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        (conn,) = store.connections
+        self.assertEqual(ledger.failures, 0)
+        self.assertEqual(
+            conn.statements[:2],
+            [
+                f"SET SESSION statement_timeout = {LEDGER_STATEMENT_TIMEOUT_MS}",
+                f"SET SESSION lock_timeout = {LEDGER_BUSY_TIMEOUT_MS}",
+            ],
+        )
+        self.assertTrue(conn.statements[2].startswith("INSERT INTO tool_calls"))
+        ledger.close()
+
+    def test_a_timed_out_write_is_a_counted_drop_not_a_raise(self) -> None:
+        dropped: list[str] = []
+        store = StubPostgresStore(
+            fail_write="canceling statement due to statement timeout"
+        )
+        ledger = ToolCallLedger(store=store, env={}, on_failure=dropped.append)
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        self.assertEqual(ledger.failures, 1)
+        self.assertEqual(dropped, ["canceling statement due to statement timeout"])
+
+    def test_a_connection_that_accepts_no_deadline_is_refused_outright(self) -> None:
+        """An undeadlined ledger connection is worse than no connection: it can
+        wait forever, which is the one thing this writer promises not to do."""
+
+        class DeadlinelessConnection:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def execute(self, sql, parameters=()):
+                raise RuntimeError("no such setting")
+
+            def close(self) -> None:
+                self.closed = True
+
+        class DeadlinelessStore:
+            def __init__(self) -> None:
+                self.connections: list[DeadlinelessConnection] = []
+
+            def connect(self) -> DeadlinelessConnection:
+                conn = DeadlinelessConnection()
+                self.connections.append(conn)
+                return conn
+
+        dropped: list[str] = []
+        store = DeadlinelessStore()
+        ledger = ToolCallLedger(store=store, env={}, on_failure=dropped.append)
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        self.assertEqual(ledger.failures, 1)
+        self.assertEqual(dropped, ["no such setting"])
+        (conn,) = store.connections
+        self.assertTrue(conn.closed, "a refused handle is not left dangling")
+
+    def test_the_sqlite_ledger_connection_carries_its_own_busy_timeout(self) -> None:
+        """Set on the LEDGER's connection as part of opening it, not left to a
+        generic pragma pass that hands out the record store's patient 10s."""
+        self.ledger.record(tool="claim.list", source="mcp", arguments={})
+        conn = self.ledger._local.conn  # noqa: SLF001 -- the setup under test
+        self.assertEqual(
+            conn.execute("PRAGMA busy_timeout").fetchone()[0], LEDGER_BUSY_TIMEOUT_MS
+        )
+        store_conn = self.store.connect()
+        try:
+            self.assertEqual(
+                store_conn.execute("PRAGMA busy_timeout").fetchone()[0], 10_000
+            )
+        finally:
+            store_conn.close()
+
+    def test_a_retired_threads_connection_is_swept_on_the_next_open(self) -> None:
+        """Worker turnover must not accumulate connections: a dead thread's
+        ``threading.local`` slot dies with it, so this cache is the only thing
+        still holding its handle — one PG server session per retired worker."""
+        store = CountingStore(self.store)
+        ledger = ToolCallLedger(store=store, env={})
+
+        worker = threading.Thread(
+            target=lambda: ledger.record(tool="claim.list", source="mcp", arguments={})
+        )
+        worker.start()
+        worker.join(timeout=5)
+
+        cached = list(ledger._open)  # noqa: SLF001 -- the cache under test
+        self.assertEqual(len(cached), 1)
+        (retired, handle) = cached[0]
+        self.assertFalse(retired.is_alive())
+
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+
+        surviving = list(ledger._open)  # noqa: SLF001 -- the cache under test
+        self.assertEqual([owner for owner, _ in surviving], [threading.current_thread()])
+        self.assertNotIn(handle, [conn for _, conn in surviving])
+        self.assertEqual(store.connects, 2)
+        ledger.close()
+
+    def test_the_connection_cache_is_bounded_even_with_no_turnover(self) -> None:
+        """Backstop: sweeping dead threads is what normally bounds the cache,
+        this bounds a process whose threads never retire."""
+        ledger = ToolCallLedger(store=self.store, env={})
+        alive = threading.current_thread()
+        ledger._open = [(alive, object()) for _ in range(5)]  # noqa: SLF001
+        with mock.patch.object(ledger_module, "LEDGER_MAX_CACHED_CONNECTIONS", 2):
+            ledger.record(tool="claim.list", source="mcp", arguments={})
+        # The two retained plus the one just opened; nothing grows without end.
+        self.assertEqual(len(ledger._open), 3)  # noqa: SLF001
         ledger.close()
 
     def test_a_contended_writer_drops_the_row_instead_of_waiting(self) -> None:
@@ -370,6 +549,51 @@ class ToolCallLedgerTest(unittest.TestCase):
         self.assertFalse(outcome["ok"])
         self.assertEqual(outcome["deleted"], 0)
         self.assertIn("no such table", outcome["error"])
+
+    def test_a_failed_prune_drops_its_handle_so_the_next_tick_reconnects(self) -> None:
+        """Retention may not stay off until process restart: Postgres closing
+        the reaper's connection would otherwise have every later hourly tick
+        reuse the same corpse and report another ignored failure."""
+        store = CountingStore(self.store)
+        ledger = ToolCallLedger(store=store, env={})
+        self._ancient(1)
+        self.assertTrue(ledger.prune()["ok"])
+        self.assertEqual(store.connects, 1)
+
+        ledger._local.conn.close()  # noqa: SLF001 -- the dead handle under test
+        self.assertFalse(ledger.prune()["ok"])
+        self.assertEqual(ledger.failures, 1)
+
+        self._ancient(1)
+        outcome = ledger.prune()
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["deleted"], 1)
+        self.assertEqual(store.connects, 2)  # exactly one re-dial
+        ledger.close()
+
+    def test_the_ledger_writes_and_prunes_again_once_the_database_recovers(
+        self,
+    ) -> None:
+        """Recovery for real, not merely a counted failure: the table comes
+        back and both paths work on the connection the ledger re-dialed."""
+        ledger = ToolCallLedger(store=self.store, env={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        with self.store.transaction() as conn:
+            conn.execute("DROP TABLE tool_calls")
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        self.assertFalse(ledger.prune()["ok"])
+        self.assertEqual(ledger.failures, 2)
+
+        StateStore(db_path=self.db_path)  # the table is back
+
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        self._ancient(1)
+        outcome = ledger.prune()
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["deleted"], 1)
+        self.assertEqual([row["tool"] for row in self._rows()], ["claim.list"])
+        self.assertEqual(ledger.failures, 2, "no new drops after recovery")
+        ledger.close()
 
     def test_retention_is_env_overridable_and_never_collapses_to_zero(self) -> None:
         self.assertEqual(

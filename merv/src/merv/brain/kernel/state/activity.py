@@ -60,18 +60,27 @@ def scrub_secret_text(text: str) -> str:
 
 # Presigned URLs are not the only credential that reaches a persisted column.
 # An auth failure quotes the header it rejected, and a caller can put anything
-# in a label; both land in the durable ledger. These three shapes cover it:
-# a bearer/basic header value, a named credential field, and this system's own
-# minted secrets (plus the common third-party prefixes and raw JWTs). The
-# length floors keep ordinary identifiers — `rp_run`, `mk_test` — out.
+# in a label; both land in the durable ledger. These shapes cover it: a
+# bearer/basic header value, a named credential field, this system's minted
+# prefixes, and generic token shapes.
 _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
 _CREDENTIAL_FIELD_RE = re.compile(
     r"(?i)\b(authorization|x-admin-token|api[_-]?key|access[_-]?token"
     r"|refresh[_-]?token|password|secret)\s*[:=]\s*[^\s,;&'\"]+"
 )
+# The known prefixes scrub whatever follows them, however short. The verifiers
+# accept a minted key by PREFIX alone — `rr_sk_known` is a live credential —
+# so a scrubber with a length floor would be laxer than the thing it protects,
+# and a short key would land verbatim in an indexed column a human later reads.
+# The cost is that an ordinary `rp_run`-shaped label redacts too; a lost
+# telemetry label is far cheaper than a persisted key.
+_MINTED_PREFIX_RE = re.compile(
+    r"\b(?:rr_sk_|mk_|mac_|mrt_|rp_|hf_|ghp_|sk-)[A-Za-z0-9_-]*"
+)
+# Generic shapes carry no prefix to key on, so structure and length are the
+# only signal separating a token from a word: a JWT's three base64url segments.
 _TOKEN_SHAPE_RE = re.compile(
-    r"\b(?:rr_sk_|mk_|mac_|mrt_|rp_|hf_|ghp_|sk-)[A-Za-z0-9_-]{20,}"
-    r"|\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*"
+    r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*"
 )
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
@@ -81,10 +90,11 @@ def scrub_credentials(text: str) -> str:
 
     Applied on the durable path only (ledger labels and ``error_head``): the
     in-memory rings keep the raw text the debug UI drills into, and paying for
-    three regex passes over every logged result would buy nothing there.
+    four regex passes over every logged result would buy nothing there.
     """
     text = _BEARER_RE.sub(r"\1 <redacted>", text)
     text = _CREDENTIAL_FIELD_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _MINTED_PREFIX_RE.sub("<redacted>", text)
     return _TOKEN_SHAPE_RE.sub("<redacted>", text)
 
 
