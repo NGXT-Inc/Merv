@@ -24,6 +24,7 @@ from .tracking_presentation import with_tracking_if_visible
 class TransitionResponse(SlimExperimentState, total=False):
     mlflow: TrackingContextPayload
     mlflow_guidance: str
+    mlflow_warning: dict[str, str]
     metrics_exhibit: dict[str, object]
     feed_note: str
 
@@ -103,6 +104,9 @@ class TransitionExperiment:
             experiment_id=experiment_id,
             include_credentials=include_tracking_credentials,
         )
+        warning = reacted.outcomes.get("tracking_start")
+        if isinstance(warning, dict):
+            response["mlflow_warning"] = cast(dict[str, str], warning)
         if transition in ("start_running", "retry_running"):
             response["metrics_exhibit"] = self._exhibit_expectation(
                 experiment_id=experiment_id, state=response

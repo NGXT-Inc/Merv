@@ -15,7 +15,11 @@ from ..events import (
     FailureMode,
     IdempotencyMode,
 )
-from ..ports.tracking import ExperimentTracking, TRACKING_TERMINAL_RUN_STATUSES
+from ..ports.tracking import (
+    CreateRunResult,
+    ExperimentTracking,
+    TRACKING_TERMINAL_RUN_STATUSES,
+)
 
 
 _FINAL_TRACKING_STATUS = {
@@ -34,6 +38,16 @@ _TRANSITION = "merv.brain.research_core.experiments.ExperimentService.transition
 _REVIEW = "merv.brain.research_core.reviews.ReviewService.submit"
 _REFRESH = "merv.brain.research_core.experiments.ExperimentService.record_mlflow_run"
 
+# Tracking availability is a deployment precondition (MERV_REQUIRE_AGENT_MLFLOW
+# is validated at startup), never a per-transition one: the transition is
+# already committed here, so an outage becomes durable state plus this warning.
+_TRACKING_REPAIR = (
+    "The transition is committed; only MLflow tracking degraded. No "
+    "plugin-created run is attached to this attempt. Read mlflow.context for "
+    "the logging environment, log to a run you create there, then call "
+    "mlflow.finalize_run with that run_id to attach it to the experiment."
+)
+
 
 def _reaction(
     producer: str, event_type: str, phase: str, handler: str, *,
@@ -49,7 +63,7 @@ def _reaction(
 EXPERIMENT_REACTION_CATALOG = (
     _reaction(
         _TRANSITION, "experiment.transitioned", "post_commit", "tracking_start",
-        failure="fatal",
+        failure="degraded",
         idempotency="requires_adapter_key_for_redelivery",
     ),
     _reaction(
@@ -83,13 +97,18 @@ class ExperimentReactions:
         self, context: EventContext[ExperimentState]
     ) -> EventReaction[ExperimentState]:
         transition = str(context.event.payload.get("transition") or "")
-        state = context.state
-        if transition in ("start_running", "retry_running"):
+        if transition not in ("start_running", "retry_running"):
+            return EventReaction(state=context.state)
+        try:
             state = self._ensure_tracking_run(
-                state=state,
+                state=context.state,
                 replace_terminal=transition == "retry_running",
             )
-        return EventReaction(state=state)
+        except Exception as exc:  # noqa: BLE001 - the commit must not be masked
+            return EventReaction(state=context.state, value=_warning(_message(exc)))
+        run = state.get("mlflow_run") or {}
+        error = "" if run.get("run_id") else str(run.get("error") or "")
+        return EventReaction(state=state, value=_warning(error) if error else None)
 
     def tracking_finalize(
         self, context: EventContext[ExperimentState]
@@ -119,12 +138,16 @@ class ExperimentReactions:
         experiment_id = str(state.get("id") or "")
         project_id = str(state.get("project_id") or "")
         attempt_index = int(state.get("attempt_index") or 1)
-        created = self.tracking.create_run(
-            project_id=project_id,
-            experiment_id=experiment_id,
-            attempt_index=attempt_index,
-            run_name=f"{experiment_id}-attempt-{attempt_index}",
-        )
+        created: CreateRunResult
+        try:
+            created = self.tracking.create_run(
+                project_id=project_id,
+                experiment_id=experiment_id,
+                attempt_index=attempt_index,
+                run_name=f"{experiment_id}-attempt-{attempt_index}",
+            )
+        except Exception as exc:  # noqa: BLE001 - an outage becomes durable state
+            created = {"error": f"MLflow run creation failed: {_message(exc)}"}
         if not (created.get("run_id") or created.get("error")):
             return state
         return self.research.record_tracking_run(
@@ -184,6 +207,14 @@ class ExperimentReactions:
             event=event,
         )
         return EventReaction(state=context.state, value=note)
+
+
+def _message(exc: Exception) -> str:
+    return str(exc).strip() or exc.__class__.__name__
+
+
+def _warning(error: str) -> dict[str, str]:
+    return {"tracking": "unavailable", "error": error, "repair": _TRACKING_REPAIR}
 
 
 def _persisted_run(run: dict[str, Any]) -> PersistedRunState:

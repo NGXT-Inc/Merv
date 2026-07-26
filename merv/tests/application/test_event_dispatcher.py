@@ -106,6 +106,23 @@ class EventDispatcherTest(unittest.TestCase):
                 idempotency="requires_adapter_key_for_redelivery",
             )
 
+    def test_degraded_entries_may_be_non_redeliverable_but_still_propagate(self) -> None:
+        entry = _catalog_entry(
+            failure="degraded",
+            idempotency="requires_adapter_key_for_redelivery",
+        )
+        dispatcher = EventDispatcher()
+
+        def escaping(_context):
+            raise RuntimeError("a degraded handler must record its own outcome")
+
+        dispatcher.bind_catalog((entry,), handlers={"probe": escaping})
+
+        with self.assertRaisesRegex(RuntimeError, "record its own outcome"):
+            dispatcher.dispatch(
+                event=_event(), phase="post_commit", state={"status": "running"}
+            )
+
     def test_catalog_identity_fields_are_required(self) -> None:
         for field in (
             "producer",

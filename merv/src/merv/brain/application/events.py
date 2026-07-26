@@ -1,5 +1,7 @@
-"""Synchronous committed-event reactions: fatal errors propagate, advisory
-errors drop, and any future replay must checkpoint ``(event.id, phase, handler)``.
+"""Synchronous committed-event reactions: fatal errors propagate, degraded
+handlers convert their own failures into durable state plus a caller-visible
+outcome, advisory errors drop, and any future replay must checkpoint
+``(event.id, phase, handler)``.
 """
 
 from __future__ import annotations
@@ -34,11 +36,16 @@ class DispatchResult(Generic[StateT]):
 
 
 EventHandler = Callable[[EventContext[Any]], EventReaction[Any]]
-FailureMode = Literal["fatal", "advisory"]
+FailureMode = Literal["fatal", "degraded", "advisory"]
 IdempotencyMode = Literal["repeat_safe", "requires_adapter_key_for_redelivery"]
+# A handler whose effect cannot be safely redelivered may only stop propagating
+# failures by recording its own durable outcome; "degraded" declares exactly
+# that, so an escaping exception from one stays a bug and still propagates.
 _DELIVERY_POLICIES = {
     ("fatal", "repeat_safe"),
     ("fatal", "requires_adapter_key_for_redelivery"),
+    ("degraded", "repeat_safe"),
+    ("degraded", "requires_adapter_key_for_redelivery"),
     ("advisory", "repeat_safe"),
 }
 

@@ -142,6 +142,7 @@ class RecordingTracking:
         order: list[str],
         *,
         create_result: dict[str, Any] | None = None,
+        create_error: Exception | None = None,
         finalize_result: dict[str, Any] | None = None,
         finalize_error: Exception | None = None,
         context_error: Exception | None = None,
@@ -149,6 +150,7 @@ class RecordingTracking:
     ) -> None:
         self.order = order
         self.create_result = create_result or {}
+        self.create_error = create_error
         self.finalize_result = finalize_result or {}
         self.finalize_error = finalize_error
         self.context_error = context_error
@@ -209,6 +211,8 @@ class RecordingTracking:
             "run_name": run_name,
         }
         self.create_calls.append(call)
+        if self.create_error is not None:
+            raise self.create_error
         return deepcopy(self.create_result)
 
     def finalize_run(
@@ -484,6 +488,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         event: StoredEvent,
         persisted: dict[str, Any] | None = None,
         create_result: dict[str, Any] | None = None,
+        create_error: Exception | None = None,
         persistence_error: Exception | None = None,
     ) -> tuple[
         TransitionExperiment,
@@ -500,7 +505,9 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             persisted=persisted,
             persistence_error=persistence_error,
         )
-        tracking = RecordingTracking(order, create_result=create_result)
+        tracking = RecordingTracking(
+            order, create_result=create_result, create_error=create_error
+        )
         feed = RecordingFeed(order)
         use_case = _use_case(
             research=research,
@@ -552,6 +559,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
         self.assertEqual(result["mlflow"]["run"]["run_id"], "run_new")
         self.assertEqual(result["mlflow"]["env"]["MLFLOW_RUN_ID"], "run_new")
+        self.assertNotIn("mlflow_warning", result)
         self.assertIn("metrics_exhibit", result)
         self.assertEqual(
             [
@@ -634,27 +642,68 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             result["mlflow_run"]["error"], "tracking control plane unavailable"
         )
 
-    def test_start_persistence_failure_propagates_after_commit_and_skips_response_phase(self) -> None:
-        failure = RuntimeError("tracking persistence failed")
-        use_case, research, tracking, feed, order = self._fixture(
+    def test_start_persistence_failure_degrades_to_a_warning_after_commit(self) -> None:
+        use_case, research, tracking, _feed, _order = self._fixture(
             committed=_state("running", run=None),
             event=_event("start_running"),
             create_result=_created_run(),
-            persistence_error=failure,
+            persistence_error=RuntimeError("tracking persistence failed"),
         )
 
-        with self.assertRaisesRegex(RuntimeError, "tracking persistence failed"):
-            use_case.execute(
-                experiment_id=EXPERIMENT_ID,
-                transition="start_running",
-                project_id=PROJECT_ID,
-            )
+        result = use_case.execute(
+            experiment_id=EXPERIMENT_ID,
+            transition="start_running",
+            project_id=PROJECT_ID,
+        )
 
         self.assertTrue(research.transition_committed)
+        self.assertEqual(result["status"], "running")
+        self.assertIsNone(result["mlflow_run"])
         self.assertEqual(tracking.create_calls[0]["attempt_index"], 3)
-        self.assertEqual(tracking.context_calls, [])
-        self.assertEqual(feed.calls, [])
-        self.assertNotIn("feed.advisory", order)
+        self.assertEqual(
+            result["mlflow_warning"]["error"], "tracking persistence failed"
+        )
+        self.assertIn("mlflow.finalize_run", result["mlflow_warning"]["repair"])
+
+    def test_start_adapter_failure_is_recorded_as_durable_run_error(self) -> None:
+        persisted = _state(
+            "running",
+            run={
+                "run_id": None,
+                "run_name": f"{EXPERIMENT_ID}-attempt-3",
+                "status": "",
+                "error": "MLflow run creation failed: tracking control plane down",
+            },
+            token="persisted-error",
+        )
+        use_case, research, _tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            event=_event("start_running"),
+            persisted=persisted,
+            create_error=RuntimeError("tracking control plane down"),
+        )
+
+        result = use_case.execute(
+            experiment_id=EXPERIMENT_ID,
+            transition="start_running",
+            project_id=PROJECT_ID,
+        )
+
+        self.assertTrue(research.transition_committed)
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(
+            research.persist_calls[0]["run"],
+            {"error": "MLflow run creation failed: tracking control plane down"},
+        )
+        self.assertEqual(
+            result["mlflow_warning"],
+            {
+                "tracking": "unavailable",
+                "error": "MLflow run creation failed: tracking control plane down",
+                "repair": result["mlflow_warning"]["repair"],
+            },
+        )
+        self.assertIn("mlflow.context", result["mlflow_warning"]["repair"])
 
     def test_retry_reuses_open_run_but_replaces_terminal_run_for_same_attempt(self) -> None:
         cases = (

@@ -180,6 +180,45 @@ class RecordingTracking:
         }
 
 
+class OutageTracking(RecordingTracking):
+    """Reachable for context and readback, unavailable for run creation."""
+
+    def create_run(self, **kwargs: Any) -> dict[str, Any]:
+        self.create_calls.append(dict(kwargs))
+        raise RuntimeError("mlflow control plane unreachable")
+
+    def finalize_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run_id: str,
+        status: str,
+        wait_seconds: float,
+    ) -> dict[str, Any]:
+        self.finalize_calls.append(
+            {
+                "project_id": project_id,
+                "experiment_id": experiment_id,
+                "run_id": run_id,
+                "status": status,
+                "wait_seconds": wait_seconds,
+            }
+        )
+        return {
+            "configured": True,
+            "run_id": run_id,
+            "terminal": True,
+            "run": {
+                "run_id": run_id,
+                "run_name": "agent-authored",
+                "status": status or "RUNNING",
+                "artifact_uri": f"s3://tracking/{run_id}",
+                "created_at": "2026-07-25T09:00:00Z",
+            },
+        }
+
+
 def _cursor(app: TestBrain) -> int:
     conn = app._store.connect()
     try:
@@ -695,6 +734,159 @@ class TransitionDeliveryAndLedgerTest(unittest.TestCase):
         self.assertEqual(tracking.finalize_calls[0]["status"], "FINISHED")
         self.assertEqual(tracking.results_calls, 1)
         self.assertEqual(tracking.context_calls, 3)
+
+
+class TrackingOutageDegradationTest(unittest.TestCase):
+    """A committed transition is never reported as a failure (audit APP-01)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.tracking = OutageTracking()
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            mlflow_tracking=self.tracking,
+        )
+        self.project_id = self.app.call_tool(
+            "project", {"action": "create", "name": "Tracking Outage"}
+        )["id"]
+        self.experiment_id = self.app.call_tool(
+            "experiment.create",
+            {
+                "project_id": self.project_id,
+                "name": "outage-start",
+                "intent": "Start running while MLflow is down.",
+            },
+        )["id"]
+        with self.app._store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?",
+                (self.experiment_id,),
+            )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _experiment_row(self) -> dict[str, Any]:
+        conn = self.app._store.connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT status, mlflow_run_id, mlflow_run_error
+                FROM experiments WHERE id = ?
+                """,
+                (self.experiment_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return dict(row)
+
+    def _start(self) -> dict[str, Any]:
+        return self.app.call_tool(
+            "experiment.transition",
+            {
+                "project_id": self.project_id,
+                "experiment_id": self.experiment_id,
+                "transition": "start_running",
+            },
+        )
+
+    def test_start_running_commits_and_reports_a_repairable_tracking_warning(
+        self,
+    ) -> None:
+        cursor = _cursor(self.app)
+
+        started = self._start()
+
+        self.assertEqual(started["status"], "running")
+        self.assertEqual(started["mlflow_warning"]["tracking"], "unavailable")
+        self.assertIn(
+            "mlflow control plane unreachable", started["mlflow_warning"]["error"]
+        )
+        self.assertIn("mlflow.finalize_run", started["mlflow_warning"]["repair"])
+        self.assertEqual(len(self.tracking.create_calls), 1)
+        self.assertEqual(
+            _ledger_delta(self, self.app, project_id=self.project_id, after_id=cursor),
+            [
+                _transition_row(
+                    self.experiment_id,
+                    before="ready_to_run",
+                    after="running",
+                    transition="start_running",
+                ),
+                _row(
+                    "experiment.mlflow_run_unavailable",
+                    self.experiment_id,
+                    {
+                        "error": (
+                            "MLflow run creation failed: "
+                            "mlflow control plane unreachable"
+                        ),
+                        "previous_run_id": "",
+                        "run_id": "",
+                        "run_name": "",
+                        "status": "",
+                    },
+                ),
+            ],
+        )
+        row = self._experiment_row()
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["mlflow_run_id"], "")
+        self.assertIn("mlflow control plane unreachable", row["mlflow_run_error"])
+        state = self.app.call_tool(
+            "experiment.get_state",
+            {"project_id": self.project_id, "experiment_id": self.experiment_id},
+        )
+        self.assertEqual(state["status"], "running")
+        self.assertIn(
+            "submit_results",
+            [item["transition"] for item in state["allowed_transitions"]],
+        )
+
+    def test_agent_run_repair_attaches_once_and_creates_no_second_run(self) -> None:
+        self._start()
+        cursor = _cursor(self.app)
+
+        repaired = [
+            self.app.call_tool(
+                "mlflow.finalize_run",
+                {
+                    "project_id": self.project_id,
+                    "experiment_id": self.experiment_id,
+                    "run_id": "agent-authored-run",
+                    "status": "FINISHED",
+                },
+            )
+            for _ in range(2)
+        ]
+
+        for response in repaired:
+            self.assertEqual(
+                response["experiment"]["mlflow_run"]["run_id"], "agent-authored-run"
+            )
+            self.assertEqual(
+                response["experiment"]["mlflow_run"]["status"], "FINISHED"
+            )
+        row = self._experiment_row()
+        self.assertEqual(row["mlflow_run_id"], "agent-authored-run")
+        self.assertEqual(row["mlflow_run_error"], "")
+        self.assertEqual(len(self.tracking.create_calls), 1)
+        rows = _ledger_delta(
+            self, self.app, project_id=self.project_id, after_id=cursor
+        )
+        self.assertEqual(
+            [row[0] for row in rows],
+            ["experiment.mlflow_run_refreshed", "experiment.mlflow_run_refreshed"],
+        )
+        self.assertEqual(
+            [row[3]["run_id"] for row in rows],
+            ["agent-authored-run", "agent-authored-run"],
+        )
+        self.assertEqual(
+            [row[3]["previous_run_id"] for row in rows], ["", "agent-authored-run"]
+        )
 
 
 if __name__ == "__main__":

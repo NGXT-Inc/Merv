@@ -49,7 +49,7 @@ class EventCatalogStructureTest(unittest.TestCase):
                     1,
                     "post_commit",
                     "tracking_start",
-                    "fatal",
+                    "degraded",
                     "requires_adapter_key_for_redelivery",
                 ),
                 (
