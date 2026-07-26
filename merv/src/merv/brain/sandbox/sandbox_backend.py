@@ -240,8 +240,15 @@ class SandboxBackend(SandboxDriver, Protocol):
 
     def health(self) -> dict: ...
 
-    def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
+    ) -> str | None:
         """Optionally find an orphan sandbox by experiment.
+
+        ``provider`` is the owner the ROW records, and it scopes the search the
+        same way it scopes ``qualified_sandbox_id``: the deterministic name is
+        derived from the experiment, so a sibling attempt on another provider
+        answers to the same name. Empty = the row names no owner.
 
         None means the provider answered and named nothing (or the backend has
         no such lookup). A provider that could not be asked RAISES — swallowing
@@ -360,8 +367,11 @@ class SandboxBackendBase:
         """Unsupported default: no hardware catalog is available."""
         return None
 
-    def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
+    ) -> str | None:
         """Unsupported default: no orphan lookup is available."""
+        _ = provider  # single-provider backend: it owns every row it serves
         return None
 
     def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:

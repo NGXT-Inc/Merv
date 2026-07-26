@@ -330,8 +330,17 @@ class SandboxRepository:
     def has_active_for_experiment(
         self, *, experiment_id: str, exclude_sandbox_uid: str | None = None
     ) -> bool:
-        """Whether the experiment has another live/provisioning sandbox."""
-        statuses = tuple({*ACTIVE_SANDBOX_STATUSES, "provisioning"})
+        """Whether the experiment has another sandbox that may still exist.
+
+        `cleanup_pending` counts. This guards the deterministic-name orphan
+        sweep, and a parked sibling is precisely the row whose VM may still be
+        up — one that answers to the same experiment-derived name. Leaving it
+        out lets the broad lookup find and destroy it while cleaning up a
+        different attempt (audit SAN-06).
+        """
+        statuses = tuple(
+            {*ACTIVE_SANDBOX_STATUSES, "provisioning", CLEANUP_PENDING_STATUS}
+        )
         if not statuses:
             return False
         placeholders = ", ".join("?" for _ in statuses)
@@ -369,6 +378,7 @@ class SandboxRepository:
         values: list[Any],
         expected_project_id: str,
         extra_clause: str = "",
+        extra_values: list[Any] | None = None,
     ) -> int:
         """One uid-keyed sandbox UPDATE bound to the project that owns the row.
 
@@ -389,7 +399,7 @@ class SandboxRepository:
         cursor = conn.execute(
             f"UPDATE sandboxes SET {assignments} "
             f"WHERE sandbox_uid = ?{owner_clause}{extra_clause}",
-            [*values, sandbox_uid, *owner_values],
+            [*values, sandbox_uid, *owner_values, *(extra_values or [])],
         )
         return int(getattr(cursor, "rowcount", 0))
 
@@ -923,6 +933,47 @@ class SandboxRepository:
                     + ", ".join(f"'{status}'" for status in terminal)
                     + ")"
                 ),
+            )
+
+    def claim_cleanup_attempt(
+        self,
+        *,
+        sandbox_uid: str,
+        phase: str,
+        attempts: int,
+        expected_project_id: str,
+    ) -> bool:
+        """Atomically take the next cleanup attempt on a parked row (CAS).
+
+        Re-reading a `cleanup_pending` row is a CHECK, not a claim: the daemon
+        sweep, the cloud CleanupService, and a manual `sandbox.release` can all
+        see the same pending row and all fire the destructive provider call —
+        one VM taking several terminates, and the ledger carrying several
+        confirmations for a single deletion.
+
+        The attempt marker in `phase` is the claim token. This advances it to
+        `attempts + 1` only while the row is still pending AND still reads the
+        `phase` the claimant saw, so exactly one worker gets through and the
+        losers skip. Returns False when somebody else already holds it.
+        """
+        target_uid = str(sandbox_uid or "").strip()
+        if not target_uid:
+            return False
+        with self.store.transaction() as conn:
+            return (
+                self._guarded_update(
+                    conn=conn,
+                    sandbox_uid=target_uid,
+                    assignments="phase = ?, updated_at = ?",
+                    values=[
+                        cleanup_attempt_phase(attempts=int(attempts) + 1),
+                        now_iso(),
+                    ],
+                    expected_project_id=expected_project_id,
+                    extra_clause=" AND status = ? AND phase = ?",
+                    extra_values=[CLEANUP_PENDING_STATUS, str(phase or "")],
+                )
+                == 1
             )
 
     def _mark_terminal(

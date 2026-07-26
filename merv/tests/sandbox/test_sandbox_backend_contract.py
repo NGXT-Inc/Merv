@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import tempfile
 import unittest
@@ -114,7 +115,7 @@ class SandboxBackendContractTest(unittest.TestCase):
             force_expiry_reaper=force_expiry_reaper,
         )
 
-    def test_backend_classes_expose_full_contract_surface(self) -> None:
+    def _backend_classes(self) -> list[type]:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MERV_MODE": "control"}, clear=False
         ):
@@ -127,6 +128,24 @@ class SandboxBackendContractTest(unittest.TestCase):
                 for descriptor in sandbox_driver_inventory()
             ]
         backend_classes.append(MultiplexingSandboxBackend)
+        return backend_classes
+
+    def test_orphan_lookup_takes_the_owner_the_row_records(self) -> None:
+        # The deterministic sandbox name is derived from the EXPERIMENT, so a
+        # sibling attempt on another provider answers to it too: the lookup is
+        # routed by the row's owner, exactly as qualified_sandbox_id is. A
+        # driver that drops the parameter turns every owner-routed cleanup into
+        # a TypeError at the one moment a possibly-billing VM must be deleted.
+        for backend_cls in [*self._backend_classes(), SandboxBackendBase]:
+            with self.subTest(backend=backend_cls.__name__):
+                self.assertIn(
+                    "provider",
+                    inspect.signature(backend_cls.find_sandbox_id).parameters,
+                    f"{backend_cls.__name__}.find_sandbox_id ignores its row's owner",
+                )
+
+    def test_backend_classes_expose_full_contract_surface(self) -> None:
+        backend_classes = self._backend_classes()
         for backend_cls in backend_classes:
             with self.subTest(backend=backend_cls.__name__):
                 for method in BACKEND_METHODS:

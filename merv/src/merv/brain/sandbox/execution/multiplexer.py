@@ -263,13 +263,36 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
 
     # ---------- fleet-wide operations ----------
 
-    def find_sandbox_id(
-        self, *, experiment_id: str, sandbox_uid: str = ""
-    ) -> str | None:
-        """First provider that recognizes the experiment wins, prefix attached.
+    def _lookup_targets(self, *, provider: str) -> dict[str, SandboxBackend]:
+        """The backends allowed to answer for a row, keyed by its owner."""
+        recorded = str(provider or "").strip().lower()
+        name = self._aliases.get(recorded, recorded)
+        if not name:
+            return self.backends
+        if name not in self.backends:
+            raise BackendUnavailableError(
+                f"sandbox belongs to provider {name!r}, which is not configured "
+                "in MERV_EXECUTION_BACKENDS"
+            )
+        return {name: self.backends[name]}
 
-        Orphans can live on any configured provider; deterministic sandbox
-        names are unique across them, so the first hit is the only hit.
+    def find_sandbox_id(
+        self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
+    ) -> str | None:
+        """Ask the provider the ROW records; only an ownerless row fans out.
+
+        Deterministic sandbox names are derived from the experiment, so a
+        sibling attempt on ANOTHER provider answers to the same name. Taking
+        the first hit across the fleet therefore terminates that sibling's VM
+        and reads its answer as proof the recorded owner's sandbox is gone —
+        the wrong attempt destroyed while the real one keeps billing behind a
+        terminalized row (audit SAN-06). A row that records its owner is
+        answered by that owner ALONE, exactly as ``qualified_sandbox_id``
+        routes an id; an owner that is no longer configured RAISES, because
+        nobody left can answer for it.
+
+        Only a row with no recorded owner (pre-multiplexer) fans out, and
+        there the first hit is the only hit — nothing else could own it.
 
         A provider outage does not mask the rest, but "nobody has it" is only
         returned when every provider actually answered — otherwise the last
@@ -277,7 +300,7 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
         proof the sandbox is gone (audit SAN-06).
         """
         unreachable: Exception | None = None
-        for name, backend in self.backends.items():
+        for name, backend in self._lookup_targets(provider=provider).items():
             try:
                 found = backend.find_sandbox_id(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid

@@ -151,6 +151,65 @@ class MultiplexerTest(unittest.TestCase):
         self.assertIsNotNone(found)
         self.assertTrue(found.startswith("beta:"))
 
+    def _name_orphan(self, backend: FakeSandboxBackend, sandbox_id: str) -> None:
+        """A live VM on `backend` answering to the experiment-derived name."""
+        backend.by_experiment["exp_1"] = sandbox_id
+        backend.alive[sandbox_id] = True
+
+    def _watch_lookups(self, backend: FakeSandboxBackend) -> list[str]:
+        asked: list[str] = []
+        inner = backend.find_sandbox_id
+
+        def find_sandbox_id(*, experiment_id: str, sandbox_uid: str = "", **_kw):
+            asked.append(sandbox_uid or experiment_id)
+            return inner(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
+
+        backend.find_sandbox_id = find_sandbox_id  # type: ignore[method-assign]
+        return asked
+
+    def test_find_sandbox_id_asks_only_the_provider_the_row_records(self) -> None:
+        # Both providers hold a VM answering to the same experiment-derived
+        # name — the sibling-attempt case. Taking the first fleet-wide hit
+        # would hand the caller alpha's id for a beta-owned row: alpha's VM
+        # gets terminated and its answer then classifies beta's row as gone.
+        self._name_orphan(self.alpha, "sb-alpha-sibling")
+        self._name_orphan(self.beta, "sb-beta-own")
+        asked_alpha = self._watch_lookups(self.alpha)
+
+        found = self.mux.find_sandbox_id(experiment_id="exp_1", provider="beta")
+
+        self.assertEqual(found, "beta:sb-beta-own")
+        self.assertEqual(asked_alpha, [], "the wrong provider was asked anyway")
+
+    def test_find_sandbox_id_resolves_the_recorded_owners_alias(self) -> None:
+        self._name_orphan(self.alpha, "sb-alpha-sibling")
+        self._name_orphan(self.beta, "sb-beta-own")
+
+        self.assertEqual(
+            self.mux.find_sandbox_id(experiment_id="exp_1", provider="beta_alias"),
+            "beta:sb-beta-own",
+        )
+
+    def test_find_sandbox_id_refuses_a_recorded_owner_nobody_can_reach(self) -> None:
+        # gamma left MERV_EXECUTION_BACKENDS. alpha and beta saying "not mine"
+        # is not evidence, and alpha's same-named VM is certainly not gamma's.
+        self._name_orphan(self.alpha, "sb-alpha-sibling")
+        asked_alpha = self._watch_lookups(self.alpha)
+
+        with self.assertRaises(BackendUnavailableError):
+            self.mux.find_sandbox_id(experiment_id="exp_1", provider="gamma")
+
+        self.assertEqual(asked_alpha, [])
+
+    def test_find_sandbox_id_still_fans_out_for_a_row_with_no_owner(self) -> None:
+        # A pre-multiplexer row names nobody, so the fleet-wide sweep is all
+        # there is — and there the first hit is the only hit.
+        self._name_orphan(self.beta, "sb-beta-own")
+
+        self.assertEqual(
+            self.mux.find_sandbox_id(experiment_id="exp_1"), "beta:sb-beta-own"
+        )
+
     def test_write_secrets_routes_by_prefix(self) -> None:
         calls: list[str] = []
         self.beta.write_secrets = (  # type: ignore[method-assign]
@@ -486,6 +545,74 @@ class LegacyRowLivenessRoutingTest(unittest.TestCase):
         self.assertEqual(view["sandbox_uid"], "uid_legacy")
         self.assertEqual(asked_alpha, [])
         self.assertEqual(self._row()["status"], "running")
+
+    # ---- cleanup of a row with no recorded id ----
+
+    def test_cleanup_never_destroys_a_same_named_attempt_on_another_provider(
+        self,
+    ) -> None:
+        # The worst shape this bug takes: a beta row that never recorded an id,
+        # so cleanup falls back to the experiment-derived deterministic name —
+        # a name an alpha sibling under the same experiment answers to as well.
+        # Searching the fleet destroys alpha's VM and then reads alpha's answer
+        # as proof beta's sandbox is gone: the wrong attempt killed, the real
+        # one still billing behind a terminalized row.
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid="uid_beta_noid",
+            project_id=self.project_id,
+            provider="beta",  # owner recorded, id never was
+            status="cleanup_pending",
+            phase="cleanup_attempt_1",
+        )
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid="uid_alpha_sibling",
+            project_id=self.project_id,
+            sandbox_id="alpha:sb-alpha-sibling",
+            provider="alpha",
+            status="cleanup_pending",
+            phase="cleanup_attempt_1",
+        )
+        self.alpha.by_experiment[exp_id] = "sb-alpha-sibling"
+        self.alpha.alive["sb-alpha-sibling"] = True
+        beta_lookups: list[str] = []
+        inner = self.beta.find_sandbox_id
+
+        def beta_find(*, experiment_id: str, sandbox_uid: str = "", **_kw):
+            beta_lookups.append(sandbox_uid)
+            return inner(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
+
+        self.beta.find_sandbox_id = beta_find  # type: ignore[method-assign]
+
+        self.app.sandboxes.lifecycle.terminate_vm(row=self._row("uid_beta_noid"))
+
+        # alpha's attempt is untouched: still alive, never terminated.
+        self.assertEqual(self.alpha.terminated, [])
+        self.assertTrue(self.alpha.alive["sb-alpha-sibling"])
+        self.assertEqual(self._row("uid_alpha_sibling")["status"], "cleanup_pending")
+        # ...and the broad experiment-name sweep never ran while a sibling that
+        # may still exist — parked counts — was attached to the experiment.
+        self.assertEqual(beta_lookups, ["uid_beta_noid"])
+
+    def test_a_parked_sibling_counts_as_one_that_may_still_exist(self) -> None:
+        # The guard underneath the test above, in its own right.
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid="uid_parked_sibling",
+            project_id=self.project_id,
+            sandbox_id="alpha:sb-parked",
+            provider="alpha",
+            status="cleanup_pending",
+        )
+
+        self.assertTrue(
+            self.app.sandboxes.repository.has_active_for_experiment(
+                experiment_id=exp_id, exclude_sandbox_uid="uid_other"
+            )
+        )
 
     # ---- a recorded owner nobody can reach ----
 

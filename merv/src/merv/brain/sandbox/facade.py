@@ -878,6 +878,15 @@ class SandboxFacade:
     def _release_row(self, *, row: dict[str, Any]) -> dict[str, Any]:
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
+        # A parked row is shared ground: the cleanup sweep retries exactly these
+        # rows. Claim the attempt before terminating, or one VM takes two
+        # provider calls and the ledger carries two settlements for it.
+        if not self.lifecycle.claim_cleanup(row=row):
+            view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
+            view["hint"] = (
+                "Nothing was sent to the provider: another cleanup attempt for this sandbox was already in flight, and a second one would terminate the same VM twice and settle it twice. `status` above is the row as it stands right now — if it is still cleanup_pending, that attempt has not reported yet; re-call sandbox.release to try again, or check the provider console."
+            )
+            return view
         self.provisioner.cancel(experiment_id=experiment_id, sandbox_uid=sandbox_uid)
         was_active = bool(
             row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES

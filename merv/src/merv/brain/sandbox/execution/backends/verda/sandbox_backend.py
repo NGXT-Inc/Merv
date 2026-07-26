@@ -187,7 +187,7 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
         return self._probe_health(lambda: self.client.list_instance_types())
 
     def find_sandbox_id(
-        self, *, experiment_id: str, sandbox_uid: str = ""
+        self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
         name = _sandbox_name(sandbox_uid or experiment_id)
         # A failed listing propagates: only a successful one that names nothing

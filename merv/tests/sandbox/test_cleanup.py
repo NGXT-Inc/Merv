@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -986,6 +987,93 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(len(self.backend.terminated), terminate_calls)
         self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
         self.assertEqual(len(self._sandbox_events("sandbox.cleanup_retried")), 0)
+
+    def test_two_simultaneous_workers_terminate_one_parked_vm_once(self) -> None:
+        # The race the sequential test above cannot reach: BOTH workers re-read
+        # the row and see it pending before either has settled anything. The
+        # re-read is a check, not a claim — without one, each fires its own
+        # terminate at the same VM and each writes its own confirmation, so the
+        # ledger says one deletion happened twice.
+        uid = "uid_simultaneous"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-simultaneous")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)  # the copy BOTH workers are holding
+        self.assertEqual(snapshot["status"], "cleanup_pending")
+
+        # The provider can delete again: both workers would otherwise succeed.
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        lifecycle = self.app.sandboxes.lifecycle
+        repository = lifecycle.repository
+        inner_get = repository.get_by_uid
+        # Hold each worker at the instant after its re-read, so neither can
+        # settle the row before the other has seen it pending.
+        gate = threading.Barrier(2, timeout=30)
+
+        def gated_get_by_uid(*, sandbox_uid: str):
+            row = inner_get(sandbox_uid=sandbox_uid)
+            if sandbox_uid == uid and row.get("status") == "cleanup_pending":
+                gate.wait()
+            return row
+
+        repository.get_by_uid = gated_get_by_uid  # type: ignore[method-assign]
+        confirmed: list[bool] = []
+        failures: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                confirmed.append(
+                    lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+                )
+            except BaseException as exc:  # noqa: BLE001 — reported, not swallowed
+                failures.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+                self.assertFalse(thread.is_alive(), "a cleanup worker never finished")
+        finally:
+            repository.get_by_uid = inner_get  # type: ignore[method-assign]
+
+        self.assertEqual(failures, [])
+        # Exactly one worker owned the attempt; the other found it taken.
+        self.assertEqual(sorted(confirmed), [False, True])
+        self.assertEqual(self.backend.terminated.count("sb-simultaneous"), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
+        self.assertEqual(self._row(uid)["status"], "terminated")
+
+    def test_a_release_holding_the_same_parked_row_never_settles_it_twice(
+        self,
+    ) -> None:
+        # Manual release and the cleanup sweep contend for exactly the same
+        # rows. A release working from a snapshot another worker has already
+        # acted on must not send a second terminate, nor write a second
+        # settlement over the first.
+        uid = "uid_release_race"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-release-race")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)
+        self.assertEqual(snapshot["status"], "cleanup_pending")
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+
+        first = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
+        self.assertEqual(first["status"], "terminated")
+        self.assertEqual(self.backend.terminated.count("sb-release-race"), 1)
+
+        second = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
+
+        self.assertEqual(self.backend.terminated.count("sb-release-race"), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.released")), 1)
+        self.assertEqual(second["status"], "terminated")
+        self.assertIn("Nothing was sent to the provider", second["hint"])
 
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:

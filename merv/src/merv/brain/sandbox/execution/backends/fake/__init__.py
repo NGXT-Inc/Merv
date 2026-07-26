@@ -189,7 +189,7 @@ class FakeSandboxBackend(SandboxBackendBase):
         return self.endpoints.get(sandbox_id)
 
     def find_sandbox_id(
-        self, *, experiment_id: str, sandbox_uid: str = ""
+        self, *, experiment_id: str, sandbox_uid: str = "", provider: str = ""
     ) -> str | None:
         sandbox_id = self.by_experiment.get(sandbox_uid or experiment_id)
         if sandbox_id and self.alive.get(sandbox_id):

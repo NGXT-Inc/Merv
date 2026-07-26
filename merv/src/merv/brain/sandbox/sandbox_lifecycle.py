@@ -277,17 +277,27 @@ class SandboxLifecycle:
         if sandbox_uid:
             lookup_uids.append(sandbox_uid)
         # Legacy fallback: old providers may only be findable by the
-        # experiment-derived deterministic name. Skip that broad lookup
-        # while another live sandbox is attached to the same experiment.
+        # experiment-derived deterministic name. Skip that broad lookup while
+        # another sandbox that may still exist — parked ones included — is
+        # attached to the same experiment and answers to that same name.
         if not active_sibling:
             lookup_uids.append("")
         if not lookup_uids:
             lookup_uids.append("")
         unreachable = ""
+        # Row-owner routing, the same rule `liveness` follows: the deterministic
+        # name is derived from the EXPERIMENT, so a sibling attempt on another
+        # provider answers to it too. Searching the fleet and taking the first
+        # hit terminates that sibling's VM and then reads its answer as proof
+        # this row's sandbox is gone (audit SAN-06). Only a row that records no
+        # owner may fan out.
+        provider = str((row or {}).get("provider") or "")
         for lookup_uid in lookup_uids:
             try:
                 orphan = self.backend.find_sandbox_id(
-                    experiment_id=experiment_id, sandbox_uid=lookup_uid
+                    experiment_id=experiment_id,
+                    sandbox_uid=lookup_uid,
+                    provider=provider,
                 )
             except Exception as exc:  # noqa: BLE001 — an outage is not "nothing is there"
                 unreachable = str(exc)
@@ -696,6 +706,29 @@ class SandboxLifecycle:
             "retried": retried,
         }
 
+    def claim_cleanup(self, *, row: dict[str, Any]) -> bool:
+        """Take exclusive ownership of one cleanup attempt on a parked row.
+
+        Every worker that is about to terminate a `cleanup_pending` VM calls
+        this first — the retry sweep and a manual `sandbox.release` alike.
+        Re-reading the row only proves it was pending a moment ago; two workers
+        can both pass that check and both call the provider. The claim is a
+        conditional write, so exactly one of them proceeds and the other backs
+        off. Rows in any other status are not claimed here: their single owner
+        is established elsewhere (a live job, the reaper's own re-read).
+        """
+        if str(row.get("status") or "") != CLEANUP_PENDING_STATUS:
+            return True
+        sandbox_uid = str(row.get("sandbox_uid") or "")
+        if not sandbox_uid:
+            return True
+        return self.repository.claim_cleanup_attempt(
+            sandbox_uid=sandbox_uid,
+            phase=str(row.get("phase") or ""),
+            attempts=cleanup_attempts(phase=row.get("phase")),
+            expected_project_id=str(row.get("project_id") or ""),
+        )
+
     def _retry_one_cleanup(self, *, row: dict[str, Any], attempts: int) -> bool:
         """One retry. True once the provider confirms the sandbox is gone."""
         experiment_id = str(row.get("experiment_id") or "")
@@ -710,6 +743,12 @@ class SandboxLifecycle:
             if fresh.get("status") != CLEANUP_PENDING_STATUS:
                 return True  # somebody else finished it; it is no longer pending
             row = fresh
+            attempts = cleanup_attempts(phase=row.get("phase")) or attempts
+        # ...and the re-read alone only proves it WAS pending. Claim it before
+        # the provider call, or a sibling worker that read the same row settles
+        # the same VM a second time and emits a second confirmation for it.
+        if not self.claim_cleanup(row=row):
+            return False
         # The verdict this row was headed for before cleanup stalled: an origin
         # error means it was on its way to `failed`, not to a clean `terminated`.
         origin_error = str(row.get("error") or "")
