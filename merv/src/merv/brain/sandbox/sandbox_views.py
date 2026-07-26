@@ -23,6 +23,7 @@ from .sandbox_support import (
     POLL_AFTER_SECONDS,
     cleanup_attempts,
     cleanup_inflight_token,
+    public_phase,
 )
 
 
@@ -205,7 +206,7 @@ def sandbox_row_view(
         "project_id": row.get("project_id"),
         "sandbox_id": row.get("sandbox_id"),
         "status": row.get("status"),
-        "phase": row.get("phase") or "",
+        "phase": public_phase(phase=row.get("phase")),
         "detail": row.get("detail") or "",
         "error": row.get("error") or "",
         "gpu": row.get("gpu") or "",

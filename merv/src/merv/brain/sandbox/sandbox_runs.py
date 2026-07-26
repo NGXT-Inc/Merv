@@ -108,18 +108,26 @@ class SandboxRunLedger:
         return bool(self.reconcile_row(row=row))
 
     def mark_final_observed(
-        self, *, sandbox_uid: str, expected_project_id: str
+        self,
+        *,
+        sandbox_uid: str,
+        expected_project_id: str,
+        expected_phase: str = "",
     ) -> None:
         """Record that the receipts were read successfully on the way terminal.
 
         Only this stamp earns the word `lost`; without it `_run_status` says
         `unknown`. Ownership-guarded like every other uid-keyed sandbox write:
-        the caller names the project it read the row from (audit SAN-02).
+        the caller names the project it read the row from (audit SAN-02), and a
+        caller holding a cleanup claim names its marker so a fenced-out
+        worker's stale read cannot land.
         """
         if not sandbox_uid:
             return
         self.repository.stamp_runs_observed(
-            sandbox_uid=sandbox_uid, expected_project_id=expected_project_id
+            sandbox_uid=sandbox_uid,
+            expected_project_id=expected_project_id,
+            expected_phase=expected_phase,
         )
 
     def _record(

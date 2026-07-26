@@ -128,6 +128,14 @@ def cleanup_inflight_token(*, phase: Any) -> str:
     return text.partition(":")[2]
 
 
+def public_phase(*, phase: Any) -> str:
+    """A phase safe to project: the in-flight ownership token never leaves the row."""
+    text = str(phase or "")
+    if not cleanup_inflight_token(phase=text):
+        return text
+    return cleanup_attempt_phase(attempts=cleanup_attempts(phase=text))
+
+
 def cleanup_claim_expired(*, claimed_at: datetime | None, now: datetime) -> bool:
     """Whether an in-flight marker is old enough for another worker to reclaim.
 

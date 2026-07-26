@@ -32,6 +32,7 @@ from merv.brain.sandbox.sandbox_support import (
     CLEANUP_INFLIGHT_DEADLINE_SECONDS,
     cleanup_inflight_token,
 )
+from merv.brain.sandbox.sandbox_views import sandbox_row_view
 from merv.brain.application.maintenance import CleanupService
 
 
@@ -1325,6 +1326,61 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(len(self._sandbox_events("sandbox.released")), 1)
         self.assertEqual(second["status"], "terminated")
         self.assertIn("Nothing was sent to the provider", second["hint"])
+
+    def test_a_fenced_out_workers_observation_stamp_never_lands(self) -> None:
+        # The stamp flips unfinished runs from `unknown` to `lost`, so a worker
+        # that lost its claim past the deadline must not land a read it took
+        # before the stall — only the holder of the row's current marker may.
+        uid = "uid_fenced_stamp"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-fenced-stamp")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        lifecycle = self.app.sandboxes.lifecycle
+        claimed_at = self._due_at(uid)
+        worker_a = lifecycle.claim_cleanup_due(row=self._row(uid), now=claimed_at)
+        self.assertTrue(worker_a)
+        stale = dict(self._row(uid))
+
+        # Past the deadline the sweep reclaims and re-parks under a new marker.
+        late = claimed_at + timedelta(seconds=CLEANUP_INFLIGHT_DEADLINE_SECONDS + 30)
+        self.cleanup.retry_cleanup_pending(now=late)
+        self.assertNotEqual(self._row(uid)["phase"], worker_a.phase)
+
+        # A's late stamp names the marker it held; the row has moved on.
+        lifecycle.commit_runs_observation(
+            row=stale, observed=True, expected_phase=worker_a.phase
+        )
+        self.assertFalse(self._row(uid)["runs_final_observed_at"])
+
+        # The current holder's stamp lands.
+        worker_b = lifecycle.claim_cleanup(row=self._row(uid))
+        self.assertTrue(worker_b)
+        lifecycle.commit_runs_observation(
+            row=self._row(uid), observed=True, expected_phase=worker_b.phase
+        )
+        self.assertTrue(self._row(uid)["runs_final_observed_at"])
+
+    def test_row_views_never_carry_the_cleanup_ownership_token(self) -> None:
+        # The in-flight marker fences internal writers; agents and the UI get
+        # the attempt count, never the token that authorizes completion writes.
+        uid = "uid_view_token"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-view-token")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        lifecycle = self.app.sandboxes.lifecycle
+        claim = lifecycle.claim_cleanup_due(row=self._row(uid), now=self._due_at(uid))
+        self.assertTrue(claim)
+        token = cleanup_inflight_token(phase=self._row(uid)["phase"])
+        self.assertTrue(token)
+
+        view = sandbox_row_view(row=self._row(uid))
+        self.assertNotIn(token, str(view))
+        self.assertEqual(view["phase"], "cleanup_attempt_2")
+
+        refusal = self.app.sandboxes._release_row(row=dict(self._row(uid)))  # noqa: SLF001
+        self.assertNotIn(token, str(refusal))
 
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:

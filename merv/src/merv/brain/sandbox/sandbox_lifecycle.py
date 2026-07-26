@@ -371,7 +371,9 @@ class SandboxLifecycle:
             return bool(self.observe_runs(row=row))
         return False
 
-    def commit_runs_observation(self, *, row: dict[str, Any], observed: bool) -> None:
+    def commit_runs_observation(
+        self, *, row: dict[str, Any], observed: bool, expected_phase: str = ""
+    ) -> None:
         """Stamp a successful pre-terminal read, once the row is really gone."""
         if not observed or self.stamp_runs_observed is None:
             return
@@ -379,6 +381,7 @@ class SandboxLifecycle:
             self.stamp_runs_observed(
                 sandbox_uid=str(row.get("sandbox_uid") or ""),
                 expected_project_id=str(row.get("project_id") or ""),
+                expected_phase=expected_phase,
             )
 
     def terminate_vm(

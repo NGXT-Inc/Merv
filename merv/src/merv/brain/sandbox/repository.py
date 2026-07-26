@@ -708,9 +708,18 @@ class SandboxRepository:
             return self._row_dict(row=row, conn=conn)
 
     def stamp_runs_observed(
-        self, *, sandbox_uid: str, expected_project_id: str
+        self,
+        *,
+        sandbox_uid: str,
+        expected_project_id: str,
+        expected_phase: str = "",
     ) -> None:
-        """Stamp a row's final run-receipt read (the ledger's only row write)."""
+        """Stamp a row's final run-receipt read (the ledger's only row write).
+
+        A caller holding a cleanup claim names its phase: the stamp flips
+        unfinished runs from `unknown` to `lost`, so a fenced-out worker's
+        stale read must not land it (audit round 7).
+        """
         target_uid = str(sandbox_uid or "").strip()
         if not target_uid:
             return
@@ -721,6 +730,8 @@ class SandboxRepository:
                 assignments="runs_final_observed_at = ?",
                 values=[now_iso()],
                 expected_project_id=expected_project_id,
+                extra_clause=" AND phase = ?" if expected_phase else "",
+                extra_values=[expected_phase] if expected_phase else None,
             )
 
     def heartbeat_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any] | None:

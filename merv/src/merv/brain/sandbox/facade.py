@@ -935,7 +935,9 @@ class SandboxFacade:
         # later retry and must not stamp, but once the VM is confirmed gone the
         # read is final even if the mark below fails.
         if outcome != "maybe_alive":
-            self.lifecycle.commit_runs_observation(row=row, observed=observed)
+            self.lifecycle.commit_runs_observation(
+                row=row, observed=observed, expected_phase=claim.phase
+            )
         applied = self.lifecycle.apply(row=row, decision=decision)
         if (
             outcome != "maybe_alive"
