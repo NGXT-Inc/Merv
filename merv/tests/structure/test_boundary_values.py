@@ -290,6 +290,7 @@ SAMPLES: dict[type, object] = {
         "configured": True,
         "run_id": "run_1",
         "error": "",
+        "mlflow_warning": {"tracking": "unavailable", "error": "down", "repair": "…"},
         "feed_note": "Run finalized.",
     },
     ExperimentDetailResponse: {

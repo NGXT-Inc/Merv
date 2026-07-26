@@ -40,7 +40,8 @@ FailureMode = Literal["fatal", "degraded", "advisory"]
 IdempotencyMode = Literal["repeat_safe", "requires_adapter_key_for_redelivery"]
 # A handler whose effect cannot be safely redelivered may only stop propagating
 # failures by recording its own durable outcome; "degraded" declares exactly
-# that, so an escaping exception from one stays a bug and still propagates.
+# that, so an exception escaping one means no durable outcome was written, and
+# it propagates instead of becoming a success no record can explain.
 _DELIVERY_POLICIES = {
     ("fatal", "repeat_safe"),
     ("fatal", "requires_adapter_key_for_redelivery"),

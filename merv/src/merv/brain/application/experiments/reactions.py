@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -20,6 +21,10 @@ from ..ports.tracking import (
     ExperimentTracking,
     TRACKING_TERMINAL_RUN_STATUSES,
 )
+from .tracking_presentation import tracking_failure_message, tracking_warning
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 _FINAL_TRACKING_STATUS = {
@@ -47,6 +52,18 @@ _TRACKING_REPAIR = (
     "the logging environment, log to a run you create there, then call "
     "mlflow.finalize_run with that run_id to attach it to the experiment."
 )
+# Losing the durable tracking outcome is a different failure domain from an
+# MLflow outage: nothing records what happened, so the caller gets the error.
+_PERSISTENCE_FAILURE = (
+    "The experiment transition already committed and must not be retried, but "
+    "persisting its MLflow tracking outcome failed twice, so no durable record "
+    "of the run (or of the outage) exists. Read experiment.get_state, then "
+    "attach any run you find with mlflow.finalize_run. Underlying error: "
+)
+
+
+class TrackingPersistenceError(RuntimeError):
+    """The transition committed but its tracking outcome never reached the DB."""
 
 
 def _reaction(
@@ -100,12 +117,20 @@ class ExperimentReactions:
         if transition not in ("start_running", "retry_running"):
             return EventReaction(state=context.state)
         try:
-            state = self._ensure_tracking_run(
+            state, attempted = self._ensure_tracking_run(
                 state=context.state,
                 replace_terminal=transition == "retry_running",
             )
+        except TrackingPersistenceError:
+            raise  # A durable outcome is this handler's promise; silence is worse.
         except Exception as exc:  # noqa: BLE001 - the commit must not be masked
+            LOGGER.error(
+                "MLflow tracking degraded after a committed %s on experiment %s: %s",
+                transition, context.event.target_id, _message(exc),
+            )
             return EventReaction(state=context.state, value=_warning(_message(exc)))
+        if not attempted:
+            return EventReaction(state=state)
         run = state.get("mlflow_run") or {}
         error = "" if run.get("run_id") else str(run.get("error") or "")
         return EventReaction(state=state, value=_warning(error) if error else None)
@@ -122,19 +147,20 @@ class ExperimentReactions:
 
     def _ensure_tracking_run(
         self, *, state: ExperimentState, replace_terminal: bool
-    ) -> ExperimentState:
+    ) -> tuple[ExperimentState, bool]:
+        """Return the state plus whether this call attempted a tracking run."""
         if self.tracking is None:
-            return state
+            return state, False
         capabilities = self.tracking.capabilities()
         if not (capabilities.logging and capabilities.control):
-            return state
+            return state, False
         existing = state.get("mlflow_run") or {}
         persisted_status = str(existing.get("status") or "").upper()
         if existing.get("run_id") and (
             not replace_terminal
             or persisted_status not in TRACKING_TERMINAL_RUN_STATUSES
         ):
-            return state
+            return state, False
         experiment_id = str(state.get("id") or "")
         project_id = str(state.get("project_id") or "")
         attempt_index = int(state.get("attempt_index") or 1)
@@ -149,12 +175,42 @@ class ExperimentReactions:
         except Exception as exc:  # noqa: BLE001 - an outage becomes durable state
             created = {"error": f"MLflow run creation failed: {_message(exc)}"}
         if not (created.get("run_id") or created.get("error")):
-            return state
-        return self.research.record_tracking_run(
+            return state, True
+        persisted = self._persist_tracking_run(
             project_id=project_id,
             experiment_id=experiment_id,
             run=_persisted_run(created),
         )
+        return persisted, True
+
+    def _persist_tracking_run(
+        self, *, project_id: str, experiment_id: str, run: PersistedRunState
+    ) -> ExperimentState:
+        """Write the tracking outcome durably, retrying once before failing loud."""
+        try:
+            return self.research.record_tracking_run(
+                project_id=project_id, experiment_id=experiment_id, run=run
+            )
+        except Exception as first:  # noqa: BLE001 - the rolled-back write is retryable
+            LOGGER.error(
+                "Retrying the durable MLflow tracking outcome for experiment %s: %s",
+                experiment_id, _message(first),
+            )
+        try:
+            return self.research.record_tracking_run(
+                project_id=project_id, experiment_id=experiment_id, run=run
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised as a server error below
+            orphan = str(run.get("run_id") or "")
+            LOGGER.error(
+                "MLflow tracking outcome for experiment %s never reached the "
+                "database (orphaned run: %s): %s",
+                experiment_id, orphan or "none", _message(exc),
+            )
+            raise TrackingPersistenceError(
+                f"{_PERSISTENCE_FAILURE}{_message(exc)}"
+                + (f" (possibly orphaned MLflow run: {orphan})" if orphan else "")
+            ) from exc
 
     def _finalize_tracking_run(
         self, *, state: ExperimentState, status: str
@@ -209,12 +265,12 @@ class ExperimentReactions:
         return EventReaction(state=context.state, value=note)
 
 
-def _message(exc: Exception) -> str:
-    return str(exc).strip() or exc.__class__.__name__
+def _message(exc: BaseException) -> str:
+    return tracking_failure_message(exc)
 
 
 def _warning(error: str) -> dict[str, str]:
-    return {"tracking": "unavailable", "error": error, "repair": _TRACKING_REPAIR}
+    return tracking_warning(error=error, repair=_TRACKING_REPAIR)
 
 
 def _persisted_run(run: dict[str, Any]) -> PersistedRunState:
@@ -224,4 +280,8 @@ def _persisted_run(run: dict[str, Any]) -> PersistedRunState:
     return cast(PersistedRunState, persisted)
 
 
-__all__ = ["EXPERIMENT_REACTION_CATALOG", "ExperimentReactions"]
+__all__ = [
+    "EXPERIMENT_REACTION_CATALOG",
+    "ExperimentReactions",
+    "TrackingPersistenceError",
+]

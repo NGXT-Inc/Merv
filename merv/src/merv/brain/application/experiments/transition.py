@@ -18,7 +18,7 @@ from ..ports.tracking import ExperimentTracking, TrackingContextPayload
 from .exhibits import ExhibitBuilder, should_pin_exhibit
 from .metrics_exhibit import METRICS_EXHIBIT_FILENAME, exhibit_bytes
 from .presentation import SlimExperimentState, slim_experiment_state
-from .tracking_presentation import with_tracking_if_visible
+from .tracking_presentation import attach_tracking_if_visible
 
 
 class TransitionResponse(SlimExperimentState, total=False):
@@ -97,7 +97,7 @@ class TransitionExperiment:
                 slim_experiment_state(state, storage_objects=storage_objects)
             ),
         )
-        with_tracking_if_visible(
+        presentation_warning = attach_tracking_if_visible(
             state=response,
             tracking=self.tracking,
             project_id=resolved_project_id,
@@ -107,6 +107,8 @@ class TransitionExperiment:
         warning = reacted.outcomes.get("tracking_start")
         if isinstance(warning, dict):
             response["mlflow_warning"] = cast(dict[str, str], warning)
+        elif presentation_warning is not None:
+            response["mlflow_warning"] = presentation_warning
         if transition in ("start_running", "retry_running"):
             response["metrics_exhibit"] = self._exhibit_expectation(
                 experiment_id=experiment_id, state=response

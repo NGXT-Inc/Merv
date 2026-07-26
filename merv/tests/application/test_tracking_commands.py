@@ -20,6 +20,7 @@ from merv.brain.kernel.events import StoredEvent, freeze_json_object
 from merv.brain.research_core.facade import CommittedTrackingRunRefresh
 
 
+PRESENTATION_LOGGER = "merv.brain.application.experiments.tracking_presentation"
 PROJECT_ID = "proj_1"
 EXPERIMENT_ID = "exp_1"
 
@@ -114,8 +115,10 @@ class RecordingTracking:
         *,
         finalize_result: dict[str, Any] | None = None,
         finalize_error: Exception | None = None,
+        context_error: Exception | None = None,
     ) -> None:
         self.order = order
+        self.context_error = context_error
         self.finalize_result = finalize_result or {
             "configured": True,
             "run_id": "run_mine",
@@ -134,6 +137,8 @@ class RecordingTracking:
     def context(self, **kwargs: Any) -> _Context:
         self.order.append("tracking.context")
         self.context_calls.append(kwargs)
+        if self.context_error is not None:
+            raise self.context_error
         return _Context(
             {
                 "configured": True,
@@ -552,6 +557,31 @@ class FinalizeTrackingRunTest(unittest.TestCase):
                 "research.refresh",
             ],
         )
+
+    def test_context_failure_after_the_refresh_degrades_to_a_warning(self) -> None:
+        order: list[str] = []
+        research = RecordingResearch(order)
+        command = self._command(
+            research=research,
+            tracking=RecordingTracking(
+                order, context_error=RuntimeError("context serialization failed")
+            ),
+            feed=RecordingFeed(order),
+        )
+
+        with self.assertLogs(PRESENTATION_LOGGER, level="ERROR"):
+            result = command.execute(
+                project_id=PROJECT_ID, experiment_id=EXPERIMENT_ID
+            )
+
+        # The refresh already committed, so presentation cannot report failure.
+        self.assertEqual(len(research.refresh_calls), 1)
+        self.assertNotIn("mlflow", result["experiment"])
+        self.assertEqual(
+            result["mlflow_warning"]["error"], "context serialization failed"
+        )
+        self.assertIn("mlflow.context", result["mlflow_warning"]["repair"])
+        self.assertEqual(result["experiment"]["mlflow_run"]["status"], "FINISHED")
 
     def test_tracking_failure_propagates_without_persistence_or_feed(self) -> None:
         order: list[str] = []

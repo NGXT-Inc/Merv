@@ -25,6 +25,7 @@ from .presentation import (
     slim_experiment_state,
 )
 from .tracking_presentation import (
+    attach_tracking_if_visible,
     tracking_connection,
     tracking_context_response,
     tracking_visible_for_status,
@@ -47,6 +48,7 @@ class FinalizeTrackingResponse(FinalizeRunResult, total=False):
     configured: bool
     run_id: str
     error: str
+    mlflow_warning: dict[str, str]
     feed_note: str
 
 
@@ -252,7 +254,7 @@ class FinalizeTrackingRun:
         experiment = dict(
             slim_experiment_state(state, storage_objects=storage_objects)
         )
-        with_tracking_if_visible(
+        presentation_warning = attach_tracking_if_visible(
             state=experiment,
             tracking=self.tracking,
             project_id=resolved_project_id,
@@ -268,6 +270,8 @@ class FinalizeTrackingRun:
                 "experiment": experiment,
             },
         )
+        if presentation_warning is not None:
+            response["mlflow_warning"] = presentation_warning
         if isinstance(run, dict) and run.get("run_id"):
             note = (
                 self.dispatcher.dispatch(
