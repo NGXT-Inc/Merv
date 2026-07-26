@@ -30,6 +30,7 @@ from merv.brain.kernel.state.tool_call_ledger import (
     DEFAULT_RETENTION_DAYS,
     LEDGER_BUSY_TIMEOUT_MS,
     LEDGER_STATEMENT_TIMEOUT_MS,
+    PRUNE_STATEMENT_TIMEOUT_MS,
     TOOL_CALL_RETENTION_DAYS_ENV_VAR,
     ToolCallLedger,
 )
@@ -41,10 +42,13 @@ class CountingStore:
     def __init__(self, store: StateStore) -> None:
         self._store = store
         self.connects = 0
+        self.handles: list = []
 
     def connect(self):
         self.connects += 1
-        return self._store.connect()
+        conn = self._store.connect()
+        self.handles.append(conn)
+        return conn
 
 
 class StubPostgresConnection:
@@ -54,18 +58,29 @@ class StubPostgresConnection:
     no test database can be, so it is stood in for at the connection seam.
     """
 
-    def __init__(self, *, fail_write: str = "") -> None:
+    def __init__(self, *, fail_write: str = "", stall: "Stall | None" = None) -> None:
         self.statements: list[str] = []
         self.closed = False
+        # A close that lands while a statement is in flight is the psycopg
+        # hazard this module has to avoid; the stub notices rather than tolerates.
+        self.closed_mid_statement = False
+        self._busy = False
         self._fail_write = fail_write
+        self._stall = stall
 
     def execute(self, sql, parameters=()):
         statement = " ".join(str(sql).split())
         if statement.startswith("PRAGMA"):
             raise RuntimeError('syntax error at or near "PRAGMA"')
-        self.statements.append(statement)
-        if self._fail_write and statement.startswith("INSERT"):
-            raise RuntimeError(self._fail_write)
+        self._busy = True
+        try:
+            if self._stall is not None and statement.startswith("SELECT"):
+                self._stall.hold()
+            self.statements.append(statement)
+            if self._fail_write and statement.startswith("INSERT"):
+                raise RuntimeError(self._fail_write)
+        finally:
+            self._busy = False
         return self
 
     def fetchone(self):
@@ -75,18 +90,36 @@ class StubPostgresConnection:
         return None
 
     def close(self) -> None:
+        if self._busy:
+            self.closed_mid_statement = True
         self.closed = True
 
 
+class Stall:
+    """One statement parked mid-flight until the test lets it go."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def hold(self) -> None:
+        self.entered.set()
+        self.release.wait(timeout=5)
+
+
 class StubPostgresStore:
-    def __init__(self, *, fail_write: str = "") -> None:
+    def __init__(self, *, fail_write: str = "", stall: Stall | None = None) -> None:
         self.connections: list[StubPostgresConnection] = []
         self._fail_write = fail_write
+        self._stall = stall
 
     def connect(self) -> StubPostgresConnection:
-        conn = StubPostgresConnection(fail_write=self._fail_write)
+        conn = StubPostgresConnection(fail_write=self._fail_write, stall=self._stall)
         self.connections.append(conn)
         return conn
+
+    def live(self) -> list[StubPostgresConnection]:
+        return [conn for conn in self.connections if not conn.closed]
 
 LEDGER_INDEX_NAMES = frozenset(
     statement.split("IF NOT EXISTS ")[1].split()[0]
@@ -422,7 +455,7 @@ class ToolCallLedgerTest(unittest.TestCase):
         """Set on the LEDGER's connection as part of opening it, not left to a
         generic pragma pass that hands out the record store's patient 10s."""
         self.ledger.record(tool="claim.list", source="mcp", arguments={})
-        conn = self.ledger._local.conn  # noqa: SLF001 -- the setup under test
+        (_, conn), = self.ledger._handles.values()  # noqa: SLF001 -- setup under test
         self.assertEqual(
             conn.execute("PRAGMA busy_timeout").fetchone()[0], LEDGER_BUSY_TIMEOUT_MS
         )
@@ -435,8 +468,8 @@ class ToolCallLedgerTest(unittest.TestCase):
             store_conn.close()
 
     def test_a_retired_threads_connection_is_swept_on_the_next_open(self) -> None:
-        """Worker turnover must not accumulate connections: a dead thread's
-        ``threading.local`` slot dies with it, so this cache is the only thing
+        """Worker turnover must not accumulate connections: a retired thread's
+        slot is unreachable to everyone else, so this cache is the only thing
         still holding its handle — one PG server session per retired worker."""
         store = CountingStore(self.store)
         ledger = ToolCallLedger(store=store, env={})
@@ -447,29 +480,53 @@ class ToolCallLedgerTest(unittest.TestCase):
         worker.start()
         worker.join(timeout=5)
 
-        cached = list(ledger._open)  # noqa: SLF001 -- the cache under test
+        cached = list(ledger._handles.values())  # noqa: SLF001 -- cache under test
         self.assertEqual(len(cached), 1)
         (retired, handle) = cached[0]
         self.assertFalse(retired.is_alive())
 
         ledger.record(tool="claim.list", source="mcp", arguments={})
 
-        surviving = list(ledger._open)  # noqa: SLF001 -- the cache under test
+        surviving = list(ledger._handles.values())  # noqa: SLF001 -- cache under test
         self.assertEqual([owner for owner, _ in surviving], [threading.current_thread()])
         self.assertNotIn(handle, [conn for _, conn in surviving])
         self.assertEqual(store.connects, 2)
         ledger.close()
 
-    def test_the_connection_cache_is_bounded_even_with_no_turnover(self) -> None:
-        """Backstop: sweeping dead threads is what normally bounds the cache,
-        this bounds a process whose threads never retire."""
-        ledger = ToolCallLedger(store=self.store, env={})
-        alive = threading.current_thread()
-        ledger._open = [(alive, object()) for _ in range(5)]  # noqa: SLF001
-        with mock.patch.object(ledger_module, "LEDGER_MAX_CACHED_CONNECTIONS", 2):
+    def test_overflow_from_live_threads_closes_real_sessions(self) -> None:
+        """The cap has to bound SESSIONS, not cache entries. Forgetting an
+        overflow handle owned by a live thread bounds nothing: the thread keeps
+        writing through it and the server keeps the session — this is the
+        hosted-Postgres connection-exhaustion path in miniature."""
+        store = StubPostgresStore()
+        ledger = ToolCallLedger(store=store, env={})
+        written = threading.Semaphore(0)
+        release = threading.Event()
+
+        def worker() -> None:
             ledger.record(tool="claim.list", source="mcp", arguments={})
-        # The two retained plus the one just opened; nothing grows without end.
-        self.assertEqual(len(ledger._open), 3)  # noqa: SLF001
+            written.release()
+            release.wait(timeout=5)  # every owner stays ALIVE across the trim
+
+        workers = [threading.Thread(target=worker, daemon=True) for _ in range(5)]
+        with mock.patch.object(ledger_module, "LEDGER_MAX_CACHED_CONNECTIONS", 2):
+            for thread in workers:  # one at a time: the cache, not the lock
+                thread.start()
+                self.assertTrue(written.acquire(timeout=5))
+            cached = len(ledger._handles)  # noqa: SLF001 -- the cache under test
+            live = store.live()
+
+        release.set()
+        for thread in workers:
+            thread.join(timeout=5)
+
+        self.assertEqual(ledger.failures, 0)
+        self.assertEqual(len(store.connections), 5)
+        self.assertEqual(cached, 2, "the cache is trimmed to the cap, not cap + 1")
+        # The three trimmed handles were CLOSED, not merely dropped: what the
+        # cache tracks and what the server holds are the same number.
+        self.assertEqual(len(live), cached)
+        self.assertFalse([c for c in store.connections if c.closed_mid_statement])
         ledger.close()
 
     def test_a_contended_writer_drops_the_row_instead_of_waiting(self) -> None:
@@ -550,26 +607,109 @@ class ToolCallLedgerTest(unittest.TestCase):
         self.assertEqual(outcome["deleted"], 0)
         self.assertIn("no such table", outcome["error"])
 
-    def test_a_failed_prune_drops_its_handle_so_the_next_tick_reconnects(self) -> None:
-        """Retention may not stay off until process restart: Postgres closing
-        the reaper's connection would otherwise have every later hourly tick
-        reuse the same corpse and report another ignored failure."""
+    def test_a_prune_handle_never_outlives_its_sweep(self) -> None:
+        """Retention may not stay off until process restart: a cached sweep
+        handle that Postgres closed would have every later hourly tick reuse
+        the same corpse. A sweep owns its connection and closes it, so the next
+        tick cannot inherit anything — healthy or dead."""
         store = CountingStore(self.store)
         ledger = ToolCallLedger(store=store, env={})
         self._ancient(1)
         self.assertTrue(ledger.prune()["ok"])
-        self.assertEqual(store.connects, 1)
-
-        ledger._local.conn.close()  # noqa: SLF001 -- the dead handle under test
-        self.assertFalse(ledger.prune()["ok"])
-        self.assertEqual(ledger.failures, 1)
-
         self._ancient(1)
-        outcome = ledger.prune()
-        self.assertTrue(outcome["ok"])
-        self.assertEqual(outcome["deleted"], 1)
-        self.assertEqual(store.connects, 2)  # exactly one re-dial
+        self.assertEqual(ledger.prune()["deleted"], 1)
+
+        self.assertEqual(store.connects, 2)  # one dial per sweep, never a cache
+        for handle in store.handles:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                handle.execute("SELECT 1")
+        self.assertEqual(ledger._handles, {})  # noqa: SLF001 -- retention is not a writer
         ledger.close()
+
+    def test_a_sweep_never_leaves_a_writers_deadline_widened(self) -> None:
+        """Operator cleanup calls prune on a synchronous HTTP worker, and the
+        next tool call on that worker reuses its connection. A sweep that
+        borrowed that handle and failed to hand back the 1s deadline would
+        leave an in-path writer able to stall for the retention deadline."""
+        store = StubPostgresStore()
+        ledger = ToolCallLedger(store=store, env={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        (writer,) = store.connections
+
+        self.assertTrue(ledger.prune()["ok"])
+
+        sweep = store.connections[-1]
+        self.assertIsNot(sweep, writer, "the sweep may not borrow an in-path handle")
+        self.assertTrue(sweep.closed)
+        self.assertFalse(writer.closed)
+        self.assertEqual(
+            [s for s in writer.statements if s.startswith("SET SESSION")],
+            [
+                f"SET SESSION statement_timeout = {LEDGER_STATEMENT_TIMEOUT_MS}",
+                f"SET SESSION lock_timeout = {LEDGER_BUSY_TIMEOUT_MS}",
+            ],
+        )
+        self.assertIn(
+            f"SET SESSION statement_timeout = {PRUNE_STATEMENT_TIMEOUT_MS}",
+            sweep.statements,
+        )
+        ledger.close()
+
+    def test_shutdown_leaves_an_in_flight_sweep_its_own_connection(self) -> None:
+        """The reaper joins for 2s and a sweep may run for 30; psycopg's close()
+        does not wait behind a running statement, it finishes the socket under
+        one. Shutdown must therefore never hold the sweep's handle at all."""
+        stall = Stall()
+        store = StubPostgresStore(stall=stall)
+        ledger = ToolCallLedger(store=store, env={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        (writer,) = store.connections
+
+        outcome: list[dict] = []
+        sweeper = threading.Thread(target=lambda: outcome.append(ledger.prune()))
+        sweeper.start()
+        self.assertTrue(stall.entered.wait(timeout=5))
+        sweep = store.connections[-1]
+
+        started = time.monotonic()
+        ledger.close()  # shutdown, with the sweep parked mid-SELECT
+        self.assertLess(time.monotonic() - started, 2.0, "close waited on the sweep")
+        self.assertTrue(writer.closed)
+        self.assertFalse(sweep.closed, "the sweep's handle is not shutdown's to close")
+
+        stall.release.set()
+        sweeper.join(timeout=5)
+        self.assertEqual([o["ok"] for o in outcome], [True])
+        self.assertTrue(sweep.closed, "the sweep closes its own handle on the way out")
+        self.assertFalse([c for c in store.connections if c.closed_mid_statement])
+
+    def test_close_never_pulls_a_handle_from_a_writer_mid_row(self) -> None:
+        """The other half of the same rule: a cached handle is only ever used
+        under the writer lock, so close() takes that lock as its proof of
+        quiescence — and when it cannot get it, forgets rather than closes."""
+        store = StubPostgresStore()
+        ledger = ToolCallLedger(store=store, env={})
+        holding = threading.Event()
+        release = threading.Event()
+
+        def writer_thread() -> None:
+            ledger.record(tool="claim.list", source="mcp", arguments={})
+            with ledger._lock:  # noqa: SLF001 -- stands in for a row mid-flight
+                holding.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=writer_thread, daemon=True)
+        holder.start()
+        self.assertTrue(holding.wait(timeout=5))
+        (writer,) = store.connections
+
+        with mock.patch.object(ledger_module, "LEDGER_CLOSE_TIMEOUT_SECONDS", 0.1):
+            ledger.close()
+        self.assertFalse(writer.closed, "a live writer's socket is not cut mid-row")
+
+        release.set()
+        holder.join(timeout=5)
+        self.assertFalse(writer.closed_mid_statement)
 
     def test_the_ledger_writes_and_prunes_again_once_the_database_recovers(
         self,

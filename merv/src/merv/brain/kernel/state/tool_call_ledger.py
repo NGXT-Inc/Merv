@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, suppress
+from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -41,11 +41,18 @@ LEDGER_LOCK_TIMEOUT_SECONDS = 0.25
 LEDGER_BUSY_TIMEOUT_MS = 250
 LEDGER_STATEMENT_TIMEOUT_MS = 1_000
 # A retention batch is observed by nobody, so it gets a deadline sized for a
-# 20k-row DELETE rather than the per-row one.
+# 20k-row DELETE rather than the per-row one. It is spent on a connection the
+# sweep opens and closes for itself, so no in-path writer ever inherits it.
 PRUNE_STATEMENT_TIMEOUT_MS = 30_000
-# Backstop only: retiring dead threads' handles is what actually bounds the
-# per-thread cache; this bounds a process whose threads never retire.
+# Hard cap on cached writer handles, and therefore on server sessions: a thread
+# past the cap has its handle closed and forgotten together, and simply re-dials
+# on its next row. Retiring dead threads' handles is the ordinary bound; this is
+# what holds in a process whose threads never retire.
 LEDGER_MAX_CACHED_CONNECTIONS = 64
+# Shutdown waits this long for the writer lock before releasing handles. Every
+# use of a cached handle happens under that lock, so holding it is the proof
+# that no thread is mid-statement on the connection being closed.
+LEDGER_CLOSE_TIMEOUT_SECONDS = 5.0
 
 _STATUSES = frozenset({"ok", "error", "rejected"})
 
@@ -99,16 +106,28 @@ def _bound_connection(
     conn.execute(f"PRAGMA busy_timeout = {int(lock_timeout_ms)}")
 
 
-def _dispose(*, conn: Connection, owner: threading.Thread) -> None:
+def _dispose(
+    *, conn: Connection, owner: threading.Thread, quiesced: bool = True
+) -> None:
     """Release a handle, closing it only where closing is legal.
 
-    A SQLite connection may only be closed on the thread that opened it, so
-    from anywhere else the correct disposal is to drop the last reference and
-    let refcounting do it. Every other dialect is a network handle whose close
-    IS thread-safe — and not closing a psycopg handle leaks a server session
-    for the life of the process.
+    Two separate legalities, and both have to hold:
+
+    - A SQLite connection may only be closed on the thread that opened it, so
+      from anywhere else the correct disposal is to drop the last reference and
+      let refcounting do it.
+    - Any other dialect is a network handle, and psycopg's ``close()`` does NOT
+      wait behind an in-flight statement — it finishes the socket underneath
+      one. So it may only be closed when the owner is provably not using it:
+      the owner is dead, the owner is us, or the caller holds the writer lock
+      every use of a cached handle is taken under (``quiesced``). Otherwise the
+      reference is dropped and the session outlives us by the owner's lifetime,
+      which is the lesser of the two evils.
     """
-    if isinstance(conn, sqlite3.Connection) and owner is not threading.current_thread():
+    if isinstance(conn, sqlite3.Connection):
+        if owner is not threading.current_thread():
+            return
+    elif not (quiesced or owner is threading.current_thread() or not owner.is_alive()):
         return
     with suppress(Exception):
         conn.close()
@@ -140,13 +159,17 @@ class ToolCallLedger:
         self.retention_days = max(1, configured)
         self._on_failure = on_failure
         self.failures = 0
-        # Re-entrant: _write holds it across _connection(), which takes it again
-        # to register the handle it just opened.
+        # The writer lock is also the handle-cache lock. That is the whole
+        # safety argument: a cached handle is opened, used, and released only
+        # under it, so anything holding it may close any cached handle without
+        # racing the thread that owns it. Re-entrant because _write holds it
+        # across _connection() and _discard().
         self._lock = threading.RLock()
-        self._local = threading.local()
-        # Owner thread alongside each handle: the owner is what says whether an
-        # entry is still reachable and whether closing it here would be legal.
-        self._open: list[tuple[threading.Thread, Connection]] = []
+        # Keyed by thread ident and owned HERE rather than in a threading.local,
+        # so evicting a handle really releases it: a thread-local slot we cannot
+        # reach would keep the session open behind our backs. The stored thread
+        # is what proves an entry belongs to today's owner of a recycled ident.
+        self._handles: dict[int, tuple[threading.Thread, Connection]] = {}
 
     def record(
         self,
@@ -211,40 +234,65 @@ class ToolCallLedger:
         that in a day. A failed sweep says so (``ok`` False) instead of
         reporting zero deleted — a silent 0 is indistinguishable from a healthy
         no-op (audit OPS-03).
+
+        The sweep opens its OWN connection, at the wide retention deadline, and
+        closes it on the way out. Three problems dissolve rather than being
+        managed: no in-path writer's connection is ever borrowed and left at 30
+        seconds (operator cleanup calls this on a synchronous HTTP worker whose
+        handle the next tool call reuses); no long DELETE runs on a handle the
+        writer lock is protecting; and no cached corpse can leave retention
+        disabled until process restart, because there is no cached handle here
+        at all. One dial an hour is not a cost worth optimizing.
         """
         cutoff = format_iso(
             (now or datetime.now(tz=UTC)) - timedelta(days=self.retention_days)
         )
         deleted = 0
         more = False
+        conn: Connection | None = None
         try:
-            with self._sweep_deadline():
-                for _ in range(max(1, int(max_batches))):
-                    batch, more = self._delete_before(cutoff=cutoff)
-                    deleted += batch
-                    if not more:
-                        break
+            conn = self._dial(statement_timeout_ms=PRUNE_STATEMENT_TIMEOUT_MS)
+            for _ in range(max(1, int(max_batches))):
+                batch, more = self._delete_before(conn=conn, cutoff=cutoff)
+                deleted += batch
+                if not more:
+                    break
         except Exception as exc:  # noqa: BLE001 -- one sweep must not abort the pass
             self.failures += 1
-            # Same discipline as _write: the handle that just failed may be a
-            # dead one, and keeping it would leave retention disabled — every
-            # later hourly tick reusing the same corpse — until process restart.
-            self._discard()
             return {
                 "deleted": deleted,
                 "ok": False,
                 "cutoff": cutoff,
                 "error": error_head(error=str(exc)) or type(exc).__name__,
             }
+        finally:
+            if conn is not None:
+                with suppress(Exception):
+                    conn.close()
         return {"deleted": deleted, "ok": True, "cutoff": cutoff, "more": more}
 
     def close(self) -> None:
-        """Release every cached connection. Called on composition shutdown."""
-        with self._lock:
-            handles, self._open = self._open, []
-            self._local = threading.local()
+        """Release every cached connection. Called on composition shutdown.
+
+        Takes the writer lock first: that is what makes closing another
+        thread's psycopg handle safe rather than a socket pulled out from under
+        an in-flight statement. If the lock does not come free in time a writer
+        is still mid-row, so its handle is only forgotten, never closed — the
+        composition's shutdown order (background daemons stopped BEFORE this)
+        is what keeps that path from being the normal one.
+
+        Retention sweeps need no coordination here: a sweep owns a connection
+        this cache never held, and closes it itself.
+        """
+        acquired = self._lock.acquire(timeout=LEDGER_CLOSE_TIMEOUT_SECONDS)
+        try:
+            handles = list(self._handles.values())
+            self._handles = {}
+        finally:
+            if acquired:
+                self._lock.release()
         for owner, conn in handles:
-            _dispose(conn=conn, owner=owner)
+            _dispose(conn=conn, owner=owner, quiesced=acquired)
 
     def _insert(
         self,
@@ -322,8 +370,30 @@ class ToolCallLedger:
         finally:
             self._lock.release()
 
+    def _dial(self, *, statement_timeout_ms: int) -> Connection:
+        """Open one connection and give it its deadlines, or open none at all.
+
+        A connection that can wait forever is worse than no connection: the
+        caller counts a drop, which is exactly the promised behavior.
+        """
+        conn = self._store.connect()
+        try:
+            _bound_connection(
+                conn=conn,
+                lock_timeout_ms=LEDGER_BUSY_TIMEOUT_MS,
+                statement_timeout_ms=statement_timeout_ms,
+            )
+        except Exception:
+            with suppress(Exception):
+                conn.close()
+            raise
+        return conn
+
     def _connection(self) -> Connection:
         """This thread's cached connection, opened once, deadlined, and reused.
+
+        Callers must hold ``self._lock`` — the cache is the lock's invariant,
+        not merely protected data.
 
         Cached per THREAD rather than per instance because rows are written
         from the HTTP threadpool and the reaper thread, and a SQLite handle may
@@ -331,84 +401,65 @@ class ToolCallLedger:
         the same thing either way: one connection per worker instead of a fresh
         connect, insert, commit, and close on every single row.
         """
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            return conn
-        conn = self._store.connect()
-        try:
-            _bound_connection(
-                conn=conn,
-                lock_timeout_ms=LEDGER_BUSY_TIMEOUT_MS,
-                statement_timeout_ms=LEDGER_STATEMENT_TIMEOUT_MS,
-            )
-        except Exception:
-            # A connection that can wait forever is worse than no connection:
-            # the caller counts a drop, which is exactly the promised behavior.
-            with suppress(Exception):
-                conn.close()
-            raise
-        self._local.conn = conn
-        with self._lock:
-            self._retire_dead_threads()
-            self._open.append((threading.current_thread(), conn))
+        thread = threading.current_thread()
+        entry = self._handles.get(thread.ident)
+        if entry is not None:
+            if entry[0] is thread:
+                return entry[1]
+            # A recycled ident: the thread that opened this handle is gone, so
+            # its session is ours to close before we take the slot.
+            del self._handles[thread.ident]
+            _dispose(conn=entry[1], owner=entry[0])
+        conn = self._dial(statement_timeout_ms=LEDGER_STATEMENT_TIMEOUT_MS)
+        self._handles[thread.ident] = (thread, conn)
+        self._bound_cache(keep=thread.ident)
         return conn
 
-    def _retire_dead_threads(self) -> None:
-        """Release handles whose owning thread is gone.
+    def _bound_cache(self, *, keep: int | None) -> None:
+        """Close every handle this ledger no longer needs to be holding.
 
-        A retired worker's ``threading.local`` slot dies with it, leaving this
-        list the only thing holding its connection open — on hosted Postgres,
-        one server session per thread the pool ever churned through. Swept only
-        when a NEW connection is opened, which is the one moment worker
-        turnover can have happened, so no row on the hot path pays for it.
+        Two bounds, in the order that matters. First the ordinary one: a
+        retired worker's handle is otherwise held open by this cache alone —
+        one server session per thread the pool ever churned through. Then the
+        backstop for a process whose threads never retire: past the cap the
+        OLDEST live thread's handle is closed and forgotten *together*, so the
+        advertised cap bounds real sessions and not merely dict entries; that
+        thread re-dials on its next row. Closing under the writer lock is legal
+        precisely because no cached handle is ever used without it.
+
+        Run only when a NEW connection is opened, which is the one moment
+        worker turnover can have happened, so no row on the hot path pays.
         """
-        live: list[tuple[threading.Thread, Connection]] = []
-        for owner, conn in self._open:
-            if owner.is_alive():
-                live.append((owner, conn))
-            else:
+        for ident, (owner, conn) in list(self._handles.items()):
+            if not owner.is_alive():
+                del self._handles[ident]
                 _dispose(conn=conn, owner=owner)
-        # Backstop for a process whose threads never retire. Overflow entries
-        # are forgotten, never closed: their thread is alive and still writing
-        # through them, and forgetting both bounds this map and hands disposal
-        # back to refcounting for when that thread does finally retire.
-        overflow = max(0, len(live) - LEDGER_MAX_CACHED_CONNECTIONS)
-        self._open = live[overflow:]
-
-    @contextmanager
-    def _sweep_deadline(self) -> Iterator[None]:
-        """Widen this thread's statement deadline for one retention sweep.
-
-        The per-row deadline is short because a row must never delay the call
-        it observes. A 20k-row DELETE on the reaper thread delays nobody and
-        legitimately outlives one second, so the sweep borrows a longer
-        deadline and hands it straight back.
-        """
-        conn = self._connection()
-        _set_statement_deadline(conn=conn, timeout_ms=PRUNE_STATEMENT_TIMEOUT_MS)
-        try:
-            yield
-        finally:
-            _set_statement_deadline(conn=conn, timeout_ms=LEDGER_STATEMENT_TIMEOUT_MS)
+        overflow = len(self._handles) - LEDGER_MAX_CACHED_CONNECTIONS
+        for ident, (owner, conn) in list(self._handles.items()):
+            if overflow <= 0:
+                break
+            if ident == keep:  # the caller is about to write through this one
+                continue
+            del self._handles[ident]
+            _dispose(conn=conn, owner=owner)
+            overflow -= 1
 
     def _discard(self) -> None:
-        """Drop a connection that just failed so the next row reconnects."""
-        conn = getattr(self._local, "conn", None)
-        self._local.conn = None
-        if conn is None:
-            return
-        with self._lock:
-            self._open = [entry for entry in self._open if entry[1] is not conn]
-        with suppress(Exception):
-            conn.close()
+        """Drop a connection that just failed so the next row reconnects.
 
-    def _delete_before(self, *, cutoff: str) -> tuple[int, bool]:
+        Callers must hold ``self._lock``.
+        """
+        entry = self._handles.pop(threading.current_thread().ident, None)
+        if entry is not None:
+            _dispose(conn=entry[1], owner=entry[0])
+
+    def _delete_before(self, *, conn: Connection, cutoff: str) -> tuple[int, bool]:
         """Delete one batch; report what it removed and whether more remain.
 
-        Runs OUTSIDE the writer lock: a 20k-row DELETE holding it would drop
-        every concurrent tool-call row for the duration of the sweep.
+        Runs on the sweep's own connection and OUTSIDE the writer lock: a
+        20k-row DELETE holding it would drop every concurrent tool-call row for
+        the duration of the sweep.
         """
-        conn = self._connection()
         # Bound the sweep by id rather than by a LIMIT on DELETE, which neither
         # dialect supports portably. The count comes from the same subquery, so
         # it is exactly what the DELETE below removes: the batch is the first
@@ -443,6 +494,7 @@ class ToolCallLedger:
 
 __all__ = [
     "DEFAULT_RETENTION_DAYS",
+    "LEDGER_CLOSE_TIMEOUT_SECONDS",
     "LEDGER_MAX_CACHED_CONNECTIONS",
     "LEDGER_STATEMENT_TIMEOUT_MS",
     "PRUNE_BATCH_ROWS",

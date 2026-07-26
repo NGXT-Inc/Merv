@@ -283,8 +283,19 @@ class ControlApp:
             )
 
     def shutdown(self) -> None:
+        """Stop what still calls the subsystems, then close the subsystems.
+
+        The order is load-bearing, not alphabetical: the reaper thread is what
+        drives the ledger's retention sweep (``periodic_maintenance`` above), so
+        it is signalled and joined FIRST. Closing the ledger under a live sweep
+        would be closing a database connection out from under a running
+        statement. ``ToolCallLedger.close()`` defends itself as well — it takes
+        the writer lock, and declines to close a handle whose owner may still be
+        mid-row — but a shutdown that raced its own daemons would be leaning on
+        that defense every time rather than in the case it exists for.
+        """
         with suppress(Exception):
-            self._sandbox_runtime.shutdown()
+            self._sandbox_runtime.shutdown()  # signals + joins the reaper
         with suppress(Exception):
             self._execution_backend.shutdown()
         with suppress(Exception):  # the ledger holds one connection per writer
