@@ -5,15 +5,22 @@ SCHEMA-extracted DDL that a fresh database gets, gated on ``_has_table`` so an
 existing store is upgraded in place. The audience + oauth_family_id columns
 these access bearers ride live in migration 26's DDL, so no separate column
 migration appears here.
+
+Migration 38 then makes DCR get-or-create a database fact rather than an
+application convention: the canonical metadata fingerprint, its UNIQUE index,
+and the two child-table client_id indexes the registration path's eligibility
+subqueries scan.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from merv.brain.kernel.state.fingerprints import oauth_client_fingerprint
 from merv.brain.kernel.state.store import MIGRATIONS, StateStore
 
 
@@ -49,6 +56,7 @@ class OAuthMigrationTest(unittest.TestCase):
                 "client_name",
                 "redirect_uris_json",
                 "grant_types_json",
+                "metadata_fingerprint",
                 "created_at",
             },
         )
@@ -152,6 +160,143 @@ class OAuthMigrationTest(unittest.TestCase):
             }
             <= tables
         )
+
+
+class OAuthClientFingerprintMigrationTest(unittest.TestCase):
+    """Migration 38: the canonical fingerprint, its UNIQUE index, the child
+    indexes, and a backfill that adopts pre-canonicalization rows."""
+
+    def _legacy_store(self, *, rows: list[tuple[str, str, list[str], list[str], str]]):
+        """A store whose oauth_clients predates migration 38, holding ``rows``."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = Path(tmp.name) / "state.sqlite"
+        StateStore(db_path=db_path)
+        conn = sqlite3.connect(db_path)
+        try:
+            # The index must go before the column SQLite refuses to drop under it.
+            conn.execute("DROP INDEX IF EXISTS idx_oauth_clients_fingerprint")
+            conn.execute("ALTER TABLE oauth_clients DROP COLUMN metadata_fingerprint")
+            for client_id, name, uris, grants, created_at in rows:
+                conn.execute(
+                    "INSERT INTO oauth_clients (client_id, client_name, "
+                    "redirect_uris_json, grant_types_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (client_id, name, json.dumps(uris), json.dumps(grants), created_at),
+                )
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 38")
+            conn.commit()
+        finally:
+            conn.close()
+        return db_path
+
+    def test_v38_backfills_from_canonicalized_metadata(self) -> None:
+        """A row written with UNSORTED arrays fingerprints as if it were sorted,
+        so a canonical lookup finds it instead of forking a duplicate."""
+        db_path = self._legacy_store(
+            rows=[
+                (
+                    "oauthc_legacy",
+                    "Legacy Agent",
+                    ["https://client.example/b", "https://client.example/a"],
+                    ["refresh_token", "authorization_code"],
+                    "2026-01-01T00:00:00Z",
+                )
+            ]
+        )
+        migrated = StateStore(db_path=db_path)
+        with migrated.connect() as conn:
+            stored = conn.execute(
+                "SELECT client_id, metadata_fingerprint FROM oauth_clients"
+            ).fetchall()
+        canonical = oauth_client_fingerprint(
+            client_name="Legacy Agent",
+            redirect_uris_json=json.dumps(
+                ["https://client.example/a", "https://client.example/b"]
+            ),
+            grant_types_json=json.dumps(["authorization_code", "refresh_token"]),
+        )
+        self.assertEqual(
+            [(row["client_id"], row["metadata_fingerprint"]) for row in stored],
+            [("oauthc_legacy", canonical)],
+        )
+
+    def test_v38_leaves_a_canonical_duplicate_null_so_the_unique_index_builds(
+        self,
+    ) -> None:
+        """Two legacy rows can already say the same thing. The oldest owns the
+        identity; the other keeps NULL — distinct under both dialects' unique
+        indexes — and stays reachable by client_id."""
+        db_path = self._legacy_store(
+            rows=[
+                (
+                    "oauthc_first",
+                    "Twin Agent",
+                    ["https://client.example/a", "https://client.example/b"],
+                    ["authorization_code"],
+                    "2026-01-01T00:00:00Z",
+                ),
+                (
+                    "oauthc_second",
+                    "Twin Agent",
+                    ["https://client.example/b", "https://client.example/a"],
+                    ["authorization_code"],
+                    "2026-02-02T00:00:00Z",
+                ),
+            ]
+        )
+        migrated = StateStore(db_path=db_path)
+        with migrated.connect() as conn:
+            rows = {
+                str(row["client_id"]): row["metadata_fingerprint"]
+                for row in conn.execute(
+                    "SELECT client_id, metadata_fingerprint FROM oauth_clients"
+                ).fetchall()
+            }
+        self.assertIsNotNone(rows["oauthc_first"])
+        self.assertIsNone(rows["oauthc_second"])
+
+    def test_v38_indexes_exist_and_the_fingerprint_one_is_unique(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(db_path=Path(tmp) / "state.sqlite")
+            with store.connect() as conn:
+                indexes = {
+                    str(row["name"]): bool(row["unique"])
+                    for table in (
+                        "oauth_clients",
+                        "oauth_authorization_codes",
+                        "oauth_refresh_tokens",
+                    )
+                    for row in conn.execute(f"PRAGMA index_list({table})").fetchall()
+                }
+                applied = [
+                    (row["version"], row["name"])
+                    for row in conn.execute(
+                        "SELECT version, name FROM schema_migrations WHERE version = 38"
+                    ).fetchall()
+                ]
+                conn.execute(
+                    "INSERT INTO oauth_clients (client_id, client_name, "
+                    "redirect_uris_json, grant_types_json, metadata_fingerprint, "
+                    "created_at) VALUES ('a', 'A', '[]', '[]', 'same', 'now')"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(
+                        "INSERT INTO oauth_clients (client_id, client_name, "
+                        "redirect_uris_json, grant_types_json, metadata_fingerprint, "
+                        "created_at) VALUES ('b', 'B', '[]', '[]', 'same', 'now')"
+                    )
+                # NULL is the deliberate exception: legacy duplicates coexist.
+                for client_id in ("c", "d"):
+                    conn.execute(
+                        "INSERT INTO oauth_clients (client_id, client_name, "
+                        "redirect_uris_json, grant_types_json, metadata_fingerprint, "
+                        f"created_at) VALUES ('{client_id}', 'N', '[]', '[]', NULL, 'now')"
+                    )
+        self.assertTrue(indexes.get("idx_oauth_clients_fingerprint"))
+        self.assertIn("idx_oauth_codes_client", indexes)
+        self.assertIn("idx_oauth_refresh_tokens_client", indexes)
+        self.assertEqual(applied, [(38, "add_oauth_client_fingerprint")])
 
 
 if __name__ == "__main__":

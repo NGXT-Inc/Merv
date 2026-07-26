@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from ..events import StoredEvent, freeze_json_object
 from ..secret_tokens import hash_secret
+from .fingerprints import oauth_client_fingerprint
 from ..utils import NotFoundError, ValidationError
 from ..utils import new_id
 from ..utils import now_iso
@@ -139,11 +140,19 @@ CREATE TABLE IF NOT EXISTS project_api_keys (
 -- Cursor double-DCR race is safe without growing the table; registrations that
 -- never authorized anything are swept by CleanupService. Only public clients
 -- (token_endpoint_auth_method=none) exist, so no client secret is stored.
+-- ``metadata_fingerprint`` is that "identical metadata" statement made a
+-- database fact: a digest over the CANONICAL (sorted-array) metadata, carrying
+-- the UNIQUE index added by migration 38. NULL is the one legal duplicate — a
+-- legacy row whose canonical twin already holds the fingerprint (both dialects
+-- treat NULLs as distinct in a unique index), which stays reachable by
+-- client_id while new registrations resolve to the twin. That index belongs to
+-- migration 38 and never to SCHEMA (see the submissions note below for why).
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id TEXT PRIMARY KEY,
   client_name TEXT NOT NULL,
   redirect_uris_json TEXT NOT NULL,
   grant_types_json TEXT NOT NULL,
+  metadata_fingerprint TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -969,6 +978,32 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # the read-path indexes below, all IF NOT EXISTS. Nothing existing is
     # rewritten, so the migration is a no-op for every current row.
     (37, "add_tool_call_ledger", ""),
+    # OAuth DCR get-or-create becomes database-enforced (July 2026, auth
+    # hardening round 2). SELECT-then-INSERT only serializes where the writers
+    # share a lock, and the Postgres advisory lock is keyed on the DSN *string*
+    # — two replicas spelling the same database differently could both insert.
+    # This adds the canonical metadata fingerprint plus its UNIQUE index, so the
+    # database itself is the arbiter, and backfills existing rows from
+    # CANONICALIZED metadata so a pre-canonicalization row is found by a
+    # post-canonicalization lookup instead of consuming another cap slot. The
+    # two child-table client_id indexes serve the prune/eviction eligibility
+    # subqueries, which run under the global writer lock.
+    (38, "add_oauth_client_fingerprint", ""),
+)
+
+# Migration 38's indexes. Same rule as migration 37's: they live HERE, never in
+# SCHEMA, because SCHEMA runs before the ladder and cannot name a column the
+# ladder has not added yet.
+OAUTH_CLIENT_FINGERPRINT_INDEXES = (
+    # The get-or-create arbiter. NULLs are distinct on both dialects, which is
+    # exactly the escape hatch legacy duplicate rows need.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_clients_fingerprint"
+    "  ON oauth_clients(metadata_fingerprint)",
+    # `client_id NOT IN (SELECT client_id FROM ...)` on the registration path.
+    "CREATE INDEX IF NOT EXISTS idx_oauth_codes_client"
+    "  ON oauth_authorization_codes(client_id)",
+    "CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client"
+    "  ON oauth_refresh_tokens(client_id)",
 )
 
 # Migration 37's indexes. They live HERE and never in SCHEMA: SCHEMA runs on
@@ -1196,7 +1231,59 @@ class BaseStateStore:
             self._add_submission_attempts(conn=conn)
         elif name == "add_tool_call_ledger":
             self._add_tool_call_ledger(conn=conn)
+        elif name == "add_oauth_client_fingerprint":
+            self._add_oauth_client_fingerprint(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_oauth_client_fingerprint(self, *, conn: Connection) -> None:
+        """Migration 38: the canonical DCR fingerprint, its UNIQUE index, and
+        the two child-table client_id indexes.
+
+        Additive. The backfill computes each existing row's fingerprint from
+        CANONICALIZED metadata — the same normalization new registrations
+        apply — so a row written before canonicalization is still found by a
+        canonical lookup. Rows that canonicalize to an already-claimed
+        fingerprint keep NULL: the oldest row owns the identity, the duplicates
+        stay reachable by client_id, and the UNIQUE index can be built."""
+        if not self._has_table(conn=conn, table="oauth_clients"):
+            return
+        if not self._has_column(
+            conn=conn, table="oauth_clients", column="metadata_fingerprint"
+        ):
+            conn.execute("ALTER TABLE oauth_clients ADD COLUMN metadata_fingerprint TEXT")
+        # Seeded from whatever already holds an identity so the backfill is
+        # re-runnable: a second pass can never hand out a taken fingerprint.
+        claimed = {
+            str((row_to_dict(row=row) or {}).get("metadata_fingerprint") or "")
+            for row in conn.execute(
+                "SELECT metadata_fingerprint FROM oauth_clients "
+                "WHERE metadata_fingerprint IS NOT NULL"
+            ).fetchall()
+        }
+        rows = conn.execute(
+            """
+            SELECT client_id, client_name, redirect_uris_json, grant_types_json
+            FROM oauth_clients
+            WHERE metadata_fingerprint IS NULL
+            ORDER BY created_at, client_id
+            """
+        ).fetchall()
+        for row in rows:
+            data = row_to_dict(row=row) or {}
+            fingerprint = oauth_client_fingerprint(
+                client_name=str(data.get("client_name") or ""),
+                redirect_uris_json=str(data.get("redirect_uris_json") or ""),
+                grant_types_json=str(data.get("grant_types_json") or ""),
+            )
+            if fingerprint in claimed:
+                continue
+            claimed.add(fingerprint)
+            conn.execute(
+                "UPDATE oauth_clients SET metadata_fingerprint = ? WHERE client_id = ?",
+                (fingerprint, str(data.get("client_id") or "")),
+            )
+        for statement in OAUTH_CLIENT_FINGERPRINT_INDEXES:
             conn.execute(statement)
 
     def _add_tool_call_ledger(self, *, conn: Connection) -> None:

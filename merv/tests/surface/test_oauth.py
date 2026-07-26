@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import sqlite3
 import tempfile
 import threading
@@ -24,6 +25,7 @@ import jwt
 from starlette.requests import Request
 from fastapi.testclient import TestClient
 
+from merv.brain.kernel.state.store import StateStore
 from merv.brain.kernel.utils import format_iso, parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier
@@ -385,10 +387,12 @@ class OAuthSurfaceTest(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
         self.assertEqual(int(count["n"]), 1)
 
-    def test_registrations_are_capped_and_pruned_without_a_scheduler(self) -> None:
-        """AUTH-03: the table is bounded even if nothing ever calls the sweep."""
+    def _capped_registrar(self, *, max_clients: int):
+        """A registration service on a deliberately tiny client table."""
         repository = SqlOAuthRepository(
-            store=self.app.store, unused_client_ttl_days=30, max_clients=2
+            store=self.app.store,
+            unused_client_ttl_days=30,
+            max_clients=max_clients,
         )
         service = OAuthService(
             repository=repository,
@@ -407,23 +411,66 @@ class OAuthSurfaceTest(unittest.TestCase):
                 }
             )
 
-        register("Agent 1")
-        register("Agent 2")
-        with self.assertRaises(OAuthError) as ctx:
-            register("Agent 3")
-        self.assertEqual(ctx.exception.error, "temporarily_unavailable")
-        self.assertIn(MAX_CLIENTS_ENV_VAR, ctx.exception.description)
+        return service, register
 
-        # Nothing schedules the TTL sweep here — the registration path prunes on
-        # its own behalf, so aging the unused rows out is enough to make room.
+    def _client_count(self) -> int:
+        with self.app.store.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
+        return int(row["n"])
+
+    def test_the_cap_evicts_the_oldest_unused_client_instead_of_refusing(self) -> None:
+        """AUTH-03: the table is bounded without any scheduler AND without
+        handing an unauthenticated caller an onboarding denial of service."""
+        _service, register = self._capped_registrar(max_clients=2)
+        first = register("Agent 1")
+        second = register("Agent 2")
+        # created_at is second-resolution, so age the two rows apart rather than
+        # letting a same-second tie decide which one "oldest" means.
+        with self.app.store.transaction() as conn:
+            for client_id, days in ((first["client_id"], 3), (second["client_id"], 2)):
+                conn.execute(
+                    "UPDATE oauth_clients SET created_at = ? WHERE client_id = ?",
+                    (format_iso(datetime.now(tz=UTC) - timedelta(days=days)), client_id),
+                )
+        third = register("Agent 3")
+
+        with self.app.store.connect() as conn:
+            surviving = {
+                str(row["client_id"])
+                for row in conn.execute("SELECT client_id FROM oauth_clients").fetchall()
+            }
+        self.assertEqual(
+            surviving, {second["client_id"], third["client_id"]}, surviving
+        )
+        self.assertNotIn(
+            first["client_id"], surviving, "the oldest unused row was not evicted"
+        )
+
+        # The TTL sweep still runs on the registration path for rows that age
+        # out on their own, so eviction is the floor, not the whole story.
         stale = format_iso(datetime.now(tz=UTC) - timedelta(days=90))
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE oauth_clients SET created_at = ?", (stale,))
-        third = register("Agent 3")
-        self.assertTrue(third["client_id"])
-        with self.app.store.connect() as conn:
-            count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
-        self.assertEqual(int(count["n"]), 1, "the stale rows were not swept")
+        register("Agent 4")
+        self.assertEqual(self._client_count(), 1, "the stale rows were not swept")
+
+    def test_a_table_of_used_clients_refuses_without_naming_the_cap(self) -> None:
+        """Eviction may never delete a row someone holds a live grant on, so an
+        all-used table is the one case that still refuses — and the refusal
+        tells an unauthenticated caller nothing about the knob or its value."""
+        used, _tokens = self._mint_oauth_tokens()
+        service, register = self._capped_registrar(max_clients=1)
+        with self.assertRaises(OAuthError) as ctx:
+            register("Agent 1")
+        self.assertEqual(ctx.exception.error, "temporarily_unavailable")
+        self.assertNotIn(MAX_CLIENTS_ENV_VAR, ctx.exception.description)
+        self.assertNotIn("1", ctx.exception.description)
+        self.assertIsNotNone(
+            SqlOAuthRepository(store=self.app.store).client_by_id(
+                client_id=used["client_id"]
+            ),
+            "the used client was evicted",
+        )
 
         # Over the wire the refusal is a server condition, not bad metadata.
         capped = TestClient(
@@ -439,21 +486,77 @@ class OAuthSurfaceTest(unittest.TestCase):
             base_url=ISSUER,
             raise_server_exceptions=False,
         )
-        payload = {
-            "redirect_uris": [REDIRECT_URI],
-            "token_endpoint_auth_method": "none",
-            "grant_types": ["authorization_code"],
-            "response_types": ["code"],
-        }
-        accepted = capped.post(
-            "/oauth/register", json={**payload, "client_name": "Agent 4"}
-        )
-        self.assertEqual(accepted.status_code, 201, accepted.text)
         refused = capped.post(
-            "/oauth/register", json={**payload, "client_name": "Agent 5"}
+            "/oauth/register",
+            json={
+                "client_name": "Agent 2",
+                "redirect_uris": [REDIRECT_URI],
+                "token_endpoint_auth_method": "none",
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+            },
         )
         self.assertEqual(refused.status_code, 503, refused.text)
         self.assertEqual(refused.json()["error"], "temporarily_unavailable")
+        self.assertNotIn(MAX_CLIENTS_ENV_VAR, refused.text)
+
+    @patch("merv.brain.surface.oauth_store.OPPORTUNISTIC_PRUNE_LIMIT", 1)
+    @patch("merv.brain.surface.oauth_store.CAP_EVICTION_LIMIT", 1)
+    def test_an_over_cap_table_converges_because_refusals_commit_their_work(
+        self,
+    ) -> None:
+        """A refusal must not roll back the deletions it just made: with the
+        per-call budget at 1 and the table well past ``max_clients`` + that
+        budget, each attempt has to shrink the table until one is admitted."""
+        _seeder, seed = self._capped_registrar(max_clients=500)
+        for index in range(6):
+            seed(f"Seeded Agent {index}")
+        self.assertEqual(self._client_count(), 6)
+
+        _service, register = self._capped_registrar(max_clients=2)
+        observed: list[int] = []
+        admitted = None
+        for _attempt in range(10):
+            try:
+                admitted = register("Latecomer Agent")
+                break
+            except OAuthError as exc:
+                self.assertEqual(exc.error, "temporarily_unavailable")
+                observed.append(self._client_count())
+
+        self.assertIsNotNone(admitted, "the over-cap table never converged")
+        self.assertEqual(observed, [5, 4, 3, 2], "a refusal rolled back its prune")
+        self.assertEqual(self._client_count(), 2)
+
+    def test_a_legacy_unsorted_registration_is_adopted_not_duplicated(self) -> None:
+        """Migration 38's backfill fingerprints pre-canonicalization rows from
+        their CANONICAL form, so the same client re-registering after the
+        canonicalization shipped resolves to its existing row."""
+        uris = ["https://client.example/b", "https://client.example/a"]
+        with self.app.store.transaction() as conn:
+            conn.execute("DROP INDEX IF EXISTS idx_oauth_clients_fingerprint")
+            conn.execute(
+                "INSERT INTO oauth_clients (client_id, client_name, "
+                "redirect_uris_json, grant_types_json, metadata_fingerprint, "
+                "created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+                (
+                    "oauthc_legacy",
+                    "Legacy Agent",
+                    json.dumps(uris),
+                    json.dumps(["refresh_token", "authorization_code"]),
+                    format_iso(datetime.now(tz=UTC) - timedelta(days=1)),
+                ),
+            )
+            conn.execute("DELETE FROM schema_migrations WHERE version = 38")
+        StateStore(db_path=self.app.store.db_path)  # replays migration 38
+
+        again = self._register(
+            client_name="Legacy Agent",
+            redirect_uris=list(reversed(uris)),
+            grants=["authorization_code", "refresh_token"],
+        )
+        self.assertEqual(again["client_id"], "oauthc_legacy")
+        self.assertEqual(self._client_count(), 1)
 
     def test_unused_registrations_expire_and_used_ones_survive(self) -> None:
         unused = self._register(client_name="Abandoned Agent")

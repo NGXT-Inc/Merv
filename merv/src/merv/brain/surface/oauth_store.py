@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..kernel.env import env_int
+from ..kernel.state.fingerprints import oauth_client_fingerprint
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import format_iso
 from .oauth import (
+    CAP_EVICTION_LIMIT,
     DEFAULT_MAX_CLIENTS,
     DEFAULT_UNUSED_CLIENT_TTL_DAYS,
     MAX_CLIENTS_ENV_VAR,
@@ -24,18 +27,35 @@ from .oauth import (
 )
 from .project_keys import PROJECT_GRANT
 
+LOGGER = logging.getLogger(__name__)
+
 
 def _json_list(values: tuple[str, ...] | list[str]) -> str:
     return json.dumps(list(values), separators=(",", ":"))
 
 
-# A registration nobody ever authorized. Shared by the scheduled sweep and the
-# bounded prune the registration path runs itself, so the two can never drift
-# into deleting different rows.
-_UNUSED_CLIENT_PREDICATE = """
-  created_at < ?
-  AND client_id NOT IN (SELECT client_id FROM oauth_authorization_codes)
+def _fingerprint(client: OAuthClient) -> str:
+    return oauth_client_fingerprint(
+        client_name=client.client_name,
+        redirect_uris_json=_json_list(client.redirect_uris),
+        grant_types_json=_json_list(client.grant_types),
+    )
+
+
+# A registration nobody ever authorized: it holds no credential, so deleting it
+# revokes nothing. Shared by the scheduled sweep, the bounded prune the
+# registration path runs itself, and the at-cap eviction, so the three can never
+# drift into disagreeing about which rows are expendable.
+_NEVER_USED_PREDICATE = """
+  client_id NOT IN (SELECT client_id FROM oauth_authorization_codes)
   AND client_id NOT IN (SELECT client_id FROM oauth_refresh_tokens)
+"""
+_UNUSED_CLIENT_PREDICATE = f"""
+  created_at < ?
+  AND {_NEVER_USED_PREDICATE}
+"""
+_BY_FINGERPRINT = """
+SELECT * FROM oauth_clients WHERE metadata_fingerprint = ?
 """
 
 
@@ -70,65 +90,118 @@ class SqlOAuthRepository:
         self.max_clients = max(1, cap)
 
     def get_or_create_client(self, *, client: OAuthClient) -> OAuthClient:
-        """Resolve identical metadata to one row, or insert it — in one commit.
+        """Resolve identical metadata to one row, or insert it.
 
-        The lookup and the insert share a single store transaction, so the
-        store's global writer serialization (SQLite ``BEGIN IMMEDIATE``, the
-        Postgres advisory lock) makes them atomic: two identical registrations
-        racing each other cannot both miss the lookup and both insert a row
-        (audit AUTH-03). The same commit also bounds the table — see
-        ``_prune_unused`` and ``max_clients``.
+        Identity is the canonical metadata fingerprint carrying migration 38's
+        UNIQUE index, so the DATABASE arbitrates the Cursor double-DCR race —
+        not merely the store's global writer lock, whose Postgres advisory key
+        is a hash of the DSN spelling and therefore does not serialize two
+        replicas that name the same database differently (audit AUTH-03). The
+        insert defers to that index and re-reads the winner.
+
+        An already-registered client is answered from a plain read, never
+        taking the writer lock: the common case must not queue behind the
+        prune/eviction work below.
         """
+        fingerprint = _fingerprint(client)
+        with closing(self._store.connect()) as conn:
+            existing = _client(conn.execute(_BY_FINGERPRINT, (fingerprint,)).fetchone())
+        if existing is not None:
+            return existing
         with self._store.transaction() as conn:
-            existing = _client(
-                conn.execute(
-                    """
-                    SELECT * FROM oauth_clients
-                    WHERE client_name = ? AND redirect_uris_json = ?
-                      AND grant_types_json = ?
-                    ORDER BY created_at, client_id
-                    """,
-                    (
-                        client.client_name,
-                        _json_list(client.redirect_uris),
-                        _json_list(client.grant_types),
-                    ),
-                ).fetchone()
-            )
+            existing = _client(conn.execute(_BY_FINGERPRINT, (fingerprint,)).fetchone())
             if existing is not None:
                 return existing
             # Cleanup that does not depend on anyone scheduling it: every
-            # registration pays for a bounded slice of the sweep.
+            # registration pays for a bounded slice of the sweep, then makes
+            # room at the cap if it must.
             self._prune_unused(
                 conn=conn, cutoff=self._cutoff(None), limit=OPPORTUNISTIC_PRUNE_LIMIT
             )
-            stored = row_to_dict(
-                row=conn.execute("SELECT COUNT(*) AS total FROM oauth_clients").fetchone()
-            )
-            if int((stored or {}).get("total") or 0) >= self.max_clients:
-                raise OAuthError(
-                    "temporarily_unavailable",
-                    "this server is holding the maximum number of registered "
-                    f"clients ({self.max_clients}); retry once unused "
-                    "registrations age out, or raise "
-                    f"{MAX_CLIENTS_ENV_VAR}",
+            occupied = self._make_room(conn=conn)
+            if occupied < self.max_clients:
+                conn.execute(
+                    """
+                    INSERT INTO oauth_clients (
+                      client_id, client_name, redirect_uris_json, grant_types_json,
+                      metadata_fingerprint, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (
+                        client.client_id,
+                        client.client_name,
+                        _json_list(client.redirect_uris),
+                        _json_list(client.grant_types),
+                        fingerprint,
+                        client.created_at,
+                    ),
                 )
-            conn.execute(
-                """
-                INSERT INTO oauth_clients (
-                  client_id, client_name, redirect_uris_json, grant_types_json,
-                  created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    client.client_id,
-                    client.client_name,
-                    _json_list(client.redirect_uris),
-                    _json_list(client.grant_types),
-                    client.created_at,
-                ),
+                # Ours, or the row a concurrent replica landed first. Either way
+                # the caller gets the one client id this metadata now names.
+                stored = _client(
+                    conn.execute(_BY_FINGERPRINT, (fingerprint,)).fetchone()
+                )
+                return stored if stored is not None else client
+        # Outside the transaction on purpose: the prune and eviction above are
+        # COMMITTED before this refusal, so an over-cap table shrinks on every
+        # attempt instead of rolling its own progress back forever.
+        LOGGER.warning(
+            "refusing an OAuth registration: %s clients remain against the %s "
+            "cap of %s and no never-used row is left to evict",
+            occupied,
+            MAX_CLIENTS_ENV_VAR,
+            self.max_clients,
+        )
+        # Deliberately says neither the cap nor the knob that sets it: an
+        # unauthenticated caller learns only that this is a server condition.
+        raise OAuthError(
+            "temporarily_unavailable",
+            "client registration is temporarily unavailable; retry shortly",
+        )
+
+    def _make_room(self, *, conn: Any) -> int:
+        """Free a slot at the cap by evicting the oldest never-used rows.
+
+        Returns how many rows the table still holds. Refusing at the cap would
+        make unauthenticated DCR a cheap onboarding denial of service: anyone
+        could fill the table with valid metadata and lock every real client out
+        until the TTL horizon. Eviction inverts that — the attacker's own
+        never-used rows are what gets dropped. Only a table whose every row is
+        USED (holds a code or a refresh token, so deleting it would revoke
+        someone's live grant) still refuses, and the per-call bound keeps the
+        work under the writer lock predictable: an over-cap table converges
+        across attempts rather than in one long one.
+        """
+        total = self._client_count(conn=conn)
+        if total < self.max_clients:
+            return total
+        evicted = self._evict_never_used(
+            conn=conn, limit=min(total - self.max_clients + 1, CAP_EVICTION_LIMIT)
+        )
+        return total - evicted
+
+    def _client_count(self, *, conn: Any) -> int:
+        row = row_to_dict(
+            row=conn.execute("SELECT COUNT(*) AS total FROM oauth_clients").fetchone()
+        )
+        return int((row or {}).get("total") or 0)
+
+    def _evict_never_used(self, *, conn: Any, limit: int) -> int:
+        """Delete the oldest never-used registrations, ignoring their age."""
+        if limit <= 0:
+            return 0
+        cursor = conn.execute(
+            f"""
+            DELETE FROM oauth_clients WHERE client_id IN (
+              SELECT client_id FROM oauth_clients
+              WHERE {_NEVER_USED_PREDICATE}
+              ORDER BY created_at, client_id LIMIT ?
             )
-        return client
+            """,
+            (limit,),
+        )
+        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
 
     def client_by_id(self, *, client_id: str) -> OAuthClient | None:
         with closing(self._store.connect()) as conn:

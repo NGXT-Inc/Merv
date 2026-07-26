@@ -24,12 +24,16 @@ REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 UNUSED_CLIENT_TTL_DAYS_ENV_VAR = "MERV_OAUTH_CLIENT_TTL_DAYS"
 DEFAULT_UNUSED_CLIENT_TTL_DAYS = 30
 # The TTL sweep needs someone to call it, and nothing in the shipped compose
-# file schedules one. These two bound the table without any external timer: the
-# registration path prunes a little every time, and the hard cap refuses to
-# grow past it no matter who is (not) running cleanup.
+# file schedules one. These bound the table without any external timer: the
+# registration path prunes a little every time, and at the cap it EVICTS the
+# oldest never-used rows to admit the new client. Eviction rather than refusal,
+# because DCR is unauthenticated: a cap that refuses hands anyone an onboarding
+# denial of service for the price of some valid metadata. Both deletion budgets
+# are per-call so the work under the store's writer lock stays bounded.
 MAX_CLIENTS_ENV_VAR = "MERV_OAUTH_MAX_CLIENTS"
 DEFAULT_MAX_CLIENTS = 500
 OPPORTUNISTIC_PRUNE_LIMIT = 100
+CAP_EVICTION_LIMIT = 100
 
 _PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
@@ -205,7 +209,9 @@ class OAuthService:
         # would otherwise grow the table forever (audit AUTH-03). Both arrays
         # are sorted first so a client that merely shuffles its own list — the
         # order carries no meaning to either side — is still the same client
-        # and not a fresh row per launch.
+        # and not a fresh row per launch. This canonical form is exactly what
+        # the stored metadata fingerprint (migration 38) hashes, which is why
+        # rows written before canonicalization are still found by this lookup.
         client = self._repository.get_or_create_client(
             client=OAuthClient(
                 client_id=new_id(prefix="oauthc"),

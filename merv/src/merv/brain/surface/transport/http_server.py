@@ -8,8 +8,10 @@ localhost with small-store defaults.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import socket
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,9 @@ import uvicorn
 
 from ..config import Mode, resolve_mode
 from ...kernel.env import env_bool, env_value
+from ...kernel.utils import ValidationError
 from .http_api import create_fastapi_app
+from .http_policy import HttpSurfacePolicy
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:
@@ -31,11 +35,29 @@ def _bind_socket(*, host: str, port: int) -> socket.socket:
     return server_socket
 
 
+def is_loopback_host(host: str) -> bool:
+    """Whether binding ``host`` can only be reached from this machine."""
+    candidate = (host or "127.0.0.1").strip().strip("[]").lower()
+    if candidate == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
 class UvicornHttpServer:
     """uvicorn server wrapper used by compatibility tests.
 
     The production launcher builds the unified brain directly. This wrapper is
     a small socket/uvicorn harness for tests and programmatic callers.
+
+    It is also a composition root, so it answers the same question every other
+    one does: WHICH surface is this? Passing ``surface_policy`` threads the
+    answer (with ``auth``/``env``) into ``create_fastapi_app``, where the
+    hosted gate decides. Omitting it means the unauthenticated local default,
+    which is only honest on a loopback bind — so a non-loopback host is refused
+    here rather than quietly serving an open full surface off-machine.
     """
 
     def __init__(
@@ -44,12 +66,25 @@ class UvicornHttpServer:
         app: Any,
         host: str,
         port: int,
+        surface_policy: HttpSurfacePolicy | None = None,
+        auth: Any | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
+        if surface_policy is None and not is_loopback_host(host):
+            raise ValidationError(
+                f"refusing to serve the unauthenticated local surface on {host!r}: "
+                "bind a loopback address, or pass surface_policy (and auth) so "
+                "the hosted authentication decision is made explicitly.",
+                details={"host": host},
+            )
+        fastapi_app = create_fastapi_app(
+            app=app.http, surface_policy=surface_policy, auth=auth, env=env
+        )
         self._socket = _bind_socket(host=host, port=port)
         selected_port = int(self._socket.getsockname()[1])
         self.server_address = (host, selected_port)
         config = uvicorn.Config(
-            create_fastapi_app(app=app.http),
+            fastapi_app,
             host=host,
             port=selected_port,
             log_level="warning",
@@ -72,8 +107,19 @@ def make_http_server(
     app: Any,
     host: str = "127.0.0.1",
     port: int = 8787,
+    *,
+    surface_policy: HttpSurfacePolicy | None = None,
+    auth: Any | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> UvicornHttpServer:
-    return UvicornHttpServer(app=app, host=host, port=port)
+    return UvicornHttpServer(
+        app=app,
+        host=host,
+        port=port,
+        surface_policy=surface_policy,
+        auth=auth,
+        env=env,
+    )
 
 
 def _run_server(*, server: Any, host: str, port: int, label: str) -> int:
