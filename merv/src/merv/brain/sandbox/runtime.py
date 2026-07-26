@@ -78,6 +78,7 @@ def build_sandbox_runtime(
         lifecycle=lifecycle,
         sample_metrics=metrics.sample_metrics,
         reconcile_runs=runs.reconcile_live,
+        runs_active=runs.has_running_runs,
         force_expiry_reaper=force_expiry_reaper,
     )
     return SandboxRuntime(

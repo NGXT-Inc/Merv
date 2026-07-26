@@ -314,6 +314,7 @@ class QuotaService:
         if quota is None:
             return
         self._check_budget(tenant_id=request.tenant_id, quota=quota)
+        self._check_price_known(quota=quota, request=request)
         if (
             quota.max_concurrent_sandboxes is not None
             and self.running_sandbox_count(tenant_id=request.tenant_id)
@@ -401,6 +402,35 @@ class QuotaService:
                     "quota": "max_price_usd_per_hour",
                 },
             )
+
+    def _check_price_known(
+        self, *, quota: "TenantQuota", request: AdmissionRequest
+    ) -> None:
+        """Refuse an unpriced procurement while a cost policy is in force.
+
+        Every dollar ceiling is arithmetic on a price, so admitting a sandbox
+        nobody can price spends the budget blind — the one outcome a budget
+        exists to prevent (audit SAN-04). Gated on the USD ceilings only: a
+        GPU-hour budget counts time, not money, and must stay permissive.
+        Tenants with no cost policy keep today's behavior exactly.
+        """
+        if not request.price_unknown_reason:
+            return
+        if quota.usd_budget is None and quota.max_price_usd_per_hour is None:
+            return
+        raise PermissionDeniedError(
+            "this tenant has a spend policy, so a sandbox whose price cannot "
+            f"be established will not be provisioned: {request.price_unknown_reason}. "
+            "Pick an instance_type the provider catalog prices, publish a price "
+            "for it, or clear usd_budget and max_price_usd_per_hour for this "
+            "tenant to accept unpriced sandboxes.",
+            details={
+                "reason": request.price_unknown_reason,
+                "quota": "price_required_by_cost_policy",
+                "usd_budget": quota.usd_budget,
+                "max_price_usd_per_hour": quota.max_price_usd_per_hour,
+            },
+        )
 
     def _check_kill_switch(self, *, scope: str, label: str) -> None:
         tripped = self.kill_switch_tripped(scope=scope)

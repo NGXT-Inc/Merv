@@ -23,7 +23,11 @@ from .sandbox_support import (
     DEFAULT_SANDBOX_IDLE_SECONDS,
     DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
 )
-from .sandbox_heartbeat import SandboxHeartbeatMonitor, SandboxIdlePolicy
+from .sandbox_heartbeat import (
+    RunActivityProbe,
+    SandboxHeartbeatMonitor,
+    SandboxIdlePolicy,
+)
 
 
 class SandboxDaemons:
@@ -38,6 +42,7 @@ class SandboxDaemons:
         lifecycle: SandboxLifecycle,
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
         reconcile_runs: Callable[[], int] | None = None,
+        runs_active: RunActivityProbe | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
         force_expiry_reaper: bool = False,
     ) -> None:
@@ -59,6 +64,7 @@ class SandboxDaemons:
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
             reap_row=lifecycle.reap_row,
             policy=idle_policy,
+            runs_active=runs_active,
         )
         self._reaper_stop = threading.Event()
         self.reaper_thread: threading.Thread | None = None

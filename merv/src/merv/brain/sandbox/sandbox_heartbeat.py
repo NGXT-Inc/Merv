@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any, Callable, Protocol
 
 from .sandbox_support import parse_iso
 from ..kernel.utils import format_iso
+
+
+class RowReaper(Protocol):
+    """Terminate one sandbox row; True only once the provider confirms."""
+
+    def __call__(
+        self,
+        *,
+        row: dict[str, Any],
+        event_type: str = ...,
+        payload_extra: dict[str, Any] | None = ...,
+    ) -> bool: ...
+
+
+class RunActivityProbe(Protocol):
+    """The run ledger's durable 'is anything still in flight' read."""
+
+    def __call__(
+        self, *, sandbox_uid: str, fresh_since: datetime | None = ...
+    ) -> bool: ...
 
 
 class SandboxIdlePolicy:
@@ -23,7 +43,13 @@ class SandboxIdlePolicy:
         current: dict[str, Any],
         previous: dict[str, Any] | None,
         elapsed_seconds: float,
+        work_running: bool = False,
     ) -> bool:
+        # Durable evidence outranks sampled gauges: a merv_run receipt with no
+        # exit code, or a command still in flight, means WORK IS RUNNING even
+        # when every meter reads zero (audit SAN-07).
+        if work_running:
+            return False
         if previous is None or elapsed_seconds <= 0:
             return False
         # A live SSH session blocks idle; an UNMEASURABLE one (None — e.g. Modal
@@ -172,13 +198,17 @@ class SandboxHeartbeatMonitor:
         *,
         repository: Any,
         sample_metrics: Callable[..., dict[str, Any]],
-        reap_row: Callable[..., None],
+        reap_row: RowReaper,
         policy: SandboxIdlePolicy | None = None,
+        runs_active: RunActivityProbe | None = None,
     ) -> None:
         self.repository = repository
         self.sample_metrics = sample_metrics
         self.reap_row = reap_row
         self.policy = policy or SandboxIdlePolicy()
+        # The run ledger's "is anything still in flight" probe; wired by the
+        # composition so the monitor and the ledger stay peers.
+        self.runs_active = runs_active
 
     def reap_idle(
         self, *, now: datetime | None = None, threshold_seconds: float
@@ -231,6 +261,9 @@ class SandboxHeartbeatMonitor:
             current=metrics,
             previous=previous,
             elapsed_seconds=(now - previous_at).total_seconds(),
+            work_running=self._work_in_flight(
+                row=row, now=now, max_age_seconds=threshold_seconds
+            ),
         )
         next_idle_since = self.policy.next_idle_since(
             idle_since=idle_since, now=now, is_idle=is_idle
@@ -252,16 +285,52 @@ class SandboxHeartbeatMonitor:
             threshold_seconds=threshold_seconds,
         ):
             return False
-        self.reap_row(
-            row=row,
-            event_type="sandbox.idle_reaped",
-            payload_extra={
-                "idle_since": format_iso(next_idle_since),
-                "idle_seconds": int((now - next_idle_since).total_seconds()),
-                "threshold_seconds": int(threshold_seconds),
-            },
+        # Re-read under a guard, as the expiry reaper does: the sweep snapshot
+        # ages while earlier rows make provider calls, and a run launched or a
+        # command started in that window must cancel this reap rather than lose
+        # its box. Only a row that is STILL running and still idle is reaped.
+        fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        if fresh.get("status") != "running" or parse_iso(fresh.get("idle_since")) is None:
+            return False
+        if self._work_in_flight(
+            row=fresh, now=now, max_age_seconds=threshold_seconds
+        ):
+            return False
+        # Honest outcome: an unconfirmed provider deletion parks the row as
+        # cleanup_pending and is NOT a reap (audit SAN-07).
+        return bool(
+            self.reap_row(
+                row=fresh,
+                event_type="sandbox.idle_reaped",
+                payload_extra={
+                    "idle_since": format_iso(next_idle_since),
+                    "idle_seconds": int((now - next_idle_since).total_seconds()),
+                    "threshold_seconds": int(threshold_seconds),
+                },
+            )
         )
-        return True
+
+    def _work_in_flight(
+        self, *, row: dict[str, Any], now: datetime, max_age_seconds: float
+    ) -> bool:
+        """Durable evidence that this box is doing something, gauges aside."""
+        if str(row.get("last_command_status") or "") == "running":
+            return True
+        if self.runs_active is None:
+            return False
+        try:
+            return bool(
+                self.runs_active(
+                    sandbox_uid=str(row.get("sandbox_uid") or ""),
+                    fresh_since=(
+                        now - timedelta(seconds=max_age_seconds)
+                        if max_age_seconds > 0
+                        else None
+                    ),
+                )
+            )
+        except Exception:  # noqa: BLE001 — an unreadable ledger never licenses a reap
+            return True
 
     def _sample(
         self, *, row: dict[str, Any], experiment_id: str

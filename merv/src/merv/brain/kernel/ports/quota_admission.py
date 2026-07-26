@@ -18,6 +18,10 @@ class AdmissionRequest:
     tenant_id: str
     time_limit_seconds: int
     price_usd_per_hour: float | None = None
+    # Why no price could be quoted, in words an operator can act on. Empty
+    # means the price above IS the provider's answer — including a real zero.
+    # A tenant with a cost policy refuses to admit on a non-empty reason.
+    price_unknown_reason: str = ""
 
 
 class QuotaAdmission(Protocol):

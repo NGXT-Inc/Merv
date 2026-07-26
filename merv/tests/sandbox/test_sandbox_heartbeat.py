@@ -45,6 +45,16 @@ class SandboxIdlePolicyTest(unittest.TestCase):
             )
         )
 
+    def test_work_in_flight_outranks_every_quiet_gauge(self) -> None:
+        self.assertFalse(
+            self.policy.is_idle(
+                current=_sample(),
+                previous=self.previous,
+                elapsed_seconds=30,
+                work_running=True,
+            )
+        )
+
     def test_unmeasurable_ssh_does_not_block_idle(self) -> None:
         # ss/proc absent (e.g. Modal has no sshd) → ssh_established is None;
         # that must not make an otherwise-quiet box un-reapable.
@@ -275,6 +285,153 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         ]
         self.assertEqual(len(idle_events), 1)
         self.assertEqual(idle_events[0]["payload"]["idle_seconds"], 3600)
+
+    def _idle_candidate(self, name: str, *, now: datetime) -> dict:
+        """A running sandbox that every sampled gauge calls idle."""
+        exp_id = self._experiment(name)
+        created = self._request(exp_id)
+        self._seed_heartbeat(
+            exp_id=exp_id,
+            sandbox_uid=str(created["sandbox_uid"]),
+            sampled_at=now - timedelta(seconds=30),
+            idle_since=now - timedelta(hours=1),
+            metrics=_sample(),
+        )
+        self.backend.metrics[created["sandbox_id"]] = _sample()
+        return {**created, "experiment_id": exp_id}
+
+    def _status(self, sandbox_uid: str) -> str:
+        return str(
+            self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)["status"]
+        )
+
+    def test_a_running_merv_run_receipt_vetoes_the_idle_reap(self) -> None:
+        # The gauges say idle, but a detached run never reported finishing:
+        # a blocked download or low-CPU orchestration step looks exactly like
+        # this, and reaping it destroys the work (audit SAN-07).
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("receipt-veto", now=now)
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sandbox_runs (
+                  sandbox_uid, label, command, exit_code, started_at,
+                  first_seen_at, updated_at
+                ) VALUES (?, 'train', 'python train.py', NULL, ?, ?, ?)
+                """,
+                (
+                    str(idle["sandbox_uid"]),
+                    format_iso(now - timedelta(minutes=30)),
+                    format_iso(now - timedelta(minutes=30)),
+                    format_iso(now - timedelta(seconds=30)),
+                ),
+            )
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+        )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
+        self.assertEqual(self._status(str(idle["sandbox_uid"])), "running")
+        # Work in flight also resets the idle clock rather than banking it.
+        self.assertIsNone(
+            self.app.sandboxes.repository.get_by_uid(
+                sandbox_uid=str(idle["sandbox_uid"])
+            )["idle_since"]
+        )
+
+    def test_a_finished_receipt_does_not_veto_the_idle_reap(self) -> None:
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("receipt-finished", now=now)
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sandbox_runs (
+                  sandbox_uid, label, command, exit_code, started_at,
+                  first_seen_at, updated_at
+                ) VALUES (?, 'train', 'python train.py', 0, ?, ?, ?)
+                """,
+                (
+                    str(idle["sandbox_uid"]),
+                    format_iso(now - timedelta(hours=3)),
+                    format_iso(now - timedelta(hours=3)),
+                    format_iso(now - timedelta(seconds=30)),
+                ),
+            )
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 1
+        )
+        self.assertIn(idle["sandbox_id"], self.backend.terminated)
+
+    def test_a_stale_receipt_no_longer_vetoes(self) -> None:
+        # The ledger has not re-confirmed this run in longer than the whole
+        # idle window: the run directory is gone, so it is not evidence of work.
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("receipt-stale", now=now)
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sandbox_runs (
+                  sandbox_uid, label, command, exit_code, started_at,
+                  first_seen_at, updated_at
+                ) VALUES (?, 'train', 'python train.py', NULL, ?, ?, ?)
+                """,
+                (
+                    str(idle["sandbox_uid"]),
+                    format_iso(now - timedelta(days=2)),
+                    format_iso(now - timedelta(days=2)),
+                    format_iso(now - timedelta(days=2)),
+                ),
+            )
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 1
+        )
+
+    def test_a_running_command_vetoes_the_idle_reap(self) -> None:
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("command-veto", now=now)
+        self.app.sandboxes.repository.record_command_snapshot(
+            sandbox_uid=str(idle["sandbox_uid"]),
+            snapshot={"command_id": "cmd_1", "command": "bash setup.sh", "status": "running"},
+        )
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+        )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
+
+    def test_an_unconfirmed_deletion_parks_the_reap_and_reports_no_reap(self) -> None:
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("unconfirmed", now=now)
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+        )
+        self.assertEqual(
+            self._status(str(idle["sandbox_uid"])), "cleanup_pending"
+        )
+
+    def test_a_row_that_left_running_mid_sweep_is_not_reaped(self) -> None:
+        # The re-read guard: the snapshot ages while earlier rows make provider
+        # calls, and the row may already be gone by the time this one's turn
+        # comes up.
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("raced", now=now)
+        repository = self.app.sandboxes.repository
+        original_get = repository.get_by_uid
+
+        def get_by_uid(*, sandbox_uid):
+            row = original_get(sandbox_uid=sandbox_uid)
+            return {**row, "status": "terminated"}
+
+        with patch.object(repository, "get_by_uid", side_effect=get_by_uid):
+            self.assertEqual(
+                self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+            )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
 
     def test_zero_threshold_disables_idle_reaping(self) -> None:
         exp_id = self._experiment("disabled")

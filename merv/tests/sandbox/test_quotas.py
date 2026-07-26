@@ -14,7 +14,7 @@ from pathlib import Path
 
 from datetime import UTC, datetime
 
-from tests.support.brain import TestBrain
+from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.ports.quota_admission import AdmissionRequest
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.quotas import GLOBAL_SCOPE, QuotaService
@@ -251,6 +251,63 @@ class QuotaAdmissionTest(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.details.get("quota"), "usd_budget")
 
+    # ---- unpriced procurement under a cost policy (audit SAN-04) ----
+
+    _UNPRICED = "the catalog lists no price for instance_type gpu_1x_mystery"
+
+    def test_unknown_price_is_refused_when_a_cost_policy_exists(self) -> None:
+        for policy in ({"usd_budget": 500.0}, {"max_price_usd_per_hour": 8.0}):
+            with self.subTest(policy=policy):
+                self.quotas.set_quota(tenant_id="tenant_q", **policy)
+                with self.assertRaises(PermissionDeniedError) as ctx:
+                    self.quotas.check_admission(
+                        request=AdmissionRequest(
+                            tenant_id="tenant_q",
+                            time_limit_seconds=3600,
+                            price_unknown_reason=self._UNPRICED,
+                        )
+                    )
+                message = str(ctx.exception)
+                self.assertIn(self._UNPRICED, message)
+                # The refusal names both ways out.
+                self.assertIn("instance_type the provider catalog prices", message)
+                self.assertIn("clear usd_budget and max_price_usd_per_hour", message)
+                self.assertEqual(
+                    ctx.exception.details.get("quota"),
+                    "price_required_by_cost_policy",
+                )
+
+    def test_unknown_price_is_allowed_without_a_cost_policy(self) -> None:
+        # No quota row at all (local mode), and a quota row with only non-money
+        # ceilings, both stay permissive.
+        self.quotas.check_admission(
+            request=AdmissionRequest(
+                tenant_id="tenant_without_quota",
+                time_limit_seconds=3600,
+                price_unknown_reason=self._UNPRICED,
+            )
+        )
+        self.quotas.set_quota(
+            tenant_id="tenant_q", max_concurrent_sandboxes=4, gpu_hours_budget=100.0
+        )
+        self.quotas.check_admission(
+            request=AdmissionRequest(
+                tenant_id="tenant_q",
+                time_limit_seconds=3600,
+                price_unknown_reason=self._UNPRICED,
+            )
+        )
+
+    def test_a_known_price_of_zero_is_still_a_known_price(self) -> None:
+        self.quotas.set_quota(tenant_id="tenant_q", usd_budget=500.0)
+        self.quotas.check_admission(
+            request=AdmissionRequest(
+                tenant_id="tenant_q",
+                time_limit_seconds=3600,
+                price_usd_per_hour=0.0,
+            )
+        )
+
     def test_open_generation_bills_to_now(self) -> None:
         # An open generation started 4h ago bills 4 GPU-hours at "now".
         now = datetime(2026, 1, 1, 4, 0, 0, tzinfo=UTC)
@@ -432,10 +489,10 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
         self.app.shutdown()
         self.tmp.cleanup()
 
-    def _experiment(self) -> str:
+    def _experiment(self, name: str = "exp-1") -> str:
         exp_id = self.app.call_tool(
             "experiment.create",
-            {"project_id": self.project_id, "name": "exp-1", "intent": "x"},
+            {"project_id": self.project_id, "name": name, "intent": "x"},
         )["id"]
         with self.store.transaction() as conn:
             conn.execute(
@@ -480,6 +537,48 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
         self.assertAlmostEqual(float(gens[0]["price_usd_per_hour"]), 1.29)
         # Local mode: the generation row carries the implicit 'local' tenant.
         self.assertEqual(gens[0]["tenant_id"], "local")
+
+    def test_an_unpriced_sku_is_refused_under_a_budget_and_allowed_without_one(
+        self,
+    ) -> None:
+        # gpu_1x_mystery is not in the fake's catalog, so nothing can price it.
+        request = {
+            "project_id": self.project_id,
+            "experiment_id": self._experiment("unpriced-permissive"),
+            "instance_type": "gpu_1x_mystery",
+        }
+        # No cost policy: today's permissive behavior is unchanged.
+        self.assertEqual(
+            self.app.call_tool("sandbox.request", request)["status"], "running"
+        )
+
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE projects SET tenant_id = ? WHERE id = ?",
+                ("tenant_budgeted", self.project_id),
+            )
+        QuotaService(store=self.store).set_quota(
+            tenant_id="tenant_budgeted", usd_budget=500.0
+        )
+        with self.assertRaises(PermissionDeniedError) as ctx:
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("unpriced-budgeted"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_mystery",
+            )
+        self.assertIn("gpu_1x_mystery", str(ctx.exception))
+        self.assertIn("spend policy", str(ctx.exception))
+        # A SKU the catalog does price still goes through.
+        self.assertEqual(
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("priced-budgeted"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_a100",
+            )["status"],
+            "running",
+        )
 
     def test_each_provision_appends_a_generation_row(self) -> None:
         exp_id = self._experiment()

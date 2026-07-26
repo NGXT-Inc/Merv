@@ -18,7 +18,7 @@ from .sandbox_backend import SandboxBackend
 from .sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from ..kernel.state.store import BaseStateStore, row_to_dict
-from ..kernel.utils import now_iso, parse_iso
+from ..kernel.utils import format_iso, now_iso, parse_iso
 from .repository import SandboxRepository
 
 
@@ -194,6 +194,38 @@ class SandboxRunLedger:
                 )
 
     # ---------- reads ----------
+
+    def has_running_runs(
+        self, *, sandbox_uid: str, fresh_since: datetime | None = None
+    ) -> bool:
+        """Whether a merv_run receipt says work is still in flight on this box.
+
+        A record with no exit_code is the durable statement that a detached
+        command was launched and never reported finishing — work the sampled
+        CPU/GPU/network gauges cannot see (audit SAN-07): a blocked download or
+        a low-CPU orchestration step reads as an idle machine.
+
+        ``fresh_since`` drops records the ledger has not re-confirmed lately,
+        so a run directory that vanished cannot veto forever. Nothing here can
+        keep a box alive past its expires_at deadline — the expiry reaper does
+        not consult receipts, and that paid-for lifetime stays the real ceiling.
+        """
+        if not sandbox_uid:
+            return False
+        clause = "" if fresh_since is None else " AND r.updated_at >= ?"
+        params: list[Any] = [sandbox_uid]
+        if fresh_since is not None:
+            params.append(format_iso(fresh_since))
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1 FROM sandbox_runs r
+                WHERE r.sandbox_uid = ? AND r.exit_code IS NULL{clause}
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return row is not None
 
     def records_for_sandbox(self, *, sandbox_uid: str) -> list[dict[str, Any]]:
         with closing(self.store.connect()) as conn:

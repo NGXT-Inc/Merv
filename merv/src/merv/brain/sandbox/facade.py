@@ -295,21 +295,31 @@ class SandboxFacade:
         except BackendValidationError as exc:
             raise ValidationError(str(exc)) from exc
 
-    def _price_for_instance(
+    def _quoted_price(
         self,
         *,
         instance_type: str | None,
         region: str | None,
         provider: str | None = None,
-    ) -> float | None:
+    ) -> tuple[float | None, str]:
+        """``(price, why-unknown)`` for the chosen instance.
+
+        The reason is what the caller needs to fail closed honestly: a lookup
+        that quietly returned None let an unpriced sandbox through every cost
+        ceiling (audit SAN-04). An empty reason means the price — zero included
+        — is the provider's own answer.
+        """
         if not instance_type:
-            return None
+            return None, (
+                "no instance_type was selected, so this backend quotes no "
+                "per-instance price"
+            )
         try:
             catalog = self.backend.hardware_catalog(region=region)
-        except Exception:
-            return None
+        except Exception as exc:  # noqa: BLE001
+            return None, f"the provider price catalog could not be read ({exc})"
         if not catalog:
-            return None
+            return None, "this backend publishes no price catalog"
         for option in catalog.get("options", []) or []:
             if str(option.get("instance_type") or "") != instance_type:
                 continue
@@ -317,8 +327,14 @@ class SandboxFacade:
             if provider and tagged and (tagged != provider):
                 continue
             price = option.get("price_usd_per_hour")
-            return float(price) if price is not None else None
-        return None
+            if price is None:
+                return None, (
+                    f"the catalog lists no price for instance_type {instance_type}"
+                )
+            return float(price), ""
+        return None, (
+            f"instance_type {instance_type} is not in the provider price catalog"
+        )
 
     def _hardware_catalog(
         self, *, gpu: str | None = None, region: str | None = None
@@ -474,13 +490,15 @@ class SandboxFacade:
                 return sandbox_views.needs_selection_view(
                     experiment_id=experiment_id, project_id=project_id, catalog=catalog
                 )
+            price, price_unknown_reason = self._quoted_price(
+                instance_type=instance_type, region=region, provider=caps.name
+            )
             self.quotas.check_admission(
                 request=AdmissionRequest(
                     tenant_id=self.repository.tenant_for_project(project_id=project_id),
                     time_limit_seconds=int(time_limit),
-                    price_usd_per_hour=self._price_for_instance(
-                        instance_type=instance_type, region=region, provider=caps.name
-                    ),
+                    price_usd_per_hour=price,
+                    price_unknown_reason=price_unknown_reason,
                 )
             )
             remote_dir = remote_experiment_dir(

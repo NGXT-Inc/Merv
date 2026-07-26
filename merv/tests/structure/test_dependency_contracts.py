@@ -59,7 +59,6 @@ sandbox/sandbox_daemons.py | SandboxDaemons.__init__ | sample_metrics | Callable
 sandbox/sandbox_daemons.py | SandboxDaemons.__init__ | reconcile_runs | Callable[[], int] | None
 sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | repository | Any
 sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | sample_metrics | Callable[..., dict[str, Any]]
-sandbox/sandbox_heartbeat.py | SandboxHeartbeatMonitor.__init__ | reap_row | Callable[..., None]
 sandbox/transcript_cache.py | TranscriptCache.__init__ | clock | Callable[[], float] | None
 surface/observability.py | StructuredLogger.__init__ | stream | Any | None
 surface/transport/admin_http.py | register_admin_routes | cleanup | Any | None
