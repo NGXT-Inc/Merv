@@ -18,7 +18,7 @@ from merv.shared.markdown_images import markdown_image_links
 
 from .artifact_evidence import (
     artifact_submission_recency_key,
-    preferred_associated_artifact,
+    preferred_artifact,
 )
 from .experiment_names import validate_experiment_name
 from .experiment_policy import (
@@ -148,9 +148,8 @@ def validate_reflection_roster(*, lenses: list[dict[str, Any]]) -> list[dict[str
 def current_reflection_requirement_artifact(
     *, reflection: dict[str, Any], role: str
 ) -> dict[str, Any] | None:
-    return preferred_associated_artifact(
+    return preferred_artifact(
         artifacts=reflection.get("current_attempt_artifacts") or [],
-        attempt=reflection.get("attempt_index"),
         roles=(role,),
     )
 

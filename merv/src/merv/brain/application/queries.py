@@ -15,7 +15,8 @@ from ..research_core.facade import (
     MAX_GRAPH_NODES,
     ResearchCore,
     graph_problems,
-    preferred_associated_artifact,
+    historical_latest_artifacts,
+    preferred_artifact,
 )
 from .ports.tracking import tracking_experiment_name
 from .experiment_figure import build_experiment_figure
@@ -205,9 +206,11 @@ class LogicGraphQuery:
             experiment_id=experiment_id, project_id=project_id
         )
         attempt = experiment.get("attempt_index")
-        chosen = preferred_associated_artifact(
-            artifacts=experiment.get("artifacts", []),
-            attempt=attempt,
+        # History, deliberately: the panel labels the graph with the attempt
+        # that produced it, so the newest graph the experiment ever submitted
+        # is an honest answer even after a rejection bumped the attempt.
+        chosen = preferred_artifact(
+            artifacts=historical_latest_artifacts(experiment.get("artifacts", [])),
             roles=("graph",),
         )
         base = {
@@ -273,9 +276,8 @@ class LogicGraphQuery:
     ) -> Record:
         base: Record = {"max_nodes": MAX_GRAPH_NODES, **(extra_base or {})}
         chosen = graph_artifact or (
-            preferred_associated_artifact(
-                artifacts=reflection.get("artifacts", []),
-                attempt=reflection.get("attempt_index"),
+            preferred_artifact(
+                artifacts=reflection.get("current_attempt_artifacts") or [],
                 roles=(PROJECT_GRAPH_ROLE,),
             )
             if reflection

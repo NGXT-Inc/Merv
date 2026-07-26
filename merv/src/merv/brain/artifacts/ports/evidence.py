@@ -49,11 +49,17 @@ class SubmittedDocument:
 
 @dataclass(frozen=True, slots=True)
 class SubmittedEvidence:
-    """Best-effort submitted text for one immutable artifact."""
+    """Best-effort submitted text for one immutable artifact.
+
+    Carries the whole evidence slot: a reflection wave's lens documents share
+    a role and a path and differ only by lens_id, so a record without it
+    cannot tell five documents apart."""
 
     role: str
+    lens_id: str
     path: str
     artifact_id: str
+    submission_id: str
     order: int
     content: str | None
 
@@ -93,12 +99,7 @@ class EvidenceReader(Protocol):
     def bounded_text_for_artifact(self, *, artifact_id: str) -> SubmittedContent: ...
 
     def submitted_evidence(
-        self,
-        *,
-        target_type: str,
-        target_id: str,
-        attempt_index: int,
-        roles: tuple[str, ...],
+        self, *, artifact_ids: tuple[str, ...]
     ) -> tuple[SubmittedEvidence, ...]: ...
 
 

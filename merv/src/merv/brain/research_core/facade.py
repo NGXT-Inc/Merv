@@ -9,7 +9,7 @@ from ..kernel.events import StoredEvent
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
 from .domain.experiment_policy import infer_claim_status_from_conclusion
 from .domain.paths import experiment_folder_rel
-from .domain.artifact_evidence import preferred_associated_artifact
+from .domain.artifact_evidence import historical_latest_artifacts, preferred_artifact
 from .domain.vocabulary import (
     EXPERIMENT_ACTIVE_PROCESS_STATUSES,
     EXPERIMENT_TERMINAL_STATUSES,
@@ -399,6 +399,6 @@ __all__ = (
     "GateEvaluation", "MAX_GRAPH_NODES", "PersistedRunState", "ResearchClaims", "ResearchCore",
     "ResearchCoreFacade", "ResearchLiterature", "ResearchProjects", "ResearchReviewDelivery", "ResearchReviews",
     "ResearchSnapshot", "ResearchSnapshots", "REVIEW_VERDICT_VALUES", "RequirementEvaluation",
-    "experiment_folder_rel", "graph_problems", "infer_claim_status_from_conclusion",
-    "preferred_associated_artifact",
+    "experiment_folder_rel", "graph_problems", "historical_latest_artifacts",
+    "infer_claim_status_from_conclusion", "preferred_artifact",
 )

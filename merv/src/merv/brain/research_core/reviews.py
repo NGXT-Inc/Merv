@@ -274,36 +274,30 @@ class ReviewService:
                 # The reviewer grades the SUBMITTED artifacts — the bytes
                 # pinned at submit — not whatever the working tree holds
                 # now. Hydrated here so a reviewer never has to trust disk.
-                "submitted_artifacts": self._submitted_artifacts(
-                    target_type=str(req["target_type"]),
-                    target_id=str(req["target_id"]),
-                    attempt_index=int(snapshot.get("attempt_index") or 0),
-                ),
+                "submitted_artifacts": self._submitted_artifacts(snapshot=snapshot),
             }
 
-    def _submitted_artifacts(
-        self, *, target_type: str, target_id: str, attempt_index: int
-    ) -> list[dict[str, Any]]:
-        """Apply reviewer visibility and advisory-failure policy to evidence."""
-        artifacts: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-        evidence = self.evidence_reader.submitted_evidence(
-            target_type=target_type,
-            target_id=target_id,
-            attempt_index=attempt_index,
-            roles=tuple(sorted(GATED_ROLES | {EXHIBIT_ROLE})),
+    def _submitted_artifacts(self, *, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        """Hydrate exactly the artifact ids this review pinned.
+
+        By id, never by (role, path): a wave's five lens documents may share
+        both and differ only by lens_id, so a role/path key would show the
+        reviewer one document where five were submitted. The snapshot is the
+        pinned round — start() has already refused a target that moved."""
+        visible = tuple(
+            str(res.get("artifact_id") or "")
+            for res in snapshot.get("artifacts", [])
+            if str(res.get("role") or "") in GATED_ROLES
+            or res.get("role") == EXHIBIT_ROLE
         )
-        for item in reversed(evidence):
-            if item.role not in GATED_ROLES and item.role != EXHIBIT_ROLE:
-                continue
-            key = (item.role, item.path)
-            if key in seen:
-                continue
-            seen.add(key)
+        artifacts: list[dict[str, Any]] = []
+        for item in self.evidence_reader.submitted_evidence(artifact_ids=visible):
             entry: dict[str, Any] = {
                 "role": item.role,
+                "lens_id": item.lens_id,
                 "path": item.path,
                 "artifact_id": item.artifact_id,
+                "submission_id": item.submission_id,
                 "content": item.content,
             }
             if item.content is None:
@@ -312,7 +306,6 @@ class ReviewService:
                     "it with artifact.submit"
                 )
             artifacts.append(entry)
-        artifacts.reverse()
         return artifacts
 
     def submit(

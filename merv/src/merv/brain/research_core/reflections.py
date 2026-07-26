@@ -41,9 +41,9 @@ from .domain.reflection_policy import (
 )
 from .domain.artifact_evidence import (
     artifact_state_record,
-    latest_per_slot,
+    current_slot_artifacts,
     artifact_submission_recency_key,
-    preferred_associated_artifact,
+    preferred_artifact,
 )
 from ..artifacts.ports import EvidenceReader, SubmissionSealer, SubmittedDocument
 from .domain.review_snapshot import review_snapshot_id
@@ -198,9 +198,8 @@ class ReflectionService:
         previous_artifacts: dict[str, dict[str, Any]] = {}
         if previous is not None:
             graph = self._project_graph_artifact(reflection=previous)
-            reflection_doc = preferred_associated_artifact(
-                artifacts=previous.get("artifacts") or [],
-                attempt=previous.get("attempt_index"),
+            reflection_doc = preferred_artifact(
+                artifacts=previous.get("current_attempt_artifacts") or [],
                 roles=("reflection_doc",),
             )
             for role, artifact in (
@@ -297,12 +296,8 @@ class ReflectionService:
             ]
             # Newest row per slot — the reflection wave seals on its forward
             # transitions too, so superseded lens docs stay alive as history.
-            data["current_attempt_artifacts"] = latest_per_slot(
-                [
-                    res
-                    for res in data["artifacts"]
-                    if res.get("attempt_index") == data["attempt_index"]
-                ]
+            data["current_attempt_artifacts"] = current_slot_artifacts(
+                data["artifacts"], attempt=data["attempt_index"]
             )
             if include_content:
                 data["corpus"] = self._hydrate_corpus_content(
@@ -550,11 +545,15 @@ class ReflectionService:
     def _project_graph_artifact(
         *, reflection: dict[str, Any] | None
     ) -> dict[str, Any] | None:
+        """This wave's graph, or None — the current attempt only.
+
+        A rejection back to reflecting bumps the attempt, so the graph the
+        reviewer rejected belongs to the previous one. Reading the whole
+        history here is what let a rejected graph answer "what is current"."""
         if reflection is None:
             return None
-        return preferred_associated_artifact(
-            artifacts=reflection.get("artifacts", []),
-            attempt=reflection.get("attempt_index"),
+        return preferred_artifact(
+            artifacts=reflection.get("current_attempt_artifacts") or [],
             roles=(PROJECT_GRAPH_ROLE,),
         )
 
@@ -1158,9 +1157,8 @@ class ReflectionService:
         self, *, reflection: dict[str, Any]
     ) -> str | None:
         """The current project-graph ARTIFACT id, pinned at publish."""
-        artifact = preferred_associated_artifact(
+        artifact = preferred_artifact(
             artifacts=reflection.get("current_attempt_artifacts") or [],
-            attempt=reflection.get("attempt_index"),
             roles=(PROJECT_GRAPH_ROLE,),
         )
         artifact_id = (artifact or {}).get("id")
@@ -1173,9 +1171,8 @@ class ReflectionService:
         roles: tuple[str, ...],
         what: str,
     ) -> SubmittedDocument | None:
-        artifact = preferred_associated_artifact(
+        artifact = preferred_artifact(
             artifacts=reflection.get("current_attempt_artifacts") or [],
-            attempt=reflection.get("attempt_index"),
             roles=roles,
         )
         if artifact is None:

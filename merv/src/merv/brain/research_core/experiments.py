@@ -24,8 +24,8 @@ from .domain.reflection_policy import (
 )
 from .domain.review_snapshot import review_snapshot_id
 from .domain.artifact_evidence import (
-    latest_per_slot,
-    preferred_associated_artifact,
+    current_slot_artifacts,
+    preferred_artifact,
     artifact_state_record,
 )
 from .domain.workflow_gates import (
@@ -409,12 +409,8 @@ class ExperimentService:
         # Newest row per slot, not every row: sealed rounds leave the
         # superseded report alive as history, and only the current one is
         # "current". A no-op on rows written before submissions existed.
-        data["current_attempt_artifacts"] = latest_per_slot(
-            [
-                artifact
-                for artifact in data["artifacts"]
-                if artifact.get("attempt_index") == data["attempt_index"]
-            ]
+        data["current_attempt_artifacts"] = current_slot_artifacts(
+            data["artifacts"], attempt=data["attempt_index"]
         )
         data["submissions"] = (
             submissions
@@ -839,9 +835,8 @@ class ExperimentService:
     def _submitted_document(
         self, *, experiment: dict[str, Any], role: str, what: str
     ) -> SubmittedDocument:
-        artifact = preferred_associated_artifact(
+        artifact = preferred_artifact(
             artifacts=experiment.get("current_attempt_artifacts") or [],
-            attempt=experiment.get("attempt_index"),
             roles=(role,),
         )
         if artifact is None:
@@ -909,9 +904,8 @@ class ExperimentService:
                 "on the sandbox), then resubmit the report to submit it"
             )
 
-        exhibit = preferred_associated_artifact(
+        exhibit = preferred_artifact(
             artifacts=experiment.get("current_attempt_artifacts") or [],
-            attempt=experiment.get("attempt_index"),
             roles=(EXHIBIT_ROLE,),
         )
         problems = report_problems(

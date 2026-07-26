@@ -632,26 +632,25 @@ class ArtifactSubmissionService:
         )
 
     def submitted_evidence(
-        self,
-        *,
-        target_type: str,
-        target_id: str,
-        attempt_index: int,
-        roles: tuple[str, ...],
+        self, *, artifact_ids: tuple[str, ...]
     ) -> tuple[SubmittedEvidence, ...]:
-        """All current-attempt submitted text as best-effort facts."""
-        if self.blobs is None or not roles:
+        """Best-effort submitted text for exactly these artifacts, oldest first.
+
+        Reads by id so a caller's pinned set arrives intact — nothing is
+        re-derived from role or path, which cannot tell per-lens siblings
+        apart."""
+        ids = list(dict.fromkeys(str(one) for one in artifact_ids if one))
+        if self.blobs is None or not ids:
             return ()
-        role_slots = ", ".join("?" for _role in roles)
+        placeholders = ", ".join("?" for _id in ids)
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM artifacts
-                WHERE status = 'complete' AND target_type = ? AND target_id = ?
-                  AND attempt_index = ? AND role IN ({role_slots})
+                WHERE status = 'complete' AND id IN ({placeholders})
                 ORDER BY created_seq
                 """,
-                (target_type, target_id, int(attempt_index), *roles),
+                (*ids,),
             ).fetchall()
         result: list[SubmittedEvidence] = []
         for row in rows:
@@ -667,8 +666,10 @@ class ArtifactSubmissionService:
             result.append(
                 SubmittedEvidence(
                     role=str(row["role"]),
+                    lens_id=str(row["lens_id"] or ""),
                     path=str(row["path"] or ""),
                     artifact_id=str(row["id"]),
+                    submission_id=str(row["submission_id"] or ""),
                     order=int(row["created_seq"] or 0),
                     content=content,
                 )

@@ -199,8 +199,10 @@ SAMPLES: dict[type, object] = {
     ),
     SubmittedEvidence: SubmittedEvidence(
         role="report",
+        lens_id="",
         path="experiments/example/report.md",
         artifact_id="art_1",
+        submission_id="sub_1",
         order=7,
         content="# Report",
     ),
