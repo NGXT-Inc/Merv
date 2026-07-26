@@ -438,10 +438,11 @@ class SandboxFacade:
                 and existing
                 and (existing.get("status") in ACTIVE_SANDBOX_STATUSES)
                 and existing.get("sandbox_id")
-                and (
-                    self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
-                    is not False
-                )
+                # Row-qualified: the recorded provider owns this id, not
+                # whichever backend is the default today. An owner that cannot
+                # be asked reads as "possibly alive" and is reused rather than
+                # cleared — clearing it is what destroys a live VM (SAN-06).
+                and (self.lifecycle.liveness(row=existing) is not False)
             )
             # A live provisioning job owns its row at any age — cleaning up
             # under it would terminate the VM it is still booting.
@@ -483,7 +484,6 @@ class SandboxFacade:
                 )
             public_key = supplied_public_key
             public_key_source = "caller"
-            management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
             if reuse_live and existing:
                 self.repository.touch_alive(
                     experiment_id=experiment_id,
@@ -529,6 +529,12 @@ class SandboxFacade:
                     price_unknown_reason=price_unknown_reason,
                 )
             )
+            # Minted only once admission has passed. A denied request (a tenant
+            # at its concurrency cap during a cleanup outage, say) retries every
+            # few seconds, and minting first left one orphaned keypair directory
+            # per attempt — nothing ever names that uid again, so nothing ever
+            # removes it. There is no VM to reach until we get past here.
+            management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
             remote_dir = remote_experiment_dir(
                 experiment_id=sandbox_uid, name=f"sandbox-{sandbox_uid[:12]}"
             )
@@ -623,7 +629,9 @@ class SandboxFacade:
         source_row = self.lifecycle.reconcile(row=source_row)
         if source_row.get("status") != "running" or not source_row.get("sandbox_id"):
             raise ValidationError("sandbox.attach requires a running sandbox")
-        if self.lifecycle.liveness(sandbox_id=str(source_row["sandbox_id"])) is False:
+        # Row-qualified (SAN-06): a legacy id asked of the wrong provider comes
+        # back "not mine", which would refuse an attach to a perfectly live VM.
+        if self.lifecycle.liveness(row=source_row) is False:
             raise ValidationError("sandbox.attach requires a live sandbox")
         if self.attachment_check is not None:
             self.attachment_check(attachment_id=experiment_id, project_id=project_id)
@@ -784,10 +792,17 @@ class SandboxFacade:
                 )
                 if item.get("project_id") == row.get("project_id")
             ]
+            # `cleanup_pending` counts: a parked sibling is precisely the row
+            # whose VM may still be up and billing, and leaving it out of an
+            # experiment-wide release is how the aggregate ends up saying
+            # "terminated" over a live box nobody is looking at any more
+            # (audit SAN-05). It re-enters the retry path here, or is reported
+            # as still pending.
             active = [
                 item
                 for item in rows
-                if item.get("status") in ACTIVE_SANDBOX_STATUSES | {"provisioning"}
+                if item.get("status")
+                in ACTIVE_SANDBOX_STATUSES | {"provisioning", CLEANUP_PENDING_STATUS}
             ]
             if len(active) > 1:
                 targets = active
@@ -872,7 +887,10 @@ class SandboxFacade:
             row=row,
             try_direct=bool(
                 row.get("sandbox_id")
-                and row.get("status") in ACTIVE_SANDBOX_STATUSES | {"provisioning"}
+                and row.get("status")
+                # A parked row gets the same direct attempt the retry sweep
+                # makes; it is the row most likely to still be billing.
+                in ACTIVE_SANDBOX_STATUSES | {"provisioning", CLEANUP_PENDING_STATUS}
             ),
         )
         decision = release_decision(

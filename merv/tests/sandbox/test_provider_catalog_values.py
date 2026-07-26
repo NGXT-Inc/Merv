@@ -59,6 +59,22 @@ class ProviderCatalogValueTest(unittest.TestCase):
         self.assertEqual(_float_or_none("0.00"), 0.0)
         self.assertEqual(_float_or_none("2.44"), 2.44)
 
+    def test_a_negative_price_is_unknown_not_the_cheapest_option(self) -> None:
+        # A negative rate sorts to the FRONT of a cheapest-first menu, slides
+        # under every positive USD ceiling (admission only rejects prices ABOVE
+        # the limit), and then subtracts from recorded spend.
+        for value in (-1, "-1", -0.0001, float("-inf")):
+            with self.subTest(value=value):
+                self.assertIsNone(_float_or_none(value))
+        options = [
+            {"instance_type": "garbled", "price_usd_per_hour": _float_or_none("-1")},
+            {"instance_type": "real", "price_usd_per_hour": 2.0},
+        ]
+        self.assertEqual(
+            [option["instance_type"] for option in sorted(options, key=price_sort_key)],
+            ["real", "garbled"],
+        )
+
     def test_unpriced_options_sort_last_not_first(self) -> None:
         options = [
             {"instance_type": "unpriced", "price_usd_per_hour": None},
@@ -189,6 +205,67 @@ class ProviderPriceFailClosedTest(unittest.TestCase):
             }
         ]
         self.assertIsNone(tensordock_options(locations)[0]["price_usd_per_hour"])
+
+    def test_tensordock_composite_quote_needs_every_component_rate(self) -> None:
+        # The quote is a SUM of four rates. A missing or garbled component
+        # coerced to zero is not a partial price, it is a wrong one — quoted
+        # low, and admitted on the strength of the terms that did parse.
+        def _locations(pricing: dict) -> list[dict]:
+            return [
+                {
+                    "id": "loc-1",
+                    "city": "Austin",
+                    "country": "United States",
+                    "gpus": [
+                        {
+                            "v0Name": "h100-sxm5-80gb",
+                            "displayName": "H100 SXM5 80GB",
+                            "max_count": 1,
+                            "price_per_hr": 2.2,
+                            "resources": {
+                                "max_vcpus": 128,
+                                "max_ram_gb": 300,
+                                "max_storage_gb": 1000,
+                            },
+                            "pricing": pricing,
+                            "network_features": {"dedicated_ip_available": True},
+                        }
+                    ],
+                }
+            ]
+
+        full = {
+            "per_vcpu_hr": 0.003,
+            "per_gb_ram_hr": 0.002,
+            "per_gb_storage_hr": 0.00005,
+        }
+        # The control: every rate known, so the machine has a real price.
+        self.assertAlmostEqual(
+            tensordock_options(_locations(full))[0]["price_usd_per_hour"],
+            2.2 + 0.003 * 8 + 0.002 * 32 + 0.00005 * 100,
+            places=4,
+        )
+        for dropped in full:
+            with self.subTest(missing=dropped):
+                partial = {k: v for k, v in full.items() if k != dropped}
+                self.assertIsNone(
+                    tensordock_options(_locations(partial))[0]["price_usd_per_hour"]
+                )
+        # Malformed reads the same as missing...
+        self.assertIsNone(
+            tensordock_options(_locations({**full, "per_vcpu_hr": "free!"}))[0][
+                "price_usd_per_hour"
+            ]
+        )
+        # ...and a negative component never discounts the machine.
+        self.assertIsNone(
+            tensordock_options(_locations({**full, "per_gb_ram_hr": -0.5}))[0][
+                "price_usd_per_hour"
+            ]
+        )
+        negative_gpu = _locations(full)
+        negative_gpu[0]["gpus"][0]["price_per_hr"] = -2.2
+        self.assertIsNone(tensordock_options(negative_gpu)[0]["price_usd_per_hour"])
 
     def test_voltage_park_preset_missing_either_rate(self) -> None:
         def _locations(**rates: str) -> list[dict]:

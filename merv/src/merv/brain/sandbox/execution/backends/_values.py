@@ -31,6 +31,12 @@ def _float_or_none(value: Any) -> float | None:
     every USD ceiling and spends a budget blind (audit SAN-04). ``None`` makes
     the cost policy fail closed; a provider's own explicit ``0`` still comes
     back as a known zero.
+
+    A NEGATIVE number is not a price either. It sorts to the front of the
+    agent's cheapest-first menu, passes any positive USD ceiling (admission
+    only rejects prices ABOVE the limit), and then SUBTRACTS from recorded
+    spend — one garbled feed value would hand a tenant an unbounded budget.
+    Unknown is the only safe reading.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -38,7 +44,9 @@ def _float_or_none(value: Any) -> float | None:
         price = float(value)
     except (TypeError, ValueError):
         return None
-    return None if price != price else price  # NaN is not a price
+    if price != price or price < 0:  # NaN and negatives are not prices
+        return None
+    return price
 
 
 def price_sort_key(option: dict[str, Any]) -> tuple[bool, float, str]:

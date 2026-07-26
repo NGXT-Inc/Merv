@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .._values import _float_or_none, _float_or_zero, _int_or_zero, _norm, price_sort_key
+from .._values import _float_or_none, _int_or_zero, _norm, price_sort_key
 
 
 # Deploy shape defaults per GPU (scaled by count, clipped to location maxima).
@@ -109,19 +109,26 @@ def to_agent_options(
                 storage_cap = _int_or_zero(resources.get("max_storage_gb"))
                 if storage_cap and storage_cap < DEFAULT_STORAGE_GB:
                     continue  # cannot meet the 100 GB minimum here
-                # The GPU rate is the price. Without it the synthesized total
-                # is not a quote at all, so the option stays unpriced rather
-                # than advertising the add-ons alone as the machine's cost.
-                gpu_rate = _float_or_none(entry.get("price_per_hr"))
+                # The quote is a SUM, so every term has to be known. A missing
+                # or malformed component rate coerced to zero is not a partial
+                # price — it is a wrong one, quoted low, and it passes the cost
+                # ceiling on the strength of the terms that did parse (audit
+                # SAN-04). Any unknown term makes the whole option unpriced.
+                rates = (
+                    _float_or_none(entry.get("price_per_hr")),
+                    _float_or_none(pricing.get("per_vcpu_hr")),
+                    _float_or_none(pricing.get("per_gb_ram_hr")),
+                    _float_or_none(pricing.get("per_gb_storage_hr")),
+                )
+                gpu_rate, vcpu_rate, ram_rate, storage_rate = rates
                 price = (
                     None
-                    if gpu_rate is None
+                    if any(rate is None for rate in rates)
                     else round(
                         gpu_rate * count
-                        + _float_or_zero(pricing.get("per_vcpu_hr")) * vcpus
-                        + _float_or_zero(pricing.get("per_gb_ram_hr")) * ram
-                        + _float_or_zero(pricing.get("per_gb_storage_hr"))
-                        * DEFAULT_STORAGE_GB,
+                        + vcpu_rate * vcpus
+                        + ram_rate * ram
+                        + storage_rate * DEFAULT_STORAGE_GB,
                         4,
                     )
                 )

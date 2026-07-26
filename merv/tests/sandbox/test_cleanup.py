@@ -20,7 +20,11 @@ from unittest.mock import patch
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
 from merv.brain.kernel.utils import parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.sandbox.sandbox_backend import BackendCapabilities
+from merv.brain.sandbox.sandbox_backend import (
+    BackendCapabilities,
+    BackendUnavailableError,
+    SandboxRequest,
+)
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
 from merv.brain.application.maintenance import CleanupService
 
@@ -745,6 +749,76 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(self._row("uid_agg_ok")["status"], "terminated")
         self.assertEqual(self._row("uid_agg_bad")["status"], "cleanup_pending")
 
+    def test_an_experiment_release_never_omits_an_already_parked_sibling(self) -> None:
+        # The state fix 1 produces: a row parks BEFORE the release, and the
+        # request that followed it provisioned a second, healthy row. Filtering
+        # the experiment's rows to the live ones drops the parked one from the
+        # release entirely — and then the aggregate happily reports
+        # "terminated" over a VM that may still be up and billing.
+        uid_parked = "uid_release_preparked"
+        exp_id = self._running_row(sandbox_uid=uid_parked, sandbox_id="sb-preparked")
+        original_terminate = self.backend.terminate
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.assertEqual(self._row(uid_parked)["status"], "cleanup_pending")
+
+        # The provider recovers enough to serve a fresh provision.
+        self.backend.terminate = original_terminate  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        fresh = self._request(exp_id)
+        self.assertEqual(fresh["status"], "running")
+        self.assertNotEqual(fresh["sandbox_uid"], uid_parked)
+
+        # ...but still cannot delete the parked box.
+        def terminate(*, sandbox_id):
+            if sandbox_id == "sb-preparked":
+                raise RuntimeError("provider API 503")
+            return original_terminate(sandbox_id=sandbox_id)
+
+        self.backend.terminate = terminate  # type: ignore[assignment]
+
+        result = self.app.sandboxes.release(
+            project_id=self.project_id, experiment_id=exp_id, confirm_retained=True
+        )
+
+        self.assertEqual(result["status"], "cleanup_pending")
+        self.assertEqual(result["pending_count"], 1)
+        self.assertEqual(result["released_count"], 1)
+        self.assertIs(result["released"], False)
+        self.assertIn("may still be running", result["hint"])
+        self.assertIn(
+            uid_parked, [view.get("sandbox_uid") for view in result["sandboxes"]]
+        )
+        self.assertEqual(self._row(uid_parked)["status"], "cleanup_pending")
+        self.assertEqual(self._row(uid_parked)["sandbox_id"], "sb-preparked")
+        self.assertEqual(self._row(fresh["sandbox_uid"])["status"], "terminated")
+
+    def test_an_experiment_release_retries_a_parked_sibling_it_can_now_delete(
+        self,
+    ) -> None:
+        # The other half: once the provider answers, the parked sibling is
+        # settled by the same release rather than left for the sweep.
+        uid_parked = "uid_release_retried"
+        exp_id = self._running_row(sandbox_uid=uid_parked, sandbox_id="sb-retried")
+        original_terminate = self.backend.terminate
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.backend.terminate = original_terminate  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        fresh = self._request(exp_id)
+
+        result = self.app.sandboxes.release(
+            project_id=self.project_id, experiment_id=exp_id, confirm_retained=True
+        )
+
+        self.assertEqual(result["status"], "terminated")
+        self.assertEqual(result["released_count"], 2)
+        self.assertEqual(self._row(uid_parked)["status"], "terminated")
+        self.assertEqual(self._row(fresh["sandbox_uid"])["status"], "terminated")
+        self.assertIn("sb-retried", self.backend.terminated)
+
     # ---- provider ownership routes every cleanup (SAN-06) ----
 
     def test_a_row_whose_provider_is_unconfigured_is_never_terminalized(self) -> None:
@@ -846,6 +920,72 @@ class CleanupSweepTest(unittest.TestCase):
             attempts=2,
         )
         self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
+
+    def test_ensure_job_refuses_a_rewrite_without_a_confirmed_cleanup(self) -> None:
+        # The facade normally confirms the cleanup itself and passes
+        # cleanup_confirmed=True. This is the guard underneath that: any other
+        # caller reaching ensure_job must not be able to blank a row's
+        # sandbox_id — the only record of a VM that may still be billing.
+        uid = "uid_ensure_job_guard"
+        exp_id = self._interrupted_provision(uid=uid, sandbox_id="sb-ensure-guard")
+        existing = self._row(uid)
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        req = SandboxRequest(
+            experiment_id=uid,
+            project_id=self.project_id,
+            public_key=DEFAULT_PUBLIC_KEY,
+            sandbox_uid=uid,
+        )
+
+        with self.assertRaises(BackendUnavailableError) as ctx:
+            self.app.sandboxes.provisioner.ensure_job(
+                experiment_id=exp_id,
+                project_id=self.project_id,
+                req=req,
+                existing=existing,
+                sandbox_uid=uid,
+                cleanup_confirmed=False,
+            )
+
+        self.assertIn("cleanup_pending", str(ctx.exception))
+        parked = self._row(uid)
+        self.assertEqual(parked["status"], "cleanup_pending")
+        self.assertEqual(parked["sandbox_id"], "sb-ensure-guard")  # never blanked
+
+    def test_two_cleanup_workers_racing_one_parked_row_confirm_it_once(self) -> None:
+        # The daemon loop and the cloud CleanupService sweep the same pending
+        # rows. Both read the row while it is pending; A confirms the delete and
+        # terminalizes it. B must notice on its own re-read — no second provider
+        # round-trip, no second confirmation event, no resurrected row.
+        uid = "uid_two_racers"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-racers")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)  # the copy BOTH workers are holding
+        self.assertEqual(snapshot["status"], "cleanup_pending")
+
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        lifecycle = self.app.sandboxes.lifecycle
+
+        self.assertTrue(
+            lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+        )
+        self.assertEqual(self._row(uid)["status"], "terminated")
+        terminate_calls = len(self.backend.terminated)
+
+        # Worker B wakes up with the same stale snapshot.
+        self.assertTrue(
+            lifecycle._retry_one_cleanup(row=dict(snapshot), attempts=1)  # noqa: SLF001
+        )
+
+        settled = self._row(uid)
+        self.assertEqual(settled["status"], "terminated")
+        self.assertEqual(len(self.backend.terminated), terminate_calls)
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_retried")), 0)
 
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:

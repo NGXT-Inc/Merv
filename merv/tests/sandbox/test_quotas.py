@@ -620,6 +620,56 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
             "running",
         )
 
+    def test_a_denied_request_leaves_no_management_keypair_behind(self) -> None:
+        # Admission denial is the common case during a cleanup outage: parked
+        # rows hold the concurrency cap and the agent retries every few seconds.
+        # A keypair minted before that check belongs to a sandbox_uid no row
+        # ever records, so nothing ever names it again and nothing removes it —
+        # one orphaned key directory per retry, forever.
+        keys_root = self.app.sandboxes.mgmt_keys.root
+
+        def minted() -> list[str]:
+            if not keys_root.exists():
+                return []
+            return sorted(path.name for path in keys_root.iterdir())
+
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE projects SET tenant_id = ? WHERE id = ?",
+                ("tenant_denied", self.project_id),
+            )
+        QuotaService(store=self.store).set_quota(
+            tenant_id="tenant_denied", usd_budget=500.0
+        )
+        before = minted()
+
+        for attempt in range(3):
+            with self.assertRaises(PermissionDeniedError):
+                self.app.sandboxes.request(
+                    project_id=self.project_id,
+                    experiment_id=self._experiment(f"denied-{attempt}"),
+                    public_key=DEFAULT_PUBLIC_KEY,
+                    instance_type="gpu_1x_mystery",  # unpriced under a budget
+                )
+
+        self.assertEqual(minted(), before)
+
+    def test_an_admitted_request_still_gets_its_management_keypair(self) -> None:
+        # The control: past admission, the key the VM authorizes is minted.
+        result = self.app.sandboxes.request(
+            project_id=self.project_id,
+            experiment_id=self._experiment("admitted"),
+            public_key=DEFAULT_PUBLIC_KEY,
+            instance_type="gpu_1x_a100",
+        )
+
+        self.assertEqual(result["status"], "running")
+        self.assertTrue(
+            self.app.sandboxes.mgmt_keys.key_path(
+                sandbox_uid=result["sandbox_uid"]
+            ).exists()
+        )
+
     def test_each_provision_appends_a_generation_row(self) -> None:
         exp_id = self._experiment()
         for _ in range(2):

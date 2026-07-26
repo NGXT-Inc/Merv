@@ -76,15 +76,39 @@ class SandboxLifecycle:
 
     # ---------- liveness ----------
 
-    def liveness(self, *, sandbox_id: str) -> bool | None:
-        """Tri-state liveness: True/False when the provider answered
-        authoritatively, None when it couldn't be asked (outage, timeout).
+    def liveness(self, *, row: dict[str, Any] | None) -> bool | None:
+        """Tri-state liveness for a ROW, asked of the provider the ROW records.
+
+        True/False when that provider answered authoritatively, None when it
+        could not be asked — an outage, a timeout, an id nobody can route, or a
+        recorded owner that is no longer in ``MERV_EXECUTION_BACKENDS``.
+
+        Routing is never left to the id alone: a legacy un-prefixed id carries
+        no owner, so asking whichever backend happens to be the default today
+        turns a wrong-provider 404 into "dead" and strands a live, billing VM
+        behind a terminated row (audit SAN-06). An unreachable owner is
+        `unavailable`, never a false "dead".
 
         Callers making destructive decisions (terminate, mark_terminated,
         re-provision) must treat None as "possibly alive" — collapsing it to
         False is how a healthy VM ends up killed or stranded behind a
         terminated row, billing invisibly.
         """
+        if self.unreachable_owner(row=row):
+            return None
+        addressed, unroutable = self.addressed_id(row=row)
+        if unroutable or not addressed:
+            return None
+        return self.liveness_of(sandbox_id=addressed)
+
+    def liveness_of(self, *, sandbox_id: str) -> bool | None:
+        """Tri-state liveness for an id that ALREADY names its owner.
+
+        Only for ids that came back from ``addressed_id`` or the multiplexer's
+        own lookup; everything row-shaped goes through ``liveness``.
+        """
+        if not sandbox_id:
+            return None
         try:
             return bool(self.backend.is_alive(sandbox_id=sandbox_id))
         except Exception:  # noqa: BLE001
@@ -342,7 +366,11 @@ class SandboxLifecycle:
         lookup = self.cleanup_orphan(experiment_id=experiment_id, row=row)
         probe_id = sandbox_id or lookup.sandbox_id
         if probe_id:
-            return "gone" if self.liveness(sandbox_id=probe_id) is False else "maybe_alive"
+            # probe_id already names its owner (addressed_id, or the
+            # multiplexer's own prefixed lookup hit).
+            return (
+                "gone" if self.liveness_of(sandbox_id=probe_id) is False else "maybe_alive"
+            )
         # Nothing to probe: only an authoritative "the provider named no such
         # sandbox" clears this row. An unreachable provider does not.
         return "gone" if lookup.kind == "not_found" else "maybe_alive"
@@ -459,7 +487,10 @@ class SandboxLifecycle:
                 row=row,
                 decision=reconcile_decision(
                     row=row,
-                    alive=self.liveness(sandbox_id=str(row["sandbox_id"])),
+                    # Row-qualified: a legacy id routed to today's default
+                    # provider answers "not mine", and reconcile would read that
+                    # as gone and terminalize a live, billing VM (audit SAN-06).
+                    alive=self.liveness(row=row),
                 ),
             )
         if status == "provisioning":
@@ -496,8 +527,14 @@ class SandboxLifecycle:
         endpoint untouched and never breaks request/get. Only ``running`` rows
         with a sandbox id are probed.
         """
-        sandbox_id = str(row.get("sandbox_id") or "")
-        if not sandbox_id or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+        if not row.get("sandbox_id") or row.get("status") not in ACTIVE_SANDBOX_STATUSES:
+            return row
+        # Ask the row's own provider: another provider's answer for a legacy
+        # un-prefixed id would write a foreign host/port over a working one.
+        if self.unreachable_owner(row=row):
+            return row
+        sandbox_id, unroutable = self.addressed_id(row=row)
+        if unroutable or not sandbox_id:
             return row
         try:
             endpoint = self.backend.refresh_ssh_endpoint(sandbox_id=sandbox_id)

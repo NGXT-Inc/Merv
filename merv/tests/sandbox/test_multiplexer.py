@@ -333,6 +333,178 @@ class MultiplexedServiceTest(unittest.TestCase):
         self.assertTrue(all(o["provider"] == "beta" for o in result["options"]))
 
 
+class LegacyRowLivenessRoutingTest(unittest.TestCase):
+    """Every liveness call site asks the provider the ROW records (SAN-06).
+
+    The rows under test predate the multiplexer, so their ``sandbox_id`` carries
+    no provider prefix and cannot name its own owner. The deployment's default
+    has since changed to alpha while the row still says beta. Routing those ids
+    to alpha gets a truthful "not mine" — which, read as "the VM is gone",
+    terminalizes the row and leaves a live beta VM billing forever behind a
+    status no sweep ever revisits.
+    """
+
+    def setUp(self) -> None:
+        from merv.brain.mlflow import CentralMlflowService
+        from tests.support.brain import TestBrain
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.alpha = FakeSandboxBackend()
+        self.alpha.capabilities = BackendCapabilities(name="alpha", enforce_expiry=False)
+        self.beta = FakeSandboxBackend()
+        self.beta.capabilities = BackendCapabilities(name="beta", enforce_expiry=False)
+        # alpha is today's default; beta served the rows below.
+        self.mux = MultiplexingSandboxBackend(
+            backends={"alpha": self.alpha, "beta": self.beta}, default="alpha"
+        )
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=self.mux,
+            mlflow_tracking=CentralMlflowService(
+                mode="external",
+                tracking_uri="https://mlflow.test",
+                health_check=lambda: True,
+            ),
+        )
+        self.project_id = self.app.call_tool(
+            "project", {"action": "create", "name": "Legacy Rows"}
+        )["id"]
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+        self.tmp.cleanup()
+
+    def _experiment(self, name: str = "exp") -> str:
+        return self.app.call_tool(
+            "experiment.create",
+            {"project_id": self.project_id, "name": name, "intent": "x"},
+        )["id"]
+
+    def _legacy_row(
+        self,
+        *,
+        provider: str,
+        sandbox_uid: str = "uid_legacy",
+        sandbox_id: str = "sb-legacy",
+        alive_on: FakeSandboxBackend | None = None,
+    ) -> str:
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=sandbox_uid,
+            project_id=self.project_id,
+            sandbox_id=sandbox_id,  # un-prefixed: nothing in the id names beta
+            provider=provider,
+            status="running",
+            ssh_host="host.test",
+            ssh_port=22,
+            ssh_user="root",
+            expires_at="2999-01-01T00:00:00Z",
+        )
+        if alive_on is not None:
+            alive_on.alive[sandbox_id] = True
+        return exp_id
+
+    def _row(self, sandbox_uid: str = "uid_legacy") -> dict:
+        return self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+
+    def _watch_alpha(self) -> list[str]:
+        """Record every id the WRONG provider is asked about."""
+        asked: list[str] = []
+        inner = self.alpha.is_alive
+
+        def is_alive(*, sandbox_id: str) -> bool:
+            asked.append(sandbox_id)
+            return inner(sandbox_id=sandbox_id)
+
+        self.alpha.is_alive = is_alive  # type: ignore[method-assign]
+        return asked
+
+    # ---- sandbox.get -> lifecycle.reconcile ----
+
+    def test_reconcile_never_terminalizes_a_row_its_own_provider_calls_live(
+        self,
+    ) -> None:
+        exp_id = self._legacy_row(provider="beta", alive_on=self.beta)
+        asked_alpha = self._watch_alpha()
+        # The control that makes this bug real: today's default says "gone".
+        self.assertFalse(self.alpha.alive.get("sb-legacy", False))
+
+        view = self.app.sandboxes.get(project_id=self.project_id, experiment_id=exp_id)
+
+        self.assertEqual(view["status"], "running")
+        self.assertEqual(self._row()["status"], "running")
+        self.assertEqual(asked_alpha, [], "the default provider was asked anyway")
+        self.assertNotIn("sb-legacy", self.beta.terminated)
+
+    def test_reconcile_still_terminalizes_when_the_owner_says_it_is_gone(self) -> None:
+        # The control: beta itself answers "not alive", which IS authoritative.
+        exp_id = self._legacy_row(provider="beta")
+        self.beta.alive["sb-legacy"] = False
+
+        view = self.app.sandboxes.get(project_id=self.project_id, experiment_id=exp_id)
+
+        self.assertEqual(view["status"], "terminated")
+
+    # ---- sandbox.request -> reuse decision ----
+
+    def test_request_reuses_the_legacy_row_instead_of_destroying_its_vm(self) -> None:
+        from tests.support.brain import DEFAULT_PUBLIC_KEY
+
+        exp_id = self._legacy_row(provider="beta", alive_on=self.beta)
+        asked_alpha = self._watch_alpha()
+
+        result = self.app.sandboxes.request(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            public_key=DEFAULT_PUBLIC_KEY,
+        )
+
+        self.assertEqual(result["sandbox_uid"], "uid_legacy")
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(asked_alpha, [])
+        # Nothing was cleared for reacquisition, so beta's VM is untouched.
+        self.assertNotIn("sb-legacy", self.beta.terminated)
+        self.assertEqual(len(self.beta.acquired), 0)
+        self.assertEqual(len(self.alpha.acquired), 0)
+
+    # ---- sandbox.attach ----
+
+    def test_attach_accepts_a_legacy_row_its_own_provider_calls_live(self) -> None:
+        self._legacy_row(provider="beta", alive_on=self.beta)
+        other = self._experiment("second")
+        asked_alpha = self._watch_alpha()
+
+        view = self.app.sandboxes.attach(
+            experiment_id=other,
+            project_id=self.project_id,
+            sandbox_uid="uid_legacy",
+        )
+
+        self.assertEqual(view["sandbox_uid"], "uid_legacy")
+        self.assertEqual(asked_alpha, [])
+        self.assertEqual(self._row()["status"], "running")
+
+    # ---- a recorded owner nobody can reach ----
+
+    def test_an_unconfigured_owner_is_unavailable_never_a_false_dead(self) -> None:
+        # gamma was dropped from MERV_EXECUTION_BACKENDS. No configured provider
+        # can answer for its ids, and "nobody here has it" is not evidence.
+        exp_id = self._legacy_row(provider="gamma", sandbox_id="sb-gamma")
+        lifecycle = self.app.sandboxes.lifecycle
+
+        self.assertIsNone(lifecycle.liveness(row=self._row()))
+
+        view = self.app.sandboxes.get(project_id=self.project_id, experiment_id=exp_id)
+
+        self.assertEqual(view["status"], "running")  # parked, not terminalized
+        self.assertEqual(self._row()["status"], "running")
+        self.assertEqual(self.alpha.terminated, [])
+        self.assertEqual(self.beta.terminated, [])
+
+
 class BuildFactoryTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
