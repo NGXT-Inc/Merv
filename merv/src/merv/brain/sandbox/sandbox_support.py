@@ -19,8 +19,16 @@ VALID_GPUS: frozenset[str] = frozenset(
     {"T4", "L4", "A10G", "L40S", "A100", "A100-80GB", "H100", "B200"}
 )
 ACTIVE_SANDBOX_STATUSES: frozenset[str] = frozenset({"running"})
+# A destroy attempt the provider never confirmed. Deliberately NOT terminal: no
+# sweep revisits a terminal row, so a live VM behind one bills forever (audit
+# SAN-05). The row stays visible and the retry sweep keeps asking.
+CLEANUP_PENDING_STATUS = "cleanup_pending"
 # Reached the end of the line: the VM is gone and every attachment is closed.
 TERMINAL_SANDBOX_STATUSES: frozenset[str] = frozenset({"terminated", "failed"})
+# Statuses a fresh sandbox.request must not reuse the row of.
+UNREUSABLE_SANDBOX_STATUSES: frozenset[str] = TERMINAL_SANDBOX_STATUSES | {
+    CLEANUP_PENDING_STATUS
+}
 MAX_TIME_LIMIT_SECONDS = 24 * 60 * 60
 MIN_TIME_LIMIT_SECONDS = 60
 DEFAULT_TIME_LIMIT_SECONDS = 3600
@@ -53,6 +61,44 @@ METRICS_CACHE_TTL_SECONDS = 2.0
 # server-side lifetime enforcement, so without this an expired VM bills forever.
 DEFAULT_REAPER_INTERVAL_SECONDS = 30.0
 DEFAULT_SANDBOX_IDLE_SECONDS = 3600.0
+# How long a `cleanup_pending` row waits before the sweep asks the provider
+# again, indexed by attempts already made. The last entry repeats forever: a
+# possibly-billing VM is never given up on, only asked about less often.
+CLEANUP_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 300.0, 900.0, 3600.0)
+_CLEANUP_ATTEMPT_PREFIX = "cleanup_attempt_"
+
+
+def cleanup_attempt_phase(*, attempts: int) -> str:
+    """The `phase` marker carrying a cleanup_pending row's attempt count.
+
+    Piggybacks the existing free-text phase column so the count is durable
+    without a migration, and reads as a lifecycle phase to an operator.
+    """
+    return f"{_CLEANUP_ATTEMPT_PREFIX}{max(int(attempts), 1)}"
+
+
+def cleanup_attempts(*, phase: Any) -> int:
+    """Attempts already made on a cleanup_pending row; 0 when unmarked."""
+    text = str(phase or "")
+    if not text.startswith(_CLEANUP_ATTEMPT_PREFIX):
+        return 0
+    try:
+        return max(int(text[len(_CLEANUP_ATTEMPT_PREFIX):]), 0)
+    except ValueError:
+        return 0
+
+
+def cleanup_retry_due(
+    *, attempts: int, last_attempt_at: datetime | None, now: datetime
+) -> bool:
+    """Whether a cleanup_pending row's backoff window has elapsed."""
+    if last_attempt_at is None:
+        return True
+    index = min(max(attempts, 1), len(CLEANUP_RETRY_BACKOFF_SECONDS)) - 1
+    return (
+        now - last_attempt_at
+    ).total_seconds() >= CLEANUP_RETRY_BACKOFF_SECONDS[index]
+
 
 def _safe_name(identity: str) -> str:
     """Filesystem-safe key/conn filename for a sandbox identity."""

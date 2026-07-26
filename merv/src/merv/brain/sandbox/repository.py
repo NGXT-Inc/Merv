@@ -15,7 +15,12 @@ import json
 import uuid
 from typing import Any
 
-from .sandbox_support import ACTIVE_SANDBOX_STATUSES, TERMINAL_SANDBOX_STATUSES
+from .sandbox_support import (
+    ACTIVE_SANDBOX_STATUSES,
+    CLEANUP_PENDING_STATUS,
+    TERMINAL_SANDBOX_STATUSES,
+    cleanup_attempt_phase,
+)
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
 
@@ -298,19 +303,25 @@ class SandboxRepository:
         )
 
     def _latest_uid(self, *, conn: Any, experiment_id: str) -> str | None:
-        """Newest non-terminal sandbox attached to the experiment."""
+        """Newest non-terminal sandbox attached to the experiment.
+
+        `cleanup_pending` is included on purpose: sandbox.get must still show a
+        row whose VM may be alive. Only sandbox.request refuses to reuse it.
+        """
+        statuses = tuple(TERMINAL_SANDBOX_STATUSES)
+        placeholders = ", ".join("?" for _ in statuses)
         row = conn.execute(
-            """
+            f"""
             SELECT s.sandbox_uid
             FROM sandboxes s
             JOIN sandbox_attachments a ON a.sandbox_uid = s.sandbox_uid
             WHERE a.experiment_id = ?
               AND a.detached_at IS NULL
-              AND s.status NOT IN ('terminated', 'failed')
+              AND s.status NOT IN ({placeholders})
             ORDER BY s.created_seq DESC
             LIMIT 1
             """,
-            (experiment_id,),
+            (experiment_id, *statuses),
         ).fetchone()
         return (
             str(row["sandbox_uid"]) if row is not None and row["sandbox_uid"] else None
@@ -766,6 +777,42 @@ class SandboxRepository:
             status="failed",
             error=error,
         )
+
+    def mark_cleanup_pending(
+        self,
+        *,
+        sandbox_uid: str,
+        detail: str,
+        attempts: int = 1,
+        error: str | None = None,
+    ) -> None:
+        """Park a row whose provider deletion was never confirmed (audit SAN-05).
+
+        Deliberately NOT terminal: attachments and the open spend generation
+        both stay, because the VM may still exist and still be billing. The
+        attempt count rides in `phase` and the last-attempt clock is
+        `updated_at`, so the retry cadence needs no new column. `error` None
+        preserves whatever verdict the row was already carrying.
+        """
+        target_uid = str(sandbox_uid or "").strip()
+        if not target_uid:
+            return
+        now = now_iso()
+        assignments = ["status = ?", "phase = ?", "detail = ?", "updated_at = ?"]
+        values: list[Any] = [
+            CLEANUP_PENDING_STATUS,
+            cleanup_attempt_phase(attempts=attempts),
+            detail,
+            now,
+        ]
+        if error is not None:
+            assignments.append("error = ?")
+            values.append(error)
+        with self.store.transaction() as conn:
+            conn.execute(
+                f"UPDATE sandboxes SET {', '.join(assignments)} WHERE sandbox_uid = ?",
+                [*values, target_uid],
+            )
 
     def _mark_terminal(
         self,

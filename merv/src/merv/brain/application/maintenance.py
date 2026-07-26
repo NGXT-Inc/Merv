@@ -39,6 +39,12 @@ class CleanupReport:
 
     orphan_vms_reaped: int = 0
     stale_provisions_reaped: int = 0
+    # Sandboxes whose provider deletion was never confirmed. `ok` stays False
+    # while any remain — a possibly-billing VM must not read as a clean pass
+    # (audit SAN-05).
+    cleanup_pending: dict[str, Any] = field(
+        default_factory=lambda: dict(SKIPPED_PRUNE)
+    )
     # Structured, not a count: a failed sweep must be distinguishable from a
     # sweep that legitimately deleted nothing (audit OPS-03).
     blobs_swept: dict[str, Any] = field(default_factory=lambda: dict(SKIPPED_PRUNE))
@@ -58,6 +64,7 @@ class CleanupReport:
         return all(
             bool(outcome.get("ok"))
             for outcome in (
+                self.cleanup_pending,
                 self.blobs_swept,
                 self.storage_objects_swept,
                 self.tool_calls_pruned,
@@ -71,6 +78,7 @@ class CleanupReport:
             # anything failed before reading any count.
             "ok": self.ok,
             "orphan_vms_reaped": self.orphan_vms_reaped,
+            "cleanup_pending": dict(self.cleanup_pending),
             "blobs_swept": dict(self.blobs_swept),
             "storage_objects_swept": dict(self.storage_objects_swept),
             "stale_provisions_reaped": self.stale_provisions_reaped,
@@ -108,6 +116,9 @@ class CleanupService:
             blobs_swept=self.sweep_expired_blobs(now=now_dt),
             storage_objects_swept=self.sweep_expired_storage(now=now_dt),
             stale_provisions_reaped=self.sweep_stale_provisions(now=now_dt),
+            # After the reaps, so a row parked this pass is retried next pass
+            # rather than immediately re-asked.
+            cleanup_pending=self.retry_cleanup_pending(now=now_dt),
             tool_calls_pruned=self.prune_tool_calls(now=now_dt),
             oauth_clients_pruned=self.prune_oauth_clients(now=now_dt),
         )
@@ -115,6 +126,13 @@ class CleanupService:
     def sweep_orphan_vms(self, *, now: datetime | None = None) -> int:
         """Reconcile tracked running rows against their providers."""
         return self.sandboxes.reconcile_running_rows()
+
+    def retry_cleanup_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Re-ask the provider about every unconfirmed sandbox deletion."""
+        try:
+            return dict(self.sandboxes.retry_cleanup_pending(now=now))
+        except Exception as exc:  # noqa: BLE001 -- one sweep must not abort the pass
+            return _sweep_failure(exc)
 
     def sweep_expired_blobs(self, *, now: datetime | None = None) -> dict[str, Any]:
         """TTL collection for submitted evidence bytes, reporting its outcome."""

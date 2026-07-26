@@ -1,8 +1,9 @@
-"""Background sandbox daemons: expiration plus idle reaping.
+"""Background sandbox daemons: expiration, idle reaping, cleanup retries.
 
 Pure scheduling: the loops decide *when* to sweep; every terminate/mark
-decision belongs to `SandboxLifecycle` (expiry + idle rows) and the
-provisioner's stale-provision reaper (wedged pre-running rows).
+decision belongs to `SandboxLifecycle` (expiry + idle rows, and the retry of
+any cleanup the provider never confirmed) and the provisioner's stale-provision
+reaper (wedged pre-running rows).
 """
 
 from __future__ import annotations
@@ -121,6 +122,11 @@ class SandboxDaemons:
                     self.provisioner.reap_stale_provisions(
                         now=datetime.now(tz=UTC), deadline_seconds=stale_deadline
                     )
+            # A terminate the provider never confirmed parks its row as
+            # cleanup_pending; nothing else revisits those, and each one may be
+            # a live VM still billing. Own backoff, so this is cheap per tick.
+            with suppress(Exception):  # the reaper must never die
+                self.lifecycle.retry_cleanup_pending(now=datetime.now(tz=UTC))
 
     def _idle_reap_threshold(self) -> float:
         raw = env_raw("MERV_SANDBOX_IDLE_SECONDS")

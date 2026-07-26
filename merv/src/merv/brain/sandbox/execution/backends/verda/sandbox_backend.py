@@ -190,15 +190,14 @@ class VerdaSandboxBackend(VmSshSandboxBackend):
         self, *, experiment_id: str, sandbox_uid: str = ""
     ) -> str | None:
         name = _sandbox_name(sandbox_uid or experiment_id)
-        try:
-            for instance in self.client.list_instances():
-                if (
-                    instance.get("hostname") == name
-                    and str(instance.get("status") or "") not in TERMINAL_INSTANCE_STATUSES
-                ):
-                    return str(instance.get("id") or "") or None
-        except Exception:  # noqa: BLE001
-            return None
+        # A failed listing propagates: only a successful one that names nothing
+        # is authoritative, and the caller must be able to tell the difference.
+        for instance in self.client.list_instances():
+            if (
+                instance.get("hostname") == name
+                and str(instance.get("status") or "") not in TERMINAL_INSTANCE_STATUSES
+            ):
+                return str(instance.get("id") or "") or None
         return None
 
     def hardware_catalog(

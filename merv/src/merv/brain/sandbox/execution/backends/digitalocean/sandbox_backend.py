@@ -188,15 +188,14 @@ class DigitalOceanSandboxBackend(VmSshSandboxBackend):
         self, *, experiment_id: str, sandbox_uid: str = ""
     ) -> str | None:
         name = _sandbox_name(sandbox_uid or experiment_id)
-        try:
-            for droplet in self.client.list_droplets():
-                if (
-                    droplet.get("name") == name
-                    and str(droplet.get("status") or "") in LIVE_DROPLET_STATUSES
-                ):
-                    return str(droplet.get("id") or "") or None
-        except Exception:  # noqa: BLE001
-            return None
+        # A failed listing propagates: only a successful one that names nothing
+        # is authoritative, and the caller must be able to tell the difference.
+        for droplet in self.client.list_droplets():
+            if (
+                droplet.get("name") == name
+                and str(droplet.get("status") or "") in LIVE_DROPLET_STATUSES
+            ):
+                return str(droplet.get("id") or "") or None
         return None
 
     def hardware_catalog(

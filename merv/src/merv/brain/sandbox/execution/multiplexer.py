@@ -239,16 +239,25 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
 
         Orphans can live on any configured provider; deterministic sandbox
         names are unique across them, so the first hit is the only hit.
+
+        A provider outage does not mask the rest, but "nobody has it" is only
+        returned when every provider actually answered — otherwise the last
+        error propagates, so the caller does not read an unasked provider as
+        proof the sandbox is gone (audit SAN-06).
         """
+        unreachable: Exception | None = None
         for name, backend in self.backends.items():
             try:
                 found = backend.find_sandbox_id(
                     experiment_id=experiment_id, sandbox_uid=sandbox_uid
                 )
-            except Exception:  # noqa: BLE001 — one provider outage must not mask the rest
+            except Exception as exc:  # noqa: BLE001 — try the others before giving up
+                unreachable = exc
                 continue
             if found:
                 return self._encode(name, str(found))
+        if unreachable is not None:
+            raise unreachable
         return None
 
     def hardware_catalog(

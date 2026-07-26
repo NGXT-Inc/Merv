@@ -26,26 +26,52 @@ class SandboxLifecycleReducerTest(unittest.TestCase):
         self.assertEqual([item.kind for item in decision.intents], ["mark_terminated"])
         self.assertEqual(decision.event.type, "sandbox.expired")
 
-    def test_missing_provision_job_cleans_before_failure(self) -> None:
+    def test_confirmed_cleanup_lets_a_wedged_provision_fail(self) -> None:
+        decision = reconcile_decision(
+            row={"status": "provisioning", "sandbox_uid": "uid"},
+            alive=None,
+            job_live=False,
+            cleanup="gone",
+        )
+        self.assertEqual([item.kind for item in decision.intents], ["mark_failed"])
+        self.assertEqual(decision.event.type, "sandbox.failed")
+
+    def test_unconfirmed_cleanup_parks_a_wedged_provision(self) -> None:
+        decision = reconcile_decision(
+            row={"status": "provisioning", "sandbox_uid": "uid"},
+            alive=None,
+            job_live=False,
+            cleanup="maybe_alive",
+        )
+        self.assertEqual(
+            [item.kind for item in decision.intents], ["mark_cleanup_pending"]
+        )
+        self.assertEqual(decision.event.type, "sandbox.cleanup_pending")
+        # The verdict the row was headed for survives the detour, so the retry
+        # that finally confirms the delete lands on `failed`, not `terminated`.
+        self.assertIn("provisioning interrupted", decision.intents[0].payload["error"])
+
+    def test_a_caller_that_skipped_the_cleanup_gets_the_safe_answer(self) -> None:
         decision = reconcile_decision(
             row={"status": "provisioning", "sandbox_uid": "uid"},
             alive=None,
             job_live=False,
         )
         self.assertEqual(
-            [item.kind for item in decision.intents],
-            ["cleanup_orphan", "mark_failed"],
+            [item.kind for item in decision.intents], ["mark_cleanup_pending"]
         )
-        self.assertEqual(decision.event.type, "sandbox.failed")
 
-    def test_failed_termination_keeps_reap_retryable(self) -> None:
+    def test_failed_termination_parks_the_reap_instead_of_terminalizing(self) -> None:
         decision = reap_decision(
             row={"sandbox_id": "sb", "sandbox_uid": "uid"},
             outcome="maybe_alive",
             event_type="sandbox.expired",
         )
-        self.assertEqual(decision.intents, ())
-        self.assertFalse(decision.event.payload["reaped"])
+        self.assertEqual(
+            [item.kind for item in decision.intents], ["mark_cleanup_pending"]
+        )
+        self.assertEqual(decision.event.type, "sandbox.cleanup_pending")
+        self.assertEqual(decision.event.payload["trigger"], "expired")
 
     def test_release_marks_only_after_provider_confirmation(self) -> None:
         uncertain = release_decision(
@@ -58,8 +84,11 @@ class SandboxLifecycleReducerTest(unittest.TestCase):
             outcome="stopped",
             active_experiment_ids=["exp_1"],
         )
-        self.assertEqual(uncertain.intents, ())
-        self.assertEqual(uncertain.event.type, "sandbox.release_failed")
+        self.assertEqual(
+            [item.kind for item in uncertain.intents], ["mark_cleanup_pending"]
+        )
+        self.assertEqual(uncertain.event.type, "sandbox.cleanup_pending")
+        self.assertEqual(uncertain.event.payload["trigger"], "release")
         self.assertEqual(confirmed.intents[0].kind, "mark_terminated")
         self.assertEqual(confirmed.event.type, "sandbox.released")
 

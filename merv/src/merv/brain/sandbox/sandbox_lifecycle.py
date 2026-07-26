@@ -6,9 +6,10 @@ and the provisioner's settle paths. Concentrating that authority here keeps
 the invariants in one place:
 
   - provider-API errors are never read as "instance gone" (tri-state
-    `liveness`); a row is stranded as terminated only once the provider
-    confirms the VM is not alive — a terminated row over a live VM bills
-    invisibly forever, and no sweep revisits terminated rows;
+    `liveness`, typed `ProviderLookup`); a row goes terminal only once the
+    provider confirms the VM is not alive — a terminated row over a live VM
+    bills invisibly forever, and no sweep revisits terminated rows. Everything
+    else parks as `cleanup_pending`, which stays visible and gets retried;
   - a terminal mark always removes its management key, regardless of which
     caller marked it;
   - a live provisioning job owns its row at any age — only the lifecycle's
@@ -26,8 +27,25 @@ from typing import Any, Callable
 
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from .sandbox_backend import SandboxBackend
-from .lifecycle_reducer import LifecycleDecision, reap_decision, reconcile_decision
-from .sandbox_support import ACTIVE_SANDBOX_STATUSES, parse_iso
+from .lifecycle_reducer import (
+    CLEANUP_PENDING_REASON,
+    LOOKUP_NOT_FOUND,
+    CleanupOutcome,
+    LifecycleDecision,
+    ProviderLookup,
+    lookup_found,
+    lookup_unavailable,
+    reap_decision,
+    reconcile_decision,
+    settle_decision,
+)
+from .sandbox_support import (
+    ACTIVE_SANDBOX_STATUSES,
+    CLEANUP_PENDING_STATUS,
+    cleanup_attempts,
+    cleanup_retry_due,
+    parse_iso,
+)
 from .repository import SandboxRepository
 
 
@@ -97,6 +115,22 @@ class SandboxLifecycle:
         )
         self._teardown(experiment_id=experiment_id, facts=facts)
 
+    def mark_cleanup_pending(
+        self, *, sandbox_uid: str, reason: str, error: str = "", attempts: int = 1
+    ) -> None:
+        """Park a row whose provider deletion was never confirmed.
+
+        No teardown: the management key and the open spend generation both stay,
+        because the VM may still be up — and if it is, we still need to reach it
+        and it is still billing.
+        """
+        self.repository.mark_cleanup_pending(
+            sandbox_uid=sandbox_uid,
+            detail=reason,
+            error=error or None,
+            attempts=attempts,
+        )
+
     def _teardown(self, *, experiment_id: str, facts: dict[str, Any]) -> None:
         """Drop a terminal sandbox's control-side management key."""
         _ = experiment_id
@@ -113,48 +147,54 @@ class SandboxLifecycle:
 
     def cleanup_orphan(
         self, *, experiment_id: str, row: dict[str, Any] | None
-    ) -> None:
+    ) -> ProviderLookup:
         """Best-effort terminate any sandbox tied to this experiment.
 
         Covers both a recorded sandbox_id (from a prior/failed row) and the
         deterministic-named orphan a dead job may have left on the backend.
+
+        Returns what the deterministic-name probe learned, so the caller can
+        tell "the provider answered and named nothing" from "the provider could
+        not be asked" (audit SAN-06). A recorded id makes the probe unnecessary
+        — there ``liveness`` is the authority — and reads as ``not_found``.
         """
         seen: set[str] = set()
         sid = (row or {}).get("sandbox_id")
         if sid:
             seen.add(str(sid))
             self.terminate_quietly(sandbox_id=str(sid))
-        if not sid:
-            sandbox_uid = str((row or {}).get("sandbox_uid") or "")
-            active_sibling = bool(
-                experiment_id
-                and sandbox_uid
-                and self.repository.has_active_for_experiment(
-                    experiment_id=experiment_id, exclude_sandbox_uid=sandbox_uid
-                )
+            return LOOKUP_NOT_FOUND
+        sandbox_uid = str((row or {}).get("sandbox_uid") or "")
+        active_sibling = bool(
+            experiment_id
+            and sandbox_uid
+            and self.repository.has_active_for_experiment(
+                experiment_id=experiment_id, exclude_sandbox_uid=sandbox_uid
             )
-            lookup_uids: list[str] = []
-            if sandbox_uid:
-                lookup_uids.append(sandbox_uid)
-            # Legacy fallback: old providers may only be findable by the
-            # experiment-derived deterministic name. Skip that broad lookup
-            # while another live sandbox is attached to the same experiment.
-            if not active_sibling:
-                lookup_uids.append("")
-            if not lookup_uids:
-                lookup_uids.append("")
-            orphan = None
-            for lookup_uid in lookup_uids:
-                if orphan:
-                    break
-                try:
-                    orphan = self.backend.find_sandbox_id(
-                        experiment_id=experiment_id, sandbox_uid=lookup_uid
-                    )
-                except Exception:  # noqa: BLE001
-                    orphan = None
+        )
+        lookup_uids: list[str] = []
+        if sandbox_uid:
+            lookup_uids.append(sandbox_uid)
+        # Legacy fallback: old providers may only be findable by the
+        # experiment-derived deterministic name. Skip that broad lookup
+        # while another live sandbox is attached to the same experiment.
+        if not active_sibling:
+            lookup_uids.append("")
+        if not lookup_uids:
+            lookup_uids.append("")
+        unreachable = ""
+        for lookup_uid in lookup_uids:
+            try:
+                orphan = self.backend.find_sandbox_id(
+                    experiment_id=experiment_id, sandbox_uid=lookup_uid
+                )
+            except Exception as exc:  # noqa: BLE001 — an outage is not "nothing is there"
+                unreachable = str(exc)
+                continue
             if orphan and str(orphan) not in seen:
                 self.terminate_quietly(sandbox_id=str(orphan))
+                return lookup_found(str(orphan))
+        return lookup_unavailable(unreachable) if unreachable else LOOKUP_NOT_FOUND
 
     def observe_runs_before_terminal(self, *, row: dict[str, Any]) -> bool:
         """Read receipts one last time while the row is still active.
@@ -190,14 +230,16 @@ class SandboxLifecycle:
         with suppress(Exception):
             self.stamp_runs_observed(sandbox_uid=str(row.get("sandbox_uid") or ""))
 
-    def terminate_vm(self, *, row: dict[str, Any], try_direct: bool = True) -> str:
+    def terminate_vm(
+        self, *, row: dict[str, Any], try_direct: bool = True
+    ) -> CleanupOutcome:
         """Terminate the provider VM behind a row. Returns:
 
         - ``"stopped"`` — the provider confirmed the terminate;
-        - ``"gone"`` — terminate failed/skipped but the provider says the VM
-          is not alive (or there was never an id to ask about);
-        - ``"maybe_alive"`` — terminate failed and the VM may still be up (or
-          the provider could not be asked): the caller must NOT mark the row
+        - ``"gone"`` — terminate failed/skipped but the provider answered
+          authoritatively that the VM is not alive;
+        - ``"maybe_alive"`` — terminate failed and the VM may still be up, or
+          the provider could not be asked: the caller must NOT mark the row
           terminal, so a later pass retries instead of stranding a billing VM.
         """
         sandbox_id = str(row.get("sandbox_id") or "")
@@ -212,10 +254,13 @@ class SandboxLifecycle:
             return "stopped"
         # Direct terminate failed or there was no recorded id: try the
         # deterministic-name orphan cleanup path, then require confirmation.
-        self.cleanup_orphan(experiment_id=experiment_id, row=row)
-        if sandbox_id and self.liveness(sandbox_id=sandbox_id) is not False:
-            return "maybe_alive"
-        return "gone"
+        lookup = self.cleanup_orphan(experiment_id=experiment_id, row=row)
+        probe_id = sandbox_id or lookup.sandbox_id
+        if probe_id:
+            return "gone" if self.liveness(sandbox_id=probe_id) is False else "maybe_alive"
+        # Nothing to probe: only an authoritative "the provider named no such
+        # sandbox" clears this row. An unreachable provider does not.
+        return "gone" if lookup.kind == "not_found" else "maybe_alive"
 
     def apply(
         self, *, row: dict[str, Any], decision: LifecycleDecision
@@ -225,8 +270,14 @@ class SandboxLifecycle:
         sandbox_uid = str(row.get("sandbox_uid") or "")
         current = row
         for intent in decision.intents:
-            if intent.kind == "cleanup_orphan":
-                self.cleanup_orphan(experiment_id=experiment_id, row=current)
+            if intent.kind == "mark_cleanup_pending":
+                self.mark_cleanup_pending(
+                    sandbox_uid=sandbox_uid,
+                    reason=str(intent.payload.get("reason") or ""),
+                    error=str(intent.payload.get("error") or ""),
+                    attempts=int(intent.payload.get("attempts") or 1),
+                )
+                current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "mark_failed":
                 self.mark_failed(
                     experiment_id=experiment_id,
@@ -265,9 +316,10 @@ class SandboxLifecycle:
         - provisioning → if a live job in this process owns it, leave it for
           the agent to keep polling (a live job owns the row at ANY age —
           Lambda boots legitimately run past the stale deadline); otherwise
-          the job is gone (daemon restart) or wedged, so clean up any orphan
-          and mark failed. This is what guarantees a polling agent always
-          reaches a terminal state.
+          the job is gone (daemon restart) or wedged, so terminate whatever it
+          left behind and mark failed once the provider confirms that worked.
+          This is what guarantees a polling agent always reaches a settled
+          state — terminal, or a visible `cleanup_pending`.
         """
         status = row.get("status")
         sandbox_uid = str(row.get("sandbox_uid") or "")
@@ -292,7 +344,10 @@ class SandboxLifecycle:
             return self.apply(
                 row=fresh,
                 decision=reconcile_decision(
-                    row=fresh, alive=None, job_live=False
+                    row=fresh,
+                    alive=None,
+                    job_live=False,
+                    cleanup=self.terminate_vm(row=fresh),
                 ),
             )
         return row
@@ -384,8 +439,8 @@ class SandboxLifecycle:
     ) -> bool:
         """Terminate + mark one row (expiry and idle reaping share this).
 
-        Returns False — leaving the row running so the next sweep retries —
-        when the VM could not be confirmed gone.
+        Returns False — parking the row as `cleanup_pending` for the retry
+        sweep — when the VM could not be confirmed gone.
         """
         observed = self.observe_runs_before_terminal(row=row)
         outcome = self.terminate_vm(row=row)
@@ -404,6 +459,122 @@ class SandboxLifecycle:
                 payload_extra=payload_extra,
             ),
         )
-        # maybe_alive leaves the row running for the next sweep to retry, so
-        # the read above described a live box, not a final one.
+        # maybe_alive parks the row for the retry sweep, so the read above
+        # described a live box, not a final one.
         return outcome != "maybe_alive"
+
+    # ---------- unconfirmed cleanups ----------
+
+    def settle(
+        self,
+        *,
+        row: dict[str, Any],
+        trigger: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> CleanupOutcome:
+        """Confirm the VM is gone, then settle the row — or park it visibly.
+
+        The shared ending for every pre-running path (failed provision, canceled
+        provision, wedged provision). Returns the cleanup outcome so the caller
+        can shape its own response.
+        """
+        outcome = self.terminate_vm(row=row)
+        self.apply(
+            row=row,
+            decision=settle_decision(
+                row=row,
+                outcome=outcome,
+                trigger=trigger,
+                event_type=event_type,
+                payload=payload,
+                error=error,
+            ),
+        )
+        return outcome
+
+    def retry_cleanup_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Ask the provider again about every row whose deletion never confirmed.
+
+        Unbounded in attempts, bounded in cadence: a possibly-billing VM is
+        never given up on. ``ok`` is False while anything is still pending —
+        that is the whole alerting mechanism, an outcome an operator can see.
+        """
+        now_dt = now or datetime.now(tz=UTC)
+        rows = self.repository.list_rows_by_status(status=CLEANUP_PENDING_STATUS)
+        confirmed = retried = 0
+        for row in rows:
+            attempts = cleanup_attempts(phase=row.get("phase"))
+            if not cleanup_retry_due(
+                attempts=attempts,
+                last_attempt_at=parse_iso(row.get("updated_at")),
+                now=now_dt,
+            ):
+                continue
+            try:
+                if self._retry_one_cleanup(row=row, attempts=attempts):
+                    confirmed += 1
+                else:
+                    retried += 1
+            except Exception:  # noqa: BLE001 — one bad row never aborts the sweep
+                retried += 1
+        pending = len(rows) - confirmed
+        return {
+            "ok": pending == 0,
+            "pending": pending,
+            "confirmed": confirmed,
+            "retried": retried,
+        }
+
+    def _retry_one_cleanup(self, *, row: dict[str, Any], attempts: int) -> bool:
+        """One retry. True once the provider confirms the sandbox is gone."""
+        experiment_id = str(row.get("experiment_id") or "")
+        sandbox_uid = str(row.get("sandbox_uid") or "")
+        project_id = str(row.get("project_id") or "")
+        # The verdict this row was headed for before cleanup stalled: an origin
+        # error means it was on its way to `failed`, not to a clean `terminated`.
+        origin_error = str(row.get("error") or "")
+        outcome = self.terminate_vm(row=row)
+        if outcome == "maybe_alive":
+            self.mark_cleanup_pending(
+                sandbox_uid=sandbox_uid,
+                reason=str(row.get("detail") or CLEANUP_PENDING_REASON),
+                error=origin_error,
+                attempts=attempts + 1,
+            )
+            self.repository.emit_event(
+                project_id=project_id,
+                event_type="sandbox.cleanup_retried",
+                experiment_id=experiment_id,
+                payload={
+                    "sandbox_id": str(row.get("sandbox_id") or ""),
+                    "sandbox_uid": sandbox_uid,
+                    "attempts": attempts + 1,
+                    "confirmed": False,
+                },
+            )
+            return False
+        if origin_error:
+            self.mark_failed(
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid,
+                error=origin_error,
+            )
+        else:
+            self.mark_terminated(
+                experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            )
+        self.repository.emit_event(
+            project_id=project_id,
+            event_type="sandbox.cleanup_confirmed",
+            experiment_id=experiment_id,
+            payload={
+                "sandbox_id": str(row.get("sandbox_id") or ""),
+                "sandbox_uid": sandbox_uid,
+                "attempts": attempts + 1,
+                "stopped": outcome == "stopped",
+                "status": "failed" if origin_error else "terminated",
+            },
+        )
+        return True

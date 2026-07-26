@@ -431,42 +431,54 @@ class SandboxProvisioner:
             if fresh.get("status") != "provisioning":
                 continue
             try:
-                self.lifecycle.cleanup_orphan(experiment_id=experiment_id, row=fresh)
-                self.lifecycle.mark_failed(
-                    experiment_id=experiment_id,
-                    sandbox_uid=sandbox_uid,
-                    error=(
-                        "provisioning wedged past deadline (daemon offline?); "
-                        "the sandbox was terminated — call sandbox.request again"
-                    ),
-                )
-                self.repository.emit_event(
-                    project_id=str(fresh.get("project_id") or ""),
+                outcome = self.lifecycle.settle(
+                    row=fresh,
+                    trigger="stale_provision",
                     event_type="sandbox.failed",
-                    experiment_id=experiment_id,
                     payload={
                         "error": "stale provision reaped",
                         "phase": fresh.get("phase", ""),
                         "sandbox_id": fresh.get("sandbox_id", ""),
                     },
+                    error=(
+                        "provisioning wedged past deadline (daemon offline?); "
+                        "the sandbox was terminated — call sandbox.request again"
+                    ),
                 )
-                reaped += 1
+                if outcome != "maybe_alive":
+                    reaped += 1
             except Exception:  # noqa: BLE001 — one bad row never aborts the pass
                 continue
         return reaped
 
     # ---------- settle helpers ----------
 
+    def _settle_row(
+        self, *, experiment_id: str, project_id: str, sandbox_uid: str
+    ) -> dict[str, Any]:
+        """The row a settle path is about to end, or a minimal stand-in."""
+        try:
+            return self.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        except Exception:  # noqa: BLE001 — the row may never have been written
+            return {
+                "experiment_id": experiment_id,
+                "project_id": project_id,
+                "sandbox_uid": sandbox_uid,
+            }
+
     def _settle_canceled(
         self, *, experiment_id: str, project_id: str, sandbox_uid: str = ""
     ) -> None:
-        self.lifecycle.mark_terminated(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid
-        )
-        self.repository.emit_event(
-            project_id=project_id,
+        # `acquire` terminated whatever it created, but every adapter suppresses
+        # that call's failure — so confirm rather than trust it (audit SAN-05).
+        self.lifecycle.settle(
+            row=self._settle_row(
+                experiment_id=experiment_id,
+                project_id=project_id,
+                sandbox_uid=sandbox_uid,
+            ),
+            trigger="provision_canceled",
             event_type="sandbox.released",
-            experiment_id=experiment_id,
             payload={"canceled": True},
         )
 
@@ -478,14 +490,14 @@ class SandboxProvisioner:
         error: str,
         sandbox_uid: str = "",
     ) -> None:
-        self.lifecycle.mark_failed(
-            experiment_id=experiment_id,
-            error=error,
-            sandbox_uid=sandbox_uid,
-        )
-        self.repository.emit_event(
-            project_id=project_id,
+        self.lifecycle.settle(
+            row=self._settle_row(
+                experiment_id=experiment_id,
+                project_id=project_id,
+                sandbox_uid=sandbox_uid,
+            ),
+            trigger="provision_failed",
             event_type="sandbox.failed",
-            experiment_id=experiment_id,
             payload={"error": error},
+            error=error,
         )

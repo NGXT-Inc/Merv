@@ -179,15 +179,14 @@ class VoltageParkSandboxBackend(VmSshSandboxBackend):
         self, *, experiment_id: str, sandbox_uid: str = ""
     ) -> str | None:
         name = _sandbox_name(sandbox_uid or experiment_id)
-        try:
-            for vm in self.client.list_vms():
-                if (
-                    vm.get("name") == name
-                    and str(vm.get("status") or "") not in TERMINAL_VM_STATUSES
-                ):
-                    return str(vm.get("id") or "") or None
-        except Exception:  # noqa: BLE001
-            return None
+        # A failed listing propagates: only a successful one that names nothing
+        # is authoritative, and the caller must be able to tell the difference.
+        for vm in self.client.list_vms():
+            if (
+                vm.get("name") == name
+                and str(vm.get("status") or "") not in TERMINAL_VM_STATUSES
+            ):
+                return str(vm.get("id") or "") or None
         return None
 
     def hardware_catalog(

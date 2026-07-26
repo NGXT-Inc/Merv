@@ -15,7 +15,8 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from tests.support.brain import TestBrain
+from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
+from merv.brain.kernel.utils import parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.application.maintenance import CleanupService
@@ -238,6 +239,10 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(report2.as_dict(), {
             "ok": True,
             "orphan_vms_reaped": 0,
+            # Nothing parked, so the money-safety sweep reports a clean pass.
+            "cleanup_pending": {
+                "ok": True, "pending": 0, "confirmed": 0, "retried": 0
+            },
             "blobs_swept": {"deleted": 0, "ok": True},
             # No storage, ledger, or OAuth store wired into this CleanupService,
             # and the report says skipped rather than reporting a sweep that
@@ -299,6 +304,215 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertIs(report.as_dict()["ok"], False)
         self.assertEqual(report.orphan_vms_reaped, 0)
+
+    # ---- unconfirmed deletions stay visible (audit SAN-05/SAN-06) ----
+
+    def _running_row(self, *, sandbox_uid: str, sandbox_id: str) -> str:
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=sandbox_uid,
+            project_id=self.project_id,
+            sandbox_id=sandbox_id,
+            status="running",
+            expires_at="2000-01-01T00:00:00Z",
+        )
+        self.backend.alive[sandbox_id] = True
+        return exp_id
+
+    def _row(self, sandbox_uid: str) -> dict:
+        return self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+
+    def _sandbox_events(self, event_type: str) -> list[dict]:
+        return [
+            event
+            for event in self.store.recent_events(project_id=self.project_id)["events"]
+            if event["type"] == event_type
+        ]
+
+    def test_a_delete_that_raises_parks_the_row_instead_of_terminating_it(self) -> None:
+        uid = "uid_delete_raises"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-delete-raises")
+
+        def exploding_terminate(*, sandbox_id):
+            raise RuntimeError("provider API 503")
+
+        self.backend.terminate = exploding_terminate  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.assertEqual(
+            self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC)), 0
+        )
+
+        row = self._row(uid)
+        self.assertEqual(row["status"], "cleanup_pending")
+        self.assertEqual(row["phase"], "cleanup_attempt_1")
+        self.assertIn("may still exist and bill", row["detail"])
+        # Durable ledger entry, and visible in the project's sandbox list.
+        events = self._sandbox_events("sandbox.cleanup_pending")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["trigger"], "expired")
+        listed = self.app.sandboxes.list_sandboxes(project_id=self.project_id)
+        self.assertIn(
+            "cleanup_pending",
+            [entry["status"] for entry in listed["sandboxes"]],
+        )
+
+    def test_the_retry_terminalizes_once_the_provider_confirms_gone(self) -> None:
+        uid = "uid_retry_confirms"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-retry-confirms")
+        original_terminate = self.backend.terminate
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.assertEqual(self._row(uid)["status"], "cleanup_pending")
+
+        # Still unreachable: the retry bumps the attempt and keeps the row.
+        first = self.cleanup.retry_cleanup_pending(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.assertEqual(first, {"ok": False, "pending": 1, "confirmed": 0, "retried": 1})
+        self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_retried")), 1)
+
+        # Provider comes back and confirms the delete.
+        self.backend.terminate = original_terminate  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        second = self.cleanup.retry_cleanup_pending(
+            now=datetime(2999, 1, 2, tzinfo=UTC)
+        )
+        self.assertEqual(
+            second, {"ok": True, "pending": 0, "confirmed": 1, "retried": 0}
+        )
+        self.assertEqual(self._row(uid)["status"], "terminated")
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_confirmed")), 1)
+
+    def test_the_retry_backs_off_before_asking_again(self) -> None:
+        uid = "uid_backoff"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-backoff")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        parked_at = parse_iso(self._row(uid)["updated_at"])
+        assert parked_at is not None
+
+        early = self.cleanup.retry_cleanup_pending(
+            now=parked_at + timedelta(seconds=10)
+        )
+        self.assertEqual(early["retried"], 0)  # inside the first backoff window
+        self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_1")
+        late = self.cleanup.retry_cleanup_pending(now=parked_at + timedelta(minutes=5))
+        self.assertEqual(late["retried"], 1)
+        self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
+
+    def test_a_failed_provision_keeps_its_verdict_through_the_detour(self) -> None:
+        # A wedged provision whose cleanup could not be confirmed parks, then
+        # settles as `failed` (not a clean `terminated`) once the VM is gone.
+        exp_id = self._experiment()
+        uid = "uid_wedged_unconfirmed"
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="sb-wedged-unconfirmed",
+            status="provisioning",
+            phase="connecting",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.backend.alive["sb-wedged-unconfirmed"] = True
+        original_terminate = self.backend.terminate
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.assertEqual(
+            self.cleanup.sweep_stale_provisions(
+                now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
+            ),
+            0,
+        )
+        row = self._row(uid)
+        self.assertEqual(row["status"], "cleanup_pending")
+        self.assertIn("wedged past deadline", row["error"])
+
+        self.backend.terminate = original_terminate  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        # The park stamp is wall-clock, so drive the retry from past it.
+        self.cleanup.retry_cleanup_pending(now=datetime(2999, 1, 1, tzinfo=UTC))
+        settled = self._row(uid)
+        self.assertEqual(settled["status"], "failed")
+        self.assertIn("wedged past deadline", settled["error"])
+
+    def test_an_unreachable_lookup_never_terminalizes_an_unrecorded_row(self) -> None:
+        # No sandbox_id: the deterministic-name probe is the only evidence, and
+        # a provider that cannot be asked is not evidence the VM is gone.
+        exp_id = self._experiment()
+        uid = "uid_lookup_outage"
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="",
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+
+        def exploding_find(*, experiment_id, sandbox_uid=""):
+            raise RuntimeError("provider API timeout")
+
+        self.backend.find_sandbox_id = exploding_find  # type: ignore[assignment]
+        self.assertEqual(
+            self.cleanup.sweep_stale_provisions(
+                now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
+            ),
+            0,
+        )
+        self.assertEqual(self._row(uid)["status"], "cleanup_pending")
+
+    def test_an_authoritative_not_found_still_terminalizes(self) -> None:
+        # Same row, but the provider answers and names nothing: that IS proof.
+        exp_id = self._experiment()
+        uid = "uid_lookup_empty"
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="",
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.assertEqual(
+            self.cleanup.sweep_stale_provisions(
+                now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
+            ),
+            1,
+        )
+        self.assertEqual(self._row(uid)["status"], "failed")
+
+    def test_a_pending_cleanup_makes_the_whole_pass_not_ok(self) -> None:
+        uid = "uid_not_ok"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-not-ok")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        report = self.cleanup.run_all(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.assertEqual(report.cleanup_pending["pending"], 1)
+        self.assertFalse(report.ok)
+
+    def test_a_request_never_provisions_over_a_pending_cleanup(self) -> None:
+        uid = "uid_no_clobber"
+        exp_id = self._running_row(sandbox_uid=uid, sandbox_id="sb-no-clobber")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        self.backend.liveness_unavailable = False
+
+        fresh = self.app.sandboxes.request(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            public_key=DEFAULT_PUBLIC_KEY,
+        )
+        self.assertNotEqual(fresh["sandbox_uid"], uid)
+        parked = self._row(uid)
+        self.assertEqual(parked["status"], "cleanup_pending")
+        self.assertEqual(parked["sandbox_id"], "sb-no-clobber")
 
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:

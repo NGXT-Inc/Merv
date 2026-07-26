@@ -235,7 +235,9 @@ class SandboxEventContractTest(unittest.TestCase):
                 def emit(**kwargs):
                     trace.append("event")
                     current = repository.get_by_uid(sandbox_uid=created["sandbox_uid"])
-                    expected = "running" if outcome == "maybe_alive" else "terminated"
+                    expected = (
+                        "cleanup_pending" if outcome == "maybe_alive" else "terminated"
+                    )
                     self.assertEqual(current["status"], expected)
                     return original_emit(**kwargs)
 
@@ -259,13 +261,17 @@ class SandboxEventContractTest(unittest.TestCase):
 
                 self.assertEqual(trace, ["cancel", "terminate", "apply", "event"])
                 expected_type = (
-                    "sandbox.release_failed" if outcome == "maybe_alive" else "sandbox.released"
+                    "sandbox.cleanup_pending"
+                    if outcome == "maybe_alive"
+                    else "sandbox.released"
                 )
                 expected_payload = (
                     {
                         "sandbox_id": created["sandbox_id"],
                         "sandbox_uid": created["sandbox_uid"],
-                        "reason": "terminate failed; instance may still be alive",
+                        "trigger": "release",
+                        "attempts": 1,
+                        "reason": "",
                     }
                     if outcome == "maybe_alive"
                     else {
@@ -275,7 +281,12 @@ class SandboxEventContractTest(unittest.TestCase):
                         "stopped": True,
                     }
                 )
-                self._assert_event(self._events()[-1], expected_type, expected_payload)
+                self._assert_event(
+                    self._events()[-1],
+                    expected_type,
+                    expected_payload,
+                    volatile={"reason"},
+                )
 
     def test_reconcile_death_applies_terminal_intent_before_event(self) -> None:
         experiment_id = self._experiment("reconcile")

@@ -17,7 +17,11 @@ from __future__ import annotations
 from typing import Any
 
 from .sandbox_paths import DEFAULT_DATA_DIR, remote_experiment_dir
-from .sandbox_support import ACTIVE_SANDBOX_STATUSES, POLL_AFTER_SECONDS
+from .sandbox_support import (
+    ACTIVE_SANDBOX_STATUSES,
+    CLEANUP_PENDING_STATUS,
+    POLL_AFTER_SECONDS,
+)
 
 
 def _sandbox_dirs(*, row: dict[str, Any]) -> tuple[str, str]:
@@ -73,6 +77,15 @@ def _runtime_hint(
         return (
             "Provisioning failed; inspect error, correct the request or "
             "provider issue, then call sandbox.request to retry."
+        )
+    if status == CLEANUP_PENDING_STATUS:
+        return (
+            "This sandbox was told to shut down but the provider never "
+            "confirmed it, so the machine may still exist and still be "
+            "billing. Do not use it for work and do not assume the cost "
+            "stopped. The cleanup sweep re-asks the provider on a backoff and "
+            "settles the row once it confirms; check the provider console if "
+            "it stays here. Call sandbox.request for a fresh sandbox."
         )
     if (
         status in ACTIVE_SANDBOX_STATUSES
@@ -148,6 +161,12 @@ def agent_row_facts(
         facts["poll_after_seconds"] = POLL_AFTER_SECONDS
     elif status == "failed":
         facts["error"] = row.get("error") or "provisioning failed"
+    elif status == CLEANUP_PENDING_STATUS:
+        facts["cleanup"] = {
+            "attempt": row.get("phase") or "",
+            "detail": row.get("detail") or "",
+            "error": row.get("error") or "",
+        }
     if reused is not None:
         facts["reused"] = reused
     return facts

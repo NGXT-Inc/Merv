@@ -241,7 +241,13 @@ class SandboxBackend(SandboxDriver, Protocol):
     def health(self) -> dict: ...
 
     def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
-        """Optionally find an orphan sandbox by experiment. Unsupported backends return None."""
+        """Optionally find an orphan sandbox by experiment.
+
+        None means the provider answered and named nothing (or the backend has
+        no such lookup). A provider that could not be asked RAISES — swallowing
+        the outage into None tells the lifecycle a possibly-live, billing VM is
+        gone (audit SAN-06), and only an authoritative answer may do that.
+        """
         ...
 
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:

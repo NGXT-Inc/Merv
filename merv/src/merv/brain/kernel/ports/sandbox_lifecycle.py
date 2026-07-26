@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 
 DEFAULT_STALE_PROVISION_DEADLINE_SECONDS = 10 * 60.0
@@ -22,3 +22,7 @@ class SandboxMaintenance(ProvisionReaper, Protocol):
     """Sandbox operations used by cross-component housekeeping."""
 
     def reconcile_running_rows(self) -> int: ...
+
+    def retry_cleanup_pending(
+        self, *, now: datetime | None = None
+    ) -> dict[str, Any]: ...

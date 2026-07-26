@@ -291,7 +291,9 @@ class ModalSandboxBackend(SandboxBackendBase):
         Used by the registry to reconcile a provisioning row whose daemon-side
         job died before it recorded the sandbox id (e.g. a restart mid-provision)
         — the orphan still holds the deterministic name, so we can find and adopt
-        or clean it up. Returns None if no such sandbox exists.
+        or clean it up. Returns None only when Modal authoritatively says no such
+        sandbox exists; an outage propagates, exactly as ``is_alive`` does, so
+        the caller never reads "could not ask" as "nothing is there".
         """
         name = _sandbox_name(sandbox_uid or experiment_id)
         if not name:
@@ -300,8 +302,10 @@ class ModalSandboxBackend(SandboxBackendBase):
             modal = self._modal_module()
             sandbox = modal.Sandbox.from_name(self.config.app_name, name)
             return str(getattr(sandbox, "object_id", "") or "") or None
-        except Exception:  # noqa: BLE001 — not found / unreachable
-            return None
+        except Exception as exc:  # noqa: BLE001
+            if "notfound" in type(exc).__name__.lower():
+                return None
+            raise
 
     def is_alive(self, *, sandbox_id: str) -> bool:
         if not sandbox_id:

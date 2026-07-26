@@ -23,6 +23,7 @@ from .sandbox_heartbeat import SandboxActivityPolicy
 from .sandbox_paths import remote_experiment_dir
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
+    CLEANUP_PENDING_STATUS,
     DEFAULT_REQUEST_WAIT_SECONDS,
     MAX_TIME_LIMIT_SECONDS,
     RUNS_WAIT_POLL_SECONDS,
@@ -406,6 +407,11 @@ class SandboxFacade:
             else:
                 existing = None
                 additional = False
+            if existing and existing.get("status") == CLEANUP_PENDING_STATUS:
+                # Its VM may still be up and billing, and that row is the only
+                # record of it — provisioning over it would erase the provider
+                # id. Leave it to the cleanup sweep and mint a fresh row.
+                existing = None
             sandbox_uid = (
                 self.repository.new_sandbox_uid()
                 if additional
@@ -813,7 +819,7 @@ class SandboxFacade:
         if outcome == "maybe_alive":
             view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
             view["hint"] = (
-                "Release did NOT complete: the provider terminate call failed and the VM may still be running (and billing). The sandbox stays active; retry sandbox.release, or the expiry reaper will retry at the deadline."
+                "Release did NOT complete: the provider terminate call failed and the VM may still be running (and billing). The sandbox is now cleanup_pending — it stays visible and the cleanup sweep keeps asking the provider until it confirms the VM is gone. Do not assume the bill stopped; re-call sandbox.release to retry sooner, or check the provider console."
             )
             return view
         view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
@@ -1008,6 +1014,9 @@ class SandboxFacade:
         return self.provisioner.reap_stale_provisions(
             now=now, deadline_seconds=deadline_seconds
         )
+
+    def retry_cleanup_pending(self, *, now: datetime | None = None) -> dict[str, Any]:
+        return self.lifecycle.retry_cleanup_pending(now=now)
 
 
 SandboxService = SandboxFacade
