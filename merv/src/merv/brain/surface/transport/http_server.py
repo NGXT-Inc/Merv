@@ -24,8 +24,18 @@ from .http_api import create_fastapi_app
 from .http_policy import HttpSurfacePolicy
 
 
+def _normalize_host(host: str) -> str:
+    """The bare address ``socket.bind`` wants, from what an operator typed.
+
+    Brackets are URL syntax for IPv6 (``[::1]``) and ``socket.bind`` raises
+    ``gaierror`` on them, so classification and the bind normalize identically:
+    a spelling the loopback check blesses is the spelling that gets bound.
+    """
+    return (host or "127.0.0.1").strip().strip("[]")
+
+
 def _bind_socket(*, host: str, port: int) -> socket.socket:
-    bind_host = host or "127.0.0.1"
+    bind_host = _normalize_host(host)
     family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
     server_socket = socket.socket(family, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -37,7 +47,7 @@ def _bind_socket(*, host: str, port: int) -> socket.socket:
 
 def is_loopback_host(host: str) -> bool:
     """Whether binding ``host`` can only be reached from this machine."""
-    candidate = (host or "127.0.0.1").strip().strip("[]").lower()
+    candidate = _normalize_host(host).lower()
     if candidate == "localhost":
         return True
     try:
@@ -60,8 +70,9 @@ def refuse_non_loopback_local_surface(host: str) -> None:
         return
     raise ValidationError(
         f"refusing to serve the unauthenticated local surface on {host!r}: "
-        "bind a loopback address, or pass surface_policy (and auth) so "
-        "the hosted authentication decision is made explicitly.",
+        "bind a loopback address, or compose the hosted surface (a "
+        "hosted_control surface_policy, and auth) so the hosted "
+        "authentication decision is made explicitly.",
         details={"host": host},
     )
 
@@ -75,9 +86,13 @@ class UvicornHttpServer:
     It is also a composition root, so it answers the same question every other
     one does: WHICH surface is this? Passing ``surface_policy`` threads the
     answer (with ``auth``/``env``) into ``create_fastapi_app``, where the
-    hosted gate decides. Omitting it means the unauthenticated local default,
-    which is only honest on a loopback bind — so a non-loopback host is refused
-    here rather than quietly serving an open full surface off-machine.
+    hosted gate decides.
+
+    The refusal keys on the EFFECTIVE policy, not on whether one was named: a
+    local policy is the unauthenticated surface whether it arrives by omission
+    or by ``for_surface(hosted_control=False)``, and it is only honest on a
+    loopback bind. Only ``hosted_control`` — which has already made the auth
+    decision at the gate — may bind off-machine.
     """
 
     def __init__(
@@ -90,7 +105,7 @@ class UvicornHttpServer:
         auth: Any | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
-        if surface_policy is None:
+        if surface_policy is None or not surface_policy.hosted_control:
             refuse_non_loopback_local_surface(host)
         fastapi_app = create_fastapi_app(
             app=app.http, surface_policy=surface_policy, auth=auth, env=env

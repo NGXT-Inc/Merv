@@ -3,7 +3,9 @@
 ``make_http_server``/``UvicornHttpServer`` compose a FastAPI app themselves, so
 they must reach the same hosted-auth decision every other composition does.
 Omitting ``surface_policy`` selects the unauthenticated LOCAL default, which is
-only honest on a loopback bind — hence the non-loopback refusal below.
+only honest on a loopback bind — hence the non-loopback refusal below. Naming a
+LOCAL policy outright composes that SAME surface, so the refusal keys on the
+effective policy rather than on the argument being absent.
 
 The wrapper is not the launcher, though: ``merv-http`` runs ``main`` ->
 ``_serve_local`` -> ``_run_server``, which never touches it. So the refusal is
@@ -13,7 +15,10 @@ types — wildcards, IPv6, IPv4-mapped forms, and the empty string.
 
 from __future__ import annotations
 
+import errno
 import importlib.util
+import ipaddress
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +37,8 @@ from merv.shared.errors import ValidationError
 from tests.support.brain import TestBrain
 
 HOSTED = HttpSurfacePolicy.for_surface(restrict_cors=True, hosted_control=True)
+# The same unauthenticated surface the omitted argument composes, spelled out.
+LOCAL = HttpSurfacePolicy.for_surface(restrict_cors=False, hosted_control=False)
 
 # Every spelling that must NOT reach a bind under the local policy: the two
 # wildcards, an IPv6 wildcard in brackets, a routable LAN address, IPv4-mapped
@@ -78,6 +85,26 @@ class HttpServerCompositionTest(unittest.TestCase):
                 make_http_server(self.app, host=host, port=0)
             self.assertIn(host, str(ctx.exception))
 
+    def test_an_explicitly_named_local_policy_is_refused_off_machine(self) -> None:
+        """The round-5 bypass: the guard fired only when ``surface_policy`` was
+        omitted, so naming the identical LOCAL policy skipped it and bound the
+        unauthenticated surface on a wildcard. WHICH surface this is does not
+        depend on how the caller spelled it."""
+        for host in OFF_MACHINE_HOSTS:
+            with self.subTest(host=host):
+                with mock.patch.object(http_server, "_bind_socket") as bind:
+                    with self.assertRaises(ValidationError) as ctx:
+                        make_http_server(
+                            self.app, host=host, port=0, surface_policy=LOCAL
+                        )
+                bind.assert_not_called()
+                self.assertIn(host, str(ctx.exception))
+
+    def test_the_loopback_local_policy_still_composes(self) -> None:
+        """Naming LOCAL is refused off-machine, not everywhere."""
+        server = self._serve(host="127.0.0.1", surface_policy=LOCAL)
+        self.assertEqual(server.server_address[0], "127.0.0.1")
+
     def test_the_loopback_local_default_still_composes(self) -> None:
         for host in ("127.0.0.1", "localhost", "::1"):
             with self.subTest(host=host):
@@ -110,6 +137,32 @@ class HttpServerCompositionTest(unittest.TestCase):
     def test_loopback_classification(self) -> None:
         self.assertTrue(all(map(is_loopback_host, LOOPBACK_HOSTS)))
         self.assertFalse(any(map(is_loopback_host, OFF_MACHINE_HOSTS)))
+
+    def test_every_blessed_loopback_spelling_binds_a_real_socket(self) -> None:
+        """Classification that a socket then rejects is worse than useless: it
+        blesses a spelling the operator cannot actually serve on. ``[::1]`` is
+        URL syntax and raised ``gaierror`` unnormalized, so bind for real."""
+        bound_hosts = []
+        for host in LOOPBACK_HOSTS:
+            with self.subTest(host=host):
+                try:
+                    server_socket = http_server._bind_socket(host=host, port=0)
+                except OSError as exc:
+                    # No interface for this address (macOS aliases only
+                    # 127.0.0.1; some hosts have no IPv6) is a machine fact, so
+                    # skip that spelling alone. An unresolvable spelling is the
+                    # normalization bug, so gaierror is never excused.
+                    if not isinstance(exc, socket.gaierror) and (
+                        exc.errno == errno.EADDRNOTAVAIL
+                    ):
+                        continue
+                    raise
+                self.addCleanup(server_socket.close)
+                bound = server_socket.getsockname()[0]
+                self.assertTrue(ipaddress.ip_address(bound).is_loopback)
+                bound_hosts.append(host)
+        # A machine with no loopback at all would make the whole loop vacuous.
+        self.assertIn("127.0.0.1", bound_hosts)
 
 
 class LocalLauncherBindTest(unittest.TestCase):
