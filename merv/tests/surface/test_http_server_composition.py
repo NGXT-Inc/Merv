@@ -54,8 +54,20 @@ OFF_MACHINE_HOSTS = (
     "192.168.1.10",
     "example.com",
 )
-# Reachable only from this machine, so the unauthenticated surface is honest.
-LOOPBACK_HOSTS = ("", "127.0.0.1", "127.5.5.5", "localhost", "::1", "[::1]")
+# Reachable only from this machine, so the unauthenticated surface is honest —
+# mapped to the address each spelling must actually hand ``socket.bind``. A
+# spelling blessed by NAME is pinned to numeric loopback (``socket.bind`` would
+# otherwise resolve it a second time, and a resolver is free to answer with a
+# LAN address); numeric spellings bind as themselves.
+LOOPBACK_BINDS = {
+    "": "127.0.0.1",
+    "127.0.0.1": "127.0.0.1",
+    "127.5.5.5": "127.5.5.5",
+    "localhost": "127.0.0.1",
+    "::1": "::1",
+    "[::1]": "::1",
+}
+LOOPBACK_HOSTS = tuple(LOOPBACK_BINDS)
 
 
 class HttpServerCompositionTest(unittest.TestCase):
@@ -109,7 +121,40 @@ class HttpServerCompositionTest(unittest.TestCase):
         for host in ("127.0.0.1", "localhost", "::1"):
             with self.subTest(host=host):
                 server = self._serve(host=host)
-                self.assertEqual(server.server_address[0], host)
+                # Reported as bound, not as typed: a name was pinned.
+                self.assertEqual(server.server_address[0], LOOPBACK_BINDS[host])
+
+    def _bound_address(self, **kwargs) -> tuple[Any, Any]:
+        """The address handed to ``socket.bind``, with the socket itself faked.
+
+        Binding for real proves nothing here: THIS machine's resolver maps
+        ``localhost`` to 127.0.0.1, so a name reaching the socket unpinned
+        would look identical. The string passed is the thing under test.
+        """
+        with mock.patch.object(http_server, "socket") as sock:
+            sock.socket.return_value.getsockname.return_value = ("127.0.0.1", 8787)
+            server = make_http_server(self.app, port=0, **kwargs)
+        return sock.socket.return_value.bind.call_args.args[0], server
+
+    def test_a_blessed_name_binds_the_numeric_loopback_it_was_blessed_as(self) -> None:
+        """``localhost`` classifies as loopback by NAME, but ``socket.bind``
+        resolves the name a second time — a resolver answering with a LAN
+        address would bind off-machine under a guard that just said loopback.
+        Names never reach the socket: they are pinned to numeric loopback."""
+        for host in ("localhost", "LOCALHOST", " localhost ", ""):
+            with self.subTest(host=host):
+                address, server = self._bound_address(host=host, surface_policy=LOCAL)
+                self.assertEqual(address[0], "127.0.0.1")
+                self.assertTrue(ipaddress.ip_address(address[0]).is_loopback)
+                self.assertEqual(server.server_address[0], "127.0.0.1")
+
+    def test_numeric_loopback_spellings_bind_themselves(self) -> None:
+        """The pin normalizes names, it does not collapse addresses: an
+        operator who asked for ::1 or 127.5.5.5 gets that interface."""
+        for host, expected in LOOPBACK_BINDS.items():
+            with self.subTest(host=host):
+                address, _server = self._bound_address(host=host)
+                self.assertEqual(address[0], expected)
 
     def test_a_non_loopback_hosted_surface_makes_the_auth_decision(self) -> None:
         """Naming the hosted surface routes the wrapper through the same gate:
@@ -211,8 +256,29 @@ class LocalLauncherBindTest(unittest.TestCase):
         for host in LOOPBACK_HOSTS:
             with self.subTest(host=host):
                 bind, uv = self._run(host=host, local_surface=True)
-                bind.assert_called_once_with(host=host, port=0)
+                bind.assert_called_once_with(host=LOOPBACK_BINDS[host], port=0)
                 uv.Server.return_value.run.assert_called_once()
+
+    def test_run_server_pins_a_loopback_name_to_a_numeric_bind(self) -> None:
+        """The console-script path, down to the socket: ``--host localhost`` is
+        blessed by name, so the name must never be what ``socket.bind``
+        resolves — a resolver mapping it to a LAN address would serve the
+        unauthenticated surface off-machine under a loopback verdict."""
+        with (
+            mock.patch.object(http_server, "socket") as sock,
+            mock.patch.object(http_server, "uvicorn") as uv,
+        ):
+            sock.socket.return_value.getsockname.return_value = ("127.0.0.1", 8787)
+            http_server._run_server(
+                server=mock.Mock(),
+                host="localhost",
+                port=0,
+                label="brain",
+                local_surface=True,
+            )
+        address = sock.socket.return_value.bind.call_args.args[0]
+        self.assertEqual(address[0], "127.0.0.1")
+        self.assertEqual(uv.Config.call_args.kwargs["host"], "127.0.0.1")
 
     def test_the_hosted_plane_still_binds_off_machine(self) -> None:
         """CONTROL composes an authenticated surface and made its own decision,

@@ -34,6 +34,23 @@ def _normalize_host(host: str) -> str:
     return (host or "127.0.0.1").strip().strip("[]")
 
 
+def _loopback_bind_host(host: str) -> str:
+    """The numeric address a blessed loopback spelling must actually bind.
+
+    ``is_loopback_host`` blesses ``localhost`` by NAME, but ``socket.bind``
+    resolves that name a second time — a resolver mapping it to a LAN address
+    would bind off-machine under a guard that just said loopback. So a
+    non-numeric spelling is pinned to numeric loopback and numeric spellings
+    bind as themselves: what was classified is what gets bound.
+    """
+    candidate = _normalize_host(host)
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return "127.0.0.1"
+    return candidate
+
+
 def _bind_socket(*, host: str, port: int) -> socket.socket:
     bind_host = _normalize_host(host)
     family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
@@ -56,7 +73,7 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
-def refuse_non_loopback_local_surface(host: str) -> None:
+def refuse_non_loopback_local_surface(host: str) -> str:
     """Refuse to bind the unauthenticated LOCAL surface off-machine.
 
     Every launcher that can serve the local default asks this BEFORE it binds —
@@ -65,9 +82,13 @@ def refuse_non_loopback_local_surface(host: str) -> None:
     that is not provably loopback (an unparseable spelling, an IPv4-mapped
     form, a wildcard) is refused, because guessing wrong here serves the whole
     tool surface to anyone who can route to the box.
+
+    Returns the address to bind, so the verdict and the bind are one step: a
+    name this blessed (``localhost``) is pinned to numeric loopback rather than
+    handed to a resolver that could still land it on a LAN interface.
     """
     if is_loopback_host(host):
-        return
+        return _loopback_bind_host(host)
     raise ValidationError(
         f"refusing to serve the unauthenticated local surface on {host!r}: "
         "bind a loopback address, or compose the hosted surface (a "
@@ -105,17 +126,18 @@ class UvicornHttpServer:
         auth: Any | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
+        bind_host = host
         if surface_policy is None or not surface_policy.hosted_control:
-            refuse_non_loopback_local_surface(host)
+            bind_host = refuse_non_loopback_local_surface(host)
         fastapi_app = create_fastapi_app(
             app=app.http, surface_policy=surface_policy, auth=auth, env=env
         )
-        self._socket = _bind_socket(host=host, port=port)
+        self._socket = _bind_socket(host=bind_host, port=port)
         selected_port = int(self._socket.getsockname()[1])
-        self.server_address = (host, selected_port)
+        self.server_address = (bind_host, selected_port)
         config = uvicorn.Config(
             fastapi_app,
-            host=host,
+            host=bind_host,
             port=selected_port,
             log_level="warning",
             access_log=False,
@@ -160,15 +182,16 @@ def _run_server(
     ``local_surface`` says the composition above chose the unauthenticated
     local policy, so the same non-loopback refusal the programmatic wrapper
     makes applies here — at the bind itself, which is the one place every
-    launcher passes through.
+    launcher passes through, and it also decides the address bound.
     """
+    bind_host = host
     if local_surface:
-        refuse_non_loopback_local_surface(host)
-    server_socket = _bind_socket(host=host, port=port)
+        bind_host = refuse_non_loopback_local_surface(host)
+    server_socket = _bind_socket(host=bind_host, port=port)
     selected_port = int(server_socket.getsockname()[1])
     config = uvicorn.Config(
         server.fastapi_app,
-        host=host,
+        host=bind_host,
         port=selected_port,
         log_level="warning",
         access_log=False,
@@ -179,7 +202,7 @@ def _run_server(
         forwarded_allow_ips="*",
     )
     uv = uvicorn.Server(config)
-    print(f"merv {label} listening on http://{host}:{selected_port}", flush=True)
+    print(f"merv {label} listening on http://{bind_host}:{selected_port}", flush=True)
     try:
         uv.run(sockets=[server_socket])
     except KeyboardInterrupt:
