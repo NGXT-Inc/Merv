@@ -282,6 +282,9 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         self.assertEqual(admin.json()["error_code"], "project_scope_forbidden")
 
     def test_removed_key_owner_cannot_read_implicit_bound_project(self) -> None:
+        # A project keeps at least one member (audit AUTH-01), so the owner
+        # leaves a project someone else still holds.
+        self._add_member(self.project_a, USER_B)
         self.app.projects.remove_member(project_id=self.project_a, user_id=USER_A)
         self.assertEqual(
             self.verifier.verify_bearer(f"Bearer {self.key}").key_id, self.key_id

@@ -11,7 +11,10 @@ from fastapi.responses import Response
 from ....application.facade import EventTimelineQuery, ProjectDashboardQuery, StatusAndNextQuery
 from ....research_core.facade import ResearchProjects
 from ....sandbox.facade import SandboxFacade
-from .shared import JsonBody, conditional_json_from_signal, path_scoped_body
+from .shared import (
+    JsonBody, conditional_json_from_signal, path_scoped_body,
+    require_membership_author,
+)
 
 from .context import ApiRouteContext
 from .views import present
@@ -58,15 +61,19 @@ def build_router(
 
     @api_router.post("/api/projects/{project_id}/members", status_code=201)
     def add_member(
-        project_id: str, body: JsonBody = Body(default=None)
+        project_id: str, request: Request, body: JsonBody = Body(default=None)
     ) -> dict[str, Any]:
-        # Any member may share the project (the membership gate already ran).
+        # Any human MEMBER may share the project (the membership gate already ran).
+        require_membership_author(request)
         return projects.add_member(
             project_id=project_id, user_id=str((body or {}).get("user_id") or "")
         )
 
     @api_router.delete("/api/projects/{project_id}/members/{user_id}")
-    def remove_member(project_id: str, user_id: str) -> dict[str, Any]:
+    def remove_member(
+        project_id: str, user_id: str, request: Request
+    ) -> dict[str, Any]:
+        require_membership_author(request)
         return projects.remove_member(project_id=project_id, user_id=user_id)
 
     @api_router.get("/api/projects/{project_id}")

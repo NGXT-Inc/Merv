@@ -59,9 +59,13 @@ OAUTH_RESOURCE_URI_ENV_VAR = "MERV_OAUTH_RESOURCE_URI"
 REQUIRE_AGENT_MLFLOW_ENV_VAR = "MERV_REQUIRE_AGENT_MLFLOW"
 REQUIRE_SANDBOX_BACKEND_ENV_VAR = "MERV_REQUIRE_SANDBOX_BACKEND"
 # Supabase auth knobs (SUPABASE_URL/JWT_SECRET/...) live in services/auth.py —
-# the extension owns them; this composition knob makes control mode fail fast
-# when they are missing instead of booting an open surface.
+# the extension owns them; this composition knob names the missing ones when
+# an operator has declared that control mode must authenticate.
 REQUIRE_AUTH_ENV_VAR = "MERV_REQUIRE_AUTH"
+# Hosted control fails closed without a verifier (audit SEC-02). This is the
+# one deliberate escape hatch: an operator who wants an UNAUTHENTICATED hosted
+# surface has to name it, and the boot log says so every time.
+ALLOW_OPEN_CONTROL_ENV_VAR = "MERV_ALLOW_OPEN_CONTROL"
 
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 

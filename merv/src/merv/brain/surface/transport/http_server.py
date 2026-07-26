@@ -107,9 +107,10 @@ def _serve_control(*, host: str, port: int) -> int:
     """Run the hosted brain preset.
 
     Hosted/no-repo-root control requires durable DB, durable blob store, and a
-    mounted management key. End-user auth is Supabase-backed and optional:
-    booting without it logs an "OPEN" warning, and MERV_REQUIRE_AUTH=1 makes
-    that a startup failure (the hosted deployment requires it).
+    mounted management key. End-user auth is Supabase-backed and REQUIRED:
+    booting without a verifier fails startup unless the operator sets
+    MERV_ALLOW_OPEN_CONTROL=1, which serves an OPEN surface and says so in the
+    boot log.
     """
     from ..composition import build_control_server
 
@@ -132,9 +133,9 @@ def control_main() -> int:
     forces control mode (MERV_MODE=control) so the image entrypoint
     never accidentally binds the local preset. The expiry reaper runs, but the
     broader cleanup sweeps are only built; a managed cron or sidecar must POST
-    ``/api/admin/cleanup``. End-user auth is optional Supabase verification
-    (off = "OPEN" warning; MERV_REQUIRE_AUTH=1 = fail-fast, as production
-    runs it); deploy behind TLS and a trusted network boundary either way.
+    ``/api/admin/cleanup``. End-user auth is Supabase verification and startup
+    fails without it (MERV_ALLOW_OPEN_CONTROL=1 is the deliberate, loudly
+    logged escape); deploy behind TLS and a trusted network boundary either way.
     """
     os.environ["MERV_MODE"] = "control"
     return main()

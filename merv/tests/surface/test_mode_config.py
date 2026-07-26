@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.surface.config import (
+    ALLOW_OPEN_CONTROL_ENV_VAR,
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
     Mode,
@@ -594,7 +595,8 @@ class ModeCompositionTest(unittest.TestCase):
 
         server = build_control_server(
             repo_root=self.repo,
-            env=_mounted_mgmt_key_env(self.repo),
+            # Tokenless by design, so the open surface is named (audit SEC-02).
+            env={**_mounted_mgmt_key_env(self.repo), ALLOW_OPEN_CONTROL_ENV_VAR: "1"},
         )
         self.addCleanup(server.shutdown)
         paths = {getattr(r, "path", "") for r in server.fastapi_app.routes}

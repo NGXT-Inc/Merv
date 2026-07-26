@@ -134,10 +134,11 @@ CREATE TABLE IF NOT EXISTS project_api_keys (
   FOREIGN KEY(parent_key_id) REFERENCES project_api_keys(id)
 );
 
--- OAuth 2.1 public DCR registrations (agent-anywhere Phase B). Append-only:
--- a repeated registration mints a fresh client_id, so the Cursor double-DCR
--- race is safe. Only public clients (token_endpoint_auth_method=none) exist,
--- so no client secret is stored.
+-- OAuth 2.1 public DCR registrations (agent-anywhere Phase B). A repeated
+-- registration with identical metadata resolves to the SAME client_id, so the
+-- Cursor double-DCR race is safe without growing the table; registrations that
+-- never authorized anything are swept by CleanupService. Only public clients
+-- (token_endpoint_auth_method=none) exist, so no client secret is stored.
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id TEXT PRIMARY KEY,
   client_name TEXT NOT NULL,
@@ -1929,7 +1930,28 @@ class BaseStateStore:
             )
 
     def remove_project_member(self, *, project_id: str, user_id: str) -> None:
+        """Drop one membership, never the last one.
+
+        Every human path into a project — listing, sharing, key minting — keys
+        on membership, so emptying the table orphans the project permanently
+        with no recovery route (audit AUTH-01). Removing a non-member stays the
+        idempotent no-op it has always been.
+        """
         with self.transaction() as conn:
+            members = {
+                str(row["user_id"])
+                for row in conn.execute(
+                    "SELECT user_id FROM project_members WHERE project_id = ?",
+                    (project_id,),
+                ).fetchall()
+            }
+            if members == {user_id}:
+                raise ValidationError(
+                    f"{user_id} is the only member of {project_id}; add another "
+                    "member first — a project with no members can never be "
+                    "reached or restored",
+                    details={"project_id": project_id, "user_id": user_id},
+                )
             conn.execute(
                 "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
                 (project_id, user_id),

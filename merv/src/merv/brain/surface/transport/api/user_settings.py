@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Request
 
-from ...identity import HumanSessionRequiredError
+from ...identity import HumanSessionRequiredError, is_human_session
 from ...user_settings import UserHfTokenSettings
 from .shared import JsonBody
 
@@ -37,7 +37,7 @@ def build_router(*, user_settings: UserHfTokenSettings) -> APIRouter:
 
 def _owner(request: Request) -> str:
     principal = request.state.principal
-    if not str(getattr(principal, "client_id", "") or "").startswith("jwt:"):
+    if not is_human_session(principal):
         raise HumanSessionRequiredError(
             "setting a personal Hugging Face token requires a Supabase browser session"
         )

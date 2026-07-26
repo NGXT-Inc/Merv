@@ -18,6 +18,11 @@ from .project_keys import GRANT_SCOPES, PROJECT_GRANT, ProjectKeyControl
 AUTHORIZATION_CODE_TTL_SECONDS = 60
 ACCESS_TOKEN_TTL_SECONDS = 3600
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
+# Public DCR is unauthenticated, so a client that registered and never came
+# back to authorize is swept (audit AUTH-03). Used clients — anything with a
+# code or refresh token — are kept regardless of age.
+UNUSED_CLIENT_TTL_DAYS_ENV_VAR = "MERV_OAUTH_CLIENT_TTL_DAYS"
+DEFAULT_UNUSED_CLIENT_TTL_DAYS = 30
 
 _PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
@@ -87,6 +92,13 @@ class RefreshToken:
 class OAuthRepository(Protocol):
     def insert_client(self, *, client: OAuthClient) -> None: ...
     def client_by_id(self, *, client_id: str) -> OAuthClient | None: ...
+    def client_by_registration(
+        self,
+        *,
+        client_name: str,
+        redirect_uris: tuple[str, ...],
+        grant_types: tuple[str, ...],
+    ) -> OAuthClient | None: ...
     def insert_code(self, *, code: AuthorizationCode) -> None: ...
     def code_by_digest(self, *, digest: str) -> AuthorizationCode | None: ...
     def consume_code(self, *, digest: str, consumed_at: str) -> bool: ...
@@ -188,14 +200,21 @@ class OAuthService:
             raise OAuthError(
                 "invalid_client_metadata", "registered scopes are not supported"
             )
-        client = OAuthClient(
-            client_id=new_id(prefix="oauthc"),
-            client_name=name,
-            redirect_uris=redirect_uris,
-            grant_types=grants,
-            created_at=now_iso(),
+        # Identical metadata resolves to the identical client. A public client
+        # id is not a credential, and clients that re-register on every launch
+        # would otherwise grow the table forever (audit AUTH-03).
+        client = self._repository.client_by_registration(
+            client_name=name, redirect_uris=redirect_uris, grant_types=grants
         )
-        self._repository.insert_client(client=client)
+        if client is None:
+            client = OAuthClient(
+                client_id=new_id(prefix="oauthc"),
+                client_name=name,
+                redirect_uris=redirect_uris,
+                grant_types=grants,
+                created_at=now_iso(),
+            )
+            self._repository.insert_client(client=client)
         issued = parse_iso(client.created_at)
         return {
             "client_id": client.client_id,
@@ -645,10 +664,12 @@ def _has_control_character(value: str) -> bool:
 __all__ = [
     "ACCESS_TOKEN_TTL_SECONDS",
     "AUTHORIZATION_CODE_TTL_SECONDS",
+    "DEFAULT_UNUSED_CLIENT_TTL_DAYS",
     "OAuthControl",
     "OAuthError",
     "OAuthService",
     "REFRESH_TOKEN_TTL_SECONDS",
+    "UNUSED_CLIENT_TTL_DAYS_ENV_VAR",
     "authorization_redirect",
     "oauth_error_redirect",
     "valid_redirect_uri",

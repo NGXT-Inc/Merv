@@ -133,14 +133,17 @@ is exposed under `/mlflow`, set
 `--static-prefix`. Route MLflow's tracking, artifact, UI, and `ajax-api` paths
 consistently. The Python brain itself does not read this variable.
 
-The reference compose stack ships with authentication off by default. Hosted
-control can enforce end-user authentication (set `MERV_REQUIRE_AUTH=1` with
-Supabase configuration), with `project_members` tenant isolation and
+The reference compose stack ships with authentication required
+(`MERV_REQUIRE_AUTH=1`), so it needs `SUPABASE_URL`, `SUPABASE_JWT_SECRET`,
+`SUPABASE_SERVICE_KEY`, and `SUPABASE_ANON_KEY` in the environment or the brain
+will not start. End-user auth brings `project_members` tenant isolation and
 project-scoped `mk_` keys (the gateway enforces that a key can only act on its
-bound project), but the reference stack leaves it disabled. CORS restrictions
-and the MCP client-version floor are not authentication. Keep the auth-off
-reference stack — the brain, MLflow, storage endpoints, and admin routes — on a
-trusted operator network; do not expose it directly to the public internet.
+bound project). A record-only dev stack that deliberately wants no auth sets
+`MERV_REQUIRE_AUTH=0` **and** `MERV_ALLOW_OPEN_CONTROL=1`; the brain then logs
+its open state on every boot. CORS restrictions and the MCP client-version floor
+are not authentication. Keep an open stack — the brain, MLflow, storage
+endpoints, and admin routes — on a trusted operator network; do not expose it
+directly to the public internet.
 
 The UI may call control/lifecycle routes, but byte transfers — artifact,
 storage, and feed uploads, and sandbox output pulls — run agent-side over

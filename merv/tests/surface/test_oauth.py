@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -299,6 +300,45 @@ class OAuthSurfaceTest(unittest.TestCase):
                     {"invalid_redirect_uri", "invalid_client_metadata"},
                 )
                 self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_identical_re_registration_returns_the_same_client(self) -> None:
+        """AUTH-03: public DCR must not grow a row per client restart."""
+        first = self._register()
+        again = self._register()
+        self.assertEqual(again["client_id"], first["client_id"])
+        self.assertEqual(again["client_id_issued_at"], first["client_id_issued_at"])
+        # Different metadata is still a different client.
+        other = self._register(redirect_uris=["https://other.example/cb"])
+        self.assertNotEqual(other["client_id"], first["client_id"])
+        with self.app.store.connect() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
+        self.assertEqual(int(count["n"]), 2)
+
+    def test_unused_registrations_expire_and_used_ones_survive(self) -> None:
+        unused = self._register(client_name="Abandoned Agent")
+        used, _tokens = self._mint_oauth_tokens()
+        repository = SqlOAuthRepository(
+            store=self.app.store, unused_client_ttl_days=30
+        )
+
+        fresh = repository.prune(now=datetime.now(tz=UTC))
+        self.assertEqual(fresh, {"deleted": 0, "ok": True, "cutoff": fresh["cutoff"]})
+
+        outcome = repository.prune(now=datetime.now(tz=UTC) + timedelta(days=31))
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["deleted"], 1)
+        self.assertIsNone(repository.client_by_id(client_id=unused["client_id"]))
+        self.assertIsNotNone(repository.client_by_id(client_id=used["client_id"]))
+
+    def test_a_failing_client_sweep_says_so_instead_of_zero(self) -> None:
+        class ExplodingStore:
+            def transaction(self):
+                raise RuntimeError("clients table unreachable")
+
+        outcome = SqlOAuthRepository(store=ExplodingStore()).prune()
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["deleted"], 0)
+        self.assertIn("unreachable", outcome["error"])
 
     def test_code_pkce_exchange_mints_working_key_for_mcp_tools_list(
         self,

@@ -316,6 +316,63 @@ class AuthedSurfaceTest(unittest.TestCase):
             404,
         )
 
+    def test_a_machine_key_cannot_change_membership(self) -> None:
+        """AUTH-01: only a human decides who belongs to a project."""
+        project_id = self._create_project("Keyed", _bearer(USER_A))
+        self.app.projects.add_member(project_id=project_id, user_id=USER_B)
+        key = {"Authorization": f"Bearer {KNOWN_KEY}"}  # rr_sk_, resolves to USER_B
+
+        added = self.client.post(
+            f"/api/projects/{project_id}/members",
+            json={"user_id": "cccccccc-cccc-cccc-cccc-cccccccccccc"},
+            headers=key,
+        )
+        self.assertEqual(added.status_code, 403, added.text)
+        self.assertEqual(added.json()["error_code"], "human_session_required")
+
+        removed = self.client.delete(
+            f"/api/projects/{project_id}/members/{USER_A}", headers=key
+        )
+        self.assertEqual(removed.status_code, 403, removed.text)
+        self.assertEqual(removed.json()["error_code"], "human_session_required")
+
+        # The member list the key tried to rewrite is untouched.
+        members = self.client.get(
+            f"/api/projects/{project_id}/members", headers=_bearer(USER_A)
+        )
+        self.assertEqual(
+            sorted(m["user_id"] for m in members.json()["members"]), [USER_A, USER_B]
+        )
+
+    def test_the_last_member_of_a_project_cannot_be_removed(self) -> None:
+        project_id = self._create_project("Solo", _bearer(USER_A))
+        refused = self.client.delete(
+            f"/api/projects/{project_id}/members/{USER_A}", headers=_bearer(USER_A)
+        )
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertEqual(refused.json()["error_code"], "validation_error")
+        self.assertIn("only member", refused.json()["detail"])
+        # Still reachable by its owner, i.e. not orphaned.
+        self.assertEqual(
+            self.client.get(
+                f"/api/projects/{project_id}", headers=_bearer(USER_A)
+            ).status_code,
+            200,
+        )
+        # With a second member present the same removal succeeds.
+        self.client.post(
+            f"/api/projects/{project_id}/members",
+            json={"user_id": USER_B},
+            headers=_bearer(USER_A),
+        )
+        allowed = self.client.delete(
+            f"/api/projects/{project_id}/members/{USER_A}", headers=_bearer(USER_A)
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(
+            [m["user_id"] for m in allowed.json()["members"]], [USER_B]
+        )
+
     def test_non_member_cannot_manage_membership(self) -> None:
         project_id = self._create_project("Fortress", _bearer(USER_A))
         response = self.client.post(

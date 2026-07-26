@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Request
 
 from ....kernel.utils import ValidationError
-from ...identity import HumanSessionRequiredError
+from ...identity import HumanSessionRequiredError, is_human_session
 from ...project_keys import PROJECT_GRANT, ProjectKeyControl
 from .shared import JsonBody
 
@@ -75,7 +75,7 @@ def build_router(*, keys: ProjectKeyControl, audience: str = "") -> APIRouter:
 
 def _owner(request: Request) -> str:
     principal = request.state.principal
-    if not str(getattr(principal, "client_id", "") or "").startswith("jwt:"):
+    if not is_human_session(principal):
         raise HumanSessionRequiredError(
             "project key management requires a Supabase browser session"
         )

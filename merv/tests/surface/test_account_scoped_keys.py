@@ -202,6 +202,23 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return str(response.json()["id"])
 
+    def _leave_home_project(self):
+        """USER_A hands project A to somebody else and walks out.
+
+        A project always keeps a member (audit AUTH-01), so leaving means
+        handing over — which is the real-world shape of this scenario anyway.
+        """
+        handover = self.client.post(
+            f"/api/projects/{self.project_a}/members",
+            json={"user_id": USER_B_ID},
+            headers=self._bearer(self.jwt),
+        )
+        self.assertEqual(handover.status_code, 201, handover.text)
+        return self.client.delete(
+            f"/api/projects/{self.project_a}/members/{USER_A}",
+            headers=self._bearer(self.jwt),
+        )
+
     def test_the_principal_carries_no_project_confinement(self) -> None:
         principal = self.verifier.verify_bearer(f"Bearer {self.key}")
         self.assertIsNotNone(principal.key_id)  # still an external key
@@ -296,10 +313,7 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
         )
         key_id = listed.json()["keys"][0]["id"]
 
-        removed = self.client.delete(
-            f"/api/projects/{self.project_a}/members/{USER_A}",
-            headers=self._bearer(self.jwt),
-        )
+        removed = self._leave_home_project()
         self.assertEqual(removed.status_code, 200, removed.text)
 
         # The key legitimately still works against the owner's other projects.
@@ -328,10 +342,7 @@ class AccountKeyOverTheWireTest(unittest.TestCase):
 
     def test_losing_membership_still_blocks_minting_under_that_project(self) -> None:
         # The revocation exemption must not extend to creation.
-        self.client.delete(
-            f"/api/projects/{self.project_a}/members/{USER_A}",
-            headers=self._bearer(self.jwt),
-        )
+        self._leave_home_project()
         minted = self.client.post(
             f"/api/projects/{self.project_a}/keys",
             json={},

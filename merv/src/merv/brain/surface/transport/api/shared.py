@@ -17,7 +17,10 @@ from fastapi.responses import JSONResponse, Response
 from ....kernel.env import env_value
 from ....kernel.request_context import bind_principal
 from ....kernel.utils import ValidationError
-from ...identity import is_local_principal, principal_label
+from ...identity import (
+    HumanSessionRequiredError, is_human_session, is_local_principal,
+    principal_label,
+)
 
 ADMIN_TOKEN_ENV_VAR = "MERV_ADMIN_TOKEN"
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
@@ -191,6 +194,26 @@ def operator_denial(request: Request) -> JSONResponse | None:
     return JSONResponse(
         {"detail": "operator token required", "error_code": "operator_forbidden"},
         status_code=403,
+    )
+
+
+def require_membership_author(request: Request) -> None:
+    """Only a human (or the operator) may change who belongs to a project.
+
+    A machine credential can drive every research tool, but membership is the
+    root of project reach: a key that adds or removes members can hand the
+    project away, or empty it (audit AUTH-01). The trusted-local sentinel keeps
+    access — local mode has no accounts at all — and MERV_ADMIN_TOKEN stays the
+    operator's recovery path.
+    """
+    principal = getattr(request.state, "principal", None)
+    if is_human_session(principal) or is_local_principal(principal):
+        return
+    if _operator_token_ok(request):
+        return
+    raise HumanSessionRequiredError(
+        "changing project membership requires a signed-in user; share the "
+        "project from the Merv UI (API keys cannot add or remove members)"
     )
 
 

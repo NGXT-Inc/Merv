@@ -3,17 +3,49 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ..kernel.env import env_int
 from ..kernel.state.store import BaseStateStore, row_to_dict
-from .oauth import AuthorizationCode, OAuthClient, RefreshToken
+from ..kernel.utils import format_iso
+from .oauth import (
+    DEFAULT_UNUSED_CLIENT_TTL_DAYS,
+    UNUSED_CLIENT_TTL_DAYS_ENV_VAR,
+    AuthorizationCode,
+    OAuthClient,
+    RefreshToken,
+)
 from .project_keys import PROJECT_GRANT
 
 
+def _json_list(values: tuple[str, ...] | list[str]) -> str:
+    return json.dumps(list(values), separators=(",", ":"))
+
+
 class SqlOAuthRepository:
-    def __init__(self, *, store: BaseStateStore) -> None:
+    def __init__(
+        self,
+        *,
+        store: BaseStateStore,
+        unused_client_ttl_days: int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self._store = store
+        configured = (
+            int(unused_client_ttl_days)
+            if unused_client_ttl_days is not None
+            else env_int(
+                UNUSED_CLIENT_TTL_DAYS_ENV_VAR,
+                DEFAULT_UNUSED_CLIENT_TTL_DAYS,
+                env=env,
+                strict=False,
+            )
+        )
+        # A zero/negative horizon would delete a client mid-authorization.
+        self.unused_client_ttl_days = max(1, configured)
 
     def insert_client(self, *, client: OAuthClient) -> None:
         with self._store.transaction() as conn:
@@ -27,8 +59,8 @@ class SqlOAuthRepository:
                 (
                     client.client_id,
                     client.client_name,
-                    json.dumps(list(client.redirect_uris), separators=(",", ":")),
-                    json.dumps(list(client.grant_types), separators=(",", ":")),
+                    _json_list(client.redirect_uris),
+                    _json_list(client.grant_types),
                     client.created_at,
                 ),
             )
@@ -38,16 +70,62 @@ class SqlOAuthRepository:
             row = conn.execute(
                 "SELECT * FROM oauth_clients WHERE client_id = ?", (client_id,)
             ).fetchone()
-        data = row_to_dict(row=row)
-        if data is None:
-            return None
-        return OAuthClient(
-            client_id=str(data["client_id"]),
-            client_name=str(data["client_name"]),
-            redirect_uris=tuple(json.loads(str(data["redirect_uris_json"]))),
-            grant_types=tuple(json.loads(str(data["grant_types_json"]))),
-            created_at=str(data["created_at"]),
+        return _client(row)
+
+    def client_by_registration(
+        self,
+        *,
+        client_name: str,
+        redirect_uris: tuple[str, ...],
+        grant_types: tuple[str, ...],
+    ) -> OAuthClient | None:
+        """The oldest client registered with exactly this metadata, if any.
+
+        The stored JSON is written by ``insert_client`` alone, so comparing the
+        serialized text is an exact metadata match, not a fuzzy one.
+        """
+        with closing(self._store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM oauth_clients
+                WHERE client_name = ? AND redirect_uris_json = ?
+                  AND grant_types_json = ?
+                ORDER BY created_at, client_id
+                """,
+                (client_name, _json_list(redirect_uris), _json_list(grant_types)),
+            ).fetchone()
+        return _client(row)
+
+    def prune(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Delete registrations past the horizon that never authorized anything.
+
+        Reports its own outcome: a failed sweep says ``ok`` False and names the
+        error rather than returning zero, which would read as a healthy pass
+        that found nothing (audit OPS-03).
+        """
+        cutoff = format_iso(
+            (now or datetime.now(tz=UTC))
+            - timedelta(days=self.unused_client_ttl_days)
         )
+        try:
+            with self._store.transaction() as conn:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM oauth_clients
+                    WHERE created_at < ?
+                      AND client_id NOT IN (
+                        SELECT client_id FROM oauth_authorization_codes
+                      )
+                      AND client_id NOT IN (
+                        SELECT client_id FROM oauth_refresh_tokens
+                      )
+                    """,
+                    (cutoff,),
+                )
+                deleted = max(0, int(getattr(cursor, "rowcount", 0) or 0))
+        except Exception as exc:  # noqa: BLE001 -- one sweep must not abort the pass
+            return {"deleted": 0, "ok": False, "cutoff": cutoff, "error": str(exc)[:200]}
+        return {"deleted": deleted, "ok": True, "cutoff": cutoff}
 
     def insert_code(self, *, code: AuthorizationCode) -> None:
         with self._store.transaction() as conn:
@@ -208,6 +286,19 @@ class SqlOAuthRepository:
                 """,
                 (key_id, revoked_at, project_id, owner_user_id),
             )
+
+
+def _client(row: Any) -> OAuthClient | None:
+    data = row_to_dict(row=row)
+    if data is None:
+        return None
+    return OAuthClient(
+        client_id=str(data["client_id"]),
+        client_name=str(data["client_name"]),
+        redirect_uris=tuple(json.loads(str(data["redirect_uris_json"]))),
+        grant_types=tuple(json.loads(str(data["grant_types_json"]))),
+        created_at=str(data["created_at"]),
+    )
 
 
 def _refresh_token(row: Any) -> RefreshToken | None:

@@ -64,13 +64,15 @@ graph:
 | `local` | `http://127.0.0.1:8787` | SQLite and local-directory blobs | Loopback development; auth off by default |
 | `control` | Operator-provided HTTPS URL | Postgres and S3-compatible stores | Supabase-backed end-user auth; TLS and network controls |
 
-The control surface supports optional Supabase-backed end-user authentication
+The control surface requires Supabase-backed end-user authentication
 (`SupabaseVerifier` in `services/auth.py`, attached per-request in
-`transport/api/app.py`, with a membership gate that 404s foreign projects). It is off by default locally —
-booting an unauthenticated hosted surface logs an "OPEN" warning — and
-`MERV_REQUIRE_AUTH=1` makes missing auth config a startup failure; the hosted
-deployment runs with it required. CORS and the client-version floor are still
-not authentication.
+`transport/api/app.py`, with a membership gate that 404s foreign projects).
+Hosted control fails closed: with no verifier configured it refuses to start
+unless the operator sets `MERV_ALLOW_OPEN_CONTROL=1`, which serves an
+unauthenticated plane and logs that state on every boot. `MERV_REQUIRE_AUTH=1`
+says the same thing more strictly — missing config is a startup failure with no
+escape. Local deployment (loopback, single user) never builds a verifier and is
+unaffected. CORS and the client-version floor are still not authentication.
 
 ### Agent client connection
 

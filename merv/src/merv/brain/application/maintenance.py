@@ -29,6 +29,10 @@ class PrunableLedger(Protocol):
 SKIPPED_PRUNE: dict[str, Any] = {"deleted": 0, "ok": True, "skipped": True}
 
 
+def _sweep_failure(exc: Exception) -> dict[str, Any]:
+    return {"deleted": 0, "ok": False, "error": str(exc)[:200]}
+
+
 @dataclass(frozen=True)
 class CleanupReport:
     """Counts returned by one idempotent maintenance pass."""
@@ -42,6 +46,9 @@ class CleanupReport:
     tool_calls_pruned: dict[str, Any] = field(
         default_factory=lambda: dict(SKIPPED_PRUNE)
     )
+    oauth_clients_pruned: dict[str, Any] = field(
+        default_factory=lambda: dict(SKIPPED_PRUNE)
+    )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +57,7 @@ class CleanupReport:
             "storage_objects_swept": self.storage_objects_swept,
             "stale_provisions_reaped": self.stale_provisions_reaped,
             "tool_calls_pruned": dict(self.tool_calls_pruned),
+            "oauth_clients_pruned": dict(self.oauth_clients_pruned),
         }
 
 
@@ -63,6 +71,7 @@ class CleanupService:
         blobs: ExpiringBlobStore,
         storage: ExpiringStorage | None = None,
         tool_call_ledger: PrunableLedger | None = None,
+        oauth_clients: PrunableLedger | None = None,
         stale_provision_deadline_seconds: float = (
             DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
         ),
@@ -71,6 +80,7 @@ class CleanupService:
         self.blobs = blobs
         self.storage = storage
         self.tool_call_ledger = tool_call_ledger
+        self.oauth_clients = oauth_clients
         self.stale_provision_deadline_seconds = float(stale_provision_deadline_seconds)
 
     def run_all(self, *, now: datetime | None = None) -> CleanupReport:
@@ -81,6 +91,7 @@ class CleanupService:
             storage_objects_swept=self.sweep_expired_storage(now=now_dt),
             stale_provisions_reaped=self.sweep_stale_provisions(now=now_dt),
             tool_calls_pruned=self.prune_tool_calls(now=now_dt),
+            oauth_clients_pruned=self.prune_oauth_clients(now=now_dt),
         )
 
     def sweep_orphan_vms(self, *, now: datetime | None = None) -> int:
@@ -106,18 +117,27 @@ class CleanupService:
             return 0
 
     def prune_tool_calls(self, *, now: datetime | None = None) -> dict[str, Any]:
-        """Bounded retention sweep over the durable tool-call ledger.
+        """Bounded retention sweep over the durable tool-call ledger."""
+        return self._prune(ledger=self.tool_call_ledger, now=now)
 
-        Returns the sweep's own report. A failure says ``ok`` False and names
-        the error — it does NOT return zero, which would read as a healthy
-        pass that found nothing (audit OPS-03).
+    def prune_oauth_clients(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Expire OAuth registrations that never authorized anything."""
+        return self._prune(ledger=self.oauth_clients, now=now)
+
+    def _prune(
+        self, *, ledger: PrunableLedger | None, now: datetime | None
+    ) -> dict[str, Any]:
+        """Run one retention sweep and return its own report.
+
+        A failure says ``ok`` False and names the error — it does NOT return
+        zero, which would read as a healthy pass that found nothing (OPS-03).
         """
-        if self.tool_call_ledger is None:
+        if ledger is None:
             return dict(SKIPPED_PRUNE)
         try:
-            return dict(self.tool_call_ledger.prune(now=now))
+            return dict(ledger.prune(now=now))
         except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
-            return {"deleted": 0, "ok": False, "error": str(exc)[:200]}
+            return _sweep_failure(exc)
 
     def sweep_stale_provisions(self, *, now: datetime | None = None) -> int:
         """Reap provider VMs stuck in any pre-running phase past the deadline."""

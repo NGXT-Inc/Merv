@@ -242,6 +242,7 @@ class CleanupSweepTest(unittest.TestCase):
             # No ledger wired into this CleanupService, and the report says so
             # rather than reporting a sweep that never ran as a clean zero.
             "tool_calls_pruned": {"deleted": 0, "ok": True, "skipped": True},
+            "oauth_clients_pruned": {"deleted": 0, "ok": True, "skipped": True},
         })
 
     # ---- tool-call ledger retention ----

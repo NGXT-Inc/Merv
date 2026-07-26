@@ -148,6 +148,17 @@ services:
       MERV_ALLOWED_ORIGINS: ${MERV_ALLOWED_ORIGINS:-${RESEARCH_PLUGIN_ALLOWED_ORIGINS:-https://experiments.rapidreview.io,https://research-suite-chi.vercel.app,http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}}
       # UI base for hosted OAuth consent; may carry a path (/merv).
       MERV_UI_BASE_URL: ${MERV_UI_BASE_URL:-${RESEARCH_PLUGIN_UI_BASE_URL:-}}
+      # End-user auth against the shared RapidReview Supabase project. Hosted
+      # control refuses to boot without a verifier, and this stack publishes
+      # 8787 below, so the four values are required. A record-only dev stack
+      # that deliberately wants an OPEN plane sets MERV_REQUIRE_AUTH=0 and
+      # MERV_ALLOW_OPEN_CONTROL=1 instead.
+      MERV_REQUIRE_AUTH: ${MERV_REQUIRE_AUTH:-1}
+      MERV_ALLOW_OPEN_CONTROL: ${MERV_ALLOW_OPEN_CONTROL:-0}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
       # Record store: the Postgres dialect.
       MERV_DB_URL: postgresql://rp:rp_dev_password@postgres:5432/research_plugin
       # Submitted-byte blob store: the S3-shape bucket on MinIO. boto3

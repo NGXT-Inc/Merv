@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from merv.brain.surface.composition.control_mode import build_control_app
 from merv.brain.surface.composition import control_mode
 from merv.brain.surface.config import (
+    ALLOW_OPEN_CONTROL_ENV_VAR,
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
     CONTROL_RESTRICT_CORS_ENV_VAR,
@@ -17,7 +18,12 @@ from merv.brain.surface.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
     REQUIRE_AGENT_MLFLOW_ENV_VAR,
+    REQUIRE_AUTH_ENV_VAR,
     REQUIRE_SANDBOX_BACKEND_ENV_VAR,
+)
+from merv.brain.surface.auth import (
+    SUPABASE_JWT_SECRET_ENV_VAR,
+    SUPABASE_URL_ENV_VAR,
 )
 from merv.brain.mlflow.config import (
     MLFLOW_MODE_ENV_VAR,
@@ -42,6 +48,15 @@ def _mounted_mgmt_key_env(root: Path) -> dict[str, str]:
         MGMT_KEY_PATH_ENV_VAR: str(key_path),
         MGMT_PUBLIC_KEY_ENV_VAR: "ssh-ed25519 AAAAmanaged",
     }
+
+
+def _open_control_env(root: Path) -> dict[str, str]:
+    """Composition env for a test that serves an UNAUTHENTICATED hosted surface.
+
+    Hosted control fails closed without a verifier (audit SEC-02); the tests
+    below make tokenless requests on purpose, so they name the open mode.
+    """
+    return {**_mounted_mgmt_key_env(root), ALLOW_OPEN_CONTROL_ENV_VAR: "1"}
 
 
 class ControlAppTest(unittest.TestCase):
@@ -394,6 +409,73 @@ class ControlAppTest(unittest.TestCase):
                 control_mode.CONTROL_COMPAT_REPO_ROOT / "blobs",
             )
 
+    def test_hosted_control_refuses_to_boot_without_a_verifier(self) -> None:
+        """SEC-02: an unauthenticated hosted surface is never the default."""
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValidationError) as ctx:
+                build_control_server(repo_root=root, env=_mounted_mgmt_key_env(root))
+        self.assertIn(SUPABASE_URL_ENV_VAR, ctx.exception.message)
+        self.assertIn(SUPABASE_JWT_SECRET_ENV_VAR, ctx.exception.message)
+        self.assertIn(ALLOW_OPEN_CONTROL_ENV_VAR, ctx.exception.message)
+
+    def test_require_auth_without_credentials_still_names_the_missing_ones(self) -> None:
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValidationError) as ctx:
+                build_control_server(
+                    repo_root=root,
+                    env={**_mounted_mgmt_key_env(root), REQUIRE_AUTH_ENV_VAR: "1"},
+                )
+        self.assertIn(REQUIRE_AUTH_ENV_VAR, ctx.exception.message)
+        self.assertEqual(
+            ctx.exception.details["missing"],
+            [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR],
+        )
+
+    def test_the_open_flag_boots_an_open_plane_and_says_so(self) -> None:
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertLogs(
+                "merv.brain.surface.composition.control_mode", level="WARNING"
+            ) as logs:
+                server = build_control_server(
+                    repo_root=root, env=_open_control_env(root)
+                )
+            self.addCleanup(server.shutdown)
+            self.assertIn("OPEN CONTROL PLANE", "\n".join(logs.output))
+            client = TestClient(server.fastapi_app, raise_server_exceptions=False)
+            self.assertEqual(client.get("/api/projects").status_code, 200)
+
+    def test_the_cleanup_pass_sweeps_oauth_registrations(self) -> None:
+        # AUTH-03: the sweep only runs if composition hands it the repository.
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = build_control_server(repo_root=root, env=_open_control_env(root))
+            self.addCleanup(server.shutdown)
+            outcome = server.cleanup.run_all().as_dict()["oauth_clients_pruned"]
+            self.assertTrue(outcome["ok"])
+            self.assertNotIn("skipped", outcome)
+
+    def test_local_deployment_keeps_its_unauthenticated_default(self) -> None:
+        # Loopback single-user mode never had a verifier and still does not
+        # need the open-mode flag.
+        from merv.brain.surface.composition.control_mode import build_local_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            server = build_local_server(state_dir=Path(tmp), env={})
+            self.addCleanup(server.shutdown)
+            client = TestClient(server.fastapi_app, raise_server_exceptions=False)
+            self.assertEqual(client.get("/api/projects").status_code, 200)
+
     def test_control_server_reads_allowed_origins_from_env(self) -> None:
         from merv.brain.surface.composition.control_mode import build_control_server
 
@@ -402,7 +484,7 @@ class ControlAppTest(unittest.TestCase):
             server = build_control_server(
                 repo_root=root,
                 env={
-                    **_mounted_mgmt_key_env(root),
+                    **_open_control_env(root),
                     ALLOWED_ORIGINS_ENV_VAR: (
                         "https://ui.example.com, http://localhost:5173"
                     )
@@ -444,7 +526,7 @@ class ControlAppTest(unittest.TestCase):
             ) as logs:
                 server = build_control_server(
                     repo_root=root,
-                    env=_mounted_mgmt_key_env(root),
+                    env=_open_control_env(root),
                 )
             self.addCleanup(server.shutdown)
             self.assertIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
@@ -463,7 +545,7 @@ class ControlAppTest(unittest.TestCase):
                 server = build_control_server(
                     repo_root=root,
                     env={
-                        **_mounted_mgmt_key_env(root),
+                        **_open_control_env(root),
                         CONTROL_RESTRICT_CORS_ENV_VAR: "false",
                     },
                 )

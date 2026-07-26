@@ -68,6 +68,16 @@ def is_external_key(principal: object | None) -> bool:
     return getattr(principal, "key_id", None) is not None
 
 
+def is_human_session(principal: object | None) -> bool:
+    """Whether a real person is driving this request (a Supabase browser JWT).
+
+    Every other verified credential — ``mk_``, ``rr_sk_`` — is a machine one,
+    however wide its reach, so operations that only a human may authorize
+    (project-key management, personal tokens, membership) test this.
+    """
+    return str(getattr(principal, "client_id", "") or "").startswith("jwt:")
+
+
 def is_local_principal(principal: object | None) -> bool:
     """Whether this is the trusted-local sentinel (internal composition).
 
@@ -108,6 +118,7 @@ __all__ = [
     "ProjectKeyScopeError",
     "ToolVisibilityError",
     "is_external_key",
+    "is_human_session",
     "is_local_principal",
     "principal_label",
 ]
