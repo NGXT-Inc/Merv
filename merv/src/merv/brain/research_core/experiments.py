@@ -60,15 +60,28 @@ def _query(conn, sql: str, parameters: tuple[Any, ...]) -> list[dict[str, Any]]:
     return rows_to_dicts(rows=conn.execute(sql, parameters).fetchall())
 
 
-# Every event record_mlflow_run can append — the ledger a delivery is proved by.
+# Every event record_mlflow_run can append.
 TRACKING_EVENT_TYPES = (
     "experiment.mlflow_run_created",
     "experiment.mlflow_run_unavailable",
     "experiment.mlflow_run_refreshed",
 )
+# The ledger a delivery is proved by: the only types a KEYED write can append.
+# `record_mlflow_run` is the sole writer of a delivery id, and it names the type
+# itself on that path — its `event_type` override is passed only by
+# `refresh_tracking_run`, which never carries a delivery id. Excluding
+# `refreshed` is therefore lossless for the lookup, and it is what makes the
+# window below bounded by real transition deliveries (a handful per experiment)
+# instead of by unkeyed `mlflow.finalize_run` refreshes, which an agent may
+# legitimately append without limit.
+TRACKING_DELIVERY_EVENT_TYPES = (
+    "experiment.mlflow_run_created",
+    "experiment.mlflow_run_unavailable",
+)
 # A delivery reads its own event moments after writing it, so the newest window
-# of an experiment's tracking events always contains it. The bound keeps the
-# lookup cost flat on a long-lived project instead of growing with its history.
+# of an experiment's keyed tracking events always contains it. The bound is a
+# backstop that keeps the lookup cost flat on a long-lived project rather than
+# the barrier's correctness argument — that is the type filter above.
 TRACKING_DELIVERY_SCAN_LIMIT = 200
 
 
@@ -605,27 +618,29 @@ class ExperimentService:
     ) -> StoredEvent | None:
         """This delivery's committed tracking event, when the ledger holds it.
 
-        SQL narrows to the project's tracking events for this experiment —
-        every column the schema offers, since the delivery id itself rides
-        inside opaque payload JSON — over the newest ``LIMIT`` window, which is
-        always where a delivery's own event is. The exact match is decided here
-        rather than by a ``LIKE`` on the serialized payload: a narrowing filter
-        that missed would append a duplicate, and it is the bound, not the
-        pattern, that makes the read cheap.
+        SQL narrows to the experiment's KEYED tracking events — the only types a
+        delivery can ever have written — and reads the newest window of them.
+        Unkeyed refreshes are excluded so they cannot push an older delivery out
+        of that window: a false miss here appends a duplicate and creates a
+        second MLflow run. Every column the schema offers is selected, since the
+        delivery id itself rides inside opaque payload JSON, and the exact match
+        is decided in Python rather than by a ``LIKE`` on the serialized
+        payload.
         """
+        placeholders = ", ".join("?" for _ in TRACKING_DELIVERY_EVENT_TYPES)
         rows = conn.execute(
-            """
+            f"""
             SELECT id, type, target_type, target_id, payload_json, created_at
             FROM events
             WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
-              AND type IN (?, ?, ?)
+              AND type IN ({placeholders})
             ORDER BY id DESC
             LIMIT ?
             """,
             (
                 project_id,
                 experiment_id,
-                *TRACKING_EVENT_TYPES,
+                *TRACKING_DELIVERY_EVENT_TYPES,
                 TRACKING_DELIVERY_SCAN_LIMIT,
             ),
         ).fetchall()

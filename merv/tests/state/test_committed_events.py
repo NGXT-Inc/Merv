@@ -18,6 +18,7 @@ from merv.brain.artifacts.submissions import ArtifactSubmissionService
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import (
+    TRACKING_DELIVERY_SCAN_LIMIT,
     TRACKING_EVENT_TYPES,
     ExperimentService,
 )
@@ -384,6 +385,37 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         self.assertEqual(
             [event["run_id"] for event in self._tracking_events()],
             ["run_a", "run_b"],
+        )
+
+    def test_unkeyed_refreshes_never_push_a_delivery_out_of_the_window(self) -> None:
+        # mlflow.finalize_run appends an unkeyed refresh every time an agent
+        # calls it, without limit. If those counted against the scan window, a
+        # long-running experiment would age its own delivery out and redelivery
+        # would create a second MLflow run — so the window sees keyed events
+        # only.
+        self._record(run_id="run_a", delivery_id=41)
+        for index in range(TRACKING_DELIVERY_SCAN_LIMIT + 5):
+            self.experiments.record_mlflow_run(
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
+                run={"run_id": "run_a", "status": f"RUNNING-{index}"},
+                event_type="experiment.mlflow_run_refreshed",
+            )
+
+        found = self.experiments.tracking_delivery_state(
+            project_id=self.project_id, experiment_id=self.experiment_id,
+            delivery_id=41,
+        )
+        assert found is not None
+        replayed = self._record(run_id="run_redelivered", delivery_id=41)
+
+        self.assertEqual(replayed["mlflow_run"]["run_id"], "run_a")
+        keyed = [
+            event for event in self._tracking_events() if "delivery_id" in event
+        ]
+        self.assertEqual(
+            [(event["type"], event["run_id"]) for event in keyed],
+            [("experiment.mlflow_run_created", "run_a")],
         )
 
     def test_the_ledger_scan_reads_a_bounded_window(self) -> None:

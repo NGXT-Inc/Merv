@@ -989,6 +989,25 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # two child-table client_id indexes serve the prune/eviction eligibility
     # subqueries, which run under the global writer lock.
     (38, "add_oauth_client_fingerprint", ""),
+    # The MLflow delivery barrier's index (July 2026, tracking idempotency).
+    # `_delivery_event` reads one experiment's keyed tracking events newest
+    # first; migration 37 left `events(project_id, id)` as the table's only
+    # index, so that lookup scanned the project's whole event history whenever
+    # the keyed events were sparse in it. Purely additive, one IF NOT EXISTS
+    # index — nothing existing is read or rewritten.
+    (39, "add_events_target_index", ""),
+)
+
+# Migration 39's index. Same rule as 37's and 38's: it lives HERE, never in
+# SCHEMA, because SCHEMA runs before the ladder and cannot name a column the
+# ladder has not added yet.
+EVENT_TARGET_INDEXES = (
+    # Aligned to _delivery_event's WHERE + ORDER BY: the equality columns
+    # first, then `id` so the newest-first window is read straight off the
+    # index instead of sorted. It also serves every other per-target event
+    # read (an experiment's or reflection's own history).
+    "CREATE INDEX IF NOT EXISTS idx_events_target"
+    "  ON events(project_id, target_type, target_id, id)",
 )
 
 # Migration 38's indexes. Same rule as migration 37's: they live HERE, never in
@@ -1233,7 +1252,17 @@ class BaseStateStore:
             self._add_tool_call_ledger(conn=conn)
         elif name == "add_oauth_client_fingerprint":
             self._add_oauth_client_fingerprint(conn=conn)
+        elif name == "add_events_target_index":
+            self._add_events_target_index(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_events_target_index(self, *, conn: Connection) -> None:
+        """Migration 39: the per-target events index the delivery barrier reads.
+
+        Additive and idempotent — an index only. `events` is created by SCHEMA
+        on both dialects long before this runs, so no table guard is needed."""
+        for statement in EVENT_TARGET_INDEXES:
             conn.execute(statement)
 
     def _add_oauth_client_fingerprint(self, *, conn: Connection) -> None:

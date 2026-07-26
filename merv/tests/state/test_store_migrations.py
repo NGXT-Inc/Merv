@@ -1310,5 +1310,69 @@ class UserHfTokenStoreTest(unittest.TestCase):
         self.assertEqual(self.store.user_hf_token(user_id=""), "")
 
 
+class Migration39Test(unittest.TestCase):
+    """The delivery barrier's index must exist on fresh AND existing stores.
+
+    It lives in the migration, never in SCHEMA (the migration-36 outage), so a
+    database that already carried migration 38 has to gain it on the next boot.
+    """
+
+    INDEX = "idx_events_target"
+
+    def _indexes(self, conn: sqlite3.Connection) -> set[str]:
+        return {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+    def test_fresh_database_gets_the_index_and_records_the_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(db_path=Path(tmp) / "state.sqlite")
+            conn = store.connect()
+            try:
+                self.assertIn(self.INDEX, self._indexes(conn))
+                applied = {
+                    int(row["version"])
+                    for row in conn.execute(
+                        "SELECT version FROM schema_migrations"
+                    ).fetchall()
+                }
+                self.assertIn(39, applied)
+                columns = [
+                    str(info["name"])
+                    for info in conn.execute(
+                        f"PRAGMA index_info({self.INDEX})"
+                    ).fetchall()
+                ]
+                self.assertEqual(
+                    columns, ["project_id", "target_type", "target_id", "id"]
+                )
+            finally:
+                conn.close()
+
+    def test_a_store_stopped_at_migration_38_converges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.sqlite"
+            StateStore(db_path=db_path)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(f"DROP INDEX IF EXISTS {self.INDEX}")
+                conn.execute("DELETE FROM schema_migrations WHERE version = 39")
+                conn.commit()
+                self.assertNotIn(self.INDEX, self._indexes(conn))
+            finally:
+                conn.close()
+
+            StateStore(db_path=db_path)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                self.assertIn(self.INDEX, self._indexes(conn))
+            finally:
+                conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
