@@ -29,6 +29,17 @@ class RunActivityProbe(Protocol):
     ) -> bool: ...
 
 
+class RunReceiptRefresh(Protocol):
+    """Pull one sandbox's .runs receipts into the mirror, right now.
+
+    True only when the box actually answered. False covers every kind of
+    silence — dead management channel, unsupported backend, a mirror write
+    that failed — none of which is evidence that no work is running.
+    """
+
+    def __call__(self, *, row: dict[str, Any]) -> bool: ...
+
+
 class SandboxIdlePolicy:
     """Pure idle decision from two usage samples."""
 
@@ -201,6 +212,7 @@ class SandboxHeartbeatMonitor:
         reap_row: RowReaper,
         policy: SandboxIdlePolicy | None = None,
         runs_active: RunActivityProbe | None = None,
+        refresh_runs: RunReceiptRefresh | None = None,
     ) -> None:
         self.repository = repository
         self.sample_metrics = sample_metrics
@@ -209,6 +221,9 @@ class SandboxHeartbeatMonitor:
         # The run ledger's "is anything still in flight" probe; wired by the
         # composition so the monitor and the ledger stay peers.
         self.runs_active = runs_active
+        # Pulls the candidate's receipts fresh from the box before we decide.
+        # The mirror alone is only as current as the last successful sweep.
+        self.refresh_runs = refresh_runs
 
     def reap_idle(
         self, *, now: datetime | None = None, threshold_seconds: float
@@ -296,6 +311,14 @@ class SandboxHeartbeatMonitor:
         fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
         if fresh.get("status") != "running" or parse_iso(fresh.get("idle_since")) is None:
             return False
+        # Read the receipts from the BOX before deciding, and treat the read as
+        # tri-state. A quiet merv_run that started since the last mirror sweep
+        # exists only on the sandbox, and a management channel that has been
+        # down longer than the idle window ages the last known receipt out of
+        # the freshness query — in both cases the ledger's silence is ignorance,
+        # not proof of an empty box, and it must not license a reap (SAN-07).
+        if not self._receipts_readable(row=fresh):
+            return False
         if self._work_in_flight(
             row=fresh, now=now, max_age_seconds=threshold_seconds
         ):
@@ -313,6 +336,20 @@ class SandboxHeartbeatMonitor:
                 },
             )
         )
+
+    def _receipts_readable(self, *, row: dict[str, Any]) -> bool:
+        """Refresh this row's receipts; False vetoes the reap.
+
+        Only a SUCCESSFUL read may age a receipt out of the veto. Rows the
+        ledger cannot mirror at all (no sandbox_id, no wired refresh) keep the
+        old behavior — there is nothing to read, so nothing to be ignorant of.
+        """
+        if self.refresh_runs is None or not str(row.get("sandbox_id") or ""):
+            return True
+        try:
+            return bool(self.refresh_runs(row=row))
+        except Exception:  # noqa: BLE001 — a failed read is not an empty box
+            return False
 
     def _work_in_flight(
         self, *, row: dict[str, Any], now: datetime, max_age_seconds: float

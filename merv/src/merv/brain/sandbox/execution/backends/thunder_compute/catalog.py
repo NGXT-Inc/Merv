@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _int_or_zero, _norm
+from .._values import _float_or_none, _int_or_zero, _norm
 
 
 def summarize_specs(
@@ -70,6 +70,8 @@ def summarize_specs(
 
     options.sort(
         key=lambda item: (
+            # Unpriced is not cheap: those SKUs sort last, not first.
+            item.get("price_usd_per_hour") is None,
             float(item.get("price_usd_per_hour") or 0.0),
             int(item.get("gpu_count") or 0),
             int(item.get("vcpus") or 0),
@@ -99,10 +101,12 @@ def _gpu_type_from_name(name: str) -> str:
     return name.split("_", 1)[0]
 
 
-def _price_for(*, name: str, gpu_type: str, prices: dict[str, Any]) -> float:
+def _price_for(*, name: str, gpu_type: str, prices: dict[str, Any]) -> float | None:
+    """The published $/hr for this SKU, or None when nothing prices it.
+
+    None, never 0.0 — an unpriced SKU that reads as free spends a budget blind.
+    """
     for key in (name, gpu_type):
-        try:
-            return float(prices.get(key) or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-    return 0.0
+        if key in prices:
+            return _float_or_none(prices.get(key))
+    return None

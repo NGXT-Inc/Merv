@@ -95,12 +95,19 @@ class QuotaService:
                 )
 
     def running_sandbox_count(self, *, tenant_id: str) -> int:
-        """How many sandboxes the tenant has running OR provisioning.
+        """How many sandboxes the tenant has that may be costing money.
 
         Provisioning rows must count: a GPU boot takes minutes, so counting
         only 'running' lets a burst of requests sail past the concurrency cap
-        before the first VM ever reaches running. Tenancy is reached through
-        the project: sandboxes carry project_id and projects carry tenant_id.
+        before the first VM ever reaches running.
+
+        `cleanup_pending` rows must count too, for the same reason they are not
+        terminal: the provider never confirmed the delete, so the VM may be UP
+        AND BILLING. Excluding them turns release/expiry + request into a
+        ratchet — every failed teardown frees a slot while leaving a live box
+        behind, and a `max_concurrent_sandboxes=1` tenant accumulates them
+        without ever tripping the ceiling. Tenancy is reached through the
+        project: sandboxes carry project_id and projects carry tenant_id.
         """
         with closing(self.store.connect()) as conn:
             row = conn.execute(
@@ -108,7 +115,8 @@ class QuotaService:
                 SELECT COUNT(*) AS n
                 FROM sandboxes s
                 JOIN projects p ON p.id = s.project_id
-                WHERE p.tenant_id = ? AND s.status IN ('provisioning', 'running')
+                WHERE p.tenant_id = ?
+                  AND s.status IN ('provisioning', 'running', 'cleanup_pending')
                 """,
                 (tenant_id,),
             ).fetchone()

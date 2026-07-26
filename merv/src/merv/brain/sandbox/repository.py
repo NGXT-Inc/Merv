@@ -889,6 +889,12 @@ class SandboxRepository:
         attempt count rides in `phase` and the last-attempt clock is
         `updated_at`, so the retry cadence needs no new column. `error` None
         preserves whatever verdict the row was already carrying.
+
+        Status-qualified (CAS): two cleanup workers can hold the same pending
+        row, and the one that hears "unavailable" LAST must not drag a row the
+        other already terminalized back to pending — attachments and the spend
+        generation are closed by then, so the resurrected row would contradict
+        its own accounting. A terminal row simply does not move.
         """
         target_uid = str(sandbox_uid or "").strip()
         if not target_uid:
@@ -904,6 +910,7 @@ class SandboxRepository:
         if error is not None:
             assignments.append("error = ?")
             values.append(error)
+        terminal = tuple(sorted(TERMINAL_SANDBOX_STATUSES))
         with self.store.transaction() as conn:
             self._guarded_update(
                 conn=conn,
@@ -911,6 +918,11 @@ class SandboxRepository:
                 assignments=", ".join(assignments),
                 values=values,
                 expected_project_id=expected_project_id,
+                extra_clause=(
+                    " AND status NOT IN ("
+                    + ", ".join(f"'{status}'" for status in terminal)
+                    + ")"
+                ),
             )
 
     def _mark_terminal(

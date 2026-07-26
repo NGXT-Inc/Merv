@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _int_or_zero, _norm
+from .._values import _float_or_none, _int_or_zero, _norm, price_sort_key
 
 
 def summarize_instance_types(
@@ -68,14 +68,16 @@ def summarize_instance_types(
         if min_gpu_count is not None and gpus < min_gpu_count:
             continue
 
-        price_cents = _int_or_zero(instance.get("price_cents_per_hour"))
+        # Tri-state on purpose: a SKU Lambda quotes no price for stays
+        # unpriced, so a spend policy can refuse it instead of billing $0/hr.
+        price_cents = _float_or_none(instance.get("price_cents_per_hour"))
         entries.append(
             {
                 "name": entry_name,
                 "description": str(instance.get("description") or ""),
                 "gpu_description": gpu_description,
-                "price_cents_per_hour": price_cents,
-                "price_usd_per_hour": price_cents / 100.0,
+                "price_cents_per_hour": None if price_cents is None else int(price_cents),
+                "price_usd_per_hour": None if price_cents is None else price_cents / 100.0,
                 "specs": {
                     "vcpus": _int_or_zero(specs.get("vcpus")),
                     "memory_gib": _int_or_zero(specs.get("memory_gib")),
@@ -121,12 +123,12 @@ def to_agent_options(summary: dict[str, Any]) -> list[dict[str, Any]]:
                 "vcpus": _int_or_zero(specs.get("vcpus")),
                 "memory_gib": _int_or_zero(specs.get("memory_gib")),
                 "storage_gib": _int_or_zero(specs.get("storage_gib")),
-                "price_usd_per_hour": entry.get("price_usd_per_hour", 0.0),
+                "price_usd_per_hour": entry.get("price_usd_per_hour"),
                 "regions": [r["name"] for r in entry.get("regions_with_capacity_available", [])],
                 "available": bool(entry.get("available")),
             }
         )
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"] or ""))
+    options.sort(key=price_sort_key)
     return options
 
 

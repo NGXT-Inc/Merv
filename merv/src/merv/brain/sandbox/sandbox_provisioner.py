@@ -108,11 +108,17 @@ class SandboxProvisioner:
         existing: dict[str, Any] | None,
         sandbox_uid: str = "",
         create_new: bool = False,
+        cleanup_confirmed: bool = False,
     ) -> _ProvisionJob:
         """Return the in-flight job for this experiment, or start a fresh one.
 
         Idempotent: a second request during provisioning attaches to the same
         job rather than starting a duplicate.
+
+        ``cleanup_confirmed`` says the caller already established, with the
+        provider's own answer, that ``existing``'s VM is gone. Without it this
+        method establishes that itself and REFUSES to start rather than write
+        over a row whose provider id may still name a live, billing VM.
         """
         sandbox_uid = str(sandbox_uid or req.sandbox_uid or "").strip()
         if not sandbox_uid:
@@ -124,8 +130,24 @@ class SandboxProvisioner:
         # No live job. Clear any prior/orphan sandbox before a fresh provision so
         # deterministic provider names cannot collide. Done outside the lock — it
         # may make a network call.
-        if not create_new:
-            self.lifecycle.cleanup_orphan(experiment_id=experiment_id, row=existing)
+        if not create_new and not cleanup_confirmed:
+            # begin_provisioning_row below rewrites this row with an empty
+            # sandbox_id. That is only safe once the provider has CONFIRMED the
+            # delete: an unconfirmed cleanup would erase the only record of a
+            # VM that is still billing (audit SAN-05).
+            if (
+                self.lifecycle.clear_for_reacquisition(
+                    experiment_id=experiment_id, row=existing
+                )
+                == "maybe_alive"
+            ):
+                raise BackendUnavailableError(
+                    "the previous sandbox for this experiment could not be "
+                    "confirmed deleted, so its row was parked as "
+                    "cleanup_pending rather than rewritten; the cleanup sweep "
+                    "keeps asking the provider — request again once it clears, "
+                    "or check the provider console"
+                )
         with self._jobs_lock:
             job = self._jobs.get(sandbox_uid)
             if job is not None and job.thread.is_alive():

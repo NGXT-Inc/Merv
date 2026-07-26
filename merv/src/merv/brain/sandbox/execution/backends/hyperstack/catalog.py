@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _float_or_zero, _int_or_zero, _norm, find_option
+from .._values import _float_or_none, _int_or_zero, _norm, find_option, price_sort_key
 
 
 def to_agent_options(
@@ -21,7 +21,7 @@ def to_agent_options(
     only_available: bool = True,
 ) -> list[dict[str, Any]]:
     prices = {
-        str(entry.get("name") or ""): _float_or_zero(entry.get("value"))
+        str(entry.get("name") or ""): _float_or_none(entry.get("value"))
         for entry in pricebook
     }
     gpu_filter = _norm(gpu)
@@ -52,12 +52,14 @@ def to_agent_options(
                     "memory_gib": _int_or_zero(flavor.get("ram")),
                     "storage_gib": _int_or_zero(flavor.get("disk"))
                     + _int_or_zero(flavor.get("ephemeral")),
-                    "price_usd_per_hour": prices.get(name, 0.0),
+                    # A flavor the pricebook does not list is UNPRICED, not
+                    # free — the cost policy has to be able to refuse it.
+                    "price_usd_per_hour": prices.get(name),
                     "regions": [flavor_region] if flavor_region else [],
                     "available": available,
                 }
             )
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"]))
+    options.sort(key=price_sort_key)
     return options
 
 

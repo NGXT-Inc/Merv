@@ -222,14 +222,26 @@ def release_decision(
     row: Mapping[str, Any],
     outcome: CleanupOutcome,
     active_experiment_ids: list[str],
+    error: str = "",
 ) -> LifecycleDecision:
-    """Describe an explicitly confirmed release."""
+    """Describe an explicitly confirmed release.
+
+    ``error`` is the verdict the row was already headed for — a parked row
+    carries the failure that stalled it. A manual release must finish that
+    journey rather than overwrite it with a clean ``terminated``: the agent
+    reading the terminal status would otherwise never learn the provision
+    failed at all.
+    """
     sandbox_id = str(row.get("sandbox_id") or "")
     sandbox_uid = str(row.get("sandbox_uid") or "")
     if outcome == "maybe_alive":
-        return cleanup_pending_decision(row=row, trigger="release")
+        return cleanup_pending_decision(row=row, trigger="release", error=error)
     return LifecycleDecision(
-        intents=(SideEffectIntent("mark_terminated", {}),),
+        intents=(
+            SideEffectIntent("mark_failed", {"error": error})
+            if error
+            else SideEffectIntent("mark_terminated", {}),
+        ),
         event=LifecycleEvent(
             "sandbox.released",
             {
@@ -237,6 +249,7 @@ def release_decision(
                 "sandbox_uid": sandbox_uid,
                 "active_experiment_ids": list(active_experiment_ids),
                 "stopped": outcome == "stopped",
+                "status": "failed" if error else "terminated",
             },
         ),
     )

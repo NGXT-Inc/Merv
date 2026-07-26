@@ -428,6 +428,42 @@ class SandboxFacade:
                 # record of it — provisioning over it would erase the provider
                 # id. Leave it to the cleanup sweep and mint a fresh row.
                 existing = None
+            # Whether this request can simply hand back the sandbox that is
+            # already there. Decided BEFORE the uid is chosen, because the
+            # answer is also what says whether the old row is about to be
+            # rewritten — and a row about to be rewritten has to have its VM
+            # confirmed gone first.
+            reuse_live = bool(
+                not additional
+                and existing
+                and (existing.get("status") in ACTIVE_SANDBOX_STATUSES)
+                and existing.get("sandbox_id")
+                and (
+                    self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
+                    is not False
+                )
+            )
+            # A live provisioning job owns its row at any age — cleaning up
+            # under it would terminate the VM it is still booting.
+            job_live = bool(
+                existing
+                and self.provisioner.job_is_live(
+                    experiment_id=experiment_id,
+                    sandbox_uid=str(existing.get("sandbox_uid") or ""),
+                )
+            )
+            if not additional and not reuse_live and not job_live:
+                # Authoritative, not best-effort: the recorded provider id is
+                # the only record of a VM that may still be billing, so an
+                # unconfirmed delete parks that row (keeping its id) and this
+                # request provisions onto a fresh one instead of erasing it.
+                if (
+                    self.lifecycle.clear_for_reacquisition(
+                        experiment_id=experiment_id, row=existing
+                    )
+                    == "maybe_alive"
+                ):
+                    existing = None
             sandbox_uid = (
                 self.repository.new_sandbox_uid()
                 if additional
@@ -448,16 +484,7 @@ class SandboxFacade:
             public_key = supplied_public_key
             public_key_source = "caller"
             management_public_key = self.mgmt_keys.ensure(sandbox_uid=sandbox_uid)
-            if (
-                not additional
-                and existing
-                and (existing.get("status") in ACTIVE_SANDBOX_STATUSES)
-                and existing.get("sandbox_id")
-                and (
-                    self.lifecycle.liveness(sandbox_id=str(existing["sandbox_id"]))
-                    is not False
-                )
-            ):
+            if reuse_live and existing:
                 self.repository.touch_alive(
                     experiment_id=experiment_id,
                     sandbox_uid=str(existing.get("sandbox_uid") or ""),
@@ -540,6 +567,10 @@ class SandboxFacade:
                 existing=None if additional else existing,
                 sandbox_uid=sandbox_uid,
                 create_new=additional,
+                # The prior sandbox was already confirmed gone (or parked)
+                # above, before the uid was chosen — asking again would be a
+                # second provider round-trip on the request's hot path.
+                cleanup_confirmed=True,
             )
         job.done.wait(timeout=self.request_wait_seconds)
         row = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
@@ -772,14 +803,33 @@ class SandboxFacade:
         views = [self._release_row(row=target) for target in targets]
         if len(views) == 1:
             return views[0]
-        return {
+        # An aggregate headline of "terminated" while one member is parked is
+        # the single most expensive lie this tool can tell: the operator reads
+        # it as "the bill stopped" and stops looking.
+        pending = [
+            view for view in views if view.get("status") == CLEANUP_PENDING_STATUS
+        ]
+        result: dict[str, Any] = {
             "experiment_id": experiment_id,
             "project_id": row.get("project_id"),
-            "status": "terminated",
-            "released_count": len(views),
+            "status": CLEANUP_PENDING_STATUS if pending else "terminated",
+            "released_count": len(views) - len(pending),
             "sandboxes": views,
             "hint": "All live sandboxes for this experiment were terminated.",
         }
+        if pending:
+            result["pending_count"] = len(pending)
+            result["released"] = False
+            result["hint"] = (
+                f"Release is INCOMPLETE: {len(views) - len(pending)} of "
+                f"{len(views)} sandboxes terminated, {len(pending)} could not "
+                "be confirmed deleted and may still be running (and billing). "
+                "Those rows are cleanup_pending — they stay visible and the "
+                "cleanup sweep keeps asking the provider. Do not assume the "
+                "bill stopped; see sandboxes[] for which ones, re-call "
+                "sandbox.release to retry sooner, or check the provider console."
+            )
+        return result
 
     def _release_confirmation(
         self, *, experiment_id: str, project_id: str, targets: list[dict[str, Any]]
@@ -829,6 +879,14 @@ class SandboxFacade:
             row=row,
             outcome=outcome,
             active_experiment_ids=self._active_experiment_ids_for_row(row=row),
+            # A parked row encodes the verdict it was headed for. Releasing it
+            # by hand must finish that journey, not launder a failed provision
+            # into a clean `terminated` the agent can never learn about.
+            error=(
+                str(row.get("error") or "")
+                if row.get("status") == CLEANUP_PENDING_STATUS
+                else ""
+            ),
         )
         # Stamp before the mark: `maybe_alive` leaves the row running for a
         # later retry and must not stamp, but once the VM is confirmed gone the
@@ -843,7 +901,11 @@ class SandboxFacade:
             )
             return view
         view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
-        if was_active:
+        if view.get("status") == "failed":
+            view["hint"] = (
+                "The VM is confirmed gone, but this sandbox is recorded as FAILED, not cleanly terminated: it carried a provisioning failure that release does not erase. See `error` for what went wrong."
+            )
+        elif was_active:
             view["hint"] = (
                 "Sandbox terminated. The VM and files on it are gone. Only files the agent explicitly copied or uploaded before release remain durable."
             )

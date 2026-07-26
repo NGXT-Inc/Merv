@@ -11,6 +11,7 @@ from unittest.mock import patch
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
+from merv.brain.sandbox.sandbox_backend import BackendCapabilities
 from merv.brain.sandbox.sandbox_heartbeat import SandboxActivityPolicy, SandboxIdlePolicy
 from merv.brain.kernel.utils import format_iso
 
@@ -389,6 +390,89 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
             self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 1
         )
 
+    def test_a_receipt_that_exists_only_on_the_box_vetoes_the_idle_reap(self) -> None:
+        # The blocker: a quiet merv_run launched right after the last mirror
+        # sweep exists ONLY on the sandbox. Deciding against the mirror alone
+        # reaps a machine that is working — so the candidate's receipts are
+        # read from the box before the decision, not a tick later.
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("on-box-only", now=now)
+        # Raw listing exactly as the on-box command emits it: a run with no
+        # ===EXIT sentinel is still in flight. Nothing is in sandbox_runs yet.
+        self.backend.run_listings[idle["sandbox_id"]] = (
+            "===MERV_RUN dHJhaW4=\n"
+            "===META eyJsYWJlbCI6InRyYWluIiwiY29tbWFuZCI6InB5dGhvbiB0cmFpbi5weSJ9\n"
+        )
+        with self.app.store.transaction() as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM sandbox_runs WHERE sandbox_uid = ?",
+                    (str(idle["sandbox_uid"]),),
+                ).fetchone()
+            )
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+        )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
+        self.assertEqual(self._status(str(idle["sandbox_uid"])), "running")
+
+    def test_an_unreadable_receipt_source_vetoes_the_idle_reap(self) -> None:
+        # A known running receipt whose ledger has not been refreshable for
+        # longer than the whole idle window: its updated_at ages out of the
+        # freshness query, so the mirror alone now says "nothing running".
+        # That silence is ignorance, not proof — read_runs returning None must
+        # veto rather than license the reap.
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("unreadable", now=now)
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sandbox_runs (
+                  sandbox_uid, label, command, exit_code, started_at,
+                  first_seen_at, updated_at
+                ) VALUES (?, 'train', 'python train.py', NULL, ?, ?, ?)
+                """,
+                (
+                    str(idle["sandbox_uid"]),
+                    format_iso(now - timedelta(days=2)),
+                    format_iso(now - timedelta(days=2)),
+                    format_iso(now - timedelta(days=2)),
+                ),
+            )
+
+        def unreadable(*, sandbox_id, workdir="", ssh_host="", ssh_port=0,
+                       ssh_user="", key_path=""):
+            return None  # management channel down: "no news", not "no runs"
+
+        self.backend.read_runs = unreadable  # type: ignore[assignment]
+
+        self.assertEqual(
+            self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+        )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
+        self.assertEqual(self._status(str(idle["sandbox_uid"])), "running")
+
+    def test_a_failed_receipt_mirror_write_does_not_license_a_reap(self) -> None:
+        # The box answered, but the mirror write blew up. A receipt we saw and
+        # could not record is still work in flight.
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        idle = self._idle_candidate("unmirrored", now=now)
+        self.backend.run_listings[idle["sandbox_id"]] = (
+            "===MERV_RUN dHJhaW4=\n"
+            "===META eyJsYWJlbCI6InRyYWluIiwiY29tbWFuZCI6InB5dGhvbiB0cmFpbi5weSJ9\n"
+        )
+        ledger = self.app.sandboxes.runs_ledger
+
+        def exploding_record(*, row, listing):
+            raise RuntimeError("state store unreachable")
+
+        with patch.object(ledger, "_record", side_effect=exploding_record):
+            self.assertEqual(
+                self.app.sandboxes.reap_idle(now=now, threshold_seconds=3600), 0
+            )
+        self.assertNotIn(idle["sandbox_id"], self.backend.terminated)
+
     def test_a_running_command_vetoes_the_idle_reap(self) -> None:
         now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         idle = self._idle_candidate("command-veto", now=now)
@@ -453,6 +537,45 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
             0,
         )
         self.assertNotIn(created["sandbox_id"], self.backend.terminated)
+
+
+class SandboxSweepOrderTest(unittest.TestCase):
+    """The reaper's tick order is load-bearing, not incidental."""
+
+    def test_receipts_are_reconciled_before_the_idle_decision(self) -> None:
+        trace: list[str] = []
+        lifecycle = SimpleNamespace(
+            reap_row=lambda **_kwargs: True,
+            reap_expired=lambda **_kwargs: trace.append("expiry"),
+            retry_cleanup_pending=lambda **_kwargs: trace.append("cleanup_retry"),
+        )
+        daemons = SandboxDaemons(
+            repository=object(),  # type: ignore[arg-type]
+            # MinimalBackend-like: enforce_expiry defaults on, so the expiry
+            # and stale-provision sweeps actually run in this tick.
+            backend=SimpleNamespace(
+                capabilities=BackendCapabilities(name="stub"),
+            ),  # type: ignore[arg-type]
+            provisioner=SimpleNamespace(
+                reap_stale_provisions=lambda **_kwargs: trace.append("stale")
+            ),  # type: ignore[arg-type]
+            lifecycle=lifecycle,  # type: ignore[arg-type]
+            sample_metrics=lambda **_kwargs: {},
+            reconcile_runs=lambda: trace.append("receipts"),
+        )
+        daemons.reap_idle = lambda **_kwargs: trace.append("idle")  # type: ignore[assignment]
+
+        with patch.dict(
+            os.environ,
+            {"RESEARCH_PLUGIN_SANDBOX_REAPER": "1"},
+            clear=False,
+        ):
+            daemons.sweep_once(stale_deadline_seconds=900.0)
+
+        self.assertEqual(
+            trace, ["expiry", "receipts", "idle", "stale", "cleanup_retry"]
+        )
+        self.assertLess(trace.index("receipts"), trace.index("idle"))
 
 
 class SandboxHeartbeatEnvTest(unittest.TestCase):

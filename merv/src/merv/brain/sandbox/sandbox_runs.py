@@ -61,6 +61,11 @@ class SandboxRunLedger:
         A None listing ("no news": dead channel, unsupported backend) never
         mutates records — a flaky read cannot un-finish or lose a run. Only
         live sandboxes are asked; box death leaves the last mirror standing.
+
+        Returns whether this row's receipts are now MIRRORED AND CURRENT. The
+        idle reaper reads that as permission to age a receipt out of its veto,
+        so False has to cover the mirror write failing too, not just the remote
+        read: a receipt we saw but could not record is still work in flight.
         """
         if row.get("status") not in ACTIVE_SANDBOX_STATUSES:
             return False
@@ -82,7 +87,10 @@ class SandboxRunLedger:
         if listing is None:
             return False
         if listing:
-            self._record(row=row, listing=listing)
+            try:
+                self._record(row=row, listing=listing)
+            except Exception:  # noqa: BLE001 — an unmirrored receipt is not an absent one
+                return False
         return True
 
     def final_observe(self, *, row: dict[str, Any]) -> bool:

@@ -280,6 +280,10 @@ class SandboxEventContractTest(unittest.TestCase):
                         "sandbox_uid": created["sandbox_uid"],
                         "active_experiment_ids": [experiment_id],
                         "stopped": True,
+                        # A release settles a row that may have been carrying a
+                        # failure verdict, so the event names the terminal
+                        # status it actually landed on.
+                        "status": "terminated",
                     }
                 )
                 self._assert_event(

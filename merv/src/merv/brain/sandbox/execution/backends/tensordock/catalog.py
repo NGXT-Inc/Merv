@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .._values import _float_or_zero, _int_or_zero, _norm
+from .._values import _float_or_none, _float_or_zero, _int_or_zero, _norm, price_sort_key
 
 
 # Deploy shape defaults per GPU (scaled by count, clipped to location maxima).
@@ -109,11 +109,21 @@ def to_agent_options(
                 storage_cap = _int_or_zero(resources.get("max_storage_gb"))
                 if storage_cap and storage_cap < DEFAULT_STORAGE_GB:
                     continue  # cannot meet the 100 GB minimum here
+                # The GPU rate is the price. Without it the synthesized total
+                # is not a quote at all, so the option stays unpriced rather
+                # than advertising the add-ons alone as the machine's cost.
+                gpu_rate = _float_or_none(entry.get("price_per_hr"))
                 price = (
-                    _float_or_zero(entry.get("price_per_hr")) * count
-                    + _float_or_zero(pricing.get("per_vcpu_hr")) * vcpus
-                    + _float_or_zero(pricing.get("per_gb_ram_hr")) * ram
-                    + _float_or_zero(pricing.get("per_gb_storage_hr")) * DEFAULT_STORAGE_GB
+                    None
+                    if gpu_rate is None
+                    else round(
+                        gpu_rate * count
+                        + _float_or_zero(pricing.get("per_vcpu_hr")) * vcpus
+                        + _float_or_zero(pricing.get("per_gb_ram_hr")) * ram
+                        + _float_or_zero(pricing.get("per_gb_storage_hr"))
+                        * DEFAULT_STORAGE_GB,
+                        4,
+                    )
                 )
                 options.append(
                     {
@@ -124,12 +134,12 @@ def to_agent_options(
                         "vcpus": vcpus,
                         "memory_gib": ram,
                         "storage_gib": DEFAULT_STORAGE_GB,
-                        "price_usd_per_hour": round(price, 4),
+                        "price_usd_per_hour": price,
                         "regions": [location_id],
                         "available": available,
                     }
                 )
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"]))
+    options.sort(key=price_sort_key)
     return options
 
 

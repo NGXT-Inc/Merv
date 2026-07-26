@@ -557,6 +557,240 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(parked["status"], "cleanup_pending")
         self.assertEqual(parked["sandbox_id"], "sb-no-clobber")
 
+    # ---- a row is never rewritten over an unconfirmed cleanup (SAN-05) ----
+
+    def _interrupted_provision(self, *, uid: str, sandbox_id: str, **fields) -> str:
+        """A `provisioning` row whose job died with the brain (restart)."""
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id=sandbox_id,
+            status="provisioning",
+            phase="connecting",
+            provision_started_at="2026-01-01T00:00:00Z",
+            **fields,
+        )
+        self.backend.alive[sandbox_id] = True
+        return exp_id
+
+    def _request(self, exp_id: str) -> dict:
+        return self.app.sandboxes.request(
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            public_key=DEFAULT_PUBLIC_KEY,
+        )
+
+    def test_a_restarted_provision_parks_rather_than_losing_its_provider_id(self) -> None:
+        # The brain restarted after on_created persisted the id but before the
+        # provision finished, and the agent re-calls sandbox.request. The row's
+        # sandbox_id is the ONLY record of a VM that may still be billing, so
+        # an unconfirmed cleanup must park that row — not blank its id and
+        # re-provision on top of it.
+        uid = "uid_restart_unconfirmed"
+        exp_id = self._interrupted_provision(uid=uid, sandbox_id="sb-restart")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+
+        fresh = self._request(exp_id)
+
+        parked = self._row(uid)
+        self.assertEqual(parked["status"], "cleanup_pending")
+        self.assertEqual(parked["sandbox_id"], "sb-restart")  # id survives
+        self.assertNotEqual(fresh["sandbox_uid"], uid)  # fresh row, not a rewrite
+        self.assertEqual(len(self._sandbox_events("sandbox.cleanup_pending")), 1)
+        self.assertEqual(
+            self._sandbox_events("sandbox.cleanup_pending")[0]["payload"]["trigger"],
+            "reacquire",
+        )
+
+    def test_a_restarted_provision_reuses_its_row_once_cleanup_is_confirmed(self) -> None:
+        # The control: the provider answers, the delete is confirmed, and the
+        # row is reused exactly as before — no new row, no parking.
+        uid = "uid_restart_confirmed"
+        exp_id = self._interrupted_provision(uid=uid, sandbox_id="sb-restart-ok")
+
+        fresh = self._request(exp_id)
+
+        self.assertEqual(fresh["sandbox_uid"], uid)
+        self.assertEqual(self._row(uid)["status"], "running")
+        self.assertIn("sb-restart-ok", self.backend.terminated)
+
+    def test_a_parked_row_settles_as_failed_not_as_a_clean_terminated(self) -> None:
+        # Manual release of a parked row must finish the journey the row was
+        # already on. Laundering a failed provision into `terminated` hides the
+        # failure from the only status the agent ever reads.
+        uid = "uid_release_verdict"
+        exp_id = self._experiment()
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="sb-verdict",
+            status="provisioning",
+            phase="connecting",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.backend.alive["sb-verdict"] = True
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.cleanup.sweep_stale_provisions(now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC))
+        self.assertEqual(self._row(uid)["status"], "cleanup_pending")
+
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        released = self.app.sandboxes.release(
+            project_id=self.project_id, sandbox_uid=uid, confirm_retained=True
+        )
+
+        self.assertEqual(released["status"], "failed")
+        settled = self._row(uid)
+        self.assertEqual(settled["status"], "failed")
+        self.assertIn("wedged past deadline", settled["error"])
+        self.assertEqual(
+            self._sandbox_events("sandbox.released")[-1]["payload"]["status"], "failed"
+        )
+
+    def test_an_aggregate_release_never_reports_terminated_while_one_row_parks(
+        self,
+    ) -> None:
+        # Two live sandboxes, one teardown unconfirmed. A "terminated" headline
+        # tells the operator the bill stopped, and they stop looking.
+        exp_id = self._experiment()
+        for uid, sandbox_id in (("uid_agg_ok", "sb-agg-ok"), ("uid_agg_bad", "sb-agg-bad")):
+            self.app.sandboxes.repository.upsert(
+                experiment_id=exp_id,
+                sandbox_uid=uid,
+                project_id=self.project_id,
+                sandbox_id=sandbox_id,
+                status="running",
+                expires_at="2999-01-01T00:00:00Z",
+            )
+            self.backend.alive[sandbox_id] = True
+        original_terminate = self.backend.terminate
+
+        def terminate(*, sandbox_id):
+            if sandbox_id == "sb-agg-bad":
+                raise RuntimeError("provider API 503")
+            return original_terminate(sandbox_id=sandbox_id)
+
+        self.backend.terminate = terminate  # type: ignore[assignment]
+
+        result = self.app.sandboxes.release(
+            project_id=self.project_id, experiment_id=exp_id, confirm_retained=True
+        )
+
+        self.assertEqual(result["status"], "cleanup_pending")
+        self.assertEqual(result["released_count"], 1)
+        self.assertEqual(result["pending_count"], 1)
+        self.assertIs(result["released"], False)
+        self.assertIn("may still be running", result["hint"])
+        self.assertEqual(self._row("uid_agg_ok")["status"], "terminated")
+        self.assertEqual(self._row("uid_agg_bad")["status"], "cleanup_pending")
+
+    # ---- provider ownership routes every cleanup (SAN-06) ----
+
+    def test_a_row_whose_provider_is_unconfigured_is_never_terminalized(self) -> None:
+        # The row records the provider that served it. If that provider is no
+        # longer in MERV_EXECUTION_BACKENDS, every remaining provider answering
+        # "not mine" is not evidence — its VM may be up and billing, and nobody
+        # asked its owner.
+        exp_id = self._experiment()
+        uid = "uid_foreign_provider"
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="",
+            provider="lambda_labs",  # the configured backend is "fake"
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.backend.alive["sb-foreign"] = True
+        self.backend.by_experiment[exp_id] = "sb-foreign"
+
+        self.assertEqual(
+            self.cleanup.sweep_stale_provisions(
+                now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
+            ),
+            0,
+        )
+        self.assertEqual(self._row(uid)["status"], "cleanup_pending")
+        # And nobody else's VM was destroyed on that row's behalf.
+        self.assertNotIn("sb-foreign", self.backend.terminated)
+
+    def test_a_row_whose_provider_is_configured_still_terminalizes(self) -> None:
+        # Same row, correct owner recorded: the sweep works exactly as before.
+        exp_id = self._experiment()
+        uid = "uid_own_provider"
+        self.app.sandboxes.repository.upsert(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            project_id=self.project_id,
+            sandbox_id="",
+            provider="fake",
+            status="provisioning",
+            phase="creating",
+            provision_started_at="2026-01-01T00:00:00Z",
+        )
+        self.backend.alive["sb-own"] = True
+        self.backend.by_experiment[exp_id] = "sb-own"
+
+        self.assertEqual(
+            self.cleanup.sweep_stale_provisions(
+                now=datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
+            ),
+            1,
+        )
+        self.assertEqual(self._row(uid)["status"], "failed")
+        self.assertIn("sb-own", self.backend.terminated)
+
+    # ---- concurrent cleanup workers (CAS) ----
+
+    def test_a_late_unavailable_result_cannot_resurrect_a_terminal_row(self) -> None:
+        # Two workers hold the same pending row. A confirms the delete and
+        # terminalizes it; B's slower "unavailable" answer arrives afterwards.
+        # B must not drag a row whose attachments and spend generation are
+        # already closed back to cleanup_pending.
+        uid = "uid_cas_race"
+        exp_id = self._running_row(sandbox_uid=uid, sandbox_id="sb-cas")
+        self.app.sandboxes.lifecycle.mark_terminated(
+            experiment_id=exp_id,
+            sandbox_uid=uid,
+            expected_project_id=self.project_id,
+        )
+        self.assertEqual(self._row(uid)["status"], "terminated")
+
+        self.app.sandboxes.repository.mark_cleanup_pending(
+            sandbox_uid=uid,
+            detail="late worker",
+            expected_project_id=self.project_id,
+            error="late worker",
+            attempts=2,
+        )
+
+        settled = self._row(uid)
+        self.assertEqual(settled["status"], "terminated")
+        self.assertNotEqual(settled["phase"], "cleanup_attempt_2")
+
+    def test_a_still_pending_row_is_parked_again_by_the_same_write(self) -> None:
+        # The control for the CAS clause: a non-terminal row still moves.
+        uid = "uid_cas_pending"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-cas-pending")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+
+        self.app.sandboxes.repository.mark_cleanup_pending(
+            sandbox_uid=uid,
+            detail="second attempt",
+            expected_project_id=self.project_id,
+            attempts=2,
+        )
+        self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
+
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:
             def prune(self, *, now=None):

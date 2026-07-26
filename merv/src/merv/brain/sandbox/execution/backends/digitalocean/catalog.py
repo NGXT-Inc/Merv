@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _float_or_zero, _int_or_zero, _norm, find_option
+from .._values import _float_or_none, _int_or_zero, _norm, find_option, price_sort_key
 
 
 def to_agent_options(
@@ -47,12 +47,14 @@ def to_agent_options(
                 # DigitalOcean reports droplet memory in MiB.
                 "memory_gib": _int_or_zero(size.get("memory")) // 1024,
                 "storage_gib": _int_or_zero(size.get("disk")),
-                "price_usd_per_hour": _float_or_zero(size.get("price_hourly")),
+                # None, never 0.0: an unpriced SKU must stay unknown so the
+                # cost policy fails closed instead of billing "free" hardware.
+                "price_usd_per_hour": _float_or_none(size.get("price_hourly")),
                 "regions": regions,
                 "available": available,
             }
         )
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"]))
+    options.sort(key=price_sort_key)
     return options
 
 

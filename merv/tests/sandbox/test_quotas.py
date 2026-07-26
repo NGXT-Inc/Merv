@@ -94,6 +94,46 @@ class QuotaAdmissionTest(unittest.TestCase):
             )
         self.assertIn("quota", ctx.exception.message)
 
+    def _sandbox_row(self, experiment_id: str, *, status: str) -> None:
+        self._running_sandbox(experiment_id)
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE sandboxes SET status = ? WHERE sandbox_uid = ?",
+                (status, f"uid_{experiment_id}"),
+            )
+
+    def test_a_parked_cleanup_still_occupies_a_concurrency_slot(self) -> None:
+        # cleanup_pending means the provider never confirmed the delete, so the
+        # VM may be up AND BILLING. Not counting it turns release + request
+        # into a ratchet: every failed teardown frees a slot and leaves a live
+        # box behind, so a 1-sandbox tenant can accumulate them without ever
+        # tripping its own ceiling.
+        self.quotas.set_quota(tenant_id="tenant_q", max_concurrent_sandboxes=1)
+        self._sandbox_row("exp_parked", status="cleanup_pending")
+        self.assertEqual(self.quotas.running_sandbox_count(tenant_id="tenant_q"), 1)
+        with self.assertRaises(PermissionDeniedError) as ctx:
+            self.quotas.check_admission(
+                request=AdmissionRequest(tenant_id="tenant_q", time_limit_seconds=3600)
+            )
+        self.assertEqual(
+            ctx.exception.details.get("quota"), "max_concurrent_sandboxes"
+        )
+
+    def test_a_genuinely_terminal_row_frees_its_slot(self) -> None:
+        # The other half of the rule: `terminated`/`failed` mean the provider
+        # confirmed the VM is gone, so those rows cost nothing and must not
+        # wedge a tenant out of provisioning forever.
+        self.quotas.set_quota(tenant_id="tenant_q", max_concurrent_sandboxes=1)
+        for experiment_id, status in (
+            ("exp_done", "terminated"),
+            ("exp_dead", "failed"),
+        ):
+            self._sandbox_row(experiment_id, status=status)
+        self.assertEqual(self.quotas.running_sandbox_count(tenant_id="tenant_q"), 0)
+        self.quotas.check_admission(
+            request=AdmissionRequest(tenant_id="tenant_q", time_limit_seconds=3600)
+        )
+
     def test_concurrent_count_is_tenant_scoped(self) -> None:
         # Another tenant's running sandboxes don't count against this tenant.
         other = self.app.call_tool("project", {"action": "create", "name": "Other"})["id"]
@@ -640,6 +680,121 @@ class QuotaProvisionRecordingTest(unittest.TestCase):
             conn.close()
         self.assertEqual(len(gens), 1)
         self.assertIsNotNone(gens[0]["ended_at"])
+
+
+class UnpricedAdapterSkuAdmissionTest(unittest.TestCase):
+    """A SKU the provider LISTS but does not price must still fail closed.
+
+    The dangerous case is not a missing SKU (that already refused) — it is a
+    real, selectable, available option whose adapter turned an absent
+    ``price_hourly`` into ``0.0``. Admission then reads a $0/hr quote, the
+    generation is accounted at zero, and the tenant's USD budget never moves
+    while the provider bills in full.
+    """
+
+    _CATALOG = [
+        {
+            "instance_type": "gpu_1x_priced",
+            "gpu": "A100",
+            "gpu_count": 1,
+            "vcpus": 30,
+            "memory_gib": 200,
+            "storage_gib": 1024,
+            "price_usd_per_hour": 1.29,
+            "regions": ["us-east-1"],
+            "available": True,
+        },
+        {
+            "instance_type": "gpu_1x_unpriced",
+            "gpu": "H100",
+            "gpu_count": 1,
+            "vcpus": 30,
+            "memory_gib": 200,
+            "storage_gib": 1024,
+            # What a real adapter now emits for a missing/garbled provider price.
+            "price_usd_per_hour": None,
+            "regions": ["us-east-1"],
+            "available": True,
+        },
+    ]
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.backend = FakeSandboxBackend(
+            requires_hardware_selection=True,
+            configurable_resources=False,
+            catalog_options=self._CATALOG,
+        )
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=self.backend,
+        )
+        self.store = self.app.store
+        self.project_id = self.app.call_tool(
+            "project", {"action": "create", "name": "Proj U"}
+        )["id"]
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+        self.tmp.cleanup()
+
+    def _experiment(self, name: str) -> str:
+        exp_id = self.app.call_tool(
+            "experiment.create",
+            {"project_id": self.project_id, "name": name, "intent": "x"},
+        )["id"]
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?", (exp_id,)
+            )
+        return exp_id
+
+    def _budget(self) -> None:
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE projects SET tenant_id = ? WHERE id = ?",
+                ("tenant_budgeted", self.project_id),
+            )
+        QuotaService(store=self.store).set_quota(
+            tenant_id="tenant_budgeted", usd_budget=500.0
+        )
+
+    def test_a_listed_but_unpriced_sku_is_refused_under_a_spend_policy(self) -> None:
+        self._budget()
+        with self.assertRaises(PermissionDeniedError) as ctx:
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("unpriced-listed"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_unpriced",
+            )
+        self.assertIn("gpu_1x_unpriced", str(ctx.exception))
+        self.assertEqual(
+            ctx.exception.details.get("quota"), "price_required_by_cost_policy"
+        )
+        # The priced sibling from the same catalog still provisions.
+        self.assertEqual(
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("priced-sibling"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_priced",
+            )["status"],
+            "running",
+        )
+
+    def test_the_unpriced_sku_stays_allowed_without_a_spend_policy(self) -> None:
+        self.assertEqual(
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=self._experiment("unpriced-permissive"),
+                public_key=DEFAULT_PUBLIC_KEY,
+                instance_type="gpu_1x_unpriced",
+            )["status"],
+            "running",
+        )
 
 
 if __name__ == "__main__":

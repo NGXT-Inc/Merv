@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _float_or_zero, _int_or_zero, _norm, find_option
+from .._values import _float_or_none, _int_or_zero, _norm, find_option, price_sort_key
 
 
 def to_agent_options(
@@ -55,10 +55,11 @@ def to_agent_options(
                 "vcpus": _int_or_zero(cpu_obj.get("number_of_cores")),
                 "memory_gib": _int_or_zero(memory_obj.get("size_in_gigabytes")),
                 "storage_gib": 0,  # Verda OS volumes are sized at deploy, not by SKU
-                "price_usd_per_hour": _float_or_zero(item.get("price_per_hour")),
+                # Absent/garbled $/hr stays unknown rather than becoming free.
+                "price_usd_per_hour": _float_or_none(item.get("price_per_hour")),
                 "regions": regions,
                 "available": available,
             }
         )
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"]))
+    options.sort(key=price_sort_key)
     return options

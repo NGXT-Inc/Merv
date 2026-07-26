@@ -104,6 +104,45 @@ class MultiplexerTest(unittest.TestCase):
         with self.assertRaises(BackendUnavailableError):
             self.mux.terminate(sandbox_id="gamma:sb-1")
 
+    # ---- legacy ids are owned by the ROW, not by the current default ----
+
+    def test_a_legacy_id_is_addressed_to_the_provider_its_row_records(self) -> None:
+        # Un-prefixed id + a row that says "beta". Routing it to the default
+        # (alpha) would 404, read as "gone", and strand a live beta VM.
+        provisioned = self.beta.acquire(request=_request())  # native, no prefix
+
+        addressed = self.mux.qualified_sandbox_id(
+            sandbox_id=provisioned.sandbox_id, provider="beta"
+        )
+
+        self.assertEqual(addressed, f"beta:{provisioned.sandbox_id}")
+        self.assertTrue(self.mux.is_alive(sandbox_id=addressed))
+        self.assertTrue(self.mux.terminate(sandbox_id=addressed))
+        self.assertIn(provisioned.sandbox_id, self.beta.terminated)
+        self.assertNotIn(provisioned.sandbox_id, self.alpha.terminated)
+
+    def test_a_legacy_id_resolves_its_rows_provider_alias(self) -> None:
+        self.assertEqual(
+            self.mux.qualified_sandbox_id(sandbox_id="sb-7", provider="beta_alias"),
+            "beta:sb-7",
+        )
+
+    def test_a_row_naming_an_unconfigured_provider_refuses_to_be_addressed(self) -> None:
+        # gamma was dropped from MERV_EXECUTION_BACKENDS. Nobody left can
+        # answer for its ids, and a guessed answer risks a billing VM.
+        with self.assertRaises(BackendUnavailableError):
+            self.mux.qualified_sandbox_id(sandbox_id="sb-7", provider="gamma")
+        with self.assertRaises(BackendUnavailableError):
+            self.mux.qualified_sandbox_id(sandbox_id="gamma:sb-7")
+
+    def test_an_id_that_already_names_its_owner_is_left_alone(self) -> None:
+        self.assertEqual(
+            self.mux.qualified_sandbox_id(sandbox_id="beta:sb-7", provider="beta"),
+            "beta:sb-7",
+        )
+        # No recorded provider at all: pre-multiplexer behavior, the default.
+        self.assertEqual(self.mux.qualified_sandbox_id(sandbox_id="sb-7"), "sb-7")
+
     def test_find_sandbox_id_returns_prefixed_hit(self) -> None:
         self.beta.acquire(request=_request(sandbox_uid="uid_beta"))
 

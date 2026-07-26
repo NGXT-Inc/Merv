@@ -102,6 +102,37 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
     def _encode(self, provider: str, native_id: str) -> str:
         return f"{provider}:{native_id}" if native_id else native_id
 
+    def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
+        """Address a stored id to the provider the ROW says owns it.
+
+        Un-prefixed ids predate the multiplexer, so the id alone cannot name
+        its owner — and routing them to whatever is currently the default is
+        how a default-backend change turns a wrong-provider 404 into "gone"
+        and strands a live, billing VM behind a terminal row. The row's durable
+        ``provider`` column is the proof of ownership; when it names a provider
+        that is not configured we RAISE rather than let anyone else answer.
+        """
+        sandbox_id = str(sandbox_id or "")
+        prefix, sep, _native = sandbox_id.partition(":")
+        if sep:
+            if prefix not in self.backends:
+                raise BackendUnavailableError(
+                    f"sandbox id {sandbox_id!r} belongs to provider {prefix!r}, "
+                    "which is not configured in MERV_EXECUTION_BACKENDS"
+                )
+            return sandbox_id  # already carries its owner
+        recorded = str(provider or "").strip().lower()
+        name = self._aliases.get(recorded, recorded)
+        if not sandbox_id or not name:
+            # Nothing recorded owns it: legacy behavior, the default backend.
+            return sandbox_id
+        if name not in self.backends:
+            raise BackendUnavailableError(
+                f"sandbox id {sandbox_id!r} belongs to provider {name!r}, "
+                "which is not configured in MERV_EXECUTION_BACKENDS"
+            )
+        return self._encode(name, sandbox_id)
+
     # ---------- capabilities ----------
 
     def capabilities_for(self, *, provider: str | None = None) -> BackendCapabilities:
@@ -287,6 +318,8 @@ class MultiplexingSandboxBackend(SandboxBackendBase):
             return None
         merged.sort(
             key=lambda o: (
+                # Unpriced options are not the cheapest ones; they sort last.
+                o.get("price_usd_per_hour") is None,
                 float(o.get("price_usd_per_hour") or 0.0),
                 str(o.get("instance_type") or ""),
             )

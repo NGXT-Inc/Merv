@@ -250,6 +250,14 @@ class SandboxBackend(SandboxDriver, Protocol):
         """
         ...
 
+    def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
+        """The id to address, qualified by the provider that owns the row.
+
+        RAISES when the recorded owner cannot be reached from this deployment;
+        answering with somebody else's provider would read a 404 as "gone".
+        """
+        ...
+
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:
         """Optionally return post-boot secrets for the backend.
 
@@ -355,6 +363,11 @@ class SandboxBackendBase:
     def find_sandbox_id(self, *, experiment_id: str, sandbox_uid: str = "") -> str | None:
         """Unsupported default: no orphan lookup is available."""
         return None
+
+    def qualified_sandbox_id(self, *, sandbox_id: str, provider: str = "") -> str:
+        """Single-provider default: this backend owns every id it was given."""
+        _ = provider
+        return sandbox_id
 
     def sandbox_secrets(self, *, hf_token: str = "") -> dict[str, str]:
         """Unsupported default: no post-boot secrets to deliver."""

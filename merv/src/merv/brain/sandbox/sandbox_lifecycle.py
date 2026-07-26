@@ -33,6 +33,7 @@ from .lifecycle_reducer import (
     CleanupOutcome,
     LifecycleDecision,
     ProviderLookup,
+    cleanup_pending_decision,
     lookup_found,
     lookup_unavailable,
     reap_decision,
@@ -158,6 +159,55 @@ class SandboxLifecycle:
             with suppress(Exception):  # key cleanup must never block the mark
                 self.mgmt_keys.remove(sandbox_uid=sandbox_uid)
 
+    # ---------- provider ownership ----------
+
+    def unreachable_owner(self, *, row: dict[str, Any] | None) -> str:
+        """Why the provider that owns this row cannot be asked, or "".
+
+        A row records the provider that served it. When that provider is no
+        longer in ``MERV_EXECUTION_BACKENDS`` nobody can answer for it, and the
+        remaining providers all truthfully saying "not mine" must NOT be read
+        as "the VM is gone" (audit SAN-06) — that is a live, billing VM behind
+        a terminal row. An empty ``provider`` is a pre-multiplexer row: the
+        configured backend is all there ever was, so it stays reachable.
+        """
+        recorded = str((row or {}).get("provider") or "").strip().lower()
+        if not recorded:
+            return ""
+        try:
+            caps = self.backend.capabilities_for(provider=recorded)
+        except Exception as exc:  # noqa: BLE001 — unknown provider name
+            return f"provider {recorded!r} is not configured ({exc})"
+        answered = str(caps.name or "").strip().lower()
+        if answered != recorded:
+            return (
+                f"provider {recorded!r} is not configured; {answered!r} would "
+                "answer in its place"
+            )
+        return ""
+
+    def addressed_id(self, *, row: dict[str, Any] | None) -> tuple[str, str]:
+        """``(id to address the provider with, why it cannot be addressed)``.
+
+        Legacy ids carry no provider prefix, so only the row knows who owns
+        them; the backend turns the pair into a routable id, or refuses.
+        """
+        sandbox_id = str((row or {}).get("sandbox_id") or "")
+        if not sandbox_id:
+            return "", ""
+        try:
+            return (
+                str(
+                    self.backend.qualified_sandbox_id(
+                        sandbox_id=sandbox_id,
+                        provider=str((row or {}).get("provider") or ""),
+                    )
+                ),
+                "",
+            )
+        except Exception as exc:  # noqa: BLE001 — an unroutable id is not a gone one
+            return "", str(exc)
+
     # ---------- VM termination ----------
 
     def terminate_quietly(self, *, sandbox_id: str) -> None:
@@ -177,11 +227,19 @@ class SandboxLifecycle:
         not be asked" (audit SAN-06). A recorded id makes the probe unnecessary
         — there ``liveness`` is the authority — and reads as ``not_found``.
         """
+        # Route by the row's durable owner first: a provider that was dropped
+        # from the configuration cannot be asked, and the ones that remain
+        # answering "not mine" is not evidence (audit SAN-06).
+        unreachable_owner = self.unreachable_owner(row=row)
+        if unreachable_owner:
+            return lookup_unavailable(unreachable_owner)
         seen: set[str] = set()
-        sid = (row or {}).get("sandbox_id")
-        if sid:
-            seen.add(str(sid))
-            self.terminate_quietly(sandbox_id=str(sid))
+        addressed, unroutable = self.addressed_id(row=row)
+        if unroutable:
+            return lookup_unavailable(unroutable)
+        if addressed:
+            seen.add(addressed)
+            self.terminate_quietly(sandbox_id=addressed)
             return LOOKUP_NOT_FOUND
         sandbox_uid = str((row or {}).get("sandbox_uid") or "")
         active_sibling = bool(
@@ -264,8 +322,13 @@ class SandboxLifecycle:
           the provider could not be asked: the caller must NOT mark the row
           terminal, so a later pass retries instead of stranding a billing VM.
         """
-        sandbox_id = str(row.get("sandbox_id") or "")
         experiment_id = str(row.get("experiment_id") or "")
+        # Ask the provider the ROW names, never whichever one is configured
+        # today: an id we cannot route is an unasked provider, which is exactly
+        # the case that must stay `maybe_alive`.
+        sandbox_id, unroutable = self.addressed_id(row=row)
+        if unroutable or (row.get("sandbox_id") and self.unreachable_owner(row=row)):
+            return "maybe_alive"
         stopped = False
         if sandbox_id and try_direct:
             try:
@@ -283,6 +346,43 @@ class SandboxLifecycle:
         # Nothing to probe: only an authoritative "the provider named no such
         # sandbox" clears this row. An unreachable provider does not.
         return "gone" if lookup.kind == "not_found" else "maybe_alive"
+
+    def clear_for_reacquisition(
+        self, *, experiment_id: str, row: dict[str, Any] | None
+    ) -> CleanupOutcome:
+        """Confirm a prior sandbox is gone BEFORE its row is rewritten.
+
+        A fresh ``sandbox.request`` after a brain restart finds no live job and
+        re-provisions over the old row. That row's ``sandbox_id`` is the only
+        record of a VM that may still be up and billing, so a best-effort
+        terminate is not enough here: rewriting it on an unconfirmed cleanup
+        erases the id and the money leaks invisibly (audit SAN-05).
+
+        So the outcome is authoritative. ``maybe_alive`` parks the row — it
+        keeps its provider id, stays visible, and the retry sweep keeps asking
+        — and the caller provisions onto a FRESH row instead. A row with no
+        recorded id has nothing to lose, so it keeps the cheap best-effort
+        deterministic-name sweep and always reads as cleared.
+        """
+        if not str((row or {}).get("sandbox_id") or ""):
+            self.cleanup_orphan(experiment_id=experiment_id, row=row)
+            return "gone"
+        assert row is not None  # narrowed by the recorded-id check above
+        outcome = self.terminate_vm(row=row)
+        if outcome == "maybe_alive":
+            self.apply(
+                row=row,
+                decision=cleanup_pending_decision(
+                    row=row,
+                    trigger="reacquire",
+                    error=str(row.get("error") or "")
+                    or (
+                        "a new sandbox.request arrived while this sandbox's "
+                        "deletion was still unconfirmed; it never became usable"
+                    ),
+                ),
+            )
+        return outcome
 
     def apply(
         self, *, row: dict[str, Any], decision: LifecycleDecision
@@ -564,6 +664,15 @@ class SandboxLifecycle:
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
         project_id = str(row.get("project_id") or "")
+        # Re-read first: the daemon loop and the cloud CleanupService sweep the
+        # same pending rows, and a sibling worker may already have confirmed
+        # this one gone while our snapshot aged. Only a row that is STILL
+        # pending is worth another provider round-trip.
+        if sandbox_uid:
+            fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
+            if fresh.get("status") != CLEANUP_PENDING_STATUS:
+                return True  # somebody else finished it; it is no longer pending
+            row = fresh
         # The verdict this row was headed for before cleanup stalled: an origin
         # error means it was on its way to `failed`, not to a clean `terminated`.
         origin_error = str(row.get("error") or "")

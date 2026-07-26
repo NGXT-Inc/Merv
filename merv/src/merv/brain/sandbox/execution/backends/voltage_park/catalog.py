@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._values import _float_or_zero, _int_or_zero, _norm, find_option
+from .._values import _float_or_none, _int_or_zero, _norm, find_option, price_sort_key
 
 
 def to_agent_options(
@@ -58,9 +58,13 @@ def to_agent_options(
                     "vcpus": _int_or_zero(resources.get("vcpu_count")),
                     "memory_gib": _int_or_zero(resources.get("ram_gb")),
                     "storage_gib": _int_or_zero(resources.get("storage_gb")),
-                    # Compute + storage hourly rates arrive as strings.
-                    "price_usd_per_hour": _float_or_zero(preset.get("compute_rate_hourly"))
-                    + _float_or_zero(preset.get("storage_rate_hourly")),
+                    # Compute + storage hourly rates arrive as strings. Either
+                    # one missing leaves the TOTAL unknown — a partial sum
+                    # would under-quote the machine and slip past a ceiling.
+                    "price_usd_per_hour": _sum_rates(
+                        _float_or_none(preset.get("compute_rate_hourly")),
+                        _float_or_none(preset.get("storage_rate_hourly")),
+                    ),
                     "regions": [],
                     "available": False,
                 },
@@ -76,8 +80,13 @@ def to_agent_options(
     ]
     for option in options:
         option["regions"].sort()
-    options.sort(key=lambda o: (o["price_usd_per_hour"], o["instance_type"]))
+    options.sort(key=price_sort_key)
     return options
+
+
+def _sum_rates(*rates: float | None) -> float | None:
+    """Total hourly rate, or None when any component is unknown."""
+    return None if any(rate is None for rate in rates) else sum(rates)  # type: ignore[arg-type]
 
 
 def _gpu_label(name: str) -> str:

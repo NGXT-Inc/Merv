@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .._values import price_sort_key
 from ...run_receipts import parse_runs_listing
 from ....sandbox_paths import (
     DEFAULT_DATA_DIR,
@@ -304,7 +305,7 @@ class FakeSandboxBackend(SandboxBackendBase):
                 o for o in options
                 if needle in [str(r).lower() for r in o.get("regions", [])]
             ]
-        options.sort(key=lambda o: (o.get("price_usd_per_hour", 0.0), o.get("instance_type") or ""))
+        options.sort(key=price_sort_key)
         regions = (
             list(self._catalog_regions)
             if self._catalog_regions is not None

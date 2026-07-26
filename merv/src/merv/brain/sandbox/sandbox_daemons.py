@@ -26,6 +26,7 @@ from .sandbox_support import (
 )
 from .sandbox_heartbeat import (
     RunActivityProbe,
+    RunReceiptRefresh,
     SandboxHeartbeatMonitor,
     SandboxIdlePolicy,
 )
@@ -61,6 +62,7 @@ class SandboxDaemons:
         sample_metrics: Callable[..., dict[str, Any]] | None = None,
         reconcile_runs: Callable[[], int] | None = None,
         runs_active: RunActivityProbe | None = None,
+        refresh_runs: RunReceiptRefresh | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
         force_expiry_reaper: bool = False,
         periodic_maintenance: PeriodicMaintenance | None = None,
@@ -91,6 +93,7 @@ class SandboxDaemons:
             reap_row=lifecycle.reap_row,
             policy=idle_policy,
             runs_active=runs_active,
+            refresh_runs=refresh_runs,
         )
         self._reaper_stop = threading.Event()
         self.reaper_thread: threading.Thread | None = None
@@ -135,31 +138,45 @@ class SandboxDaemons:
             DEFAULT_STALE_PROVISION_DEADLINE_SECONDS,
         )
         while not self._reaper_stop.wait(interval):
-            expiry_enabled = self._reaper_enabled()
-            with suppress(Exception):  # the reaper must never die
-                if expiry_enabled:
-                    self.lifecycle.reap_expired()
-            with suppress(Exception):  # the reaper must never die
-                self.reap_idle(threshold_seconds=self._idle_reap_threshold())
-            with suppress(Exception):  # the reaper must never die
-                if self.reconcile_runs is not None:
-                    self.reconcile_runs()
-            # The reaper handles `running` rows by expires_at; a provision that
-            # wedged before reaching `running` (daemon crash mid-provision) has
-            # no expires_at, so without this its billing VM would leak until the
-            # agent happened to re-poll. In local mode this thread is the only
-            # proactive billing backstop (CleanupService runs only in the cloud).
-            with suppress(Exception):  # the reaper must never die
-                if expiry_enabled:
-                    self.provisioner.reap_stale_provisions(
-                        now=datetime.now(tz=UTC), deadline_seconds=stale_deadline
-                    )
-            # A terminate the provider never confirmed parks its row as
-            # cleanup_pending; nothing else revisits those, and each one may be
-            # a live VM still billing. Own backoff, so this is cheap per tick.
-            with suppress(Exception):  # the reaper must never die
-                self.lifecycle.retry_cleanup_pending(now=datetime.now(tz=UTC))
-            self.maintenance_tick(now=time.monotonic())
+            self.sweep_once(stale_deadline_seconds=stale_deadline)
+
+    def sweep_once(self, *, stale_deadline_seconds: float) -> None:
+        """One reaper tick, in the order the sweeps depend on each other.
+
+        Split out of the loop so the ORDER is testable without a thread: it is
+        not incidental, and getting it wrong terminates live work.
+        """
+        expiry_enabled = self._reaper_enabled()
+        with suppress(Exception):  # the reaper must never die
+            if expiry_enabled:
+                self.lifecycle.reap_expired()
+        # Receipts BEFORE the idle decision, never after. The idle sweep reads
+        # the `sandbox_runs` mirror to see work the CPU/GPU gauges cannot;
+        # running it first would judge a box against a mirror that is one whole
+        # tick stale, and a merv_run launched since the last pass would be
+        # invisible at exactly the moment it is reaped.
+        with suppress(Exception):  # the reaper must never die
+            if self.reconcile_runs is not None:
+                self.reconcile_runs()
+        with suppress(Exception):  # the reaper must never die
+            self.reap_idle(threshold_seconds=self._idle_reap_threshold())
+        # The reaper handles `running` rows by expires_at; a provision that
+        # wedged before reaching `running` (daemon crash mid-provision) has
+        # no expires_at, so without this its billing VM would leak until the
+        # agent happened to re-poll. In local mode this thread is the only
+        # proactive billing backstop (CleanupService runs only in the cloud).
+        with suppress(Exception):  # the reaper must never die
+            if expiry_enabled:
+                self.provisioner.reap_stale_provisions(
+                    now=datetime.now(tz=UTC),
+                    deadline_seconds=stale_deadline_seconds,
+                )
+        # A terminate the provider never confirmed parks its row as
+        # cleanup_pending; nothing else revisits those, and each one may be
+        # a live VM still billing. Own backoff, so this is cheap per tick.
+        with suppress(Exception):  # the reaper must never die
+            self.lifecycle.retry_cleanup_pending(now=datetime.now(tz=UTC))
+        self.maintenance_tick(now=time.monotonic())
 
     def maintenance_tick(self, *, now: float) -> bool:
         """Run the composition's housekeeping callback when its interval is due.
