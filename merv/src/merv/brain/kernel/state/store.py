@@ -367,6 +367,26 @@ CREATE TABLE IF NOT EXISTS events (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+-- Lookup key for the MLflow tracking delivery barrier (migration 40, July
+-- 2026). One row per KEYED tracking write, inserted in the same transaction as
+-- the event it names, so replay detection is one indexed lookup on
+-- (project_id, target_type, target_id, delivery_id) instead of a decode of
+-- every keyed event the target has accrued. `event_id` names the `events` row
+-- the delivery appended, which the barrier then fetches by primary key. The
+-- delivery id still rides in that event payload, but only as a readable trace,
+-- never as a lookup key. Nothing here is derived state: the row and its event
+-- commit together or not at all. The UNIQUE index belongs to migration 40 and
+-- never to SCHEMA (see the tool_calls block below).
+CREATE TABLE IF NOT EXISTS tracking_deliveries (
+  project_id TEXT NOT NULL,
+  target_type TEXT NOT NULL DEFAULT '',
+  target_id TEXT NOT NULL DEFAULT '',
+  delivery_id INTEGER NOT NULL,
+  event_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
 CREATE TABLE IF NOT EXISTS reflections (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -996,16 +1016,42 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # the keyed events were sparse in it. Purely additive, one IF NOT EXISTS
     # index — nothing existing is read or rewritten.
     (39, "add_events_target_index", ""),
+    # The delivery barrier gets a real key (July 2026, tracking idempotency).
+    # Migration 39 indexed the events read, but the barrier still had to
+    # JSON-decode every keyed tracking event of the target on EVERY keyed
+    # write, inside the write transaction, because the delivery id only
+    # existed inside opaque payload JSON — and keyed cardinality is unbounded,
+    # so the cumulative work over one experiment's deliveries grew with their
+    # square. This normalizes the delivery into its own row plus a UNIQUE
+    # index, making the barrier one indexed lookup and one primary-key fetch.
+    # Purely additive: a new table and one index, both IF NOT EXISTS, nothing
+    # existing read or rewritten. Deliberately NO backfill of the payload-keyed
+    # events: every delivery committed before this migration predates the
+    # dedupe feature shipping, so there is no historical keyed write a row
+    # could describe, and an unkeyed event has no delivery to name.
+    (40, "add_tracking_deliveries", ""),
+)
+
+# Migration 40's index. Same rule as 37/38/39's: it lives HERE, never in
+# SCHEMA, because SCHEMA runs before the ladder and cannot name a column the
+# ladder has not added yet.
+TRACKING_DELIVERY_INDEXES = (
+    # Exactly the barrier's lookup, and its uniqueness law: one row per
+    # delivery per target, so the database itself — not only the check inside
+    # the write transaction — states that a delivery appends at most once.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracking_deliveries_key"
+    "  ON tracking_deliveries(project_id, target_type, target_id, delivery_id)",
 )
 
 # Migration 39's index. Same rule as 37's and 38's: it lives HERE, never in
 # SCHEMA, because SCHEMA runs before the ladder and cannot name a column the
 # ladder has not added yet.
 EVENT_TARGET_INDEXES = (
-    # Aligned to _delivery_event's WHERE + ORDER BY: the equality columns
-    # first, then `id` so the newest-first window is read straight off the
-    # index instead of sorted. It also serves every other per-target event
-    # read (an experiment's or reflection's own history).
+    # The equality columns first, then `id` so a newest-first window is read
+    # straight off the index instead of sorted. Migration 40 moved the
+    # delivery barrier off this index onto its own key; what remains — and
+    # what keeps it — is every other per-target event read (an experiment's or
+    # reflection's own history).
     "CREATE INDEX IF NOT EXISTS idx_events_target"
     "  ON events(project_id, target_type, target_id, id)",
 )
@@ -1254,7 +1300,22 @@ class BaseStateStore:
             self._add_oauth_client_fingerprint(conn=conn)
         elif name == "add_events_target_index":
             self._add_events_target_index(conn=conn)
+        elif name == "add_tracking_deliveries":
+            self._add_tracking_deliveries(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_tracking_deliveries(self, *, conn: Connection) -> None:
+        """Migration 40: the keyed-delivery table plus its UNIQUE index.
+
+        Additive and idempotent. The table guard is belt-and-braces — SCHEMA
+        creates it on both dialects before the ladder runs — but the index
+        genuinely needs to be here, where it executes after the table it names
+        exists. No backfill: pre-migration deliveries predate the dedupe
+        feature shipping, so no committed event needs a row (see the ledger)."""
+        if not self._has_table(conn=conn, table="tracking_deliveries"):
+            conn.execute(_schema_table_ddl(table="tracking_deliveries"))
+        for statement in TRACKING_DELIVERY_INDEXES:
             conn.execute(statement)
 
     def _add_events_target_index(self, *, conn: Connection) -> None:

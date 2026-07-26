@@ -199,6 +199,10 @@ TABLE_OWNERS = {
     "tenants": KERNEL,
     "experiments": RESEARCH_CORE,
     "experiment_claims": RESEARCH_CORE,
+    # The MLflow delivery barrier's key. Written and read only by the keyed
+    # tracking write in research_core; it names a kernel `events` row the way
+    # experiment_claims names a claim.
+    "tracking_deliveries": RESEARCH_CORE,
     "claims": RESEARCH_CORE,
     "reviews": RESEARCH_CORE,
     "review_requests": RESEARCH_CORE,

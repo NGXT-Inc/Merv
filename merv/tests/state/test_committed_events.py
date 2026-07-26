@@ -303,6 +303,16 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             for row in rows
         ]
 
+    def _delivery_rows(self) -> list[tuple[int, str]]:
+        """The normalized delivery keys, oldest append first."""
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                "SELECT delivery_id, target_type FROM tracking_deliveries"
+                "  WHERE target_id = ? ORDER BY event_id",
+                (self.experiment_id,),
+            ).fetchall()
+        return [(int(row["delivery_id"]), str(row["target_type"])) for row in rows]
+
     def test_sql_lookup_finds_the_delivery_and_the_writer_no_ops_on_a_duplicate(
         self,
     ) -> None:
@@ -349,6 +359,9 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
                 }
             ],
         )
+        # One delivery row, written with the append it names — the replays
+        # found it there and added none.
+        self.assertEqual(self._delivery_rows(), [(41, "experiment")])
 
     def test_a_rival_write_after_a_negative_read_cannot_duplicate_the_append(
         self,
@@ -384,6 +397,8 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             [event["run_id"] for event in self._tracking_events()],
             ["run_a", "run_b"],
         )
+        # An unkeyed write has no delivery to name, so it claims no key.
+        self.assertEqual(self._delivery_rows(), [])
 
     def test_unkeyed_refreshes_are_never_mistaken_for_a_delivery(self) -> None:
         # mlflow.finalize_run appends an unkeyed refresh every time an agent
@@ -420,9 +435,10 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
     ) -> None:
         # Nothing caps an experiment's keyed tracking events: a `retry_running`
         # loop during an MLflow outage appends one `mlflow_run_unavailable` per
-        # attempt while the experiment never leaves `running`. Any row limit on
-        # the lookup would age the FIRST delivery out and let its replay write a
-        # second MLflow run, so the scan carries none.
+        # attempt while the experiment never leaves `running`. The keyed row
+        # the lookup reads is exact and permanent, so the FIRST delivery stays
+        # findable behind any number of later ones — an aged-out delivery would
+        # let its replay write a second MLflow run.
         self._record(run_id="run_a", delivery_id=41)
         for index in range(205):
             self._record(run_id=f"run_{index}", delivery_id=100 + index)
@@ -433,6 +449,10 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
                 delivery_id=41,
             )
         )
+        # Every keyed write left exactly one delivery row, and the oldest is
+        # reached by that row rather than by walking the newer ones.
+        self.assertEqual(self._delivery_rows()[0], (41, "experiment"))
+        self.assertEqual(len(self._delivery_rows()), 206)
         before = self._tracking_events()
         replayed = self._record(run_id="run_redelivered", delivery_id=41)
 
@@ -452,9 +472,9 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
         )
 
     def test_a_keyed_write_rejects_an_event_type_override(self) -> None:
-        # The type filter in the delivery lookup is only lossless because a
-        # keyed write cannot name its own type: an override would commit an
-        # event the replay can never see, and the replay would write again.
+        # A keyed write cannot name its own type: an override would commit an
+        # event whose type denies the delivery its own row describes, so the
+        # durable ledger would contradict itself.
         with self.assertRaises(ValueError) as raised:
             self.experiments.record_mlflow_run(
                 project_id=self.project_id,
@@ -473,6 +493,135 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
                 delivery_id=41,
             )
         )
+
+
+class _RecordingCursor:
+    """Reports how many rows a statement actually handed back."""
+
+    def __init__(self, cursor, sql: str, reads: list[tuple[str, int]]) -> None:
+        self._cursor = cursor
+        self._sql = " ".join(sql.split())
+        self._reads = reads
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        self._reads.append((self._sql, 0 if row is None else 1))
+        return row
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        self._reads.append((self._sql, len(rows)))
+        return rows
+
+    def __getattr__(self, name: str):
+        return getattr(self._cursor, name)
+
+
+class _RecordingConnection:
+    def __init__(self, conn, reads: list[tuple[str, int]]) -> None:
+        self._conn = conn
+        self._reads = reads
+
+    def execute(self, sql: str, parameters=()):
+        return _RecordingCursor(self._conn.execute(sql, parameters), sql, self._reads)
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+class _RecordingStateStore(StateStore):
+    """A store whose reads are observable, so a lookup's COST is assertable."""
+
+    def __init__(self, *, db_path: Path) -> None:
+        self.reads: list[tuple[str, int]] = []
+        super().__init__(db_path=db_path)
+
+    def connect(self):
+        return _RecordingConnection(super().connect(), self.reads)
+
+
+class TrackingDeliveryLookupCostTest(unittest.TestCase):
+    """The barrier runs inside EVERY keyed write, so its cost is a contract.
+
+    The tests above fix what the lookup answers; these fix how much it reads.
+    The lookup it replaced correlated on a payload key, so it had to read and
+    JSON-decode every keyed event the experiment had accrued — a per-write cost
+    linear in an unbounded cardinality, hence quadratic cumulatively, and paid
+    inside the write transaction. A row count is the honest assertion: an index
+    the planner could stop using would not change the answers, only the work.
+    """
+
+    HISTORY = 205
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = _RecordingStateStore(db_path=Path(self.tmp.name) / "state.sqlite")
+        evidence = ArtifactSubmissionService(
+            store=self.store,
+            association_targets=AssociationTargets(store=self.store),
+        )
+        self.experiments = ExperimentService(
+            store=self.store, evidence_reader=evidence, submissions=evidence
+        )
+        with closing(self.store.connect()) as conn:
+            row = conn.execute("SELECT id FROM projects").fetchone()
+            assert row is not None
+            self.project_id = str(row["id"])
+        self.experiment_id = self.experiments.create(
+            project_id=self.project_id, name="delivery-cost", intent="test"
+        )["id"]
+        # The oldest delivery, then a long run of newer ones on top of it: the
+        # worst case for anything that walks the history to find one delivery.
+        self._record(run_id="run_a", delivery_id=41)
+        for index in range(self.HISTORY):
+            self._record(run_id=f"run_{index}", delivery_id=100 + index)
+        self.store.reads.clear()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _record(self, *, run_id: str, delivery_id: int | None) -> dict:
+        return self.experiments.record_mlflow_run(
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
+            run={"run_id": run_id, "status": "RUNNING"},
+            delivery_id=delivery_id,
+        )
+
+    def _assert_two_point_reads(self) -> None:
+        delivery_reads = [
+            count for sql, count in self.store.reads
+            if "FROM tracking_deliveries" in sql
+        ]
+        event_reads = [
+            (sql, count) for sql, count in self.store.reads if "FROM events" in sql
+        ]
+        # One row off the unique key, one event off its primary key. Under the
+        # payload-scan this list was empty and the events read returned 206.
+        self.assertEqual(delivery_reads, [1])
+        self.assertEqual([count for _, count in event_reads], [1])
+        self.assertIn("FROM events WHERE id = ?", event_reads[0][0])
+
+    def test_the_read_path_lookup_never_walks_the_keyed_history(self) -> None:
+        found = self.experiments.tracking_delivery_state(
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
+            delivery_id=41,
+        )
+
+        assert found is not None
+        self.assertEqual(found["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}")
+        self._assert_two_point_reads()
+
+    def test_the_write_barrier_never_walks_the_keyed_history(self) -> None:
+        # The path that made the cost quadratic: the barrier inside the write
+        # transaction, replaying the OLDEST delivery behind every later one.
+        replayed = self._record(run_id="run_redelivered", delivery_id=41)
+
+        self.assertEqual(
+            replayed["mlflow_run"]["run_id"], f"run_{self.HISTORY - 1}"
+        )
+        self._assert_two_point_reads()
 
 
 if __name__ == "__main__":

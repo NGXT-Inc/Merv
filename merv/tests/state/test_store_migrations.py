@@ -1374,5 +1374,97 @@ class Migration39Test(unittest.TestCase):
                 conn.close()
 
 
+class Migration40Test(unittest.TestCase):
+    """The delivery barrier's own key: table on both paths, UNIQUE index here.
+
+    The table reaches an existing database through SCHEMA (CREATE TABLE IF NOT
+    EXISTS runs every boot); the index cannot live there — SCHEMA runs before
+    the ladder (the migration-36 outage) — so a store stopped at 39 has to gain
+    it from this migration on the next boot.
+    """
+
+    INDEX = "idx_tracking_deliveries_key"
+
+    def _indexes(self, conn: sqlite3.Connection) -> set[str]:
+        return {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+
+    def test_fresh_database_gets_the_unique_key_and_records_the_migration(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(db_path=Path(tmp) / "state.sqlite")
+            conn = store.connect()
+            try:
+                self.assertIn(self.INDEX, self._indexes(conn))
+                applied = {
+                    int(row["version"])
+                    for row in conn.execute(
+                        "SELECT version FROM schema_migrations"
+                    ).fetchall()
+                }
+                self.assertIn(40, applied)
+                columns = [
+                    str(info["name"])
+                    for info in conn.execute(
+                        f"PRAGMA index_info({self.INDEX})"
+                    ).fetchall()
+                ]
+                self.assertEqual(
+                    columns,
+                    ["project_id", "target_type", "target_id", "delivery_id"],
+                )
+                unique = {
+                    str(row["name"]): bool(row["unique"])
+                    for row in conn.execute(
+                        "PRAGMA index_list(tracking_deliveries)"
+                    ).fetchall()
+                }
+                self.assertTrue(unique[self.INDEX])
+            finally:
+                conn.close()
+
+    def test_a_store_stopped_at_migration_39_converges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "state.sqlite"
+            StateStore(db_path=db_path)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(f"DROP INDEX IF EXISTS {self.INDEX}")
+                conn.execute("DROP TABLE IF EXISTS tracking_deliveries")
+                conn.execute("DELETE FROM schema_migrations WHERE version = 40")
+                conn.commit()
+                self.assertNotIn(self.INDEX, self._indexes(conn))
+            finally:
+                conn.close()
+
+            StateStore(db_path=db_path)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                self.assertIn(self.INDEX, self._indexes(conn))
+                # And the key is enforceable: the second insert of one delivery
+                # raises instead of leaving two rows for one append.
+                conn.execute(
+                    "INSERT INTO tracking_deliveries (project_id, target_type,"
+                    "  target_id, delivery_id, event_id, created_at)"
+                    "  SELECT id, 'experiment', 'exp_1', 41, 1, '' FROM projects"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(
+                        "INSERT INTO tracking_deliveries (project_id,"
+                        "  target_type, target_id, delivery_id, event_id,"
+                        "  created_at)"
+                        "  SELECT id, 'experiment', 'exp_1', 41, 2, ''"
+                        "  FROM projects"
+                    )
+            finally:
+                conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

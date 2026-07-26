@@ -66,12 +66,11 @@ TRACKING_EVENT_TYPES = (
     "experiment.mlflow_run_unavailable",
     "experiment.mlflow_run_refreshed",
 )
-# The ledger a delivery is proved by: the only types a KEYED write can append.
-# `record_mlflow_run` is the sole writer of a delivery id and derives the type
-# itself on that path — `reject_keyed_event_type_override` below makes that an
-# enforced invariant rather than a convention, so excluding `refreshed` here is
-# lossless. It also keeps the lookup off the unkeyed `mlflow.finalize_run`
-# refreshes, which an agent may legitimately append without limit.
+# The only types a KEYED write can append. `record_mlflow_run` is the sole
+# writer of a delivery id and derives the type itself on that path —
+# `reject_keyed_event_type_override` below makes that an enforced invariant
+# rather than a convention, so the unkeyed `mlflow.finalize_run` refreshes an
+# agent may append without limit can never claim a delivery.
 TRACKING_DELIVERY_EVENT_TYPES = (
     "experiment.mlflow_run_created",
     "experiment.mlflow_run_unavailable",
@@ -83,9 +82,10 @@ def reject_keyed_event_type_override(
 ) -> None:
     """A keyed tracking write names its own event type; an override is invalid.
 
-    The delivery lookup can only find events of the types a keyed write derives,
-    so an override would hide a committed delivery from its own replay and
-    append it twice. Enforced at the writer, where it is binding.
+    A delivery's durable record is one of the two types above and nothing else:
+    letting a caller name the type would let a keyed write masquerade as an
+    unkeyed refresh, so the ledger would describe a delivery that never
+    happened. Enforced at the writer, where it is binding.
     """
     if event_type is not None and delivery_id is not None:
         raise ValueError(
@@ -505,9 +505,10 @@ class ExperimentService:
         delivery_id: int | None = None,
     ) -> dict[str, Any] | CommittedTrackingRunRefresh:
         """``delivery_id`` names the committed event this tracking outcome
-        belongs to. It rides in the append-only event payload, so its presence
-        there is exact proof this delivery's write committed — the mutable
-        experiments row cannot distinguish it from an identical earlier one.
+        belongs to. A keyed write records it in ``tracking_deliveries`` in the
+        SAME transaction as the append, so the row's existence is exact proof
+        this delivery's write committed — the mutable experiments row cannot
+        distinguish it from an identical earlier one.
 
         A keyed write derives its own event type; pairing ``delivery_id`` with
         an ``event_type`` override is rejected here, at the only boundary that
@@ -582,6 +583,13 @@ class ExperimentService:
                         **delivery,
                     },
                 )
+                self._record_delivery(
+                    conn=conn,
+                    project_id=project_id,
+                    experiment_id=experiment_id,
+                    delivery_id=delivery_id,
+                    event=event,
+                )
                 state = self.get_state(experiment_id=experiment_id, conn=conn)
                 return result(state, event)
             conn.execute(
@@ -629,55 +637,98 @@ class ExperimentService:
                     **delivery,
                 },
             )
+            self._record_delivery(
+                conn=conn,
+                project_id=project_id,
+                experiment_id=experiment_id,
+                delivery_id=delivery_id,
+                event=event,
+            )
             state = self.get_state(experiment_id=experiment_id, conn=conn)
             return result(state, event)
+
+    def _record_delivery(
+        self,
+        *,
+        conn,
+        project_id: str,
+        experiment_id: str,
+        delivery_id: int | None,
+        event: StoredEvent,
+    ) -> None:
+        """Key this delivery to the event it just appended, same transaction.
+
+        The row is the barrier's only lookup key, so it must be exactly as
+        durable as the append it describes: written here, beside it, under the
+        one commit. An unkeyed write has no delivery to name and writes none.
+        The UNIQUE index makes "at most one append per delivery" the database's
+        statement rather than the check above's — a second insert raises
+        instead of quietly duplicating.
+        """
+        if delivery_id is None:
+            return
+        conn.execute(
+            """
+            INSERT INTO tracking_deliveries
+              (project_id, target_type, target_id, delivery_id, event_id, created_at)
+            VALUES (?, 'experiment', ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                experiment_id,
+                int(delivery_id),
+                int(event.id),
+                event.created_at,
+            ),
+        )
 
     def _delivery_event(
         self, *, conn, project_id: str, experiment_id: str, delivery_id: int
     ) -> StoredEvent | None:
         """This delivery's committed tracking event, when the ledger holds it.
 
-        SQL narrows to the experiment's KEYED tracking events — the only types a
-        delivery can ever have written — and reads ALL of them, newest first.
-        The scan is deliberately unbounded: nothing caps how many keyed events
-        one experiment accrues (a `retry_running` loop during an MLflow outage
-        appends an `mlflow_run_unavailable` per attempt), so any row limit is a
-        false miss waiting to happen, and a false miss here appends a duplicate
-        and creates a second MLflow run. Cost stays flat instead: the predicate
-        matches `idx_events_target(project_id, target_type, target_id, id)`, so
-        the scan is index-bounded to one experiment and stops at the first
-        match. Every column the schema offers is selected, since the delivery id
-        itself rides inside opaque payload JSON, and the exact match is decided
-        in Python rather than by a ``LIKE`` on the serialized payload.
+        Two point reads and no search: one lookup on `tracking_deliveries`'
+        UNIQUE key, then the named `events` row by primary key. Cost is flat in
+        the target's keyed history, which matters because this runs inside
+        EVERY keyed write's transaction and nothing caps that history — a
+        `retry_running` loop during an MLflow outage appends an
+        `mlflow_run_unavailable` per attempt — so a lookup that grew with it
+        would make the cumulative write cost quadratic (the reason the
+        payload-decoding scan it replaces was wrong even while correct).
+        Nothing is bounded away and nothing is decided by decoding: a false
+        miss here appends a duplicate and creates a second MLflow run, so the
+        key is exact and total. Only the one named event's payload is decoded,
+        to return the event as it was stored.
         """
-        placeholders = ", ".join("?" for _ in TRACKING_DELIVERY_EVENT_TYPES)
-        rows = conn.execute(
-            f"""
-            SELECT id, type, target_type, target_id, payload_json, created_at
-            FROM events
-            WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
-              AND type IN ({placeholders})
-            ORDER BY id DESC
+        keyed = conn.execute(
+            """
+            SELECT event_id
+            FROM tracking_deliveries
+            WHERE project_id = ? AND target_type = 'experiment'
+              AND target_id = ? AND delivery_id = ?
             """,
-            (project_id, experiment_id, *TRACKING_DELIVERY_EVENT_TYPES),
-        ).fetchall()
-        for row in rows:
-            try:
-                payload = json.loads(str(row["payload_json"] or "{}"))
-            except json.JSONDecodeError:  # pragma: no cover - defensive
-                continue
-            if payload.get("delivery_id") != int(delivery_id):
-                continue
-            return StoredEvent(
-                id=int(row["id"]),
-                project_id=project_id,
-                type=str(row["type"]),
-                target_type=str(row["target_type"]),
-                target_id=str(row["target_id"]),
-                payload=freeze_json_object(payload),
-                created_at=str(row["created_at"]),
-            )
-        return None
+            (project_id, experiment_id, int(delivery_id)),
+        ).fetchone()
+        if keyed is None:
+            return None
+        row = conn.execute(
+            """
+            SELECT id, type, target_type, target_id, payload_json, created_at
+            FROM events WHERE id = ?
+            """,
+            (int(keyed["event_id"]),),
+        ).fetchone()
+        if row is None:  # pragma: no cover - the two rows commit together
+            return None
+        return StoredEvent(
+            id=int(row["id"]),
+            project_id=project_id,
+            type=str(row["type"]),
+            target_type=str(row["target_type"]),
+            target_id=str(row["target_id"]),
+            payload=freeze_json_object(json.loads(str(row["payload_json"] or "{}"))),
+            created_at=str(row["created_at"]),
+        )
 
     def tracking_delivery_state(
         self, *, project_id: str | None = None, experiment_id: str, delivery_id: int
