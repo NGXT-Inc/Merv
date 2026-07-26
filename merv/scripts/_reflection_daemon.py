@@ -26,6 +26,7 @@ from merv.brain.kernel.state import StateStore
 from merv.brain.object_storage.blobs import LocalDirBlobStore
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.composition import build_local_server
+from merv.brain.surface.transport.http_server import refuse_non_loopback_local_surface
 
 
 def main() -> int:
@@ -38,6 +39,9 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9911)
     args = parser.parse_args()
+    # build_local_server composes the unauthenticated local policy, so a
+    # throwaway harness must still refuse a non-loopback --host before binding.
+    refuse_non_loopback_local_surface(args.host)
 
     state_dir = Path(
         args.state_dir or tempfile.mkdtemp(prefix="merv_reflection_")

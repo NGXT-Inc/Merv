@@ -4,15 +4,25 @@
 they must reach the same hosted-auth decision every other composition does.
 Omitting ``surface_policy`` selects the unauthenticated LOCAL default, which is
 only honest on a loopback bind — hence the non-loopback refusal below.
+
+The wrapper is not the launcher, though: ``merv-http`` runs ``main`` ->
+``_serve_local`` -> ``_run_server``, which never touches it. So the refusal is
+pinned on THOSE entrypoints too, over the host spellings an operator actually
+types — wildcards, IPv6, IPv4-mapped forms, and the empty string.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from merv.brain.surface.config import Mode
+from merv.brain.surface.transport import http_server
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
 from merv.brain.surface.transport.http_server import (
     is_loopback_host,
@@ -22,6 +32,23 @@ from merv.shared.errors import ValidationError
 from tests.support.brain import TestBrain
 
 HOSTED = HttpSurfacePolicy.for_surface(restrict_cors=True, hosted_control=True)
+
+# Every spelling that must NOT reach a bind under the local policy: the two
+# wildcards, an IPv6 wildcard in brackets, a routable LAN address, IPv4-mapped
+# loopback (an AF_INET6 socket accepts v4 traffic on it), and hostnames the
+# address parser cannot vouch for.
+OFF_MACHINE_HOSTS = (
+    "0.0.0.0",
+    "0.0.0.0.",
+    "::",
+    "[::]",
+    "0000:0000:0000:0000:0000:0000:0000:0000",
+    "::ffff:127.0.0.1",
+    "192.168.1.10",
+    "example.com",
+)
+# Reachable only from this machine, so the unauthenticated surface is honest.
+LOOPBACK_HOSTS = ("", "127.0.0.1", "127.5.5.5", "localhost", "::1", "[::1]")
 
 
 class HttpServerCompositionTest(unittest.TestCase):
@@ -81,8 +108,126 @@ class HttpServerCompositionTest(unittest.TestCase):
         self.assertIn("OPEN CONTROL PLANE", "\n".join(logs.output))
 
     def test_loopback_classification(self) -> None:
-        self.assertTrue(all(map(is_loopback_host, ("", "127.0.0.1", "127.5.5.5", "::1", "localhost", "[::1]"))))
-        self.assertFalse(any(map(is_loopback_host, ("0.0.0.0", "::", "10.0.0.1", "example.com"))))
+        self.assertTrue(all(map(is_loopback_host, LOOPBACK_HOSTS)))
+        self.assertFalse(any(map(is_loopback_host, OFF_MACHINE_HOSTS)))
+
+
+class LocalLauncherBindTest(unittest.TestCase):
+    """The refusal on the path ``merv-http`` actually takes.
+
+    ``main`` -> ``_serve_local`` -> ``_run_server`` never constructs
+    ``UvicornHttpServer``, so the wrapper's guard proves nothing about the
+    shipped console script. These pin the launcher itself, and they patch the
+    bind so a regression fails the assertion instead of opening a real socket.
+    """
+
+    def _run(self, *, host: str, local_surface: bool) -> tuple[Any, Any]:
+        """Drive ``_run_server`` with the socket and uvicorn stubbed out."""
+        with (
+            mock.patch.object(http_server, "_bind_socket") as bind,
+            mock.patch.object(http_server, "uvicorn") as uv,
+        ):
+            bind.return_value.getsockname.return_value = (host, 8787)
+            result = http_server._run_server(
+                server=mock.Mock(),
+                host=host,
+                port=0,
+                label="brain",
+                local_surface=local_surface,
+            )
+        self.assertEqual(result, 0)
+        return bind, uv
+
+    def test_run_server_refuses_every_off_machine_spelling_before_binding(self) -> None:
+        for host in OFF_MACHINE_HOSTS:
+            with self.subTest(host=host):
+                with mock.patch.object(http_server, "_bind_socket") as bind:
+                    with self.assertRaises(ValidationError) as ctx:
+                        http_server._run_server(
+                            server=mock.Mock(),
+                            host=host,
+                            port=0,
+                            label="brain",
+                            local_surface=True,
+                        )
+                bind.assert_not_called()
+                self.assertIn(host, str(ctx.exception))
+
+    def test_run_server_serves_loopback_including_the_empty_host_default(self) -> None:
+        """Empty is the argparse fallback ``_bind_socket`` reads as 127.0.0.1."""
+        for host in LOOPBACK_HOSTS:
+            with self.subTest(host=host):
+                bind, uv = self._run(host=host, local_surface=True)
+                bind.assert_called_once_with(host=host, port=0)
+                uv.Server.return_value.run.assert_called_once()
+
+    def test_the_hosted_plane_still_binds_off_machine(self) -> None:
+        """CONTROL composes an authenticated surface and made its own decision,
+        so the local refusal must not reach it — deploys bind 0.0.0.0."""
+        bind, _uv = self._run(host="0.0.0.0", local_surface=False)
+        bind.assert_called_once_with(host="0.0.0.0", port=0)
+
+    def test_serve_local_refuses_before_it_builds_a_brain(self) -> None:
+        """Refusal precedes composition: no state dir, no store, no socket."""
+        for host in OFF_MACHINE_HOSTS:
+            with self.subTest(host=host):
+                with (
+                    mock.patch(
+                        "merv.brain.surface.composition.build_local_server"
+                    ) as build,
+                    mock.patch.object(http_server, "_bind_socket") as bind,
+                ):
+                    with self.assertRaises(ValidationError) as ctx:
+                        http_server._serve_local(host=host, port=0, state_dir=None)
+                build.assert_not_called()
+                bind.assert_not_called()
+                self.assertIn(host, str(ctx.exception))
+
+    def test_serve_local_tells_run_server_the_surface_is_unauthenticated(self) -> None:
+        """The two guards are one decision, not two opinions that can drift."""
+        with (
+            mock.patch("merv.brain.surface.composition.build_local_server"),
+            mock.patch.object(http_server, "_run_server", return_value=0) as run,
+        ):
+            http_server._serve_local(host="127.0.0.1", port=0, state_dir=None)
+        self.assertTrue(run.call_args.kwargs["local_surface"])
+
+    def test_the_merv_http_entrypoint_refuses_the_reported_wildcard(self) -> None:
+        """The literal report: ``merv-http --host 0.0.0.0`` in default mode."""
+        with (
+            mock.patch("sys.argv", ["merv-http", "--host", "0.0.0.0", "--port", "0"]),
+            mock.patch.object(http_server, "resolve_mode", return_value=Mode.LOCAL),
+            mock.patch("merv.brain.surface.composition.build_local_server") as build,
+            mock.patch.object(http_server, "_bind_socket") as bind,
+        ):
+            with self.assertRaises(ValidationError):
+                http_server.main()
+        build.assert_not_called()
+        bind.assert_not_called()
+
+
+class ReflectionDaemonBindTest(unittest.TestCase):
+    """The dev harness boots the same unauthenticated local composition, so it
+    inherits the same refusal rather than trusting its own ``--host``."""
+
+    def _daemon(self) -> Any:
+        path = (
+            Path(__file__).resolve().parents[2] / "scripts" / "_reflection_daemon.py"
+        )
+        spec = importlib.util.spec_from_file_location("merv_reflection_daemon", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_daemon_refuses_a_non_loopback_host(self) -> None:
+        daemon = self._daemon()
+        for host in ("0.0.0.0", "::", "192.168.1.10"):
+            with self.subTest(host=host):
+                with mock.patch(
+                    "sys.argv", ["_reflection_daemon.py", "--host", host]
+                ), self.assertRaises(ValidationError) as ctx:
+                    daemon.main()
+                self.assertIn(host, str(ctx.exception))
 
 
 if __name__ == "__main__":

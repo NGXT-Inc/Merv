@@ -126,7 +126,7 @@ class SqlOAuthRepository:
                       client_id, client_name, redirect_uris_json, grant_types_json,
                       metadata_fingerprint, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (metadata_fingerprint) DO NOTHING
                     """,
                     (
                         client.client_id,
@@ -139,10 +139,25 @@ class SqlOAuthRepository:
                 )
                 # Ours, or the row a concurrent replica landed first. Either way
                 # the caller gets the one client id this metadata now names.
+                #
+                # The conflict target is the FINGERPRINT index alone: an
+                # untargeted clause would also swallow a client_id collision
+                # and leave nothing behind, and a missing re-read is treated as
+                # the server fault it is rather than answered with a client id
+                # this database never stored.
                 stored = _client(
                     conn.execute(_BY_FINGERPRINT, (fingerprint,)).fetchone()
                 )
-                return stored if stored is not None else client
+                if stored is None:
+                    LOGGER.error(
+                        "OAuth registration insert left no row for fingerprint %s",
+                        fingerprint,
+                    )
+                    raise OAuthError(
+                        "temporarily_unavailable",
+                        "client registration is temporarily unavailable; retry shortly",
+                    )
+                return stored
         # Outside the transaction on purpose: the prune and eviction above are
         # COMMITTED before this refusal, so an over-cap table shrinks on every
         # attempt instead of rolling its own progress back forever.

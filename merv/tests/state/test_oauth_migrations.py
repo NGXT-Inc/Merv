@@ -19,6 +19,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from merv.brain.kernel.state.fingerprints import oauth_client_fingerprint
 from merv.brain.kernel.state.store import MIGRATIONS, StateStore
@@ -255,6 +256,71 @@ class OAuthClientFingerprintMigrationTest(unittest.TestCase):
             }
         self.assertIsNotNone(rows["oauthc_first"])
         self.assertIsNone(rows["oauthc_second"])
+
+    def _fingerprints(self, store: StateStore) -> dict[str, Any]:
+        with store.connect() as conn:
+            return {
+                str(row["client_id"]): row["metadata_fingerprint"]
+                for row in conn.execute(
+                    "SELECT client_id, metadata_fingerprint FROM oauth_clients"
+                ).fetchall()
+            }
+
+    def test_v38_handler_replays_on_a_store_that_already_applied_it(self) -> None:
+        """A migration that crashed after its work but before its ledger row is
+        re-entered on the next boot, so the HANDLER — not just the version
+        guard — has to be idempotent. Running it again on a migrated store must
+        add no column twice, re-fingerprint nothing, leave the deliberate NULL
+        duplicate alone, and keep the UNIQUE index enforcing."""
+        db_path = self._legacy_store(
+            rows=[
+                (
+                    "oauthc_first",
+                    "Twin Agent",
+                    ["https://client.example/a"],
+                    ["authorization_code"],
+                    "2026-01-01T00:00:00Z",
+                ),
+                (
+                    "oauthc_second",
+                    "Twin Agent",
+                    ["https://client.example/a"],
+                    ["authorization_code"],
+                    "2026-02-02T00:00:00Z",
+                ),
+            ]
+        )
+        store = StateStore(db_path=db_path)
+        before = self._fingerprints(store)
+        self.assertIsNotNone(before["oauthc_first"])
+        self.assertIsNone(before["oauthc_second"])
+
+        with store.transaction() as conn:
+            # Twice: the second pass proves replay is not a one-shot allowance.
+            store._add_oauth_client_fingerprint(conn=conn)
+            store._add_oauth_client_fingerprint(conn=conn)
+
+        self.assertEqual(self._fingerprints(store), before)
+        with store.connect() as conn:
+            self.assertEqual(
+                len(
+                    [
+                        row
+                        for row in conn.execute(
+                            "PRAGMA table_info(oauth_clients)"
+                        ).fetchall()
+                        if row["name"] == "metadata_fingerprint"
+                    ]
+                ),
+                1,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO oauth_clients (client_id, client_name, "
+                    "redirect_uris_json, grant_types_json, metadata_fingerprint, "
+                    "created_at) VALUES ('z', 'Z', '[]', '[]', ?, 'now')",
+                    (before["oauthc_first"],),
+                )
 
     def test_v38_indexes_exist_and_the_fingerprint_one_is_unique(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

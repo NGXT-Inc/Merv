@@ -46,6 +46,26 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+def refuse_non_loopback_local_surface(host: str) -> None:
+    """Refuse to bind the unauthenticated LOCAL surface off-machine.
+
+    Every launcher that can serve the local default asks this BEFORE it binds —
+    the wrapper below, the ``merv-http`` console script, the dev daemons — so
+    one host spelling cannot open the full surface to the network. Anything
+    that is not provably loopback (an unparseable spelling, an IPv4-mapped
+    form, a wildcard) is refused, because guessing wrong here serves the whole
+    tool surface to anyone who can route to the box.
+    """
+    if is_loopback_host(host):
+        return
+    raise ValidationError(
+        f"refusing to serve the unauthenticated local surface on {host!r}: "
+        "bind a loopback address, or pass surface_policy (and auth) so "
+        "the hosted authentication decision is made explicitly.",
+        details={"host": host},
+    )
+
+
 class UvicornHttpServer:
     """uvicorn server wrapper used by compatibility tests.
 
@@ -70,13 +90,8 @@ class UvicornHttpServer:
         auth: Any | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
-        if surface_policy is None and not is_loopback_host(host):
-            raise ValidationError(
-                f"refusing to serve the unauthenticated local surface on {host!r}: "
-                "bind a loopback address, or pass surface_policy (and auth) so "
-                "the hosted authentication decision is made explicitly.",
-                details={"host": host},
-            )
+        if surface_policy is None:
+            refuse_non_loopback_local_surface(host)
         fastapi_app = create_fastapi_app(
             app=app.http, surface_policy=surface_policy, auth=auth, env=env
         )
@@ -122,7 +137,18 @@ def make_http_server(
     )
 
 
-def _run_server(*, server: Any, host: str, port: int, label: str) -> int:
+def _run_server(
+    *, server: Any, host: str, port: int, label: str, local_surface: bool = False
+) -> int:
+    """Bind and serve an already-composed brain.
+
+    ``local_surface`` says the composition above chose the unauthenticated
+    local policy, so the same non-loopback refusal the programmatic wrapper
+    makes applies here — at the bind itself, which is the one place every
+    launcher passes through.
+    """
+    if local_surface:
+        refuse_non_loopback_local_surface(host)
     server_socket = _bind_socket(host=host, port=port)
     selected_port = int(server_socket.getsockname()[1])
     config = uvicorn.Config(
@@ -165,11 +191,20 @@ def _serve_control(*, host: str, port: int) -> int:
 
 
 def _serve_local(*, host: str, port: int, state_dir: Path | None) -> int:
-    """Run the localhost brain preset."""
+    """Run the localhost brain preset.
+
+    This preset composes the unauthenticated local policy, so it refuses a
+    non-loopback ``--host``/``MERV_HTTP_HOST`` before it builds anything —
+    long before a socket exists. Serving off-machine is the hosted brain's
+    job (``MERV_MODE=control``), which makes the auth decision explicitly.
+    """
+    refuse_non_loopback_local_surface(host)
     from ..composition import build_local_server
 
     server = build_local_server(state_dir=state_dir)
-    return _run_server(server=server, host=host, port=port, label="brain")
+    return _run_server(
+        server=server, host=host, port=port, label="brain", local_surface=True
+    )
 
 
 def control_main() -> int:
