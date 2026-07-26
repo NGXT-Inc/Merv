@@ -383,7 +383,10 @@ def _oauth_json_error(exc: OAuthError, *, status_code: int = 400) -> JSONRespons
 
 
 def _dcr_error(exc: OAuthError) -> JSONResponse:
-    return _oauth_json_error(exc)
+    # Hitting the registration cap is a server condition, not bad metadata:
+    # the same request succeeds once unused registrations age out.
+    unavailable = exc.error == "temporarily_unavailable"
+    return _oauth_json_error(exc, status_code=503 if unavailable else 400)
 
 
 def _token_error(exc: OAuthError) -> JSONResponse:

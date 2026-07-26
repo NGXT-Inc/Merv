@@ -12,6 +12,7 @@ import base64
 import hashlib
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -23,10 +24,10 @@ import jwt
 from starlette.requests import Request
 from fastapi.testclient import TestClient
 
-from merv.brain.kernel.utils import parse_iso
+from merv.brain.kernel.utils import format_iso, parse_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.auth import SupabaseVerifier
-from merv.brain.surface.oauth import OAuthError, OAuthService
+from merv.brain.surface.oauth import MAX_CLIENTS_ENV_VAR, OAuthError, OAuthService
 from merv.brain.surface.oauth_store import SqlOAuthRepository
 from merv.brain.surface.project_key_store import SqlProjectKeyRepository
 from merv.brain.surface.project_keys import ProjectKeys
@@ -314,6 +315,146 @@ class OAuthSurfaceTest(unittest.TestCase):
             count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
         self.assertEqual(int(count["n"]), 2)
 
+    def test_concurrent_identical_registrations_resolve_to_one_client(self) -> None:
+        """AUTH-03: lookup and insert share one transaction, so a race cannot fork.
+
+        Two clients registering the same metadata at the same moment could both
+        miss a separate existence check and both insert. Under the store's
+        global writer serialization a single get-or-create transaction cannot.
+        """
+        repository = SqlOAuthRepository(store=self.app.store)
+        service = OAuthService(
+            repository=repository,
+            project_keys=self.keys,
+            is_project_member=self.app.projects.is_member,
+        )
+        metadata = {
+            "client_name": "Racing Agent",
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        }
+        workers = 8
+        start = threading.Barrier(workers)
+        lock = threading.Lock()
+        minted: list[str] = []
+        failures: list[Exception] = []
+
+        def register() -> None:
+            start.wait(timeout=10)
+            try:
+                client_id = service.register_client(dict(metadata))["client_id"]
+            except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+                with lock:
+                    failures.append(exc)
+                return
+            with lock:
+                minted.append(client_id)
+
+        threads = [threading.Thread(target=register) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        self.assertEqual([str(exc) for exc in failures], [])
+        self.assertEqual(len(minted), workers)
+        self.assertEqual(len(set(minted)), 1, "the race forked the client id")
+        with self.app.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT COUNT(*) AS n FROM oauth_clients WHERE client_name = ?",
+                ("Racing Agent",),
+            ).fetchone()
+        self.assertEqual(int(rows["n"]), 1)
+
+    def test_array_order_does_not_fork_the_registration(self) -> None:
+        """AUTH-03: the arrays are sets to both sides, so order cannot dedupe-miss."""
+        uris = ["https://client.example/a", "https://client.example/b"]
+        first = self._register(
+            redirect_uris=uris, grants=["authorization_code", "refresh_token"]
+        )
+        permuted = self._register(
+            redirect_uris=list(reversed(uris)),
+            grants=["refresh_token", "authorization_code"],
+        )
+        self.assertEqual(permuted["client_id"], first["client_id"])
+        # The response reports the canonical order, and both uris survive it.
+        self.assertEqual(sorted(permuted["redirect_uris"]), sorted(uris))
+        with self.app.store.connect() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
+        self.assertEqual(int(count["n"]), 1)
+
+    def test_registrations_are_capped_and_pruned_without_a_scheduler(self) -> None:
+        """AUTH-03: the table is bounded even if nothing ever calls the sweep."""
+        repository = SqlOAuthRepository(
+            store=self.app.store, unused_client_ttl_days=30, max_clients=2
+        )
+        service = OAuthService(
+            repository=repository,
+            project_keys=self.keys,
+            is_project_member=self.app.projects.is_member,
+        )
+
+        def register(name: str) -> dict:
+            return service.register_client(
+                {
+                    "client_name": name,
+                    "redirect_uris": [REDIRECT_URI],
+                    "token_endpoint_auth_method": "none",
+                    "grant_types": ["authorization_code"],
+                    "response_types": ["code"],
+                }
+            )
+
+        register("Agent 1")
+        register("Agent 2")
+        with self.assertRaises(OAuthError) as ctx:
+            register("Agent 3")
+        self.assertEqual(ctx.exception.error, "temporarily_unavailable")
+        self.assertIn(MAX_CLIENTS_ENV_VAR, ctx.exception.description)
+
+        # Nothing schedules the TTL sweep here — the registration path prunes on
+        # its own behalf, so aging the unused rows out is enough to make room.
+        stale = format_iso(datetime.now(tz=UTC) - timedelta(days=90))
+        with self.app.store.transaction() as conn:
+            conn.execute("UPDATE oauth_clients SET created_at = ?", (stale,))
+        third = register("Agent 3")
+        self.assertTrue(third["client_id"])
+        with self.app.store.connect() as conn:
+            count = conn.execute("SELECT COUNT(*) AS n FROM oauth_clients").fetchone()
+        self.assertEqual(int(count["n"]), 1, "the stale rows were not swept")
+
+        # Over the wire the refusal is a server condition, not bad metadata.
+        capped = TestClient(
+            create_fastapi_app(
+                self.app.http,
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=True, hosted_control=True
+                ),
+                auth=self.verifier,
+                oauth_service=service,
+                oauth_resource_uri=RESOURCE,
+            ),
+            base_url=ISSUER,
+            raise_server_exceptions=False,
+        )
+        payload = {
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+        }
+        accepted = capped.post(
+            "/oauth/register", json={**payload, "client_name": "Agent 4"}
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        refused = capped.post(
+            "/oauth/register", json={**payload, "client_name": "Agent 5"}
+        )
+        self.assertEqual(refused.status_code, 503, refused.text)
+        self.assertEqual(refused.json()["error"], "temporarily_unavailable")
+
     def test_unused_registrations_expire_and_used_ones_survive(self) -> None:
         unused = self._register(client_name="Abandoned Agent")
         used, _tokens = self._mint_oauth_tokens()
@@ -329,6 +470,63 @@ class OAuthSurfaceTest(unittest.TestCase):
         self.assertEqual(outcome["deleted"], 1)
         self.assertIsNone(repository.client_by_id(client_id=unused["client_id"]))
         self.assertIsNotNone(repository.client_by_id(client_id=used["client_id"]))
+
+    def test_a_client_with_only_a_live_code_survives_the_prune(self) -> None:
+        """One protection, isolated: an unexchanged code alone keeps the row."""
+        registration = self._register(client_name="Consenting Agent")
+        self._authorize(registration["client_id"])  # a code, never exchanged
+        with self.app.store.connect() as conn:
+            codes = conn.execute(
+                "SELECT COUNT(*) AS n FROM oauth_authorization_codes "
+                "WHERE client_id = ?",
+                (registration["client_id"],),
+            ).fetchone()
+            refreshes = conn.execute(
+                "SELECT COUNT(*) AS n FROM oauth_refresh_tokens WHERE client_id = ?",
+                (registration["client_id"],),
+            ).fetchone()
+        self.assertEqual(int(codes["n"]), 1)
+        self.assertEqual(int(refreshes["n"]), 0, "the refresh path must not help here")
+
+        repository = SqlOAuthRepository(
+            store=self.app.store, unused_client_ttl_days=30
+        )
+        outcome = repository.prune(now=datetime.now(tz=UTC) + timedelta(days=31))
+        self.assertTrue(outcome["ok"])
+        self.assertIsNotNone(
+            repository.client_by_id(client_id=registration["client_id"])
+        )
+
+    def test_a_client_with_only_a_refresh_token_survives_the_prune(self) -> None:
+        """The other protection, isolated: a refresh token alone keeps the row."""
+        registration, _tokens = self._mint_oauth_tokens()
+        # Drop the spent code so ONLY the refresh-token subquery can save this.
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM oauth_authorization_codes WHERE client_id = ?",
+                (registration["client_id"],),
+            )
+        with self.app.store.connect() as conn:
+            codes = conn.execute(
+                "SELECT COUNT(*) AS n FROM oauth_authorization_codes "
+                "WHERE client_id = ?",
+                (registration["client_id"],),
+            ).fetchone()
+            refreshes = conn.execute(
+                "SELECT COUNT(*) AS n FROM oauth_refresh_tokens WHERE client_id = ?",
+                (registration["client_id"],),
+            ).fetchone()
+        self.assertEqual(int(codes["n"]), 0, "the code path must not help here")
+        self.assertEqual(int(refreshes["n"]), 1)
+
+        repository = SqlOAuthRepository(
+            store=self.app.store, unused_client_ttl_days=30
+        )
+        outcome = repository.prune(now=datetime.now(tz=UTC) + timedelta(days=31))
+        self.assertTrue(outcome["ok"])
+        self.assertIsNotNone(
+            repository.client_by_id(client_id=registration["client_id"])
+        )
 
     def test_a_failing_client_sweep_says_so_instead_of_zero(self) -> None:
         class ExplodingStore:

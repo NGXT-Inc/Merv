@@ -76,6 +76,7 @@ class ControlAppTest(unittest.TestCase):
                         restrict_cors=True,
                         hosted_control=True,
                     ),
+                    env=_open_control_env(root),
                 ),
                 raise_server_exceptions=False,
             )
@@ -143,6 +144,7 @@ class ControlAppTest(unittest.TestCase):
                         restrict_cors=True,
                         hosted_control=True,
                     ),
+                    env=_open_control_env(root),
                 ),
                 raise_server_exceptions=False,
             )
@@ -192,6 +194,7 @@ class ControlAppTest(unittest.TestCase):
                         restrict_cors=True,
                         hosted_control=True,
                     ),
+                    env=_open_control_env(root),
                 ),
                 raise_server_exceptions=False,
             )
@@ -421,6 +424,82 @@ class ControlAppTest(unittest.TestCase):
         self.assertIn(SUPABASE_JWT_SECRET_ENV_VAR, ctx.exception.message)
         self.assertIn(ALLOW_OPEN_CONTROL_ENV_VAR, ctx.exception.message)
 
+    def test_composing_a_hosted_app_directly_fails_closed_too(self) -> None:
+        """SEC-02: the outer server builder is not the only way in.
+
+        ``build_control_app`` + ``create_fastapi_app(surface_policy=hosted)``
+        is a public composition path. If the verifier/open decision only lived
+        in ``build_control_server``, this route would serve tokenless writes on
+        a hosted-policy surface — which is exactly what a committed test used
+        to do. The decision has to live where the hosted app is composed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = build_control_app(
+                repo_root=root,
+                env=_mounted_mgmt_key_env(root),
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
+            hosted = HttpSurfacePolicy.for_surface(
+                restrict_cors=True, hosted_control=True
+            )
+            with self.assertRaises(ValidationError) as ctx:
+                create_fastapi_app(app=app.http, surface_policy=hosted, env={})
+            self.assertIn(ALLOW_OPEN_CONTROL_ENV_VAR, ctx.exception.message)
+
+            # Naming the open mode is the only way through, and it works.
+            opened = create_fastapi_app(
+                app=app.http,
+                surface_policy=hosted,
+                env={ALLOW_OPEN_CONTROL_ENV_VAR: "1"},
+            )
+            client = TestClient(opened, raise_server_exceptions=False)
+            self.assertEqual(client.get("/api/projects").status_code, 200)
+
+            # The local preset is untouched: no flag, no verifier, still serves.
+            local = TestClient(
+                create_fastapi_app(app=app.http, env={}),
+                raise_server_exceptions=False,
+            )
+            self.assertEqual(local.get("/api/projects").status_code, 200)
+
+    def test_a_misspelled_open_flag_fails_the_boot_instead_of_opening(self) -> None:
+        """The flag turns a security control off, so it is parsed strictly."""
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValidationError) as ctx:
+                build_control_server(
+                    repo_root=root,
+                    env={
+                        **_mounted_mgmt_key_env(root),
+                        ALLOW_OPEN_CONTROL_ENV_VAR: "ture",
+                    },
+                )
+        # Names the variable and what it will accept, rather than guessing.
+        self.assertIn(ALLOW_OPEN_CONTROL_ENV_VAR, ctx.exception.message)
+        self.assertIn("true", ctx.exception.message)
+        self.assertIn("1", ctx.exception.message)
+        self.assertEqual(ctx.exception.details["value"], "ture")
+
+    def test_an_explicit_off_value_keeps_the_plane_closed(self) -> None:
+        from merv.brain.surface.composition.control_mode import build_control_server
+
+        for value in ("0", "false", "off", "no"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                with self.assertRaises(ValidationError) as ctx:
+                    build_control_server(
+                        repo_root=root,
+                        env={
+                            **_mounted_mgmt_key_env(root),
+                            ALLOW_OPEN_CONTROL_ENV_VAR: value,
+                        },
+                    )
+                self.assertIn(SUPABASE_URL_ENV_VAR, ctx.exception.message)
+
     def test_require_auth_without_credentials_still_names_the_missing_ones(self) -> None:
         from merv.brain.surface.composition.control_mode import build_control_server
 
@@ -442,9 +521,7 @@ class ControlAppTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertLogs(
-                "merv.brain.surface.composition.control_mode", level="WARNING"
-            ) as logs:
+            with self.assertLogs("merv.brain.surface.auth", level="WARNING") as logs:
                 server = build_control_server(
                     repo_root=root, env=_open_control_env(root)
                 )
@@ -536,12 +613,13 @@ class ControlAppTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # Auth is deliberately unconfigured here (this test's requests are
-            # tokenless), which now emits its own open-surface warning — so
-            # assert the CORS warning specifically rather than no-logs-at-all.
-            with self.assertLogs(
+            # CORS is deliberately unrestricted, so the composition must not
+            # warn about empty origins. Auth is deliberately unconfigured too,
+            # but that warning belongs to the auth module now, leaving this
+            # logger silent — which is the assertion this test wants.
+            with self.assertNoLogs(
                 "merv.brain.surface.composition.control_mode", level="WARNING"
-            ) as logs:
+            ):
                 server = build_control_server(
                     repo_root=root,
                     env={
@@ -549,7 +627,6 @@ class ControlAppTest(unittest.TestCase):
                         CONTROL_RESTRICT_CORS_ENV_VAR: "false",
                     },
                 )
-            self.assertNotIn(ALLOWED_ORIGINS_ENV_VAR, "\n".join(logs.output))
             self.addCleanup(server.shutdown)
             client = TestClient(server.fastapi_app, raise_server_exceptions=False)
 

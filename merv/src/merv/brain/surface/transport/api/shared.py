@@ -197,6 +197,27 @@ def operator_denial(request: Request) -> JSONResponse | None:
     )
 
 
+# The two routes that rewrite who belongs to a project.
+_MEMBERSHIP_MUTATION_ROUTES = {
+    "POST": re.compile(r"^/api/projects/[^/]+/members$"),
+    "DELETE": re.compile(r"^/api/projects/[^/]+/members/[^/]+$"),
+}
+
+
+def operator_membership_recovery(request: Request) -> bool:
+    """Whether MERV_ADMIN_TOKEN may pass the membership gate on this request.
+
+    An orphaned project — one whose last member predates the last-member rule —
+    is unreachable through the hosted API: the gateway answers 404 for a
+    non-member before the route's own author check can see the admin token, so
+    the operator's documented recovery path never runs. This buys back exactly
+    the two membership-mutation routes and nothing else; every other route
+    still 404s for a non-member, token or not.
+    """
+    route = _MEMBERSHIP_MUTATION_ROUTES.get(request.method)
+    return bool(route and route.match(request.url.path)) and _operator_token_ok(request)
+
+
 def require_membership_author(request: Request) -> None:
     """Only a human (or the operator) may change who belongs to a project.
 

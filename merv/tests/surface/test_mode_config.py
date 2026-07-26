@@ -45,6 +45,12 @@ def _hosted_surface() -> HttpSurfacePolicy:
     )
 
 
+# Composing a hosted surface with no verifier fails closed wherever it happens
+# (audit SEC-02), including here. The tests below make tokenless requests on
+# purpose, so each names the open mode with the same flag an operator would.
+OPEN_HOSTED = {ALLOW_OPEN_CONTROL_ENV_VAR: "1"}
+
+
 class ModeConfigTest(unittest.TestCase):
     def test_default_is_local(self) -> None:
         self.assertIs(resolve_mode(env={}), Mode.LOCAL)
@@ -185,7 +191,9 @@ class HostedControlSurfaceTest(unittest.TestCase):
             execution_backend=FakeSandboxBackend(),
         )
         self.client = TestClient(
-            create_fastapi_app(self.app.http, surface_policy=_hosted_surface()),
+            create_fastapi_app(
+                self.app.http, surface_policy=_hosted_surface(), env=OPEN_HOSTED
+            ),
             raise_server_exceptions=False,
         )
 
@@ -401,6 +409,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
                 surface_policy=_hosted_surface(),
                 cleanup=cleanup,
                 tenant_counters=tenant_counters,
+                env=OPEN_HOSTED,
             ),
             raise_server_exceptions=False,
         )
@@ -432,6 +441,7 @@ class HostedControlSurfaceTest(unittest.TestCase):
             create_fastapi_app(
                 self.app.http,
                 surface_policy=_hosted_surface(),
+                env=OPEN_HOSTED,
             ),
             raise_server_exceptions=False,
         )
@@ -525,7 +535,9 @@ class VersionHandshakeTest(unittest.TestCase):
             execution_backend=FakeSandboxBackend(),
         )
         self.client = TestClient(
-            create_fastapi_app(self.app.http, surface_policy=_hosted_surface()),
+            create_fastapi_app(
+                self.app.http, surface_policy=_hosted_surface(), env=OPEN_HOSTED
+            ),
             raise_server_exceptions=False,
         )
         self.local_client = TestClient(

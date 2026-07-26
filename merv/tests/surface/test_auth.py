@@ -382,6 +382,59 @@ class AuthedSurfaceTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404, response.text)
 
+    def test_the_operator_token_can_re_staff_an_orphaned_project(self) -> None:
+        """The last-member rule protects new projects; old ones can be orphaned.
+
+        A project with no members left answers 404 to everyone, and the
+        membership gate runs before the route's own author check — so without a
+        bypass the operator's documented recovery path is unreachable.
+        """
+        project_id = self._create_project("Orphan", _bearer(USER_A))
+        # The last-member rule now refuses this, so the row is emptied the way a
+        # project orphaned BEFORE that rule already sits in the database.
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "DELETE FROM project_members WHERE project_id = ?", (project_id,)
+            )
+        self.assertEqual(self.app.projects.members(project_id=project_id)["members"], [])
+
+        stranded = self.client.post(
+            f"/api/projects/{project_id}/members",
+            json={"user_id": USER_A},
+            headers=_bearer(USER_A),
+        )
+        self.assertEqual(stranded.status_code, 404, stranded.text)
+
+        with patch.dict(os.environ, {"MERV_ADMIN_TOKEN": "op-secret"}):
+            recovered = self.client.post(
+                f"/api/projects/{project_id}/members",
+                json={"user_id": USER_A},
+                headers={**_bearer(USER_A), "X-Admin-Token": "op-secret"},
+            )
+            self.assertEqual(recovered.status_code, 201, recovered.text)
+            # The bypass is scoped to membership mutation only: every other
+            # route still 404s for a non-member, operator token or not.
+            for path in (
+                f"/api/projects/{project_id}",
+                f"/api/projects/{project_id}/claims",
+            ):
+                with self.subTest(path=path):
+                    other = self.client.get(
+                        path, headers={**_bearer(USER_B), "X-Admin-Token": "op-secret"}
+                    )
+                    self.assertEqual(other.status_code, 404, other.text)
+            # A wrong token buys nothing on the membership routes either.
+            forged = self.client.delete(
+                f"/api/projects/{project_id}/members/{USER_A}",
+                headers={**_bearer(USER_B), "X-Admin-Token": "not-the-token"},
+            )
+            self.assertEqual(forged.status_code, 404, forged.text)
+
+        self.assertEqual(
+            [m["user_id"] for m in self.app.projects.members(project_id=project_id)["members"]],
+            [USER_A],
+        )
+
     def test_activity_requires_project_scope_and_membership(self) -> None:
         project_id = self._create_project("Audited", _bearer(USER_A))
         unscoped = self.client.get("/api/activity", headers=_bearer(USER_A))

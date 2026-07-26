@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI
 
 from .... import __version__
+from ...auth import require_hosted_auth_decision
 from ..admin_http import register_admin_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
@@ -37,6 +39,7 @@ def create_fastapi_app(
     oauth_service: Any | None = None,
     ui_base_url: str = "",
     oauth_resource_uri: str = "",
+    env: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Compose transport adapters around an already-built backend."""
     if app is None:
@@ -46,6 +49,7 @@ def create_fastapi_app(
     surface = surface_policy or HttpSurfacePolicy.for_surface(
         restrict_cors=False, hosted_control=False
     )
+    require_hosted_auth_decision(auth=auth, hosted=surface.hosted_control, env=env)
     api = app
     authorizer = ProjectAuthorizer(projects=api.projects)
     gateway = ToolInvocationGateway(

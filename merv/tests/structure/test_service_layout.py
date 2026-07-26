@@ -817,10 +817,13 @@ class ServiceLayoutTest(unittest.TestCase):
 
     def test_env_coercion_is_single_sourced(self) -> None:
         # logging is allowed for the one-per-process legacy-env deprecation
-        # warning; the kernel resolver must otherwise stay dependency-free.
+        # warning, and the shared error vocabulary so a strictly parsed flag
+        # (env_bool_strict) can refuse a misspelling by name instead of
+        # coercing it to the risky answer. The kernel resolver must otherwise
+        # stay dependency-free — merv.shared.errors imports nothing itself.
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "kernel" / "env.py"),
-            {"collections.abc", "logging", "os"},
+            {"collections.abc", "logging", "merv.shared.errors", "os"},
         )
         for path in sorted(BACKEND_ROOT.rglob("*.py")):
             if path.name == "env.py":

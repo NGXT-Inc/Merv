@@ -19,7 +19,11 @@ from fastapi.testclient import TestClient
 
 from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
-from merv.brain.surface.auth import SupabaseVerifier, UnauthorizedError
+from merv.brain.surface.auth import (
+    ALLOW_OPEN_CONTROL_ENV_VAR,
+    SupabaseVerifier,
+    UnauthorizedError,
+)
 from merv.brain.surface.project_key_store import SqlProjectKeyRepository
 from merv.brain.surface.project_keys import ProjectKeyRecord, ProjectKeys
 from merv.brain.surface.transport.http_api import create_fastapi_app
@@ -579,6 +583,8 @@ class ProjectKeySurfaceTest(unittest.TestCase):
                 auth=None,
                 cleanup=_Cleanup(),
                 tenant_counters=lambda *, tenant_id: {"tenant_id": tenant_id},
+                # An open hosted surface is only composable when named (SEC-02).
+                env={ALLOW_OPEN_CONTROL_ENV_VAR: "1"},
             ),
             raise_server_exceptions=False,
         )

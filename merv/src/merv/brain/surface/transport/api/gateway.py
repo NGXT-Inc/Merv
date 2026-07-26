@@ -26,7 +26,8 @@ from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
 from .shared import (GLOBAL_MUTATOR_PREFIXES, RefusalLedger, attribute_request,
-                     is_local_origin, open_hosted_operator_denial, operator_denial)
+                     is_local_origin, open_hosted_operator_denial, operator_denial,
+                     operator_membership_recovery)
 from . import oauth, project_keys
 
 
@@ -160,6 +161,8 @@ class ProjectAuthorizer:
             )
         owner_key = self._owner_key_routes.get(request.method)
         gated = project_id and not (owner_key and owner_key.match(path))
+        if gated and operator_membership_recovery(request):
+            gated = False  # operator re-staffing an orphaned project
         if gated and not self.projects.is_member(
             project_id=project_id, user_id=self.user_id(request.state.principal)
         ):

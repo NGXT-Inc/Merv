@@ -49,10 +49,14 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         )
 
     def test_gateway_is_smaller_than_the_factory_logic_it_replaced(self) -> None:
+        # The ceilings moved by 3 lines when the operator's membership-recovery
+        # bypass landed in the gateway's one denial path (the route matching
+        # itself lives in shared.py). They still bind: the gateway must not
+        # re-absorb factory logic.
         app_loc = len(APP.read_text(encoding="utf-8").splitlines())
         gateway_loc = len(GATEWAY.read_text(encoding="utf-8").splitlines())
-        self.assertLessEqual(gateway_loc, 383)
-        self.assertLessEqual(app_loc + gateway_loc, 504)
+        self.assertLessEqual(gateway_loc, 386)
+        self.assertLessEqual(app_loc + gateway_loc, 507)
 
     def test_project_membership_has_one_transport_lookup(self) -> None:
         package_source = "\n".join(

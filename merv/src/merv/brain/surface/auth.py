@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 import time
 from collections.abc import Mapping
@@ -19,12 +20,23 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from ..kernel.env import env_bool, env_bool_strict
 from ..kernel.identity import LOCAL_TENANT_ID
+from ..kernel.utils import ValidationError
 from .identity import Principal
 from .project_keys import PROJECT_GRANT, PROJECT_KEY_PREFIX, ProjectKeyControl
 
+LOGGER = logging.getLogger(__name__)
+
 SUPABASE_URL_ENV_VAR = "SUPABASE_URL"
 SUPABASE_JWT_SECRET_ENV_VAR = "SUPABASE_JWT_SECRET"
+# Operator declaration that hosted control MUST authenticate; names the missing
+# Supabase variables when it cannot.
+REQUIRE_AUTH_ENV_VAR = "MERV_REQUIRE_AUTH"
+# Hosted control fails closed without a verifier (audit SEC-02). This is the
+# one deliberate escape hatch: an operator who wants an UNAUTHENTICATED hosted
+# surface has to name it exactly, and the boot log says so every time.
+ALLOW_OPEN_CONTROL_ENV_VAR = "MERV_ALLOW_OPEN_CONTROL"
 # Same value RapidReview calls SUPABASE_KEY (service role — bypasses RLS so
 # the api_keys hash lookup works). Server-side only; never reaches clients.
 SUPABASE_SERVICE_KEY_ENV_VAR = "SUPABASE_SERVICE_KEY"
@@ -199,3 +211,58 @@ class SupabaseVerifier:
         if self._http is None:
             self._http = httpx.Client(timeout=5.0)
         return self._http
+
+
+def require_hosted_auth_decision(
+    *,
+    auth: "SupabaseVerifier | None",
+    hosted: bool,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Hosted control fails closed when no verifier is configured (SEC-02).
+
+    This is called from the FastAPI composition itself rather than the outer
+    server builder, so EVERY hosted-policy app — the deploy entrypoint, a test
+    harness, any future embedder — makes the same decision; there is no public
+    composition path that reaches an open hosted surface without naming it.
+    Local deployment is a loopback single-user surface and keeps its
+    unauthenticated default, so it never reaches the checks below.
+    """
+    if not hosted or auth is not None:
+        return
+    if env_bool(REQUIRE_AUTH_ENV_VAR, False, env=env):
+        raise ValidationError(
+            f"{REQUIRE_AUTH_ENV_VAR}=1 requires {SUPABASE_URL_ENV_VAR} and "
+            f"{SUPABASE_JWT_SECRET_ENV_VAR}; set them (shared with the RapidReview "
+            "Supabase project) or disable the requirement for an intentionally "
+            "open deployment.",
+            details={"missing": [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR]},
+        )
+    # Strict parsing: this flag disables a security control, so a misspelling
+    # must fail the boot rather than read as the permissive answer.
+    if env_bool_strict(ALLOW_OPEN_CONTROL_ENV_VAR, False, env=env):
+        # Say so loudly on every composition so an OPEN plane is never quiet.
+        LOGGER.warning(
+            "SERVING AN OPEN CONTROL PLANE: %s is set and Supabase auth is "
+            "unconfigured (%s/%s unset). Every project is readable and writable "
+            "by anyone who can reach this port — unset %s once %s and %s are in "
+            "place.",
+            ALLOW_OPEN_CONTROL_ENV_VAR,
+            SUPABASE_URL_ENV_VAR,
+            SUPABASE_JWT_SECRET_ENV_VAR,
+            ALLOW_OPEN_CONTROL_ENV_VAR,
+            SUPABASE_URL_ENV_VAR,
+            SUPABASE_JWT_SECRET_ENV_VAR,
+        )
+        return
+    raise ValidationError(
+        "hosted control mode refuses to serve an unauthenticated surface: set "
+        f"{SUPABASE_URL_ENV_VAR} and {SUPABASE_JWT_SECRET_ENV_VAR} (shared with "
+        f"the RapidReview Supabase project), or set {ALLOW_OPEN_CONTROL_ENV_VAR}=1 "
+        "to run an OPEN control plane on purpose — every project on it is then "
+        "readable and writable by anyone who can reach the port.",
+        details={
+            "missing": [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR],
+            "override": ALLOW_OPEN_CONTROL_ENV_VAR,
+        },
+    )

@@ -19,7 +19,6 @@ from fastapi import FastAPI
 
 from ...application.maintenance import CleanupService
 from ..config import (
-    ALLOW_OPEN_CONTROL_ENV_VAR,
     ALLOWED_ORIGINS_ENV_VAR,
     BLOB_BUCKET_ENV_VAR,
     CONTROL_RESTRICT_CORS_ENV_VAR,
@@ -29,7 +28,6 @@ from ..config import (
     build_object_store,
     build_state_store,
     REQUIRE_AGENT_MLFLOW_ENV_VAR,
-    REQUIRE_AUTH_ENV_VAR,
     REQUIRE_SANDBOX_BACKEND_ENV_VAR,
     resolve_blob_bucket,
     resolve_db_url,
@@ -47,11 +45,7 @@ from ...kernel.ports.blob_store import BlobStore
 from ...sandbox.execution import build_sandbox_backend
 from ..transport.http_api import create_fastapi_app
 from ..transport.http_policy import HttpSurfacePolicy
-from ..auth import (
-    SUPABASE_JWT_SECRET_ENV_VAR,
-    SUPABASE_URL_ENV_VAR,
-    SupabaseVerifier,
-)
+from ..auth import SupabaseVerifier
 from ..project_keys import ProjectKeys
 from ..project_key_store import SqlProjectKeyRepository
 from ..oauth import OAuthService
@@ -175,42 +169,6 @@ def build_control_app(
     return app
 
 
-def _validate_auth_requirement(
-    *,
-    auth: SupabaseVerifier | None,
-    env: Mapping[str, str] | None = None,
-) -> None:
-    """Hosted control fails closed when no verifier is configured (SEC-02).
-
-    Local deployment never reaches here: it is a loopback single-user surface
-    and keeps its unauthenticated default. Hosted mode serves a reachable port,
-    so an open surface has to be an explicit operator decision.
-    """
-    if auth is not None:
-        return
-    if env_bool(REQUIRE_AUTH_ENV_VAR, False, env=env):
-        raise ValidationError(
-            f"{REQUIRE_AUTH_ENV_VAR}=1 requires {SUPABASE_URL_ENV_VAR} and "
-            f"{SUPABASE_JWT_SECRET_ENV_VAR}; set them (shared with the RapidReview "
-            "Supabase project) or disable the requirement for an intentionally "
-            "open deployment.",
-            details={"missing": [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR]},
-        )
-    if env_bool(ALLOW_OPEN_CONTROL_ENV_VAR, False, env=env):
-        return
-    raise ValidationError(
-        "hosted control mode refuses to serve an unauthenticated surface: set "
-        f"{SUPABASE_URL_ENV_VAR} and {SUPABASE_JWT_SECRET_ENV_VAR} (shared with "
-        f"the RapidReview Supabase project), or set {ALLOW_OPEN_CONTROL_ENV_VAR}=1 "
-        "to run an OPEN control plane on purpose — every project on it is then "
-        "readable and writable by anyone who can reach the port.",
-        details={
-            "missing": [SUPABASE_URL_ENV_VAR, SUPABASE_JWT_SECRET_ENV_VAR],
-            "override": ALLOW_OPEN_CONTROL_ENV_VAR,
-        },
-    )
-
-
 def build_control_server(
     *,
     repo_root: Path | None = None,
@@ -233,23 +191,11 @@ def build_control_server(
                              tool_call_ledger=app.tool_ledger,
                              oauth_clients=oauth_repository)
     project_keys = ProjectKeys(repository=SqlProjectKeyRepository(store=app._store))
+    # The fail-closed/open decision (SEC-02) is NOT taken here: it lives in
+    # create_fastapi_app, where a hosted-policy app is actually composed, so no
+    # composition path can reach an open hosted surface by skipping this
+    # builder. Passing `env` below is what carries the operator's answer.
     auth = SupabaseVerifier.from_env(env, project_keys=project_keys)
-    _validate_auth_requirement(auth=auth, env=env)
-    if auth is None:
-        # Reaching here means the operator set the override; say so loudly on
-        # every boot so an OPEN control plane is never a quiet accident.
-        LOGGER.warning(
-            "SERVING AN OPEN CONTROL PLANE: %s=1 is set and Supabase auth is "
-            "unconfigured (%s/%s unset). Every project is readable and writable "
-            "by anyone who can reach this port — unset %s once %s and %s are in "
-            "place.",
-            ALLOW_OPEN_CONTROL_ENV_VAR,
-            SUPABASE_URL_ENV_VAR,
-            SUPABASE_JWT_SECRET_ENV_VAR,
-            ALLOW_OPEN_CONTROL_ENV_VAR,
-            SUPABASE_URL_ENV_VAR,
-            SUPABASE_JWT_SECRET_ENV_VAR,
-        )
     oauth_resource_uri = resolve_oauth_resource_uri(env)
     # OAuth needs a verifier (browser Supabase sessions drive consent) and the
     # canonical /mcp resource URI; without either it is not mounted and cloud
@@ -273,6 +219,7 @@ def build_control_server(
         oauth_service=oauth_service,
         ui_base_url=resolve_ui_base_url(env),
         oauth_resource_uri=oauth_resource_uri,
+        env=env,
     )
     return ControlPlaneServer(
         app=app,

@@ -15,11 +15,14 @@ import logging
 import os
 from collections.abc import Mapping
 
+from merv.shared.errors import ValidationError
+
 
 ENV_PREFIX = "MERV_"
 LEGACY_ENV_PREFIX = "RESEARCH_PLUGIN_"
 
 FALSE_VALUES = {"0", "false", "no", "off"}
+TRUE_VALUES = {"1", "true", "yes", "on"}
 
 LOGGER = logging.getLogger(__name__)
 _warned_legacy_names: set[str] = set()
@@ -81,6 +84,34 @@ def env_bool(
     if value is None or value == "":
         return default
     return value.lower() not in FALSE_VALUES
+
+
+def env_bool_strict(
+    name: str, default: bool = False, *, env: Mapping[str, str] | None = None
+) -> bool:
+    """``env_bool`` for a flag where a typo must not read as the risky answer.
+
+    ``env_bool`` treats every value it does not recognize as true, which is
+    fine for an opt-in convenience and wrong for a switch that turns a security
+    control off: ``MERV_ALLOW_OPEN_CONTROL=ture`` would open the control plane.
+    Only the listed spellings decide here; anything else raises rather than
+    guessing, so a misspelling fails the boot instead of silently opening it.
+    """
+    value = _env_value(name=name, env=env)
+    if value is None or value == "":
+        return default
+    lowered = value.lower()
+    if lowered in TRUE_VALUES:
+        return True
+    if lowered in FALSE_VALUES:
+        return False
+    canonical = merv_env_name(name)
+    accepted = ", ".join(sorted(TRUE_VALUES | FALSE_VALUES))
+    raise ValidationError(
+        f"{canonical} is set to an unrecognized value; it accepts only "
+        f"{accepted}. Refusing to guess what {value!r} meant.",
+        details={"variable": canonical, "value": value, "accepted": accepted},
+    )
 
 
 MLFLOW_SUSPENDED_ENV_VAR = "MERV_MLFLOW_SUSPENDED"

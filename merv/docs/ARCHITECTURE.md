@@ -69,9 +69,12 @@ The control surface requires Supabase-backed end-user authentication
 `transport/api/app.py`, with a membership gate that 404s foreign projects).
 Hosted control fails closed: with no verifier configured it refuses to start
 unless the operator sets `MERV_ALLOW_OPEN_CONTROL=1`, which serves an
-unauthenticated plane and logs that state on every boot. `MERV_REQUIRE_AUTH=1`
-says the same thing more strictly — missing config is a startup failure with no
-escape. Local deployment (loopback, single user) never builds a verifier and is
+unauthenticated plane and logs that state on every boot. The decision is taken
+inside `create_fastapi_app`, where a hosted-policy app is composed, so it binds
+every construction path rather than one outer builder; the flag is parsed
+strictly, and a value it does not recognize fails the boot instead of opening
+the plane. `MERV_REQUIRE_AUTH=1` says the same thing more strictly — missing
+config is a startup failure with no escape. Local deployment (loopback, single user) never builds a verifier and is
 unaffected. CORS and the client-version floor are still not authentication.
 
 ### Agent client connection

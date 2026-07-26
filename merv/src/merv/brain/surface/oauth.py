@@ -23,6 +23,13 @@ REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 # code or refresh token — are kept regardless of age.
 UNUSED_CLIENT_TTL_DAYS_ENV_VAR = "MERV_OAUTH_CLIENT_TTL_DAYS"
 DEFAULT_UNUSED_CLIENT_TTL_DAYS = 30
+# The TTL sweep needs someone to call it, and nothing in the shipped compose
+# file schedules one. These two bound the table without any external timer: the
+# registration path prunes a little every time, and the hard cap refuses to
+# grow past it no matter who is (not) running cleanup.
+MAX_CLIENTS_ENV_VAR = "MERV_OAUTH_MAX_CLIENTS"
+DEFAULT_MAX_CLIENTS = 500
+OPPORTUNISTIC_PRUNE_LIMIT = 100
 
 _PKCE_CHALLENGE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
@@ -90,15 +97,8 @@ class RefreshToken:
 
 
 class OAuthRepository(Protocol):
-    def insert_client(self, *, client: OAuthClient) -> None: ...
+    def get_or_create_client(self, *, client: OAuthClient) -> OAuthClient: ...
     def client_by_id(self, *, client_id: str) -> OAuthClient | None: ...
-    def client_by_registration(
-        self,
-        *,
-        client_name: str,
-        redirect_uris: tuple[str, ...],
-        grant_types: tuple[str, ...],
-    ) -> OAuthClient | None: ...
     def insert_code(self, *, code: AuthorizationCode) -> None: ...
     def code_by_digest(self, *, digest: str) -> AuthorizationCode | None: ...
     def consume_code(self, *, digest: str, consumed_at: str) -> bool: ...
@@ -202,19 +202,19 @@ class OAuthService:
             )
         # Identical metadata resolves to the identical client. A public client
         # id is not a credential, and clients that re-register on every launch
-        # would otherwise grow the table forever (audit AUTH-03).
-        client = self._repository.client_by_registration(
-            client_name=name, redirect_uris=redirect_uris, grant_types=grants
-        )
-        if client is None:
-            client = OAuthClient(
+        # would otherwise grow the table forever (audit AUTH-03). Both arrays
+        # are sorted first so a client that merely shuffles its own list — the
+        # order carries no meaning to either side — is still the same client
+        # and not a fresh row per launch.
+        client = self._repository.get_or_create_client(
+            client=OAuthClient(
                 client_id=new_id(prefix="oauthc"),
                 client_name=name,
-                redirect_uris=redirect_uris,
-                grant_types=grants,
+                redirect_uris=tuple(sorted(redirect_uris)),
+                grant_types=tuple(sorted(grants)),
                 created_at=now_iso(),
             )
-            self._repository.insert_client(client=client)
+        )
         issued = parse_iso(client.created_at)
         return {
             "client_id": client.client_id,

@@ -21,6 +21,10 @@ from merv.shared.client_config import (
 from ..kernel.env import env_int, env_value
 from ..kernel.ports.blob_store import BlobStore
 from ..kernel.utils import ValidationError
+from .auth import (  # noqa: F401 -- re-exported operator knobs, see below
+    ALLOW_OPEN_CONTROL_ENV_VAR,
+    REQUIRE_AUTH_ENV_VAR,
+)
 
 if TYPE_CHECKING:  # the store import stays lazy at runtime (see build_state_store)
     from ..kernel.state import BaseStateStore
@@ -58,14 +62,11 @@ OAUTH_RESOURCE_URI_ENV_VAR = "MERV_OAUTH_RESOURCE_URI"
 # The enforcement knob below is composition policy, so it stays here.
 REQUIRE_AGENT_MLFLOW_ENV_VAR = "MERV_REQUIRE_AGENT_MLFLOW"
 REQUIRE_SANDBOX_BACKEND_ENV_VAR = "MERV_REQUIRE_SANDBOX_BACKEND"
-# Supabase auth knobs (SUPABASE_URL/JWT_SECRET/...) live in services/auth.py —
-# the extension owns them; this composition knob names the missing ones when
-# an operator has declared that control mode must authenticate.
-REQUIRE_AUTH_ENV_VAR = "MERV_REQUIRE_AUTH"
-# Hosted control fails closed without a verifier (audit SEC-02). This is the
-# one deliberate escape hatch: an operator who wants an UNAUTHENTICATED hosted
-# surface has to name it, and the boot log says so every time.
-ALLOW_OPEN_CONTROL_ENV_VAR = "MERV_ALLOW_OPEN_CONTROL"
+# MERV_REQUIRE_AUTH and MERV_ALLOW_OPEN_CONTROL are defined in surface/auth.py
+# alongside the Supabase knobs (SUPABASE_URL/JWT_SECRET/...) they name: the
+# decision they drive is taken where a hosted-policy app is composed, which is
+# delivery, not bootstrap. They are imported above so this module still lists
+# every operator-facing knob.
 
 _POSTGRES_URL_PREFIXES = ("postgres://", "postgresql://")
 

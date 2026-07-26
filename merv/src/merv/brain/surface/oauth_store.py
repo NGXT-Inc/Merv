@@ -12,10 +12,14 @@ from ..kernel.env import env_int
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import format_iso
 from .oauth import (
+    DEFAULT_MAX_CLIENTS,
     DEFAULT_UNUSED_CLIENT_TTL_DAYS,
+    MAX_CLIENTS_ENV_VAR,
+    OPPORTUNISTIC_PRUNE_LIMIT,
     UNUSED_CLIENT_TTL_DAYS_ENV_VAR,
     AuthorizationCode,
     OAuthClient,
+    OAuthError,
     RefreshToken,
 )
 from .project_keys import PROJECT_GRANT
@@ -25,12 +29,23 @@ def _json_list(values: tuple[str, ...] | list[str]) -> str:
     return json.dumps(list(values), separators=(",", ":"))
 
 
+# A registration nobody ever authorized. Shared by the scheduled sweep and the
+# bounded prune the registration path runs itself, so the two can never drift
+# into deleting different rows.
+_UNUSED_CLIENT_PREDICATE = """
+  created_at < ?
+  AND client_id NOT IN (SELECT client_id FROM oauth_authorization_codes)
+  AND client_id NOT IN (SELECT client_id FROM oauth_refresh_tokens)
+"""
+
+
 class SqlOAuthRepository:
     def __init__(
         self,
         *,
         store: BaseStateStore,
         unused_client_ttl_days: int | None = None,
+        max_clients: int | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
@@ -46,9 +61,58 @@ class SqlOAuthRepository:
         )
         # A zero/negative horizon would delete a client mid-authorization.
         self.unused_client_ttl_days = max(1, configured)
+        cap = (
+            int(max_clients)
+            if max_clients is not None
+            else env_int(MAX_CLIENTS_ENV_VAR, DEFAULT_MAX_CLIENTS, env=env, strict=False)
+        )
+        # A zero/negative cap would refuse the very first registration.
+        self.max_clients = max(1, cap)
 
-    def insert_client(self, *, client: OAuthClient) -> None:
+    def get_or_create_client(self, *, client: OAuthClient) -> OAuthClient:
+        """Resolve identical metadata to one row, or insert it — in one commit.
+
+        The lookup and the insert share a single store transaction, so the
+        store's global writer serialization (SQLite ``BEGIN IMMEDIATE``, the
+        Postgres advisory lock) makes them atomic: two identical registrations
+        racing each other cannot both miss the lookup and both insert a row
+        (audit AUTH-03). The same commit also bounds the table — see
+        ``_prune_unused`` and ``max_clients``.
+        """
         with self._store.transaction() as conn:
+            existing = _client(
+                conn.execute(
+                    """
+                    SELECT * FROM oauth_clients
+                    WHERE client_name = ? AND redirect_uris_json = ?
+                      AND grant_types_json = ?
+                    ORDER BY created_at, client_id
+                    """,
+                    (
+                        client.client_name,
+                        _json_list(client.redirect_uris),
+                        _json_list(client.grant_types),
+                    ),
+                ).fetchone()
+            )
+            if existing is not None:
+                return existing
+            # Cleanup that does not depend on anyone scheduling it: every
+            # registration pays for a bounded slice of the sweep.
+            self._prune_unused(
+                conn=conn, cutoff=self._cutoff(None), limit=OPPORTUNISTIC_PRUNE_LIMIT
+            )
+            stored = row_to_dict(
+                row=conn.execute("SELECT COUNT(*) AS total FROM oauth_clients").fetchone()
+            )
+            if int((stored or {}).get("total") or 0) >= self.max_clients:
+                raise OAuthError(
+                    "temporarily_unavailable",
+                    "this server is holding the maximum number of registered "
+                    f"clients ({self.max_clients}); retry once unused "
+                    "registrations age out, or raise "
+                    f"{MAX_CLIENTS_ENV_VAR}",
+                )
             conn.execute(
                 """
                 INSERT INTO oauth_clients (
@@ -64,35 +128,12 @@ class SqlOAuthRepository:
                     client.created_at,
                 ),
             )
+        return client
 
     def client_by_id(self, *, client_id: str) -> OAuthClient | None:
         with closing(self._store.connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM oauth_clients WHERE client_id = ?", (client_id,)
-            ).fetchone()
-        return _client(row)
-
-    def client_by_registration(
-        self,
-        *,
-        client_name: str,
-        redirect_uris: tuple[str, ...],
-        grant_types: tuple[str, ...],
-    ) -> OAuthClient | None:
-        """The oldest client registered with exactly this metadata, if any.
-
-        The stored JSON is written by ``insert_client`` alone, so comparing the
-        serialized text is an exact metadata match, not a fuzzy one.
-        """
-        with closing(self._store.connect()) as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM oauth_clients
-                WHERE client_name = ? AND redirect_uris_json = ?
-                  AND grant_types_json = ?
-                ORDER BY created_at, client_id
-                """,
-                (client_name, _json_list(redirect_uris), _json_list(grant_types)),
             ).fetchone()
         return _client(row)
 
@@ -103,29 +144,44 @@ class SqlOAuthRepository:
         error rather than returning zero, which would read as a healthy pass
         that found nothing (audit OPS-03).
         """
-        cutoff = format_iso(
-            (now or datetime.now(tz=UTC))
-            - timedelta(days=self.unused_client_ttl_days)
-        )
+        cutoff = self._cutoff(now)
         try:
             with self._store.transaction() as conn:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM oauth_clients
-                    WHERE created_at < ?
-                      AND client_id NOT IN (
-                        SELECT client_id FROM oauth_authorization_codes
-                      )
-                      AND client_id NOT IN (
-                        SELECT client_id FROM oauth_refresh_tokens
-                      )
-                    """,
-                    (cutoff,),
-                )
-                deleted = max(0, int(getattr(cursor, "rowcount", 0) or 0))
+                deleted = self._prune_unused(conn=conn, cutoff=cutoff, limit=None)
         except Exception as exc:  # noqa: BLE001 -- one sweep must not abort the pass
             return {"deleted": 0, "ok": False, "cutoff": cutoff, "error": str(exc)[:200]}
         return {"deleted": deleted, "ok": True, "cutoff": cutoff}
+
+    def _cutoff(self, now: datetime | None) -> str:
+        return format_iso(
+            (now or datetime.now(tz=UTC))
+            - timedelta(days=self.unused_client_ttl_days)
+        )
+
+    def _prune_unused(self, *, conn: Any, cutoff: str, limit: int | None) -> int:
+        """Delete unused registrations older than ``cutoff``, at most ``limit``.
+
+        ``limit`` None is the full scheduled sweep; a number keeps the work a
+        registration does on its own behalf bounded and predictable. The
+        subquery form (rather than ``DELETE ... LIMIT``) is the one both
+        dialects accept.
+        """
+        if limit is None:
+            cursor = conn.execute(
+                f"DELETE FROM oauth_clients WHERE {_UNUSED_CLIENT_PREDICATE}", (cutoff,)
+            )
+        else:
+            cursor = conn.execute(
+                f"""
+                DELETE FROM oauth_clients WHERE client_id IN (
+                  SELECT client_id FROM oauth_clients
+                  WHERE {_UNUSED_CLIENT_PREDICATE}
+                  ORDER BY created_at LIMIT ?
+                )
+                """,
+                (cutoff, limit),
+            )
+        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
 
     def insert_code(self, *, code: AuthorizationCode) -> None:
         with self._store.transaction() as conn:
