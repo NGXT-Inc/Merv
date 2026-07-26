@@ -7,6 +7,7 @@ import unittest
 from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest.mock import patch
 
 from merv.brain.application.events import (
     EventCatalogEntry,
@@ -16,7 +17,10 @@ from merv.brain.application.events import (
 from merv.brain.artifacts.submissions import ArtifactSubmissionService
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
-from merv.brain.research_core.experiments import ExperimentService
+from merv.brain.research_core.experiments import (
+    TRACKING_EVENT_TYPES,
+    ExperimentService,
+)
 from merv.brain.research_core.facade import ResearchCoreFacade
 
 
@@ -249,6 +253,161 @@ class CommittedEventTest(unittest.TestCase):
             ).fetchone()
         assert row is not None
         self.assertEqual(int(row["count"]), 0)
+
+
+class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
+    """The delivery barrier over the real SQL, not an in-memory stand-in.
+
+    The application tests prove the handler's decisions; only these prove the
+    query behind them, so a filter or ordering regression cannot duplicate a
+    durable event while every lost-ack test stays green.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = StateStore(db_path=Path(self.tmp.name) / "state.sqlite")
+        evidence = ArtifactSubmissionService(
+            store=self.store,
+            association_targets=AssociationTargets(store=self.store),
+        )
+        self.experiments = ExperimentService(
+            store=self.store, evidence_reader=evidence, submissions=evidence
+        )
+        with closing(self.store.connect()) as conn:
+            row = conn.execute("SELECT id FROM projects").fetchone()
+            assert row is not None
+            self.project_id = str(row["id"])
+        self.experiment_id = self.experiments.create(
+            project_id=self.project_id, name="delivery-ledger", intent="test"
+        )["id"]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _record(self, *, run_id: str, delivery_id: int | None) -> dict:
+        return self.experiments.record_mlflow_run(
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
+            run={"run_id": run_id, "status": "RUNNING"},
+            delivery_id=delivery_id,
+        )
+
+    def _tracking_events(self) -> list[dict]:
+        with closing(self.store.connect()) as conn:
+            rows = conn.execute(
+                "SELECT type, payload_json FROM events WHERE target_id = ?"
+                "  AND type IN (?, ?, ?) ORDER BY id",
+                (self.experiment_id, *TRACKING_EVENT_TYPES),
+            ).fetchall()
+        return [
+            {"type": str(row["type"]), **json.loads(str(row["payload_json"]))}
+            for row in rows
+        ]
+
+    def test_sql_lookup_finds_the_delivery_and_the_writer_no_ops_on_a_duplicate(
+        self,
+    ) -> None:
+        self._record(run_id="run_a", delivery_id=41)
+
+        found = self.experiments.tracking_delivery_state(
+            project_id=self.project_id, experiment_id=self.experiment_id,
+            delivery_id=41,
+        )
+        assert found is not None
+        self.assertEqual(found["mlflow_run"]["run_id"], "run_a")
+        # A delivery that never wrote is absent: the query correlates on the
+        # payload key, not on "this experiment has some tracking event".
+        self.assertIsNone(
+            self.experiments.tracking_delivery_state(
+                project_id=self.project_id, experiment_id=self.experiment_id,
+                delivery_id=42,
+            )
+        )
+
+        # The duplicate carries a different run so a no-op is distinguishable
+        # from a re-write that happens to land the same values.
+        replayed = self._record(run_id="run_replayed", delivery_id=41)
+
+        self.assertEqual(replayed["mlflow_run"]["run_id"], "run_a")
+        # The event-returning shape stays total across the no-op: it answers
+        # with the event that landed rather than inventing one.
+        refreshed = self.experiments.record_mlflow_run(
+            project_id=self.project_id,
+            experiment_id=self.experiment_id,
+            run={"run_id": "run_replayed", "status": "RUNNING"},
+            delivery_id=41,
+            return_event=True,
+        )
+        self.assertEqual(refreshed.event.payload["run_id"], "run_a")
+        self.assertEqual(refreshed.event.payload["delivery_id"], 41)
+        self.assertEqual(
+            self._tracking_events(),
+            [
+                {
+                    "type": "experiment.mlflow_run_created",
+                    "run_id": "run_a", "run_name": "", "status": "RUNNING",
+                    "error": "", "previous_run_id": "", "delivery_id": 41,
+                }
+            ],
+        )
+
+    def test_a_rival_write_after_a_negative_read_cannot_duplicate_the_append(
+        self,
+    ) -> None:
+        # The race the barrier exists for: A's ledger read (its own
+        # transaction) finds nothing, A's write commits late anyway, a newer
+        # delivery B commits on top, and only then does A retry.
+        self.assertIsNone(
+            self.experiments.tracking_delivery_state(
+                project_id=self.project_id, experiment_id=self.experiment_id,
+                delivery_id=41,
+            )
+        )
+        self._record(run_id="run_a", delivery_id=41)  # A's delayed commit
+        self._record(run_id="run_rival", delivery_id=99)  # B, the newer outcome
+
+        retried = self._record(run_id="run_a", delivery_id=41)
+
+        # One append per delivery, and A's older outcome does not come back.
+        self.assertEqual(
+            [(event["delivery_id"], event["run_id"]) for event in self._tracking_events()],
+            [(41, "run_a"), (99, "run_rival")],
+        )
+        self.assertEqual(retried["mlflow_run"]["run_id"], "run_rival")
+
+    def test_an_unkeyed_write_is_never_deduplicated(self) -> None:
+        # refresh_tracking_run carries no delivery id; the barrier must not
+        # collapse those writes into the first one.
+        self._record(run_id="run_a", delivery_id=None)
+        self._record(run_id="run_b", delivery_id=None)
+
+        self.assertEqual(
+            [event["run_id"] for event in self._tracking_events()],
+            ["run_a", "run_b"],
+        )
+
+    def test_the_ledger_scan_reads_a_bounded_window(self) -> None:
+        self._record(run_id="run_a", delivery_id=41)
+        self._record(run_id="run_b", delivery_id=42)
+
+        # Proof the LIMIT is really in the query: shrink the window and the
+        # older delivery falls outside it. Production's 200 is far past any
+        # plausible burst of tracking events for one experiment.
+        with patch(
+            "merv.brain.research_core.experiments.TRACKING_DELIVERY_SCAN_LIMIT", 1
+        ):
+            self.assertIsNone(
+                self.experiments.tracking_delivery_state(
+                    project_id=self.project_id, experiment_id=self.experiment_id,
+                    delivery_id=41,
+                )
+            )
+            self.assertIsNotNone(
+                self.experiments.tracking_delivery_state(
+                    project_id=self.project_id, experiment_id=self.experiment_id,
+                    delivery_id=42,
+                )
+            )
 
 
 if __name__ == "__main__":

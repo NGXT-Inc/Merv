@@ -44,7 +44,7 @@ from ..artifacts.ports import (
     SubmissionSealer,
     SubmittedDocument,
 )
-from ..kernel.events import StoredEvent
+from ..kernel.events import StoredEvent, freeze_json_object
 from ..kernel.state.store import BaseStateStore, row_to_dict, rows_to_dicts
 from ..kernel.utils import NotFoundError, ValidationError, WorkflowError
 from ..kernel.utils import new_id
@@ -66,6 +66,10 @@ TRACKING_EVENT_TYPES = (
     "experiment.mlflow_run_unavailable",
     "experiment.mlflow_run_refreshed",
 )
+# A delivery reads its own event moments after writing it, so the newest window
+# of an experiment's tracking events always contains it. The bound keeps the
+# lookup cost flat on a long-lived project instead of growing with its history.
+TRACKING_DELIVERY_SCAN_LIMIT = 200
 
 
 class ExperimentService:
@@ -491,6 +495,26 @@ class ExperimentService:
 
         with self.store.transaction() as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
+            if delivery_id is not None and (
+                landed := self._delivery_event(
+                    conn=conn,
+                    project_id=project_id,
+                    experiment_id=experiment_id,
+                    delivery_id=int(delivery_id),
+                )
+            ) is not None:
+                # The barrier lives here because only here is it atomic with
+                # the append: a caller that reads the ledger in one transaction
+                # and writes in another can be overtaken between the two, and
+                # would then overwrite a newer outcome or append this delivery
+                # twice. Callers may still pre-read as a fast path. The landed
+                # event is returned as this call's own, because it is.
+                return result(
+                    self.get_state(
+                        experiment_id=experiment_id, project_id=project_id, conn=conn
+                    ),
+                    landed,
+                )
             existing = self.get_state(
                 experiment_id=experiment_id,
                 project_id=project_id,
@@ -576,6 +600,53 @@ class ExperimentService:
             state = self.get_state(experiment_id=experiment_id, conn=conn)
             return result(state, event)
 
+    def _delivery_event(
+        self, *, conn, project_id: str, experiment_id: str, delivery_id: int
+    ) -> StoredEvent | None:
+        """This delivery's committed tracking event, when the ledger holds it.
+
+        SQL narrows to the project's tracking events for this experiment —
+        every column the schema offers, since the delivery id itself rides
+        inside opaque payload JSON — over the newest ``LIMIT`` window, which is
+        always where a delivery's own event is. The exact match is decided here
+        rather than by a ``LIKE`` on the serialized payload: a narrowing filter
+        that missed would append a duplicate, and it is the bound, not the
+        pattern, that makes the read cheap.
+        """
+        rows = conn.execute(
+            """
+            SELECT id, type, target_type, target_id, payload_json, created_at
+            FROM events
+            WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
+              AND type IN (?, ?, ?)
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (
+                project_id,
+                experiment_id,
+                *TRACKING_EVENT_TYPES,
+                TRACKING_DELIVERY_SCAN_LIMIT,
+            ),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except json.JSONDecodeError:  # pragma: no cover - defensive
+                continue
+            if payload.get("delivery_id") != int(delivery_id):
+                continue
+            return StoredEvent(
+                id=int(row["id"]),
+                project_id=project_id,
+                type=str(row["type"]),
+                target_type=str(row["target_type"]),
+                target_id=str(row["target_id"]),
+                payload=freeze_json_object(payload),
+                created_at=str(row["created_at"]),
+            )
+        return None
+
     def tracking_delivery_state(
         self, *, project_id: str | None = None, experiment_id: str, delivery_id: int
     ) -> dict[str, Any] | None:
@@ -583,29 +654,21 @@ class ExperimentService:
 
         Answers "did THIS delivery's write land?" from the append-only ledger,
         so a stale identical run id or adapter error from an earlier delivery
-        can never be mistaken for it.
+        can never be mistaken for it. This is the callers' fast path; the
+        binding barrier is the same check inside ``record_mlflow_run``.
         """
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
-            rows = conn.execute(
-                """
-                SELECT payload_json FROM events
-                WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
-                  AND type IN (?, ?, ?)
-                ORDER BY id DESC
-                """,
-                (project_id, experiment_id, *TRACKING_EVENT_TYPES),
-            ).fetchall()
-            for row in rows:
-                try:
-                    payload = json.loads(str(row["payload_json"] or "{}"))
-                except json.JSONDecodeError:  # pragma: no cover - defensive
-                    continue
-                if payload.get("delivery_id") == int(delivery_id):
-                    return self.get_state(
-                        experiment_id=experiment_id, project_id=project_id, conn=conn
-                    )
-        return None
+            if self._delivery_event(
+                conn=conn,
+                project_id=project_id,
+                experiment_id=experiment_id,
+                delivery_id=int(delivery_id),
+            ) is None:
+                return None
+            return self.get_state(
+                experiment_id=experiment_id, project_id=project_id, conn=conn
+            )
 
     def _evaluate_gate(self, *, conn, experiment: dict[str, Any]) -> GateEvaluation:
         """Collect current facts once for enforcement, state, and guidance."""

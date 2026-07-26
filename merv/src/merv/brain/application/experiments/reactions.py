@@ -150,7 +150,7 @@ class ExperimentReactions:
     def _ensure_tracking_run(
         self, *, state: ExperimentState, replace_terminal: bool, delivery_id: int
     ) -> tuple[ExperimentState, bool]:
-        """Return the state plus whether this call attempted a tracking run."""
+        """Return the state plus whether a tracking outcome is this call's to report."""
         if self.tracking is None:
             return state, False
         capabilities = self.tracking.capabilities()
@@ -165,6 +165,20 @@ class ExperimentReactions:
             return state, False
         experiment_id = str(state.get("id") or "")
         project_id = str(state.get("project_id") or "")
+        # Redelivery of an already-served event: the guard above only catches
+        # the run-id shape, so an error-only outcome would otherwise create a
+        # second MLflow run before the writer's barrier discarded the write.
+        # Reporting the durable outcome again reproduces the original answer.
+        if (served := self._landed_tracking_run(
+            project_id=project_id, experiment_id=experiment_id,
+            delivery_id=delivery_id,
+        )) is not None:
+            LOGGER.warning(
+                "Redelivered MLflow tracking event for experiment %s (delivery "
+                "%s) already has a durable outcome; not creating a second run.",
+                experiment_id, delivery_id,
+            )
+            return served, True
         attempt_index = int(state.get("attempt_index") or 1)
         created: CreateRunResult
         try:
@@ -216,7 +230,9 @@ class ExperimentReactions:
         # A failed write can still have committed (a lost acknowledgement), and
         # the tracking event is unconstrained: read the ledger for THIS
         # delivery's key before writing again, so an ambiguous commit stays one
-        # durable record, not two.
+        # durable record, not two. The retry re-checks the same key inside its
+        # own transaction, so this read is the fast path that also names the
+        # currently durable row — never the barrier that guarantees one append.
         if (landed := self._landed_tracking_run(
             project_id=project_id, experiment_id=experiment_id,
             delivery_id=delivery_id,

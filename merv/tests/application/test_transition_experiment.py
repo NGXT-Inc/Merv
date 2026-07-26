@@ -794,7 +794,9 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         self.assertIn("research.tracking_delivery", order)
         # The correlation key is the delivery, not the run id or the message.
         self.assertEqual(research.persist_calls[0]["delivery_id"], 41)
-        self.assertEqual(research.delivery_reads, [41])
+        # Two reads on the same key: the redelivery pre-check before the first
+        # write, then the lost-acknowledgement re-read before the retry.
+        self.assertEqual(research.delivery_reads, [41, 41])
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
         self.assertNotIn("mlflow_warning", result)
         self.assertIn("is durable after all", "\n".join(logs.output))
@@ -825,7 +827,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             )
 
         self.assertEqual(len(research.persist_calls), 2)
-        self.assertEqual(research.delivery_reads, [41])
+        self.assertEqual(research.delivery_reads, [41, 41])
         self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
 
     def test_start_ignores_a_prior_deliverys_identical_error_as_proof(self) -> None:
@@ -862,7 +864,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
             )
 
         self.assertEqual(len(research.persist_calls), 2)
-        self.assertEqual(research.delivery_reads, [41])
+        self.assertEqual(research.delivery_reads, [41, 41])
         self.assertIs(research.ledger[41], persisted)
         self.assertEqual(result["mlflow_warning"]["error"], outage)
 
@@ -899,10 +901,45 @@ class StartAndRetryTransitionTest(unittest.TestCase):
 
         self.assertEqual(len(research.persist_calls), 1)
         self.assertEqual(len(tracking.create_calls), 1)
-        self.assertEqual(research.delivery_reads, [41])
+        self.assertEqual(research.delivery_reads, [41, 41])
         # The durable truth, not this delivery's intent.
         self.assertEqual(result["mlflow_run"]["run_id"], "run_rival")
         self.assertIn("Current durable run: run_rival", "\n".join(logs.output))
+
+    def test_start_redelivery_of_an_error_only_outcome_creates_no_second_run(
+        self,
+    ) -> None:
+        # Redelivery of an already-served event. The error-only outcome carries
+        # no run id, so the "already has a run" guard cannot catch it: without
+        # the ledger pre-check this would create a second MLflow run whose
+        # write the writer's barrier then discards, orphaning it.
+        outage = "MLflow run creation failed: tracking control plane down"
+        served = _state(
+            "running",
+            run={"run_id": None, "status": "", "error": outage},
+            token="served",
+        )
+        use_case, research, tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            event=_event("retry_running"),
+            create_result=_created_run(),
+        )
+        research.ledger[41] = served
+        research.current = served
+
+        with self.assertLogs(REACTIONS_LOGGER, level="WARNING") as logs:
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="retry_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(tracking.create_calls, [])
+        self.assertEqual(research.persist_calls, [])
+        self.assertEqual(research.delivery_reads, [41])
+        # The redelivery reproduces the answer the first delivery gave.
+        self.assertEqual(result["mlflow_warning"]["error"], outage)
+        self.assertIn("already has a durable outcome", "\n".join(logs.output))
 
     def test_start_retries_when_the_ledger_shows_no_durable_write(self) -> None:
         # A ledger with no entry for this delivery means the first write really
