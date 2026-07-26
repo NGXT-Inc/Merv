@@ -67,22 +67,34 @@ TRACKING_EVENT_TYPES = (
     "experiment.mlflow_run_refreshed",
 )
 # The ledger a delivery is proved by: the only types a KEYED write can append.
-# `record_mlflow_run` is the sole writer of a delivery id, and it names the type
-# itself on that path — its `event_type` override is passed only by
-# `refresh_tracking_run`, which never carries a delivery id. Excluding
-# `refreshed` is therefore lossless for the lookup, and it is what makes the
-# window below bounded by real transition deliveries (a handful per experiment)
-# instead of by unkeyed `mlflow.finalize_run` refreshes, which an agent may
-# legitimately append without limit.
+# `record_mlflow_run` is the sole writer of a delivery id and derives the type
+# itself on that path — `reject_keyed_event_type_override` below makes that an
+# enforced invariant rather than a convention, so excluding `refreshed` here is
+# lossless. It also keeps the lookup off the unkeyed `mlflow.finalize_run`
+# refreshes, which an agent may legitimately append without limit.
 TRACKING_DELIVERY_EVENT_TYPES = (
     "experiment.mlflow_run_created",
     "experiment.mlflow_run_unavailable",
 )
-# A delivery reads its own event moments after writing it, so the newest window
-# of an experiment's keyed tracking events always contains it. The bound is a
-# backstop that keeps the lookup cost flat on a long-lived project rather than
-# the barrier's correctness argument — that is the type filter above.
-TRACKING_DELIVERY_SCAN_LIMIT = 200
+
+
+def reject_keyed_event_type_override(
+    *, event_type: str | None, delivery_id: int | None
+) -> None:
+    """A keyed tracking write names its own event type; an override is invalid.
+
+    The delivery lookup can only find events of the types a keyed write derives,
+    so an override would hide a committed delivery from its own replay and
+    append it twice. Enforced at the writer, where it is binding.
+    """
+    if event_type is not None and delivery_id is not None:
+        raise ValueError(
+            "A keyed tracking write derives its own event type: "
+            f"event_type={event_type!r} is invalid alongside "
+            f"delivery_id={delivery_id!r}. Keyed writes may only append "
+            + " or ".join(TRACKING_DELIVERY_EVENT_TYPES)
+            + "."
+        )
 
 
 class ExperimentService:
@@ -495,7 +507,14 @@ class ExperimentService:
         """``delivery_id`` names the committed event this tracking outcome
         belongs to. It rides in the append-only event payload, so its presence
         there is exact proof this delivery's write committed — the mutable
-        experiments row cannot distinguish it from an identical earlier one."""
+        experiments row cannot distinguish it from an identical earlier one.
+
+        A keyed write derives its own event type; pairing ``delivery_id`` with
+        an ``event_type`` override is rejected here, at the only boundary that
+        can bind it."""
+        reject_keyed_event_type_override(
+            event_type=event_type, delivery_id=delivery_id
+        )
 
         def result(
             state: dict[str, Any], event: StoredEvent
@@ -619,13 +638,17 @@ class ExperimentService:
         """This delivery's committed tracking event, when the ledger holds it.
 
         SQL narrows to the experiment's KEYED tracking events — the only types a
-        delivery can ever have written — and reads the newest window of them.
-        Unkeyed refreshes are excluded so they cannot push an older delivery out
-        of that window: a false miss here appends a duplicate and creates a
-        second MLflow run. Every column the schema offers is selected, since the
-        delivery id itself rides inside opaque payload JSON, and the exact match
-        is decided in Python rather than by a ``LIKE`` on the serialized
-        payload.
+        delivery can ever have written — and reads ALL of them, newest first.
+        The scan is deliberately unbounded: nothing caps how many keyed events
+        one experiment accrues (a `retry_running` loop during an MLflow outage
+        appends an `mlflow_run_unavailable` per attempt), so any row limit is a
+        false miss waiting to happen, and a false miss here appends a duplicate
+        and creates a second MLflow run. Cost stays flat instead: the predicate
+        matches `idx_events_target(project_id, target_type, target_id, id)`, so
+        the scan is index-bounded to one experiment and stops at the first
+        match. Every column the schema offers is selected, since the delivery id
+        itself rides inside opaque payload JSON, and the exact match is decided
+        in Python rather than by a ``LIKE`` on the serialized payload.
         """
         placeholders = ", ".join("?" for _ in TRACKING_DELIVERY_EVENT_TYPES)
         rows = conn.execute(
@@ -635,14 +658,8 @@ class ExperimentService:
             WHERE project_id = ? AND target_type = 'experiment' AND target_id = ?
               AND type IN ({placeholders})
             ORDER BY id DESC
-            LIMIT ?
             """,
-            (
-                project_id,
-                experiment_id,
-                *TRACKING_DELIVERY_EVENT_TYPES,
-                TRACKING_DELIVERY_SCAN_LIMIT,
-            ),
+            (project_id, experiment_id, *TRACKING_DELIVERY_EVENT_TYPES),
         ).fetchall()
         for row in rows:
             try:

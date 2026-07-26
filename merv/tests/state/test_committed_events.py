@@ -7,7 +7,6 @@ import unittest
 from contextlib import closing
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from unittest.mock import patch
 
 from merv.brain.application.events import (
     EventCatalogEntry,
@@ -18,7 +17,6 @@ from merv.brain.artifacts.submissions import ArtifactSubmissionService
 from merv.brain.kernel.state.store import StateStore
 from merv.brain.research_core.association_targets import AssociationTargets
 from merv.brain.research_core.experiments import (
-    TRACKING_DELIVERY_SCAN_LIMIT,
     TRACKING_EVENT_TYPES,
     ExperimentService,
 )
@@ -387,14 +385,13 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             ["run_a", "run_b"],
         )
 
-    def test_unkeyed_refreshes_never_push_a_delivery_out_of_the_window(self) -> None:
+    def test_unkeyed_refreshes_are_never_mistaken_for_a_delivery(self) -> None:
         # mlflow.finalize_run appends an unkeyed refresh every time an agent
-        # calls it, without limit. If those counted against the scan window, a
-        # long-running experiment would age its own delivery out and redelivery
-        # would create a second MLflow run — so the window sees keyed events
-        # only.
+        # calls it, without limit. Those carry no delivery id and are excluded
+        # from the lookup by type, so no volume of them can make a committed
+        # delivery look absent and create a second MLflow run.
         self._record(run_id="run_a", delivery_id=41)
-        for index in range(TRACKING_DELIVERY_SCAN_LIMIT + 5):
+        for index in range(205):
             self.experiments.record_mlflow_run(
                 project_id=self.project_id,
                 experiment_id=self.experiment_id,
@@ -418,28 +415,64 @@ class TrackingDeliveryLedgerSqlTest(unittest.TestCase):
             [("experiment.mlflow_run_created", "run_a")],
         )
 
-    def test_the_ledger_scan_reads_a_bounded_window(self) -> None:
+    def test_the_oldest_delivery_survives_an_unbounded_run_of_keyed_events(
+        self,
+    ) -> None:
+        # Nothing caps an experiment's keyed tracking events: a `retry_running`
+        # loop during an MLflow outage appends one `mlflow_run_unavailable` per
+        # attempt while the experiment never leaves `running`. Any row limit on
+        # the lookup would age the FIRST delivery out and let its replay write a
+        # second MLflow run, so the scan carries none.
         self._record(run_id="run_a", delivery_id=41)
-        self._record(run_id="run_b", delivery_id=42)
+        for index in range(205):
+            self._record(run_id=f"run_{index}", delivery_id=100 + index)
 
-        # Proof the LIMIT is really in the query: shrink the window and the
-        # older delivery falls outside it. Production's 200 is far past any
-        # plausible burst of tracking events for one experiment.
-        with patch(
-            "merv.brain.research_core.experiments.TRACKING_DELIVERY_SCAN_LIMIT", 1
-        ):
-            self.assertIsNone(
-                self.experiments.tracking_delivery_state(
-                    project_id=self.project_id, experiment_id=self.experiment_id,
-                    delivery_id=41,
-                )
+        self.assertIsNotNone(
+            self.experiments.tracking_delivery_state(
+                project_id=self.project_id, experiment_id=self.experiment_id,
+                delivery_id=41,
             )
-            self.assertIsNotNone(
-                self.experiments.tracking_delivery_state(
-                    project_id=self.project_id, experiment_id=self.experiment_id,
-                    delivery_id=42,
-                )
+        )
+        before = self._tracking_events()
+        replayed = self._record(run_id="run_redelivered", delivery_id=41)
+
+        # The replay is a no-op that answers with the currently durable run,
+        # not with its own stale intent, and appends nothing.
+        self.assertEqual(replayed["mlflow_run"]["run_id"], "run_204")
+        self.assertEqual(self._tracking_events(), before)
+        self.assertEqual(
+            [event for event in before if event.get("delivery_id") == 41],
+            [
+                {
+                    "type": "experiment.mlflow_run_created",
+                    "run_id": "run_a", "run_name": "", "status": "RUNNING",
+                    "error": "", "previous_run_id": "", "delivery_id": 41,
+                }
+            ],
+        )
+
+    def test_a_keyed_write_rejects_an_event_type_override(self) -> None:
+        # The type filter in the delivery lookup is only lossless because a
+        # keyed write cannot name its own type: an override would commit an
+        # event the replay can never see, and the replay would write again.
+        with self.assertRaises(ValueError) as raised:
+            self.experiments.record_mlflow_run(
+                project_id=self.project_id,
+                experiment_id=self.experiment_id,
+                run={"run_id": "run_a", "status": "RUNNING"},
+                event_type="experiment.mlflow_run_refreshed",
+                delivery_id=41,
             )
+
+        self.assertIn("delivery_id=41", str(raised.exception))
+        # Rejected before the transaction: no event, no experiments-row write.
+        self.assertEqual(self._tracking_events(), [])
+        self.assertIsNone(
+            self.experiments.tracking_delivery_state(
+                project_id=self.project_id, experiment_id=self.experiment_id,
+                delivery_id=41,
+            )
+        )
 
 
 if __name__ == "__main__":

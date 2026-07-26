@@ -315,11 +315,21 @@ class ComponentFacadeTest(unittest.TestCase):
                 project_id="proj_1",
                 experiment_id="exp_1",
                 run=run,
-                event_type="experiment.mlflow_run_refreshed",
                 delivery_id=41,
             ),
             service.state,
         )
+        # A keyed write derives its own event type: the pairing the contract's
+        # overloads forbid is refused at the seam too, before it reaches a
+        # service that would write an event the delivery lookup cannot find.
+        with self.assertRaises(ValueError):
+            facade.record_tracking_run(
+                project_id="proj_1",
+                experiment_id="exp_1",
+                run=run,
+                event_type="experiment.mlflow_run_refreshed",
+                delivery_id=41,
+            )
         self.assertIs(
             facade.tracking_delivery_state(
                 project_id="proj_1", experiment_id="exp_1", delivery_id=41
@@ -370,7 +380,7 @@ class ComponentFacadeTest(unittest.TestCase):
                         "project_id": "proj_1",
                         "experiment_id": "exp_1",
                         "run": run,
-                        "event_type": "experiment.mlflow_run_refreshed",
+                        "event_type": None,
                         "delivery_id": 41,
                     },
                 ),

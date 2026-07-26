@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypedDict, Unpack, cast, runtime_checkable
+from typing import (
+    Any,
+    Protocol,
+    TypedDict,
+    Unpack,
+    cast,
+    overload,
+    runtime_checkable,
+)
 
 from ..kernel.events import StoredEvent
 from .domain.graph_lint import MAX_GRAPH_NODES, graph_problems
@@ -15,7 +23,7 @@ from .domain.vocabulary import (
     EXPERIMENT_TERMINAL_STATUSES,
     REVIEW_VERDICT_VALUES,
 )
-from .experiments import ExperimentService
+from .experiments import ExperimentService, reject_keyed_event_type_override
 from .graph_refs import GraphRefResolver
 from .gate_evaluation import GateEvaluation, RequirementEvaluation
 from .reflections import ReflectionService
@@ -109,14 +117,26 @@ class ResearchCore(Protocol):
         project_id: str | None = None,
     ) -> CommittedExperimentTransition: ...
 
+    # Two shapes, never one: a KEYED write derives its own event type, so the
+    # contract does not admit `event_type` beside `delivery_id`.
+    @overload
     def record_tracking_run(
         self,
         *,
         project_id: str,
         experiment_id: str,
         run: PersistedRunState,
-        event_type: str | None = None,
-        delivery_id: int | None = None,
+        delivery_id: int,
+    ) -> ExperimentState: ...
+
+    @overload
+    def record_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: PersistedRunState,
+        event_type: str,
     ) -> ExperimentState: ...
 
     def tracking_delivery_state(
@@ -246,6 +266,26 @@ class ResearchCoreFacade:
             project_id=project_id,
         )
 
+    @overload
+    def record_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: PersistedRunState,
+        delivery_id: int,
+    ) -> ExperimentState: ...
+
+    @overload
+    def record_tracking_run(
+        self,
+        *,
+        project_id: str,
+        experiment_id: str,
+        run: PersistedRunState,
+        event_type: str,
+    ) -> ExperimentState: ...
+
     def record_tracking_run(
         self,
         *,
@@ -255,6 +295,11 @@ class ResearchCoreFacade:
         event_type: str | None = None,
         delivery_id: int | None = None,
     ) -> ExperimentState:
+        # The overloads above forbid the pairing statically; this rejects it for
+        # callers the type checker never sees.
+        reject_keyed_event_type_override(
+            event_type=event_type, delivery_id=delivery_id
+        )
         return cast(
             ExperimentState,
             self._experiments.record_mlflow_run(
