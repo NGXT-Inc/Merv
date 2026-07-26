@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError as PydanticValidationError
 
 from ....kernel.env import mlflow_suspended
 from ....kernel.utils import (
     NotFoundError,
+    ResearchPluginError,
     ValidationError,
 )
 from ....kernel.version import CLIENT_VERSION_HEADER, MIN_PROXY_VERSION, is_below_floor
@@ -25,8 +27,10 @@ from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import (GLOBAL_MUTATOR_PREFIXES, RefusalLedger, attribute_request,
-                     is_local_origin, open_hosted_operator_denial, operator_denial,
+from .shared import (CallLedger, GLOBAL_MUTATOR_PREFIXES, RefusalLedger,
+                     bind_request_principal, is_local_origin, ledger_direct_call,
+                     ledger_refusal, ledger_tool_refusal,
+                     open_hosted_operator_denial, operator_denial,
                      operator_membership_recovery)
 from . import oauth, project_keys
 
@@ -182,6 +186,7 @@ class ToolInvocationGateway:
     sandboxes: SandboxFacade
     surface: HttpSurfacePolicy
     projects: ProjectAuthorizer
+    ledger: CallLedger | None = None
 
     def call(
         self,
@@ -195,7 +200,39 @@ class ToolInvocationGateway:
         base_url: str = "",  # renders the artifact.submit upload one-liner
     ) -> dict[str, Any]:
         arguments = dict(arguments or {})
-        context = dict(context or {})
+        scope = str(arguments.get("project_id") or project_scope or "")
+        try:
+            plan = self._preflight(
+                name=name, arguments=arguments, context=dict(context or {}),
+                project_scope=project_scope, activity_source=activity_source,
+                principal=principal, base_url=base_url)
+        except ResearchPluginError as exc:
+            # Only PRE-dispatch refusals reach here — repo_root, membership, the
+            # key project-create block. Legacy /mcp/call earns these too, and
+            # without this line the caller's refusal would leave no evidence.
+            ledger_tool_refusal(self.ledger, tool=name, source=activity_source,
+                                project_id=scope, exc=exc)
+            raise
+        return self._dispatch(name=name, arguments=arguments, plan=plan,
+                              activity_source=activity_source, project_id=scope)
+
+    def _preflight(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        context: dict[str, Any],
+        project_scope: str | None,
+        activity_source: str,
+        principal: Any | None,
+        base_url: str,
+    ) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any]]:
+        """Every denial a call can earn before dispatch, plus the kwargs it needs.
+
+        Split from dispatch so one ``except`` owns the durable refusal row: past
+        this point the dispatcher and the hosted sandbox route each mint their
+        own, and a blanket handler would double-count them.
+        """
         contract = TOOL_MANIFEST.get(name)
         # INV-5: an MCP call from any non-local principal (mk_/rr_sk_/JWT) is
         # confined to public tools by the dispatcher; local composition is not.
@@ -260,13 +297,7 @@ class ToolInvocationGateway:
                 if project_scope and project_id != project_scope:
                     raise NotFoundError(f"project not found: {project_scope}")
                 call_kwargs["telemetry_project_id"] = project_id
-            return self.tools.call_tool(
-                name=name,
-                arguments=arguments,
-                activity_source=activity_source,
-                internal_kwargs=internal_kwargs,
-                **call_kwargs,
-            )
+            return contract, policy, internal_kwargs, call_kwargs
         if (
             contract is not None
             and contract.scope_strategy == "linked-project"
@@ -275,23 +306,44 @@ class ToolInvocationGateway:
             raise ValidationError(
                 "project_id is required", details={"field": "project_id"}
             )
+        return contract, policy, internal_kwargs, call_kwargs
+
+    def _dispatch(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        plan: tuple[Any, Any, dict[str, Any] | None, dict[str, Any]],
+        activity_source: str,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Run the pre-flighted call. Both routes write their own ledger row."""
+        contract, policy, internal_kwargs, call_kwargs = plan
         if (
             self.surface.hosted_control
             and contract is not None
             and contract.hosted_control_sandbox_lookup
+            and policy is None
         ):
             try:
                 request = contract.input_model.model_validate(arguments)
             except PydanticValidationError as exc:
-                raise ValidationError(
+                refusal = ValidationError(
                     "invalid tool arguments",
                     details={"tool": name, "errors": exc.errors()},
-                ) from exc
-            return self.sandboxes.get(
-                experiment_id=request.experiment_id,
-                project_id=request.project_id,
-                tenant_id=None,
-                sandbox_uid=request.sandbox_uid,
+                )
+                ledger_tool_refusal(self.ledger, tool=name, source=activity_source,
+                                    project_id=project_id, exc=refusal)
+                raise refusal from exc
+            return ledger_direct_call(
+                self.ledger, tool=name, source=activity_source,
+                project_id=project_id, arguments=arguments,
+                run=lambda: self.sandboxes.get(
+                    experiment_id=request.experiment_id,
+                    project_id=request.project_id,
+                    tenant_id=None,
+                    sandbox_uid=request.sandbox_uid,
+                ),
             )
         return self.tools.call_tool(
             name=name,
@@ -322,6 +374,10 @@ class ToolInvocationGateway:
 def install_request_middleware(
     http: FastAPI, *, authenticator: RequestAuthenticator,
     authorizer: ProjectAuthorizer, ledger: RefusalLedger | None = None) -> None:
+    # Hosted WITHOUT a verifier: nobody authenticates, so an undenied caller is
+    # an anonymous remote one, not this machine's trusted operator.
+    open_mode = authenticator.surface.hosted_control and authenticator.verifier is None
+
     @http.middleware("http")
     async def reject_foreign_origins(request: Request, call_next):
         origin = request.headers.get("origin")
@@ -346,8 +402,13 @@ def install_request_middleware(
         elif denied is None and authenticator.surface.hosted_control:
             # OPEN hosted mode (no verifier): still operator-gate global mutators.
             denied = open_hosted_operator_denial(request)
-        attribute_request(request, denied=denied, ledger=ledger)
-        return denied if denied is not None else await call_next(request)
+        bind_request_principal(request, denied=denied, open_mode=open_mode)
+        if denied is None:
+            return await call_next(request)
+        # Off the event loop: a 401 storm against a stalled database must not
+        # queue every unrelated request behind the durable row it is writing.
+        await run_in_threadpool(ledger_refusal, request, denied=denied, ledger=ledger)
+        return denied
 
 
 def install_auth_routes(

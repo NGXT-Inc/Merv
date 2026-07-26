@@ -153,7 +153,12 @@ class CleanupService:
             return _sweep_failure(exc)
 
     def prune_tool_calls(self, *, now: datetime | None = None) -> dict[str, Any]:
-        """Bounded retention sweep over the durable tool-call ledger."""
+        """Bounded retention sweep over the durable tool-call ledger.
+
+        One call clears the horizon in batches, so an operator pass is not
+        rate-limited to a single batch. It is a supplement, not the schedule:
+        the ledger's prune also rides the brain's own in-process timer.
+        """
         return self._prune(ledger=self.tool_call_ledger, now=now)
 
     def prune_oauth_clients(self, *, now: datetime | None = None) -> dict[str, Any]:

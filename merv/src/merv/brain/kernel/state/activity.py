@@ -19,6 +19,13 @@ RESULT_LOG_MAX_BYTES = 16 * 1024
 # line, capped, so errors group without the column becoming a payload store.
 LEDGER_ERROR_MAX_CHARS = 200
 
+# Every durable LABEL column (tool, source, project_id, target_id, error_code,
+# request/principal id) is indexed and fed by caller-controlled text: an MCP
+# method name, a query-string project_id. Uncapped, one hostile caller both
+# amplifies the table and its three indexes and parks a credential in a column
+# a human will later read. Bound them here, at the one writer.
+LEDGER_LABEL_MAX_CHARS = 120
+
 SENSITIVE_KEYS = {
     "reviewer_capability",
     "capability",
@@ -49,6 +56,47 @@ def scrub_secret_text(text: str) -> str:
     if "/api/" in text:
         text = _UPLOAD_TOKEN_URL_RE.sub(r"\1<redacted>", text)
     return text
+
+
+# Presigned URLs are not the only credential that reaches a persisted column.
+# An auth failure quotes the header it rejected, and a caller can put anything
+# in a label; both land in the durable ledger. These three shapes cover it:
+# a bearer/basic header value, a named credential field, and this system's own
+# minted secrets (plus the common third-party prefixes and raw JWTs). The
+# length floors keep ordinary identifiers — `rp_run`, `mk_test` — out.
+_BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+_CREDENTIAL_FIELD_RE = re.compile(
+    r"(?i)\b(authorization|x-admin-token|api[_-]?key|access[_-]?token"
+    r"|refresh[_-]?token|password|secret)\s*[:=]\s*[^\s,;&'\"]+"
+)
+_TOKEN_SHAPE_RE = re.compile(
+    r"\b(?:rr_sk_|mk_|mac_|mrt_|rp_|hf_|ghp_|sk-)[A-Za-z0-9_-]{20,}"
+    r"|\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*"
+)
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def scrub_credentials(text: str) -> str:
+    """Redact bearer/authorization values and key-shaped strings.
+
+    Applied on the durable path only (ledger labels and ``error_head``): the
+    in-memory rings keep the raw text the debug UI drills into, and paying for
+    three regex passes over every logged result would buy nothing there.
+    """
+    text = _BEARER_RE.sub(r"\1 <redacted>", text)
+    text = _CREDENTIAL_FIELD_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    return _TOKEN_SHAPE_RE.sub("<redacted>", text)
+
+
+def ledger_label(value: Any) -> str:
+    """Bound and de-fang a value on its way into an indexed label column.
+
+    Pre-trimmed before scrubbing so a multi-megabyte method name costs a slice
+    rather than a regex sweep, while a token straddling the final cap is still
+    seen whole by the scrubber.
+    """
+    text = _CONTROL_CHARS_RE.sub(" ", str(value or "")[: LEDGER_LABEL_MAX_CHARS * 4])
+    return scrub_credentials(scrub_secret_text(text))[:LEDGER_LABEL_MAX_CHARS]
 ID_KEYS = {
     "project_id",
     "claim_id",
@@ -178,7 +226,10 @@ def args_digest(*, arguments: Any) -> str:
 def error_head(*, error: str) -> str:
     """First line of an error, secret-scrubbed and capped for the ledger."""
     lines = str(error or "").strip().splitlines()
-    return scrub_secret_text(lines[0])[:LEDGER_ERROR_MAX_CHARS] if lines else ""
+    if not lines:
+        return ""
+    head = lines[0][: LEDGER_ERROR_MAX_CHARS * 4]
+    return scrub_credentials(scrub_secret_text(head))[:LEDGER_ERROR_MAX_CHARS]
 
 
 def payload_chars(*, value: Any) -> int:

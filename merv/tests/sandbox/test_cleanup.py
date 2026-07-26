@@ -277,6 +277,49 @@ class CleanupSweepTest(unittest.TestCase):
             ]
         self.assertNotIn("ancient", remaining)
 
+    def test_retention_runs_in_process_without_any_operator_or_cron(self) -> None:
+        """Production schedules no cleanup pass, so the 30-day horizon has to be
+        enforced by the one timer this process already owns."""
+        daemons = self.app.sandboxes.daemons
+        self.assertEqual(daemons.periodic_maintenance, self.app.tool_ledger.prune)
+
+        self.app.call_tool("claim.list", {"project_id": self.project_id})
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO tool_calls (ts, tool, source, status) VALUES (?, ?, ?, ?)",
+                ("2020-01-01T00:00:00Z", "ancient", "mcp", "ok"),
+            )
+
+        self.assertTrue(daemons.maintenance_tick(now=0.0))
+        with self.store.transaction() as conn:
+            remaining = [
+                str(row["tool"])
+                for row in conn.execute("SELECT tool FROM tool_calls").fetchall()
+            ]
+        self.assertNotIn("ancient", remaining)
+        self.assertIn("claim.list", remaining)
+
+    def test_the_maintenance_tick_keeps_its_own_low_frequency_cadence(self) -> None:
+        """It rides the reaper's tick without running on every one of them."""
+        runs: list[int] = []
+        daemons = self.app.sandboxes.daemons
+        daemons.periodic_maintenance = lambda: runs.append(1)
+        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
+
+        self.assertTrue(daemons.maintenance_tick(now=0.0))
+        self.assertFalse(daemons.maintenance_tick(now=60.0))
+        self.assertTrue(daemons.maintenance_tick(now=100_000.0))
+        self.assertEqual(len(runs), 2)
+
+    def test_a_failing_maintenance_callback_never_kills_the_reaper(self) -> None:
+        def explode() -> None:
+            raise RuntimeError("database unreachable")
+
+        daemons = self.app.sandboxes.daemons
+        daemons.periodic_maintenance = explode
+        daemons._maintenance_due = 0.0  # noqa: SLF001 -- the cadence under test
+        self.assertTrue(daemons.maintenance_tick(now=0.0))
+
     def test_a_failing_blob_sweep_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingBlobs:
             def sweep_expired(self, *, now):

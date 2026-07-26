@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from merv.brain.kernel.request_context import begin_request, bind_principal, reset_request
+from merv.brain.kernel.state import tool_call_ledger as ledger_module
+from merv.brain.kernel.state.activity import LEDGER_LABEL_MAX_CHARS
 from merv.brain.kernel.state.store import (
     MIGRATIONS,
     SCHEMA,
@@ -26,6 +31,18 @@ from merv.brain.kernel.state.tool_call_ledger import (
     TOOL_CALL_RETENTION_DAYS_ENV_VAR,
     ToolCallLedger,
 )
+
+
+class CountingStore:
+    """A store that reports how many connections the ledger actually opened."""
+
+    def __init__(self, store: StateStore) -> None:
+        self._store = store
+        self.connects = 0
+
+    def connect(self):
+        self.connects += 1
+        return self._store.connect()
 
 LEDGER_INDEX_NAMES = frozenset(
     statement.split("IF NOT EXISTS ")[1].split()[0]
@@ -207,6 +224,102 @@ class ToolCallLedgerTest(unittest.TestCase):
         # brute-forced back out of the digest either.
         self.assertEqual(first["args_digest"], second["args_digest"])
 
+    def test_every_label_column_is_capped_before_it_is_indexed(self) -> None:
+        """Storage amplification, closed at the writer: an indexed column can
+        never take a caller's multi-kilobyte string."""
+        self.ledger.reject(
+            tool="tools/" + "z" * 4000,
+            source="m" * 500,
+            error_code="e" * 500,
+            project_id="p" * 3000,
+        )
+        (row,) = self._rows()
+        for column in ("tool", "source", "project_id", "error_code"):
+            with self.subTest(column=column):
+                self.assertLessEqual(len(str(row[column])), LEDGER_LABEL_MAX_CHARS)
+
+    def test_a_token_bearing_label_never_lands_verbatim(self) -> None:
+        """The reviewer's scenario: an unauthenticated caller puts a credential
+        in ?project_id= or in an MCP method name and it is persisted."""
+        self.ledger.reject(
+            tool="Authorization: Bearer sk-livetoken0123456789abcdef",
+            source="http",
+            project_id="mk_" + "a" * 40,
+            error="denied for mk_" + "b" * 40,
+        )
+        (row,) = self._rows()
+        printed = str(row)
+        self.assertNotIn("sk-livetoken0123456789abcdef", printed)
+        self.assertNotIn("a" * 40, printed)
+        self.assertNotIn("b" * 40, printed)
+        self.assertIn("<redacted>", str(row["tool"]))
+        self.assertIn("<redacted>", str(row["error_head"]))
+
+    def test_control_characters_never_reach_a_label(self) -> None:
+        self.ledger.reject(tool="tools/\x00call\nnext", source="mcp")
+        (row,) = self._rows()
+        self.assertNotIn("\x00", str(row["tool"]))
+        self.assertNotIn("\n", str(row["tool"]))
+
+    def test_a_jwt_in_an_error_is_scrubbed(self) -> None:
+        token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJlZmFrZQ"
+        self.ledger.record(
+            tool="project", source="http", status="error", error=f"bad token {token}"
+        )
+        (row,) = self._rows()
+        self.assertNotIn(token, str(row["error_head"]))
+        self.assertIn("<redacted>", str(row["error_head"]))
+
+    def test_the_writer_opens_one_connection_and_reuses_it(self) -> None:
+        store = CountingStore(self.store)
+        ledger = ToolCallLedger(store=store, env={})
+        for _ in range(5):
+            ledger.record(tool="claim.list", source="mcp", arguments={})
+        self.assertEqual(store.connects, 1)
+        self.assertEqual(len(self._rows()), 5)
+        ledger.close()
+
+    def test_a_failed_write_drops_its_connection_and_reconnects(self) -> None:
+        store = CountingStore(self.store)
+        ledger = ToolCallLedger(store=store, env={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        with self.store.transaction() as conn:
+            conn.execute("DROP TABLE tool_calls")
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        self.assertEqual(ledger.failures, 2)
+        # One dial, then exactly one re-dial: the handle that failed was
+        # discarded rather than cached forever, and no row re-dials needlessly.
+        self.assertEqual(store.connects, 2)
+        ledger.close()
+
+    def test_a_contended_writer_drops_the_row_instead_of_waiting(self) -> None:
+        """Fail-safe LATENCY, not just fail-safe errors: a held writer must
+        never make the tool call it observes wait out a database timeout."""
+        dropped: list[str] = []
+        ledger = ToolCallLedger(store=self.store, env={}, on_failure=dropped.append)
+        holding = threading.Event()
+        release = threading.Event()
+
+        def hold() -> None:
+            with ledger._lock:  # noqa: SLF001 -- the contention under test
+                holding.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        self.assertTrue(holding.wait(timeout=5))
+        started = time.monotonic()
+        ledger.record(tool="claim.list", source="mcp", arguments={})
+        elapsed = time.monotonic() - started
+        release.set()
+        holder.join(timeout=5)
+
+        self.assertLess(elapsed, 2.0)  # nowhere near the store's 10s busy timeout
+        self.assertEqual(ledger.failures, 1)
+        self.assertEqual(dropped, ["tool-call ledger writer is busy"])
+        self.assertEqual(self._rows(), [])
+
     def test_rejection_is_its_own_status(self) -> None:
         self.ledger.reject(
             source="http", error_code="project_scope_forbidden", error="wrong project"
@@ -275,6 +388,41 @@ class ToolCallLedgerTest(unittest.TestCase):
                     store=self.store, env={TOOL_CALL_RETENTION_DAYS_ENV_VAR: hostile}
                 )
                 self.assertGreaterEqual(ledger.retention_days, 1)
+
+    def _ancient(self, count: int) -> None:
+        with self.store.transaction() as conn:
+            for index in range(count):
+                conn.execute(
+                    "INSERT INTO tool_calls (ts, tool, source, status) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("2020-01-01T00:00:00Z", f"ancient-{index}", "mcp", "ok"),
+                )
+
+    def test_one_sweep_batches_until_the_horizon_is_clear(self) -> None:
+        """A single 20k batch per pass cannot outrun a call rate that mints
+        more than that a day; the sweep loops instead of merely saying `more`."""
+        self._ancient(5)
+        with mock.patch.object(ledger_module, "PRUNE_BATCH_ROWS", 2):
+            outcome = self.ledger.prune()
+        self.assertEqual(outcome["deleted"], 5)
+        self.assertFalse(outcome["more"])
+        self.assertEqual(self._rows(), [])
+
+    def test_the_batch_bound_is_honored_and_reports_the_backlog(self) -> None:
+        self._ancient(5)
+        with mock.patch.object(ledger_module, "PRUNE_BATCH_ROWS", 2):
+            outcome = self.ledger.prune(max_batches=1)
+        self.assertEqual(outcome["deleted"], 2)
+        self.assertTrue(outcome["more"])
+        self.assertEqual(len(self._rows()), 3)
+
+    def test_a_full_batch_that_empties_the_horizon_reports_no_more(self) -> None:
+        """`more` is the state of the table, not `deleted >= batch size`."""
+        self._ancient(2)
+        with mock.patch.object(ledger_module, "PRUNE_BATCH_ROWS", 2):
+            outcome = self.ledger.prune(max_batches=1)
+        self.assertEqual(outcome["deleted"], 2)
+        self.assertFalse(outcome["more"])
 
     def test_prune_keeps_rows_inside_the_horizon(self) -> None:
         self.ledger.record(tool="claim.list", source="mcp", arguments={})

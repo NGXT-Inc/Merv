@@ -161,6 +161,11 @@ class ControlApp:
             storage_hint=STORAGE_RULE_OF_THUMB,
             attachment_check=self.research_core.assert_experiment_in_project,
         )
+        # Retention has to be enforced IN PROCESS: the hosted runtime schedules
+        # no cleanup pass, so a 30-day horizon that waits on an external cron is
+        # a horizon nothing enforces. The reaper is the only timer this process
+        # owns, and the prune it now carries is bounded and batched.
+        self._sandbox_runtime.daemons.periodic_maintenance = self.tool_ledger.prune
         self._sandbox_runtime.start()
         self.research_snapshots = ResearchSnapshotReader(
             store=store,
@@ -282,3 +287,5 @@ class ControlApp:
             self._sandbox_runtime.shutdown()
         with suppress(Exception):
             self._execution_backend.shutdown()
+        with suppress(Exception):  # the ledger holds one connection per writer
+            self.tool_ledger.close()

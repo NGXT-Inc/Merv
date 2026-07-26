@@ -82,8 +82,9 @@ class ControlPlaneServer:
         self.app = app
         # Broader cleanup sweeps are built but NOT scheduled here — a managed
         # cron or sidecar tick calls ``cleanup.run_all(now=...)``. The owned
-        # expiry reaper lives in the composition-owned SandboxRuntime; this is
-        # broader housekeeping.
+        # expiry reaper lives in the composition-owned SandboxRuntime, and
+        # tool-call retention rides its tick, so the one horizon that must hold
+        # without an operator does not depend on that cron existing.
         self.cleanup = cleanup
         self.fastapi_app = fastapi_app
 

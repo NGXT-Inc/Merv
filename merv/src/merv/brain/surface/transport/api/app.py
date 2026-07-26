@@ -54,7 +54,7 @@ def create_fastapi_app(
     authorizer = ProjectAuthorizer(projects=api.projects)
     gateway = ToolInvocationGateway(
         tools=api.tools, reviews=api.reviews, sandboxes=api.sandboxes,
-        surface=surface, projects=authorizer)
+        surface=surface, projects=authorizer, ledger=api.tool_ledger)
     authenticator = RequestAuthenticator(
         surface=surface, verifier=auth, oauth_enabled=oauth_service is not None,
         canonical_mcp_resource=oauth_resource_uri)

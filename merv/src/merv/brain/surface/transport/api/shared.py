@@ -8,6 +8,7 @@ import json
 import re
 import urllib.parse
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any, Protocol
 
 from fastapi import Request
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ....kernel.env import env_value
 from ....kernel.request_context import bind_principal
+from ....kernel.state import monotonic_ms
 from ....kernel.utils import ValidationError
 from ...identity import (
     HumanSessionRequiredError, is_human_session, is_local_principal,
@@ -130,6 +132,12 @@ class RefusalLedger(Protocol):
     def reject(self, **kwargs: Any) -> None: ...
 
 
+class CallLedger(RefusalLedger, Protocol):
+    """...plus the outcome sink for a call answered outside the dispatcher."""
+
+    def record(self, **kwargs: Any) -> None: ...
+
+
 def _denial_facts(response: Response) -> tuple[str, str]:
     """(error_code, detail) of an already-rendered denial body, if it has one."""
     try:
@@ -141,34 +149,116 @@ def _denial_facts(response: Response) -> tuple[str, str]:
     return str(payload.get("error_code") or ""), str(payload.get("detail") or "")
 
 
-def attribute_request(
-    request: Request, *, denied: Response | None, ledger: RefusalLedger | None
+def bind_request_principal(
+    request: Request, *, denied: Response | None, open_mode: bool = False
 ) -> None:
-    """Name the caller for this request's telemetry, and ledger a refusal.
+    """Name the caller for this request's telemetry.
 
-    Call this BEFORE ``call_next``: the identity is a contextvar, and only the
-    layers entered after it is bound — routes, the tool dispatcher, the ledger
-    itself — inherit it. A request the auth boundary short-circuits never
-    reaches the dispatcher, so this is its only chance at the durable record;
-    source and project scope come off the path, since no tool contract resolved
-    to supply them.
+    Call this BEFORE ``call_next``, and on the event loop: the identity is a
+    contextvar, and only the layers entered after it is bound — routes, the
+    tool dispatcher, the ledger itself — inherit it. ``open_mode`` is hosted
+    deployment WITHOUT a verifier: every caller there carries the local
+    sentinel by default, so an undenied request is an anonymous remote one and
+    is named ``open``. ``local`` stays reserved for genuine local deployment.
     """
     principal = getattr(request.state, "principal", None)  # unset on OPTIONS
     # A refusal that never authenticated still leaves the local sentinel on
     # request.state; that is the default, not evidence of a local caller.
-    unnamed = denied is not None and not getattr(request.state, "authenticated", False)
+    authenticated = getattr(request.state, "authenticated", False)
+    unnamed = not authenticated and (denied is not None or open_mode)
     bind_principal(principal_id="open" if unnamed else principal_label(principal))
-    if denied is None or ledger is None:
+
+
+def ledger_refusal(
+    request: Request, *, denied: Response, ledger: RefusalLedger | None
+) -> None:
+    """Durable row for a request the auth boundary short-circuited.
+
+    Such a request never reaches the dispatcher, so this is its only chance at
+    the record; source and project scope come off the path, since no tool
+    contract resolved to supply them. Blocking work — run it off the loop.
+    """
+    if ledger is None:
         return
     path = request.url.path
     match = _PROJECT_PATH_RE.match(path)
     error_code, detail = _denial_facts(denied)
-    ledger.reject(
-        source="mcp" if path == "/mcp" or path.startswith("/mcp/") else "http",
-        error_code=error_code or f"http_{denied.status_code}",
-        error=detail or f"request refused with {denied.status_code}",
-        project_id=match.group(1) if match else (request.query_params.get("project_id") or ""),
+    with suppress(Exception):  # telemetry never turns a 401 into a 500
+        ledger.reject(
+            source="mcp" if path == "/mcp" or path.startswith("/mcp/") else "http",
+            error_code=error_code or f"http_{denied.status_code}",
+            error=detail or f"request refused with {denied.status_code}",
+            project_id=match.group(1) if match else (request.query_params.get("project_id") or ""),
+        )
+
+
+def ledger_tool_refusal(
+    ledger: RefusalLedger | None,
+    *,
+    tool: str,
+    source: str,
+    project_id: str,
+    exc: BaseException,
+) -> None:
+    """Durable row for a gateway pre-flight refusal (INV-5/INV-11 and friends).
+
+    These denials — repo_root, membership, the key project-create block, a
+    contract that will not validate — are raised before any dispatcher runs, so
+    without this the durable record would show nothing at all for a call the
+    caller definitely made.
+    """
+    if ledger is None:
+        return
+    with suppress(Exception):  # telemetry never breaks the refusal it observes
+        ledger.reject(
+            tool=tool,
+            source=source,
+            project_id=project_id,
+            error_code=str(getattr(exc, "error_code", "") or "unexpected"),
+            error=str(getattr(exc, "message", "") or exc),
+        )
+
+
+def ledger_direct_call(
+    ledger: CallLedger | None,
+    *,
+    tool: str,
+    source: str,
+    project_id: str,
+    arguments: dict[str, Any],
+    run: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Run a call that answers OUTSIDE the dispatcher, and record its outcome.
+
+    The hosted sandbox lookup is served straight from the sandbox facade, so
+    the dispatcher never sees it; without this every hosted ``sandbox.get`` —
+    success and failure alike — would be missing from the durable ledger.
+    """
+    started = monotonic_ms()
+    try:
+        result = run()
+    except Exception as exc:
+        _direct_row(
+            ledger, tool=tool, source=source, project_id=project_id,
+            arguments=arguments, started=started, status="error",
+            error=str(getattr(exc, "message", "") or exc),
+            error_code=str(getattr(exc, "error_code", "") or "unexpected"),
+        )
+        raise
+    _direct_row(
+        ledger, tool=tool, source=source, project_id=project_id,
+        arguments=arguments, started=started, status="ok", result=result,
     )
+    return result
+
+
+def _direct_row(
+    ledger: CallLedger | None, *, started: int, **fields: Any
+) -> None:
+    if ledger is None:
+        return
+    with suppress(Exception):  # telemetry never breaks the call it observes
+        ledger.record(duration_ms=monotonic_ms() - started, **fields)
 
 
 # Global mutators/aggregates gated behind the operator token in hosted mode.

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from contextlib import suppress
 import threading
+import time
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from .sandbox_backend import SandboxBackend
 from ..kernel.env import env_bool, env_float, env_raw
@@ -30,6 +31,23 @@ from .sandbox_heartbeat import (
 )
 
 
+# This process owns exactly one timer, and low-frequency housekeeping that
+# would otherwise need an external cron rides it rather than growing a second
+# one. Hourly is far below the reaper's own cadence and self-bounding: the
+# callback is expected to do its own batching.
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 3600.0
+
+
+class PeriodicMaintenance(Protocol):
+    """Self-bounding housekeeping the reaper's tick carries for the composition.
+
+    Deliberately opaque: this loop is a clock, not a subsystem that knows what
+    retention is.
+    """
+
+    def __call__(self) -> object: ...
+
+
 class SandboxDaemons:
     """Owns control-plane background loops and composes their policies."""
 
@@ -45,6 +63,8 @@ class SandboxDaemons:
         runs_active: RunActivityProbe | None = None,
         idle_policy: SandboxIdlePolicy | None = None,
         force_expiry_reaper: bool = False,
+        periodic_maintenance: PeriodicMaintenance | None = None,
+        maintenance_interval_seconds: float = DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
     ) -> None:
         self.repository = repository
         self.backend = backend
@@ -59,6 +79,12 @@ class SandboxDaemons:
         # able to leave billing VMs unreaped. Local/daemon compositions pass
         # False and keep the env off-switch (the user owns their own bill).
         self.force_expiry_reaper = bool(force_expiry_reaper)
+        # Composition-supplied and deliberately opaque: this loop is a clock,
+        # not a subsystem that knows what retention is. Set to the tool-call
+        # ledger's bounded prune by the brain composition.
+        self.periodic_maintenance = periodic_maintenance
+        self._maintenance_interval = float(maintenance_interval_seconds)
+        self._maintenance_due = 0.0  # first tick runs it
         self.heartbeat = SandboxHeartbeatMonitor(
             repository=repository,
             sample_metrics=sample_metrics or (lambda **_kwargs: {}),
@@ -133,6 +159,19 @@ class SandboxDaemons:
             # a live VM still billing. Own backoff, so this is cheap per tick.
             with suppress(Exception):  # the reaper must never die
                 self.lifecycle.retry_cleanup_pending(now=datetime.now(tz=UTC))
+            self.maintenance_tick(now=time.monotonic())
+
+    def maintenance_tick(self, *, now: float) -> bool:
+        """Run the composition's housekeeping callback when its interval is due.
+
+        Returns whether it ran, so the cadence is testable without threads.
+        """
+        if self.periodic_maintenance is None or now < self._maintenance_due:
+            return False
+        self._maintenance_due = now + self._maintenance_interval
+        with suppress(Exception):  # the reaper must never die
+            self.periodic_maintenance()
+        return True
 
     def _idle_reap_threshold(self) -> float:
         raw = env_raw("MERV_SANDBOX_IDLE_SECONDS")
