@@ -199,8 +199,13 @@ class ControlToolCallSink:
 
 
 def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    # Same keys as the API-level summarizer (transport/api/views.py): the view
+    # recomputes the summary for every response, so a key present in one shape
+    # and absent from the other would silently change the local/unscoped
+    # response schema (audit TEL-01). `count` mirrors `total`.
     summary = {
         "total": len(events),
+        "count": len(events),
         "source_counts": {},
         "event_counts": {},
         "status_counts": {"ok": 0, "error": 0},

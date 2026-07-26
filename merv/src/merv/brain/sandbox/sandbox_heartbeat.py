@@ -232,6 +232,8 @@ class SandboxHeartbeatMonitor:
     ) -> bool:
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
+        # The sweep read this row; its owner guards every write below (SAN-02).
+        project_id = str(row.get("project_id") or "")
         if not experiment_id and not sandbox_uid:
             return False
         metrics = self._sample(row=row, experiment_id=experiment_id)
@@ -255,6 +257,7 @@ class SandboxHeartbeatMonitor:
                 sandbox_uid=sandbox_uid,
                 idle_since=None,
                 snapshot=self._snapshot(metrics=metrics, now=now),
+                expected_project_id=project_id,
             )
             return False
         is_idle = self.policy.is_idle(
@@ -271,6 +274,7 @@ class SandboxHeartbeatMonitor:
         self.repository.record_heartbeat(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
+            expected_project_id=project_id,
             idle_since=format_iso(next_idle_since) if next_idle_since else None,
             snapshot=self._snapshot(
                 metrics=metrics,

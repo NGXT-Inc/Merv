@@ -101,22 +101,40 @@ class SandboxLifecycle:
 
     # ---------- terminal transitions (mark + teardown, one owner) ----------
 
-    def mark_terminated(self, *, experiment_id: str, sandbox_uid: str) -> None:
+    def mark_terminated(
+        self, *, experiment_id: str, sandbox_uid: str, expected_project_id: str
+    ) -> None:
         facts = self.repository.mark_terminated(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            expected_project_id=expected_project_id,
         )
         self._teardown(experiment_id=experiment_id, facts=facts)
 
     def mark_failed(
-        self, *, experiment_id: str, error: str, sandbox_uid: str
+        self,
+        *,
+        experiment_id: str,
+        error: str,
+        sandbox_uid: str,
+        expected_project_id: str,
     ) -> None:
         facts = self.repository.mark_failed(
-            experiment_id=experiment_id, error=error, sandbox_uid=sandbox_uid
+            experiment_id=experiment_id,
+            error=error,
+            sandbox_uid=sandbox_uid,
+            expected_project_id=expected_project_id,
         )
         self._teardown(experiment_id=experiment_id, facts=facts)
 
     def mark_cleanup_pending(
-        self, *, sandbox_uid: str, reason: str, error: str = "", attempts: int = 1
+        self,
+        *,
+        sandbox_uid: str,
+        reason: str,
+        expected_project_id: str,
+        error: str = "",
+        attempts: int = 1,
     ) -> None:
         """Park a row whose provider deletion was never confirmed.
 
@@ -127,6 +145,7 @@ class SandboxLifecycle:
         self.repository.mark_cleanup_pending(
             sandbox_uid=sandbox_uid,
             detail=reason,
+            expected_project_id=expected_project_id,
             error=error or None,
             attempts=attempts,
         )
@@ -228,7 +247,10 @@ class SandboxLifecycle:
         if not observed or self.stamp_runs_observed is None:
             return
         with suppress(Exception):
-            self.stamp_runs_observed(sandbox_uid=str(row.get("sandbox_uid") or ""))
+            self.stamp_runs_observed(
+                sandbox_uid=str(row.get("sandbox_uid") or ""),
+                expected_project_id=str(row.get("project_id") or ""),
+            )
 
     def terminate_vm(
         self, *, row: dict[str, Any], try_direct: bool = True
@@ -268,12 +290,16 @@ class SandboxLifecycle:
         """Execute one reducer result in its declared order."""
         experiment_id = str(row.get("experiment_id") or "")
         sandbox_uid = str(row.get("sandbox_uid") or "")
+        # The row this decision was reduced from names its owner; every write
+        # below carries that name in its predicate (audit SAN-02).
+        project_id = str(row.get("project_id") or "")
         current = row
         for intent in decision.intents:
             if intent.kind == "mark_cleanup_pending":
                 self.mark_cleanup_pending(
                     sandbox_uid=sandbox_uid,
                     reason=str(intent.payload.get("reason") or ""),
+                    expected_project_id=project_id,
                     error=str(intent.payload.get("error") or ""),
                     attempts=int(intent.payload.get("attempts") or 1),
                 )
@@ -283,16 +309,21 @@ class SandboxLifecycle:
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
                     error=str(intent.payload.get("error") or "sandbox failed"),
+                    expected_project_id=project_id,
                 )
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "mark_terminated":
                 self.mark_terminated(
-                    experiment_id=experiment_id, sandbox_uid=sandbox_uid
+                    experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
+                    expected_project_id=project_id,
                 )
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "touch_alive":
                 self.repository.touch_alive(
-                    experiment_id=experiment_id, sandbox_uid=sandbox_uid
+                    experiment_id=experiment_id,
+                    sandbox_uid=sandbox_uid,
+                    expected_project_id=project_id,
                 )
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "refresh_endpoint":
@@ -386,6 +417,7 @@ class SandboxLifecycle:
         self.repository.upsert(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
+            expected_project_id=str(row.get("project_id") or ""),
             ssh_host=host,
             ssh_port=port,
         )
@@ -540,6 +572,7 @@ class SandboxLifecycle:
             self.mark_cleanup_pending(
                 sandbox_uid=sandbox_uid,
                 reason=str(row.get("detail") or CLEANUP_PENDING_REASON),
+                expected_project_id=project_id,
                 error=origin_error,
                 attempts=attempts + 1,
             )
@@ -560,10 +593,13 @@ class SandboxLifecycle:
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
                 error=origin_error,
+                expected_project_id=project_id,
             )
         else:
             self.mark_terminated(
-                experiment_id=experiment_id, sandbox_uid=sandbox_uid
+                experiment_id=experiment_id,
+                sandbox_uid=sandbox_uid,
+                expected_project_id=project_id,
             )
         self.repository.emit_event(
             project_id=project_id,

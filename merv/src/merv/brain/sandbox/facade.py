@@ -461,6 +461,7 @@ class SandboxFacade:
                 self.repository.touch_alive(
                     experiment_id=experiment_id,
                     sandbox_uid=str(existing.get("sandbox_uid") or ""),
+                    expected_project_id=project_id,
                 )
                 row = self.lifecycle.refresh_endpoint(
                     row=self.repository.get_by_uid(
@@ -685,6 +686,7 @@ class SandboxFacade:
             sandbox_uid=str(row.get("sandbox_uid") or ""),
             expires_at=new_expires_at,
             time_limit=new_limit,
+            expected_project_id=resolved_project_id,
         )
         resolved_experiment_id = experiment_id or str(
             updated.get("experiment_id") or ""

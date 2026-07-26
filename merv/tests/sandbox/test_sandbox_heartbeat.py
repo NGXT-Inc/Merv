@@ -233,6 +233,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         self.app.sandboxes.repository.record_heartbeat(
             experiment_id=exp_id,
             sandbox_uid=sandbox_uid,
+            expected_project_id=self.project_id,
             idle_since=format_iso(idle_since),
             snapshot={"sampled_at": format_iso(sampled_at), "metrics": metrics},
         )
@@ -394,6 +395,7 @@ class SandboxHeartbeatMonitorTest(unittest.TestCase):
         self.app.sandboxes.repository.record_command_snapshot(
             sandbox_uid=str(idle["sandbox_uid"]),
             snapshot={"command_id": "cmd_1", "command": "bash setup.sh", "status": "running"},
+            expected_project_id=self.project_id,
         )
 
         self.assertEqual(

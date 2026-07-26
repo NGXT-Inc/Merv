@@ -367,6 +367,85 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
                 token=result["figures"][0]["token"], data=png
             )
 
+    def test_a_stale_figure_token_cannot_mutate_a_closed_round(self) -> None:
+        # ART-02: a figure token inherits its document's (target, attempt)
+        # binding. Attempt 2 closed the round the token was minted in, so the
+        # figure must not land in the attempt-1 document's figure set.
+        png = b"\x89PNG fake bytes"
+        report = self._submit(role="report", path="report.md")
+        result = self.service.complete_upload(
+            token=self._token(report), data=REPORT_WITH_FIGURE.encode()
+        )
+        figure_token = result["figures"][0]["token"]
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET attempt_index = 2 WHERE id = ?",
+                (self.experiment_id,),
+            )
+        with self.assertRaises(ValidationError) as caught:
+            self.service.complete_figure_upload(token=figure_token, data=png)
+        self.assertIn("attempt superseded", caught.exception.message)
+        # The refusal expired the pending figure tokens, so a retry finds none.
+        with self.assertRaises(NotFoundError):
+            self.service.complete_figure_upload(token=figure_token, data=png)
+        document = self.service.submitted_document(
+            artifact_id=report["artifact_id"], what="results report"
+        )
+        self.assertEqual(document.figure_links, ())
+
+        # A figure minted in the CURRENT attempt completes normally.
+        fresh = self._submit(role="report", path="report.md")
+        minted = self.service.complete_upload(
+            token=self._token(fresh), data=REPORT_WITH_FIGURE.encode()
+        )
+        uploaded = self.service.complete_figure_upload(
+            token=minted["figures"][0]["token"], data=png
+        )
+        self.assertEqual(uploaded["link_path"], "figures/curve.png")
+        self.assertEqual(
+            self.service.submitted_document(
+                artifact_id=fresh["artifact_id"], what="results report"
+            ).figure_links,
+            ("figures/curve.png",),
+        )
+
+    def test_a_figure_token_is_refused_once_its_target_goes_terminal(self) -> None:
+        # ART-02: same target-status check the primary upload runs — a frozen
+        # wave's figure set must not drift after it publishes.
+        reflection_id = self._insert_reflection()
+        pending = self.service.submit(
+            target_type="reflection",
+            target_id=reflection_id,
+            role="reflection_doc",
+            path="reflections/wave.md",
+            project_id=self.project_id,
+        )
+        result = self.service.complete_upload(
+            token=self._token(pending),
+            data="## Story\n![curve](figures/curve.png)\n".encode(),
+        )
+        figure_token = result["figures"][0]["token"]
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE reflections SET status = 'published' WHERE id = ?",
+                (reflection_id,),
+            )
+        with self.assertRaises(ValidationError) as caught:
+            self.service.complete_figure_upload(
+                token=figure_token, data=b"\x89PNG fake bytes"
+            )
+        self.assertIn("published", caught.exception.message)
+        with self.assertRaises(NotFoundError):
+            self.service.complete_figure_upload(
+                token=figure_token, data=b"\x89PNG fake bytes"
+            )
+        self.assertEqual(
+            self.service.submitted_document(
+                artifact_id=pending["artifact_id"], what="reflection"
+            ).figure_links,
+            (),
+        )
+
     def test_result_role_pins_and_feeds_metric_sources(self) -> None:
         pending = self._submit(role="result", path="anything/output.txt")
         self.service.complete_upload(

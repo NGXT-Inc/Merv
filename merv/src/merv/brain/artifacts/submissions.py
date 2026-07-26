@@ -278,13 +278,22 @@ class ArtifactSubmissionService:
         }
 
     def complete_figure_upload(self, *, token: str, data: bytes) -> dict[str, Any]:
+        """Pin one figure's bytes into its document's figure set.
+
+        A figure token inherits its document's binding: the parent artifact's
+        (target, attempt) is re-resolved here exactly as the primary upload
+        re-resolves its own, so a figure minted in attempt 1 cannot land in a
+        document whose round has closed or whose target went terminal (audit
+        ART-02). Refusal expires the document's pending figure tokens, the same
+        expire-then-refuse semantics the primary upload uses.
+        """
         if self.blobs is None:
             raise WorkflowError("artifact submission requires a configured blob store")
         self._sweep_expired()
         with self.store.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT f.*, a.project_id
+                SELECT f.*, a.project_id, a.target_type, a.target_id, a.attempt_index
                 FROM artifact_figures f JOIN artifacts a ON a.id = f.artifact_id
                 WHERE f.upload_token = ? AND f.status = 'pending'
                 """,
@@ -296,26 +305,38 @@ class ArtifactSubmissionService:
                     "document to mint fresh figure uploads"
                 )
             link = str(row["link_path"])
-            if len(data) > MARKDOWN_FIGURE_MAX_BYTES:
-                raise ValidationError(
-                    f"figure {link!r} is {len(data)} bytes; the maximum is "
-                    f"{MARKDOWN_FIGURE_MAX_BYTES} bytes",
-                    details={"size_bytes": len(data), "max_bytes": MARKDOWN_FIGURE_MAX_BYTES},
+            refusal = self._stale_upload_refusal(row=row)
+            if refusal is not None:
+                # Expire, not rollback: the delete must commit so no figure of
+                # this document can complete into the closed round either.
+                conn.execute(
+                    "DELETE FROM artifact_figures "
+                    "WHERE artifact_id = ? AND status = 'pending'",
+                    (row["artifact_id"],),
                 )
-            sha = self.blobs.put(
-                namespace=str(row["project_id"]),
-                data=data,
-                content_type=_content_type_for(link),
-            )
-            conn.execute(
-                """
-                UPDATE artifact_figures
-                SET status = 'complete', upload_token = '', expires_at = NULL,
-                    content_sha256 = ?, size_bytes = ?
-                WHERE id = ?
-                """,
-                (sha, len(data), row["id"]),
-            )
+            else:
+                if len(data) > MARKDOWN_FIGURE_MAX_BYTES:
+                    raise ValidationError(
+                        f"figure {link!r} is {len(data)} bytes; the maximum is "
+                        f"{MARKDOWN_FIGURE_MAX_BYTES} bytes",
+                        details={"size_bytes": len(data), "max_bytes": MARKDOWN_FIGURE_MAX_BYTES},
+                    )
+                sha = self.blobs.put(
+                    namespace=str(row["project_id"]),
+                    data=data,
+                    content_type=_content_type_for(link),
+                )
+                conn.execute(
+                    """
+                    UPDATE artifact_figures
+                    SET status = 'complete', upload_token = '', expires_at = NULL,
+                        content_sha256 = ?, size_bytes = ?
+                    WHERE id = ?
+                    """,
+                    (sha, len(data), row["id"]),
+                )
+        if refusal is not None:
+            raise refusal
         return {
             "artifact_id": str(row["artifact_id"]),
             "link_path": link,

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
-from merv.brain.kernel.utils import ValidationError
+from merv.brain.kernel.utils import NotFoundError, ValidationError
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 
@@ -162,6 +162,116 @@ class SandboxIdentityTest(unittest.TestCase):
         self.assertIn("ownership is immutable", ctx.exception.message)
         row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=uid)
         self.assertEqual(row["project_id"], self.project_id)
+
+    def test_attach_never_rewrites_row_ownership(self) -> None:
+        # SAN-02: attach binds an experiment to a sandbox the caller's project
+        # already owns. An internal/alternate call naming another project must
+        # not rebind the row — that is how a live VM (and its bill) changes
+        # hands behind the owner's back.
+        exp_id = self._experiment("exp-owner")
+        self._request(exp_id)
+        repository = self.app.sandboxes.repository
+        before = repository.load_row(experiment_id=exp_id)
+        uid = str(before["sandbox_uid"])
+        other_project = self.app.call_tool(
+            "project", {"action": "create", "name": "Other Lab"}
+        )["id"]
+        other_exp = self.app.call_tool(
+            "experiment.create",
+            {"project_id": other_project, "name": "theirs", "intent": "x"},
+        )["id"]
+
+        with self.assertRaises(NotFoundError):
+            repository.attach(
+                sandbox_uid=uid,
+                experiment_id=other_exp,
+                project_id=other_project,
+            )
+        after = repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(after["project_id"], self.project_id)
+        self.assertEqual(after["tenant_id"], before["tenant_id"])
+        self.assertIsNone(self._attachment(uid, other_exp))
+
+        # The owning project still attaches, and ownership is untouched.
+        second = self._experiment("exp-second")
+        attached = repository.attach(
+            sandbox_uid=uid, experiment_id=second, project_id=self.project_id
+        )
+        self.assertEqual(attached["project_id"], self.project_id)
+        self.assertEqual(attached["tenant_id"], before["tenant_id"])
+        self.assertIsNotNone(self._attachment(uid, second))
+
+    def test_uid_only_writers_refuse_a_cross_project_write(self) -> None:
+        # SAN-02: every runtime writer carries the project it believes it is
+        # writing for in its UPDATE predicate, so a stale heartbeat, run
+        # observer, or reaper holding only a uid cannot touch another
+        # project's row.
+        exp_id = self._experiment("exp-guarded")
+        self._request(exp_id)
+        repository = self.app.sandboxes.repository
+        before = repository.load_row(experiment_id=exp_id)
+        uid = str(before["sandbox_uid"])
+        other = self.app.call_tool(
+            "project", {"action": "create", "name": "Intruder"}
+        )["id"]
+
+        writes = {
+            "touch_alive": lambda: repository.touch_alive(
+                experiment_id=exp_id, sandbox_uid=uid, expected_project_id=other
+            ),
+            "record_heartbeat": lambda: repository.record_heartbeat(
+                experiment_id=exp_id,
+                sandbox_uid=uid,
+                idle_since=None,
+                snapshot={"metrics": {}},
+                expected_project_id=other,
+            ),
+            "record_command_snapshot": lambda: repository.record_command_snapshot(
+                sandbox_uid=uid,
+                snapshot={"command_id": "cmd_x", "status": "running"},
+                expected_project_id=other,
+            ),
+            "extend_lifetime": lambda: repository.extend_lifetime(
+                sandbox_uid=uid,
+                expires_at="2099-01-01T00:00:00Z",
+                time_limit=99_999,
+                expected_project_id=other,
+            ),
+            "stamp_runs_observed": lambda: repository.stamp_runs_observed(
+                sandbox_uid=uid, expected_project_id=other
+            ),
+            "mark_cleanup_pending": lambda: repository.mark_cleanup_pending(
+                sandbox_uid=uid, detail="stolen", expected_project_id=other
+            ),
+            "mark_terminated": lambda: repository.mark_terminated(
+                experiment_id=exp_id, sandbox_uid=uid, expected_project_id=other
+            ),
+            "upsert": lambda: repository.upsert(
+                experiment_id=exp_id,
+                sandbox_uid=uid,
+                expected_project_id=other,
+                status="failed",
+            ),
+        }
+        for name, write in writes.items():
+            with self.subTest(writer=name):
+                with self.assertRaises(NotFoundError):
+                    write()
+        after = repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(after["project_id"], self.project_id)
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["updated_at"], before["updated_at"])
+
+        # The owning project writes normally.
+        repository.touch_alive(
+            experiment_id=exp_id, sandbox_uid=uid, expected_project_id=self.project_id
+        )
+        repository.mark_cleanup_pending(
+            sandbox_uid=uid, detail="owner sweep", expected_project_id=self.project_id
+        )
+        self.assertEqual(
+            repository.get_by_uid(sandbox_uid=uid)["detail"], "owner sweep"
+        )
 
     def test_attachment_created_on_request_and_closed_on_release(self) -> None:
         exp_id = self._experiment("exp-attach")

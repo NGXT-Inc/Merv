@@ -162,6 +162,7 @@ class SandboxEventContractTest(unittest.TestCase):
         self.app.sandboxes.repository.record_command_snapshot(
             sandbox_uid=created["sandbox_uid"],
             snapshot={"command_id": "cmd", "status": "running"},
+            expected_project_id=self.project_id,
         )
         extended = self.app.sandboxes.extend(
             project_id=self.project_id, sandbox_uid=created["sandbox_uid"], seconds=600
@@ -351,6 +352,7 @@ class SandboxEventContractTest(unittest.TestCase):
         self.app.sandboxes.repository.record_heartbeat(
             experiment_id=idle_exp,
             sandbox_uid=idle["sandbox_uid"],
+            expected_project_id=self.project_id,
             idle_since=format_iso(idle_since),
             snapshot={
                 "sampled_at": format_iso(now - timedelta(seconds=30)),

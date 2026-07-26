@@ -176,6 +176,18 @@ class InMemoryActivityTest(unittest.TestCase):
         self.assertEqual(by_source["summary"]["source_counts"], {"http": 2})
         self.assertEqual(by_source["summary"]["window"], 2)
 
+        # The API view recomputes this summary for every response, so the two
+        # summarizers must agree on the shape — a key in one and not the other
+        # silently changes the local/unscoped response schema (audit TEL-01).
+        from merv.brain.surface.transport.api.views import (
+            _activity_summary as api_activity_summary,
+        )
+
+        self.assertEqual(
+            set(unfiltered["summary"]),
+            set(api_activity_summary(unfiltered["scanned_filtered"])),
+        )
+
         by_project = sink.recent(
             limit=10,
             event_filter=lambda event: event.get("args", {}).get("project_id") == "p1",

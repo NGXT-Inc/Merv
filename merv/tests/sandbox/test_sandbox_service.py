@@ -45,6 +45,7 @@ class SandboxServiceTest(unittest.TestCase):
     def _record_running_command(self, *, sandbox_uid: str) -> None:
         self.app.sandboxes.repository.record_command_snapshot(
             sandbox_uid=sandbox_uid,
+            expected_project_id=self.project_id,
             snapshot={
                 "command_id": "cmd_running",
                 "command": "python train.py",
@@ -1238,7 +1239,7 @@ class SandboxServiceTest(unittest.TestCase):
             "output_tail": "loss 0.1",
         }
         result = self.app.sandboxes.repository.record_command_snapshot(
-            sandbox_uid=uid, snapshot=stale
+            sandbox_uid=uid, snapshot=stale, expected_project_id=self.project_id
         )
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["exit_code"], 0)
@@ -1336,6 +1337,7 @@ class SandboxServiceTest(unittest.TestCase):
         self.app.sandboxes.repository.record_heartbeat(
             experiment_id="",
             sandbox_uid=created["sandbox_uid"],
+            expected_project_id=self.project_id,
             idle_since=None,
             snapshot={
                 "sampled_at": "2026-06-09T12:00:30Z",

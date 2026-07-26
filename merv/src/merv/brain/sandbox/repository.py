@@ -360,14 +360,49 @@ class SandboxRepository:
     def new_sandbox_uid(self) -> str:
         return uuid.uuid4().hex
 
+    def _guarded_update(
+        self,
+        *,
+        conn: Any,
+        sandbox_uid: str,
+        assignments: str,
+        values: list[Any],
+        expected_project_id: str,
+        extra_clause: str = "",
+    ) -> int:
+        """One uid-keyed sandbox UPDATE bound to the project that owns the row.
+
+        Every runtime writer — heartbeat, lifetime, command snapshot, terminal
+        mark, run mirror — names the project it believes it is writing for, and
+        that name rides in the WHERE clause. A caller holding only a uid can
+        therefore never reach another project's row (audit SAN-02). Returns the
+        rowcount so callers can tell a refused write from a no-op.
+        """
+        row = conn.execute(
+            "SELECT project_id FROM sandboxes WHERE sandbox_uid = ?", (sandbox_uid,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"sandbox not found: {sandbox_uid}")
+        owner_clause, owner_values = _owner_guard(
+            row=row, expected_project_id=expected_project_id, uid=sandbox_uid
+        )
+        cursor = conn.execute(
+            f"UPDATE sandboxes SET {assignments} "
+            f"WHERE sandbox_uid = ?{owner_clause}{extra_clause}",
+            [*values, sandbox_uid, *owner_values],
+        )
+        return int(getattr(cursor, "rowcount", 0))
+
     def upsert(
         self,
         *,
         experiment_id: str,
         sandbox_uid: str,
+        expected_project_id: str = "",
         **fields: Any,
     ) -> None:
         now = now_iso()
+        expected = str(expected_project_id or "").strip()
         with self.store.transaction() as conn:
             target_uid = str(sandbox_uid or "").strip()
             if not target_uid:
@@ -379,6 +414,20 @@ class SandboxRepository:
             ).fetchone()
             payload = dict(fields)
             payload.pop("experiment_id", None)
+            if expected:
+                # A caller that names the project it believes it is writing for
+                # authenticates itself: the name goes into the WHERE clause
+                # below instead of being read back off the target row, so a
+                # provision callback can never land on a row it never owned
+                # (audit SAN-02).
+                incoming = str(payload.get("project_id") or "")
+                if incoming and incoming != expected:
+                    raise ValidationError(
+                        f"sandbox {target_uid}: expected project {expected} does "
+                        f"not match the project being written ({incoming})",
+                        details={"sandbox_uid": target_uid, "field": "project_id"},
+                    )
+                payload.setdefault("project_id", expected)
             if payload.get("project_id") and not payload.get("tenant_id"):
                 tenant_row = conn.execute(
                     "SELECT tenant_id FROM projects WHERE id = ?",
@@ -408,20 +457,17 @@ class SandboxRepository:
                 )
             else:
                 sandbox_uid = str(exists["sandbox_uid"] or target_uid)
-                owner_project = str(exists["project_id"] or "")
-                _reject_ownership_change(row=exists, payload=payload, uid=sandbox_uid)
-                assignments = ", ".join(f"{key} = ?" for key in payload)
                 # Ownership is immutable, so it also guards the write: a row
                 # that changed hands takes no update at all (audit SAN-02).
-                owner_clause = " AND project_id = ?" if owner_project else ""
+                owner_clause, owner_values = _owner_guard(
+                    row=exists, expected_project_id=expected, uid=sandbox_uid
+                )
+                _reject_ownership_change(row=exists, payload=payload, uid=sandbox_uid)
+                assignments = ", ".join(f"{key} = ?" for key in payload)
                 cursor = conn.execute(
                     f"UPDATE sandboxes SET {assignments} "
                     f"WHERE sandbox_uid = ?{owner_clause}",
-                    [
-                        *payload.values(),
-                        sandbox_uid,
-                        *([owner_project] if owner_project else []),
-                    ],
+                    [*payload.values(), sandbox_uid, *owner_values],
                 )
                 if int(getattr(cursor, "rowcount", 0)) != 1:
                     raise NotFoundError(f"sandbox not found: {sandbox_uid}")
@@ -437,14 +483,27 @@ class SandboxRepository:
                         attached_at=now,
                     )
 
-    def create_sandbox(self, *, experiment_id: str, **fields: Any) -> str:
+    def create_sandbox(
+        self, *, experiment_id: str, expected_project_id: str = "", **fields: Any
+    ) -> str:
         """Insert a distinct row for a parallel sandbox under the experiment."""
         sandbox_uid = str(fields.pop("sandbox_uid", "") or self.new_sandbox_uid())
-        self.upsert(experiment_id=experiment_id, sandbox_uid=sandbox_uid, **fields)
+        self.upsert(
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            expected_project_id=expected_project_id,
+            **fields,
+        )
         return sandbox_uid
 
-    def provision_additional(self, *, experiment_id: str, **fields: Any) -> str:
-        return self.create_sandbox(experiment_id=experiment_id, **fields)
+    def provision_additional(
+        self, *, experiment_id: str, expected_project_id: str = "", **fields: Any
+    ) -> str:
+        return self.create_sandbox(
+            experiment_id=experiment_id,
+            expected_project_id=expected_project_id,
+            **fields,
+        )
 
     def attach(
         self,
@@ -453,7 +512,14 @@ class SandboxRepository:
         experiment_id: str,
         project_id: str,
     ) -> dict[str, Any]:
-        """Add an active experiment association to a live sandbox row."""
+        """Add an active experiment association to a live sandbox row.
+
+        Ownership is never rewritten here (audit SAN-02): attaching binds an
+        experiment to a sandbox the caller's project already owns. A row owned
+        by another project reads as not found rather than changing hands — an
+        attach that rebinds project_id/tenant_id off a bare uid is exactly how
+        another project's running VM (and its bill) would be handed over.
+        """
         now = now_iso()
         with self.store.transaction() as conn:
             row = conn.execute(
@@ -461,11 +527,8 @@ class SandboxRepository:
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"sandbox not found: {sandbox_uid}")
-            tenant_row = conn.execute(
-                "SELECT tenant_id FROM projects WHERE id = ?", (project_id,)
-            ).fetchone()
-            tenant_id = (
-                str(tenant_row["tenant_id"]) if tenant_row is not None else "local"
+            owner_clause, owner_values = _owner_guard(
+                row=row, expected_project_id=project_id, uid=sandbox_uid
             )
             self._ensure_attachment(
                 conn=conn,
@@ -473,20 +536,16 @@ class SandboxRepository:
                 experiment_id=experiment_id,
                 attached_at=now,
             )
-            conn.execute(
-                """
+            cursor = conn.execute(
+                f"""
                 UPDATE sandboxes
-                SET project_id = ?, tenant_id = ?, phase = '', detail = '',
-                    error = '', updated_at = ?
-                WHERE sandbox_uid = ?
+                SET phase = '', detail = '', error = '', updated_at = ?
+                WHERE sandbox_uid = ?{owner_clause}
                 """,
-                (
-                    project_id,
-                    tenant_id,
-                    now,
-                    sandbox_uid,
-                ),
+                (now, sandbox_uid, *owner_values),
             )
+            if int(getattr(cursor, "rowcount", 0)) != 1:
+                raise NotFoundError(f"sandbox not found: {sandbox_uid}")
             fresh = conn.execute(
                 "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (sandbox_uid,)
             ).fetchone()
@@ -586,15 +645,20 @@ class SandboxRepository:
                     (closed_at, experiment_id),
                 )
 
-    def touch_alive(self, *, experiment_id: str, sandbox_uid: str) -> None:
+    def touch_alive(
+        self, *, experiment_id: str, sandbox_uid: str, expected_project_id: str
+    ) -> None:
         now = now_iso()
         with self.store.transaction() as conn:
             target_uid = str(sandbox_uid or "").strip()
             if not target_uid:
                 return
-            conn.execute(
-                "UPDATE sandboxes SET last_seen_at = ?, updated_at = ? WHERE sandbox_uid = ?",
-                (now, now, target_uid),
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments="last_seen_at = ?, updated_at = ?",
+                values=[now, now],
+                expected_project_id=expected_project_id,
             )
 
     def extend_lifetime(
@@ -603,6 +667,7 @@ class SandboxRepository:
         sandbox_uid: str,
         expires_at: str,
         time_limit: int,
+        expected_project_id: str,
     ) -> dict[str, Any]:
         now = now_iso()
         with self.store.transaction() as conn:
@@ -611,13 +676,13 @@ class SandboxRepository:
                 raise NotFoundError("sandbox not found")
             # Status-guarded: extending a row the reaper just terminated would
             # resurrect a fresh expires_at onto a dead sandbox.
-            conn.execute(
-                """
-                UPDATE sandboxes
-                SET expires_at = ?, time_limit = ?, updated_at = ?
-                WHERE sandbox_uid = ? AND status = 'running'
-                """,
-                (expires_at, int(time_limit), now, target_uid),
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments="expires_at = ?, time_limit = ?, updated_at = ?",
+                values=[expires_at, int(time_limit), now],
+                expected_project_id=expected_project_id,
+                extra_clause=" AND status = 'running'",
             )
             row = conn.execute(
                 "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (target_uid,)
@@ -630,6 +695,22 @@ class SandboxRepository:
                     "sandbox can be extended"
                 )
             return self._row_dict(row=row, conn=conn)
+
+    def stamp_runs_observed(
+        self, *, sandbox_uid: str, expected_project_id: str
+    ) -> None:
+        """Stamp a row's final run-receipt read (the ledger's only row write)."""
+        target_uid = str(sandbox_uid or "").strip()
+        if not target_uid:
+            return
+        with self.store.transaction() as conn:
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments="runs_final_observed_at = ?",
+                values=[now_iso()],
+                expected_project_id=expected_project_id,
+            )
 
     def heartbeat_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -645,24 +726,21 @@ class SandboxRepository:
         sandbox_uid: str,
         idle_since: str | None,
         snapshot: dict[str, Any],
+        expected_project_id: str,
     ) -> None:
         now = now_iso()
         with self.store.transaction() as conn:
             target_uid = str(sandbox_uid or "").strip()
             if not target_uid:
                 return
-            conn.execute(
-                """
-                UPDATE sandboxes
-                SET idle_since = ?, heartbeat_snapshot_json = ?, updated_at = ?
-                WHERE sandbox_uid = ?
-                """,
-                (
-                    idle_since,
-                    json.dumps(snapshot, sort_keys=True),
-                    now,
-                    target_uid,
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments=(
+                    "idle_since = ?, heartbeat_snapshot_json = ?, updated_at = ?"
                 ),
+                values=[idle_since, json.dumps(snapshot, sort_keys=True), now],
+                expected_project_id=expected_project_id,
             )
 
     def command_snapshot(self, *, row: dict[str, Any]) -> dict[str, Any] | None:
@@ -684,7 +762,7 @@ class SandboxRepository:
         }
 
     def record_command_snapshot(
-        self, *, sandbox_uid: str, snapshot: dict[str, Any]
+        self, *, sandbox_uid: str, snapshot: dict[str, Any], expected_project_id: str
     ) -> dict[str, Any]:
         now = now_iso()
         command_id = str(snapshot.get("command_id") or "")
@@ -695,6 +773,14 @@ class SandboxRepository:
             row = conn.execute(
                 "SELECT * FROM sandboxes WHERE sandbox_uid = ?", (target_uid,)
             ).fetchone()
+            if row is not None:
+                # Refuse before the read-back too: the unchanged/regressed
+                # branches below hand the stored snapshot back to the caller.
+                _owner_guard(
+                    row=row,
+                    expected_project_id=expected_project_id,
+                    uid=target_uid,
+                )
             existing = (
                 self.command_snapshot(row=row_to_dict(row=row) or {})
                 if row is not None
@@ -732,21 +818,21 @@ class SandboxRepository:
                 )
                 if unchanged or same_command_regressed or older_command:
                     return existing
-            conn.execute(
-                """
-                UPDATE sandboxes
-                SET last_command_id = ?,
-                    last_command_text = ?,
-                    last_command_started_at = ?,
-                    last_command_status = ?,
-                    last_command_exit_code = ?,
-                    last_command_finished_at = ?,
-                    last_command_output_tail = ?,
-                    last_command_snapshot_at = ?,
-                    updated_at = ?
-                WHERE sandbox_uid = ?
-                """,
-                (
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments=(
+                    "last_command_id = ?, "
+                    "last_command_text = ?, "
+                    "last_command_started_at = ?, "
+                    "last_command_status = ?, "
+                    "last_command_exit_code = ?, "
+                    "last_command_finished_at = ?, "
+                    "last_command_output_tail = ?, "
+                    "last_command_snapshot_at = ?, "
+                    "updated_at = ?"
+                ),
+                values=[
                     command_id,
                     str(snapshot.get("command") or ""),
                     snapshot.get("started_at"),
@@ -756,26 +842,35 @@ class SandboxRepository:
                     str(snapshot.get("output_tail") or ""),
                     now,
                     now,
-                    target_uid,
-                ),
+                ],
+                expected_project_id=expected_project_id,
             )
         return {**snapshot, "snapshot_at": now}
 
     def mark_terminated(
-        self, *, experiment_id: str, sandbox_uid: str
+        self, *, experiment_id: str, sandbox_uid: str, expected_project_id: str
     ) -> dict[str, Any]:
         return self._mark_terminal(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid, status="terminated"
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            status="terminated",
+            expected_project_id=expected_project_id,
         )
 
     def mark_failed(
-        self, *, experiment_id: str, error: str, sandbox_uid: str
+        self,
+        *,
+        experiment_id: str,
+        error: str,
+        sandbox_uid: str,
+        expected_project_id: str,
     ) -> dict[str, Any]:
         return self._mark_terminal(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             status="failed",
             error=error,
+            expected_project_id=expected_project_id,
         )
 
     def mark_cleanup_pending(
@@ -783,6 +878,7 @@ class SandboxRepository:
         *,
         sandbox_uid: str,
         detail: str,
+        expected_project_id: str,
         attempts: int = 1,
         error: str | None = None,
     ) -> None:
@@ -809,9 +905,12 @@ class SandboxRepository:
             assignments.append("error = ?")
             values.append(error)
         with self.store.transaction() as conn:
-            conn.execute(
-                f"UPDATE sandboxes SET {', '.join(assignments)} WHERE sandbox_uid = ?",
-                [*values, target_uid],
+            self._guarded_update(
+                conn=conn,
+                sandbox_uid=target_uid,
+                assignments=", ".join(assignments),
+                values=values,
+                expected_project_id=expected_project_id,
             )
 
     def _mark_terminal(
@@ -820,6 +919,7 @@ class SandboxRepository:
         experiment_id: str,
         sandbox_uid: str,
         status: str,
+        expected_project_id: str,
         error: str | None = None,
     ) -> dict[str, Any]:
         """Drive one sandbox row to a terminal status, closing its attachment
@@ -829,7 +929,8 @@ class SandboxRepository:
             target_uid = str(sandbox_uid or "").strip()
             row = (
                 conn.execute(
-                    "SELECT sandbox_id, sandbox_uid FROM sandboxes WHERE sandbox_uid = ?",
+                    "SELECT sandbox_id, sandbox_uid, project_id FROM sandboxes "
+                    "WHERE sandbox_uid = ?",
                     (target_uid,),
                 ).fetchone()
                 if target_uid
@@ -837,24 +938,33 @@ class SandboxRepository:
             )
             sandbox_id = str(row["sandbox_id"] or "") if row is not None else None
             row_uid = str(row["sandbox_uid"] or "") if row is not None else target_uid
+            if row is not None:
+                # Terminating is the most destructive write there is: the
+                # caller's expected project rides in the predicate so a uid
+                # alone can never kill another project's box (audit SAN-02).
+                owner_clause, owner_values = _owner_guard(
+                    row=row, expected_project_id=expected_project_id, uid=row_uid
+                )
+            else:
+                owner_clause, owner_values = "", []
             if error is None:
                 conn.execute(
-                    """
+                    f"""
                     UPDATE sandboxes
                     SET status = ?, terminated_at = ?, updated_at = ?
-                    WHERE sandbox_uid = ?
+                    WHERE sandbox_uid = ?{owner_clause}
                     """,
-                    (status, now, now, row_uid),
+                    (status, now, now, row_uid, *owner_values),
                 )
             else:
                 conn.execute(
-                    """
+                    f"""
                     UPDATE sandboxes
                     SET status = ?, error = ?, phase = '', detail = '',
                         terminated_at = ?, updated_at = ?
-                    WHERE sandbox_uid = ?
+                    WHERE sandbox_uid = ?{owner_clause}
                     """,
-                    (status, error, now, now, row_uid),
+                    (status, error, now, now, row_uid, *owner_values),
                 )
             if row is not None:
                 self._close_all_attachments(
@@ -962,6 +1072,28 @@ class SandboxRepository:
                 ).fetchone()
                 tenant = row["tenant_id"] if row is not None else None
         return str(tenant) if tenant else "local"
+
+
+def _owner_guard(
+    *, row: Any, expected_project_id: str, uid: str
+) -> tuple[str, list[Any]]:
+    """WHERE fragment binding a uid-keyed write to one owning project.
+
+    The expected project is the caller's own claim about who it is writing for;
+    a mismatch with the stored owner reads as "not found in that project" and
+    never as a write. When a caller names nothing (legacy internal paths) the
+    row's own owner still guards the statement, so a row that changed hands
+    between the read and the write takes no update at all (audit SAN-02).
+    """
+    owner = str(row["project_id"] or "")
+    expected = str(expected_project_id or "").strip()
+    if expected and owner and expected != owner:
+        raise NotFoundError(
+            f"sandbox not found in project {expected}: {uid}",
+            details={"sandbox_uid": uid, "project_id": expected},
+        )
+    guard = expected or owner
+    return (" AND project_id = ?", [guard]) if guard else ("", [])
 
 
 def _reject_ownership_change(*, row: Any, payload: dict[str, Any], uid: str) -> None:

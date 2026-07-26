@@ -194,7 +194,9 @@ class SandboxQueryHandler:
                 snapshot = {**snapshot, "status": "interrupted"}
             last_command = (
                 self.repository.record_command_snapshot(
-                    sandbox_uid=sandbox_uid, snapshot=snapshot
+                    sandbox_uid=sandbox_uid,
+                    snapshot=snapshot,
+                    expected_project_id=str(row.get("project_id") or ""),
                 )
                 if snapshot.get("command_id")
                 else None

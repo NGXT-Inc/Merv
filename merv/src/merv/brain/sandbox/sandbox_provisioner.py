@@ -196,6 +196,7 @@ class SandboxProvisioner:
                 self.set_provision(
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
+                    project_id=project_id,
                     phase=phase,
                     detail=detail,
                 )
@@ -206,6 +207,7 @@ class SandboxProvisioner:
                 self.set_provision(
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
+                    project_id=project_id,
                     sandbox_id=sandbox_id,
                     sandbox_name=sandbox_name,
                 )
@@ -230,6 +232,10 @@ class SandboxProvisioner:
             self.repository.upsert(
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
+                # The job's own project authenticates the callback: the row is
+                # only written if it still belongs to the project this
+                # provision was started for (audit SAN-02).
+                expected_project_id=project_id,
                 project_id=project_id,
                 status="running",
                 sandbox_id=provisioned.sandbox_id,
@@ -336,6 +342,7 @@ class SandboxProvisioner:
         writer(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
+            expected_project_id=project_id,
             project_id=project_id,
             status="provisioning",
             phase="starting",
@@ -372,11 +379,17 @@ class SandboxProvisioner:
         *,
         experiment_id: str,
         sandbox_uid: str = "",
+        project_id: str = "",
         phase: str | None = None,
         detail: str | None = None,
         sandbox_id: str | None = None,
         sandbox_name: str | None = None,
     ) -> None:
+        """Phase/id progress from a provisioning job.
+
+        `project_id` is the project the job was started for; it guards the
+        write so a callback can only ever land on its own row (audit SAN-02).
+        """
         fields: dict[str, Any] = {"status": "provisioning"}
         if phase is not None:
             fields["phase"] = phase
@@ -387,7 +400,10 @@ class SandboxProvisioner:
         if sandbox_name is not None:
             fields["sandbox_name"] = sandbox_name
         self.repository.upsert(
-            experiment_id=experiment_id, sandbox_uid=sandbox_uid, **fields
+            experiment_id=experiment_id,
+            sandbox_uid=sandbox_uid,
+            expected_project_id=project_id,
+            **fields,
         )
 
     def reap_stale_provisions(
