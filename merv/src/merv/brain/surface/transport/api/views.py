@@ -76,13 +76,16 @@ def activity_view(
 
     result = activity.recent(limit=limit, source=source, event_filter=event_filter)
     events = result["events"]
+    scanned = result.get("scanned_filtered", events)
     if project_id is not None and project_ids is None:
-        events = [event for event in events if _event_project_id(event) in (None, project_id)]
-    summary = (
-        _activity_summary(result.get("scanned_filtered", events))
-        if project_ids is not None or not include_unscoped_events
-        else result["summary"]
-    )
+
+        def visible(event: dict[str, Any]) -> bool:
+            return _event_project_id(event) in (None, project_id)
+
+        events = [event for event in events if visible(event)]
+        scanned = [event for event in scanned if visible(event)]
+    # Summarize the same rows the caller is shown, never a wider window.
+    summary = _activity_summary(scanned)
     return present(
         {
             "filter": {

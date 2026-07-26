@@ -371,6 +371,15 @@ class SandboxFacade:
         provisioning_key_id: str = "",
     ) -> dict[str, Any]:
         experiment_id = (experiment_id or "").strip()
+        if (sandbox_uid or "").strip():
+            # The brain mints every uid it provisions against (audit SAN-02);
+            # accepting one here lets a caller aim a provision at a row it does
+            # not own. Reaching an existing sandbox is what attach/get are for.
+            raise ValidationError(
+                "sandbox.request does not take sandbox_uid — the brain mints it "
+                "and returns it; use sandbox.attach or sandbox.get to reach a "
+                "sandbox that already exists"
+            )
         provider = (provider or "").strip() or None
         caps = self._capabilities_for(provider=provider)
         gpu, cpu, memory, time_limit = validate_request_inputs(
@@ -397,8 +406,7 @@ class SandboxFacade:
             else:
                 existing = None
                 additional = False
-            requested_uid = (sandbox_uid or "").strip()
-            sandbox_uid = requested_uid or (
+            sandbox_uid = (
                 self.repository.new_sandbox_uid()
                 if additional
                 else str(

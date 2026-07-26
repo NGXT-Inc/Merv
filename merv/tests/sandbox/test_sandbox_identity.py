@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support.brain import TestBrain
+from tests.support.brain import DEFAULT_PUBLIC_KEY, TestBrain
+from merv.brain.kernel.utils import ValidationError
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 
@@ -112,6 +113,55 @@ class SandboxIdentityTest(unittest.TestCase):
             self.app.sandboxes.repository.load_row(experiment_id=exp_a)["sandbox_uid"],
             uid_a,
         )
+
+    def test_request_refuses_a_caller_supplied_uid(self) -> None:
+        """SAN-02: the brain mints every uid it provisions against."""
+        exp_id = self._experiment("exp-minted")
+        with self.assertRaises(ValidationError) as ctx:
+            self.app.sandboxes.request(
+                project_id=self.project_id,
+                experiment_id=exp_id,
+                public_key=DEFAULT_PUBLIC_KEY,
+                sandbox_uid="uid_i_picked",
+            )
+        self.assertIn("does not take sandbox_uid", ctx.exception.message)
+        with self.app.store.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sandboxes WHERE sandbox_uid = ?", ("uid_i_picked",)
+            ).fetchone()
+        self.assertIsNone(row)
+        # The MCP contract never carried the field either, so the tool refuses
+        # it before the facade is even reached.
+        with self.assertRaises(ValidationError):
+            self.app.call_tool(
+                "sandbox.request",
+                {
+                    "project_id": self.project_id,
+                    "experiment_id": exp_id,
+                    "sandbox_uid": "uid_i_picked",
+                },
+            )
+
+    def test_an_upsert_cannot_move_a_sandbox_to_another_project(self) -> None:
+        exp_id = self._experiment("exp-owned")
+        self._request(exp_id)
+        uid = str(
+            self.app.sandboxes.repository.load_row(experiment_id=exp_id)["sandbox_uid"]
+        )
+        other = self.app.call_tool(
+            "project", {"action": "create", "name": "Someone Else"}
+        )["id"]
+
+        with self.assertRaises(ValidationError) as ctx:
+            self.app.sandboxes.repository.upsert(
+                experiment_id=exp_id,
+                sandbox_uid=uid,
+                project_id=other,
+                status="running",
+            )
+        self.assertIn("ownership is immutable", ctx.exception.message)
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=uid)
+        self.assertEqual(row["project_id"], self.project_id)
 
     def test_attachment_created_on_request_and_closed_on_release(self) -> None:
         exp_id = self._experiment("exp-attach")

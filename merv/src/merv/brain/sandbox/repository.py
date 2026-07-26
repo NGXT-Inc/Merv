@@ -362,7 +362,8 @@ class SandboxRepository:
             if not target_uid:
                 raise ValueError("sandbox_uid is required")
             exists = conn.execute(
-                "SELECT sandbox_uid FROM sandboxes WHERE sandbox_uid = ?",
+                "SELECT sandbox_uid, project_id, tenant_id FROM sandboxes "
+                "WHERE sandbox_uid = ?",
                 (target_uid,),
             ).fetchone()
             payload = dict(fields)
@@ -396,11 +397,23 @@ class SandboxRepository:
                 )
             else:
                 sandbox_uid = str(exists["sandbox_uid"] or target_uid)
+                owner_project = str(exists["project_id"] or "")
+                _reject_ownership_change(row=exists, payload=payload, uid=sandbox_uid)
                 assignments = ", ".join(f"{key} = ?" for key in payload)
-                conn.execute(
-                    f"UPDATE sandboxes SET {assignments} WHERE sandbox_uid = ?",
-                    [*payload.values(), sandbox_uid],
+                # Ownership is immutable, so it also guards the write: a row
+                # that changed hands takes no update at all (audit SAN-02).
+                owner_clause = " AND project_id = ?" if owner_project else ""
+                cursor = conn.execute(
+                    f"UPDATE sandboxes SET {assignments} "
+                    f"WHERE sandbox_uid = ?{owner_clause}",
+                    [
+                        *payload.values(),
+                        sandbox_uid,
+                        *([owner_project] if owner_project else []),
+                    ],
                 )
+                if int(getattr(cursor, "rowcount", 0)) != 1:
+                    raise NotFoundError(f"sandbox not found: {sandbox_uid}")
                 if sandbox_uid and str(payload.get("status") or "") not in {
                     "",
                     "terminated",
@@ -902,6 +915,25 @@ class SandboxRepository:
                 ).fetchone()
                 tenant = row["tenant_id"] if row is not None else None
         return str(tenant) if tenant else "local"
+
+
+def _reject_ownership_change(*, row: Any, payload: dict[str, Any], uid: str) -> None:
+    """Refuse an update that would move a live sandbox to another owner.
+
+    project_id/tenant_id are set once, at insert. Letting a later write change
+    them would hand another project's running VM — and its bill — to whoever
+    knows the uid, leaving the real owner with an orphan (audit SAN-02).
+    """
+    for column in ("project_id", "tenant_id"):
+        stored = str(row[column] or "")
+        incoming = str(payload.get(column) or "")
+        if incoming and stored and incoming != stored:
+            raise ValidationError(
+                f"sandbox {uid} belongs to another {column[:-3]}; sandbox "
+                "ownership is immutable — call sandbox.request for a new one "
+                "instead of rebinding this row",
+                details={"sandbox_uid": uid, "field": column},
+            )
 
 
 __all__ = ["SandboxRepository"]

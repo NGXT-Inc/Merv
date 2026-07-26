@@ -38,11 +38,13 @@ class CleanupReport:
     """Counts returned by one idempotent maintenance pass."""
 
     orphan_vms_reaped: int = 0
-    blobs_swept: int = 0
-    storage_objects_swept: int = 0
     stale_provisions_reaped: int = 0
     # Structured, not a count: a failed sweep must be distinguishable from a
     # sweep that legitimately deleted nothing (audit OPS-03).
+    blobs_swept: dict[str, Any] = field(default_factory=lambda: dict(SKIPPED_PRUNE))
+    storage_objects_swept: dict[str, Any] = field(
+        default_factory=lambda: dict(SKIPPED_PRUNE)
+    )
     tool_calls_pruned: dict[str, Any] = field(
         default_factory=lambda: dict(SKIPPED_PRUNE)
     )
@@ -50,11 +52,27 @@ class CleanupReport:
         default_factory=lambda: dict(SKIPPED_PRUNE)
     )
 
+    @property
+    def ok(self) -> bool:
+        """Whether every subsystem that reports an outcome reported success."""
+        return all(
+            bool(outcome.get("ok"))
+            for outcome in (
+                self.blobs_swept,
+                self.storage_objects_swept,
+                self.tool_calls_pruned,
+                self.oauth_clients_pruned,
+            )
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
+            # Leading, so an operator reading the cleanup response sees whether
+            # anything failed before reading any count.
+            "ok": self.ok,
             "orphan_vms_reaped": self.orphan_vms_reaped,
-            "blobs_swept": self.blobs_swept,
-            "storage_objects_swept": self.storage_objects_swept,
+            "blobs_swept": dict(self.blobs_swept),
+            "storage_objects_swept": dict(self.storage_objects_swept),
             "stale_provisions_reaped": self.stale_provisions_reaped,
             "tool_calls_pruned": dict(self.tool_calls_pruned),
             "oauth_clients_pruned": dict(self.oauth_clients_pruned),
@@ -98,23 +116,23 @@ class CleanupService:
         """Reconcile tracked running rows against their providers."""
         return self.sandboxes.reconcile_running_rows()
 
-    def sweep_expired_blobs(self, *, now: datetime | None = None) -> int:
-        """Best-effort TTL collection for submitted evidence bytes."""
+    def sweep_expired_blobs(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """TTL collection for submitted evidence bytes, reporting its outcome."""
         try:
             now_iso = format_iso(now or datetime.now(tz=UTC))
-            return int(self.blobs.sweep_expired(now=now_iso))
-        except Exception:  # noqa: BLE001 -- one GC adapter must not abort the pass
-            return 0
+            return {"deleted": int(self.blobs.sweep_expired(now=now_iso)), "ok": True}
+        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+            return _sweep_failure(exc)
 
-    def sweep_expired_storage(self, *, now: datetime | None = None) -> int:
-        """Best-effort, ledger-aware expiry for heavy storage."""
+    def sweep_expired_storage(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Ledger-aware expiry for heavy storage, reporting its outcome."""
         if self.storage is None:
-            return 0
+            return dict(SKIPPED_PRUNE)
         try:
             now_iso = format_iso(now or datetime.now(tz=UTC))
-            return int(self.storage.sweep_expired(now=now_iso))
-        except Exception:  # noqa: BLE001 -- one GC adapter must not abort the pass
-            return 0
+            return {"deleted": int(self.storage.sweep_expired(now=now_iso)), "ok": True}
+        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+            return _sweep_failure(exc)
 
     def prune_tool_calls(self, *, now: datetime | None = None) -> dict[str, Any]:
         """Bounded retention sweep over the durable tool-call ledger."""

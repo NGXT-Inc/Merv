@@ -156,6 +156,36 @@ class InMemoryActivityTest(unittest.TestCase):
         self.assertEqual(len(recent["events"]), 1)
         self.assertEqual(recent["events"][0]["args"]["project_id"], "p1")
 
+    def test_summary_counts_the_rows_the_filters_kept(self) -> None:
+        """TEL-01: a filtered read must not carry unfiltered totals."""
+        sink = ControlActivitySink()
+        for source, project in (("mcp", "p1"), ("http", "p2"), ("http", "p3")):
+            sink.tool_ok(
+                source=source,
+                tool="claim.list",
+                arguments={"project_id": project},
+                duration_ms=1,
+                result={"claims": []},
+            )
+        unfiltered = sink.recent(limit=10)
+        self.assertEqual(unfiltered["summary"]["total"], 3)
+
+        by_source = sink.recent(limit=10, source="http")
+        self.assertEqual(len(by_source["events"]), 2)
+        self.assertEqual(by_source["summary"]["total"], 2)
+        self.assertEqual(by_source["summary"]["source_counts"], {"http": 2})
+        self.assertEqual(by_source["summary"]["window"], 2)
+
+        by_project = sink.recent(
+            limit=10,
+            event_filter=lambda event: event.get("args", {}).get("project_id") == "p1",
+        )
+        self.assertEqual(by_project["summary"]["total"], 1)
+        self.assertEqual(
+            sum(by_project["summary"]["status_counts"].values()),
+            len(by_project["events"]),
+        )
+
     def test_tool_ok_records_true_io_sizes_even_when_capped(self) -> None:
         sink = ControlActivitySink()
         big = "z" * (RESULT_LOG_MAX_BYTES + 5000)

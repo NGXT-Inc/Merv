@@ -44,7 +44,6 @@ class ControlActivitySink(ToolActivityEmitter):
     ) -> dict[str, Any]:
         with self._lock:
             scanned = list(self._events[-max(1, min(window, self.max_events)):])
-        summary = _activity_summary(scanned)
         if source is not None:
             scanned = [
                 event for event in scanned if effective_source(event=event) == source
@@ -55,7 +54,9 @@ class ControlActivitySink(ToolActivityEmitter):
         return {
             "events": scanned[-limit:],
             "scanned_filtered": scanned,
-            "summary": summary,
+            # Summarize what the filters kept: totals that describe rows the
+            # caller cannot see are not a summary of anything (audit TEL-01).
+            "summary": _activity_summary(scanned),
         }
 
 

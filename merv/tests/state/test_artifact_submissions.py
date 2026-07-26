@@ -232,6 +232,43 @@ class ArtifactSubmissionServiceTest(unittest.TestCase):
                 token=self._token(pending), data=b"## Story\nS.\n"
             )
 
+    def test_a_superseded_attempt_cannot_complete_its_stale_token(self) -> None:
+        # ART-02: a token minted in attempt 1 promised bytes to a round that
+        # attempt 2 has closed; completing it would land work in a dead round.
+        stale = self._submit()
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET attempt_index = 2 WHERE id = ?",
+                (self.experiment_id,),
+            )
+        with self.assertRaises(ValidationError) as caught:
+            self.service.complete_upload(
+                token=self._token(stale), data=PLAN_MD.encode()
+            )
+        self.assertIn("attempt superseded", caught.exception.message)
+        self.assertIn("artifact.submit again", caught.exception.message)
+        # The refusal expired the row, so a retry finds no token at all.
+        with self.assertRaises(NotFoundError):
+            self.service.complete_upload(
+                token=self._token(stale), data=PLAN_MD.encode()
+            )
+        self.assertEqual(
+            self.service.artifacts_for_target(
+                target_type="experiment", target_id=self.experiment_id
+            ),
+            (),
+        )
+        # A token minted in the CURRENT attempt completes normally.
+        fresh = self._submit()
+        completed = self.service.complete_upload(
+            token=self._token(fresh), data=PLAN_MD.encode()
+        )
+        self.assertEqual(completed["artifact_id"], fresh["artifact_id"])
+        evidence = self.service.artifacts_for_target(
+            target_type="experiment", target_id=self.experiment_id
+        )
+        self.assertEqual([item.attempt_index for item in evidence], [2])
+
     def test_artifact_content_binary_contract(self) -> None:
         # Declared non-text type is binary even when the bytes decode as UTF-8.
         cases = (

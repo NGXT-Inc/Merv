@@ -115,7 +115,7 @@ class CleanupSweepTest(unittest.TestCase):
             namespace=ns, data=b"drop", expires_at="2000-01-01T00:00:00Z"
         )
         swept = self.cleanup.sweep_expired_blobs(now=datetime.now(tz=UTC))
-        self.assertEqual(swept, 1)
+        self.assertEqual(swept, {"deleted": 1, "ok": True})
         self.assertIsNotNone(self.app.blobs.stat(namespace=ns, sha256=live))
         self.assertIsNone(self.app.blobs.stat(namespace=ns, sha256=dead))
 
@@ -231,18 +231,21 @@ class CleanupSweepTest(unittest.TestCase):
         future = datetime.now(tz=UTC) + timedelta(hours=1)
         report = self.cleanup.run_all(now=future)
         self.assertEqual(report.orphan_vms_reaped, 1)
-        self.assertEqual(report.blobs_swept, 1)
+        self.assertEqual(report.blobs_swept, {"deleted": 1, "ok": True})
         # A second pass over the cleaned state changes nothing.
         report2 = self.cleanup.run_all(now=future)
+        skipped = {"deleted": 0, "ok": True, "skipped": True}
         self.assertEqual(report2.as_dict(), {
+            "ok": True,
             "orphan_vms_reaped": 0,
-            "blobs_swept": 0,
-            "storage_objects_swept": 0,
+            "blobs_swept": {"deleted": 0, "ok": True},
+            # No storage, ledger, or OAuth store wired into this CleanupService,
+            # and the report says skipped rather than reporting a sweep that
+            # never ran as a clean zero.
+            "storage_objects_swept": skipped,
             "stale_provisions_reaped": 0,
-            # No ledger wired into this CleanupService, and the report says so
-            # rather than reporting a sweep that never ran as a clean zero.
-            "tool_calls_pruned": {"deleted": 0, "ok": True, "skipped": True},
-            "oauth_clients_pruned": {"deleted": 0, "ok": True, "skipped": True},
+            "tool_calls_pruned": skipped,
+            "oauth_clients_pruned": skipped,
         })
 
     # ---- tool-call ledger retention ----
@@ -268,6 +271,34 @@ class CleanupSweepTest(unittest.TestCase):
                 for row in conn.execute("SELECT tool FROM tool_calls").fetchall()
             ]
         self.assertNotIn("ancient", remaining)
+
+    def test_a_failing_blob_sweep_is_reported_as_not_ok_not_as_zero(self) -> None:
+        class ExplodingBlobs:
+            def sweep_expired(self, *, now):
+                raise RuntimeError("blob store unreachable")
+
+        class ExplodingStorage:
+            def sweep_expired(self, *, now):
+                raise RuntimeError("bucket unreachable")
+
+        cleanup = CleanupService(
+            sandboxes=self.app.sandboxes,
+            blobs=ExplodingBlobs(),
+            storage=ExplodingStorage(),
+        )
+        report = cleanup.run_all(now=datetime.now(tz=UTC))
+        self.assertEqual(
+            report.blobs_swept,
+            {"deleted": 0, "ok": False, "error": "blob store unreachable"},
+        )
+        self.assertEqual(
+            report.storage_objects_swept,
+            {"deleted": 0, "ok": False, "error": "bucket unreachable"},
+        )
+        # The pass still completes, and the response says it did not go clean.
+        self.assertFalse(report.ok)
+        self.assertIs(report.as_dict()["ok"], False)
+        self.assertEqual(report.orphan_vms_reaped, 0)
 
     def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
         class ExplodingLedger:

@@ -200,10 +200,13 @@ class ArtifactSubmissionService:
     def complete_upload(self, *, token: str, data: bytes) -> dict[str, Any]:
         """Pin the uploaded bytes: cap, sha, blob, flip complete, supersede.
 
-        The target is re-resolved through the same resolver used at submit: a
-        target that went terminal after submit (e.g. the reflection wave
-        published) refuses the bytes, and the pending row expires with its
-        token — otherwise a pre-minted token could drift a frozen wave."""
+        The token is bound to (target, attempt): the target is re-resolved
+        through the same resolver used at submit, and its CURRENT attempt must
+        still be the one the token was minted for. A target that went terminal
+        (e.g. the reflection wave published) or moved on to a new attempt
+        refuses the bytes, and the pending row expires with its token —
+        otherwise a pre-minted token could drift a frozen wave or land work in
+        a round that already closed."""
         if self.blobs is None:
             raise WorkflowError("artifact submission requires a configured blob store")
         self._sweep_expired()
@@ -216,7 +219,7 @@ class ArtifactSubmissionService:
                 raise NotFoundError(
                     "unknown, used, or expired upload token — call artifact.submit again"
                 )
-            refusal = self._frozen_target_refusal(row=row)
+            refusal = self._stale_upload_refusal(row=row)
             if refusal is not None:
                 # Expire, not rollback: the delete must commit (raising here
                 # would roll it back) so the dead token can never complete.
@@ -912,13 +915,15 @@ class ArtifactSubmissionService:
         ).fetchone()
         return str(row["id"]) if row is not None else ""
 
-    def _frozen_target_refusal(self, *, row: Row) -> ValidationError | None:
+    def _stale_upload_refusal(self, *, row: Row) -> ValidationError | None:
         """Re-run submit-time target resolution for a pending upload.
 
         Returns the refusal to raise once the expiry commits — None while the
-        target still accepts submissions."""
+        SAME attempt on the same target still accepts submissions. Attempt
+        identity is part of that check: a token minted in attempt 1 promised
+        bytes to a round that a later attempt has closed (audit ART-02)."""
         try:
-            self.association_targets.resolve(
+            target = self.association_targets.resolve(
                 target_type=str(row["target_type"]), target_id=str(row["target_id"])
             )
         except (NotFoundError, ValidationError) as exc:
@@ -926,6 +931,13 @@ class ArtifactSubmissionService:
             return ValidationError(
                 f"upload refused — {reason}. This upload token has expired; "
                 "submit new work against a live target with artifact.submit"
+            )
+        minted_for = int(row["attempt_index"])
+        if int(target.attempt_index) != minted_for:
+            return ValidationError(
+                f"upload refused — attempt superseded. This token was minted for "
+                f"attempt {minted_for} and attempt {target.attempt_index} is now "
+                "open; call artifact.submit again to upload into the current one"
             )
         return None
 
