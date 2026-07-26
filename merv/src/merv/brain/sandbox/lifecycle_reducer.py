@@ -81,12 +81,18 @@ def cleanup_pending_decision(
     trigger: str,
     error: str = "",
     attempts: int = 0,
+    fence_phase: str = "",
 ) -> LifecycleDecision:
     """Park a row whose provider deletion was never confirmed.
 
     ``error`` is the verdict the row was headed for; it rides along so the
     retry that finally confirms the delete can finish the original journey
     (a failed provision must not quietly land as a clean ``terminated``).
+
+    ``fence_phase`` is the in-flight marker the caller claimed, when it holds
+    one. Carrying it makes the re-park conditional on still owning the row, so
+    a worker whose claim was reclaimed cannot rewind the new holder's attempt
+    count to its own.
     """
     sandbox_id = str(row.get("sandbox_id") or "")
     sandbox_uid = str(row.get("sandbox_uid") or "")
@@ -98,6 +104,7 @@ def cleanup_pending_decision(
                     "reason": CLEANUP_PENDING_REASON,
                     "error": error,
                     "attempts": max(int(attempts), 1),
+                    "expected_phase": fence_phase,
                 },
             ),
         ),
@@ -223,6 +230,8 @@ def release_decision(
     outcome: CleanupOutcome,
     active_experiment_ids: list[str],
     error: str = "",
+    fence_phase: str = "",
+    attempts: int = 0,
 ) -> LifecycleDecision:
     """Describe an explicitly confirmed release.
 
@@ -231,16 +240,28 @@ def release_decision(
     journey rather than overwrite it with a clean ``terminated``: the agent
     reading the terminal status would otherwise never learn the provision
     failed at all.
+
+    ``fence_phase``/``attempts`` come from the cleanup claim a release takes
+    over a parked row: every write below asserts the claim, and a re-park keeps
+    the attempt the claim actually took instead of restarting the backoff at 1.
     """
     sandbox_id = str(row.get("sandbox_id") or "")
     sandbox_uid = str(row.get("sandbox_uid") or "")
     if outcome == "maybe_alive":
-        return cleanup_pending_decision(row=row, trigger="release", error=error)
+        return cleanup_pending_decision(
+            row=row,
+            trigger="release",
+            error=error,
+            attempts=attempts,
+            fence_phase=fence_phase,
+        )
     return LifecycleDecision(
         intents=(
-            SideEffectIntent("mark_failed", {"error": error})
+            SideEffectIntent(
+                "mark_failed", {"error": error, "expected_phase": fence_phase}
+            )
             if error
-            else SideEffectIntent("mark_terminated", {}),
+            else SideEffectIntent("mark_terminated", {"expected_phase": fence_phase}),
         ),
         event=LifecycleEvent(
             "sandbox.released",

@@ -43,10 +43,18 @@ from .lifecycle_reducer import (
 )
 from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
+    CLEANUP_CLAIM_REFUSED,
+    CLEANUP_CLAIM_UNFENCED,
     CLEANUP_PENDING_STATUS,
     CLEANUP_RETRY_BACKOFF_SECONDS,
+    CleanupClaim,
     cleanup_attempts,
+    cleanup_claim_cutoff,
+    cleanup_claim_expired,
+    cleanup_inflight_phase,
+    cleanup_inflight_token,
     cleanup_retry_due,
+    new_cleanup_token,
     parse_iso,
 )
 from .repository import SandboxRepository
@@ -136,14 +144,24 @@ class SandboxLifecycle:
     # ---------- terminal transitions (mark + teardown, one owner) ----------
 
     def mark_terminated(
-        self, *, experiment_id: str, sandbox_uid: str, expected_project_id: str
-    ) -> None:
+        self,
+        *,
+        experiment_id: str,
+        sandbox_uid: str,
+        expected_project_id: str,
+        expected_phase: str | None = None,
+    ) -> bool:
+        """Terminal mark + teardown. False when a cleanup fence refused it."""
         facts = self.repository.mark_terminated(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             expected_project_id=expected_project_id,
+            expected_phase=expected_phase,
         )
+        if not facts.get("landed", True):
+            return False
         self._teardown(experiment_id=experiment_id, facts=facts)
+        return True
 
     def mark_failed(
         self,
@@ -152,14 +170,19 @@ class SandboxLifecycle:
         error: str,
         sandbox_uid: str,
         expected_project_id: str,
-    ) -> None:
+        expected_phase: str | None = None,
+    ) -> bool:
         facts = self.repository.mark_failed(
             experiment_id=experiment_id,
             error=error,
             sandbox_uid=sandbox_uid,
             expected_project_id=expected_project_id,
+            expected_phase=expected_phase,
         )
+        if not facts.get("landed", True):
+            return False
         self._teardown(experiment_id=experiment_id, facts=facts)
+        return True
 
     def mark_cleanup_pending(
         self,
@@ -169,19 +192,24 @@ class SandboxLifecycle:
         expected_project_id: str,
         error: str = "",
         attempts: int = 1,
-    ) -> None:
+        expected_phase: str | None = None,
+    ) -> bool:
         """Park a row whose provider deletion was never confirmed.
 
         No teardown: the management key and the open spend generation both stay,
         because the VM may still be up — and if it is, we still need to reach it
         and it is still billing.
+
+        ``expected_phase`` is the in-flight marker this worker claimed; passing
+        it makes the re-park a no-op once another worker has reclaimed the row.
         """
-        self.repository.mark_cleanup_pending(
+        return self.repository.mark_cleanup_pending(
             sandbox_uid=sandbox_uid,
             detail=reason,
             expected_project_id=expected_project_id,
             error=error or None,
             attempts=attempts,
+            expected_phase=expected_phase,
         )
 
     def _teardown(self, *, experiment_id: str, facts: dict[str, Any]) -> None:
@@ -441,30 +469,41 @@ class SandboxLifecycle:
         # below carries that name in its predicate (audit SAN-02).
         project_id = str(row.get("project_id") or "")
         current = row
+        # A fenced intent that finds its claim reclaimed writes nothing. The
+        # event must not outlive the write it describes: a `sandbox.released`
+        # over a row somebody else now owns is a settlement that never happened.
+        fenced_out = False
         for intent in decision.intents:
+            fence = str(intent.payload.get("expected_phase") or "") or None
             if intent.kind == "mark_cleanup_pending":
-                self.mark_cleanup_pending(
+                landed = self.mark_cleanup_pending(
                     sandbox_uid=sandbox_uid,
                     reason=str(intent.payload.get("reason") or ""),
                     expected_project_id=project_id,
                     error=str(intent.payload.get("error") or ""),
                     attempts=int(intent.payload.get("attempts") or 1),
+                    expected_phase=fence,
                 )
+                fenced_out |= fence is not None and not landed
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "mark_failed":
-                self.mark_failed(
+                landed = self.mark_failed(
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
                     error=str(intent.payload.get("error") or "sandbox failed"),
                     expected_project_id=project_id,
+                    expected_phase=fence,
                 )
+                fenced_out |= fence is not None and not landed
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "mark_terminated":
-                self.mark_terminated(
+                landed = self.mark_terminated(
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
                     expected_project_id=project_id,
+                    expected_phase=fence,
                 )
+                fenced_out |= fence is not None and not landed
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "touch_alive":
                 self.repository.touch_alive(
@@ -475,7 +514,7 @@ class SandboxLifecycle:
                 current = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
             elif intent.kind == "refresh_endpoint":
                 current = self.refresh_endpoint(row=current)
-        if decision.event is not None:
+        if decision.event is not None and not fenced_out:
             self.repository.emit_event(
                 project_id=str(row.get("project_id") or ""),
                 event_type=decision.event.type,
@@ -694,9 +733,16 @@ class SandboxLifecycle:
         confirmed = retried = 0
         for row in rows:
             attempts = cleanup_attempts(phase=row.get("phase"))
-            if not cleanup_retry_due(
+            last_attempt_at = parse_iso(row.get("updated_at"))
+            if cleanup_inflight_token(phase=row.get("phase")):
+                # Somebody holds this row. That is not a backoff question: the
+                # row is worth looking at again only once its marker is past
+                # the hard deadline, and then as a reclaim, not a retry.
+                if not cleanup_claim_expired(claimed_at=last_attempt_at, now=now_dt):
+                    continue
+            elif not cleanup_retry_due(
                 attempts=attempts,
-                last_attempt_at=parse_iso(row.get("updated_at")),
+                last_attempt_at=last_attempt_at,
                 now=now_dt,
             ):
                 continue
@@ -715,30 +761,28 @@ class SandboxLifecycle:
             "retried": retried,
         }
 
-    def claim_cleanup(self, *, row: dict[str, Any]) -> bool:
+    def claim_cleanup(self, *, row: dict[str, Any]) -> CleanupClaim:
         """Claim one cleanup attempt on the parked row the CALLER read.
 
         The manual `sandbox.release` path: an operator asking by hand may jump
         the retry backoff, but must not walk into an attempt already in flight.
-        The claim therefore asserts the exact `updated_at` the caller read, so
-        a claim taken since that read — a worker that may still be inside the
-        provider call — refuses this one. Rows in any other status are not
-        claimed here: their single owner is established elsewhere (a live job,
-        the reaper's own re-read).
+        The in-flight marker is what tells it apart — a fresh read that shows
+        somebody holds the row refuses here, and a stale snapshot names a
+        marker the row no longer carries and is refused by the CAS. Rows in any
+        other status are not claimed here: their single owner is established
+        elsewhere (a live job, the reaper's own re-read).
         """
-        return self._claim_cleanup(
-            row=row, expected_updated_at=str(row.get("updated_at") or "")
-        )
+        return self._claim_cleanup(row=row)
 
-    def claim_cleanup_due(self, *, row: dict[str, Any], now: datetime) -> bool:
+    def claim_cleanup_due(self, *, row: dict[str, Any], now: datetime) -> CleanupClaim:
         """Claim one cleanup attempt for the retry sweep, if still due.
 
-        The sweep's workers are STAGGERED, not simultaneous: the second one
-        re-reads the row after the first has claimed it and blocked in the
-        provider call, so a claim that only guards the attempt marker resyncs
-        to the winner's phase and lets it through. Being due is the guard that
-        survives that: the winner's claim stamps `updated_at`, and the row is
-        not askable again until its backoff has elapsed.
+        Two independent guards. The in-flight marker is the exclusion: the
+        sweep's workers arrive STAGGERED, so the second re-reads the row after
+        the first has claimed it and blocked in the provider call, and what it
+        reads back says outright that the attempt is taken. Being due is the
+        cadence: a parked row is not asked about again until its backoff has
+        elapsed, so the provider is not hammered.
         """
         return self._claim_cleanup(
             row=row,
@@ -754,24 +798,55 @@ class SandboxLifecycle:
         row: dict[str, Any],
         now: datetime | None = None,
         due_before: str | None = None,
-        expected_updated_at: str | None = None,
-    ) -> bool:
+    ) -> CleanupClaim:
         """Shared claim: a conditional write is the only exclusive read."""
         if str(row.get("status") or "") != CLEANUP_PENDING_STATUS:
-            return True
+            return CLEANUP_CLAIM_UNFENCED
         sandbox_uid = str(row.get("sandbox_uid") or "")
         if not sandbox_uid:
-            return True
-        return self.repository.claim_cleanup_attempt(
+            return CLEANUP_CLAIM_UNFENCED
+        now_dt = now or datetime.now(tz=UTC)
+        phase = str(row.get("phase") or "")
+        stale_before: str | None = None
+        if cleanup_inflight_token(phase=phase):
+            # The row says outright that an attempt is in flight. Nobody may
+            # take it — not the sweep, not a manual release that re-read the
+            # row AFTER the holder's claim and would otherwise see nothing but
+            # a timestamp it cannot interpret.
+            if not cleanup_claim_expired(
+                claimed_at=parse_iso(row.get("updated_at")), now=now_dt
+            ):
+                return CLEANUP_CLAIM_REFUSED
+            # Past the deadline the holder is presumed dead (or wedged past its
+            # own bounded provider call) and the row is reclaimable — otherwise
+            # one lost worker parks a possibly-billing VM forever. Reclaiming is
+            # safe because the new token fences the old holder out: its late
+            # write fails the CAS and settles nothing. The deadline replaces the
+            # backoff here; the previous attempt is not going to report.
+            stale_before = format_iso(cleanup_claim_cutoff(now=now_dt))
+            due_before = None
+        attempts = cleanup_attempts(phase=phase)
+        token = new_cleanup_token()
+        claimed = self.repository.claim_cleanup_attempt(
             sandbox_uid=sandbox_uid,
-            phase=str(row.get("phase") or ""),
-            attempts=cleanup_attempts(phase=row.get("phase")),
+            phase=phase,
+            attempts=attempts,
             expected_project_id=str(row.get("project_id") or ""),
             # One clock throughout: the instant this attempt is claimed is the
-            # instant the next backoff window is measured from.
-            claimed_at=format_iso(now) if now is not None else "",
+            # instant both the next backoff window and the in-flight deadline
+            # are measured from.
+            claimed_at=format_iso(now_dt),
+            token=token,
             due_before=due_before,
-            expected_updated_at=expected_updated_at,
+            stale_before=stale_before,
+        )
+        if not claimed:
+            return CLEANUP_CLAIM_REFUSED
+        return CleanupClaim(
+            granted=True,
+            token=token,
+            attempts=attempts + 1,
+            phase=cleanup_inflight_phase(attempts=attempts + 1, token=token),
         )
 
     def _retry_one_cleanup(
@@ -792,24 +867,31 @@ class SandboxLifecycle:
                 return True  # somebody else finished it; it is no longer pending
             row = fresh
             attempts = cleanup_attempts(phase=row.get("phase")) or attempts
-        # ...and the re-read alone only proves it WAS pending — it even hands a
-        # straggler the winner's fresh attempt marker. Claim it, still-due, or a
+        # ...and the re-read alone only proves it WAS pending — a straggler
+        # even reads back the winner's own in-flight marker. Claim it, or a
         # sibling worker settles the same VM a second time and emits a second
         # confirmation for it.
-        if not self.claim_cleanup_due(row=row, now=now_dt):
+        claim = self.claim_cleanup_due(row=row, now=now_dt)
+        if not claim:
             return False
+        # The attempt this worker owns, and the marker every write below asserts
+        # so a reclaim of a wedged attempt cannot be undone by its late writer.
+        attempts = claim.attempts or attempts + 1
+        fence = claim.phase or None
         # The verdict this row was headed for before cleanup stalled: an origin
         # error means it was on its way to `failed`, not to a clean `terminated`.
         origin_error = str(row.get("error") or "")
         outcome = self.terminate_vm(row=row)
         if outcome == "maybe_alive":
-            self.mark_cleanup_pending(
+            if not self.mark_cleanup_pending(
                 sandbox_uid=sandbox_uid,
                 reason=str(row.get("detail") or CLEANUP_PENDING_REASON),
                 expected_project_id=project_id,
                 error=origin_error,
-                attempts=attempts + 1,
-            )
+                attempts=attempts,
+                expected_phase=fence,
+            ):
+                return False  # fenced out: this attempt no longer owns the row
             self.repository.emit_event(
                 project_id=project_id,
                 event_type="sandbox.cleanup_retried",
@@ -817,24 +899,28 @@ class SandboxLifecycle:
                 payload={
                     "sandbox_id": str(row.get("sandbox_id") or ""),
                     "sandbox_uid": sandbox_uid,
-                    "attempts": attempts + 1,
+                    "attempts": attempts,
                     "confirmed": False,
                 },
             )
             return False
         if origin_error:
-            self.mark_failed(
+            settled = self.mark_failed(
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
                 error=origin_error,
                 expected_project_id=project_id,
+                expected_phase=fence,
             )
         else:
-            self.mark_terminated(
+            settled = self.mark_terminated(
                 experiment_id=experiment_id,
                 sandbox_uid=sandbox_uid,
                 expected_project_id=project_id,
+                expected_phase=fence,
             )
+        if not settled:
+            return False  # fenced out: the reclaiming worker owns the ending
         self.repository.emit_event(
             project_id=project_id,
             event_type="sandbox.cleanup_confirmed",
@@ -842,7 +928,7 @@ class SandboxLifecycle:
             payload={
                 "sandbox_id": str(row.get("sandbox_id") or ""),
                 "sandbox_uid": sandbox_uid,
-                "attempts": attempts + 1,
+                "attempts": attempts,
                 "stopped": outcome == "stopped",
                 "status": "failed" if origin_error else "terminated",
             },

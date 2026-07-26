@@ -26,7 +26,12 @@ from merv.brain.sandbox.sandbox_backend import (
     BackendUnavailableError,
     SandboxRequest,
 )
+from merv.brain.sandbox import sandbox_support
 from merv.brain.sandbox.sandbox_daemons import SandboxDaemons
+from merv.brain.sandbox.sandbox_support import (
+    CLEANUP_INFLIGHT_DEADLINE_SECONDS,
+    cleanup_inflight_token,
+)
 from merv.brain.application.maintenance import CleanupService
 
 
@@ -1136,22 +1141,28 @@ class CleanupSweepTest(unittest.TestCase):
 
     def test_a_release_refuses_a_row_claimed_since_it_read_it(self) -> None:
         # Release may jump the retry backoff — asking by hand is the point —
-        # but not an attempt already taken. The sweep has claimed this row and
-        # its provider call has not reported yet, so the row still reads
-        # `cleanup_pending`: only the stamp the release holds says otherwise.
+        # but not an attempt already taken. The hard case is a release whose
+        # snapshot is taken AFTER the sweep's claim: the phase and the stamp it
+        # holds are both the winner's own, so no CAS on either can tell this
+        # apart from a free row. Only an explicit in-flight marker can, and the
+        # sweep's provider call has not reported yet.
         uid = "uid_release_inflight"
         self._running_row(sandbox_uid=uid, sandbox_id="sb-release-inflight")
         self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
         self.backend.liveness_unavailable = True
         self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
-        snapshot = self._row(uid)  # the copy the release is working from
         self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
         self.backend.liveness_unavailable = False
 
         lifecycle = self.app.sandboxes.lifecycle
-        self.assertTrue(
-            lifecycle.claim_cleanup_due(row=dict(snapshot), now=self._due_at(uid))
-        )
+        claim = lifecycle.claim_cleanup_due(row=self._row(uid), now=self._due_at(uid))
+        self.assertTrue(claim)
+
+        # The release reads the row fresh, from scratch, after that claim.
+        snapshot = self._row(uid)
+        self.assertEqual(snapshot["status"], "cleanup_pending")
+        self.assertEqual(snapshot["phase"], claim.phase)
+        self.assertTrue(cleanup_inflight_token(phase=snapshot["phase"]))
 
         view = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
 
@@ -1159,6 +1170,133 @@ class CleanupSweepTest(unittest.TestCase):
         self.assertEqual(view["status"], "cleanup_pending")
         self.assertIn("Nothing was sent to the provider", view["hint"])
         self.assertEqual(len(self._sandbox_events("sandbox.released")), 0)
+        # The holder still owns the row: nothing was bumped out from under it.
+        self.assertEqual(self._row(uid)["phase"], claim.phase)
+
+    def test_an_in_flight_claim_is_reclaimable_only_past_the_deadline(self) -> None:
+        # A worker can die inside the provider call. Its marker must not park a
+        # possibly-billing VM forever — but nor may a second worker step over a
+        # claim that is merely slow. The hard deadline is the whole difference.
+        uid = "uid_inflight_deadline"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-inflight-deadline")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        lifecycle = self.app.sandboxes.lifecycle
+        claimed_at = self._due_at(uid)
+        worker_a = lifecycle.claim_cleanup_due(row=self._row(uid), now=claimed_at)
+        self.assertTrue(worker_a)
+
+        # Still inside the deadline: the row belongs to A, by hand or by sweep.
+        early = claimed_at + timedelta(seconds=CLEANUP_INFLIGHT_DEADLINE_SECONDS - 30)
+        self.assertFalse(lifecycle.claim_cleanup_due(row=self._row(uid), now=early))
+        self.assertFalse(lifecycle.claim_cleanup(row=self._row(uid)))
+        self.assertEqual(
+            self.cleanup.retry_cleanup_pending(now=early),
+            {"ok": False, "pending": 1, "confirmed": 0, "retried": 0},
+        )
+        self.assertEqual(self._row(uid)["phase"], worker_a.phase)
+
+        # Past it the sweep reclaims the row under a NEW token — otherwise one
+        # lost worker parks a possibly-billing VM behind its marker forever.
+        # The provider is still unreachable, so the reclaim re-parks at the
+        # attempt IT took, not at A's.
+        late = claimed_at + timedelta(seconds=CLEANUP_INFLIGHT_DEADLINE_SECONDS + 30)
+        self.assertEqual(
+            self.cleanup.retry_cleanup_pending(now=late),
+            {"ok": False, "pending": 1, "confirmed": 0, "retried": 1},
+        )
+        reclaimed = self._row(uid)
+        self.assertEqual(reclaimed["status"], "cleanup_pending")
+        self.assertEqual(reclaimed["phase"], "cleanup_attempt_3")
+
+        # A finally reports. Its settlement lands nowhere.
+        self.assertFalse(
+            lifecycle.mark_terminated(
+                experiment_id="",
+                sandbox_uid=uid,
+                expected_project_id=self.project_id,
+                expected_phase=worker_a.phase,
+            )
+        )
+        fenced = self._row(uid)
+        self.assertEqual(fenced["status"], "cleanup_pending")
+        self.assertEqual(fenced["phase"], "cleanup_attempt_3")
+
+        # ...and the ending belongs to whoever holds the row now.
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+        self.assertEqual(
+            self.cleanup.retry_cleanup_pending(now=late + timedelta(hours=2)),
+            {"ok": True, "pending": 0, "confirmed": 1, "retried": 0},
+        )
+        self.assertEqual(self._row(uid)["status"], "terminated")
+
+    def test_a_reclaimed_release_settles_nothing_and_reports_it(self) -> None:
+        # The same fence through the whole release path: this release overran
+        # the deadline, another attempt reclaimed the row while it was inside
+        # the provider call, and its terminate really did go through. It must
+        # still write nothing — no terminal status, no `sandbox.released` — and
+        # the operator must be told the row was not settled here.
+        uid = "uid_release_fenced"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-release-fenced")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)
+        self.backend.liveness_unavailable = False
+        lifecycle = self.app.sandboxes.lifecycle
+        real_terminate = FakeSandboxBackend.terminate.__get__(self.backend)
+        reclaimed: list[str] = []
+
+        def gated_terminate(*, sandbox_id: str):
+            # A second attempt reclaims the row mid-call: from its side this
+            # release has been gone longer than any bounded provider call.
+            if not reclaimed:
+                with patch.object(
+                    sandbox_support, "CLEANUP_INFLIGHT_DEADLINE_SECONDS", 0.0
+                ):
+                    claim = lifecycle.claim_cleanup(row=self._row(uid))
+                reclaimed.append(claim.phase if claim else "")
+            return real_terminate(sandbox_id=sandbox_id)
+
+        self.backend.terminate = gated_terminate  # type: ignore[assignment]
+
+        view = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
+
+        self.assertTrue(reclaimed and reclaimed[0], "the reclaim never happened")
+        self.assertEqual(self.backend.terminated.count("sb-release-fenced"), 1)
+        self.assertEqual(view["status"], "cleanup_pending")
+        self.assertIn("reclaimed", view["hint"])
+        self.assertEqual(len(self._sandbox_events("sandbox.released")), 0)
+        settled = self._row(uid)
+        self.assertEqual(settled["status"], "cleanup_pending")
+        self.assertEqual(settled["phase"], reclaimed[0])
+
+    def test_a_release_retries_once_against_a_row_that_has_freed_up(self) -> None:
+        # A snapshot goes stale without the row being held: the attempt it
+        # collided with finished and re-parked. Refusing the operator forever on
+        # that evidence is starvation, not safety — one fresh read settles it.
+        uid = "uid_release_starved"
+        self._running_row(sandbox_uid=uid, sandbox_id="sb-release-starved")
+        self.backend.terminate = lambda *, sandbox_id: False  # type: ignore[assignment]
+        self.backend.liveness_unavailable = True
+        self.app.sandboxes.reap_expired(now=datetime(2999, 1, 1, tzinfo=UTC))
+        snapshot = self._row(uid)  # the operator's read: attempt 1, parked
+
+        # The sweep takes attempt 2 and cannot confirm either, so the row parks
+        # again — with a phase and a stamp the operator's copy never saw.
+        self.cleanup.retry_cleanup_pending(now=self._due_at(uid))
+        self.assertEqual(self._row(uid)["phase"], "cleanup_attempt_2")
+
+        self.backend.terminate = FakeSandboxBackend.terminate.__get__(self.backend)  # type: ignore[assignment]
+        self.backend.liveness_unavailable = False
+
+        view = self.app.sandboxes._release_row(row=dict(snapshot))  # noqa: SLF001
+
+        self.assertEqual(view["status"], "terminated")
+        self.assertEqual(self.backend.terminated.count("sb-release-starved"), 1)
+        self.assertEqual(len(self._sandbox_events("sandbox.released")), 1)
 
     def test_a_release_holding_the_same_parked_row_never_settles_it_twice(
         self,

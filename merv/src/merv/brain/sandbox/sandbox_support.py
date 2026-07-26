@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..kernel.ports.sandbox_lifecycle import DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
@@ -65,11 +67,18 @@ DEFAULT_SANDBOX_IDLE_SECONDS = 3600.0
 # again, indexed by attempts already made. The last entry repeats forever: a
 # possibly-billing VM is never given up on, only asked about less often.
 CLEANUP_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 300.0, 900.0, 3600.0)
+# How long a claimed cleanup attempt may stay in flight before another worker
+# may reclaim the row. Sits comfortably above any bounded provider terminate
+# call, so only a worker that has actually died — or wedged past its own
+# timeout — is fenced out. The clock decides WHEN a row is reclaimable; the
+# token decides whether the old holder's late write still counts (it does not).
+CLEANUP_INFLIGHT_DEADLINE_SECONDS = 600.0
 _CLEANUP_ATTEMPT_PREFIX = "cleanup_attempt_"
+_CLEANUP_INFLIGHT_PREFIX = "cleanup_inflight_"
 
 
 def cleanup_attempt_phase(*, attempts: int) -> str:
-    """The `phase` marker carrying a cleanup_pending row's attempt count.
+    """The `phase` marker of a PARKED cleanup_pending row: nobody holds it.
 
     Piggybacks the existing free-text phase column so the count is durable
     without a migration, and reads as a lifecycle phase to an operator.
@@ -77,15 +86,92 @@ def cleanup_attempt_phase(*, attempts: int) -> str:
     return f"{_CLEANUP_ATTEMPT_PREFIX}{max(int(attempts), 1)}"
 
 
+def new_cleanup_token() -> str:
+    """A fresh ownership token for one cleanup attempt."""
+    return secrets.token_hex(8)
+
+
+def cleanup_inflight_phase(*, attempts: int, token: str) -> str:
+    """The `phase` marker naming the worker that OWNS this cleanup attempt.
+
+    An EXPLICIT marker, because a timestamp can only be guessed at: a worker
+    that re-reads the row after the winner's claim sees a fresh `updated_at`
+    and no way to tell the winner's own stamp from a settled row's. The marker
+    says so outright — and the token in it is the fence every completion write
+    CASes on, so a holder that was reclaimed for being over the deadline
+    discovers it by failing that CAS rather than by settling a row it lost.
+    """
+    return f"{_CLEANUP_INFLIGHT_PREFIX}{max(int(attempts), 1)}:{token}"
+
+
 def cleanup_attempts(*, phase: Any) -> int:
-    """Attempts already made on a cleanup_pending row; 0 when unmarked."""
+    """Attempts already made on a cleanup_pending row; 0 when unmarked.
+
+    Reads both markers: an in-flight phase carries the attempt its holder took.
+    """
     text = str(phase or "")
-    if not text.startswith(_CLEANUP_ATTEMPT_PREFIX):
-        return 0
-    try:
-        return max(int(text[len(_CLEANUP_ATTEMPT_PREFIX):]), 0)
-    except ValueError:
-        return 0
+    for prefix in (_CLEANUP_ATTEMPT_PREFIX, _CLEANUP_INFLIGHT_PREFIX):
+        if not text.startswith(prefix):
+            continue
+        try:
+            return max(int(text[len(prefix):].split(":", 1)[0]), 0)
+        except ValueError:
+            return 0
+    return 0
+
+
+def cleanup_inflight_token(*, phase: Any) -> str:
+    """The ownership token a phase carries, or "" when the row is parked."""
+    text = str(phase or "")
+    if not text.startswith(_CLEANUP_INFLIGHT_PREFIX):
+        return ""
+    return text.partition(":")[2]
+
+
+def cleanup_claim_expired(*, claimed_at: datetime | None, now: datetime) -> bool:
+    """Whether an in-flight marker is old enough for another worker to reclaim.
+
+    An unstamped marker has nothing proving it is fresh, so it is reclaimable —
+    the same reading `cleanup_retry_due` gives a missing last-attempt clock.
+    """
+    if claimed_at is None:
+        return True
+    return claimed_at <= cleanup_claim_cutoff(now=now)
+
+
+def cleanup_claim_cutoff(*, now: datetime) -> datetime:
+    """The newest claim stamp already past the deadline.
+
+    The reader's half of `cleanup_claim_expired`, expressed as a bound the
+    reclaim's WHERE clause can carry — so the check the caller makes and the
+    check the database re-makes are the same deadline, not two of them.
+    """
+    return now - timedelta(seconds=CLEANUP_INFLIGHT_DEADLINE_SECONDS)
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupClaim:
+    """Whether this worker owns the next cleanup attempt, and under which fence.
+
+    ``phase`` is the exact in-flight marker the claim wrote; every write that
+    finishes the attempt asserts it, so a holder fenced out by a stale-claim
+    reclaim lands a no-op instead of a second settlement. It is empty when no
+    fence applies — a row that is not parked has a single owner established
+    elsewhere (a live job, the reaper's own re-read), so nothing to CAS on.
+    """
+
+    granted: bool
+    token: str = ""
+    attempts: int = 0
+    phase: str = ""
+
+    def __bool__(self) -> bool:
+        return self.granted
+
+
+CLEANUP_CLAIM_REFUSED = CleanupClaim(granted=False)
+# Granted with no fence: the row was never parked, so no claim was needed.
+CLEANUP_CLAIM_UNFENCED = CleanupClaim(granted=True)
 
 
 def cleanup_retry_due(

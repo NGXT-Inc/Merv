@@ -882,9 +882,20 @@ class SandboxFacade:
         # rows. Claim the attempt before terminating, or one VM takes two
         # provider calls and the ledger carries two settlements for it. Release
         # is allowed to jump the retry backoff — that is the point of asking by
-        # hand — so its claim asserts the row is unchanged since this read
-        # instead, which is what refuses an attempt already in flight.
-        if not self.lifecycle.claim_cleanup(row=row):
+        # hand — so what refuses it is the in-flight marker alone.
+        claim = self.lifecycle.claim_cleanup(row=row)
+        if not claim:
+            # One bounded retry off a FRESH read. A snapshot can be refused for
+            # naming a marker the row has since moved past — the attempt it
+            # collided with finished and re-parked the row — and starving the
+            # operator on a row that is free again is the wrong answer. One
+            # extra read either finds it free or confirms it is genuinely held.
+            fresh = self.repository.get_by_uid(sandbox_uid=sandbox_uid)
+            if str(fresh.get("status") or "") == CLEANUP_PENDING_STATUS:
+                claim = self.lifecycle.claim_cleanup(row=fresh)
+                if claim:
+                    row = fresh
+        if not claim:
             view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
             view["hint"] = (
                 "Nothing was sent to the provider: another cleanup attempt for this sandbox was already in flight, and a second one would terminate the same VM twice and settle it twice. `status` above is the row as it stands right now — if it is still cleanup_pending, that attempt has not reported yet; re-call sandbox.release to try again, or check the provider console."
@@ -917,13 +928,30 @@ class SandboxFacade:
                 if row.get("status") == CLEANUP_PENDING_STATUS
                 else ""
             ),
+            fence_phase=claim.phase,
+            attempts=claim.attempts,
         )
         # Stamp before the mark: `maybe_alive` leaves the row running for a
         # later retry and must not stamp, but once the VM is confirmed gone the
         # read is final even if the mark below fails.
         if outcome != "maybe_alive":
             self.lifecycle.commit_runs_observation(row=row, observed=observed)
-        self.lifecycle.apply(row=row, decision=decision)
+        applied = self.lifecycle.apply(row=row, decision=decision)
+        if (
+            outcome != "maybe_alive"
+            and claim.phase
+            and str(applied.get("status") or "") == CLEANUP_PENDING_STATUS
+        ):
+            # This release ran past the in-flight deadline and another worker
+            # reclaimed the row, so its settlement was fenced out. The VM it
+            # terminated really is gone — but the row's ending belongs to the
+            # new holder, and saying "terminated" here would describe a write
+            # that never happened.
+            view = self._row_view(row=applied)
+            view["hint"] = (
+                "The provider terminate call went through, but this release took longer than the cleanup deadline and another attempt reclaimed the sandbox, so the row was NOT settled here. `status` above is the row as it stands right now; the holding attempt will confirm it. Re-call sandbox.release if it stays cleanup_pending, or check the provider console."
+            )
+            return view
         if outcome == "maybe_alive":
             view = self._row_view(row=self.repository.get_by_uid(sandbox_uid=sandbox_uid))
             view["hint"] = (

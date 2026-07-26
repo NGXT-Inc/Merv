@@ -20,6 +20,7 @@ from .sandbox_support import (
     CLEANUP_PENDING_STATUS,
     TERMINAL_SANDBOX_STATUSES,
     cleanup_attempt_phase,
+    cleanup_inflight_phase,
 )
 from ..kernel.state.store import BaseStateStore, next_created_seq, row_to_dict
 from ..kernel.utils import NotFoundError, ValidationError, new_id, now_iso
@@ -858,13 +859,19 @@ class SandboxRepository:
         return {**snapshot, "snapshot_at": now}
 
     def mark_terminated(
-        self, *, experiment_id: str, sandbox_uid: str, expected_project_id: str
+        self,
+        *,
+        experiment_id: str,
+        sandbox_uid: str,
+        expected_project_id: str,
+        expected_phase: str | None = None,
     ) -> dict[str, Any]:
         return self._mark_terminal(
             experiment_id=experiment_id,
             sandbox_uid=sandbox_uid,
             status="terminated",
             expected_project_id=expected_project_id,
+            expected_phase=expected_phase,
         )
 
     def mark_failed(
@@ -874,6 +881,7 @@ class SandboxRepository:
         error: str,
         sandbox_uid: str,
         expected_project_id: str,
+        expected_phase: str | None = None,
     ) -> dict[str, Any]:
         return self._mark_terminal(
             experiment_id=experiment_id,
@@ -881,6 +889,7 @@ class SandboxRepository:
             status="failed",
             error=error,
             expected_project_id=expected_project_id,
+            expected_phase=expected_phase,
         )
 
     def mark_cleanup_pending(
@@ -891,7 +900,8 @@ class SandboxRepository:
         expected_project_id: str,
         attempts: int = 1,
         error: str | None = None,
-    ) -> None:
+        expected_phase: str | None = None,
+    ) -> bool:
         """Park a row whose provider deletion was never confirmed (audit SAN-05).
 
         Deliberately NOT terminal: attachments and the open spend generation
@@ -905,10 +915,16 @@ class SandboxRepository:
         other already terminalized back to pending — attachments and the spend
         generation are closed by then, so the resurrected row would contradict
         its own accounting. A terminal row simply does not move.
+
+        ``expected_phase`` is the in-flight marker a claiming worker wrote. It
+        makes the re-park a token CAS: a holder that was reclaimed for running
+        past the deadline finds the marker replaced and writes nothing, rather
+        than dragging the new holder's attempt back to its own stale count.
+        Returns whether the write landed.
         """
         target_uid = str(sandbox_uid or "").strip()
         if not target_uid:
-            return
+            return False
         now = now_iso()
         assignments = ["status = ?", "phase = ?", "detail = ?", "updated_at = ?"]
         values: list[Any] = [
@@ -921,18 +937,27 @@ class SandboxRepository:
             assignments.append("error = ?")
             values.append(error)
         terminal = tuple(sorted(TERMINAL_SANDBOX_STATUSES))
+        extra_clause = (
+            " AND status NOT IN ("
+            + ", ".join(f"'{status}'" for status in terminal)
+            + ")"
+        )
+        extra_values: list[Any] = []
+        if expected_phase is not None:
+            extra_clause += " AND phase = ?"
+            extra_values.append(expected_phase)
         with self.store.transaction() as conn:
-            self._guarded_update(
-                conn=conn,
-                sandbox_uid=target_uid,
-                assignments=", ".join(assignments),
-                values=values,
-                expected_project_id=expected_project_id,
-                extra_clause=(
-                    " AND status NOT IN ("
-                    + ", ".join(f"'{status}'" for status in terminal)
-                    + ")"
-                ),
+            return (
+                self._guarded_update(
+                    conn=conn,
+                    sandbox_uid=target_uid,
+                    assignments=", ".join(assignments),
+                    values=values,
+                    expected_project_id=expected_project_id,
+                    extra_clause=extra_clause,
+                    extra_values=extra_values,
+                )
+                == 1
             )
 
     def claim_cleanup_attempt(
@@ -943,8 +968,9 @@ class SandboxRepository:
         attempts: int,
         expected_project_id: str,
         claimed_at: str,
+        token: str,
         due_before: str | None = None,
-        expected_updated_at: str | None = None,
+        stale_before: str | None = None,
     ) -> bool:
         """Atomically take the next cleanup attempt on a parked row (CAS).
 
@@ -954,21 +980,24 @@ class SandboxRepository:
         one VM taking several terminates, and the ledger carrying several
         confirmations for a single deletion.
 
-        The claim advances the attempt marker in `phase` and stamps
-        `updated_at` — but advancing the phase is not by itself exclusive.
-        Workers arrive STAGGERED: one that re-reads the row after the winner's
-        bump sees the new phase and would CAS cleanly against it, land in the
-        provider call the winner is still inside, and settle the same VM twice.
-        So the claim also asserts the row has not been touched since the
-        claimant looked, in whichever form its caller can prove:
+        The claim writes an explicit in-flight marker — `phase` becomes
+        ``cleanup_inflight_<attempt>:<token>`` — so ownership is a fact on the
+        row rather than something a later reader has to infer from a
+        timestamp. Two predicates make it exclusive:
 
-        - ``due_before`` (the retry sweep) — `updated_at` must be at or before
-          the backoff cutoff for this attempt. The winner's stamp is its own
-          `now`, so a straggler is refused until that attempt's backoff has
-          elapsed: the in-flight window and the retry cadence are one window.
-        - ``expected_updated_at`` (manual release) — the exact stamp the caller
-          read. Release may jump the backoff queue, but never past a claim it
-          never saw.
+        - ``phase`` must still be exactly what the claimant READ. A straggler
+          holding a pre-claim snapshot names the old marker and is refused;
+        - the caller must have read a row that is claimable at all. A reader
+          that arrives AFTER the winner's bump sees the in-flight marker
+          itself and refuses upstream (`SandboxLifecycle._claim_cleanup`) —
+          the read-after-bump race the old timestamp CAS could not see.
+
+        ``due_before`` (retry sweep) keeps the backoff cadence: `updated_at`
+        must be at or before this attempt's cutoff. ``stale_before`` is the
+        opposite case — the caller READ an in-flight marker and is reclaiming
+        it because it is past the hard deadline, so the DB re-checks that age
+        rather than trusting the caller. The reclaimed holder is not
+        interrupted; it simply fails its own token CAS when it finally writes.
 
         Returns False when somebody else already holds the attempt.
         """
@@ -977,16 +1006,12 @@ class SandboxRepository:
             return False
         extra_clause = " AND status = ? AND phase = ?"
         extra_values: list[Any] = [CLEANUP_PENDING_STATUS, str(phase or "")]
-        if due_before is not None:
-            # An unstamped row has no window left to wait out — same reading
-            # `cleanup_retry_due` gives a missing last-attempt clock.
+        # An unstamped row has no window left to wait out — same reading
+        # `cleanup_retry_due` gives a missing last-attempt clock.
+        cutoff = stale_before if stale_before is not None else due_before
+        if cutoff is not None:
             extra_clause += " AND (updated_at IS NULL OR updated_at <= ?)"
-            extra_values.append(due_before)
-        elif expected_updated_at:
-            extra_clause += " AND updated_at = ?"
-            extra_values.append(expected_updated_at)
-        elif expected_updated_at is not None:
-            extra_clause += " AND (updated_at IS NULL OR updated_at = '')"
+            extra_values.append(cutoff)
         with self.store.transaction() as conn:
             return (
                 self._guarded_update(
@@ -994,7 +1019,9 @@ class SandboxRepository:
                     sandbox_uid=target_uid,
                     assignments="phase = ?, updated_at = ?",
                     values=[
-                        cleanup_attempt_phase(attempts=int(attempts) + 1),
+                        cleanup_inflight_phase(
+                            attempts=int(attempts) + 1, token=token
+                        ),
                         claimed_at or now_iso(),
                     ],
                     expected_project_id=expected_project_id,
@@ -1012,10 +1039,21 @@ class SandboxRepository:
         status: str,
         expected_project_id: str,
         error: str | None = None,
+        expected_phase: str | None = None,
     ) -> dict[str, Any]:
         """Drive one sandbox row to a terminal status, closing its attachment
-        and spend generation. `error` is set only on the failed path."""
+        and spend generation. `error` is set only on the failed path.
+
+        ``expected_phase`` fences the write to one cleanup claim: a worker
+        whose in-flight marker has since been reclaimed settles nothing —
+        neither the status, nor the attachments, nor the spend generation —
+        because the row it was settling is no longer the row it claimed. The
+        returned facts carry ``landed`` so the caller can skip the teardown
+        and the ledger entry that would otherwise describe a write that never
+        happened.
+        """
         now = now_iso()
+        landed = True
         with self.store.transaction() as conn:
             target_uid = str(sandbox_uid or "").strip()
             row = (
@@ -1038,26 +1076,32 @@ class SandboxRepository:
                 )
             else:
                 owner_clause, owner_values = "", []
+            phase_clause = " AND phase = ?" if expected_phase is not None else ""
+            phase_values = [expected_phase] if expected_phase is not None else []
             if error is None:
-                conn.execute(
+                cursor = conn.execute(
                     f"""
                     UPDATE sandboxes
-                    SET status = ?, terminated_at = ?, updated_at = ?
-                    WHERE sandbox_uid = ?{owner_clause}
+                    SET status = ?, phase = '', terminated_at = ?, updated_at = ?
+                    WHERE sandbox_uid = ?{owner_clause}{phase_clause}
                     """,
-                    (status, now, now, row_uid, *owner_values),
+                    (status, now, now, row_uid, *owner_values, *phase_values),
                 )
             else:
-                conn.execute(
+                cursor = conn.execute(
                     f"""
                     UPDATE sandboxes
                     SET status = ?, error = ?, phase = '', detail = '',
                         terminated_at = ?, updated_at = ?
-                    WHERE sandbox_uid = ?{owner_clause}
+                    WHERE sandbox_uid = ?{owner_clause}{phase_clause}
                     """,
-                    (status, error, now, now, row_uid, *owner_values),
+                    (status, error, now, now, row_uid, *owner_values, *phase_values),
                 )
-            if row is not None:
+            # Only a fenced write reads the rowcount: an unfenced mark on a row
+            # that does not exist has always been a tolerated no-op.
+            if expected_phase is not None:
+                landed = int(getattr(cursor, "rowcount", 0)) == 1
+            if row is not None and landed:
                 self._close_all_attachments(
                     conn=conn,
                     sandbox_uid=row_uid,
@@ -1068,13 +1112,13 @@ class SandboxRepository:
         # under a different experiment id than the current primary attachment
         # (anonymous request, later attach) — an experiment_id filter here
         # leaves it open and billing "to now" forever.
-        if sandbox_id:
+        if landed and sandbox_id:
             self.close_generation(experiment_id="", sandbox_id=sandbox_id, now=now)
-        elif not row_uid:
+        elif landed and not row_uid:
             self.close_generation(experiment_id=experiment_id, now=now)
         # sandbox_id is "" when the row never recorded one, None when the row
         # itself does not exist (the update still ran).
-        return {"sandbox_id": sandbox_id, "sandbox_uid": row_uid}
+        return {"sandbox_id": sandbox_id, "sandbox_uid": row_uid, "landed": landed}
 
     def emit_event(
         self,

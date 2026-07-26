@@ -21,6 +21,8 @@ from .sandbox_support import (
     ACTIVE_SANDBOX_STATUSES,
     CLEANUP_PENDING_STATUS,
     POLL_AFTER_SECONDS,
+    cleanup_attempts,
+    cleanup_inflight_token,
 )
 
 
@@ -162,8 +164,11 @@ def agent_row_facts(
     elif status == "failed":
         facts["error"] = row.get("error") or "provisioning failed"
     elif status == CLEANUP_PENDING_STATUS:
+        # The count and whether somebody holds the row — not the raw marker,
+        # which carries an internal ownership token an agent has no use for.
         facts["cleanup"] = {
-            "attempt": row.get("phase") or "",
+            "attempt": cleanup_attempts(phase=row.get("phase")),
+            "in_flight": bool(cleanup_inflight_token(phase=row.get("phase"))),
             "detail": row.get("detail") or "",
             "error": row.get("error") or "",
         }

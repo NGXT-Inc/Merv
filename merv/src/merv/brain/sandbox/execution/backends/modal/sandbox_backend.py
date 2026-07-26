@@ -70,6 +70,30 @@ ActivityHook = Callable[[str, dict[str, Any]], None]
 
 SESSIONS_DIR_NAME = ".merv_sessions"
 TRANSCRIPT_FILENAME = "transcript.log"
+# Ceiling on one destructive control-plane call. Every other backend terminates
+# over HTTP with a request timeout; the Modal SDK has none, so a hung call would
+# otherwise pin a cleanup worker (and its claim on the row) indefinitely.
+TERMINATE_TIMEOUT_SECONDS = 60.0
+
+
+def _call_bounded(call: Callable[[], Any], *, timeout: float) -> bool:
+    """Run one blocking SDK call with a deadline. False if it did not finish.
+
+    The worker thread is left running rather than killed — Python cannot
+    interrupt it — but it is a daemon, so it never holds the process open, and
+    the caller is free the moment the deadline passes.
+    """
+    done = threading.Event()
+    ok: list[bool] = []
+
+    def run() -> None:
+        with suppress(Exception):
+            maybe_await(call())
+            ok.append(True)
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    return bool(done.wait(timeout=timeout) and ok)
 
 # The usage sampler script + parser live in src/merv/brain/sandbox/execution/usage_metrics.py,
 # shared with the Lambda backend (which runs the same probes over plain SSH).
@@ -347,14 +371,14 @@ class ModalSandboxBackend(SandboxBackendBase):
             sandbox = self._sandbox_from_id(sandbox_id)
         except Exception:  # noqa: BLE001
             return False
-        ok = False
-        with suppress(Exception):
-            sandbox.terminate()
-            ok = True
-        with suppress(Exception):
-            detach = getattr(sandbox, "detach", None)
-            if callable(detach):
-                detach()
+        # Bounded: the Modal SDK call has no timeout of its own, and a cleanup
+        # worker blocked in it forever holds its claim on the row forever. A
+        # call that overruns simply reads as unconfirmed — the row parks and the
+        # sweep asks again, which is the safe answer for a VM that may be up.
+        ok = _call_bounded(sandbox.terminate, timeout=TERMINATE_TIMEOUT_SECONDS)
+        detach = getattr(sandbox, "detach", None)
+        if callable(detach):
+            _call_bounded(detach, timeout=TERMINATE_TIMEOUT_SECONDS)
         return ok
 
     def read_transcript(
