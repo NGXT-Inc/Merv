@@ -15,8 +15,10 @@ types — wildcards, IPv6, IPv4-mapped forms, and the empty string.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import importlib.util
+import io
 import ipaddress
 import socket
 import tempfile
@@ -347,6 +349,37 @@ class ReflectionDaemonBindTest(unittest.TestCase):
                 ), self.assertRaises(ValidationError) as ctx:
                     daemon.main()
                 self.assertIn(host, str(ctx.exception))
+
+    def test_the_daemon_pins_a_loopback_name_to_a_numeric_bind(self) -> None:
+        """The daemon asked the guard for a VERDICT and then handed uvicorn its
+        own ``--host``, so ``localhost`` — blessed by NAME — reached the socket
+        unpinned and a resolver answering with a LAN address would serve the
+        unauthenticated harness off-machine. The guard's RETURN is the bind."""
+        daemon = self._daemon()
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as state_dir:
+            with (
+                mock.patch.object(daemon, "uvicorn") as uv,
+                mock.patch.object(daemon, "build_local_server"),
+                mock.patch.object(daemon, "StateStore"),
+                mock.patch.object(daemon, "LocalDirBlobStore"),
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "_reflection_daemon.py",
+                        "--host",
+                        "localhost",
+                        "--state-dir",
+                        state_dir,
+                    ],
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                self.assertEqual(daemon.main(), 0)
+        self.assertEqual(uv.run.call_args.kwargs["host"], "127.0.0.1")
+        # The banner an operator copies must name the address actually bound.
+        self.assertIn("http://127.0.0.1:", out.getvalue())
+        self.assertNotIn("localhost", out.getvalue())
 
 
 if __name__ == "__main__":

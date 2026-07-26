@@ -41,7 +41,10 @@ def main() -> int:
     args = parser.parse_args()
     # build_local_server composes the unauthenticated local policy, so a
     # throwaway harness must still refuse a non-loopback --host before binding.
-    refuse_non_loopback_local_surface(args.host)
+    # The guard's RETURN is the address to bind: a spelling it blesses by NAME
+    # (localhost) is pinned to numeric loopback, so uvicorn never re-resolves a
+    # name that a resolver could answer with a LAN address.
+    bind_host = refuse_non_loopback_local_surface(args.host)
 
     state_dir = Path(
         args.state_dir or tempfile.mkdtemp(prefix="merv_reflection_")
@@ -60,11 +63,11 @@ def main() -> int:
         blobs=LocalDirBlobStore(root=state_dir / "blobs"),
     )
     print(
-        f"reflection daemon listening on http://{args.host}:{args.port} "
+        f"reflection daemon listening on http://{bind_host}:{args.port} "
         f"state={state_dir}",
         flush=True,
     )
-    uvicorn.run(server.fastapi_app, host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(server.fastapi_app, host=bind_host, port=args.port, log_level="warning")
     return 0
 
 
