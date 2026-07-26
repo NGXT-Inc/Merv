@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, cast
 
+from merv.shared.errors import TrackingPersistenceError
+
 from ...feed.facade import Feed
 from ...research_core.facade import ExperimentState, PersistedRunState, ResearchCore
 from ..events import (
@@ -53,17 +55,16 @@ _TRACKING_REPAIR = (
     "mlflow.finalize_run with that run_id to attach it to the experiment."
 )
 # Losing the durable tracking outcome is a different failure domain from an
-# MLflow outage: nothing records what happened, so the caller gets the error.
+# MLflow outage: nothing reliably records what happened, so the caller gets the
+# error. A failed write can still have committed (a lost acknowledgement), so
+# the claim is honestly uncertain rather than an assertion of absence.
 _PERSISTENCE_FAILURE = (
     "The experiment transition already committed and must not be retried, but "
-    "persisting its MLflow tracking outcome failed twice, so no durable record "
-    "of the run (or of the outage) exists. Read experiment.get_state, then "
-    "attach any run you find with mlflow.finalize_run. Underlying error: "
+    "persisting its MLflow tracking outcome failed on both attempts, so a "
+    "durable record of the run (or of the outage) may or may not exist. Verify "
+    "with experiment.get_state before any repair, then attach any run you find "
+    "with mlflow.finalize_run. Underlying error: "
 )
-
-
-class TrackingPersistenceError(RuntimeError):
-    """The transition committed but its tracking outcome never reached the DB."""
 
 
 def _reaction(
@@ -176,41 +177,91 @@ class ExperimentReactions:
             created = {"error": f"MLflow run creation failed: {_message(exc)}"}
         if not (created.get("run_id") or created.get("error")):
             return state, True
+        # The degrade path is a real incident: log the cause here, where it is
+        # converted to a payload, so it survives even if persisting it fails.
+        adapter_failure = (
+            "" if created.get("run_id") else str(created.get("error") or "")
+        )
+        if adapter_failure:
+            LOGGER.error(
+                "MLflow run creation failed for experiment %s; recording the "
+                "outage as this attempt's durable tracking state: %s",
+                experiment_id, adapter_failure,
+            )
         persisted = self._persist_tracking_run(
             project_id=project_id,
             experiment_id=experiment_id,
             run=_persisted_run(created),
+            adapter_failure=adapter_failure,
         )
         return persisted, True
 
     def _persist_tracking_run(
-        self, *, project_id: str, experiment_id: str, run: PersistedRunState
+        self, *, project_id: str, experiment_id: str, run: PersistedRunState,
+        adapter_failure: str = "",
     ) -> ExperimentState:
         """Write the tracking outcome durably, retrying once before failing loud."""
         try:
             return self.research.record_tracking_run(
                 project_id=project_id, experiment_id=experiment_id, run=run
             )
-        except Exception as first:  # noqa: BLE001 - the rolled-back write is retryable
+        except Exception as first:  # noqa: BLE001 - retryable unless it landed
             LOGGER.error(
                 "Retrying the durable MLflow tracking outcome for experiment %s: %s",
                 experiment_id, _message(first),
             )
+        # A failed write can still have committed (a lost acknowledgement), and
+        # the tracking event is unconstrained: re-read before writing again so
+        # an ambiguous commit stays one durable record, not two.
+        if (landed := self._landed_tracking_run(
+            project_id=project_id, experiment_id=experiment_id, run=run
+        )) is not None:
+            LOGGER.error(
+                "The failed MLflow tracking write for experiment %s is durable "
+                "after all; skipping the retry that would duplicate it.",
+                experiment_id,
+            )
+            return landed
         try:
             return self.research.record_tracking_run(
                 project_id=project_id, experiment_id=experiment_id, run=run
             )
         except Exception as exc:  # noqa: BLE001 - re-raised as a server error below
             orphan = str(run.get("run_id") or "")
+            cause = _message(exc)
             LOGGER.error(
-                "MLflow tracking outcome for experiment %s never reached the "
-                "database (orphaned run: %s): %s",
-                experiment_id, orphan or "none", _message(exc),
+                "MLflow tracking outcome for experiment %s may never have reached "
+                "the database (orphaned run: %s): %s%s",
+                experiment_id, orphan or "none", cause,
+                f" (after {adapter_failure})" if adapter_failure else "",
             )
             raise TrackingPersistenceError(
-                f"{_PERSISTENCE_FAILURE}{_message(exc)}"
+                f"{_PERSISTENCE_FAILURE}{cause}"
                 + (f" (possibly orphaned MLflow run: {orphan})" if orphan else "")
+                + (f". The outcome it was recording: {adapter_failure}"
+                   if adapter_failure else "")
             ) from exc
+
+    def _landed_tracking_run(
+        self, *, project_id: str, experiment_id: str, run: PersistedRunState
+    ) -> ExperimentState | None:
+        """Return the durable state when the failed write committed after all."""
+        try:
+            state = self.research.experiment_state(
+                experiment_id=experiment_id, project_id=project_id
+            )
+        except Exception as exc:  # noqa: BLE001 - the retry stays the fallback
+            LOGGER.error(
+                "Could not re-read the MLflow tracking state of experiment %s "
+                "before retrying its write: %s",
+                experiment_id, _message(exc),
+            )
+            return None
+        persisted = state.get("mlflow_run") or {}
+        if run_id := str(run.get("run_id") or ""):
+            return state if str(persisted.get("run_id") or "") == run_id else None
+        error = str(run.get("error") or "")
+        return state if error and str(persisted.get("error") or "") == error else None
 
     def _finalize_tracking_run(
         self, *, state: ExperimentState, status: str

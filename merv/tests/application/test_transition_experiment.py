@@ -270,6 +270,8 @@ class RecordingResearch:
         self.persistence_error = persistence_error
         # Per-call outcomes, so a transient failure can be followed by success.
         self.persistence_errors = list(persistence_errors or [])
+        # Set by tests that make the durable re-read itself unavailable.
+        self.state_error: Exception | None = None
         self.transition_committed = False
         self.transition_calls: list[dict[str, Any]] = []
         self.persist_calls: list[dict[str, Any]] = []
@@ -279,6 +281,8 @@ class RecordingResearch:
         self, *, experiment_id: str, project_id: str | None = None
     ) -> dict[str, Any]:
         self.order.append("research.state")
+        if self.state_error is not None:
+            raise self.state_error
         return self.before
 
     def transition_experiment(
@@ -499,6 +503,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         *,
         committed: dict[str, Any],
         event: StoredEvent,
+        before: dict[str, Any] | None = None,
         persisted: dict[str, Any] | None = None,
         create_result: dict[str, Any] | None = None,
         create_error: Exception | None = None,
@@ -514,6 +519,7 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         order: list[str] = []
         research = RecordingResearch(
             order,
+            before=before,
             committed=committed,
             event=event,
             persisted=persisted,
@@ -705,8 +711,123 @@ class StartAndRetryTransitionTest(unittest.TestCase):
         self.assertIn("already committed", message)
         self.assertIn("tracking persistence failed", message)
         self.assertIn("run_new", message)
-        self.assertIn("never reached the database", "\n".join(logs.output))
+        # An ambiguous commit makes absence unknowable: the claim must stay
+        # honest and point at the one read that settles it.
+        self.assertIn("may or may not exist", message)
+        self.assertIn("experiment.get_state", message)
+        self.assertNotIn("no durable record", message)
+        # The orphan run id is the only handle on an untracked MLflow run, so
+        # it belongs in the operator's log, not just the caller's error.
+        logged = "\n".join(logs.output)
+        self.assertIn("may never have reached the database", logged)
+        self.assertIn("orphaned run: run_new", logged)
         self.assertEqual(feed.calls, [])
+        self.assertEqual(raised.exception.error_code, "tracking_persistence_failed")
+
+    def test_start_persistence_failure_skips_a_retry_that_would_duplicate(self) -> None:
+        # The first write raised but committed (a lost acknowledgement); the
+        # re-read finds it, so no second write appends a duplicate event.
+        durable = _state("running", run=_open_run("run_new"), token="durable")
+        use_case, research, tracking, _feed, order = self._fixture(
+            committed=_state("running", run=None),
+            before=durable,
+            event=_event("start_running"),
+            create_result=_created_run(),
+            persistence_error=RuntimeError("connection reset by peer"),
+        )
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="start_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 1)
+        self.assertEqual(len(tracking.create_calls), 1)
+        self.assertIn("research.state", order)
+        self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
+        self.assertNotIn("mlflow_warning", result)
+        self.assertIn("is durable after all", "\n".join(logs.output))
+
+    def test_start_retries_when_the_reread_shows_no_durable_write(self) -> None:
+        # A re-read that cannot see the intended run means the first write
+        # really did roll back — the retry is the correct move.
+        persisted = _state("running", run=_open_run("run_new"), token="persisted")
+        use_case, research, _tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            before=_state("running", run=_open_run("run_stale"), token="stale"),
+            event=_event("start_running"),
+            persisted=persisted,
+            create_result=_created_run(),
+            persistence_errors=[RuntimeError("connection reset"), None],
+        )
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR"):
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="start_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 2)
+        self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
+
+    def test_start_reread_failure_falls_back_to_the_retry(self) -> None:
+        persisted = _state("running", run=_open_run("run_new"), token="persisted")
+        use_case, research, _tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            event=_event("start_running"),
+            persisted=persisted,
+            create_result=_created_run(),
+            persistence_errors=[RuntimeError("connection reset"), None],
+        )
+        research.state_error = RuntimeError("read replica unavailable")
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
+            result = use_case.execute(
+                experiment_id=EXPERIMENT_ID,
+                transition="start_running",
+                project_id=PROJECT_ID,
+            )
+
+        self.assertEqual(len(research.persist_calls), 2)
+        self.assertEqual(result["mlflow_run"]["run_id"], "run_new")
+        self.assertIn("read replica unavailable", "\n".join(logs.output))
+
+    def test_start_adapter_and_double_persistence_failure_keep_both_causes(
+        self,
+    ) -> None:
+        # The adapter outage is the reason there is anything to persist; losing
+        # it would leave the operator with a bare "connection reset".
+        use_case, research, tracking, _feed, _order = self._fixture(
+            committed=_state("running", run=None),
+            event=_event("start_running"),
+            create_error=RuntimeError("tracking control plane down"),
+            persistence_error=RuntimeError("connection reset by peer"),
+        )
+
+        with self.assertLogs(REACTIONS_LOGGER, level="ERROR") as logs:
+            with self.assertRaises(TrackingPersistenceError) as raised:
+                use_case.execute(
+                    experiment_id=EXPERIMENT_ID,
+                    transition="start_running",
+                    project_id=PROJECT_ID,
+                )
+
+        self.assertTrue(research.transition_committed)
+        self.assertEqual(len(tracking.create_calls), 1)
+        self.assertEqual(len(research.persist_calls), 2)
+        message = str(raised.exception)
+        logged = "\n".join(logs.output)
+        for cause in (
+            "connection reset by peer",
+            "MLflow run creation failed: tracking control plane down",
+        ):
+            with self.subTest(cause=cause):
+                self.assertIn(cause, message)
+                self.assertIn(cause, logged)
+        self.assertIn("orphaned run: none", logged)
 
     def test_start_adapter_failure_is_recorded_as_durable_run_error(self) -> None:
         persisted = _state(

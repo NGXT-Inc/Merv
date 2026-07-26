@@ -34,3 +34,14 @@ class ContentUnavailableError(ResearchPluginError):
     """A file's bytes are not available from the current deployment."""
 
     error_code = "content_unavailable"
+
+
+class TrackingPersistenceError(ResearchPluginError):
+    """A committed state change whose tracking outcome never reached the DB.
+
+    It belongs to this family so transports render its message verbatim: the
+    caller must learn the change is already committed, must not be retried,
+    and which run id may now be orphaned — not a generic internal error.
+    """
+
+    error_code = "tracking_persistence_failed"

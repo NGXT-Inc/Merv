@@ -889,5 +889,98 @@ class TrackingOutageDegradationTest(unittest.TestCase):
         )
 
 
+class LostTrackingWriteOverMcpTest(unittest.TestCase):
+    """A lost tracking write must survive MCP serialization verbatim.
+
+    As a plain ``RuntimeError`` it collapsed to -32603 "Internal error", which
+    reads as an ordinary retryable server fault — exactly the wrong lesson for
+    a transition that is already committed.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.tracking = RecordingTracking()
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            mlflow_tracking=self.tracking,
+        )
+        self.project_id = self.app.call_tool(
+            "project", {"action": "create", "name": "Lost Tracking Write"}
+        )["id"]
+        self.experiment_id = self.app.call_tool(
+            "experiment.create",
+            {
+                "project_id": self.project_id,
+                "name": "lost-write",
+                "intent": "Lose the tracking write after a committed transition.",
+            },
+        )["id"]
+        with self.app._store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?",
+                (self.experiment_id,),
+            )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_lost_tracking_write_reaches_the_agent_as_a_coded_mcp_error(self) -> None:
+        client = TestClient(self.app.fastapi_app)
+
+        with patch(
+            "merv.brain.research_core.experiments.ExperimentService.record_mlflow_run",
+            side_effect=RuntimeError("write-ahead log offline"),
+        ):
+            response = client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "experiment.transition",
+                        "arguments": {
+                            "project_id": self.project_id,
+                            "experiment_id": self.experiment_id,
+                            "transition": "start_running",
+                        },
+                    },
+                },
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], -32000)
+        self.assertNotEqual(error["message"], "Internal error")
+        self.assertEqual(error["data"]["error_code"], "tracking_persistence_failed")
+        for phrase in (
+            "already committed",
+            "must not be retried",
+            "may or may not exist",
+            "experiment.get_state",
+            "run-composed",
+            "write-ahead log offline",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, error["message"])
+
+        conn = self.app._store.connect()
+        try:
+            row = conn.execute(
+                "SELECT status, mlflow_run_id FROM experiments WHERE id = ?",
+                (self.experiment_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        # The error is about the tracking record only: the transition itself is
+        # durable, which is why the caller must not retry it.
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["mlflow_run_id"], "")
+        self.assertEqual(len(self.tracking.create_calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
