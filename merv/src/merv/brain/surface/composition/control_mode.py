@@ -207,7 +207,8 @@ def build_control_server(
             "%s is empty; browser clients will be blocked by hosted-control CORS",
             ALLOWED_ORIGINS_ENV_VAR,
         )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage)
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage,
+                             tool_call_ledger=app.tool_ledger)
     project_keys = ProjectKeys(repository=SqlProjectKeyRepository(store=app._store))
     auth = SupabaseVerifier.from_env(env, project_keys=project_keys)
     _validate_auth_requirement(auth=auth, env=env)
@@ -275,7 +276,8 @@ def build_local_server(
         mlflow_tracking=mlflow_tracking,
         local_deployment=True,
     )
-    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage)
+    cleanup = CleanupService(sandboxes=app.sandboxes, blobs=app._blobs, storage=app._storage,
+                             tool_call_ledger=app.tool_ledger)
     fastapi_app = create_fastapi_app(
         app=app.http,
         allowed_origins=allowed_origins or [],

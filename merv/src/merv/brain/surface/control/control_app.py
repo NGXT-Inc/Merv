@@ -44,6 +44,7 @@ from ...sandbox.runtime import build_sandbox_runtime
 from ...object_storage.service import StorageLedgerService
 from ...object_storage.catalog import StorageObjectCatalog
 from ...kernel.state import BaseStateStore
+from ...kernel.state.tool_call_ledger import ToolCallLedger
 from ..tools.tool_facade import ToolDispatcher
 from ..tools.tool_handlers import build_control_tool_handlers
 from ..transport.api.dependencies import HttpDependencies
@@ -67,6 +68,10 @@ class ControlApp:
         self._store = store
         self.activity = ControlActivitySink()
         self.tool_calls = ControlToolCallSink()
+        # Durable sibling of the ring above: the rings still serve the debug
+        # UI's raw payload view; the ledger keeps sizes and outcomes past a
+        # restart. A dropped row announces itself through the activity feed.
+        self.tool_ledger = ToolCallLedger(store=store, on_failure=self._ledger_dropped)
         self.structured_logger = StructuredLogger(enabled=structured_logging)
         self._blobs = blobs
         self._storage = storage
@@ -234,6 +239,7 @@ class ControlApp:
             permissions=core.permissions,
             activity=self.activity,
             tool_calls=self.tool_calls,
+            ledger=self.tool_ledger,
             tool_names=tool_names,
         )
         self.http = HttpDependencies(
@@ -246,6 +252,7 @@ class ControlApp:
             timeline=self.event_timeline,
             activity=self.activity,
             tool_calls=self.tool_calls,
+            tool_ledger=self.tool_ledger,
             tools=self.tools,
             structured_log=self.structured_logger,
             experiment_detail=self.experiment_detail_query,
@@ -260,6 +267,15 @@ class ControlApp:
             literature=core.literature,
             user_settings=self.user_settings,
         )
+
+    def _ledger_dropped(self, error: str) -> None:
+        """A ledger row that could not be written is itself telemetry, and says
+        so in the activity feed rather than vanishing."""
+        with suppress(Exception):
+            self.activity.emit(
+                event_type="telemetry.dropped",
+                payload={"sink": "tool_calls", "status": "error", "error": error},
+            )
 
     def shutdown(self) -> None:
         with suppress(Exception):

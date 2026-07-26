@@ -8,15 +8,16 @@ import json
 import re
 import urllib.parse
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 
 from ....kernel.env import env_value
+from ....kernel.request_context import bind_principal
 from ....kernel.utils import ValidationError
-from ...identity import is_local_principal
+from ...identity import is_local_principal, principal_label
 
 ADMIN_TOKEN_ENV_VAR = "MERV_ADMIN_TOKEN"
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
@@ -115,6 +116,56 @@ def conditional_json_from_signal(
 def is_local_origin(origin: str) -> bool:
     host = (urllib.parse.urlsplit(origin).hostname or "").lower()
     return host in ("localhost", "127.0.0.1", "::1")
+
+
+_PROJECT_PATH_RE = re.compile(r"^/api/projects/([^/]+)")
+
+
+class RefusalLedger(Protocol):
+    """Durable sink for calls refused before the dispatcher ever sees them."""
+
+    def reject(self, **kwargs: Any) -> None: ...
+
+
+def _denial_facts(response: Response) -> tuple[str, str]:
+    """(error_code, detail) of an already-rendered denial body, if it has one."""
+    try:
+        payload = json.loads(bytes(getattr(response, "body", b"") or b"{}"))
+    except (TypeError, ValueError):
+        return "", ""
+    if not isinstance(payload, dict):
+        return "", ""
+    return str(payload.get("error_code") or ""), str(payload.get("detail") or "")
+
+
+def attribute_request(
+    request: Request, *, denied: Response | None, ledger: RefusalLedger | None
+) -> None:
+    """Name the caller for this request's telemetry, and ledger a refusal.
+
+    Call this BEFORE ``call_next``: the identity is a contextvar, and only the
+    layers entered after it is bound — routes, the tool dispatcher, the ledger
+    itself — inherit it. A request the auth boundary short-circuits never
+    reaches the dispatcher, so this is its only chance at the durable record;
+    source and project scope come off the path, since no tool contract resolved
+    to supply them.
+    """
+    principal = getattr(request.state, "principal", None)  # unset on OPTIONS
+    # A refusal that never authenticated still leaves the local sentinel on
+    # request.state; that is the default, not evidence of a local caller.
+    unnamed = denied is not None and not getattr(request.state, "authenticated", False)
+    bind_principal(principal_id="open" if unnamed else principal_label(principal))
+    if denied is None or ledger is None:
+        return
+    path = request.url.path
+    match = _PROJECT_PATH_RE.match(path)
+    error_code, detail = _denial_facts(denied)
+    ledger.reject(
+        source="mcp" if path == "/mcp" or path.startswith("/mcp/") else "http",
+        error_code=error_code or f"http_{denied.status_code}",
+        error=detail or f"request refused with {denied.status_code}",
+        project_id=match.group(1) if match else (request.query_params.get("project_id") or ""),
+    )
 
 
 # Global mutators/aggregates gated behind the operator token in hosted mode.

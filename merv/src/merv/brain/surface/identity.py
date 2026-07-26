@@ -84,6 +84,23 @@ def is_local_principal(principal: object | None) -> bool:
     )
 
 
+def principal_label(principal: object | None) -> str:
+    """Non-secret caller identity for telemetry attribution.
+
+    A project key is named by its ``project_api_keys`` row id — never the
+    presented secret, and never a digest of one; a verified session by its
+    Supabase user id; the trusted-local sentinel by ``local``; and an
+    unauthenticated request on an open deployment by ``open``.
+    """
+    key_id = str(getattr(principal, "key_id", "") or "")
+    if key_id:
+        return f"key:{key_id}"
+    user_id = str(getattr(principal, "user_id", "") or "")
+    if user_id:
+        return f"user:{user_id}"
+    return "local" if is_local_principal(principal) else "open"
+
+
 __all__ = [
     "HumanSessionRequiredError",
     "LOCAL_PRINCIPAL",
@@ -92,4 +109,5 @@ __all__ = [
     "ToolVisibilityError",
     "is_external_key",
     "is_local_principal",
+    "principal_label",
 ]

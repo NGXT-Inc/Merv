@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from ....kernel.request_context import begin_request, reset_request
 from ....kernel.state import monotonic_ms
 from ....kernel.utils import ContentUnavailableError, NotFoundError, ResearchPluginError
 from ...identity import (
@@ -35,12 +36,17 @@ def install_activity_middleware(
         started = monotonic_ms()
         status = 500
         request_id = uuid.uuid4().hex[:16]
+        # Outermost of the custom middlewares, so every inner layer — the
+        # principal gate, the routes, and the tool dispatcher running in the
+        # threadpool — inherits this id without it entering any signature.
+        scope = begin_request(request_id=request_id)
         try:
             response = await call_next(request)
             status = response.status_code
             response.headers["X-RP-Request-Id"] = request_id
             return response
         finally:
+            reset_request(scope)
             principal = getattr(request.state, "principal", None)
             structured_logger.log(
                 kind="http",

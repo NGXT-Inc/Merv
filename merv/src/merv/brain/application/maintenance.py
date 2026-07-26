@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..kernel.ports.blob_store import ExpiringBlobStore
 from ..kernel.ports.sandbox_lifecycle import (
@@ -20,6 +20,15 @@ class ExpiringStorage(Protocol):
     def sweep_expired(self, *, now: str) -> int: ...
 
 
+class PrunableLedger(Protocol):
+    """Bounded retention sweep that reports its own outcome, not just a count."""
+
+    def prune(self, *, now: datetime | None = None) -> dict[str, Any]: ...
+
+
+SKIPPED_PRUNE: dict[str, Any] = {"deleted": 0, "ok": True, "skipped": True}
+
+
 @dataclass(frozen=True)
 class CleanupReport:
     """Counts returned by one idempotent maintenance pass."""
@@ -28,13 +37,19 @@ class CleanupReport:
     blobs_swept: int = 0
     storage_objects_swept: int = 0
     stale_provisions_reaped: int = 0
+    # Structured, not a count: a failed sweep must be distinguishable from a
+    # sweep that legitimately deleted nothing (audit OPS-03).
+    tool_calls_pruned: dict[str, Any] = field(
+        default_factory=lambda: dict(SKIPPED_PRUNE)
+    )
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "orphan_vms_reaped": self.orphan_vms_reaped,
             "blobs_swept": self.blobs_swept,
             "storage_objects_swept": self.storage_objects_swept,
             "stale_provisions_reaped": self.stale_provisions_reaped,
+            "tool_calls_pruned": dict(self.tool_calls_pruned),
         }
 
 
@@ -47,6 +62,7 @@ class CleanupService:
         sandboxes: SandboxMaintenance,
         blobs: ExpiringBlobStore,
         storage: ExpiringStorage | None = None,
+        tool_call_ledger: PrunableLedger | None = None,
         stale_provision_deadline_seconds: float = (
             DEFAULT_STALE_PROVISION_DEADLINE_SECONDS
         ),
@@ -54,6 +70,7 @@ class CleanupService:
         self.sandboxes = sandboxes
         self.blobs = blobs
         self.storage = storage
+        self.tool_call_ledger = tool_call_ledger
         self.stale_provision_deadline_seconds = float(stale_provision_deadline_seconds)
 
     def run_all(self, *, now: datetime | None = None) -> CleanupReport:
@@ -63,6 +80,7 @@ class CleanupService:
             blobs_swept=self.sweep_expired_blobs(now=now_dt),
             storage_objects_swept=self.sweep_expired_storage(now=now_dt),
             stale_provisions_reaped=self.sweep_stale_provisions(now=now_dt),
+            tool_calls_pruned=self.prune_tool_calls(now=now_dt),
         )
 
     def sweep_orphan_vms(self, *, now: datetime | None = None) -> int:
@@ -86,6 +104,20 @@ class CleanupService:
             return int(self.storage.sweep_expired(now=now_iso))
         except Exception:  # noqa: BLE001 -- one GC adapter must not abort the pass
             return 0
+
+    def prune_tool_calls(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """Bounded retention sweep over the durable tool-call ledger.
+
+        Returns the sweep's own report. A failure says ``ok`` False and names
+        the error — it does NOT return zero, which would read as a healthy
+        pass that found nothing (audit OPS-03).
+        """
+        if self.tool_call_ledger is None:
+            return dict(SKIPPED_PRUNE)
+        try:
+            return dict(self.tool_call_ledger.prune(now=now))
+        except Exception as exc:  # noqa: BLE001 -- one GC adapter must not abort the pass
+            return {"deleted": 0, "ok": False, "error": str(exc)[:200]}
 
     def sweep_stale_provisions(self, *, now: datetime | None = None) -> int:
         """Reap provider VMs stuck in any pre-running phase past the deadline."""

@@ -44,6 +44,13 @@ class ToolCallTelemetry(Protocol):
     def clear(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+class ToolCallLedgerWrites(Protocol):
+    """Durable ledger writes: one row per call, one per pre-dispatch refusal."""
+
+    def record(self, **kwargs: Any) -> None: ...
+    def reject(self, **kwargs: Any) -> None: ...
+
+
 class AuthorizeProject(Protocol):
     def __call__(self, request: Request, project_id: str) -> None: ...
 
@@ -61,6 +68,7 @@ class HttpDependencies:
     timeline: EventTimelineQuery
     activity: ActivityTelemetry
     tool_calls: ToolCallTelemetry
+    tool_ledger: ToolCallLedgerWrites
     tools: ToolDispatcher
     structured_log: StructuredLogger
     experiment_detail: ExperimentDetailQuery

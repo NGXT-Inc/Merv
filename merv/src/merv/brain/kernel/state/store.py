@@ -756,6 +756,40 @@ CREATE TABLE IF NOT EXISTS user_hf_tokens (
   token TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Durable tool-call ledger (July 2026, logging/observability P0). One row per
+-- dispatched call AND per refusal that never reached the dispatcher, so agent
+-- friction — retry loops, gate bounces, poll churn, per-tool latency, context
+-- bloat — outlives a restart. Sizes and digests only: the in-memory rings keep
+-- serving the debug UI's raw request/response view, and this table must never
+-- become a second payload store. No foreign key to projects: project_id is
+-- empty for global and rejected calls, and a telemetry insert may not fail on
+-- a missing parent. Indexes are migration 37's, never SCHEMA's (see the
+-- submissions block above). Retention is a bounded prune, not a row cap.
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  -- Correlates every row a single HTTP request produced (X-RP-Request-Id).
+  request_id TEXT NOT NULL DEFAULT '',
+  -- Non-secret caller identity: key:<project_api_keys.id>, user:<uuid>,
+  -- 'local', or 'open'. Never a token, never a digest of one.
+  principal_id TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  project_id TEXT NOT NULL DEFAULT '',
+  target_type TEXT NOT NULL DEFAULT '',
+  target_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('ok', 'error', 'rejected')),
+  error_code TEXT NOT NULL DEFAULT '',
+  -- First line of the failure, secret-scrubbed and capped: enough to group
+  -- errors, never enough to reconstruct a payload.
+  error_head TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  sent_chars INTEGER NOT NULL DEFAULT 0,
+  received_chars INTEGER NOT NULL DEFAULT 0,
+  -- sha256 prefix of the redacted arguments: a retry loop repeats one digest.
+  args_digest TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -929,6 +963,42 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     # before shipping: 2,965 complete artifacts, zero duplicate slots, so
     # latest-per-slot selects the identical set that the flat filter did.
     (36, "add_submission_attempts", ""),
+    # Durable tool-call ledger + the audit's minimum index plan (July 2026,
+    # logging/observability P0). Purely additive: one new append-only table and
+    # the read-path indexes below, all IF NOT EXISTS. Nothing existing is
+    # rewritten, so the migration is a no-op for every current row.
+    (37, "add_tool_call_ledger", ""),
+)
+
+# Migration 37's indexes. They live HERE and never in SCHEMA: SCHEMA runs on
+# every boot BEFORE the ladder, and its CREATE TABLE IF NOT EXISTS is a no-op
+# on a database that already has the table — so an index in SCHEMA can name a
+# column the ladder has not added yet and crash-loop the container (the
+# migration-36 outage, commit d4b766c). _apply_migrations runs on fresh
+# databases too, so both paths get every index.
+TOOL_CALL_LEDGER_INDEXES = (
+    # The ledger's own mining reads: per-project timeline, error hunt, per-tool
+    # rollup. Each pairs its filter with the append order it is scanned in.
+    "CREATE INDEX IF NOT EXISTS idx_tool_calls_project ON tool_calls(project_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_calls_status ON tool_calls(status, id)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool, id)",
+    # Audit §5.3 minimum plan for the existing hot reads.
+    "CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, id)",
+    "CREATE INDEX IF NOT EXISTS idx_storage_objects_content"
+    "  ON storage_objects(namespace, content_sha256, status)",
+    "CREATE INDEX IF NOT EXISTS idx_storage_objects_latest"
+    "  ON storage_objects(project_id, status, name, version DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_storage_objects_producer"
+    "  ON storage_objects(project_id, producing_experiment_id, status)",
+    # Deliberately NOT unique: upload_id uniqueness is unenforced today, so a
+    # unique index could fail on existing production rows. Enforcing it is a
+    # separate behavioral decision.
+    "CREATE INDEX IF NOT EXISTS idx_storage_objects_upload"
+    "  ON storage_objects(project_id, upload_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sandbox_generations_tenant"
+    "  ON sandbox_generations(tenant_id, started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_sandbox_generations_project"
+    "  ON sandbox_generations(project_id, created_seq)",
 )
 
 # Credential tables that carry a scope discriminator (migration 34).
@@ -1123,7 +1193,21 @@ class BaseStateStore:
             self._ensure_runs_final_observed_at(conn=conn)
         elif name == "add_submission_attempts":
             self._add_submission_attempts(conn=conn)
+        elif name == "add_tool_call_ledger":
+            self._add_tool_call_ledger(conn=conn)
         else:
+            conn.execute(statement)
+
+    def _add_tool_call_ledger(self, *, conn: Connection) -> None:
+        """Migration 37: the durable tool-call ledger plus the read-path indexes.
+
+        Additive and idempotent. The table guard is belt-and-braces — SCHEMA
+        creates it on both dialects before the ladder runs — but the indexes
+        genuinely need to be here, where they execute after every table and
+        column they name exists."""
+        if not self._has_table(conn=conn, table="tool_calls"):
+            conn.execute(_schema_table_ddl(table="tool_calls"))
+        for statement in TOOL_CALL_LEDGER_INDEXES:
             conn.execute(statement)
 
     def _add_submission_attempts(self, *, conn: Connection) -> None:

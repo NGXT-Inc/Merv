@@ -33,6 +33,13 @@ class ToolCallRecorder(Protocol):
     def record(self, **kwargs: Any) -> None: ...
 
 
+class ToolCallLedgerWriter(Protocol):
+    """Durable per-call ledger. Contractually never raises: a dropped
+    telemetry row may not turn a successful tool call into a failure."""
+
+    def record(self, **kwargs: Any) -> None: ...
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     input_model: type[ContractModel]
@@ -101,6 +108,7 @@ class ToolDispatcher:
         permissions: ToolPermissionPolicy,
         activity: ToolActivity,
         tool_calls: ToolCallRecorder,
+        ledger: ToolCallLedgerWriter | None = None,
         tool_names: Iterable[str] | None = None,
     ) -> None:
         selected_tool_names = (
@@ -113,6 +121,9 @@ class ToolDispatcher:
         self.permissions = permissions
         self.activity = activity
         self.tool_calls = tool_calls
+        # Durable sibling of the in-memory ring: sizes, digests, and outcomes
+        # that survive a restart. Absent in narrow test compositions.
+        self.ledger = ledger
         self._tool_names = frozenset(selected_tool_names)
         self._tools = {
             name: ToolSpec(contract.input_model, handlers[name])
@@ -200,6 +211,15 @@ class ToolDispatcher:
                 arguments=telemetry_arguments,
                 result=result,
             )
+            if self.ledger is not None:
+                self.ledger.record(
+                    tool=name,
+                    source=activity_source,
+                    status="ok",
+                    duration_ms=duration_ms,
+                    arguments=telemetry_arguments,
+                    result=result,
+                )
             return result
         except Exception as exc:
             if isinstance(exc, ResearchPluginError):
@@ -226,4 +246,14 @@ class ToolDispatcher:
                 error=error,
                 error_code=error_code,
             )
+            if self.ledger is not None:
+                self.ledger.record(
+                    tool=name,
+                    source=activity_source,
+                    status="error",
+                    duration_ms=duration_ms,
+                    arguments=telemetry_arguments,
+                    error=error,
+                    error_code=error_code,
+                )
             raise

@@ -239,7 +239,52 @@ class CleanupSweepTest(unittest.TestCase):
             "blobs_swept": 0,
             "storage_objects_swept": 0,
             "stale_provisions_reaped": 0,
+            # No ledger wired into this CleanupService, and the report says so
+            # rather than reporting a sweep that never ran as a clean zero.
+            "tool_calls_pruned": {"deleted": 0, "ok": True, "skipped": True},
         })
+
+    # ---- tool-call ledger retention ----
+
+    def test_prune_deletes_expired_ledger_rows_through_the_pass(self) -> None:
+        cleanup = CleanupService(
+            sandboxes=self.app.sandboxes,
+            blobs=self.app.blobs,
+            tool_call_ledger=self.app.tool_ledger,
+        )
+        self.app.call_tool("claim.list", {"project_id": self.project_id})
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO tool_calls (ts, tool, source, status) VALUES (?, ?, ?, ?)",
+                ("2020-01-01T00:00:00Z", "ancient", "mcp", "ok"),
+            )
+        outcome = cleanup.run_all(now=datetime.now(tz=UTC)).as_dict()["tool_calls_pruned"]
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["deleted"], 1)
+        with self.store.transaction() as conn:
+            remaining = [
+                str(row["tool"])
+                for row in conn.execute("SELECT tool FROM tool_calls").fetchall()
+            ]
+        self.assertNotIn("ancient", remaining)
+
+    def test_a_failing_prune_is_reported_as_not_ok_not_as_zero(self) -> None:
+        class ExplodingLedger:
+            def prune(self, *, now=None):
+                raise RuntimeError("ledger unreachable")
+
+        cleanup = CleanupService(
+            sandboxes=self.app.sandboxes,
+            blobs=self.app.blobs,
+            tool_call_ledger=ExplodingLedger(),
+        )
+        report = cleanup.run_all(now=datetime.now(tz=UTC))
+        self.assertEqual(
+            report.tool_calls_pruned,
+            {"deleted": 0, "ok": False, "error": "ledger unreachable"},
+        )
+        # The rest of the pass still ran.
+        self.assertEqual(report.orphan_vms_reaped, 0)
 
 
 if __name__ == "__main__":

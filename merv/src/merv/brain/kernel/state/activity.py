@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+import hashlib
 import json
 import re
 import time
@@ -13,6 +14,10 @@ from typing import Any
 # verbatim on every call — including frequent UI polls — is what drives
 # multi-hundred-MB/day growth. The log is a visibility feed, not an archive.
 RESULT_LOG_MAX_BYTES = 16 * 1024
+
+# The durable ledger keeps a failure *sample*, never the failure text: one
+# line, capped, so errors group without the column becoming a payload store.
+LEDGER_ERROR_MAX_CHARS = 200
 
 SENSITIVE_KEYS = {
     "reviewer_capability",
@@ -141,6 +146,39 @@ def summarize_arguments(*, arguments: dict[str, Any]) -> dict[str, Any]:
         elif key in ID_KEYS:
             summary[key] = value
     return summary
+
+
+def target_of(arguments: Any) -> tuple[str | None, str | None]:
+    """The workflow entity a call names, so a feed or ledger row can chip it."""
+    if not isinstance(arguments, dict):
+        return None, None
+    for target_type, key in (
+        ("experiment", "experiment_id"),
+        ("claim", "claim_id"),
+        ("artifact", "artifact_id"),
+    ):
+        if arguments.get(key):
+            return target_type, str(arguments[key])
+    review = arguments.get("review_id") or arguments.get("request_id")
+    return ("review", str(review)) if review else (None, None)
+
+
+def args_digest(*, arguments: Any) -> str:
+    """Stable fingerprint of REDACTED arguments — a retry loop repeats one
+    digest, and no argument value is recoverable from it."""
+    try:
+        canonical = json.dumps(
+            redact_sensitive(value=jsonable(value=arguments)), sort_keys=True
+        )
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def error_head(*, error: str) -> str:
+    """First line of an error, secret-scrubbed and capped for the ledger."""
+    lines = str(error or "").strip().splitlines()
+    return scrub_secret_text(lines[0])[:LEDGER_ERROR_MAX_CHARS] if lines else ""
 
 
 def payload_chars(*, value: Any) -> int:

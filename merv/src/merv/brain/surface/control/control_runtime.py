@@ -13,6 +13,7 @@ from ...kernel.state.activity import (
     is_event_ok,
     payload_chars,
     redact_sensitive,
+    target_of,
 )
 from ...kernel.utils import now_iso, parse_iso
 
@@ -81,7 +82,7 @@ class ControlToolCallSink:
         error: str = "",
         error_code: str = "",
     ) -> None:
-        target_type, target_id = _target_of(arguments)
+        target_type, target_id = target_of(arguments)
         row = {
             "id": self._next_id,
             "ts": now_iso(),
@@ -214,20 +215,6 @@ def _activity_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         status = "ok" if is_event_ok(event=event) else "error"
         summary["status_counts"][status] += 1
     return summary
-
-
-def _target_of(arguments: Any) -> tuple[str | None, str | None]:
-    if not isinstance(arguments, dict):
-        return None, None
-    for target_type, key in (
-        ("experiment", "experiment_id"),
-        ("claim", "claim_id"),
-        ("artifact", "artifact_id"),
-    ):
-        if arguments.get(key):
-            return target_type, str(arguments[key])
-    review = arguments.get("review_id") or arguments.get("request_id")
-    return ("review", str(review)) if review else (None, None)
 
 
 def _tool_call_matches(

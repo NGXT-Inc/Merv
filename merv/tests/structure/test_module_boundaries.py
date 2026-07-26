@@ -192,6 +192,9 @@ TABLE_OWNERS = {
     "oauth_authorization_codes": SURFACE,
     "oauth_refresh_tokens": SURFACE,
     "events": KERNEL,
+    # Written from the surface dispatcher through a kernel-owned ledger, the
+    # same shape as events: kernel owns the table, everyone feeds it.
+    "tool_calls": KERNEL,
     "schema_migrations": KERNEL,
     "tenants": KERNEL,
     "experiments": RESEARCH_CORE,

@@ -56,7 +56,8 @@ def create_fastapi_app(
         canonical_mcp_resource=oauth_resource_uri)
     http = FastAPI(title="Merv API", version=__version__)
 
-    install_request_middleware(http, authenticator=authenticator, authorizer=authorizer)
+    install_request_middleware(http, authenticator=authenticator, authorizer=authorizer,
+                               ledger=api.tool_ledger)
     install_activity_middleware(http, structured_logger=api.structured_log)
     # Registered last so CORS decorates middleware short-circuits as well.
     install_cors(http, allowed_origins=allowed_origins, surface=surface)
@@ -105,6 +106,7 @@ def create_fastapi_app(
         authorize_scope=mcp_preauth.build_mcp_preauthorizer(
             authorizer=authorizer, reviews=api.reviews,
             hosted=surface.use_hosted_tool_policies),
+        ledger=api.tool_ledger,
     )
     register_admin_routes(
         http,

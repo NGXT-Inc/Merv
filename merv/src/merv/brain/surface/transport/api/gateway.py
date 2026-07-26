@@ -25,8 +25,8 @@ from ...tools.tool_facade import ToolDispatcher
 from ....research_core.facade import ResearchProjects, ResearchReviewDelivery
 from ....sandbox.facade import SandboxFacade
 from ..http_policy import HOSTED_CONTROL_TOOL_POLICIES, HttpSurfacePolicy
-from .shared import (GLOBAL_MUTATOR_PREFIXES, is_local_origin,
-                     open_hosted_operator_denial, operator_denial)
+from .shared import (GLOBAL_MUTATOR_PREFIXES, RefusalLedger, attribute_request,
+                     is_local_origin, open_hosted_operator_denial, operator_denial)
 from . import oauth, project_keys
 
 
@@ -317,8 +317,8 @@ class ToolInvocationGateway:
 
 
 def install_request_middleware(
-    http: FastAPI, *, authenticator: RequestAuthenticator, authorizer: ProjectAuthorizer
-) -> None:
+    http: FastAPI, *, authenticator: RequestAuthenticator,
+    authorizer: ProjectAuthorizer, ledger: RefusalLedger | None = None) -> None:
     @http.middleware("http")
     async def reject_foreign_origins(request: Request, call_next):
         origin = request.headers.get("origin")
@@ -343,6 +343,7 @@ def install_request_middleware(
         elif denied is None and authenticator.surface.hosted_control:
             # OPEN hosted mode (no verifier): still operator-gate global mutators.
             denied = open_hosted_operator_denial(request)
+        attribute_request(request, denied=denied, ledger=ledger)
         return denied if denied is not None else await call_next(request)
 
 
