@@ -9,7 +9,10 @@ from pathlib import Path
 from pydantic import ValidationError as PydanticValidationError
 
 from merv.brain.kernel.utils import NotFoundError
-from merv.brain.surface.tools.contracts import ArtifactFindInput
+from merv.brain.surface.tools.contracts import (
+    ArtifactFindInput,
+    ExperimentGetStateInput,
+)
 from tests.support.brain import TestBrain
 
 
@@ -118,6 +121,18 @@ class ArtifactBatchFindTest(unittest.TestCase):
                     "role": "plan",
                 }
             )
+
+    def test_plural_ids_are_artifact_only(self) -> None:
+        for plural_field in ("experiment_ids", "review_ids"):
+            with self.subTest(plural_field=plural_field):
+                with self.assertRaises(PydanticValidationError):
+                    ExperimentGetStateInput.model_validate(
+                        {
+                            "project_id": "proj_1",
+                            "experiment_id": "exp_1",
+                            plural_field: ["unexpected_plural_id"],
+                        }
+                    )
 
 
 if __name__ == "__main__":

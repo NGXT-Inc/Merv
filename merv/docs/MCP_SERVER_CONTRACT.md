@@ -125,6 +125,7 @@ plural reads add the envelope to each artifact row. The envelope contains
 or unavailable bytes are represented without being injected as text. Without
 either id selector, the tool lists the project's complete artifacts filtered
 by target and role; `include_content` is invalid for this broad list mode.
+`artifact.find` is the only agent-facing plural-id retrieval surface.
 
 `workflow.status_and_next(project_id, experiment_id=...)` is the canonical
 experiment read. Its `context` has exactly four sections: experiment, latest
@@ -133,7 +134,8 @@ Live experiments receive the full latest plan; terminal experiments receive
 its bounded Summary; the latest report is full when present. Plan, report, and
 every artifact reference carry their immutable artifact id, local path, and
 submission timestamp. `experiment.get_state` remains an internal compatibility
-reader for UI/service code and is not advertised over MCP.
+reader for UI/service code, stays singular, and does not accept
+`experiment_ids` or `review_ids`.
 
 ## Experiment workflow
 

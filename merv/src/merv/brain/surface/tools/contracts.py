@@ -1112,9 +1112,9 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         visibility="internal",
         input_model=ExperimentGetStateInput,
         description=(
-            "Compatibility-only internal experiment state projection. Agents "
-            "use workflow.status_and_next for context and artifact.find for "
-            "focused document retrieval."
+            "Compatibility-only singular internal experiment state projection. "
+            "Agents use workflow.status_and_next for context and artifact.find "
+            "for focused singular or batch document retrieval."
         ),
     ),
     "experiment.transition": ToolContract(

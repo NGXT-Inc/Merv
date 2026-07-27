@@ -561,6 +561,8 @@ answer the question, add
 `content` envelope, while binary or unavailable bytes remain marked and are not
 injected as text. A missing id fails the whole batch, so use ids from the same
 project and current authoritative state.
+This plural-id interface is intentionally artifact-only. Do not call or pass
+plural ids to the internal compatibility reader `experiment.get_state`.
 
 ## Review discipline
 
