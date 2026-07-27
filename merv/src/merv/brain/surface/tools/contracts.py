@@ -331,6 +331,13 @@ class ReflectionCreateInput(ProjectScopedInput):
 
 class ReflectionGetInput(ProjectScopedInput):
     reflection_id: str
+    include_content: bool = Field(
+        default=False,
+        description=(
+            "Default false: return TLDRs for submitted documents. Set true "
+            "only for a focused deep dive that needs the exact bounded text."
+        ),
+    )
 
 
 class ReflectionListInput(ProjectScopedInput):
@@ -373,7 +380,8 @@ class ArtifactSubmitInput(ProjectScopedInput):
         default="",
         description=(
             "REQUIRED when role=reflection_lens_doc: the roster lens this "
-            "reflection covers. Invalid for any other role."
+            "reflection covers. Its submitted Markdown must contain a non-empty "
+            "Summary section to pass submit_reflections. Invalid for any other role."
         ),
     )
     title: str = Field(default="", description="Optional display title.")
@@ -1190,9 +1198,11 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ReflectionGetInput,
         description=(
             "Get one reflection wave state: roster, per-lens "
-            "reflection coverage, bounded content for current-attempt "
-            "reflection artifacts, prior published graph/reflection content, "
-            "snapshotted terminal-experiment report/graph content, reviews, and "
+            "reflection coverage, TLDRs for current-attempt reflection "
+            "artifacts, prior published graph/reflection documents, and "
+            "snapshotted terminal-experiment reports/graphs; pass "
+            "include_content=true only for a focused deep dive that needs "
+            "their exact bounded text. Also returns reviews and "
             "allowed_transitions with preconditions. Includes gate_checklist "
             "for missing lenses/artifacts/review state, and project_graph_diff "
             "when a submitted project graph can be compared with the previous "

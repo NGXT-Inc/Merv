@@ -9,6 +9,9 @@ from pathlib import Path
 from tests.support.brain import TestBrain, upload_token
 from merv.brain.artifacts.ports import MAX_SUBMITTED_TEXT_BYTES
 from merv.brain.research_core.domain.experiment_policy import ACTIVE_EXPERIMENT_CAP
+from merv.brain.research_core.domain.reflection_artifacts import (
+    reflection_lens_doc_problems,
+)
 from merv.brain.research_core.domain.reflection_policy import (
     REFLECTION_BLOCK_NEW_TERMINAL_THRESHOLD,
     REFLECTION_NUDGE_NEW_TERMINAL_THRESHOLD,
@@ -99,6 +102,26 @@ def full_roster() -> list[dict[str, str]]:
 ALL_LENS_IDS = ("amplify", "avoid", "entropy", "rigor", "cost")
 
 
+class ReflectionLensDocumentContractTest(unittest.TestCase):
+    def test_summary_section_is_required_and_must_have_authored_content(self) -> None:
+        self.assertEqual(
+            reflection_lens_doc_problems(
+                "## Summary\nThe lens found a stable signal.\n\n## Analysis\nDetails.\n"
+            ),
+            [],
+        )
+        self.assertEqual(
+            reflection_lens_doc_problems("## Analysis\nDetails only.\n"),
+            ["missing or empty required section: Summary"],
+        )
+        self.assertEqual(
+            reflection_lens_doc_problems(
+                "## Summary\n<!-- write this later -->\n\n## Analysis\nDetails.\n"
+            ),
+            ["missing or empty required section: Summary"],
+        )
+
+
 class ReflectionGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -140,7 +163,10 @@ class ReflectionGateTest(unittest.TestCase):
             syn_id=syn_id,
             path=f"reflections/{syn_id}/reflections/{lens_id}.md",
             role="reflection_lens_doc",
-            body=f"# {lens_id}\nFindings through the {lens_id} lens.\n",
+            body=(
+                f"# {lens_id}\n\n## Summary\n"
+                f"Findings through the {lens_id} lens.\n"
+            ),
             lens_id=lens_id,
         )
 
@@ -231,7 +257,12 @@ class ReflectionGateTest(unittest.TestCase):
         return syn_id
 
     def _state(self, syn_id: str) -> dict:
-        return self.call("reflection.get", project_id=self.project_id, reflection_id=syn_id)
+        return self.call(
+            "reflection.get",
+            project_id=self.project_id,
+            reflection_id=syn_id,
+            include_content=True,
+        )
 
     # ---- roster envelope ----
 
@@ -442,6 +473,36 @@ class ReflectionGateTest(unittest.TestCase):
             )
         self.assertIn("empty", str(ctx.exception))
 
+    def test_reflection_without_summary_blocks_submit(self) -> None:
+        syn_id = self._create_wave()
+        for lens_id in ALL_LENS_IDS:
+            if lens_id == "rigor":
+                self._submit_file(
+                    syn_id=syn_id,
+                    path=f"reflections/{syn_id}/reflections/rigor.md",
+                    role="reflection_lens_doc",
+                    body="## Analysis\nMethodological details without a macro summary.\n",
+                    lens_id="rigor",
+                )
+            else:
+                self._submit_reflection(syn_id=syn_id, lens_id=lens_id)
+
+        with self.assertRaises(WorkflowError) as ctx:
+            self.call(
+                "reflection.transition",
+                project_id=self.project_id,
+                reflection_id=syn_id,
+                transition="submit_reflections",
+            )
+
+        self.assertIn("missing or empty required section: Summary", str(ctx.exception))
+        item = {
+            entry["id"]: entry
+            for entry in self._state(syn_id)["gate_checklist"]["items"]
+        }["reflection_lens:rigor"]
+        self.assertEqual(item["status"], "invalid")
+        self.assertFalse(item["satisfied"])
+
     def test_blank_lens_is_invalid_in_checklist_transition_and_guidance(self) -> None:
         syn_id = self._create_wave()
         for lens_id in ALL_LENS_IDS:
@@ -487,7 +548,11 @@ class ReflectionGateTest(unittest.TestCase):
                 syn_id=syn_id,
                 path=f"reflections/{syn_id}/reflections/{lens_id}.md",
                 role="reflection_lens_doc",
-                body="   \n" if lens_id in {"amplify", "avoid"} else f"# {lens_id}\nOK\n",
+                body=(
+                    "   \n"
+                    if lens_id in {"amplify", "avoid"}
+                    else f"# {lens_id}\n\n## Summary\nOK\n"
+                ),
                 lens_id=lens_id,
             )
 
@@ -1528,7 +1593,8 @@ class ReflectionGateTest(unittest.TestCase):
         for lens_id, artifact in lens_docs.items():
             self.assertEqual(
                 artifact["content"],
-                f"# {lens_id}\nFindings through the {lens_id} lens.\n",
+                f"# {lens_id}\n\n## Summary\n"
+                f"Findings through the {lens_id} lens.\n",
             )
             self.assertTrue(artifact["content_available"])
             self.assertFalse(artifact["content_truncated"])
@@ -1543,14 +1609,14 @@ class ReflectionGateTest(unittest.TestCase):
             syn_id=syn_id,
             path=f"reflections/{syn_id}/reflections/amplify-old.md",
             role="reflection_lens_doc",
-            body="# amplify\nOld lens content.\n",
+            body="# amplify\n\n## Summary\nOld lens content.\n",
             lens_id="amplify",
         )
         new = self._submit_file(
             syn_id=syn_id,
             path=f"reflections/{syn_id}/reflections/amplify-new.md",
             role="reflection_lens_doc",
-            body="# amplify\nNew authoritative lens content.\n",
+            body="# amplify\n\n## Summary\nNew authoritative lens content.\n",
             lens_id="amplify",
         )
         for lens_id in ALL_LENS_IDS[1:]:
@@ -1571,7 +1637,7 @@ class ReflectionGateTest(unittest.TestCase):
         )
         self.assertEqual(
             amplify_docs[0]["content"],
-            "# amplify\nNew authoritative lens content.\n",
+            "# amplify\n\n## Summary\nNew authoritative lens content.\n",
         )
         self.assertNotEqual(amplify_docs[0]["id"], old["artifact_id"])
         self.assertGreater(amplify_docs[0]["submitted_order"], 0)
@@ -1646,7 +1712,7 @@ class ReflectionSignalTest(unittest.TestCase):
                 target_id=syn_id,
                 role="reflection_lens_doc",
                 path=f"reflections/{syn_id}/reflections/{lens_id}.md",
-                body=f"{lens_id} findings\n",
+                body=f"## Summary\n{lens_id} findings\n",
                 lens_id=lens_id,
             )
         self.call(
@@ -1771,7 +1837,10 @@ class ReflectionSignalTest(unittest.TestCase):
         first = self._finish_experiment(intent="first signal")
         wave1_id = self._publish_wave()
         corpus1 = self.call(
-            "reflection.get", project_id=self.project_id, reflection_id=wave1_id
+            "reflection.get",
+            project_id=self.project_id,
+            reflection_id=wave1_id,
+            include_content=True,
         )["corpus"]
         # The first wave's new signal is everything terminal so far.
         self.assertEqual(
@@ -1782,11 +1851,21 @@ class ReflectionSignalTest(unittest.TestCase):
         self.assertEqual(corpus1["previous_published_artifacts"], {})
 
         second = self._finish_experiment(intent="second signal")
-        corpus2 = self.call(
+        created = self.call(
             "reflection.create",
             project_id=self.project_id,
             title="Wave 2",
             lenses=full_roster(),
+        )
+        self.assertNotIn(
+            "content",
+            next(iter(created["corpus"]["previous_lens_reflections"].values())),
+        )
+        corpus2 = self.call(
+            "reflection.get",
+            project_id=self.project_id,
+            reflection_id=created["id"],
+            include_content=True,
         )["corpus"]
         # The second wave's delta excludes what wave 1 already covered and
         # points each lens at its own previous reflection.
@@ -1802,7 +1881,9 @@ class ReflectionSignalTest(unittest.TestCase):
                 artifact["path"],
                 f"reflections/{wave1_id}/reflections/{lens_id}.md",
             )
-            self.assertEqual(artifact["content"], f"{lens_id} findings\n")
+            self.assertEqual(
+                artifact["content"], f"## Summary\n{lens_id} findings\n"
+            )
             self.assertTrue(artifact["content_available"])
             self.assertFalse(artifact["content_truncated"])
             self.assertGreater(artifact["submitted_order"], 0)
@@ -1873,6 +1954,21 @@ class ReflectionSignalTest(unittest.TestCase):
             project_id=self.project_id,
             title="Authoritative evidence wave",
             lenses=full_roster(),
+        )
+        default_report = next(
+            artifact
+            for experiment in reflection["corpus"]["terminal_experiments"]
+            if experiment["id"] == exp["id"]
+            for artifact in experiment["artifacts"]
+            if artifact["role"] == "report"
+        )
+        self.assertNotIn("content", default_report)
+        self.assertTrue(default_report["tldr"])
+        reflection = self.call(
+            "reflection.get",
+            project_id=self.project_id,
+            reflection_id=reflection["id"],
+            include_content=True,
         )
         corpus_experiment = next(
             item
@@ -2239,7 +2335,7 @@ class StatusAndNextLiveSiblingsTest(unittest.TestCase):
         self._finish_experiment("done-b")
         out = self.call("workflow.status_and_next", project_id=self.project_id)
         # The scope still resolves to the finished newest experiment...
-        self.assertEqual(out["experiment"]["status"], "abandoned")
+        self.assertEqual(out["context"]["experiment"]["status"], "abandoned")
         # ...but the workflow block re-orients instead of answering 'none'.
         workflow = out["workflow"]
         self.assertEqual(workflow["current_gate"], "live_experiments")

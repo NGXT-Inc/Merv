@@ -116,6 +116,7 @@ def artifact_state_record(evidence: AssociatedEvidence) -> dict[str, Any]:
         "role": evidence.role,
         "attempt_index": evidence.attempt_index,
         "submitted_order": evidence.order,
+        "tldr": evidence.tldr,
         "submission_id": evidence.submission_id,
     }
 

@@ -20,6 +20,10 @@ Roles are exactly what the backend consumes:
 - **Gated docs** (16 KB cap each): `plan`, `report`, `graph`, `project_graph`,
   `reflection_lens_doc`, `reflection_doc`, `change_spec`. Workflow gates and
   reviewers lint the pinned submission, never a later working-tree edit.
+  Plans, reports, reflection documents, and lens documents use their authored
+  Markdown `Summary` as the preferred macro TLDR. Each
+  `reflection_lens_doc` must contain that section; legacy or structured
+  artifacts receive a deterministic bounded fallback.
 - **`result`** (16 KB cap): small metrics JSON the system exhibit ingests. The
   bytes are always pinned; JSON parsing is try-based (the path label is a
   hint, not a gate).

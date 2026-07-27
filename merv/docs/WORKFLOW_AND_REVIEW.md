@@ -292,10 +292,11 @@ Gates (envelope-only, same philosophy as experiment gates):
    (terminal experiments + claim statuses) is snapshotted at create.
 2. Reflection coverage gate: `submit_reflections` is blocked until every
    roster lens has a current-attempt role-`reflection_lens_doc` artifact
-   submitted with that explicit `lens_id` and non-empty pinned content. Each
-   reflection is authored and submitted by its own subagent. The subagent reads
-   project state without mutating it, then submits its own lens document as
-   the one required mutation.
+   submitted with that explicit `lens_id`, non-empty pinned content, and a
+   non-empty Markdown `Summary` section. That authored section is the lens TLDR
+   in macro reflection views. Each reflection is authored and submitted by its
+   own subagent. The subagent reads project state without mutating it, then
+   submits its own lens document as the one required mutation.
 3. Reflection artifacts gate: `submit_reflection_artifacts` requires the project logic
    graph (role `project_graph`, the shared `graph_lint` envelope), a concise reflection
    document (role `reflection_doc`, required sections: Summary, Critical

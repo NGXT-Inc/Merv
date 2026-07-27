@@ -60,8 +60,11 @@ reflection.create (declare the 5-lens roster; corpus is snapshotted)
 ```
 
 One wave may be open at a time. `reflection.get` shows per-lens coverage,
-`gate_checklist`, and `allowed_transitions`; `workflow.status_and_next` carries
-the wave's gate guidance under `project_reflection` while it is open.
+`gate_checklist`, `allowed_transitions`, and compact TLDRs for submitted
+documents by default. Start from that slim view; use
+`reflection.get(include_content=true)` only for a focused synthesis or review
+that needs the exact bounded documents. `workflow.status_and_next` carries the
+wave's gate guidance under `project_reflection` while it is open.
 
 ## Step 1 — declare the roster
 
@@ -89,7 +92,7 @@ Spawn five subagents in parallel. Each gets:
 - **the list of the other four lenses running**, with the instruction to stay
   in its lane — anything squarely in another lens's charter is that agent's
   job, not yours to duplicate;
-- **the wave's new signal** — `reflection.get`'s corpus lists
+- **the wave's new signal** — slim `reflection.get`'s corpus lists
   `new_terminal_experiments`, the experiments that finished since the last
   published wave. Pass the list with this framing: these are why the project
   is reflecting now — they carry the signal the last wave never saw — but the
@@ -98,8 +101,8 @@ Spawn five subagents in parallel. Each gets:
   the new experiments;
 - **for the three core lenses, the lens's previous reflection** —
   `corpus.previous_lens_reflections[<lens_id>]`, once a wave has published.
-  This is a hydrated object with `artifact_id`, provenance `path`, and bounded
-  submitted `content`. Hand its content over as private context: it shows what
+  The default object has its `artifact_id`, provenance `path`, and a bounded
+  `tldr`. Hand that TLDR over as private context first: it shows what
   this lens concluded last time, so the agent can learn from its own prior
   round — what held up, what broke, what deserves different weight now. The
   researcher sees only the current wave's reflection, so it must stand alone:
@@ -107,28 +110,30 @@ Spawn five subagents in parallel. Each gets:
   conclusion carried forward without re-verifying it against the current
   records. (Authored lenses are wave-specific and start fresh.);
 - read-only project access through MCP, with the wave's snapshotted corpus as
-  the evidence base: `reflection.get` carries the full claims (`corpus.claims`
-  — id, statement, status, confidence, scope),
+  the evidence base: slim `reflection.get` carries the full claims
+  (`corpus.claims` — id, statement, status, confidence, scope),
   `corpus.terminal_experiments[].artifacts[]` (the snapshotted report and
-  logic-graph artifact IDs plus bounded submitted content), and
-  `corpus.previous_lens_reflections`. Do NOT call
+  logic-graph artifact IDs plus bounded TLDRs), and
+  `corpus.previous_lens_reflections`. Treat those summaries as the working
+  context; call `reflection.get(include_content=true)` only when a
+  load-bearing claim genuinely requires the exact submitted documents. Do NOT call
   `project(action="overview")` — the corpus is the wave's authoritative claim
   and experiment state, and the orchestrator already took the one live read
-  in Step 1. The only live read a lens makes is `experiment.get_state` for
-  one experiment's verdict history: reviews arrive as one-line synopses —
-  only the newest review carries its body — and the synopses are the working
-  material; hydrate a single older round with that round's `review_id` only
-  when its synopsis genuinely cannot answer your question. Do not read a
-  repository checkout and do not use `artifact.find` as a content reader; it
-  returns metadata only;
+  in Step 1. Do not perform live experiment reads from a pinned reflection
+  lens: the corpus and its review synopses are the authoritative snapshot. Use
+  `reflection.get(include_content=true)` for the exact snapshotted documents
+  only when a synopsis cannot answer a load-bearing question. Do not read a
+  repository checkout;
 - the instruction to write its reflection to a caller-side temporary file
   (the provenance `path` may be
   `reflections/<syn_id>/reflections/<lens_id>.md`), then submit it with
   `artifact.submit` (pass the `path`, `target_type: "reflection"`, the wave id
   as `target_id`, `role: "reflection_lens_doc"`, and `lens_id: "<lens_id>"` —
   coverage is matched by the explicit lens_id) and run the returned upload
-  command verbatim — **the subagent submits its own reflection**; do not
-  collect and submit on its behalf.
+  command verbatim. Every lens document must contain a non-empty `## Summary`
+  with 2–3 plain-language sentences stating its macro finding; this becomes
+  the lens TLDR in slim reflection views. **The subagent submits its own
+  reflection**; do not collect and submit on its behalf.
 
 After the wave publishes, each lens may also register a distinct handle with
 `feed.register` (`role="lens"`) and post ONE `feed.post` with its single
@@ -180,7 +185,7 @@ missing.
 
 ## Step 3 — synthesize
 
-Call `reflection.get` and read all five current-attempt
+Call `reflection.get(include_content=true)` and read all five current-attempt
 `reflection_lens_doc` entries from `current_attempt_artifacts[].content`.
 Their artifact IDs pin the exact inputs you are reconciling. Also read
 `corpus.previous_published_artifacts.project_graph.content` and
@@ -226,7 +231,7 @@ Produce three artifacts and submit each to the reflection wave (artifact.submit)
 Do not create the experiments yourself during reflection. They are materialized
 only when `reflection.transition(publish)` succeeds after reviewer approval.
 
-Before requesting review, call `reflection.get` and inspect `gate_checklist`.
+Before requesting review, call slim `reflection.get` and inspect `gate_checklist`.
 It should show valid `project_graph`, `reflection_doc`, and `change_spec`
 items before you transition. Also inspect `project_graph_diff` when it is
 available. Use it as a compact previous-vs-new check: what nodes/edges were

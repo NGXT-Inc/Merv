@@ -35,6 +35,7 @@ class AssociatedEvidence:
     created_at: str
     updated_at: str
     order: int
+    tldr: str = ""
     submission_id: str = ""
 
 

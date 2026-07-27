@@ -188,7 +188,10 @@ class ReflectionEvidenceTest(unittest.TestCase):
                 syn_id=syn_id,
                 role="reflection_lens_doc",
                 path=SHARED_LENS_PATH,
-                body=f"# {lens_id}\nFindings through the {lens_id} lens ({round_label}).\n",
+                body=(
+                    f"# {lens_id}\n\n## Summary\n"
+                    f"Findings through the {lens_id} lens ({round_label}).\n"
+                ),
                 lens_id=lens_id,
             )
             for lens_id in LENS_IDS
@@ -264,6 +267,12 @@ class ReflectionEvidenceTest(unittest.TestCase):
             syn_id=syn_id, graph=VALID_PROJECT_GRAPH, suffix="a"
         )
         session = self._review_session(syn_id=syn_id)
+
+        self.assertEqual(session["project_context"]["id"], self.project_id)
+        self.assertEqual(session["reflection_context"]["id"], syn_id)
+        for artifact in session["reflection_context"]["current_attempt_artifacts"]:
+            self.assertNotIn("content", artifact)
+            self.assertTrue(artifact["tldr"])
 
         lens_docs = [
             item

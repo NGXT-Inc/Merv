@@ -26,31 +26,29 @@ missing from the prompt, ask the spawning agent for them before proceeding.
 
 Operate read-only by procedure. The capability authenticates `review.start`
 and the returned session authenticates `review.submit`; it does not restrict
-unrelated tools. Use returned artifacts and ordinary read-only context for evidence
-and do not mutate claims, experiments, reflections, artifacts, sandboxes, or
-workflow state. Call `review.start` with exactly the provided
+unrelated tools. Call `review.start` with exactly the provided
 `review_request_id`, provided `reviewer_capability`, your own required
 `caller_session_id` (never the producer session's), and optional
 `declared_agent`, then call `review.submit`.
 
 `review.start` and `review.submit` are capability-addressed and take no
-`project_id`; any other project-scoped read you make (such as
-`reflection.get`) needs the key-bound `project_id` — learn it from
-`project(action="current")` if the handoff did not include it.
+`project_id`. The start response supplies that id plus `project_context`, the
+slim `reflection_context`, and full `submitted_artifacts` pinned to the review
+snapshot. Start with those macro views and exact submitted documents. Use the
+returned `project_id` for any focused, project-scoped read that a TLDR shows is
+necessary. Do not mutate claims, experiments, reflections, artifacts,
+sandboxes, or workflow state.
 
 ## Your four inputs
 
-1. **The project corpus** — gather what you need through read-only access:
-   claims and their statuses, experiments and their outcomes, the
-   per-experiment logic graphs, reports, and review history. An experiment
-   lists only its newest review's body; older rounds travel as one-line
-   synopses, and `experiment.get_state` with that round's `review_id` reads
-   one back in full.
-   `reflection.get(project_id, reflection_id)` shows the wave's corpus snapshot (the
-   finished experiments it claims to cover), the lens roster, and the current
-   attempt's artifacts; the snapshot's `new_terminal_experiments` names the
-   experiments that finished since the last published wave — the new signal
-   this reflection exists to absorb.
+1. **The project corpus** — begin with `project_context` and the corpus TLDRs in
+   `reflection_context`: claims and their statuses, experiments and their
+   outcomes, the per-experiment logic graphs, reports, and review history.
+   Review synopses are the pinned working history; do not replace them with a
+   live experiment read. The start packet already includes the
+   wave's lens roster, current-attempt artifact TLDRs, and
+   `new_terminal_experiments`; the exact current submitted documents are under
+   `submitted_artifacts`.
 2. **The previous state of the project graph**, if any — earlier published
    reflection waves pin the graph version they shipped, so you can see what this
    wave changed, pruned, or retold.

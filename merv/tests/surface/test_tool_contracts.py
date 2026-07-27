@@ -16,6 +16,7 @@ from merv.brain.surface.tools.contracts import (
     ArtifactFindInput,
     ArtifactSubmitInput,
     MlflowFinalizeRunInput,
+    ReflectionGetInput,
     SandboxExtendInput,
     SandboxPullOutputsInput,
     SandboxRequestInput,
@@ -259,6 +260,24 @@ class ToolContractRegistryTest(unittest.TestCase):
             {**base, "role": "reflection_lens_doc", "lens_id": "amplify"}
         )
         self.assertEqual(parsed.lens_id, "amplify")
+
+    def test_reflection_get_defaults_to_summaries_with_explicit_full_opt_in(self) -> None:
+        default = ReflectionGetInput.model_validate(
+            {"project_id": "proj_1", "reflection_id": "syn_1"}
+        )
+        deep_dive = ReflectionGetInput.model_validate(
+            {
+                "project_id": "proj_1",
+                "reflection_id": "syn_1",
+                "include_content": True,
+            }
+        )
+
+        self.assertFalse(default.include_content)
+        self.assertTrue(deep_dive.include_content)
+        description = TOOL_CONTRACTS["reflection.get"].description
+        self.assertIn("TLDRs", description)
+        self.assertIn("include_content=true", description)
 
     def test_sandbox_pull_outputs_contract(self) -> None:
         self.assertIs(

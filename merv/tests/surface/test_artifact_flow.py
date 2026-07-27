@@ -278,7 +278,7 @@ class ArtifactFlowTest(unittest.TestCase):
                 # File names deliberately do NOT match lens ids: coverage must
                 # key on the explicit lens_id field.
                 path=f"reflections/notes-{lens['id']}-v2.md",
-                body=f"# {lens['id']}\nFindings through this lens.\n",
+                body=f"# {lens['id']}\n\n## Summary\nFindings through this lens.\n",
                 lens_id=lens["id"],
             )
         state = self.call(
@@ -286,6 +286,33 @@ class ArtifactFlowTest(unittest.TestCase):
         )
         coverage = state["reflection_coverage"]
         self.assertTrue(coverage["complete"], coverage)
+        default_lenses = [
+            artifact
+            for artifact in state["current_attempt_artifacts"]
+            if artifact["role"] == "reflection_lens_doc"
+        ]
+        self.assertEqual(len(default_lenses), 5)
+        for artifact in default_lenses:
+            self.assertNotIn("content", artifact)
+            self.assertEqual(
+                artifact["tldr"],
+                f"Findings through this lens.",
+            )
+
+        deep_dive = self.call(
+            "reflection.get",
+            project_id=self.project_id,
+            reflection_id=wave_id,
+            include_content=True,
+        )
+        full_lenses = [
+            artifact
+            for artifact in deep_dive["current_attempt_artifacts"]
+            if artifact["role"] == "reflection_lens_doc"
+        ]
+        self.assertEqual(len(full_lenses), 5)
+        for artifact in full_lenses:
+            self.assertIn("Findings through this lens.", artifact["content"])
         self.call(
             "reflection.transition",
             project_id=self.project_id,

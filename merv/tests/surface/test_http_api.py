@@ -1427,7 +1427,7 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
                 target_id=syn_id,
                 role="reflection_lens_doc",
                 path=f"reflections/{syn_id}/reflections/{lens}.md",
-                body=f"{lens} findings\n",
+                body=f"## Summary\n{lens} findings\n",
                 lens_id=lens,
             )
             if lens == "avoid":

@@ -523,7 +523,8 @@ To submit a gated document or result file:
   local files and cannot reach remote sandbox paths)
 - call `artifact.submit {project_id, target_type, target_id, role, path}` with
   the file's relative path — pass `lens_id` when the role is
-  `reflection_lens_doc` — and
+  `reflection_lens_doc`, and ensure that lens Markdown has a non-empty
+  `## Summary` for its macro TLDR — and
   run the returned one-line upload command **verbatim** (one-time token,
   expires in ~15 min)
 - for markdown with relative image links, the upload response returns one

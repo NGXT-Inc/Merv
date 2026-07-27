@@ -7,15 +7,23 @@ design.
 ## 1. Reflections — `reflections/<syn_id>/reflections/<lens_id>.md`
 
 One markdown file per lens, written and submitted by that lens's subagent
-(role `reflection_lens_doc`). The filename must be `<lens_id>.md` — the
-`submit_reflections` gate matches coverage by filename. The only enforced
-rule beyond that: the file must exist and be non-empty.
+(role `reflection_lens_doc`). Submit it with the roster's explicit `lens_id`;
+the `submit_reflections` gate matches coverage on that field. The file must be
+non-empty and contain a non-empty `## Summary` section. That authored summary
+is the lens's TLDR in macro reflection views.
 
 A reflection that serves the synthesizer well usually states: what the lens
 examined (with ids/paths), what it found, what surprised it, and what it
 could not verify. The `avoid` lens should center its ledger table:
 
 ```markdown
+## Summary
+
+Two or three plain-language sentences stating the lens's most important
+finding, what it changes about the project view, and the main uncertainty.
+
+## Analysis
+
 | direction tested | setting | what happened | why it failed | what would have to change |
 |---|---|---|---|---|
 | longer warmup    | exp_a, attempt 2 | no effect beyond noise | LR floor dominated | retry only with a lower LR floor |

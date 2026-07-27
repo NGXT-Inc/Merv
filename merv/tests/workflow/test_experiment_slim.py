@@ -12,7 +12,9 @@ from tests.support.brain import TestBrain
 from merv.brain.kernel.utils import ValidationError
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
-SLIM_ARTIFACT_KEYS = {"id", "role", "path", "lens_id", "size_bytes", "title"}
+SLIM_ARTIFACT_KEYS = {
+    "id", "role", "path", "lens_id", "size_bytes", "title", "tldr",
+}
 WASTE_ARTIFACT_KEYS = {"content_sha256", "content_type", "created_by", "created_at",
                        "updated_at", "project_id", "attempt_index", "submitted_order"}
 WASTE_REVIEW_KEYS = {"target_snapshot_id", "request_id", "session_id", "target_id", "target_type", "project_id"}
@@ -40,14 +42,26 @@ class ExperimentSlimTest(unittest.TestCase):
             "experiment.create", name="reve-small", project_id=self.project_id,
             intent="Train REVE-Small.\n\nTitle: REVE-Small",
         )["id"]
-        for path, role in [
-            ("experiments/004/plan.md", "plan"),
-            ("experiments/004/report.md", "report"),
-            ("experiments/004/results/status.json", "result"),
+        for path, role, body in [
+            (
+                "experiments/004/plan.md",
+                "plan",
+                "## Summary\nCompare REVE-Small with the baseline.\n",
+            ),
+            (
+                "experiments/004/report.md",
+                "report",
+                "## Summary\nREVE-Small improved over the baseline.\n",
+            ),
+            (
+                "experiments/004/results/status.json",
+                "result",
+                '{"summary": "The run completed successfully."}\n',
+            ),
         ]:
             self.app.submit_artifact(
                 project_id=self.project_id, target_type="experiment",
-                target_id=exp_id, role=role, path=path, body="x" * 50,
+                target_id=exp_id, role=role, path=path, body=body,
             )
         return exp_id
 
@@ -74,6 +88,7 @@ class ExperimentSlimTest(unittest.TestCase):
         res = slim["current_attempt_artifacts"][0]
         self.assertEqual(set(res), SLIM_ARTIFACT_KEYS)
         self.assertEqual(WASTE_ARTIFACT_KEYS & set(res), set())
+        self.assertEqual(res["tldr"], "Compare REVE-Small with the baseline.")
         # Detail that get_state exists for is preserved.
         self.assertIn("intent", slim)
         self.assertIn("conclusion", slim)
@@ -103,16 +118,17 @@ class ExperimentSlimTest(unittest.TestCase):
         raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
         raw.commit(); raw.close()
 
-    def test_get_state_review_keeps_findings_drops_bookkeeping(self) -> None:
+    def test_get_state_review_list_is_synopsis_only(self) -> None:
         exp_id = self._experiment_with_artifacts()
         self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1)
 
         slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         review = slim["reviews"][0]
         self.assertEqual(review["verdict"], "pass")
-        self.assertEqual(review["findings"][0]["issue"], "narrow")   # detail kept
-        self.assertEqual(review["notes"], "looks good")
-        self.assertEqual(review["evidence"], {"exit_code": 0})
+        self.assertEqual(review["synopsis"], "looks good")
+        self.assertNotIn("findings", review)
+        self.assertNotIn("notes", review)
+        self.assertNotIn("evidence", review)
         self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())     # bookkeeping dropped
 
     def test_get_state_older_rounds_arrive_as_tldrs(self) -> None:
@@ -132,8 +148,7 @@ class ExperimentSlimTest(unittest.TestCase):
         )["reviews"]
 
         self.assertEqual([review["id"] for review in reviews], ["rev_2", "rev_1"])
-        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis",
-                                           "findings", "notes", "evidence"})
+        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis"})
         self.assertEqual(set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"})
         self.assertEqual(reviews[1]["synopsis"], "The first pass never separated the arms.")
 

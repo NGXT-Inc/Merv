@@ -37,6 +37,7 @@ _SLIM_ARTIFACT_FIELDS = (
     "lens_id",
     "path",
     "size_bytes",
+    "tldr",
 )
 _SLIM_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "synopsis")
 
@@ -458,7 +459,9 @@ class StatusGuidancePolicy:
                 "reflections/<syn_id>/reflections/<lens_id>.md), then calls "
                 "artifact.submit for this reflection wave with role "
                 "'reflection_lens_doc', lens_id=<lens_id>, and the file's "
-                "relative path — and runs the returned upload command verbatim. "
+                "relative path. The document must include a non-empty "
+                "'## Summary' with its 2–3 sentence macro finding. The subagent "
+                "then runs the returned upload command verbatim. "
                 "See the project-reflection skill for the lens briefs."
             ),
         }

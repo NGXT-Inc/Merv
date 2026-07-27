@@ -116,6 +116,7 @@ class ExperimentPresentationTest(unittest.TestCase):
                     "attempt_index": 1,
                     "path": "old.md",
                     "lens_id": "",
+                    "tldr": "The earlier attempt missed the target.",
                 },
                 {
                     "id": "art_current",
@@ -125,6 +126,7 @@ class ExperimentPresentationTest(unittest.TestCase):
                     "lens_id": "",
                     "size_bytes": 12,
                     "title": "Report",
+                    "tldr": "The retry met the target.",
                 },
             ],
             "reviews": [
@@ -169,6 +171,7 @@ class ExperimentPresentationTest(unittest.TestCase):
                 "lens_id": "",
                 "size_bytes": 12,
                 "title": "Report",
+                "tldr": "The retry met the target.",
             }
         ])
         self.assertEqual(result["prior_attempt_artifacts"], [
@@ -177,6 +180,7 @@ class ExperimentPresentationTest(unittest.TestCase):
                 "role": "report",
                 "path": "old.md",
                 "attempt_index": 1,
+                "tldr": "The earlier attempt missed the target.",
             }
         ])
         self.assertEqual(set(result["storage_objects"][0]), {
@@ -207,7 +211,7 @@ class ExperimentPresentationTest(unittest.TestCase):
 
 
 class ReviewDietTest(unittest.TestCase):
-    def test_newest_keeps_its_body_and_older_rounds_travel_as_tldrs(self) -> None:
+    def test_every_review_travels_as_a_tldr_by_default(self) -> None:
         rows = slim_review_rows(
             [
                 _review("rev_3", created_at="2026-07-03T00:00:00Z"),
@@ -217,15 +221,13 @@ class ReviewDietTest(unittest.TestCase):
         )
 
         self.assertEqual([row["id"] for row in rows], ["rev_3", "rev_2", "rev_1"])
-        self.assertEqual(set(rows[0]), BODY_KEYS)
-        self.assertEqual(rows[0]["findings"], [{"issue": "rev_3"}])
+        self.assertEqual(set(rows[0]), TLDR_KEYS)
         self.assertEqual(set(rows[1]), TLDR_KEYS)
         self.assertEqual(set(rows[2]), TLDR_KEYS)
+        self.assertEqual(rows[0]["synopsis"], "synopsis for rev_3")
         self.assertEqual(rows[1]["synopsis"], "synopsis for rev_2")
 
-    def test_insertion_order_beats_a_skewed_timestamp(self) -> None:
-        # created_seq DESC is the authority; a clock-skewed created_at on an
-        # older row must not steal the newest round's body.
+    def test_projection_preserves_authoritative_insertion_order(self) -> None:
         rows = slim_review_rows(
             [
                 _review("rev_new", created_at="2026-07-01T00:00:00Z"),
@@ -237,11 +239,11 @@ class ReviewDietTest(unittest.TestCase):
         self.assertEqual(
             [row["id"] for row in rows], ["rev_new", "rev_skewed", "rev_old"]
         )
-        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(set(rows[0]), TLDR_KEYS)
         self.assertEqual(set(rows[1]), TLDR_KEYS)
         self.assertEqual(set(rows[2]), TLDR_KEYS)
 
-    def test_same_timestamp_keeps_the_body_on_the_newest_first_row(self) -> None:
+    def test_same_timestamp_does_not_change_input_order(self) -> None:
         rows = slim_review_rows(
             [
                 _review("rev_2", created_at="2026-07-01T00:00:00Z"),
@@ -249,13 +251,13 @@ class ReviewDietTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(set(rows[0]), TLDR_KEYS)
         self.assertEqual(set(rows[1]), TLDR_KEYS)
 
-    def test_a_lone_review_keeps_its_body(self) -> None:
+    def test_a_lone_review_is_still_tldr_only(self) -> None:
         rows = slim_review_rows([_review("rev_1", created_at="2026-07-01T00:00:00Z")])
 
-        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(set(rows[0]), TLDR_KEYS)
 
     def test_no_reviews_projects_to_an_empty_list(self) -> None:
         self.assertEqual(slim_review_rows([]), [])
@@ -288,9 +290,10 @@ class ReviewDietTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(rows[1]["synopsis"], "w" * 420)
+        self.assertEqual(len(rows[1]["synopsis"]), 420)
+        self.assertTrue(rows[1]["synopsis"].endswith("…"))
 
-    def test_an_older_row_with_neither_synopsis_nor_notes_stays_empty(self) -> None:
+    def test_missing_synopsis_and_notes_falls_back_to_a_finding(self) -> None:
         rows = slim_review_rows(
             [
                 _review("rev_2", created_at="2026-07-02T00:00:00Z"),
@@ -303,7 +306,23 @@ class ReviewDietTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(rows[1]["synopsis"], "")
+        self.assertEqual(rows[1]["synopsis"], "Review finding: rev_1")
+
+    def test_fully_empty_legacy_review_gets_a_nonempty_status_tldr(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review(
+                    "rev_1",
+                    created_at="2026-07-01T00:00:00Z",
+                    synopsis="",
+                    notes="",
+                    findings=[],
+                ),
+            ]
+        )
+
+        self.assertIn("returned pass", rows[0]["synopsis"])
+        self.assertLessEqual(len(rows[0]["synopsis"]), 420)
 
     def test_review_body_reads_an_older_round_back_with_its_routing(self) -> None:
         reviews = [

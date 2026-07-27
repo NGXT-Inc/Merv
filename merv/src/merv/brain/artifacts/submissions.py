@@ -22,6 +22,7 @@ from merv.shared.artifact_roles import (
     SYSTEM_CREATED_BY,
     artifact_byte_cap,
 )
+from merv.shared.content_summaries import content_tldr
 from merv.shared.markdown_images import (
     MARKDOWN_FIGURE_MAX_BYTES,
     MARKDOWN_FIGURE_ROLES,
@@ -100,7 +101,7 @@ def upload_command(*, base_url: str, path: str, token: str, kind: str = "u") -> 
     return f"curl -sf -T {_shell_quote(path)} '{base}/api/artifacts/{kind}/{token}'"
 
 
-def _evidence(row: Row) -> AssociatedEvidence:
+def _evidence(row: Row, *, tldr: str = "") -> AssociatedEvidence:
     return AssociatedEvidence(
         artifact_id=str(row["id"]),
         project_id=str(row["project_id"]),
@@ -116,6 +117,7 @@ def _evidence(row: Row) -> AssociatedEvidence:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         order=int(row["created_seq"] or 0),
+        tldr=tldr,
         submission_id=str(row["submission_id"] or ""),
     )
 
@@ -595,8 +597,29 @@ class ArtifactSubmissionService:
                 (target_type, *ids),
             ).fetchall()
         for row in rows:
-            grouped[str(row["target_id"])].append(_evidence(row))
+            grouped[str(row["target_id"])].append(
+                _evidence(row, tldr=self._content_tldr(row=row))
+            )
         return {tid: tuple(items) for tid, items in grouped.items()}
+
+    def _content_tldr(self, *, row: Row) -> str:
+        """Summarize immutable submitted bytes without exposing the full body."""
+
+        content = None
+        if self.blobs is not None and row["content_sha256"]:
+            try:
+                data = self.blobs.get(
+                    namespace=str(row["project_id"]),
+                    sha256=str(row["content_sha256"]),
+                )
+                content = data.decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - macro context is best-effort
+                pass
+        return content_tldr(
+            content,
+            role=str(row["role"] or ""),
+            path=str(row["path"] or ""),
+        )
 
     def submitted_document(
         self, *, artifact_id: str | None, what: str

@@ -16,6 +16,7 @@ from typing import Any, Callable
 from merv.shared.artifact_roles import REFLECTION_LENS_DOC_ROLE
 from merv.shared.markdown_images import markdown_image_links
 
+from .artifacts import required_markdown_sections_missing
 from .artifact_evidence import (
     artifact_submission_recency_key,
     preferred_artifact,
@@ -31,6 +32,9 @@ from ...kernel.utils import ValidationError, WorkflowError
 
 CHANGE_SPEC_SCHEMA_VERSION = 1
 MAX_REFLECTION_DOC_BYTES = 16_000
+REQUIRED_REFLECTION_LENS_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Summary", "summary"),
+)
 REQUIRED_REFLECTION_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Summary", "summary"),
     ("Critical reading", "critical"),
@@ -40,6 +44,21 @@ REQUIRED_REFLECTION_DOC_SECTIONS: tuple[tuple[str, str], ...] = (
 _CHANGE_SPEC_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _MD_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _LENS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def reflection_lens_doc_problems(text: str) -> list[str]:
+    """Require each lens to author the TLDR used by macro reflection views."""
+
+    if not text.strip():
+        return ["reflection lens document is empty"]
+    missing = required_markdown_sections_missing(
+        text, REQUIRED_REFLECTION_LENS_DOC_SECTIONS
+    )
+    return (
+        ["missing or empty required section: Summary"]
+        if missing
+        else []
+    )
 
 
 def reflection_doc_problems(text: str) -> list[str]:

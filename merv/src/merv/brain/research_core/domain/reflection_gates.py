@@ -89,8 +89,9 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
         requires_prose=(
             "every roster lens must have its own reflection submitted "
             "to this reflection wave (role 'reflection_lens_doc', with its "
-            "lens_id) for the current attempt — each reflection document "
-            "is authored and submitted by its own subagent"
+            "lens_id) for the current attempt, with a non-empty Summary section "
+            "for macro views — each reflection document is authored and "
+            "submitted by its own subagent"
         ),
         requirements=(
             RoleRequirement(
@@ -101,13 +102,14 @@ REFLECTION_GATE_TABLE: dict[str, ForwardTransition] = {
                     "reflection (e.g. reflections/<syn_id>/reflections/"
                     "<lens_id>.md) and submits it with artifact.submit (role "
                     "'reflection_lens_doc', lens_id=<lens_id>) for this "
-                    "reflection wave"
+                    "reflection wave; every lens document needs a non-empty "
+                    "Summary section"
                 ),
                 validator="roster",
                 gate="reflection_roster_incomplete",
                 missing=(
-                    "one reflection document per roster lens "
-                    "(role 'reflection_lens_doc')"
+                    "one reflection document with a non-empty Summary per roster "
+                    "lens (role 'reflection_lens_doc')"
                 ),
                 label="Per-lens reflections submitted",
             ),

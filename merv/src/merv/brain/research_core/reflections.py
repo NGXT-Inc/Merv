@@ -32,6 +32,7 @@ from .domain.reflection_artifacts import (
     graph_diff_summary,
     parse_change_spec,
     reflection_coverage_for,
+    reflection_lens_doc_problems,
     reflection_doc_review_problems,
     validate_reflection_roster,
 )
@@ -376,7 +377,7 @@ class ReflectionService:
             artifact_id=str(artifact.get("artifact_id") or artifact.get("id") or "")
         )
         return {
-            **artifact,
+            **{key: value for key, value in artifact.items() if key != "tldr"},
             "content": result.content,
             "content_available": result.content is not None,
             "content_truncated": result.truncated,
@@ -811,10 +812,13 @@ class ReflectionService:
                         artifact_id=str(lens.get("artifact_id") or ""),
                         what=f"reflection {lens_id!r}",
                     ).text
-                    if not text.strip():
+                    problems = reflection_lens_doc_problems(text)
+                    if problems:
                         invalid[lens_id] = (
-                            f"reflection for lens {lens_id!r} ({path}) is empty — "
-                            "write it and resubmit it (artifact.submit) to submit the content"
+                            f"reflection for lens {lens_id!r} ({path}) is not ready: "
+                            + "; ".join(problems)
+                            + " — add a ## Summary with the lens's macro-level "
+                            "finding, then resubmit it (artifact.submit)"
                         )
                 except WorkflowError as exc:
                     invalid[lens_id] = str(exc)

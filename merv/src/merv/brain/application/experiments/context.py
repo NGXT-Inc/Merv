@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-import re
 from typing import Any
+
+from merv.shared.content_summaries import content_tldr
 
 from ...artifacts.facade import Artifacts
 from ...research_core.facade import (
@@ -164,9 +165,10 @@ class ExperimentContextQuery:
         }
         content = self._content(artifact=artifact, pinned_content=pinned_content)
         if status in EXPERIMENT_TERMINAL_STATUSES:
-            result["summary"] = (
-                str(artifact.get("tldr") or "").strip()
-                or _document_summary(content)
+            result["summary"] = str(artifact.get("tldr") or "").strip() or content_tldr(
+                content,
+                role="plan",
+                path=str(artifact.get("path") or ""),
             )
         else:
             result["content"] = content or ""
@@ -302,48 +304,6 @@ def _submitted_at(artifact: Mapping[str, Any]) -> str:
         or artifact.get("created_at")
         or ""
     )
-
-
-def _document_summary(content: str | None, *, max_chars: int = 600) -> str:
-    """Extract the authored Summary section, with a bounded legacy fallback."""
-
-    text = str(content or "").strip()
-    headings = list(
-        re.finditer(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$", text, re.MULTILINE)
-    )
-    for index, heading in enumerate(headings):
-        name = re.sub(r"[^a-z0-9]+", " ", heading.group(2).lower()).strip()
-        if name != "summary":
-            continue
-        level = len(heading.group(1))
-        end = len(text)
-        for following in headings[index + 1 :]:
-            if len(following.group(1)) <= level:
-                end = following.start()
-                break
-        summary = text[heading.end() : end].strip()
-        if summary:
-            return _bounded_plain_text(summary, max_chars=max_chars)
-
-    fallback = next(
-        (
-            line.strip()
-            for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ),
-        "",
-    )
-    return _bounded_plain_text(fallback, max_chars=max_chars)
-
-
-def _bounded_plain_text(value: str, *, max_chars: int) -> str:
-    compact = re.sub(r"\s+", " ", value).strip()
-    if len(compact) <= max_chars:
-        return compact
-    clipped = compact[: max_chars - 1].rstrip()
-    if " " in clipped:
-        clipped = clipped.rsplit(" ", 1)[0].rstrip()
-    return clipped + "…"
 
 
 __all__ = ["ExperimentContextQuery"]

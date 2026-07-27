@@ -55,7 +55,9 @@ def _normalize_heading(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
 
-def _sections_missing(text: str, required: tuple[tuple[str, str], ...]) -> list[str]:
+def required_markdown_sections_missing(
+    text: str, required: tuple[tuple[str, str], ...]
+) -> list[str]:
     """Return the canonical names of REQUIRED sections that are absent or
     empty. A section counts as present when its heading exists and the body
     beneath it — up to the next same-or-higher-level heading — contains
@@ -85,11 +87,11 @@ def _sections_missing(text: str, required: tuple[tuple[str, str], ...]) -> list[
 
 
 def plan_sections_missing(plan_text: str) -> list[str]:
-    return _sections_missing(plan_text, REQUIRED_PLAN_SECTIONS)
+    return required_markdown_sections_missing(plan_text, REQUIRED_PLAN_SECTIONS)
 
 
 def report_sections_missing(report_text: str) -> list[str]:
-    return _sections_missing(report_text, REQUIRED_REPORT_SECTIONS)
+    return required_markdown_sections_missing(report_text, REQUIRED_REPORT_SECTIONS)
 
 
 def report_figure_links(report_text: str) -> list[str]:

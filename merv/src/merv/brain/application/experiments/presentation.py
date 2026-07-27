@@ -21,6 +21,7 @@ _SLIM_ARTIFACT_FIELDS = (
     "lens_id",
     "size_bytes",
     "title",
+    "tldr",
 )
 _SLIM_STORAGE_FIELDS = tuple(
     field
@@ -32,6 +33,7 @@ _PRIOR_ARTIFACT_FIELDS = (
     "role",
     "path",
     "attempt_index",
+    "tldr",
 )
 _SLIM_CLAIM_FIELDS = ("id", "statement", "confidence", "status", "scope")
 _SLIM_REVIEW_FIELDS = (
@@ -59,17 +61,10 @@ def project_rows(
 
 
 def slim_review_rows(reviews: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the newest review's body; older rounds travel as their TLDR alone."""
+    """Project every review to its TLDR; bodies require an explicit id read."""
 
     rows = list(reviews)
-    if not rows:
-        return []
-    # Rows arrive newest-first (created_seq DESC) — insertion order is the
-    # authority, not created_at, which clock skew or imports can misorder.
-    return [
-        project_fields(row, _SLIM_REVIEW_FIELDS) if index == 0 else _review_tldr(row)
-        for index, row in enumerate(rows)
-    ]
+    return [_review_tldr(row) for row in rows]
 
 
 def review_body(
@@ -90,19 +85,53 @@ def review_body(
 
 def _review_tldr(review: dict[str, Any]) -> dict[str, Any]:
     row = project_fields(review, _TLDR_REVIEW_FIELDS)
-    row["synopsis"] = str(row.get("synopsis") or "").strip() or _notes_tldr(
-        review.get("notes")
+    row["synopsis"] = (
+        _compact_tldr(row.get("synopsis"))
+        or _notes_tldr(review.get("notes"))
+        or _finding_tldr(review.get("findings"))
+        or _legacy_review_tldr(review)
     )
     return row
 
 
+def _compact_tldr(value: Any) -> str:
+    """Normalize legacy prose to the current one-line synopsis envelope."""
+
+    compact = " ".join(str(value or "").split())
+    if len(compact) <= SYNOPSIS_MAX_LEN:
+        return compact
+    clipped = compact[: SYNOPSIS_MAX_LEN - 1].rstrip()
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0].rstrip()
+    return clipped + "…"
+
+
 def _notes_tldr(notes: Any) -> str:
-    """Rows written before synopsis was mandatory borrow their opening notes line."""
+    """Use the first authored notes line for pre-synopsis review rows."""
 
     for line in str(notes or "").splitlines():
         if line.strip():
-            return line.strip()[:SYNOPSIS_MAX_LEN]
+            return _compact_tldr(line)
     return ""
+
+
+def _finding_tldr(findings: Any) -> str:
+    if not isinstance(findings, list):
+        return ""
+    issues = [
+        str(finding.get("issue") or "").strip()
+        for finding in findings
+        if isinstance(finding, dict) and str(finding.get("issue") or "").strip()
+    ]
+    return _compact_tldr("Review finding: " + "; ".join(issues[:3])) if issues else ""
+
+
+def _legacy_review_tldr(review: dict[str, Any]) -> str:
+    verdict = str(review.get("verdict") or "completed").replace("_", " ")
+    role = str(review.get("role") or "review").replace("_", " ")
+    return _compact_tldr(
+        f"The {role} returned {verdict}; this legacy review stored no narrative synopsis."
+    )
 
 
 def rich_experiment_state(

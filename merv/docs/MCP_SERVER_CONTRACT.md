@@ -193,8 +193,9 @@ reflecting -> synthesizing -> reflection_review -> published
 
 - `reflection.create` snapshots the corpus and requires exactly five lenses:
   `amplify`, `avoid`, `entropy`, and two project-specific lenses.
-- `submit_reflections` requires a separately submitted, non-empty
-  `reflection_lens_doc` for every roster lens.
+- `submit_reflections` requires a separately submitted `reflection_lens_doc`
+  for every roster lens. Each pinned Markdown document must contain a non-empty
+  `Summary` section, which supplies its TLDR in macro reflection views.
 - `submit_reflection_artifacts` requires a valid `project_graph`, concise
   `reflection_doc`, and materializable `change_spec`.
 - `publish` requires a passing `reflection_reviewer` review, then applies claim
