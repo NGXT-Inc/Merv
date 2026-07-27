@@ -82,12 +82,14 @@ the experiment. The long-poll cap is 300s server-side, but most MCP clients cut
 tool calls around ~60s; unless you know your client's tool timeout is higher,
 pass `wait_seconds<=45` (the same bound `sandbox.request` uses) and call again.
 Run-oriented sandbox responses include compact receipts; `sandbox.runs` is the
-authoritative status/readback call, and each of its rows carries the `wait_url`
-that lets a client be *woken* by the run instead of polling for it.
+authoritative status/readback call, and on HTTP surfaces configured with a wait
+key its rows carry the `wait_url` that lets a client be *woken* by the run
+instead of polling for it.
 
 ## Waking on run completion
 
-Every `sandbox.runs` row carries a `wait_url`: a per-run URL signed for exactly
+On the hosted and local HTTP surfaces (any composition holding a wait key),
+each `sandbox.runs` row carries a `wait_url`: a per-run URL signed for exactly
 that `(sandbox_uid, label)` pair, served by an auth-exempt route, so an agent
 can wait on a run without holding a credential. It reveals only that the run
 ended and how (`status`, `exit_code`) — logs, outputs and receipts stay behind
@@ -141,7 +143,7 @@ The exit code is the state, in both modes:
 | 0 | `done` | terminal observation — read `status=`/`exit_code=` on the line; exit 0 never means the workload succeeded |
 | 2 | `still_running` | the server's hold cap (60 min) or `--deadline` elapsed; re-arm the same command |
 | 3 | `poll_error` | the wait itself failed (transport, auth, rate limit); read truth with one authenticated `sandbox.runs`, then re-arm |
-| 4 | `no_such_run` | the only conclusive absence — recheck the uid/label against the launch receipt |
+| 4 | `no_such_run` | absence OR an expired/rejected URL — in URL mode the run may still exist behind auth; read truth with one authenticated `sandbox.runs`, and conclude absence only when that row is missing past keyed registration grace |
 
 ## Packaging the client bundle (maintainers)
 

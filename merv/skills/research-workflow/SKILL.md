@@ -352,7 +352,7 @@ When it wakes you, branch on the final line:
 | 0 | `done` | the observation ended, not necessarily the work — read `status=` and `exit_code=` |
 | 2 | `still_running` | the hold cap or `--deadline` elapsed; nothing is wrong — re-arm the same command/URL immediately |
 | 3 | `poll_error` | transport or auth hiccup — make ONE authenticated `sandbox.runs` call to read truth, then re-arm |
-| 4 | `no_such_run` | the identity is absent past the registration grace — re-check `sandbox_uid` and label against the launch receipt before assuming loss |
+| 4 | `no_such_run` | keyed mode: absent past registration grace. URL mode: the URL may simply have expired while the run lives on — make ONE authenticated `sandbox.runs` call before concluding anything, and re-check `sandbox_uid` and label against the launch receipt |
 
 Inside `done`:
 
