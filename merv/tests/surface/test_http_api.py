@@ -703,8 +703,8 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
 
         with patch.object(
             self.app.transition_experiment,
-            "execute",
-            wraps=self.app.transition_experiment.execute,
+            "_execute",
+            wraps=self.app.transition_experiment._execute,
         ) as execute, patch.object(
             CentralMlflowService,
             "create_run",
