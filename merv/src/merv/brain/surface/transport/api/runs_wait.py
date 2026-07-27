@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -64,7 +63,14 @@ WAIT_LEASE_CEILING_SECONDS = 24 * 3600.0
 # concurrent waiters on one box, and its permit pool caps the real reads.
 WAIT_OBSERVE_MAX_AGE_SECONDS = 75.0
 WAIT_OBSERVE_ACQUIRE_SECONDS = 10.0
-WAIT_OBSERVE_WORKERS = 6
+WAIT_POOL_WORKERS = 6
+# The ledger read opens a synchronous connection (Postgres when hosted), so it
+# is bounded like every other blocking thing here: a database that does not
+# answer costs this wait its cycle, never the loop every heartbeat runs on.
+WAIT_FACTS_TIMEOUT_SECONDS = 5.0
+# ...but a run of unanswered cycles is a failure, and the caller is better off
+# re-arming its URL than heartbeating at a database that stopped talking.
+WAIT_FACTS_MAX_TIMEOUTS = 3
 
 _MAX_ECHO_CHARS = 128
 # The wire format is line-oriented and the label arrives as caller-controlled
@@ -130,14 +136,37 @@ class _StreamAdmission:
             return self._held
 
 
+class _Slot:
+    """One admission, given back by whichever path reaches it first.
+
+    Two paths must: the generator's finally, and the response's ASGI call for
+    the client that vanishes before the body is ever iterated. A resolved
+    stream runs both, so releasing twice must hand back nothing.
+    """
+
+    def __init__(self, *, signature: str) -> None:
+        self.signature = signature
+        self._guard = threading.Lock()
+        self._held = True
+
+    def release(self) -> None:
+        with self._guard:
+            if not self._held:
+                return
+            self._held = False
+        _ADMISSION.release(signature=self.signature)
+
+
 _BUCKET = _TokenBucket(
     capacity=BUCKET_CAPACITY, per_second=BUCKET_REFILL_PER_SECOND
 )
 _ADMISSION = _StreamAdmission()
-# Its own pool: a receipt read blocks its thread for up to the acquire budget,
-# and starving the request threadpool of workers would stall unrelated routes.
-_OBSERVE_POOL = ThreadPoolExecutor(
-    max_workers=WAIT_OBSERVE_WORKERS, thread_name_prefix="merv-wait-observe"
+# Its own pool: every blocking thing a wait does runs here — the receipt read
+# blocks its thread for up to the acquire budget, and the ledger read is a
+# synchronous connection — and starving the request threadpool of workers
+# would stall unrelated routes.
+_WAIT_POOL = ThreadPoolExecutor(
+    max_workers=WAIT_POOL_WORKERS, thread_name_prefix="merv-wait"
 )
 
 
@@ -171,6 +200,25 @@ def _plain(body: str, *, status_code: int) -> Response:
         media_type="text/plain",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+class _WaitStream(StreamingResponse):
+    """A hold that gives its slot back even when the body never starts.
+
+    Starlette only begins iterating the generator once the response has begun,
+    so a client that disappears while the headers go out never reaches the
+    generator's finally. The ASGI call is the one context that always runs.
+    """
+
+    def __init__(self, generator, *, slot: _Slot, **kwargs) -> None:
+        super().__init__(generator, **kwargs)
+        self.slot = slot
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.slot.release()
 
 
 def _verdict(*, facts: dict | None, now: datetime) -> _Verdict:
@@ -219,37 +267,64 @@ def _observe(*, sandboxes: SandboxFacade, sandbox_uid: str) -> None:
         return
 
 
+async def _facts(
+    *, sandboxes: SandboxFacade, sandbox_uid: str, label: str
+) -> dict | None:
+    """The ledger read every wait makes, off the loop and time-bounded.
+
+    Raises ``TimeoutError`` when the database did not answer in the budget;
+    the caller decides whether that is one lost cycle or the end of the hold.
+    """
+    loop = asyncio.get_running_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(
+            _WAIT_POOL,
+            lambda: sandboxes.runs_ledger.wait_facts(
+                sandbox_uid=sandbox_uid, label=label
+            ),
+        ),
+        timeout=WAIT_FACTS_TIMEOUT_SECONDS,
+    )
+
+
 def build_router(
     *, sandboxes: SandboxFacade, secret: bytes | None = None
 ) -> APIRouter:
-    """Mount the wait route. A composition that names no durable key still
-    signs, but its URLs die with the process; both deployments name one."""
-    key = secret if secret else secrets.token_bytes(32)
+    """Mount the wait route, but only for a composition that named a key.
+
+    A process-lifetime key would sign URLs that stop verifying at the next
+    restart, so no key is no route: every composition that means to serve
+    waits loads one explicitly, and a hosted one that named none fails its
+    boot rather than handing agents URLs that quietly die.
+    """
     api_router = APIRouter()
+    if not secret:
+        return api_router
 
     @api_router.get(WAIT_ROUTE_PREFIX + "{sandbox_uid}/{label}/{sig}")
-    def wait_for_run(sandbox_uid: str, label: str, sig: str) -> Response:
+    async def wait_for_run(sandbox_uid: str, label: str, sig: str) -> Response:
         echo = _echo(label)
         if not _BUCKET.take():
             return _plain(_line("poll_error", echo, "rate_limited"), status_code=429)
         # The MAC decides before anything is looked up: a forged tag costs one
         # HMAC and touches no row, so this endpoint is not a sandbox probe.
         if not wait_signature_matches(
-            key=key, sandbox_uid=sandbox_uid, label=label, presented=sig
+            key=secret, sandbox_uid=sandbox_uid, label=label, presented=sig
         ):
             return _plain(_line("no_such_run", echo), status_code=410)
         if not _ADMISSION.acquire(signature=sig):
             return _plain(_line("poll_error", echo, "rate_limited"), status_code=429)
+        slot = _Slot(signature=sig)
         try:
-            facts = sandboxes.runs_ledger.wait_facts(
-                sandbox_uid=sandbox_uid, label=label
+            facts = await _facts(
+                sandboxes=sandboxes, sandbox_uid=sandbox_uid, label=label
             )
             opening = _verdict(facts=facts, now=datetime.now(tz=UTC))
         except Exception:  # noqa: BLE001 — the slot must not leak on a bad read
-            _ADMISSION.release(signature=sig)
+            slot.release()
             return _plain(_line("poll_error", echo), status_code=500)
         if opening.state == "gone":
-            _ADMISSION.release(signature=sig)
+            slot.release()
             return _plain(_line("no_such_run", echo), status_code=410)
 
         async def hold(first: dict | None):
@@ -257,6 +332,7 @@ def build_router(
             started = loop.time()
             beat = started - WAIT_HEARTBEAT_SECONDS
             facts = first
+            timeouts = 0
             try:
                 while True:
                     verdict = _verdict(facts=facts, now=datetime.now(tz=UTC))
@@ -284,7 +360,7 @@ def build_router(
                     try:
                         await asyncio.wait_for(
                             loop.run_in_executor(
-                                _OBSERVE_POOL,
+                                _WAIT_POOL,
                                 lambda: _observe(
                                     sandboxes=sandboxes, sandbox_uid=sandbox_uid
                                 ),
@@ -294,18 +370,27 @@ def build_router(
                     except (asyncio.TimeoutError, RuntimeError):
                         pass  # a saturated pool must not stall the heartbeat
                     await asyncio.sleep(WAIT_POLL_SECONDS)
-                    facts = sandboxes.runs_ledger.wait_facts(
-                        sandbox_uid=sandbox_uid, label=label
-                    )
+                    try:
+                        facts = await _facts(
+                            sandboxes=sandboxes, sandbox_uid=sandbox_uid, label=label
+                        )
+                        timeouts = 0
+                    except asyncio.TimeoutError:
+                        timeouts += 1
+                        if timeouts >= WAIT_FACTS_MAX_TIMEOUTS:
+                            raise
+                        # One unanswered read is a lost cycle, not an answer:
+                        # keep the facts from last time and ask again.
             except Exception:  # noqa: BLE001 — say so rather than die silent
                 yield _line("poll_error", echo)
             finally:
                 # Also the disconnect path: a closed generator lands here, and
                 # a slot a vanished client still holds is a slot lost forever.
-                _ADMISSION.release(signature=sig)
+                slot.release()
 
-        return StreamingResponse(
+        return _WaitStream(
             hold(facts),
+            slot=slot,
             media_type="text/plain",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )

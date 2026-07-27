@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 from urllib.parse import quote
 
@@ -40,6 +42,8 @@ from merv.brain.surface.config import (
 from merv.brain.surface.transport.api import runs_wait
 from merv.brain.surface.transport.api.shared import redact_upload_tokens
 from merv.brain.surface.transport.http_api import create_fastapi_app
+from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
+from merv.brain.surface.transport.http_server import make_http_server
 from tests.support.brain import TestBrain
 
 
@@ -462,7 +466,141 @@ class WaitEndpointTest(unittest.TestCase):
     def test_a_client_that_walks_away_gives_its_slot_back(self) -> None:
         # Driven at the ASGI seam because TestClient buffers: the first body
         # chunk fails to send, exactly as a vanished client's socket does.
-        url = self._url(label="seed0")
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body" and message.get("body"):
+                raise OSError("client went away")
+
+        self.assertEqual(self._drive_wait(label="seed0", send=send), 0)
+
+    def test_a_client_that_vanishes_before_the_stream_starts_gives_it_back(self) -> None:
+        """The leak: Starlette iterates the generator only once the response
+        has BEGUN, so a client already gone while the headers are still going
+        out never reaches the generator's finally, and two of those per valid
+        signature ate that URL's whole budget for the life of the process.
+
+        Driven against the response itself — the ASGI call is the one context
+        that runs whether or not the body ever starts."""
+        async def send(message: dict) -> None:
+            await asyncio.Event().wait()  # the headers never land
+
+        async def gone() -> dict:
+            return {"type": "http.disconnect"}
+
+        async def drive() -> int:
+            response = await self._endpoint(label="seed0")
+            self.assertEqual(runs_wait._ADMISSION.held(), 1)
+            await response({"type": "http"}, gone, send)
+            return runs_wait._ADMISSION.held()
+
+        with patch.multiple(
+            runs_wait,
+            WAIT_POLL_SECONDS=0.02,
+            WAIT_HEARTBEAT_SECONDS=0.0,
+            WAIT_HOLD_CAP_SECONDS=30.0,
+        ):
+            self.assertEqual(asyncio.run(drive()), 0)
+
+    def test_a_stream_that_resolves_hands_back_exactly_one_slot(self) -> None:
+        """Resolution runs BOTH finallys — the generator's and the response's
+        ASGI call — so the release is once-only. A slot handed back twice is
+        another waiter's slot, and the ceiling stops meaning anything."""
+        self._mirror({"label": "seed0", "exit_code": 0, "finished_at": "2026-07-27T10:05:00Z"})
+        self.assertTrue(runs_wait._ADMISSION.acquire(signature="another-wait"))
+        self.assertEqual(self.client.get(self._url(label="seed0")).status_code, 200)
+        self.assertEqual(runs_wait._ADMISSION.held(), 1)
+        slot = runs_wait._Slot(signature="another-wait")
+        slot.release()
+        slot.release()
+        self.assertEqual(runs_wait._ADMISSION.held(), 0)
+
+    def test_a_refused_request_never_took_a_slot(self) -> None:
+        self.client.get(self._url(label="seed0", sig="3" * 32))
+        self._assert_slots_free()
+
+    # ---------- the loop the stream runs on ----------
+
+    def test_a_slow_ledger_read_costs_its_own_cycle_and_nothing_else(self) -> None:
+        """wait_facts opens a synchronous connection (Postgres when hosted), so
+        reading it inline would freeze every heartbeat in the process — and
+        every unrelated request — for as long as one database is slow."""
+        ledger = self.app.sandboxes.runs_ledger
+        answer = ledger.wait_facts
+        readers: list[str] = []
+
+        def slow(**kwargs) -> dict | None:
+            readers.append(threading.current_thread().name)
+            time.sleep(0.2)
+            return answer(**kwargs)
+
+        chunks: list[bytes] = []
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        async def send(message: dict) -> None:
+            if message["type"] == "http.response.body":
+                chunks.append(message.get("body", b""))
+
+        with patch.object(ledger, "wait_facts", side_effect=slow):
+            held = self._drive_wait(
+                label="not-yet", send=send, before=tick, hold_cap=0.6
+            )
+        self.assertEqual(held, 0)
+        # Whatever else the wait did, the loop kept running through the reads.
+        self.assertGreater(ticks, 10)
+        self.assertIn(b"# waiting ", b"".join(chunks))
+        # The pool this module owns, never the thread the event loop is on.
+        self.assertTrue(readers)
+        for reader in readers:
+            self.assertTrue(reader.startswith("merv-wait"), reader)
+
+    # ---------- no key, no route ----------
+
+    def test_a_composition_that_named_no_key_mounts_no_wait_route(self) -> None:
+        """An unsigned URL is not a capability and a process-lifetime key is a
+        URL that dies at the next restart, so absence is not a fallback."""
+        client = TestClient(create_fastapi_app(self.app.http))
+        with patch.object(
+            runs_wait._ADMISSION, "acquire", side_effect=AssertionError("admitted")
+        ):
+            response = client.get(self._url(label="seed0"))
+        self.assertEqual(response.status_code, 404)
+
+    async def _endpoint(self, *, label: str):
+        """The route's own response object, before any middleware wraps it."""
+        route = runs_wait.build_router(
+            sandboxes=self.app.sandboxes, secret=SECRET
+        ).routes[0]
+        return await route.endpoint(
+            sandbox_uid=self.sandbox_uid,
+            label=label,
+            sig=wait_signature(
+                key=SECRET, sandbox_uid=self.sandbox_uid, label=label
+            ),
+        )
+
+    def _drive_wait(
+        self,
+        *,
+        label: str,
+        send,
+        receive=None,
+        before=None,
+        hold_cap: float = 30.0,
+    ) -> int:
+        """One wait driven at the ASGI seam, since TestClient buffers.
+
+        Returns the slots still held THE MOMENT the request is over, read on
+        the loop: ``asyncio.run`` closes stray async generators on its way out
+        and would otherwise hand back a slot nothing in the process ever did.
+        ``before`` is a coroutine started on that same loop, which is how a
+        stream that froze it is told apart from one that only froze itself.
+        """
+        url = self._url(label=label)
         scope = {
             "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
             "method": "GET", "scheme": "http", "path": url,
@@ -471,27 +609,31 @@ class WaitEndpointTest(unittest.TestCase):
             "client": ("127.0.0.1", 4444), "server": ("testserver", 80),
         }
 
-        async def receive() -> dict:
+        async def request() -> dict:
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        async def send(message: dict) -> None:
-            if message["type"] == "http.response.body" and message.get("body"):
-                raise OSError("client went away")
-
         app = create_fastapi_app(self.app.http, wait_secret=SECRET)
+        held = -1
+
+        async def drive() -> None:
+            nonlocal held
+            companion = None if before is None else asyncio.create_task(before())
+            try:
+                with contextlib.suppress(BaseException):  # a gone client raises
+                    await app(scope, receive or request, send)
+                held = runs_wait._ADMISSION.held()
+            finally:
+                if companion is not None:
+                    companion.cancel()
+
         with patch.multiple(
             runs_wait,
             WAIT_POLL_SECONDS=0.02,
             WAIT_HEARTBEAT_SECONDS=0.0,
-            WAIT_HOLD_CAP_SECONDS=30.0,
+            WAIT_HOLD_CAP_SECONDS=hold_cap,
         ):
-            with self.assertRaises(BaseException):
-                asyncio.run(app(scope, receive, send))
-        self._assert_slots_free()
-
-    def test_a_refused_request_never_took_a_slot(self) -> None:
-        self.client.get(self._url(label="seed0", sig="3" * 32))
-        self._assert_slots_free()
+            asyncio.run(drive())
+        return held
 
     def _await_held(self, count: int) -> None:
         deadline = time.monotonic() + 10.0
@@ -565,6 +707,105 @@ class WaitCompositionTest(unittest.TestCase):
             self.assertTrue(path.is_file())
             self.assertGreaterEqual(len(path.read_bytes()), MIN_WAIT_SECRET_BYTES)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class WaitServerCompositionTest(unittest.TestCase):
+    """The programmatic uvicorn wrapper is a composition root too.
+
+    It keeps no state root, so its key is whatever the environment names —
+    and it must load it through the same contract rather than mint one that
+    dies with the process.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        repo = Path(self.tmp.name)
+        self.fake = FakeSandboxBackend()
+        self.brain = TestBrain(
+            repo_root=repo,
+            db_path=repo / ".research_plugin" / "state.sqlite",
+            execution_backend=self.fake,
+        )
+        project_id = self.brain.call_tool(
+            "project", {"action": "create", "name": "Waits"}
+        )["id"]
+        experiment_id = self.brain.call_tool(
+            "experiment.create",
+            {"project_id": project_id, "name": "wrapped", "intent": "x"},
+        )["id"]
+        with self.brain.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?",
+                (experiment_id,),
+            )
+        view = self.brain.call_tool(
+            "sandbox.request",
+            {"project_id": project_id, "experiment_id": experiment_id},
+        )
+        self.sandbox_uid = view["sandbox_uid"]
+        row = self.brain.sandboxes.repository.get_by_uid(sandbox_uid=self.sandbox_uid)
+        self.fake.run_listings[str(row["sandbox_id"])] = _listing(
+            {"label": "seed0", "exit_code": 0, "finished_at": "2026-07-27T10:05:00Z"}
+        )
+        self.brain.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+        # Module singletons are process-wide by design; each test starts clean.
+        runs_wait._ADMISSION = runs_wait._StreamAdmission()
+        runs_wait._BUCKET = runs_wait._TokenBucket(
+            capacity=runs_wait.BUCKET_CAPACITY,
+            per_second=runs_wait.BUCKET_REFILL_PER_SECOND,
+        )
+
+    def tearDown(self) -> None:
+        self.brain.shutdown()
+        self.tmp.cleanup()
+
+    def _serve(self, **kwargs) -> Any:
+        server = make_http_server(self.brain, port=0, **kwargs)
+        self.addCleanup(server.server_close)
+        return server
+
+    def _wait(self, server: Any, *, key: bytes):
+        tag = wait_signature(key=key, sandbox_uid=self.sandbox_uid, label="seed0")
+        return TestClient(server.fastapi_app).get(
+            f"/wait/{self.sandbox_uid}/seed0/{tag}"
+        )
+
+    def test_the_env_key_is_what_the_wrapper_signs_with_and_it_survives_a_rebuild(
+        self,
+    ) -> None:
+        # The bug: the wrapper named no key at all, so MERV_WAIT_SECRET sitting
+        # right there in its env was ignored and every URL died with the
+        # process. Two constructions is the restart an agent's URL must cross.
+        key = b"e" * 40
+        env = {WAIT_SECRET_ENV_VAR: key.decode("ascii")}
+        for _ in range(2):
+            response = self._wait(self._serve(env=env), key=key)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.text,
+                "MERV_RUNS_WAIT done seed0 status=finished exit_code=0\n",
+            )
+        # And it is that key, not any key: another one is the 410 non-answer.
+        self.assertEqual(
+            self._wait(self._serve(env=env), key=b"f" * 40).status_code, 410
+        )
+
+    def test_a_hosted_wrapper_without_the_key_fails_at_construction(self) -> None:
+        with self.assertRaises(ValidationError) as caught:
+            make_http_server(
+                self.brain,
+                host="0.0.0.0",
+                port=0,
+                surface_policy=HttpSurfacePolicy.for_surface(
+                    restrict_cors=True, hosted_control=True
+                ),
+                env={"MERV_ALLOW_OPEN_CONTROL": "1"},
+            )
+        self.assertIn(WAIT_SECRET_ENV_VAR, caught.exception.message)
+
+    def test_a_local_wrapper_with_no_key_serves_no_wait_route(self) -> None:
+        response = self._wait(self._serve(env={}), key=b"e" * 40)
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":
