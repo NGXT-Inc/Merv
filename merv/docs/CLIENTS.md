@@ -81,21 +81,67 @@ Long sandbox work is client-neutral in core: launch with
 the experiment. The long-poll cap is 300s server-side, but most MCP clients cut
 tool calls around ~60s; unless you know your client's tool timeout is higher,
 pass `wait_seconds<=45` (the same bound `sandbox.request` uses) and call again.
+Run-oriented sandbox responses include compact receipts; `sandbox.runs` is the
+authoritative status/readback call, and each of its rows carries the `wait_url`
+that lets a client be *woken* by the run instead of polling for it.
 
-Optional per-client babysitting recipes — documentation only, nothing in core
-depends on them:
+## Waking on run completion
 
-- **Claude Code**: instead of blocking on a long-poll, start a background
-  shell task that watches the sentinel and let the client's native
-  background-task notification fire when it exits:
-  `ssh <host> 'until [ -f $MERV_EXPERIMENT_DIR/.runs/<label>/exit_code ]; do sleep 60; done'`
-  (run in the background). The turn ends immediately; the notification brings
-  the agent back, and one `sandbox.runs` call fetches the receipts.
-- **Other clients** (Codex, Cursor, Gemini CLI, OpenCode): no background-task
-  notification channel — end the turn after launching via merv_run and call
-  `sandbox.runs` when next attending the experiment. Run-oriented sandbox
-  responses include compact receipts; `sandbox.runs` is the authoritative
-  status/readback call.
+Every `sandbox.runs` row carries a `wait_url`: a per-run URL signed for exactly
+that `(sandbox_uid, label)` pair, served by an auth-exempt route, so an agent
+can wait on a run without holding a credential. It reveals only that the run
+ended and how (`status`, `exit_code`) — logs, outputs and receipts stay behind
+the authenticated tools — and it stops answering roughly six hours after the
+brain last observed a terminal run, or once the sandbox lease plus a day has
+passed. Anyone holding the URL can read that much, so treat it like a status
+pager rather than a secret: fine to hand to a local background process, not
+something to paste anywhere public.
+
+`bin/merv-runs-wait` (in the client bundle) is the portable watcher. It blocks
+until the run settles and its **exit** is the wake signal; stdout carries
+exactly one line, `MERV_RUNS_WAIT <state> <label> [status=... exit_code=...]`,
+with heartbeats confined to stderr. Arming it right after a launch is what
+keeps a finished run from billing idle until someone looks. Per-client
+recipes — documentation only, nothing in core depends on them:
+
+- **Claude Code**: run `merv-runs-wait --url <wait_url>` as a background Bash
+  task (`run_in_background`). The turn ends immediately; the task's exit fires
+  the client's native background-task notification and brings the agent back.
+  Works from subagents too. On a machine with no bundle, `curl -N <wait_url>`
+  streams the same final line, but the exit codes are curl's, not the
+  contract's.
+- **Cursor (3.0+)**: background shell with notify-on-output armed on the
+  sentinel regex `^MERV_RUNS_WAIT `; the shell's exit or the matched line
+  resumes the agent. If a long-idle reattach fails, re-run the watcher or fall
+  back to a stop-hook loop.
+- **Codex CLI**: run the watcher in the foreground blocking terminal (raise
+  `background_terminal_max_timeout` when holds outlast the default), or use a
+  background terminal plus an empty `write_stdin` poll, which unblocks the
+  instant the process exits.
+- **Kilo**: `background_process` with `ready.pattern` `^MERV_RUNS_WAIT `
+  (block-until-sentinel).
+- **No-shell surfaces** (Claude Desktop and similar MCP-only clients): no
+  watcher is possible. Long-poll `sandbox.runs` with `wait_seconds` and never
+  call tighter than 60s apart; abandoning that loop leaves the box billing with
+  nobody reading the receipts.
+
+Rows minted by surfaces that have no caller-reachable base URL or no wait key
+(library and direct callers) carry no `wait_url`. The same binary then polls
+`sandbox.runs` with `MERV_MCP_KEY` and produces the same final line:
+
+```bash
+merv-runs-wait --project-id <project_id> --sandbox-uid <sandbox_uid> \
+  --label <label> [--deadline 3600]
+```
+
+The exit code is the state, in both modes:
+
+| Exit | State | Meaning |
+|---|---|---|
+| 0 | `done` | terminal observation — read `status=`/`exit_code=` on the line; exit 0 never means the workload succeeded |
+| 2 | `still_running` | the server's hold cap (60 min) or `--deadline` elapsed; re-arm the same command |
+| 3 | `poll_error` | the wait itself failed (transport, auth, rate limit); read truth with one authenticated `sandbox.runs`, then re-arm |
+| 4 | `no_such_run` | the only conclusive absence — recheck the uid/label against the launch receipt |
 
 ## Packaging the client bundle (maintainers)
 
@@ -105,8 +151,9 @@ never runs. Claude Code copies a plugin's whole `source` tree on install (there
 is no `.claudeignore`), so clients should install a *slim* bundle instead.
 
 [`scripts/build_client_bundle.py`](../scripts/build_client_bundle.py) assembles
-that bundle (40 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
-+ its self-contained `src/merv/{client,shared}`, and the conformance probe) from
+that bundle (42 files: skills, agents, manifests, `.mcp.json`, `bin/merv-client`
+and `bin/merv-runs-wait` + their self-contained `src/merv/{client,shared}`, and
+the conformance probe) from
 the real sources — nothing is duplicated in git, and
 `tests/surface/test_client_bundle.py` fails if the backend or tests ever leak in
 or a new skill/agent is left out.

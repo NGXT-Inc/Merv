@@ -299,16 +299,88 @@ transcript for it. Launch it as
 `ssh ... 'merv_run <label> -- <command>'` (e.g. `merv_run seed0 -- python train.py
 --seed 0`): the run detaches, survives disconnects, logs to
 `.runs/<label>/log.txt`, and writes an `exit_code` sentinel when it finishes.
-Then long-poll `sandbox.runs(project_id, experiment_id, wait_seconds=...)`: it
+Then call `sandbox.runs(project_id, experiment_id, wait_seconds=...)`: it
 returns the moment a run reaches a terminal state, so the answer arrives within
 seconds of the run ending rather than at the next poll. Keep `wait_seconds<=45`
 unless your client's tool timeout is known to allow more.
 
+### Arm the watcher first
+
+**After a launch, arming a watcher is the next thing you do** — before more
+edits, before another tool call, before ending the turn. A run that ends with
+nobody watching bills until you happen to look.
+
+1. Launch with `merv_run <label> -- <command>`.
+2. Call `sandbox.runs`. If the new label is not listed yet, call again in a
+   short loop — the brain mirrors a receipt up to ~90s after `merv_run` writes
+   it, and each call is cheap.
+3. Take that row's `wait_url` (present on hosted and local HTTP surfaces).
+4. Arm your platform's background watcher on it.
+5. Only then continue other work or end the turn.
+
+`merv-runs-wait` — in the plugin bundle's `bin/`, run it by full path if it is
+not on your `PATH` — is the watcher. It blocks while the run runs, and its EXIT
+is the wake signal: stdout carries exactly one line,
+`MERV_RUNS_WAIT <state> <label> [status=... exit_code=...]`, and the exit code
+is the state. Heartbeats go to stderr; never read an answer out of them.
+
+- **Claude Code**: run `merv-runs-wait --url <wait_url>` as a background Bash
+  task (`run_in_background`). The task's exit re-invokes you, so the turn can
+  end immediately instead of holding a long-poll open; this works from
+  subagents too. With no bundle on the machine, `curl -N <wait_url>` streams
+  the same final line, but the exit codes are curl's rather than the
+  contract's — prefer the watcher.
+- **Cursor (3.0+)**: run it in a background shell with notify-on-output armed
+  on the sentinel regex `^MERV_RUNS_WAIT `. The shell's exit or the matched
+  line resumes you without a foreground block. If a long-idle reattach fails,
+  re-run the watcher or fall back to a stop-hook loop.
+- **Codex CLI**: run it in the foreground blocking terminal (raise
+  `background_terminal_max_timeout` in config when holds outlast the default),
+  or in a background terminal plus an empty `write_stdin` poll, which unblocks
+  the instant the process exits.
+- **Kilo**: `background_process` with `ready.pattern` set to
+  `^MERV_RUNS_WAIT `, which blocks until the sentinel line arrives.
+- **No-shell surfaces** (Claude Desktop and the like): no watcher is possible,
+  so loop on `sandbox.runs` with `wait_seconds` yourself and never call tighter
+  than 60s apart. Fabricating a completion or abandoning the loop loses the
+  run: the box keeps billing and nobody reads the receipts.
+
+When it wakes you, branch on the final line:
+
+| Exit | State | Next action |
+|---|---|---|
+| 0 | `done` | the observation ended, not necessarily the work — read `status=` and `exit_code=` |
+| 2 | `still_running` | the hold cap or `--deadline` elapsed; nothing is wrong — re-arm the same command/URL immediately |
+| 3 | `poll_error` | transport or auth hiccup — make ONE authenticated `sandbox.runs` call to read truth, then re-arm |
+| 4 | `no_such_run` | the identity is absent past the registration grace — re-check `sandbox_uid` and label against the launch receipt before assuming loss |
+
+Inside `done`:
+
+- `status=finished exit_code=0` — pull outputs and proceed.
+- `status=finished` with a nonzero `exit_code` — read the log, fix, relaunch.
+- `status=lost` or `status=unknown` — the box died or the observation failed.
+  Check `sandbox.get` and decide whether to relaunch; the status table below
+  says what each of those does and does not license.
+
+**Never treat `done` as workload success.** Exit 0 says the run reached a
+terminal state; only `exit_code=` says the work worked.
+
 **A sandbox bills continuously, so the gap between a run finishing and you next
 looking is paid for** — one measured incident burned 62 idle minutes on an H100.
-The long-poll only spans the current turn, so if you end the turn with a run in
-flight, that gap is on the meter until you return. Prefer chaining work into one
-`merv_run` over leaving a box idle between steps.
+The watcher exists so that YOU close that window: when it wakes you, pull
+outputs, launch the next tier, or release when the plan says so. Nothing
+releases a box automatically, by design — release stays your explicit decision
+under the two-step rule below. Prefer chaining work into one `merv_run` over
+leaving a box idle between steps.
+
+When a row carries no `wait_url` (direct or library surfaces that mint no
+signed URLs), use keyed mode with `MERV_MCP_KEY` exported — same final line,
+same exit codes:
+
+```bash
+merv-runs-wait --project-id <project_id> --sandbox-uid <sandbox_uid> \
+  --label <label> [--deadline 3600]
+```
 
 Read `status`, not just `exit_code`:
 
