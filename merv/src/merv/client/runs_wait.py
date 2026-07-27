@@ -104,7 +104,7 @@ class UsageError(Exception):
 
 
 class _Terminated(Exception):
-    """SIGTERM, in a shape this process can answer.
+    """SIGTERM or SIGHUP, in a shape this process can answer.
 
     Its default action is a silent 143 with an empty stdout — the one way a
     platform's own teardown can leave the watcher looking like a crash.
@@ -746,7 +746,7 @@ def _mute_std_streams() -> None:
 def _teardown(signum: int, frame: Any) -> None:  # noqa: ARG001 — signal hook
     """A teardown signal, once, in a shape this process can answer.
 
-    Deafening BOTH signals as the first one fires is the point: the raise
+    Deafening ALL teardown signals as the first one fires is the point: the raise
     lands wherever the main thread happens to stand, and a second one landing
     inside the clause already answering for the first would escape it — a
     traceback and exit 1 where the caller is blocked reading for a line.
@@ -779,7 +779,7 @@ def _arm_teardown() -> Callable[[], None]:
     only this handler disarms, and the two arrive by the same teardowns.
     Restoring matters because ``main`` is importable: a host process's own
     signal handling is not this function's to keep once the wait is over, and
-    the exit path deafened both.
+    the exit path deafened all of them.
     """
     previous: dict[int, Any] = {}
     # SIGHUP rides along: the exec'd shim has nothing in front of this process
