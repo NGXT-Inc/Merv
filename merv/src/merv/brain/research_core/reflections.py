@@ -164,7 +164,8 @@ class ReflectionService:
             (project_id,),
         ).fetchall()
         claim_rows = conn.execute(
-            "SELECT id, status FROM claims WHERE project_id = ? ORDER BY created_at, id",
+            "SELECT id, statement, status, confidence, scope FROM claims"
+            " WHERE project_id = ? ORDER BY created_at, id",
             (project_id,),
         ).fetchall()
         experiments = rows_to_dicts(rows=exp_rows)
@@ -301,7 +302,7 @@ class ReflectionService:
             )
             if include_content:
                 data["corpus"] = self._hydrate_corpus_content(
-                    corpus=data["corpus"]
+                    conn=conn, corpus=data["corpus"]
                 )
                 data["current_attempt_artifacts"] = (
                     self._hydrate_current_attempt_artifacts(
@@ -420,8 +421,13 @@ class ReflectionService:
             )
         return hydrated
 
-    def _hydrate_corpus_content(self, *, corpus: dict[str, Any]) -> dict[str, Any]:
+    def _hydrate_corpus_content(
+        self, *, conn, corpus: dict[str, Any]
+    ) -> dict[str, Any]:
         hydrated = dict(corpus)
+        hydrated["claims"] = self._backfill_claim_fields(
+            conn=conn, claims=corpus.get("claims") or []
+        )
         previous_lenses: dict[str, dict[str, Any]] = {}
         for lens_id, raw in (corpus.get("previous_lens_reflections") or {}).items():
             reference = (
@@ -453,6 +459,35 @@ class ReflectionService:
             if isinstance(experiment, dict)
         ]
         return hydrated
+
+    def _backfill_claim_fields(
+        self, *, conn, claims: list[Any]
+    ) -> list[dict[str, Any]]:
+        """Snapshots taken before claims carried text get it joined in live.
+
+        The claim SET stays pinned by the snapshot; a claim deleted since
+        keeps its snapshotted id and status.
+        """
+        rows = [dict(claim) for claim in claims if isinstance(claim, dict)]
+        missing = tuple(
+            str(row.get("id") or "") for row in rows if "statement" not in row
+        )
+        if not missing:
+            return rows
+        placeholders = ", ".join("?" for _ in missing)
+        live = {
+            str(record["id"]): record
+            for record in rows_to_dicts(
+                rows=conn.execute(
+                    "SELECT id, statement, confidence, scope FROM claims"
+                    f" WHERE id IN ({placeholders})",
+                    missing,
+                ).fetchall()
+            )
+        }
+        return [
+            {**live.get(str(row.get("id") or ""), {}), **row} for row in rows
+        ]
 
     def list_reflections(self, *, project_id: str | None = None) -> dict[str, Any]:
         with closing(self.store.connect()) as conn:

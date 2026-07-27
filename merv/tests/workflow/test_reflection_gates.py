@@ -1701,6 +1701,72 @@ class ReflectionSignalTest(unittest.TestCase):
         )
         return syn_id
 
+    def test_corpus_claims_carry_their_text(self) -> None:
+        claim_id = self.call(
+            "claim.create", project_id=self.project_id, statement="Bigger batches help."
+        )["id"]
+        self._finish_experiment(intent="claims corpus")
+        wave_id = self.call(
+            "reflection.create",
+            project_id=self.project_id,
+            title="Wave",
+            lenses=full_roster(),
+        )["id"]
+
+        claims = self.call(
+            "reflection.get", project_id=self.project_id, reflection_id=wave_id
+        )["corpus"]["claims"]
+
+        self.assertEqual(
+            claims,
+            [{
+                "id": claim_id,
+                "statement": "Bigger batches help.",
+                "status": "active",
+                "confidence": "medium",
+                "scope": "",
+            }],
+        )
+
+    def test_a_pre_claim_text_snapshot_is_backfilled_on_read(self) -> None:
+        claim_id = self.call(
+            "claim.create", project_id=self.project_id, statement="Bigger batches help."
+        )["id"]
+        self._finish_experiment(intent="old corpus shape")
+        wave_id = self.call(
+            "reflection.create",
+            project_id=self.project_id,
+            title="Wave",
+            lenses=full_roster(),
+        )["id"]
+        # Rewrite the stored snapshot to the pre-change shape: id + status only,
+        # plus a claim that no longer exists anywhere.
+        with self.app.store.transaction() as conn:
+            corpus = json.loads(
+                conn.execute(
+                    "SELECT corpus_json FROM reflections WHERE id = ?", (wave_id,)
+                ).fetchone()[0]
+            )
+            corpus["claims"] = [
+                {"id": claim_id, "status": "retired"},
+                {"id": "claim_gone", "status": "active"},
+            ]
+            conn.execute(
+                "UPDATE reflections SET corpus_json = ? WHERE id = ?",
+                (json.dumps(corpus, sort_keys=True), wave_id),
+            )
+
+        claims = self.call(
+            "reflection.get", project_id=self.project_id, reflection_id=wave_id
+        )["corpus"]["claims"]
+
+        # The live row fills in the text; the snapshotted status stays pinned.
+        self.assertEqual(claims[0]["statement"], "Bigger batches help.")
+        self.assertEqual(claims[0]["status"], "retired")
+        self.assertEqual(claims[0]["confidence"], "medium")
+        # A claim the snapshot alone remembers survives as it was captured.
+        self.assertEqual(claims[1], {"id": "claim_gone", "status": "active"})
+
     def test_corpus_delta_names_new_signal_and_previous_lens_reflections(self) -> None:
         first = self._finish_experiment(intent="first signal")
         wave1_id = self._publish_wave()
