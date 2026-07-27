@@ -15,10 +15,16 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
+import signal
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+import urllib.error
+from contextlib import redirect_stderr, redirect_stdout, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -105,10 +111,12 @@ class _Poller:
         self.views = list(views)
         self.holds = holds
         self.asked: list[int] = []
+        self.left: list[float] = []
         self.at: list[float] = []
 
-    def __call__(self, *, sandbox_uid: str, wait_seconds: int) -> dict:
+    def __call__(self, *, sandbox_uid: str, wait_seconds: int, remaining: float) -> dict:
         self.asked.append(wait_seconds)
+        self.left.append(remaining)
         self.at.append(self.clock.now)
         view = self.views[min(len(self.asked) - 1, len(self.views) - 1)]
         if self.holds:
@@ -122,16 +130,29 @@ class _Poller:
         return [b - a for a, b in zip(self.at, self.at[1:])]
 
 
-class _StubHandler(BaseHTTPRequestHandler):
-    """Replays a scripted status + line sequence, flushing as it goes."""
+class _Quiet(BaseHTTPRequestHandler):
+    """Shared plumbing: no access log, and every request is remembered."""
 
     protocol_version = "HTTP/1.0"  # close at the end: the client sees real EOF
 
-    def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler hook
+    def _record(self) -> None:
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.server.seen.append((self.path, self.headers.get("Authorization")))
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+class _StubHandler(_Quiet):
+    """Replays a scripted status + line sequence, flushing as it goes."""
+
+    def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler hook
+        self._record()
         status, lines = self.server.script
         self.send_response(status)
         self.send_header("Content-Type", "text/plain")
+        for name, value in self.server.headers_out.items():
+            self.send_header(name, value)
         self.end_headers()
         for line in lines:
             self.wfile.write(line.encode("utf-8"))
@@ -139,8 +160,63 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     do_POST = do_GET  # noqa: N815 — the tool wire is a POST
 
-    def log_message(self, *args) -> None:
-        pass
+
+class _HoldHandler(_Quiet):
+    """Heartbeats once, then holds — a real wait, stopped where a test wants."""
+
+    def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler hook
+        self._record()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"# waiting 20s\n")
+        self.wfile.flush()
+        _, tail = self.server.script
+        self.server.release.wait(30)
+        with suppress(OSError):
+            for line in tail:
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+
+
+class _DribbleHandler(_Quiet):
+    """An SSE answer that only ever keepalives.
+
+    This is the shape that resets a per-socket-operation timeout forever
+    without ever stating an outcome, so a read bounded only by the socket
+    never returns.
+    """
+
+    def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler hook
+        self._record()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        while not self.server.release.is_set():
+            with suppress(OSError):
+                self.wfile.write(b": tool call in progress\n\n")
+                self.wfile.flush()
+            self.server.release.wait(0.05)
+
+
+def _stub(test: unittest.TestCase, handler, status: int, lines, **headers):
+    """A scripted server on a real socket, torn down with the test."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.script = (status, list(lines))
+    server.headers_out = headers
+    server.seen = []  # (path, Authorization) per request it was handed
+    server.release = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    test.addCleanup(thread.join, 5)
+    test.addCleanup(server.shutdown)
+    test.addCleanup(server.release.set)
+    return server
+
+
+def _origin(server: ThreadingHTTPServer) -> str:
+    host, port = server.server_address
+    return f"http://{host}:{port}"
 
 
 class RunsWaitGrammarTest(unittest.TestCase):
@@ -169,15 +245,9 @@ class RunsWaitGrammarTest(unittest.TestCase):
 class RunsWaitUrlModeTest(unittest.TestCase):
     """The credential-free half: one GET, and the server's word is the answer."""
 
-    def _serve(self, status: int, lines: list[str]) -> str:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
-        server.script = (status, lines)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(thread.join, 5)
-        self.addCleanup(server.shutdown)
-        host, port = server.server_address
-        return f"http://{host}:{port}/wait/{UID}/seed0/deadbeef"
+    def _serve(self, status: int, lines: list[str], **headers) -> str:
+        server = _stub(self, _StubHandler, status, lines, **headers)
+        return f"{_origin(server)}/wait/{UID}/seed0/deadbeef"
 
     def test_heartbeats_are_progress_and_the_answer_is_relayed_verbatim(self) -> None:
         noted: list[str] = []
@@ -228,6 +298,50 @@ class RunsWaitUrlModeTest(unittest.TestCase):
     def test_a_state_this_client_cannot_act_on_is_not_relayed(self) -> None:
         line = watch_url(self._serve(200, ["MERV_RUNS_WAIT teapot seed0\n"]))
         self.assertEqual(line, "MERV_RUNS_WAIT poll_error seed0 malformed")
+
+    def test_a_line_that_is_not_a_whole_answer_is_not_an_answer(self) -> None:
+        # The state token is the cheapest part of the grammar to get right, so
+        # trusting it alone relays whatever a compromised or broken hop wrote:
+        # a `done` with no facts, or one that ends a run this waiter never named.
+        for served, why in (
+            ("MERV_RUNS_WAIT done\n", "no label at all"),
+            ("MERV_RUNS_WAIT done other status=finished exit_code=0\n", "another run"),
+            ("MERV_RUNS_WAIT still_running other\n", "another run, still running"),
+            ("MERV_RUNS_WAIT done seed0\n", "done without its facts"),
+            ("MERV_RUNS_WAIT done seed0 status=finished\n", "half the facts"),
+            ("MERV_RUNS_WAIT done seed0 status=finished exit_code=soon\n", "a junk code"),
+            ("MERV_RUNS_WAIT done seed0 status=running exit_code=none\n", "a live status"),
+            ("MERV_RUNS_WAIT done seed0 status=finished exit_code=0 and_more\n", "a tail"),
+        ):
+            with self.subTest(why=why):
+                line = watch_url(self._serve(200, [served]))
+                self.assertEqual(line, "MERV_RUNS_WAIT poll_error seed0 malformed")
+                self.assertEqual(runs_wait.exit_code_for(line), 3)
+
+    def test_the_answers_a_real_server_sends_all_still_relay(self) -> None:
+        # The validation is a grammar, not a whitelist of one line: every shape
+        # the wait route emits has to survive it.
+        for served in (
+            "MERV_RUNS_WAIT done seed0 status=finished exit_code=0",
+            "MERV_RUNS_WAIT done seed0 status=finished exit_code=137",
+            "MERV_RUNS_WAIT done seed0 status=lost exit_code=none",
+            "MERV_RUNS_WAIT done seed0 status=unknown exit_code=none",
+            "MERV_RUNS_WAIT still_running seed0",
+            "MERV_RUNS_WAIT poll_error seed0",
+            "MERV_RUNS_WAIT poll_error seed0 rate_limited",
+            "MERV_RUNS_WAIT no_such_run seed0",
+        ):
+            with self.subTest(served=served):
+                self.assertEqual(watch_url(self._serve(200, [served + "\n"])), served)
+
+    def test_a_redirect_is_refused_rather_than_followed(self) -> None:
+        answer = "MERV_RUNS_WAIT done seed0 status=lost exit_code=none\n"
+        leak = _stub(self, _StubHandler, 200, [answer])
+        url = self._serve(302, [], Location=f"{_origin(leak)}/wait/{UID}/seed0/deadbeef")
+        line = watch_url(url)
+        self.assertEqual(line, "MERV_RUNS_WAIT poll_error seed0 redirect")
+        self.assertEqual(runs_wait.exit_code_for(line), 3)
+        self.assertEqual(leak.seen, [])  # and the hop was never taken
 
     def test_a_dead_endpoint_is_a_poll_error_naming_the_run(self) -> None:
         line = watch_url(f"http://127.0.0.1:1/wait/{UID}/seed0/deadbeef")
@@ -405,6 +519,52 @@ class RunsWaitKeyedModeTest(unittest.TestCase):
         line = self._watch(poller, label="a b\nMERV_RUNS_WAIT done x")
         self.assertEqual(len(line.splitlines()), 1)
 
+    def test_every_call_is_handed_what_is_left_of_the_deadline(self) -> None:
+        # The deadline has to reach the call itself, not just the cadence: a
+        # call that only knows wait_seconds can outrun it by its own margin.
+        poller = _Poller(self.clock, [{"runs": [_row("seed0", "running")]}])
+        self._watch(poller, deadline=26.0)
+        self.assertEqual(poller.left[0], 26.0)
+        self.assertTrue(all(left > 0 for left in poller.left), poller.left)
+        self.assertEqual(
+            poller.left, [26.0 - (at - 1000.0) for at in poller.at]
+        )
+
+    def test_a_call_that_spends_the_deadline_hands_back_still_running(self) -> None:
+        # A registration poll asks the server to hold for nothing at all and
+        # can still block; when it comes back past the deadline the wait is
+        # over, and "the time ran out" is the answer — not the call's failure.
+        def _slow(*, sandbox_uid: str, wait_seconds: int, remaining: float) -> dict:
+            self.clock.now += remaining + 5.0  # the socket's last op, spent
+            raise PollError("transport")
+
+        line = watch_keyed(
+            sandbox_uid=UID, label="seed0", deadline=10.0, call=_slow,
+            sleep=self.clock.sleep, monotonic=self.clock.monotonic,
+        )
+        self.assertEqual(line, "MERV_RUNS_WAIT still_running seed0")
+        self.assertEqual(runs_wait.exit_code_for(line), 2)
+
+    def test_an_answer_that_arrived_late_is_still_an_answer(self) -> None:
+        # Being past the deadline never discards an outcome already observed:
+        # exit 0 is for a run this watcher SAW end, whenever the line landed.
+        def _late(*, sandbox_uid: str, wait_seconds: int, remaining: float) -> dict:
+            self.clock.now += remaining
+            return {"runs": [_row("seed0", "finished", exit_code=0)]}
+
+        line = watch_keyed(
+            sandbox_uid=UID, label="seed0", deadline=10.0, call=_late,
+            sleep=self.clock.sleep, monotonic=self.clock.monotonic,
+        )
+        self.assertEqual(line, "MERV_RUNS_WAIT done seed0 status=finished exit_code=0")
+
+    def test_a_poll_that_fails_inside_the_deadline_still_names_why(self) -> None:
+        # The still_running override is for the deadline, not a mask over it.
+        poller = _Poller(self.clock, [PollError("http_500")])
+        self.assertEqual(
+            self._watch(poller, deadline=600.0), "MERV_RUNS_WAIT poll_error seed0 http_500"
+        )
+
 
 class RunsWaitTransportTest(unittest.TestCase):
     """The tool-call envelope: both response shapes, and every refusal."""
@@ -446,16 +606,10 @@ class RunsWaitTransportTest(unittest.TestCase):
                 tool_view(body)
 
     def test_a_rejected_key_names_its_status_so_the_caller_can_tell(self) -> None:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
-        server.script = (401, ['{"detail":"unauthorized"}'])
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(thread.join, 5)
-        self.addCleanup(server.shutdown)
-        host, port = server.server_address
+        server = _stub(self, _StubHandler, 401, ['{"detail":"unauthorized"}'])
         with self.assertRaises(PollError) as caught:
             call_sandbox_runs(
-                control_url=f"http://{host}:{port}", key="mk_x", project_id="p",
+                control_url=_origin(server), key="mk_x", project_id="p",
                 sandbox_uid=UID, wait_seconds=0,
             )
         self.assertEqual(caught.exception.reason, "http_401")
@@ -467,6 +621,65 @@ class RunsWaitTransportTest(unittest.TestCase):
                 sandbox_uid=UID, wait_seconds=0,
             )
         self.assertEqual(caught.exception.reason, "transport")
+
+    def test_a_redirect_never_carries_the_key_to_wherever_it_points(self) -> None:
+        # urllib follows 3xx by default and takes the Authorization header
+        # along, so one misconfigured hop would disclose MERV_MCP_KEY to
+        # whatever answered. The control URL is canonical: refuse instead.
+        leak = _stub(self, _StubHandler, 200, ['{"jsonrpc":"2.0","id":1,"result":{}}'])
+        server = _stub(self, _StubHandler, 302, [], Location=f"{_origin(leak)}/mcp")
+        with self.assertRaises(PollError) as caught:
+            call_sandbox_runs(
+                control_url=_origin(server), key="mk_secret", project_id="p",
+                sandbox_uid=UID, wait_seconds=0,
+            )
+        # Measured before the fix: the hop's target logged `Bearer mk_secret`.
+        self.assertEqual(leak.seen, [])
+        self.assertEqual([auth for _, auth in server.seen], ["Bearer mk_secret"])
+        self.assertEqual(caught.exception.reason, "redirect")
+        refused = final_line("poll_error", "seed0", "redirect")
+        self.assertEqual(runs_wait.exit_code_for(refused), 3)
+
+    def test_the_socket_never_gets_a_timeout_longer_than_the_budget(self) -> None:
+        seen: list[float] = []
+
+        class _Refuses:
+            def open(self, request, timeout=None):
+                seen.append(timeout)
+                raise urllib.error.URLError("nope")
+
+        # wait_seconds + margin is the ceiling, what is left of the deadline is
+        # the floor, and a registration call inherits the deadline, not the 30s.
+        with patch.object(runs_wait, "_OPENER", _Refuses()):
+            for wait_seconds, remaining, expected in (
+                (45, 600.0, 75.0), (45, 10.0, 15.0), (0, 10.0, 15.0), (0, None, 30.0)
+            ):
+                with self.subTest(remaining=remaining), self.assertRaises(PollError):
+                    call_sandbox_runs(
+                        control_url="http://brain.test", key="mk_x", project_id="p",
+                        sandbox_uid=UID, wait_seconds=wait_seconds, remaining=remaining,
+                    )
+                self.assertEqual(seen[-1], expected)
+
+    def test_a_stream_that_only_keepalives_cannot_outlive_the_deadline(self) -> None:
+        # urllib's timeout is per socket OPERATION, so keepalive bytes reset it
+        # forever: without a wall clock over the read, this watcher never wakes.
+        server = _stub(self, _DribbleHandler, 200, [])
+        deadline = 2.0
+        started = time.monotonic()
+        line = watch_keyed(
+            sandbox_uid=UID,
+            label="seed0",
+            deadline=deadline,
+            call=lambda **kwargs: call_sandbox_runs(
+                control_url=_origin(server), key="mk_x", project_id="p", **kwargs
+            ),
+        )
+        spent = time.monotonic() - started
+        self.assertEqual(line, "MERV_RUNS_WAIT still_running seed0")
+        self.assertEqual(runs_wait.exit_code_for(line), 2)
+        self.assertGreaterEqual(spent, deadline)
+        self.assertLess(spent, deadline + runs_wait.KEYED_OVERRUN_SECONDS)
 
 
 class RunsWaitEndToEndTest(unittest.TestCase):
@@ -622,6 +835,69 @@ class RunsWaitCliTest(unittest.TestCase):
         self.assertEqual(seen["control_url"], "https://brain.example.test")
         self.assertEqual(seen["key"], "mk_secret")
         self.assertEqual(seen["project_id"], "p1")
+
+
+class RunsWaitProcessTest(unittest.TestCase):
+    """The artifact itself: a real process, and every way out of it.
+
+    In-process tests can pin what ``main`` returns; only a real one can pin
+    what the platform actually observes — the exit code the OS reports, and
+    what survives on stdout when the parent has already walked away.
+    """
+
+    def _argv(self, *args: str) -> list[str]:
+        return [sys.executable, "-m", "merv.client.runs_wait", *args]
+
+    def _env(self) -> dict[str, str]:
+        return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+
+    def _held(self, *lines: str) -> tuple[str, ThreadingHTTPServer]:
+        """A wait URL that really holds, and the server that ends the holding."""
+        server = _stub(self, _HoldHandler, 200, lines)
+        return f"{_origin(server)}/wait/{UID}/seed0/deadbeef", server
+
+    def _spawn(self, url: str) -> subprocess.Popen:
+        proc = subprocess.Popen(
+            self._argv("--url", url), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=self._env(),
+        )
+        self.addCleanup(proc.kill)
+        # The heartbeat is the handshake: it says the watcher is really waiting
+        # and has written nothing to stdout yet.
+        self.assertTrue(proc.stderr.readline().startswith("# waiting"))
+        return proc
+
+    def test_help_is_an_answer_on_the_wake_channel_like_any_other(self) -> None:
+        # `-h` used to print to stdout and exit 0 — indistinguishable from an
+        # observed terminal run by exit code, with no grammar line to read.
+        result = subprocess.run(
+            self._argv("--help"), capture_output=True, text=True,
+            env=self._env(), timeout=60,
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ usage"])
+        self.assertIn("usage: merv-runs-wait", result.stderr)
+
+    def test_an_interrupt_leaves_through_the_grammar_and_names_the_run(self) -> None:
+        url, _ = self._held()
+        proc = self._spawn(url)
+        proc.send_signal(signal.SIGINT)
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 interrupted"])
+
+    def test_a_parent_that_hung_up_still_gets_the_code_it_earned(self) -> None:
+        # The exit code is the half of the wake signal a dead pipe cannot eat:
+        # a BrokenPipeError on the final write must not replace it.
+        url, server = self._held("MERV_RUNS_WAIT done seed0 status=finished exit_code=0\n")
+        proc = self._spawn(url)
+        proc.stdout.close()  # the parent shell went away mid-wait
+        server.release.set()  # and only now does the answer arrive
+        self.assertEqual(proc.wait(timeout=60), 0)
+        err = proc.stderr.read()
+        proc.stderr.close()
+        self.assertNotIn("BrokenPipeError", err)
+        self.assertNotIn("Traceback", err)
 
 
 if __name__ == "__main__":
