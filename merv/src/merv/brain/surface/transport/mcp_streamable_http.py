@@ -58,6 +58,10 @@ SERVER_INSTRUCTIONS = (
 # 400 (spec 2025-06-18); an absent header defaults to the negotiated version.
 SUPPORTED_MCP_PROTOCOL_VERSIONS = frozenset({MCP_PROTOCOL_VERSION})
 MAX_MCP_REQUEST_BODY_BYTES = 36_000_000
+# Past this size the compact one-line result defeats every line-oriented reader
+# on the agent side: Read cannot page a single giant line, and head/tail/grep
+# see nothing. Indenting lands the top-level structure on its own lines.
+PRETTY_RESULT_THRESHOLD_BYTES = 32 * 1024
 _FAST_CALL_SECONDS = 0.05
 _PROGRESS_INTERVAL_SECONDS = 10.0
 
@@ -145,8 +149,13 @@ def _sse_message(payload: JsonObject) -> str:
 
 
 def _tool_result(result: JsonObject) -> JsonObject:
+    # Only the inner text gains newlines; the envelope escapes them, so SSE
+    # framing is untouched.
+    text = json.dumps(result, sort_keys=True)
+    if len(text) > PRETTY_RESULT_THRESHOLD_BYTES:
+        text = json.dumps(result, sort_keys=True, indent=1)
     return {
-        "content": [{"type": "text", "text": json.dumps(result, sort_keys=True)}],
+        "content": [{"type": "text", "text": text}],
         "structuredContent": result,
     }
 

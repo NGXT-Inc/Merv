@@ -246,8 +246,10 @@ def payload_chars(*, value: Any) -> int:
     """Length (in chars) of a value serialized the way the agent sees it.
 
     Matches HTTP MCP's `json.dumps(result, sort_keys=True)` so the count is
-    the true size of the JSON text that enters the agent's context. Returns 0 on
-    any serialization failure rather than raising — this is telemetry.
+    the true size of the JSON text that enters the agent's context. Results past
+    PRETTY_RESULT_THRESHOLD_BYTES go out indented, so this measures their payload
+    and not the added whitespace. Returns 0 on any serialization failure rather
+    than raising — this is telemetry.
     """
     try:
         return len(json.dumps(jsonable(value=value), sort_keys=True))

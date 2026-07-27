@@ -28,7 +28,10 @@ from merv.brain import __version__
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.mcp_http import register_mcp_routes
-from merv.brain.surface.transport.mcp_streamable_http import SERVER_INSTRUCTIONS
+from merv.brain.surface.transport.mcp_streamable_http import (
+    PRETTY_RESULT_THRESHOLD_BYTES,
+    SERVER_INSTRUCTIONS,
+)
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -454,6 +457,104 @@ class McpStreamableHttpProgressTest(unittest.TestCase):
             frames[-1]["result"]["structuredContent"],
             {"ok": True, "name": "slow.tool"},
         )
+
+
+class McpStreamableResultSerializationTest(unittest.TestCase):
+    """A big result on a single line defeats every incremental reader the agent
+    has (Read cannot page one giant line; head/tail/grep see nothing), so results
+    past the threshold go out indented. Smaller ones keep the exact compact bytes
+    clients have always received."""
+
+    SMALL = {"ok": True, "b": 2, "a": [1, 2, 3]}
+    SLOW_SECONDS = 0.15
+
+    @staticmethod
+    def _large() -> dict[str, Any]:
+        return {
+            "rows": [
+                {"id": index, "name": f"row-{index}", "note": "n" * 40}
+                for index in range(800)
+            ]
+        }
+
+    def setUp(self) -> None:
+        app = FastAPI()
+
+        def call_tool(name, arguments, context, request):
+            if name == "small.tool":
+                return self.SMALL
+            if name == "slow.large":
+                time.sleep(self.SLOW_SECONDS)
+            return self._large()
+
+        register_mcp_routes(
+            app,
+            list_tools=lambda: [
+                {"name": "small.tool"},
+                {"name": "large.tool"},
+                {"name": "slow.large"},
+            ],
+            call_tool=call_tool,
+        )
+        self.client = TestClient(app)
+        self.mcp = _McpClient(self.client)
+        self.mcp.initialize()
+
+    def test_small_result_keeps_the_compact_bytes(self) -> None:
+        response = self.mcp.request("tools/call", {"name": "small.tool"})
+        self.assertEqual(response.status_code, 200, response.text)
+        text = response.json()["result"]["content"][0]["text"]
+        self.assertEqual(text, json.dumps(self.SMALL, sort_keys=True))
+        self.assertNotIn("\n", text)
+
+    def test_large_result_gains_newlines_inside_a_one_line_envelope(self) -> None:
+        large = self._large()
+        self.assertGreater(
+            len(json.dumps(large, sort_keys=True)), PRETTY_RESULT_THRESHOLD_BYTES
+        )
+        response = self.mcp.request("tools/call", {"name": "large.tool"})
+        self.assertEqual(response.status_code, 200, response.text)
+        text = response.json()["result"]["content"][0]["text"]
+        self.assertIn("\n", text)
+        self.assertEqual(json.loads(text), large)
+        self.assertEqual(response.json()["result"]["structuredContent"], large)
+        # The envelope holds the text as a JSON string, so its newlines are
+        # escaped and the HTTP body itself stays a single line.
+        self.assertNotIn(b"\n", response.content)
+
+    def test_streamed_large_result_keeps_the_sse_frame_on_one_line(self) -> None:
+        response = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "tools/call",
+                "params": {"name": "slow.large"},
+            },
+            headers=self.mcp.headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        lines = response.text.splitlines()
+        # No frame ever spills onto a continuation line.
+        self.assertTrue(
+            all(
+                not line or line.startswith(("data: ", "event: ", ": "))
+                for line in lines
+            ),
+            response.text[:400],
+        )
+        frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in lines
+            if line.startswith("data: ")
+        ]
+        self.assertEqual(frames[-1]["id"], 42)
+        text = frames[-1]["result"]["content"][0]["text"]
+        self.assertIn("\n", text)
+        self.assertEqual(json.loads(text), self._large())
 
 
 class McpStreamablePreflightTest(unittest.TestCase):
