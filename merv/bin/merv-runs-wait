@@ -12,10 +12,12 @@ set -euo pipefail
 #
 # The honest residual: a signal arriving BEFORE those handlers arm — the tens
 # of milliseconds an interpreter spends starting — takes its default action, so
-# the caller sees a signal exit code and no line. That is the same untotalizable
-# class as SIGKILL, and as a signal delivered before bash reaches line 1 here;
-# consumers read a missing line as poll_error and re-arm. Everything after the
-# handlers arm is the watcher's own reviewed totality.
+# the caller sees a signal exit code and no line. The same class covers an
+# interpreter whose OWN startup fails after a successful exec (a broken
+# PYTHONHOME dies before the -c body runs, so no code of ours gets a turn):
+# nonzero exit, no line. Both are the SIGKILL class — consumers read a missing
+# line as poll_error, verify with one authenticated sandbox.runs, and re-arm.
+# Everything after the handlers arm is the watcher's own reviewed totality.
 
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -72,9 +74,13 @@ except BaseException:
 sys.exit(main())
 '
 
-# execfail keeps the shell alive if exec itself fails (ENOEXEC, permission),
-# so even that leaves through the grammar; on success nothing below runs.
-shopt -s execfail 2>/dev/null || true
-exec "$PYTHON_BIN" -c "$WRAPPER" "$@" || true
-printf 'MERV_RUNS_WAIT poll_error _ crashed\n' 2>/dev/null || true
+# execfail keeps the shell alive if exec itself fails (a directory passing
+# -x, a stale shebang, ENOEXEC, permission), so even that leaves through the
+# grammar; on success nothing below runs. errexit must be OFF here — on the
+# deployed bash 3.2 a failed exec under set -e exits the shell before the
+# fallthrough despite execfail.
+set +e
+shopt -s execfail 2>/dev/null
+exec "$PYTHON_BIN" -c "$WRAPPER" "$@"
+printf 'MERV_RUNS_WAIT poll_error _ crashed\n' 2>/dev/null
 exit 3

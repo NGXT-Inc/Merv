@@ -322,7 +322,10 @@ nobody watching bills until you happen to look.
 not on your `PATH` — is the watcher. It blocks while the run runs, and its EXIT
 is the wake signal: stdout carries exactly one line,
 `MERV_RUNS_WAIT <state> <label> [status=... exit_code=...]`, and the exit code
-is the state. Heartbeats go to stderr; never read an answer out of them.
+is the state. Heartbeats go to stderr; never read an answer out of them. If the
+watcher died with NO final line (killed, interpreter failure), that is
+`poll_error` by definition: make one authenticated `sandbox.runs` call to read
+truth, then re-arm — never infer an outcome from a silent exit.
 
 - **Claude Code**: run `merv-runs-wait --url <wait_url>` as a background Bash
   task (`run_in_background`). The task's exit re-invokes you, so the turn can

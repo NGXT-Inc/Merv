@@ -1195,16 +1195,26 @@ class RunsWaitProcessTest(_RealProcess):
                 )
 
     def test_an_interpreter_that_cannot_be_execd_is_answered_for_too(self) -> None:
-        # A directory satisfies `-x`, so it passes the guard and fails at the
-        # exec itself — the execfail belt, not the resolution guard, must
-        # answer. Bash's bare 126/127 would say nothing to a wake consumer.
+        # Both shapes pass the `-x` guard and fail at the exec itself — the
+        # execfail belt, not the resolution guard, must answer. Bash's bare
+        # 126/127 would say nothing to a wake consumer. errexit is off around
+        # the exec because bash 3.2 otherwise exits before the fallthrough.
         copy, _ = self._stray_shim()
         with tempfile.TemporaryDirectory() as fake:
-            result = self._shim(copy, "--url", DEAD_URL, python=fake)
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(
-            result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"]
-        )
+            stale = Path(fake) / "python-with-a-dead-shebang"
+            stale.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+            stale.chmod(0o755)
+            for why, python in (
+                ("a directory", fake),
+                ("a stale shebang", str(stale)),
+            ):
+                with self.subTest(why=why):
+                    result = self._shim(copy, "--url", DEAD_URL, python=python)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertEqual(
+                        result.stdout.splitlines(),
+                        ["MERV_RUNS_WAIT poll_error _ crashed"],
+                    )
 
 
 class RunsWaitTotalityTest(_RealProcess):
@@ -1492,20 +1502,23 @@ class RunsWaitTotalityTest(_RealProcess):
             line for line in SHIM.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
-        # The last thing it does is stop being itself; the two lines after the
+        # The last thing it does is stop being itself; the lines after the
         # exec are unreachable on success and exist only so an exec that FAILS
-        # (ENOEXEC, permission — execfail keeps the shell alive) still leaves
-        # through the grammar instead of bash's bare 126/127.
+        # (a directory, a stale shebang, ENOEXEC, permission) still leaves
+        # through the grammar instead of bash's bare 126/127. errexit must be
+        # off first: on bash 3.2 a failed exec under set -e exits the shell
+        # before the fallthrough despite execfail.
         self.assertEqual(
-            code[-3:],
+            code[-5:],
             [
-                'exec "$PYTHON_BIN" -c "$WRAPPER" "$@" || true',
-                "printf 'MERV_RUNS_WAIT poll_error _ crashed\\n' 2>/dev/null || true",
+                "set +e",
+                "shopt -s execfail 2>/dev/null",
+                'exec "$PYTHON_BIN" -c "$WRAPPER" "$@"',
+                "printf 'MERV_RUNS_WAIT poll_error _ crashed\\n' 2>/dev/null",
                 "exit 3",
             ],
         )
         self.assertEqual(len([line for line in code if line.startswith("exec ")]), 1)
-        self.assertIn("shopt -s execfail 2>/dev/null || true", code)
         for line in code:
             statement = line.strip()
             with self.subTest(statement=statement):
@@ -1548,11 +1561,15 @@ class RunsWaitTotalityTest(_RealProcess):
         # untotalizable class as SIGKILL, and as a signal delivered before bash
         # reached line 1 of the shim; a consumer reads the missing line as
         # poll_error and re-arms.
+        # HUP is armed too: the deleted supervisor used to trap it, and with
+        # nothing left in front of this process a platform hanging up mid-hold
+        # must reach the handler, not the default action.
         for signum, reason in (
             (signal.SIGINT, "interrupted"),
             (signal.SIGTERM, "terminated"),
+            (signal.SIGHUP, "terminated"),
         ):
-            with self.subTest(reason=reason):
+            with self.subTest(reason=reason, signum=signum):
                 url, _ = self._held()
                 proc = self._spawn(url, [str(SHIM), "--url", url], env=self._shim_env())
                 proc.send_signal(signum)

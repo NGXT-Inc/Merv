@@ -102,8 +102,12 @@ something to paste anywhere public.
 `bin/merv-runs-wait` (in the client bundle) is the portable watcher. It blocks
 until the run settles and its **exit** is the wake signal; stdout carries
 exactly one line, `MERV_RUNS_WAIT <state> <label> [status=... exit_code=...]`,
-with heartbeats confined to stderr. Arming it right after a launch is what
-keeps a finished run from billing idle until someone looks. Per-client
+with heartbeats confined to stderr. One exception the contract names: a watcher
+killed outright (SIGKILL, a signal during interpreter startup, a broken Python
+install) exits with no line at all — treat a missing line exactly like
+`poll_error`: read truth with one authenticated `sandbox.runs`, then re-arm.
+Arming it right after a launch is what keeps a finished run from billing idle
+until someone looks. Per-client
 recipes — documentation only, nothing in core depends on them:
 
 - **Claude Code**: run `merv-runs-wait --url <wait_url>` as a background Bash

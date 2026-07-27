@@ -765,7 +765,7 @@ def _deafen() -> None:
     and a signal landing in that window would replace a stated answer with a
     traceback.
     """
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         with contextlib.suppress(Exception):
             signal.signal(signum, signal.SIG_IGN)
 
@@ -782,7 +782,9 @@ def _arm_teardown() -> Callable[[], None]:
     the exit path deafened both.
     """
     previous: dict[int, Any] = {}
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    # SIGHUP rides along: the exec'd shim has nothing in front of this process
+    # anymore, so a platform hanging up mid-hold must land here, not default.
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         with contextlib.suppress(Exception):
             previous[signum] = signal.signal(signum, _teardown)
     return lambda: _restore_signals(previous)
