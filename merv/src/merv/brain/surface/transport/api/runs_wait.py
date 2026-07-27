@@ -31,7 +31,7 @@ from fastapi import APIRouter
 from fastapi.responses import Response, StreamingResponse
 
 from ....kernel.env import env_int
-from ....kernel.secret_tokens import wait_signature_matches
+from ....kernel.secret_tokens import MIN_WAIT_SECRET_BYTES, wait_signature_matches
 from ....kernel.utils import parse_iso
 from ....sandbox.facade import SandboxFacade
 
@@ -300,6 +300,12 @@ def build_router(
     api_router = APIRouter()
     if not secret:
         return api_router
+    if len(secret) < MIN_WAIT_SECRET_BYTES:
+        # The route is auth-exempt, so a short key here is a forgeable
+        # capability no loader ever vetted — refuse to mount at all.
+        raise ValueError(
+            f"wait secret must be at least {MIN_WAIT_SECRET_BYTES} bytes"
+        )
 
     @api_router.get(WAIT_ROUTE_PREFIX + "{sandbox_uid}/{label}/{sig}")
     async def wait_for_run(sandbox_uid: str, label: str, sig: str) -> Response:
@@ -323,6 +329,11 @@ def build_router(
         except Exception:  # noqa: BLE001 — the slot must not leak on a bad read
             slot.release()
             return _plain(_line("poll_error", echo), status_code=500)
+        except BaseException:
+            # Cancellation lands here: no response object exists yet, so no
+            # downstream finally can give this slot back.
+            slot.release()
+            raise
         if opening.state == "gone":
             slot.release()
             return _plain(_line("no_such_run", echo), status_code=410)

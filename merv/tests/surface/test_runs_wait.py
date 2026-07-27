@@ -570,6 +570,46 @@ class WaitEndpointTest(unittest.TestCase):
             response = client.get(self._url(label="seed0"))
         self.assertEqual(response.status_code, 404)
 
+    def test_a_short_key_refuses_to_mount_rather_than_sign(self) -> None:
+        """The route is auth-exempt: bytes no loader vetted must meet the same
+        floor the loader enforces, or the mount itself is the forgery."""
+        with self.assertRaises(ValueError):
+            runs_wait.build_router(sandboxes=self.app.sandboxes, secret=b"x")
+        with self.assertRaises(ValueError):
+            create_fastapi_app(self.app.http, wait_secret=b"x")
+
+    def test_a_cancelled_opening_read_gives_its_slot_back(self) -> None:
+        """Cancellation is a BaseException with no response object yet, so no
+        downstream finally exists — the route itself must hand the slot back."""
+        entered = threading.Event()
+        finish = threading.Event()
+
+        def stuck(*_a, **_k):
+            entered.set()
+            finish.wait(5.0)
+            return None
+
+        ledger = self.app.sandboxes.runs_ledger
+
+        async def scenario() -> int:
+            task = asyncio.create_task(self._endpoint(label="seed0"))
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while not entered.is_set():
+                if asyncio.get_running_loop().time() > deadline:
+                    self.fail("the opening read never started")
+                await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            return runs_wait._ADMISSION.held()
+
+        try:
+            with patch.object(ledger, "wait_facts", side_effect=stuck):
+                held = asyncio.run(scenario())
+        finally:
+            finish.set()
+        self.assertEqual(held, 0)
+
     async def _endpoint(self, *, label: str):
         """The route's own response object, before any middleware wraps it."""
         route = runs_wait.build_router(
