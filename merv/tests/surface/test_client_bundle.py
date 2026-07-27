@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -88,7 +89,9 @@ class ClientBundleTest(unittest.TestCase):
             "GEMINI.md",
             "AGENTS.md",
             "bin/merv-client",
+            "bin/merv-runs-wait",
             "src/merv/client/cli.py",
+            "src/merv/client/runs_wait.py",
             # Codex manifest's composerIcon must resolve inside the bundle.
             "assets/icon.svg",
         }
@@ -168,6 +171,32 @@ class ClientBundleTest(unittest.TestCase):
             snippet = json.loads(result.stdout)
             self.assertEqual(
                 snippet["mcpServers"]["merv"]["type"], "http", result.stdout
+            )
+
+    def test_the_run_watcher_ships_runnable(self) -> None:
+        # Platforms arm the watcher by path, so a shim that arrives without its
+        # executable bit is a wake signal nobody can start; and it has to run
+        # from the bundle's own src like the onboarding CLI does.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "plugin"
+            build_client_bundle.build(out)
+            shim = out / "bin" / "merv-runs-wait"
+            self.assertTrue(shim.is_file())
+            self.assertTrue(os.access(shim, os.X_OK), "merv-runs-wait is not executable")
+
+            result = subprocess.run(
+                [sys.executable, "-m", "merv.client.runs_wait",
+                 "--url", "ftp://nowhere/wait/sbx-1/seed0/sig"],
+                cwd=out,
+                env={"PYTHONPATH": str(out / "src"), "PATH": ""},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertEqual(
+                result.stdout.splitlines()[-1],
+                "MERV_RUNS_WAIT poll_error seed0 bad_url",
             )
 
     def test_slim_src_is_self_contained(self) -> None:

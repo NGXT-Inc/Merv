@@ -9,13 +9,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from merv.shared.client_config import (
-    CLIENT_CONFIG_ENV_VAR,
-    CONTROL_URL_ENV_VAR,
     HOSTED_CONTROL_URL,
     LOCAL_BRAIN_URL,
-    dual_env_value,
-    read_client_config,
     resolve_client_config_path,
+    resolve_client_control_url,
 )
 
 
@@ -85,13 +82,7 @@ def _cmd_configure(args: argparse.Namespace) -> int:
 
 
 def _cmd_env(args: argparse.Namespace) -> int:
-    config_path = _config_path(args)
-    config = read_client_config({CLIENT_CONFIG_ENV_VAR: str(config_path)})
-    control_url = (
-        dual_env_value(CONTROL_URL_ENV_VAR)
-        or config.get("control_url")
-        or HOSTED_CONTROL_URL
-    ).rstrip("/")
+    control_url = resolve_client_control_url(config_path=_config_path(args))
     snippet = {
         "mcpServers": {
             "merv": {

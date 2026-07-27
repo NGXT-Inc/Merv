@@ -49,6 +49,8 @@ INCLUDE = (
     "agents",
     # Onboarding CLI and its self-contained runtime (no merv.brain import)
     "bin/merv-client",
+    # The portable run watcher every platform backgrounds to get woken
+    "bin/merv-runs-wait",
     "src/merv/__init__.py",
     "src/merv/client",
     "src/merv/shared",

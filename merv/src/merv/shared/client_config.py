@@ -76,6 +76,28 @@ def resolve_client_config_path(env: Mapping[str, str] | None = None) -> Path:
     return Path(raw).expanduser() if raw else default_client_config_path()
 
 
+def resolve_client_control_url(
+    *, config_path: Path | None = None, env: Mapping[str, str] | None = None
+) -> str:
+    """The brain a client dials: env var, then machine config, then hosted.
+
+    One definition so every client entry point agrees on the precedence; a
+    caller that already resolved a config path (``--config``) names it here
+    rather than reordering the rest.
+    """
+    config_env = env
+    if config_path is not None:
+        config_env = {
+            **(env if env is not None else os.environ),
+            CLIENT_CONFIG_ENV_VAR: str(config_path),
+        }
+    return (
+        dual_env_value(CONTROL_URL_ENV_VAR, env)
+        or read_client_config(config_env).get("control_url")
+        or HOSTED_CONTROL_URL
+    ).rstrip("/")
+
+
 def read_client_config(env: Mapping[str, str] | None = None) -> dict[str, str]:
     path = resolve_client_config_path(env)
     try:
