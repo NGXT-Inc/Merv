@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, cast
 
-from ...research_core.facade import ExperimentState
+from ...research_core.facade import SYNOPSIS_MAX_LEN, ExperimentState
 from ..gate_checklist import present_gate_checklist
 from ..ports.storage import ProducedObject
 from .claim_guidance import claim_update_suggestions
@@ -44,6 +44,7 @@ _SLIM_REVIEW_FIELDS = (
     "notes",
     "evidence",
 )
+_TLDR_REVIEW_FIELDS = ("id", "role", "verdict", "created_at", "synopsis")
 
 
 def project_fields(record: dict[str, Any], fields: Iterable[str]) -> dict[str, Any]:
@@ -55,6 +56,59 @@ def project_rows(
 ) -> list[dict[str, Any]]:
     fields = tuple(fields)
     return [project_fields(record, fields) for record in records]
+
+
+def slim_review_rows(reviews: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the newest review's body; older rounds travel as their TLDR alone."""
+
+    rows = list(reviews)
+    if not rows:
+        return []
+    # Rows arrive newest-first (created_seq DESC), so equal timestamps resolve
+    # to the earliest position.
+    newest = max(
+        range(len(rows)),
+        key=lambda index: (str(rows[index].get("created_at") or ""), -index),
+    )
+    return [
+        project_fields(row, _SLIM_REVIEW_FIELDS)
+        if index == newest
+        else _review_tldr(row)
+        for index, row in enumerate(rows)
+    ]
+
+
+def review_body(
+    reviews: Iterable[dict[str, Any]], *, review_id: str
+) -> dict[str, Any] | None:
+    """Read one review's full prose back out of a state whose bodies are intact."""
+
+    match = next(
+        (row for row in reviews if str(row.get("id") or "") == review_id), None
+    )
+    if match is None:
+        return None
+    body = project_fields(match, _SLIM_REVIEW_FIELDS)
+    if match.get("return_to"):
+        body["return_to"] = match["return_to"]
+    return body
+
+
+def _review_tldr(review: dict[str, Any]) -> dict[str, Any]:
+    row = project_fields(review, _TLDR_REVIEW_FIELDS)
+    row["synopsis"] = str(row.get("synopsis") or "").strip() or _notes_tldr(
+        review.get("notes")
+    )
+    return row
+
+
+def _notes_tldr(notes: Any) -> str:
+    """Rows written before synopsis was mandatory borrow their opening notes line."""
+
+    for line in str(notes or "").splitlines():
+        if line.strip():
+            return line.strip()[:SYNOPSIS_MAX_LEN]
+    return ""
 
 
 def rich_experiment_state(
@@ -125,7 +179,7 @@ def slim_experiment_state(
         "tested_claims": project_rows(rich.get("tested_claims", []), _SLIM_CLAIM_FIELDS),
         "current_attempt_artifacts": project_rows(current, _SLIM_ARTIFACT_FIELDS),
         "storage_objects": project_rows(rich.get("storage_objects", []), _SLIM_STORAGE_FIELDS),
-        "reviews": project_rows(rich.get("reviews", []), _SLIM_REVIEW_FIELDS),
+        "reviews": slim_review_rows(rich.get("reviews", [])),
     }
     if prior:
         slim["prior_attempt_artifacts"] = project_rows(prior, _PRIOR_ARTIFACT_FIELDS)
@@ -133,4 +187,4 @@ def slim_experiment_state(
 
 
 __all__ = ["SlimExperimentState", "claim_update_suggestions", "project_fields", "project_rows",
-           "rich_experiment_state", "slim_experiment_state"]
+           "review_body", "rich_experiment_state", "slim_experiment_state", "slim_review_rows"]

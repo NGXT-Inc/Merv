@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from tests.support.brain import TestBrain
+from merv.brain.kernel.utils import ValidationError
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 SLIM_ARTIFACT_KEYS = {"id", "role", "path", "lens_id", "size_bytes", "title"}
@@ -83,24 +84,28 @@ class ExperimentSlimTest(unittest.TestCase):
         # Single-attempt experiment: no prior-attempt block.
         self.assertNotIn("prior_attempt_artifacts", slim)
 
-    def test_get_state_review_keeps_findings_drops_bookkeeping(self) -> None:
-        exp_id = self._experiment_with_artifacts()
-        # Seed a review directly (FK off) with bookkeeping + findings.
+    def _seed_review(self, *, exp_id: str, review_id: str, seq: int, **overrides) -> None:
+        """Write a review row directly (FK off) with bookkeeping + findings."""
         import sqlite3
         raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
         raw.execute("PRAGMA foreign_keys=OFF")
         cols = [r[1] for r in raw.execute("PRAGMA table_info(reviews)").fetchall()]
         vals = {
-            "id": "rev_1", "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
+            "id": review_id, "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
             "role": "experiment_reviewer", "verdict": "pass", "status": "submitted",
             "findings_json": json.dumps([{"issue": "narrow", "severity": "low"}]),
             "evidence_json": json.dumps({"exit_code": 0}), "notes": "looks good",
             "target_snapshot_id": "experiment|" + "x" * 500, "created_at": "2026-06-03T04:41:27Z",
-            "request_id": "rr_x", "session_id": "rvs_x",
+            "request_id": "rr_x", "session_id": "rvs_x", "created_seq": seq,
+            **overrides,
         }
         present = {k: v for k, v in vals.items() if k in cols}
         raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
         raw.commit(); raw.close()
+
+    def test_get_state_review_keeps_findings_drops_bookkeeping(self) -> None:
+        exp_id = self._experiment_with_artifacts()
+        self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1)
 
         slim = self.call("experiment.get_state", project_id=self.project_id, experiment_id=exp_id)
         review = slim["reviews"][0]
@@ -109,6 +114,63 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertEqual(review["notes"], "looks good")
         self.assertEqual(review["evidence"], {"exit_code": 0})
         self.assertEqual(WASTE_REVIEW_KEYS & set(review), set())     # bookkeeping dropped
+
+    def test_get_state_older_rounds_arrive_as_tldrs(self) -> None:
+        exp_id = self._experiment_with_artifacts()
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z",
+            verdict="needs_changes", return_to="planned", synopsis="",
+            notes="The first pass never separated the arms.\nlong prose follows",
+        )
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z",
+            synopsis="The rerun clears the baseline, so the attempt stands.",
+        )
+
+        reviews = self.call(
+            "experiment.get_state", project_id=self.project_id, experiment_id=exp_id
+        )["reviews"]
+
+        self.assertEqual([review["id"] for review in reviews], ["rev_2", "rev_1"])
+        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis",
+                                           "findings", "notes", "evidence"})
+        self.assertEqual(set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"})
+        self.assertEqual(reviews[1]["synopsis"], "The first pass never separated the arms.")
+
+    def test_get_state_review_id_reads_an_older_body_back(self) -> None:
+        exp_id = self._experiment_with_artifacts()
+        self._seed_review(
+            exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z",
+            verdict="needs_changes", return_to="planned", notes="the arms overlap",
+            findings_json=json.dumps([{"issue": "confounded", "severity": "high"}]),
+        )
+        self._seed_review(exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z")
+
+        state = self.call(
+            "experiment.get_state", project_id=self.project_id,
+            experiment_id=exp_id, review_id="rev_1",
+        )
+
+        self.assertEqual(state["review"]["id"], "rev_1")
+        self.assertEqual(state["review"]["notes"], "the arms overlap")
+        self.assertEqual(state["review"]["findings"][0]["issue"], "confounded")
+        self.assertEqual(state["review"]["evidence"], {"exit_code": 0})
+        self.assertEqual(state["review"]["return_to"], "planned")
+        # The list itself stays on its diet.
+        self.assertNotIn("notes", state["reviews"][1])
+
+    def test_get_state_unknown_review_id_names_the_ids_that_exist(self) -> None:
+        exp_id = self._experiment_with_artifacts()
+        self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1)
+
+        with self.assertRaises(ValidationError) as ctx:
+            self.call(
+                "experiment.get_state", project_id=self.project_id,
+                experiment_id=exp_id, review_id="rev_nope",
+            )
+
+        self.assertIn("rev_nope", str(ctx.exception))
+        self.assertIn("rev_1", str(ctx.exception))
 
     def test_list_tool_is_slim(self) -> None:
         self._experiment_with_artifacts()

@@ -4,9 +4,29 @@ import unittest
 from copy import deepcopy
 
 from merv.brain.application.experiments.presentation import (
+    review_body,
     rich_experiment_state,
     slim_experiment_state,
+    slim_review_rows,
 )
+
+TLDR_KEYS = {"id", "role", "verdict", "created_at", "synopsis"}
+BODY_KEYS = TLDR_KEYS | {"findings", "notes", "evidence"}
+
+
+def _review(review_id: str, *, created_at: str, **overrides) -> dict:
+    return {
+        "id": review_id,
+        "role": "experiment_reviewer",
+        "verdict": "pass",
+        "created_at": created_at,
+        "synopsis": f"synopsis for {review_id}",
+        "findings": [{"issue": review_id}],
+        "notes": f"notes for {review_id}",
+        "evidence": {"exit_code": 0},
+        "target_snapshot_id": "drop",
+        **overrides,
+    }
 
 
 class ExperimentPresentationTest(unittest.TestCase):
@@ -155,6 +175,117 @@ class ExperimentPresentationTest(unittest.TestCase):
 
         self.assertEqual(result["current_attempt_artifacts"], [])
         self.assertNotIn("prior_attempt_artifacts", result)
+
+
+class ReviewDietTest(unittest.TestCase):
+    def test_newest_keeps_its_body_and_older_rounds_travel_as_tldrs(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_3", created_at="2026-07-03T00:00:00Z"),
+                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+                _review("rev_1", created_at="2026-07-01T00:00:00Z"),
+            ]
+        )
+
+        self.assertEqual([row["id"] for row in rows], ["rev_3", "rev_2", "rev_1"])
+        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(rows[0]["findings"], [{"issue": "rev_3"}])
+        self.assertEqual(set(rows[1]), TLDR_KEYS)
+        self.assertEqual(set(rows[2]), TLDR_KEYS)
+        self.assertEqual(rows[1]["synopsis"], "synopsis for rev_2")
+
+    def test_incoming_order_survives_an_out_of_order_newest(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_old", created_at="2026-07-01T00:00:00Z"),
+                _review("rev_new", created_at="2026-07-09T00:00:00Z"),
+                _review("rev_mid", created_at="2026-07-05T00:00:00Z"),
+            ]
+        )
+
+        self.assertEqual(
+            [row["id"] for row in rows], ["rev_old", "rev_new", "rev_mid"]
+        )
+        self.assertEqual(set(rows[1]), BODY_KEYS)
+        self.assertEqual(set(rows[0]), TLDR_KEYS)
+        self.assertEqual(set(rows[2]), TLDR_KEYS)
+
+    def test_same_timestamp_keeps_the_body_on_the_newest_first_row(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_2", created_at="2026-07-01T00:00:00Z"),
+                _review("rev_1", created_at="2026-07-01T00:00:00Z"),
+            ]
+        )
+
+        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(set(rows[1]), TLDR_KEYS)
+
+    def test_a_lone_review_keeps_its_body(self) -> None:
+        rows = slim_review_rows([_review("rev_1", created_at="2026-07-01T00:00:00Z")])
+
+        self.assertEqual(set(rows[0]), BODY_KEYS)
+
+    def test_no_reviews_projects_to_an_empty_list(self) -> None:
+        self.assertEqual(slim_review_rows([]), [])
+
+    def test_pre_synopsis_rows_borrow_their_first_notes_line(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+                _review(
+                    "rev_1",
+                    created_at="2026-07-01T00:00:00Z",
+                    synopsis="",
+                    notes="\n\n  The sweep never separated the arms.  \nmore detail",
+                ),
+            ]
+        )
+
+        self.assertEqual(rows[1]["synopsis"], "The sweep never separated the arms.")
+
+    def test_borrowed_notes_line_is_truncated_to_the_synopsis_ceiling(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+                _review(
+                    "rev_1",
+                    created_at="2026-07-01T00:00:00Z",
+                    synopsis="",
+                    notes="w" * 900,
+                ),
+            ]
+        )
+
+        self.assertEqual(rows[1]["synopsis"], "w" * 420)
+
+    def test_an_older_row_with_neither_synopsis_nor_notes_stays_empty(self) -> None:
+        rows = slim_review_rows(
+            [
+                _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+                _review(
+                    "rev_1",
+                    created_at="2026-07-01T00:00:00Z",
+                    synopsis="",
+                    notes="   \n \n",
+                ),
+            ]
+        )
+
+        self.assertEqual(rows[1]["synopsis"], "")
+
+    def test_review_body_reads_an_older_round_back_with_its_routing(self) -> None:
+        reviews = [
+            _review("rev_2", created_at="2026-07-02T00:00:00Z"),
+            _review("rev_1", created_at="2026-07-01T00:00:00Z", return_to="planned"),
+        ]
+
+        body = review_body(reviews, review_id="rev_1")
+
+        self.assertEqual(set(body), BODY_KEYS | {"return_to"})
+        self.assertEqual(body["notes"], "notes for rev_1")
+        self.assertEqual(body["return_to"], "planned")
+        self.assertIsNone(review_body(reviews, review_id="rev_9"))
 
 
 if __name__ == "__main__":  # pragma: no cover

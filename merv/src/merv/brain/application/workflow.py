@@ -15,15 +15,16 @@ from ..research_core.facade import (
     ResearchSnapshot,
     ResearchSnapshots,
 )
-from .experiments.presentation import project_fields, project_rows, rich_experiment_state
+from .experiments.presentation import (
+    project_fields,
+    project_rows,
+    rich_experiment_state,
+    slim_review_rows,
+)
 from .ports.sandbox import SandboxReads
 from .ports.storage import ProducedObjectCatalog
 from .reflection_guidance import literature_hint
-from .status_guidance import (
-    StatusGuidancePolicy,
-    _SLIM_ARTIFACT_FIELDS,
-    _SLIM_REVIEW_FIELDS,
-)
+from .status_guidance import StatusGuidancePolicy, _SLIM_ARTIFACT_FIELDS
 
 Record = dict[str, Any]
 RecordQuery = Callable[..., Record]
@@ -485,9 +486,7 @@ def _slim_status(full: Record) -> Record:
                     experiment.get("current_attempt_artifacts", []),
                     _SLIM_ARTIFACT_FIELDS,
                 ),
-                "reviews": project_rows(
-                    experiment.get("reviews", []), _SLIM_REVIEW_FIELDS
-                ),
+                "reviews": slim_review_rows(experiment.get("reviews", [])),
             },
             "sandbox": _sandbox_summary(full.get("sandboxes", [])),
             "project": {"id": project.get("id"), "name": project.get("name")},

@@ -224,6 +224,14 @@ class ExperimentListInput(ProjectScopedInput):
 
 class ExperimentGetStateInput(ProjectScopedInput):
     experiment_id: str
+    review_id: str = Field(
+        default="",
+        description=(
+            "Optional review id taken from this experiment's 'reviews' list. "
+            "Older rounds are listed by synopsis only; pass one here to also "
+            "receive that review's full body under 'review'."
+        ),
+    )
 
 
 class ExperimentExhibitInput(ProjectScopedInput):
@@ -1055,7 +1063,10 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "transitions available from the current status, each with what it "
             "'requires' (e.g. a submitted plan artifact, a passing review). "
             "Once running or later, includes the central 'mlflow' context and "
-            "any plugin-created 'mlflow_run' identity for quantitative logging."
+            "any plugin-created 'mlflow_run' identity for quantitative logging. "
+            "In 'reviews', only the newest round carries its findings, notes, "
+            "and evidence; older rounds are listed by synopsis alone. Pass "
+            "review_id to read an older round's full body back."
         ),
     ),
     "experiment.transition": ToolContract(

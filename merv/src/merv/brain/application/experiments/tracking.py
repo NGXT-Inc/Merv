@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
 from ...feed.facade import Feed
+from ...kernel.utils import ValidationError
 from ...research_core.facade import (
     ExperimentState,
     PersistedRunState,
@@ -21,6 +22,7 @@ from ..ports.tracking import (
 from ..ports.storage import ProducedObjectCatalog
 from .presentation import (
     SlimExperimentState,
+    review_body,
     rich_experiment_state,
     slim_experiment_state,
 )
@@ -129,7 +131,7 @@ class AgentExperimentQuery:
     tracking: ExperimentTracking | None
 
     def experiment(
-        self, *, experiment_id: str, project_id: str | None = None
+        self, *, experiment_id: str, project_id: str | None = None, review_id: str = ""
     ) -> SlimExperimentState:
         state = self.research.experiment_state(
             experiment_id=experiment_id, project_id=project_id
@@ -141,6 +143,18 @@ class AgentExperimentQuery:
         response = dict(
             slim_experiment_state(state, storage_objects=storage_objects)
         )
+        if review_id:
+            # Pre-slim state: the older bodies the reviews list no longer carries.
+            reviews = state.get("reviews", [])
+            body = review_body(reviews, review_id=review_id)
+            if body is None:
+                known = [str(review.get("id") or "") for review in reviews]
+                raise ValidationError(
+                    f"no review {review_id} on this experiment. Reviews here: "
+                    f"{', '.join(known) or 'none yet'}.",
+                    details={"field": "review_id", "review_ids": known},
+                )
+            response["review"] = body
         return cast(
             SlimExperimentState,
             with_tracking_if_visible(
