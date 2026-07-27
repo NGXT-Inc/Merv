@@ -194,20 +194,22 @@ class ReviewDietTest(unittest.TestCase):
         self.assertEqual(set(rows[2]), TLDR_KEYS)
         self.assertEqual(rows[1]["synopsis"], "synopsis for rev_2")
 
-    def test_incoming_order_survives_an_out_of_order_newest(self) -> None:
+    def test_insertion_order_beats_a_skewed_timestamp(self) -> None:
+        # created_seq DESC is the authority; a clock-skewed created_at on an
+        # older row must not steal the newest round's body.
         rows = slim_review_rows(
             [
-                _review("rev_old", created_at="2026-07-01T00:00:00Z"),
-                _review("rev_new", created_at="2026-07-09T00:00:00Z"),
-                _review("rev_mid", created_at="2026-07-05T00:00:00Z"),
+                _review("rev_new", created_at="2026-07-01T00:00:00Z"),
+                _review("rev_skewed", created_at="2026-07-09T00:00:00Z"),
+                _review("rev_old", created_at="2026-06-20T00:00:00Z"),
             ]
         )
 
         self.assertEqual(
-            [row["id"] for row in rows], ["rev_old", "rev_new", "rev_mid"]
+            [row["id"] for row in rows], ["rev_new", "rev_skewed", "rev_old"]
         )
-        self.assertEqual(set(rows[1]), BODY_KEYS)
-        self.assertEqual(set(rows[0]), TLDR_KEYS)
+        self.assertEqual(set(rows[0]), BODY_KEYS)
+        self.assertEqual(set(rows[1]), TLDR_KEYS)
         self.assertEqual(set(rows[2]), TLDR_KEYS)
 
     def test_same_timestamp_keeps_the_body_on_the_newest_first_row(self) -> None:

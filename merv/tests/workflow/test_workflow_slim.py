@@ -38,6 +38,27 @@ class WorkflowSlimTest(unittest.TestCase):
         with self.app.store.transaction() as conn:
             conn.execute("UPDATE experiments SET status = ? WHERE id = ?", (status, exp_id))
 
+    def _seed_review(self, *, exp_id: str, review_id: str, seq: int, **overrides) -> None:
+        """Write a review row directly (FK off) with bookkeeping + findings."""
+        import json
+        import sqlite3
+        raw = sqlite3.connect(self.repo / ".research_plugin" / "state.sqlite")
+        raw.execute("PRAGMA foreign_keys=OFF")
+        cols = [r[1] for r in raw.execute("PRAGMA table_info(reviews)").fetchall()]
+        vals = {
+            "id": review_id, "project_id": self.project_id, "target_type": "experiment", "target_id": exp_id,
+            "role": "experiment_reviewer", "verdict": "pass", "status": "submitted",
+            "findings_json": json.dumps([{"issue": "narrow", "severity": "low"}]),
+            "evidence_json": json.dumps({"exit_code": 0}), "notes": "looks good",
+            "synopsis": f"synopsis for {review_id}",
+            "target_snapshot_id": "experiment|" + "x" * 500, "created_at": "2026-06-03T04:41:27Z",
+            "request_id": "rr_x", "session_id": "rvs_x", "created_seq": seq,
+            **overrides,
+        }
+        present = {k: v for k, v in vals.items() if k in cols}
+        raw.execute(f"INSERT INTO reviews ({','.join(present)}) VALUES ({','.join('?' for _ in present)})", list(present.values()))
+        raw.commit(); raw.close()
+
     def _experiment_with_plan(self) -> str:
         exp_id = self.call(
             "experiment.create",
@@ -80,6 +101,19 @@ class WorkflowSlimTest(unittest.TestCase):
         # No sandbox yet → explicitly says so.
         self.assertFalse(slim["sandbox"]["active"])
         self.assertIn("note", slim["sandbox"])
+
+    def test_reviews_carry_one_body_and_older_tldrs(self) -> None:
+        exp_id = self._experiment_with_plan()
+        self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z")
+        self._seed_review(exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z")
+
+        slim = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
+        reviews = slim["experiment"]["reviews"]
+
+        self.assertEqual([review["id"] for review in reviews], ["rev_2", "rev_1"])
+        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis",
+                                           "findings", "notes", "evidence"})
+        self.assertEqual(set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"})
 
     def test_active_sandbox_is_summarized(self) -> None:
         exp_id = self._experiment_with_plan()

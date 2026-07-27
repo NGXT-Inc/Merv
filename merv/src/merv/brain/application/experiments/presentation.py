@@ -64,16 +64,10 @@ def slim_review_rows(reviews: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = list(reviews)
     if not rows:
         return []
-    # Rows arrive newest-first (created_seq DESC), so equal timestamps resolve
-    # to the earliest position.
-    newest = max(
-        range(len(rows)),
-        key=lambda index: (str(rows[index].get("created_at") or ""), -index),
-    )
+    # Rows arrive newest-first (created_seq DESC) — insertion order is the
+    # authority, not created_at, which clock skew or imports can misorder.
     return [
-        project_fields(row, _SLIM_REVIEW_FIELDS)
-        if index == newest
-        else _review_tldr(row)
+        project_fields(row, _SLIM_REVIEW_FIELDS) if index == 0 else _review_tldr(row)
         for index, row in enumerate(rows)
     ]
 
