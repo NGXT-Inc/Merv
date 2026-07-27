@@ -72,4 +72,9 @@ except BaseException:
 sys.exit(main())
 '
 
-exec "$PYTHON_BIN" -c "$WRAPPER" "$@"
+# execfail keeps the shell alive if exec itself fails (ENOEXEC, permission),
+# so even that leaves through the grammar; on success nothing below runs.
+shopt -s execfail 2>/dev/null || true
+exec "$PYTHON_BIN" -c "$WRAPPER" "$@" || true
+printf 'MERV_RUNS_WAIT poll_error _ crashed\n' 2>/dev/null || true
+exit 3

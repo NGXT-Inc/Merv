@@ -1194,6 +1194,18 @@ class RunsWaitProcessTest(_RealProcess):
                     result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"]
                 )
 
+    def test_an_interpreter_that_cannot_be_execd_is_answered_for_too(self) -> None:
+        # A directory satisfies `-x`, so it passes the guard and fails at the
+        # exec itself — the execfail belt, not the resolution guard, must
+        # answer. Bash's bare 126/127 would say nothing to a wake consumer.
+        copy, _ = self._stray_shim()
+        with tempfile.TemporaryDirectory() as fake:
+            result = self._shim(copy, "--url", DEAD_URL, python=fake)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"]
+        )
+
 
 class RunsWaitTotalityTest(_RealProcess):
     """The windows in which a total watcher was still not total.
@@ -1480,9 +1492,20 @@ class RunsWaitTotalityTest(_RealProcess):
             line for line in SHIM.read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
-        # The last thing it does is stop being itself.
-        self.assertEqual(code[-1], 'exec "$PYTHON_BIN" -c "$WRAPPER" "$@"')
+        # The last thing it does is stop being itself; the two lines after the
+        # exec are unreachable on success and exist only so an exec that FAILS
+        # (ENOEXEC, permission — execfail keeps the shell alive) still leaves
+        # through the grammar instead of bash's bare 126/127.
+        self.assertEqual(
+            code[-3:],
+            [
+                'exec "$PYTHON_BIN" -c "$WRAPPER" "$@" || true',
+                "printf 'MERV_RUNS_WAIT poll_error _ crashed\\n' 2>/dev/null || true",
+                "exit 3",
+            ],
+        )
         self.assertEqual(len([line for line in code if line.startswith("exec ")]), 1)
+        self.assertIn("shopt -s execfail 2>/dev/null || true", code)
         for line in code:
             statement = line.strip()
             with self.subTest(statement=statement):
