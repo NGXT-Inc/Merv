@@ -23,6 +23,10 @@ from .env import env_value
 
 WAIT_SECRET_ENV_VAR = "MERV_WAIT_SECRET"
 WAIT_SECRET_FILENAME = "wait_secret"
+# The route shape lives HERE and not in the transport: the transport mounts it
+# and sandbox.runs renders it, and those two live in components that cannot
+# import each other. One string, so a drift cannot mint URLs nobody serves.
+WAIT_ROUTE_PREFIX = "/wait/"
 # The tag is 128 bits, so a key below it would be the cheaper thing to guess.
 MIN_WAIT_SECRET_BYTES = 32
 WAIT_SIGNATURE_CHARS = 32
@@ -123,6 +127,20 @@ def wait_signature(*, key: bytes, sandbox_uid: str, label: str) -> str:
     message = _WAIT_DOMAIN + _length_prefixed(sandbox_uid) + _length_prefixed(label)
     digest = hmac.new(key, message, hashlib.sha256).hexdigest()
     return digest[:WAIT_SIGNATURE_CHARS]
+
+
+def wait_url(*, base_url: str, key: bytes, sandbox_uid: str, label: str) -> str:
+    """The absolute capability URL for one run, ready to hand to an agent.
+
+    The prefix carries its own slashes, and labels are already restricted to
+    merv_run's charset at registration, so nothing here is escaped or joined
+    twice — a URL this returns resolves to the mounted route verbatim.
+    """
+    signature = wait_signature(key=key, sandbox_uid=sandbox_uid, label=label)
+    return (
+        f"{base_url.rstrip('/')}{WAIT_ROUTE_PREFIX}"
+        f"{sandbox_uid}/{label}/{signature}"
+    )
 
 
 def wait_signature_matches(

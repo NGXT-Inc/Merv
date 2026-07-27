@@ -197,7 +197,7 @@ class ToolInvocationGateway:
         project_scope: str | None = None,
         activity_source: str = "http",
         principal: Any | None = None,
-        base_url: str = "",  # renders the artifact.submit upload one-liner
+        base_url: str = "",  # renders upload one-liners and run wait URLs
     ) -> dict[str, Any]:
         arguments = dict(arguments or {})
         scope = str(arguments.get("project_id") or project_scope or "")
@@ -260,8 +260,9 @@ class ToolInvocationGateway:
             internal_kwargs = {"user_id": user_id}
             if key_project_id:  # list -> scope to bound project; project -> pass through
                 internal_kwargs["project_id" if name == "project.list" else "key_project_id"] = key_project_id
-        if name in ("artifact.submit", "feed.post", "storage.submit") and base_url:
-            # Each renders a token-curl one-liner against the caller-reachable base.
+        if base_url and name in ("artifact.submit", "feed.post", "storage.submit", "sandbox.runs"):
+            # Each renders an absolute URL against the caller-reachable base: an
+            # upload token-curl one-liner, or a run's signed wait capability.
             internal_kwargs = {"base_url": base_url}
         if name == "sandbox.request":
             internal_kwargs = {

@@ -52,6 +52,9 @@ def create_fastapi_app(
     )
     require_hosted_auth_decision(auth=auth, hosted=surface.hosted_control, env=env)
     api = app
+    # One key, both directions: sandbox.runs signs its wait URLs with exactly
+    # what the route below verifies, so no app hands out a URL it would refuse.
+    api.sandboxes.wait_secret = wait_secret
     authorizer = ProjectAuthorizer(projects=api.projects)
     gateway = ToolInvocationGateway(
         tools=api.tools, reviews=api.reviews, sandboxes=api.sandboxes,

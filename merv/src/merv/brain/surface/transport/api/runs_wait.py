@@ -31,12 +31,15 @@ from fastapi import APIRouter
 from fastapi.responses import Response, StreamingResponse
 
 from ....kernel.env import env_int
-from ....kernel.secret_tokens import MIN_WAIT_SECRET_BYTES, wait_signature_matches
+from ....kernel.secret_tokens import (
+    MIN_WAIT_SECRET_BYTES,
+    WAIT_ROUTE_PREFIX,
+    wait_signature_matches,
+)
 from ....kernel.utils import parse_iso
 from ....sandbox.facade import SandboxFacade
 
 
-WAIT_ROUTE_PREFIX = "/wait/"
 MAX_STREAMS_ENV_VAR = "MERV_WAIT_MAX_STREAMS"
 # How many waits this process will hold at once. Each is an idle async task
 # plus one bounded DB read every poll, so the ceiling is about the reads and

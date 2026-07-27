@@ -17,7 +17,10 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         source = APP.read_text(encoding="utf-8")
         # 121 -> 122 when the auth-exempt run-wait route mounted: one router
         # line and one key parameter, which is what this factory is for.
-        self.assertLessEqual(len(source.splitlines()), 122)
+        # -> 125 when that same key was also handed to the sandbox facade, so
+        # the renderer of a wait URL and its verifier cannot hold different
+        # keys: one assignment plus the comment that says why.
+        self.assertLessEqual(len(source.splitlines()), 125)
         for seam in (
             "RequestAuthenticator",
             "ProjectAuthorizer",
@@ -59,10 +62,12 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         # bind: the gateway must not re-absorb factory logic.
         app_loc = len(APP.read_text(encoding="utf-8").splitlines())
         gateway_loc = len(GATEWAY.read_text(encoding="utf-8").splitlines())
-        self.assertLessEqual(gateway_loc, 447)
+        # +1 when sandbox.runs joined the base_url forwarding list: one tool
+        # name and one clause, no new branch.
+        self.assertLessEqual(gateway_loc, 448)
         # +1 for the run-wait mount: the gateway itself did not move, so the
         # pair ceiling tracks the factory's two composition lines.
-        self.assertLessEqual(app_loc + gateway_loc, 569)
+        self.assertLessEqual(app_loc + gateway_loc, 573)
 
     def test_project_membership_has_one_transport_lookup(self) -> None:
         package_source = "\n".join(

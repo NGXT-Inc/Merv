@@ -27,7 +27,9 @@ PUBLIC_SIGNATURES = {
     "list_sandboxes": "(self, *, project_id: 'str | None' = None) -> 'dict[str, Any]'",
     "release": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, confirm_retained: 'bool' = False) -> 'dict[str, Any]'",
     "terminal": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, sandbox_uid: 'str | None' = None, tail: 'int | None' = None, since: 'int | None' = None) -> 'dict[str, Any]'",
-    "runs": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, wait_seconds: 'int' = 0) -> 'dict[str, Any]'",
+    # base_url is gateway-supplied like request's provisioning ids, and defaults
+    # to nothing: a library caller still gets rows, just without wait URLs.
+    "runs": "(self, *, experiment_id: 'str | None' = None, project_id: 'str | None' = None, tenant_id: 'str | None' = None, sandbox_uid: 'str | None' = None, wait_seconds: 'int' = 0, base_url: 'str' = '') -> 'dict[str, Any]'",
 }
 
 

@@ -233,6 +233,8 @@ class SandboxQueryHandler:
         tenant_id: str | None = None,
         sandbox_uid: str | None = None,
         wait_seconds: int = 0,
+        base_url: str = "",
+        wait_secret: bytes | None = None,
     ) -> dict[str, Any]:
         experiment_id = (experiment_id or "").strip()
         sandbox_uid = (sandbox_uid or "").strip()
@@ -283,6 +285,8 @@ class SandboxQueryHandler:
                     records=records,
                     experiment_id=experiment_id,
                     sandbox_uid=sandbox_uid,
+                    base_url=base_url,
+                    wait_secret=wait_secret,
                 )
             time.sleep(
                 min(self.runs_wait_poll_seconds, max(deadline - time.monotonic(), 0.1))

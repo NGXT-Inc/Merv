@@ -17,6 +17,7 @@ from typing import Any
 from .sandbox_backend import SandboxBackend
 from .sandbox_support import ACTIVE_SANDBOX_STATUSES
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
+from ..kernel.secret_tokens import wait_url
 from ..kernel.state.store import BaseStateStore, row_to_dict
 from ..kernel.utils import format_iso, now_iso, parse_iso
 from .repository import SandboxRepository
@@ -345,24 +346,39 @@ def run_records_view(
     records: list[dict[str, Any]],
     experiment_id: str = "",
     sandbox_uid: str = "",
+    base_url: str = "",
+    wait_secret: bytes | None = None,
 ) -> dict[str, Any]:
     """Compact sandbox.runs response (<100 tokens typical).
 
     Per run: label, status, exit_code (finished only), started_at/finished_at,
     log path (experiment_dir-relative). sandbox_uid appears per run only when
     the experiment scope spans more than one sandbox.
+
+    `wait_url` needs BOTH a caller-reachable base and this app's wait key, so a
+    library call, a composition with no key, and a mounted route that would
+    refuse the tag all render the same thing: no key at all. Consumers that see
+    none fall back to authenticated polling.
     """
     multi_sandbox = len({str(r.get("sandbox_uid") or "") for r in records}) > 1
     runs: list[dict[str, Any]] = []
     live = finished = lost = unknown = 0
     for record in records:
         status = run_status(record)
+        label = str(record.get("label") or "")
+        uid = str(record.get("sandbox_uid") or "")
         view: dict[str, Any] = {
             "label": record.get("label"),
             "status": status,
             "started_at": record.get("started_at") or None,
             "log": f".runs/{record.get('label')}/log.txt",
         }
+        if base_url and wait_secret and label and uid:
+            # Signed for THIS row's pair: an experiment-scoped listing spans
+            # sandboxes, and one tag must never open another's run.
+            view["wait_url"] = wait_url(
+                base_url=base_url, key=wait_secret, sandbox_uid=uid, label=label
+            )
         if status == "running":
             live += 1
         elif status == "finished":

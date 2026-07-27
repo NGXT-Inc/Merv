@@ -32,7 +32,7 @@ from merv.brain.kernel.secret_tokens import (
     wait_signature,
     wait_signature_matches,
 )
-from merv.brain.kernel.state.activity import scrub_secret_text
+from merv.brain.kernel.state.activity import redact_sensitive, scrub_secret_text
 from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.config import (
@@ -686,6 +686,195 @@ class WaitEndpointTest(unittest.TestCase):
         while time.monotonic() < deadline and runs_wait._ADMISSION.held():
             time.sleep(0.02)
         self.assertEqual(runs_wait._ADMISSION.held(), 0)
+
+
+class RunsWaitUrlTest(unittest.TestCase):
+    """sandbox.runs hands back the wait URL itself.
+
+    An agent that just launched work — or just listed what is running — can arm
+    a watcher from the row it already has, with no second call and no key of
+    its own. Two things make that URL: the caller-reachable base the request
+    arrived on, and this app's wait key. Missing either, the field is absent
+    and the consumer falls back to authenticated polling.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        self.fake = FakeSandboxBackend()
+        self.app = TestBrain(
+            repo_root=self.repo,
+            db_path=self.repo / ".research_plugin" / "state.sqlite",
+            execution_backend=self.fake,
+        )
+        self.client = TestClient(
+            create_fastapi_app(self.app.http, wait_secret=SECRET)
+        )
+        self.project_id = self.app.call_tool(
+            "project", {"action": "create", "name": "Waits"}
+        )["id"]
+        self.experiment_id = self._experiment("long-training")
+        self.sandbox_uid = self._sandbox(self.experiment_id)
+        self._mirror(
+            self.sandbox_uid,
+            {"label": "seed0", "exit_code": 0, "finished_at": "2026-07-27T10:05:00Z"},
+            {"label": "seed1"},
+        )
+
+    def tearDown(self) -> None:
+        self.app.shutdown()
+        self.tmp.cleanup()
+
+    def _experiment(self, name: str) -> str:
+        exp_id = self.app.call_tool(
+            "experiment.create",
+            {"project_id": self.project_id, "name": name, "intent": "x"},
+        )["id"]
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'ready_to_run' WHERE id = ?",
+                (exp_id,),
+            )
+        return exp_id
+
+    def _sandbox(self, experiment_id: str) -> str:
+        return self.app.call_tool(
+            "sandbox.request",
+            {"project_id": self.project_id, "experiment_id": experiment_id},
+        )["sandbox_uid"]
+
+    def _mirror(self, sandbox_uid: str, *runs: dict) -> None:
+        row = self.app.sandboxes.repository.get_by_uid(sandbox_uid=sandbox_uid)
+        self.fake.run_listings[str(row["sandbox_id"])] = _listing(*runs)
+        self.app.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+
+    def _legacy(self, **arguments: str) -> dict:
+        response = self.client.post(
+            "/mcp/call",
+            json={"name": "sandbox.runs", "arguments": {
+                "project_id": self.project_id, **arguments}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["result"]
+
+    def _streamable(self, **arguments: str) -> dict:
+        response = self.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "sandbox.runs", "arguments": {
+                    "project_id": self.project_id, **arguments}},
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["result"]["structuredContent"]
+
+    def _by_label(self, view: dict) -> dict[str, dict]:
+        return {str(run["label"]): run for run in view["runs"]}
+
+    def test_every_row_carries_a_url_signed_for_its_own_run(self) -> None:
+        runs = self._by_label(self._legacy(sandbox_uid=self.sandbox_uid))
+        self.assertEqual(sorted(runs), ["seed0", "seed1"])
+        for label, run in runs.items():
+            with self.subTest(label=label):
+                # Golden against the derivation itself, not a round-trip: the
+                # URL an agent is handed has to be the one the route verifies.
+                self.assertEqual(
+                    run["wait_url"],
+                    f"http://testserver/wait/{self.sandbox_uid}/{label}/"
+                    + wait_signature(
+                        key=SECRET, sandbox_uid=self.sandbox_uid, label=label
+                    ),
+                )
+
+    def test_the_streamable_transport_renders_the_same_url(self) -> None:
+        # Both transports reach the tool through ToolInvocationGateway.call_mcp,
+        # which is where the caller-reachable base is read; this pins that they
+        # stay one seam rather than two that can drift.
+        legacy = self._by_label(self._legacy(sandbox_uid=self.sandbox_uid))
+        streamed = self._by_label(self._streamable(sandbox_uid=self.sandbox_uid))
+        self.assertEqual(
+            {label: run["wait_url"] for label, run in streamed.items()},
+            {label: run["wait_url"] for label, run in legacy.items()},
+        )
+
+    def test_the_rendered_url_resolves_to_the_mounted_route(self) -> None:
+        """The prefix carries its own slashes, so a joining slip is a 404."""
+        runs = self._by_label(self._legacy(sandbox_uid=self.sandbox_uid))
+        response = self.client.get(runs["seed0"]["wait_url"])
+        self.assertNotEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.text, "MERV_RUNS_WAIT done seed0 status=finished exit_code=0\n"
+        )
+
+    def test_an_experiment_listing_never_cross_signs_its_sandboxes(self) -> None:
+        other_uid = self._sandbox(self._experiment("second-box"))
+        self.app.call_tool(
+            "sandbox.attach",
+            {"project_id": self.project_id, "experiment_id": self.experiment_id,
+             "sandbox_uid": other_uid},
+        )
+        self._mirror(other_uid, {"label": "sweep", "exit_code": 0})
+        runs = self._by_label(self._legacy(experiment_id=self.experiment_id))
+        self.assertEqual(sorted(runs), ["seed0", "seed1", "sweep"])
+        self.assertIn(other_uid, runs["sweep"]["wait_url"])
+        self.assertNotIn(self.sandbox_uid, runs["sweep"]["wait_url"])
+        # Each tag opens exactly one run: the neighbour's URL is refused for it.
+        self.assertEqual(
+            self.client.get(
+                f"http://testserver/wait/{other_uid}/sweep/"
+                + wait_signature(
+                    key=SECRET, sandbox_uid=self.sandbox_uid, label="sweep"
+                )
+            ).status_code,
+            410,
+        )
+        self.assertEqual(
+            self.client.get(runs["sweep"]["wait_url"]).status_code, 200
+        )
+
+    def test_a_composition_with_no_key_renders_no_field_at_all(self) -> None:
+        """Absent, not null: a consumer tests for the key, never for a value."""
+        keyless = TestClient(create_fastapi_app(self.app.http))
+        response = keyless.post(
+            "/mcp/call",
+            json={"name": "sandbox.runs", "arguments": {
+                "project_id": self.project_id, "sandbox_uid": self.sandbox_uid}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        for run in response.json()["result"]["runs"]:
+            self.assertNotIn("wait_url", run)
+
+    def test_a_library_call_with_no_reachable_base_renders_no_field(self) -> None:
+        """No request, no base: the facade still answers, just without URLs."""
+        view = self.app.call_tool(
+            "sandbox.runs",
+            {"project_id": self.project_id, "sandbox_uid": self.sandbox_uid},
+        )
+        self.assertEqual(len(view["runs"]), 2)
+        for run in view["runs"]:
+            self.assertNotIn("wait_url", run)
+        self.assertNotIn(
+            "wait_url",
+            self.app.sandboxes.runs(
+                project_id=self.project_id, sandbox_uid=self.sandbox_uid
+            )["runs"][0],
+        )
+
+    def test_a_rendered_url_never_reaches_a_persisted_log_intact(self) -> None:
+        """The row is a tool RESULT, and results reach the telemetry sinks: the
+        durable ledger stores only sizes, and every sink that keeps a body runs
+        it through the same scrubber the access log uses."""
+        runs = self._by_label(self._legacy(sandbox_uid=self.sandbox_uid))
+        url = runs["seed0"]["wait_url"]
+        self.assertNotIn(
+            wait_signature(key=SECRET, sandbox_uid=self.sandbox_uid, label="seed0"),
+            json.dumps(redact_sensitive(value={"runs": list(runs.values())})),
+        )
+        self.assertTrue(scrub_secret_text(url).endswith("/seed0/<redacted>"))
 
 
 class WaitRedactionTest(unittest.TestCase):
