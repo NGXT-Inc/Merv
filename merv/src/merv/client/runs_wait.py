@@ -623,9 +623,18 @@ def _drained(stream: Any) -> bool:
 def _say(line: str) -> bool:
     """The answer onto fd 1, through whatever is left of the stream.
 
-    Spawned with stdout closed, this process has no ``sys.stdout`` object at
-    all; spawned by a parent that hung up, it has one that raises. Neither may
-    reach the caller as a traceback, so the raw fd is the last thing tried.
+    The raw fd is for ONE thing: a process that has no ``sys.stdout`` to offer
+    the line to at all, spawned with the descriptor already closed. Not a
+    fallback for a stream that took the line badly — once a byte has been
+    offered to a stream, that attempt is the whole answer, whatever became of
+    it. How much landed is exactly what cannot be known there: a host that
+    wrote every character and THEN raised reports no count at all, because the
+    raise is what returned in place of one, and writing the line again down
+    the raw fd puts a second whole answer under a first one somebody may
+    already have woken on. Two identical lines are not one line said twice to
+    a consumer keying on the first it reads, and a partial line is the
+    `poll_error` it re-arms on — so an offering that did not plainly complete
+    ends here, with the exit code the observation earned still standing.
 
     The latch is claimed BEFORE the first byte is offered, not after the write
     returns. Writing is where the escapes live — a host's ``SystemExit`` from
@@ -638,15 +647,10 @@ def _say(line: str) -> bool:
     text = f"{line}\n"
     _ANSWERED.append(line)
     stream = sys.stdout
-    if stream is None:
-        return _say_raw(text)
-    sent = _delivered(stream.write, text)
-    if not sent:
-        return _say_raw(text)  # nothing landed, so the raw fd is still owed it
-    if sent < len(text):
-        # A stream that took part of the line and then stopped taking. The
-        # rest is not written elsewhere: half a line is the caller's
-        # `poll_error`, and finishing it down another path is a second answer.
+    write = getattr(stream, "write", None)
+    if not callable(write):
+        return _say_raw(text)  # no stream at all, so the fd is still owed it
+    if _delivered(write, text) < len(text):
         return False
     with contextlib.suppress(Exception):
         stream.flush()
@@ -673,6 +677,10 @@ def _delivered(write: Callable[[Any], Any], payload: Any) -> int:
     Anything that raises, or that reports no progress, is a stream that will
     not take the rest — the loop ends there rather than spinning on it, and
     what it managed is what the caller gets.
+
+    So the count is a floor and never a receipt: a writer that raises may have
+    taken every byte it was handed and reported none of them. Which is why an
+    incomplete return is `unknowable`, not `nothing`, to the one caller of this.
     """
     sent, total = 0, len(payload)
     while sent < total:

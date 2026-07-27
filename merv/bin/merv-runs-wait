@@ -13,7 +13,14 @@ CHILD=""
 PENDING_SIG=""
 SIG_SEEN=""
 TRAPPED=""
-WATCHDOG=""
+TIMEOUT=""
+TIMER=""
+ENDED=""
+# This shell's own pid, recorded here in the shell it names. The grace timer
+# below taps THIS process and nothing else, and it does so from inside a
+# subshell — which is exactly where `$$` stops being a thing worth asking, so
+# the answer is carried in rather than read there.
+SHIM_PID=$$
 # How long a signalled child gets to answer for itself before it is taken out
 # of the way. Long enough for a real watcher to state its line, short enough
 # that no caller waits on a wait nobody managed to stop.
@@ -34,8 +41,8 @@ teardown_line() {
 # send is not an acknowledgment, so a bounded volley can put all of its
 # attempts into a child that is still the shell about to BECOME the watcher
 # and lose every one of them to the exec, then clear the buffer as though the
-# teardown had been delivered. Instead the send is BACKED: whatever it did,
-# the watchdog below ends the child within the grace, `wait` returns either
+# teardown had been delivered. Instead the send is BACKED: whatever it did, the
+# grace below runs out and the wait loop ends the child, `wait` returns either
 # way, and the answer is then either the child's own line or one this script
 # authors under the name of the signal it saw. Non-delivery is survivable, so
 # it no longer has to be detected.
@@ -45,35 +52,59 @@ teardown_line() {
 # but not empty, and a teardown that lands in it is still a teardown.
 forward() {
   TRAPPED=1
+  # The name this script would answer under is the LAST teardown it saw, and
+  # it is recorded before the child is even consulted. A caller that escalates
+  # — TERM, then INT when the wait has not stopped — is ending this wait with
+  # the interrupt, and one that lands after the child is already reaped is
+  # still the caller's own: it has nobody to forward to, which is not the same
+  # as not having arrived.
+  SIG_SEEN="$1"
   if [ -z "$CHILD" ]; then
     PENDING_SIG="$1"
     return 0
   fi
-  SIG_SEEN="$1"
   kill -"$1" "$CHILD" 2>/dev/null || true
-  if [ -z "$WATCHDOG" ]; then
-    # Every descriptor of the caller's is traded for the void first. Killing
-    # this subshell leaves its `sleep` orphaned for the rest of the grace, and
-    # an orphan holding the pipe a platform reads is a wake that never
-    # arrives — with nothing shared, it is a process nobody is waiting on.
-    # The residual is the pid it names being reaped and reissued inside the
-    # grace, so it is stood down the instant the child is reaped, which on any
-    # run that ends at all is long before the sleep is up.
-    ( sleep "$GRACE"; kill -KILL "$CHILD" 2>/dev/null || true ) \
-      </dev/null >/dev/null 2>&1 &
-    WATCHDOG=$!
+  if [ -z "$TIMER" ]; then
+    # A TIMER, and pointedly not a killer. A detached helper that sleeps out
+    # the grace and only THEN expands a child's pid names whoever holds that
+    # pid by the end of the sleep — the kernel is free to reissue it the
+    # moment the child is reaped, and standing the helper down is a send
+    # nobody acknowledges, so that window cannot be closed from here. This one
+    # therefore signals a single process, the shim itself, with a single
+    # signal, SIGWINCH — whose default action is IGNORE. A tap that arrives
+    # late, at a pid this script no longer owns, is the one signal that costs
+    # its new owner nothing at all. The kill it stands in for is the parent's,
+    # below, where the child is still held. Every descriptor of the caller's
+    # is traded for the void first, so what this leaves behind can never be an
+    # orphan holding the pipe a platform reads.
+    ( exec >/dev/null 2>&1 0<&-; sleep "$GRACE"; kill -WINCH "$SHIM_PID" || true ) &
+    TIMER=$!
   fi
+  return 0
+}
+
+# The grace running out, arriving as a flag and nothing else. Whatever has to
+# be ended is the wait loop's to end — it is the one context still holding the
+# child — and a handler is not it. A tap with no teardown behind it is read by
+# nobody: a terminal resizing its window sends this signal too.
+timed_out() {
+  TRAPPED=1
+  TIMEOUT=1
   return 0
 }
 trap 'forward INT' INT
 trap 'forward TERM' TERM
 trap 'forward HUP' HUP
+trap timed_out WINCH
 
 CAPTURE=""
 cleanup() {
-  if [ -n "$WATCHDOG" ]; then
-    kill "$WATCHDOG" 2>/dev/null || true
-    WATCHDOG=""
+  # Best effort, and nothing rests on it: a timer that outlives this script
+  # taps a pid with a signal that is ignored by default, so standing it down
+  # is tidiness rather than safety. It is this shell's own child either way.
+  if [ -n "$TIMER" ]; then
+    kill "$TIMER" 2>/dev/null || true
+    TIMER=""
   fi
   if [ -n "$CAPTURE" ]; then
     rm -f "$CAPTURE" 2>/dev/null || true
@@ -156,8 +187,8 @@ CHILD=$!
 
 # The sliver the test above cannot cover: a signal landing between it and the
 # fork, buffered by `forward` because there was still no pid. There is one now,
-# so it goes out the same one-shot, watchdog-backed way as any other — a send
-# into a child that may still be mid-exec, which the grace makes survivable.
+# so it goes out the same one-shot, grace-backed way as any other — a send into
+# a child that may still be mid-exec, which the grace makes survivable.
 if [ -n "$PENDING_SIG" ]; then
   SIG="$PENDING_SIG"
   PENDING_SIG=""
@@ -170,26 +201,40 @@ fi
 # and `CHILD` is emptied the instant either happens, before anything else in
 # this script runs. From there a trap has nothing of ours to reach, so it can
 # no longer forward a signal to a pid that was reaped and reissued to somebody
-# else while this line was being read. The one statement between `wait`
-# returning and the clear is the same untotalizable class as a signal before
-# line 1: no ordering closes it, only shortening does.
+# else while this line was being read. Nothing at all stands between the two —
+# not a `true` off the end of the wait — because the boundary is measured in
+# commands rather than in lines, and every command in it is a window.
 #
 # Nothing is owed a second forward on the way through here: the watcher deafens
 # the moment it answers a signal, so the only child that could still take one
-# is a child already under the watchdog's grace.
+# is a child already inside the grace.
 WATCHER="$CHILD"
 while true; do
+  # The KILL the grace timer stands in for, in the one place it can stand: the
+  # parent's, on a child it is still waiting on. Every pass through here after
+  # the first is reached by a `wait` a trap CUT SHORT rather than one that came
+  # back with the child's status, so the pid named here is the pid that was
+  # forked. It is spent once, behind a grace that ran out and a teardown this
+  # script actually saw — a bare SIGWINCH, from a terminal or from a timer
+  # outliving its run, reaches this with no teardown behind it and does
+  # nothing. The residual is a child that exits in the few instructions
+  # between the tap and the kill: the same untotalizable class as a signal
+  # delivered before line 1, and the only one no ordering here closes.
+  if [ -n "$TIMEOUT" ] && [ -n "$SIG_SEEN" ] && [ -z "$ENDED" ]; then
+    ENDED=1
+    kill -KILL "$WATCHER" 2>/dev/null || true
+  fi
   TRAPPED=""
-  wait "$WATCHER" 2>/dev/null || true
+  # `set -e` is off for exactly one command rather than the wait carrying an
+  # `|| true`: a nonzero wait is the child's own code and not this script's
+  # failure, and `true` is a COMMAND — one that would run between the reap and
+  # the clear, in the boundary this ordering exists to leave empty.
+  set +e
+  wait "$WATCHER" 2>/dev/null
   CHILD=""
+  set -e
   [ -n "$TRAPPED" ] || break
 done
-
-# Reaped, so the watchdog is holding a pid that is no longer ours to kill.
-if [ -n "$WATCHDOG" ]; then
-  kill "$WATCHDOG" 2>/dev/null || true
-  WATCHDOG=""
-fi
 
 LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
 
