@@ -1,6 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The teardown signals come FIRST, ahead of every other statement in this
+# script. A platform reclaims a background watcher with SIGTERM, and the
+# default action for one is a silent 143 with an empty stdout — so a signal
+# landing during this script's own setup used to kill it outright, leaving a
+# caller blocked on the process with no line to read and an exit code outside
+# the grammar. The one window left is a signal delivered before bash executes
+# the trap statements below, which is the same class of thing as SIGKILL:
+# untotalizable, and not something a handler can be installed early enough for.
+CHILD=""
+PENDING_SIG=""
+
+# Forward the ACTUAL signal: the watcher tells `interrupted` from `terminated`,
+# and a caller reading that line should see which of the two really happened.
+# Before there is a child, the signal is REMEMBERED rather than dropped — the
+# gap between arming these traps and having something to forward to is short
+# but not empty, and a teardown that lands in it is still a teardown.
+forward() {
+  if [ -n "$CHILD" ]; then
+    kill -"$1" "$CHILD" 2>/dev/null || true
+  else
+    PENDING_SIG="$1"
+  fi
+  return 0
+}
+trap 'forward INT' INT
+trap 'forward TERM' TERM
+trap 'forward HUP' HUP
+
+CAPTURE=""
+cleanup() {
+  if [ -n "$CAPTURE" ]; then
+    rm -f "$CAPTURE" 2>/dev/null || true
+  fi
+  return 0
+}
+trap cleanup EXIT
+
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
   DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
@@ -37,53 +74,68 @@ export PYTHONPATH="$PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 # exactly one line ever leaves this script. Stderr stays passthrough, which is
 # where the heartbeats and diagnostics live; nothing about the wake is delayed
 # by the capture, because the watcher's stdout carries the final answer alone.
-CAPTURE=""
-CHILD=""
-
-cleanup() {
+#
+# Which makes the capture load-bearing rather than an optimization: without it
+# the child speaks straight to our stdout and this script can only ADD to
+# whatever it said, restoring both escapes at once — an unvalidated exit code,
+# and a second line under a first one somebody may already have woken on. So
+# both plausible temp dirs are tried, and a machine with neither gets a total,
+# honest re-arm signal below instead of a watcher that might be lying.
+for TMP in "${TMPDIR:-/tmp}" /tmp; do
+  CAPTURE="$(mktemp "$TMP/merv-runs-wait.XXXXXX" 2>/dev/null)" || CAPTURE=""
   if [ -n "$CAPTURE" ]; then
-    rm -f "$CAPTURE" 2>/dev/null || true
+    break
   fi
-  return 0
-}
-trap cleanup EXIT
+done
 
-# Forward the ACTUAL signal: the watcher tells `interrupted` from `terminated`,
-# and a caller reading that line should see which of the two really happened.
-forward() {
-  if [ -n "$CHILD" ]; then
-    kill -"$1" "$CHILD" 2>/dev/null || true
-  fi
-  return 0
-}
-trap 'forward INT' INT
-trap 'forward TERM' TERM
-trap 'forward HUP' HUP
-
-# A machine with no writable temp dir still gets a watcher: with no capture the
-# child speaks straight to our stdout, and the belt below can only add to what
-# it said rather than verify it.
-CAPTURE="$(mktemp "${TMPDIR:-/tmp}/merv-runs-wait.XXXXXX" 2>/dev/null)" || CAPTURE=""
-
-if [ -n "$CAPTURE" ]; then
-  "$PYTHON_BIN" -m merv.client.runs_wait "$@" >"$CAPTURE" &
-else
-  "$PYTHON_BIN" -m merv.client.runs_wait "$@" &
+if [ -z "$CAPTURE" ]; then
+  # Nowhere to capture, so the child is never launched at all: `poll_error` is
+  # the honest answer for an environment this script cannot watch a run from,
+  # and it re-arms the caller instead of handing it an unverifiable code.
+  printf '%s\n' "MERV_RUNS_WAIT poll_error _ crashed" 2>/dev/null || true
+  exit 3
 fi
+
+"$PYTHON_BIN" -m merv.client.runs_wait "$@" >"$CAPTURE" &
 CHILD=$!
 
+# A teardown that beat the launch is delivered now — and delivered until it can
+# land. Sent in the same breath as the fork, a signal reaches a child that is
+# still the shell about to BECOME the watcher, and the handlers that took it
+# die with the exec: one send is not delivery, and it was measured losing the
+# teardown outright, after which the wait ran on as though nobody had asked it
+# to stop. The watcher deafens the moment it answers a signal, so a re-send can
+# only reach a child that has not answered for one yet, and a child that is
+# gone ends this on its own.
+if [ -n "$PENDING_SIG" ]; then
+  for TRY in 1 2 3 4 5; do
+    kill -0 "$CHILD" 2>/dev/null || break
+    forward "$PENDING_SIG"
+    sleep 0.04
+  done
+  PENDING_SIG=""
+fi
+
 while true; do
-  RC=0
-  wait "$CHILD" || RC=$?
+  wait "$CHILD" || true
   # `wait` also returns when a trapped signal ran, with the child still there:
   # the watcher answers a signal itself, so let it finish saying so.
   kill -0 "$CHILD" 2>/dev/null || break
 done
+# Reaped. A signal arriving from here on has nothing of ours left to reach, and
+# the pid it named may already belong to somebody else.
+CHILD=""
 
-LINE=""
-if [ -n "$CAPTURE" ]; then
-  LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
-fi
+LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
+
+# The shell half of the `done` grammar, kept in exact step with `_FACTS_RE` in
+# src/merv/client/runs_wait.py: one of the three terminal statuses, an exit
+# code that is an integer or `none`, and nothing else on the line. The presence
+# of the two words is not the two facts — `status=running exit_code=garbage`
+# has both and states neither — and exit 0 is the one answer that ends a
+# caller's waiting, so a `done` this cannot parse is not one. The end-to-end
+# test through this shim is the seam that keeps the two spellings together.
+DONE_LINE_RE='^MERV_RUNS_WAIT done [^ ]+ status=(finished|lost|unknown) exit_code=(-?[0-9]+|none)$'
 
 # A whole line is a whole observation, and it names its own code — so the line
 # is what the exit code follows, even when the process died AFTER stating one
@@ -91,21 +143,21 @@ fi
 # the answer away there would re-arm a caller whose run is already over, and
 # loop one forever on a run that will never exist.
 CODE=""
-case "$LINE" in
-  "MERV_RUNS_WAIT done "*" status="*" exit_code="*) CODE=0 ;;
-  "MERV_RUNS_WAIT still_running "*) CODE=2 ;;
-  "MERV_RUNS_WAIT poll_error "*) CODE=3 ;;
-  "MERV_RUNS_WAIT no_such_run "*) CODE=4 ;;
-esac
+if [[ "$LINE" =~ $DONE_LINE_RE ]]; then
+  CODE=0
+else
+  case "$LINE" in
+    "MERV_RUNS_WAIT still_running "*) CODE=2 ;;
+    "MERV_RUNS_WAIT poll_error "*) CODE=3 ;;
+    "MERV_RUNS_WAIT no_such_run "*) CODE=4 ;;
+  esac
+fi
 
 if [ -z "$CODE" ]; then
-  # Nothing sayable came back. With no capture that is only knowable from the
-  # exit code, so its own 0/2/3/4 still pass through untouched.
-  if [ -z "$CAPTURE" ]; then
-    case "$RC" in
-      0|2|3|4) exit "$RC" ;;
-    esac
-  fi
+  # Nothing sayable came back — no line at all, or one that is not an answer.
+  # The child's own exit code is never consulted here: it cannot tell an
+  # observation from a stray process, so every way out of this script stands
+  # behind a line this script validated.
   LINE="MERV_RUNS_WAIT poll_error _ crashed"
   CODE=3
 fi

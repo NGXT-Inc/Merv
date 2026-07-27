@@ -89,7 +89,11 @@ _MAX_ECHO_CHARS = 128
 # protocol line and wake a platform with an answer nobody sent.
 _UNSAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]")
 # What `done` has to actually say. A state token alone is not an outcome: the
-# two facts are the whole reason exit 0 licenses the caller to move on.
+# two facts are the whole reason exit 0 licenses the caller to move on. The
+# shim spells this same grammar in shell as DONE_LINE_RE (bin/merv-runs-wait),
+# because it validates the line this process wrote without being able to import
+# anything; the two must be changed together, and the end-to-end test that
+# drives a `done` through the shim is the seam that says so.
 _FACTS_RE = re.compile(
     rf"^status=({'|'.join(sorted(TERMINAL_RUN_STATUSES))}) exit_code=(-?\d+|none)$"
 )
@@ -511,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     are armed here rather than under ``__main__``, so a caller that imports
     this function is as total as the module invoked as a script.
     """
+    _ANSWERED.clear()  # one answer per invocation, and this one is importable
     _claim_std_fds()
     restore = _arm_teardown()
     try:
@@ -521,6 +526,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # and answering, which neither of them is watching. Nothing has been
         # written there yet, because the answer deafens before it speaks, so
         # this belt can still state one rather than leave through a traceback.
+        #
+        # It can also land AFTER the line — a host whose flush raises, a
+        # SystemExit from inside the write — and then there is nothing left to
+        # state: `_answer` finds the latch set and leaves through the code the
+        # line already named, because a caller woken by it is reading already.
         _deafen()
         _diagnostic(f"merv-runs-wait: {exc!r}")
         return _answer(final_line(POLL_ERROR, "_", "crashed"))
@@ -553,6 +563,15 @@ def _observed(argv: Sequence[str] | None) -> str:
     return line
 
 
+# The line this invocation has already put on the wake channel, if any. Written
+# is the point of no return: a platform watching output is reading by then, and
+# nothing that escapes afterwards — a flush that raised, a host's own
+# SystemExit, a signal in the last instruction — may say a second thing over
+# it. Module state because the escape can happen anywhere below `main`, and
+# cleared per invocation because `main` is importable and may be called again.
+_ANSWERED: list[str] = []
+
+
 def _answer(line: str) -> int:
     """Say it once on stdout, and never let saying it change what was said.
 
@@ -568,8 +587,15 @@ def _answer(line: str) -> int:
     Nothing may interrupt the saying of it either: past this point the caller
     is owed a line and a code, and a SIGTERM landing between the write and the
     return would hand it a valid line followed by a traceback and exit 1.
+
+    And it is said ONCE. Whatever reaches this function second — the crash belt
+    in ``main``, after an escape from inside the writing itself — arrives too
+    late to change an answer somebody may already have woken on, so it leaves
+    through that answer's own code instead of stating another.
     """
     _deafen()
+    if _ANSWERED:
+        return exit_code_for(_ANSWERED[0])
     code = exit_code_for(line)
     if not _say(line) or not _drained(sys.stderr):
         _mute_std_streams()
@@ -598,24 +624,29 @@ def _say(line: str) -> bool:
     Spawned with stdout closed, this process has no ``sys.stdout`` object at
     all; spawned by a parent that hung up, it has one that raises. Neither may
     reach the caller as a traceback, so the raw fd is the last thing tried.
+
+    The latch is set the instant the line LANDS, before the flush that follows
+    it — a stream that takes the line and then raises out of the flush has
+    still said it, and whatever catches that escape must not say it again.
     """
-    text = f"{line}\n"
     stream = sys.stdout
     if stream is None:
-        return _say_raw(text)
+        return _say_raw(line)
     try:
-        stream.write(text)
+        stream.write(f"{line}\n")
     except Exception:  # noqa: BLE001 — a stream that would not take it
-        return _say_raw(text)
+        return _say_raw(line)
+    _ANSWERED.append(line)
     with contextlib.suppress(Exception):
         stream.flush()
         return True
     return False  # written, but into something that will not drain
 
 
-def _say_raw(text: str) -> bool:
+def _say_raw(line: str) -> bool:
     with contextlib.suppress(Exception):
-        os.write(1, text.encode("utf-8", "replace"))
+        os.write(1, f"{line}\n".encode("utf-8", "replace"))
+        _ANSWERED.append(line)
         return True
     return False
 
