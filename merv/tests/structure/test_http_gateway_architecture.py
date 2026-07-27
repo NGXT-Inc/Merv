@@ -20,7 +20,10 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         # -> 125 when that same key was also handed to the sandbox facade, so
         # the renderer of a wait URL and its verifier cannot hold different
         # keys: one assignment plus the comment that says why.
-        self.assertLessEqual(len(source.splitlines()), 125)
+        # -> 132 when the key moved off the shared facade onto the gateway
+        # (two apps over one backend must not swap each other's keys): the
+        # up-front length check with its comment, one import, one ctor line.
+        self.assertLessEqual(len(source.splitlines()), 132)
         for seam in (
             "RequestAuthenticator",
             "ProjectAuthorizer",
@@ -63,11 +66,14 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         app_loc = len(APP.read_text(encoding="utf-8").splitlines())
         gateway_loc = len(GATEWAY.read_text(encoding="utf-8").splitlines())
         # +1 when sandbox.runs joined the base_url forwarding list: one tool
-        # name and one clause, no new branch.
-        self.assertLessEqual(gateway_loc, 448)
+        # name and one clause, no new branch. +5 when the wait key became a
+        # per-composition gateway field (one field with its two-line comment,
+        # one two-line forward for sandbox.runs) instead of shared facade state.
+        self.assertLessEqual(gateway_loc, 453)
         # +1 for the run-wait mount: the gateway itself did not move, so the
-        # pair ceiling tracks the factory's two composition lines.
-        self.assertLessEqual(app_loc + gateway_loc, 573)
+        # pair ceiling tracks the factory's two composition lines. Then the
+        # per-composition key rework: factory +7, gateway +5.
+        self.assertLessEqual(app_loc + gateway_loc, 585)
 
     def test_project_membership_has_one_transport_lookup(self) -> None:
         package_source = "\n".join(

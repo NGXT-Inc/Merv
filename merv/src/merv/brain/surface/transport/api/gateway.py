@@ -187,6 +187,9 @@ class ToolInvocationGateway:
     surface: HttpSurfacePolicy
     projects: ProjectAuthorizer
     ledger: CallLedger | None = None
+    # Per-composition: the SAME key this app's /wait route verifies with, so
+    # two apps over one backend each sign only what their own route accepts.
+    wait_secret: bytes | None = None
 
     def call(
         self,
@@ -264,6 +267,8 @@ class ToolInvocationGateway:
             # Each renders an absolute URL against the caller-reachable base: an
             # upload token-curl one-liner, or a run's signed wait capability.
             internal_kwargs = {"base_url": base_url}
+            if name == "sandbox.runs":
+                internal_kwargs["wait_secret"] = self.wait_secret
         if name == "sandbox.request":
             internal_kwargs = {
                 "provisioning_user_id": user_id,

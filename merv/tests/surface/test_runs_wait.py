@@ -35,6 +35,7 @@ from merv.brain.kernel.secret_tokens import (
 from merv.brain.kernel.state.activity import redact_sensitive, scrub_secret_text
 from merv.brain.kernel.utils import ValidationError, now_iso
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
+from merv.brain.surface.control.control_runtime import ControlToolCallSink
 from merv.brain.surface.config import (
     MGMT_KEY_PATH_ENV_VAR,
     MGMT_PUBLIC_KEY_ENV_VAR,
@@ -836,17 +837,44 @@ class RunsWaitUrlTest(unittest.TestCase):
             self.client.get(runs["sweep"]["wait_url"]).status_code, 200
         )
 
-    def test_a_composition_with_no_key_renders_no_field_at_all(self) -> None:
-        """Absent, not null: a consumer tests for the key, never for a value."""
-        keyless = TestClient(create_fastapi_app(self.app.http))
-        response = keyless.post(
+    def _runs_via(self, client: TestClient) -> dict[str, dict]:
+        response = client.post(
             "/mcp/call",
             json={"name": "sandbox.runs", "arguments": {
                 "project_id": self.project_id, "sandbox_uid": self.sandbox_uid}},
         )
         self.assertEqual(response.status_code, 200, response.text)
-        for run in response.json()["result"]["runs"]:
+        return self._by_label(response.json()["result"])
+
+    def test_a_composition_with_no_key_renders_no_field_at_all(self) -> None:
+        """Absent, not null: a consumer tests for the key, never for a value."""
+        keyless = TestClient(create_fastapi_app(self.app.http))
+        for run in self._runs_via(keyless).values():
             self.assertNotIn("wait_url", run)
+        # The key rides the composition, not the shared backend: a keyless
+        # sibling must not have unhooked the app that was already serving.
+        survivor = self._runs_via(self.client)["seed0"]
+        self.assertEqual(self.client.get(survivor["wait_url"]).status_code, 200)
+
+    def test_two_keyed_compositions_over_one_backend_stay_isolated(self) -> None:
+        """Each app signs with its own key and honors only its own signatures."""
+        second_key = b"second-wait-secret-9876543210zyxwvu"
+        other = TestClient(create_fastapi_app(self.app.http, wait_secret=second_key))
+        mine = self._runs_via(self.client)["seed0"]["wait_url"]
+        theirs = self._runs_via(other)["seed0"]["wait_url"]
+        self.assertNotEqual(mine, theirs)
+        self.assertEqual(self.client.get(mine).status_code, 200)
+        self.assertEqual(other.get(theirs).status_code, 200)
+        self.assertEqual(self.client.get(theirs).status_code, 410)
+        self.assertEqual(other.get(mine).status_code, 410)
+
+    def test_a_failed_composition_leaves_a_serving_app_untouched(self) -> None:
+        """A short key refuses its own composition before touching anything a
+        sibling app relies on."""
+        with self.assertRaises(ValueError):
+            create_fastapi_app(self.app.http, wait_secret=b"x")
+        survivor = self._runs_via(self.client)["seed0"]
+        self.assertEqual(self.client.get(survivor["wait_url"]).status_code, 200)
 
     def test_a_library_call_with_no_reachable_base_renders_no_field(self) -> None:
         """No request, no base: the facade still answers, just without URLs."""
@@ -870,11 +898,23 @@ class RunsWaitUrlTest(unittest.TestCase):
         it through the same scrubber the access log uses."""
         runs = self._by_label(self._legacy(sandbox_uid=self.sandbox_uid))
         url = runs["seed0"]["wait_url"]
+        tag = wait_signature(key=SECRET, sandbox_uid=self.sandbox_uid, label="seed0")
         self.assertNotIn(
-            wait_signature(key=SECRET, sandbox_uid=self.sandbox_uid, label="seed0"),
+            tag,
             json.dumps(redact_sensitive(value={"runs": list(runs.values())})),
         )
         self.assertTrue(scrub_secret_text(url).endswith("/seed0/<redacted>"))
+        # And through a real sink, not just the helper: the stored row itself
+        # must come back masked, or a sink that skips the scrubber hides here.
+        sink = ControlToolCallSink()
+        sink.record(
+            tool="sandbox.runs", source="http", status="ok", duration_ms=1,
+            arguments={"project_id": self.project_id},
+            result={"runs": list(runs.values())},
+        )
+        stored = json.dumps(sink.get(call_id=1))
+        self.assertIn("seed0", stored)
+        self.assertNotIn(tag, stored)
 
 
 class WaitRedactionTest(unittest.TestCase):

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from .... import __version__
+from ....kernel.secret_tokens import MIN_WAIT_SECRET_BYTES
 from ...auth import require_hosted_auth_decision
 from ..admin_http import register_admin_routes
 from ..feed_http import register_feed_routes
@@ -52,13 +53,19 @@ def create_fastapi_app(
     )
     require_hosted_auth_decision(auth=auth, hosted=surface.hosted_control, env=env)
     api = app
-    # One key, both directions: sandbox.runs signs its wait URLs with exactly
-    # what the route below verifies, so no app hands out a URL it would refuse.
-    api.sandboxes.wait_secret = wait_secret
+    # Validated before any wiring: a bad key must refuse this composition
+    # without touching state a sibling app over the same backend relies on.
+    if wait_secret and len(wait_secret) < MIN_WAIT_SECRET_BYTES:
+        raise ValueError(
+            f"wait secret must be at least {MIN_WAIT_SECRET_BYTES} bytes"
+        )
     authorizer = ProjectAuthorizer(projects=api.projects)
+    # One key, both directions: the gateway signs sandbox.runs wait URLs with
+    # exactly what the route below verifies, per composition — never shared.
     gateway = ToolInvocationGateway(
         tools=api.tools, reviews=api.reviews, sandboxes=api.sandboxes,
-        surface=surface, projects=authorizer, ledger=api.tool_ledger)
+        surface=surface, projects=authorizer, ledger=api.tool_ledger,
+        wait_secret=wait_secret)
     authenticator = RequestAuthenticator(
         surface=surface, verifier=auth, oauth_enabled=oauth_service is not None,
         canonical_mcp_resource=oauth_resource_uri)

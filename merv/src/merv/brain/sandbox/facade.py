@@ -136,11 +136,6 @@ class SandboxFacade:
         self.runs_ledger = runtime.runs
         self.runs_observer = runtime.runs_observer
         self.runs_wait_poll_seconds = RUNS_WAIT_POLL_SECONDS
-        # Set by the HTTP composition to the SAME key its wait route verifies
-        # with, so sandbox.runs can never mint a URL this app would refuse. A
-        # composition that serves no wait route (a library call, a test harness)
-        # leaves it None and sandbox.runs simply renders no wait_url.
-        self.wait_secret: bytes | None = None
         self._secrets_delivered: set[str] = set()
         # Per-sandbox HF token resolved at request() from the provisioning user,
         # held in memory until the VM/SSH post-boot secret delivery reads it (the
@@ -1078,6 +1073,7 @@ class SandboxFacade:
         sandbox_uid: str | None = None,
         wait_seconds: int = 0,
         base_url: str = "",
+        wait_secret: bytes | None = None,
     ) -> dict[str, Any]:
         # execute_runs deliberately tolerates "experiment has no sandboxes yet"
         # by swallowing the scoped lookup's NotFoundError, which would otherwise
@@ -1093,7 +1089,7 @@ class SandboxFacade:
             sandbox_uid=sandbox_uid,
             wait_seconds=wait_seconds,
             base_url=base_url,
-            wait_secret=self.wait_secret,
+            wait_secret=wait_secret,
         )
 
     def health(self) -> dict[str, Any]:
