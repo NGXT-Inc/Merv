@@ -274,11 +274,11 @@ def _normalized(value: Any, *, project_id: str, experiment_id: str) -> Any:
         return {
             key: (
                 "<timestamp>"
-                if key in {"created_at", "updated_at"}
+                if key in {"accepted_at", "created_at", "updated_at"}
                 # The delivery key is a real event id, so it differs per
                 # transport; only its presence is comparable across them.
                 else "<delivery>"
-                if key == "delivery_id"
+                if key in {"delivery_id", "event_id"}
                 else _normalized(
                     item, project_id=project_id, experiment_id=experiment_id
                 )
