@@ -43,10 +43,15 @@ UI_CORS_EXPOSE_HEADERS = ["ETag"]
 # route (INV-12): artifact document/figure PUTs, feed-media PUTs, and the
 # storage completion POST.
 _UPLOAD_TOKEN_PATH_RE = re.compile(r"(/api/(?:artifacts/[uf]|feed/u|storage/u)/)[^/?]+")
+# The run-wait tag is the same kind of credential in the same place: keep the
+# sandbox and the label (they name the run a log line is about), mask the tag.
+_WAIT_SIGNATURE_PATH_RE = re.compile(r"(/wait/[^/?]+/[^/?]+/)[^/?]+")
 
 
 def redact_upload_tokens(path: str) -> str:
-    return _UPLOAD_TOKEN_PATH_RE.sub(r"\1<redacted>", path)
+    return _WAIT_SIGNATURE_PATH_RE.sub(
+        r"\1<redacted>", _UPLOAD_TOKEN_PATH_RE.sub(r"\1<redacted>", path)
+    )
 
 
 def path_scoped_body(body: JsonBody, **scope: str) -> dict[str, Any]:

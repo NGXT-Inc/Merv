@@ -234,6 +234,53 @@ class SandboxRunLedger:
             ).fetchall()
             return [row_to_dict(row=item) or {} for item in rows]
 
+    def wait_facts(
+        self, *, sandbox_uid: str, label: str
+    ) -> dict[str, Any] | None:
+        """Everything an auth-exempt run-wait may learn about one run.
+
+        Deliberately narrow: a wait URL carries no credential, so this returns
+        the run's terminal state and the BRAIN clocks that bound how long that
+        URL stays valid — never the command, the log path, or the receipt
+        clocks the box itself wrote. None means no such sandbox row.
+
+        `present` separates a run the mirror has never seen (registration lag,
+        which is a hold) from one it has seen end (which is an answer); the two
+        are otherwise the same absent exit_code.
+        """
+        with closing(self.store.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT s.status AS sandbox_status,
+                       s.expires_at AS expires_at,
+                       s.runs_final_observed_at AS runs_final_observed_at,
+                       r.label AS run_label,
+                       r.exit_code AS exit_code,
+                       r.updated_at AS run_updated_at
+                FROM sandboxes s
+                LEFT JOIN sandbox_runs r
+                  ON r.sandbox_uid = s.sandbox_uid AND r.label = ?
+                WHERE s.sandbox_uid = ?
+                """,
+                (label, sandbox_uid),
+            ).fetchone()
+        if row is None:
+            return None
+        facts = row_to_dict(row=row) or {}
+        present = facts.get("run_label") is not None
+        observed = str(facts.get("runs_final_observed_at") or "")
+        updated = str(facts.get("run_updated_at") or "")
+        return {
+            "present": present,
+            "status": run_status(facts) if present else "",
+            "exit_code": facts.get("exit_code"),
+            # ISO-8601 second precision from one writer, so the later stamp is
+            # the larger string: when this process last knew anything.
+            "observed_at": max(observed, updated),
+            "sandbox_active": facts.get("sandbox_status") in ACTIVE_SANDBOX_STATUSES,
+            "expires_at": str(facts.get("expires_at") or ""),
+        }
+
     def records_for_experiment(self, *, experiment_id: str) -> list[dict[str, Any]]:
         """Runs across every sandbox ever attached to the experiment.
 

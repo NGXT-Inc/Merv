@@ -13,7 +13,7 @@ from ..admin_http import register_admin_routes
 from ..feed_http import register_feed_routes
 from ..http_policy import HttpSurfacePolicy
 from ..mcp_http import register_mcp_routes
-from . import artifacts, claims, events, experiments, litreview, mcp_preauth, meta, oauth, projects, reflections, reviews, sandboxes, storage, user_settings
+from . import artifacts, claims, events, experiments, litreview, mcp_preauth, meta, oauth, projects, reflections, reviews, runs_wait, sandboxes, storage, user_settings
 from .context import ApiRouteContext
 from .dependencies import HttpDependencies
 from .gateway import (
@@ -39,6 +39,7 @@ def create_fastapi_app(
     oauth_service: Any | None = None,
     ui_base_url: str = "",
     oauth_resource_uri: str = "",
+    wait_secret: bytes | None = None,
     env: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Compose transport adapters around an already-built backend."""
@@ -94,6 +95,7 @@ def create_fastapi_app(
         reviews.build_router(ctx, review_delivery=api.reviews),
         sandboxes.build_router(ctx, sandboxes=api.sandboxes, cost_query=api.compute_cost),
         events.build_router(timeline=api.timeline),
+        runs_wait.build_router(sandboxes=api.sandboxes, secret=wait_secret),
         user_settings.build_router(user_settings=api.user_settings),
     )
     for router in routers:

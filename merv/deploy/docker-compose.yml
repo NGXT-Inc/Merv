@@ -181,6 +181,10 @@ services:
       MERV_REQUIRE_AGENT_MLFLOW: ${MERV_REQUIRE_AGENT_MLFLOW:-${RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW:-0}}
       # Dev-only mounted management key from the mgmtkey one-shot above.
       MERV_MGMT_KEY_PATH: /run/secrets/research_plugin_mgmt_key/key
+      # Signs the auth-exempt run-wait URLs; hosted control has no writable
+      # state root to generate one in. Dev-only default — real deployments set
+      # this from a secret store (see deploy/.env.example).
+      MERV_WAIT_SECRET: ${MERV_WAIT_SECRET:-dev-only-wait-secret-not-for-production}
       AWS_ACCESS_KEY_ID: rpminio
       AWS_SECRET_ACCESS_KEY: rpminio_dev_password
       AWS_DEFAULT_REGION: us-east-1

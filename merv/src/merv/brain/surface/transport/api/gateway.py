@@ -51,9 +51,9 @@ class RequestAuthenticator:
         request.state.principal = LOCAL_PRINCIPAL
         request.state.authenticated = False
         path = request.url.path
-        # Token-bearer routes carry their own credential (INV-12).
-        exempt = ("/api/artifacts/u/", "/api/artifacts/f/",
-                  "/api/feed/u/", "/api/storage/u/")
+        # Token-bearer routes carry their own credential (INV-12), /wait/ too.
+        exempt = ("/api/artifacts/u/", "/api/artifacts/f/", "/api/feed/u/",
+                  "/api/storage/u/", "/wait/")
         if (path in ("/health", "/api/meta", "/internal/auth/mlflow")
                 or path.startswith(exempt)
                 or oauth.public_request(request, enabled=self.oauth_enabled)):

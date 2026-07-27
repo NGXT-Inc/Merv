@@ -46,6 +46,13 @@ _S3_SIGV4_PARAM_RE = re.compile(
 _UPLOAD_TOKEN_URL_RE = re.compile(
     r"(/api/(?:artifacts/[uf]|feed/u|storage/u)/)[^/?'\"\s]+"
 )
+# Run-wait URLs are auth-exempt capabilities too, and they are handed to agents
+# to paste into commands — so they reach logs inside string values, not just as
+# request paths. Keep the sandbox and label, mask the tag. Lockstep with
+# shared._WAIT_SIGNATURE_PATH_RE (the HTTP access-log scrubber).
+_WAIT_SIGNATURE_URL_RE = re.compile(
+    r"(/wait/[^/?'\"\s]+/[^/?'\"\s]+/)[^/?'\"\s]+"
+)
 
 
 def scrub_secret_text(text: str) -> str:
@@ -55,6 +62,8 @@ def scrub_secret_text(text: str) -> str:
         text = _S3_SIGV4_PARAM_RE.sub("<redacted>", text)
     if "/api/" in text:
         text = _UPLOAD_TOKEN_URL_RE.sub(r"\1<redacted>", text)
+    if "/wait/" in text:
+        text = _WAIT_SIGNATURE_URL_RE.sub(r"\1<redacted>", text)
     return text
 
 

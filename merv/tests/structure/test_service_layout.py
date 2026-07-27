@@ -1422,9 +1422,22 @@ class ServiceLayoutTest(unittest.TestCase):
         self.assertNotIn("services.identity", _rc_source("reviews.py"))
 
     def test_opaque_secret_token_helpers_are_single_sourced(self) -> None:
+        # The set grew when the run-wait key loader landed here: that key is
+        # read from the environment or generated into the state root, so the
+        # module owns file and env access now. Still exact — a token helper
+        # that starts reaching for anything else has stopped being one.
         self.assertEqual(
             _import_module_names(BACKEND_ROOT / "kernel" / "secret_tokens.py"),
-            {"hashlib", "hmac", "secrets"},
+            {
+                "collections.abc",
+                "env",
+                "hashlib",
+                "hmac",
+                "merv.shared.errors",
+                "os",
+                "pathlib",
+                "secrets",
+            },
         )
         sensitive_paths = (
             RESEARCH_CORE / "reviews.py",
