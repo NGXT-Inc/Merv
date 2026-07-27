@@ -16,7 +16,9 @@ import base64
 import io
 import json
 import os
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -52,6 +54,10 @@ from tests.support.brain import TestBrain
 
 SECRET = b"wait-secret-for-tests-0123456789abcdef"
 UID = "sbx-1"
+# Nothing listens on port 1: a wait that answers `transport` immediately.
+DEAD_URL = f"http://127.0.0.1:1/wait/{UID}/seed0/deadbeef"
+# The shim a platform actually arms, next to the module it runs.
+SHIM = Path(runs_wait.__file__).resolve().parents[3] / "bin" / "merv-runs-wait"
 
 
 def _b64(text: str) -> str:
@@ -197,6 +203,39 @@ class _DribbleHandler(_Quiet):
                 self.wfile.write(b": tool call in progress\n\n")
                 self.wfile.flush()
             self.server.release.wait(0.05)
+
+
+class _StallHandler(_Quiet):
+    """Dribbles once, then goes silent WITHOUT closing the connection.
+
+    The shape a clock checked BETWEEN reads cannot bound: the check passes on
+    the last dribble, and the read that follows it blocks inside the socket
+    for its whole timeout — well past the stop the check was enforcing.
+    """
+
+    def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler hook
+        self._record()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        with suppress(OSError):
+            self.wfile.write(b": tool call in progress\n\n")
+            self.wfile.flush()
+        self.server.release.wait(30)  # silent, and still holding the socket
+
+
+def _mute_listener(test: unittest.TestCase) -> str:
+    """A socket that takes the connection and then never says anything.
+
+    The stall is in the phase BEFORE there is a response to close or a body to
+    read, which is the half of a call no read-side timer can reach at all.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)  # the backlog completes the connect; nobody accepts it
+    test.addCleanup(listener.close)
+    host, port = listener.getsockname()
+    return f"http://{host}:{port}"
 
 
 def _stub(test: unittest.TestCase, handler, status: int, lines, **headers):
@@ -682,6 +721,47 @@ class RunsWaitTransportTest(unittest.TestCase):
         self.assertLess(spent, deadline + runs_wait.KEYED_OVERRUN_SECONDS)
 
 
+class RunsWaitWallClockTest(unittest.TestCase):
+    """The bound the caller was promised, against servers that go quiet.
+
+    urllib's timeout bounds one socket OPERATION, and a call is several of
+    them; each shape below spends its stall inside one, where a clock read
+    between operations never gets a turn. What must hold for all of them is
+    one sentence: the call is back by the deadline it was handed, plus grace.
+    """
+
+    DEADLINE = 1.0
+    # Room for a thread hand-off and a socket teardown, and far less than the
+    # per-op timeout the old read could still spend past the stop: measured
+    # before the fix, every case below took ~6s for this deadline.
+    GRACE = 2.0
+
+    def _assert_bounded(self, control_url: str) -> None:
+        started = time.monotonic()
+        line = watch_keyed(
+            sandbox_uid=UID,
+            label="seed0",
+            deadline=self.DEADLINE,
+            call=lambda **kwargs: call_sandbox_runs(
+                control_url=control_url, key="mk_x", project_id="p", **kwargs
+            ),
+        )
+        spent = time.monotonic() - started
+        # A wait that ran out of time learned nothing, and says so.
+        self.assertEqual(line, "MERV_RUNS_WAIT still_running seed0")
+        self.assertEqual(runs_wait.exit_code_for(line), 2)
+        self.assertGreaterEqual(spent, self.DEADLINE)
+        self.assertLess(spent, self.DEADLINE + self.GRACE)
+        # ...and the contract as advertised, which the grace sits well inside.
+        self.assertLess(spent, self.DEADLINE + runs_wait.KEYED_OVERRUN_SECONDS)
+
+    def test_a_body_that_stalls_after_dribbling_cannot_outlive_the_deadline(self) -> None:
+        self._assert_bounded(_origin(_stub(self, _StallHandler, 200, [])))
+
+    def test_a_server_that_never_answers_at_all_cannot_either(self) -> None:
+        self._assert_bounded(_mute_listener(self))
+
+
 class RunsWaitEndToEndTest(unittest.TestCase):
     """A real brain on a real socket: the row it renders, the wait it answers.
 
@@ -785,11 +865,19 @@ class RunsWaitCliTest(unittest.TestCase):
         return code, out.getvalue().strip()
 
     def test_a_usage_error_is_a_poll_error_and_never_exit_two(self) -> None:
-        for argv in ([], ["--label", "seed0"], ["--url", "http://x/wait/u/l/s", "--label", "l"]):
+        # Changed with the totality fix: once parsing has captured a label,
+        # every line names it. A caller with several watchers armed should not
+        # have to guess which one just failed; before parsing there is nothing
+        # to name, so those lines still say `_`.
+        for argv, label in (
+            ([], "_"),
+            (["--label", "seed0"], "seed0"),
+            (["--url", "http://x/wait/u/from_url/s", "--label", "l"], "from_url"),
+        ):
             with self.subTest(argv=argv):
                 code, line = self._run(argv)
                 self.assertEqual(code, 3)
-                self.assertEqual(line, "MERV_RUNS_WAIT poll_error _ usage")
+                self.assertEqual(line, f"MERV_RUNS_WAIT poll_error {label} usage")
 
     def test_an_unparseable_deadline_leaves_through_the_protocol(self) -> None:
         code, line = self._run(
@@ -799,15 +887,18 @@ class RunsWaitCliTest(unittest.TestCase):
         self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error _ usage"))
 
     def test_keyed_mode_without_a_key_is_a_poll_error(self) -> None:
+        # The label is named here too: this usage error is found after parsing.
         code, line = self._run(
             ["--project-id", "p", "--sandbox-uid", UID, "--label", "seed0"],
             env={"MERV_MCP_KEY": "", "RESEARCH_PLUGIN_MCP_KEY": ""},
         )
-        self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error _ usage"))
+        self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error seed0 usage"))
 
     def test_nothing_leaves_this_process_outside_the_grammar(self) -> None:
         # The caller is a background process watching for one prefix and four
-        # exit codes; a traceback out of here would strand it forever.
+        # exit codes; a traceback out of here would strand it forever. It also
+        # names the run, like an interrupt does: a crash is a failure to
+        # observe THIS run, and the caller re-arms on that run alone.
         def _boom(**kwargs):
             raise RuntimeError("the wire caught fire")
 
@@ -816,7 +907,14 @@ class RunsWaitCliTest(unittest.TestCase):
                 ["--project-id", "p", "--sandbox-uid", UID, "--label", "seed0"],
                 env={"MERV_MCP_KEY": "mk_secret"},
             )
-        self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error _ crashed"))
+        self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error seed0 crashed"))
+
+    def test_a_crash_after_parsing_still_names_the_run_it_was_watching(self) -> None:
+        # The crash need not come from the wire: anything raised after the
+        # label is known answers for that label.
+        with patch.object(runs_wait, "_watch", lambda args: 1 / 0):
+            code, line = self._run(["--url", "http://x/wait/u/seed0/sig"])
+        self.assertEqual((code, line), (3, "MERV_RUNS_WAIT poll_error seed0 crashed"))
 
     def test_the_key_and_the_control_url_come_from_the_client_environment(self) -> None:
         seen: dict = {}
@@ -856,9 +954,9 @@ class RunsWaitProcessTest(unittest.TestCase):
         server = _stub(self, _HoldHandler, 200, lines)
         return f"{_origin(server)}/wait/{UID}/seed0/deadbeef", server
 
-    def _spawn(self, url: str) -> subprocess.Popen:
+    def _spawn(self, url: str, argv: list[str] | None = None) -> subprocess.Popen:
         proc = subprocess.Popen(
-            self._argv("--url", url), stdout=subprocess.PIPE,
+            argv or self._argv("--url", url), stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=self._env(),
         )
         self.addCleanup(proc.kill)
@@ -886,6 +984,17 @@ class RunsWaitProcessTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 interrupted"])
 
+    def test_a_termination_leaves_through_the_grammar_like_an_interrupt(self) -> None:
+        # SIGTERM is how a platform reclaims a background process, and its
+        # default action is a silent 143 with an empty stdout — the caller's
+        # own teardown, arriving as a crash nobody can read.
+        url, _ = self._held()
+        proc = self._spawn(url)
+        proc.terminate()
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 terminated"])
+
     def test_a_parent_that_hung_up_still_gets_the_code_it_earned(self) -> None:
         # The exit code is the half of the wake signal a dead pipe cannot eat:
         # a BrokenPipeError on the final write must not replace it.
@@ -898,6 +1007,71 @@ class RunsWaitProcessTest(unittest.TestCase):
         proc.stderr.close()
         self.assertNotIn("BrokenPipeError", err)
         self.assertNotIn("Traceback", err)
+
+    def test_an_importer_that_exits_on_main_is_as_total_as_the_module(self) -> None:
+        # `main` is importable, and the protection against the interpreter's
+        # own final flush used to live in the `__main__` block alone: the same
+        # dead pipe then died at shutdown instead, as exit 120 — not a code in
+        # the contract, and not one the caller can act on.
+        url, server = self._held("MERV_RUNS_WAIT done seed0 status=finished exit_code=0\n")
+        importer = (
+            "import sys\n"
+            "from merv.client.runs_wait import main\n"
+            "raise SystemExit(main(['--url', sys.argv[1]]))\n"
+        )
+        proc = self._spawn(url, [sys.executable, "-c", importer, url])
+        proc.stdout.close()
+        server.release.set()
+        self.assertEqual(proc.wait(timeout=60), 0)
+        err = proc.stderr.read()
+        proc.stderr.close()
+        self.assertNotIn("Traceback", err)
+
+    def test_a_watcher_spawned_with_stdout_closed_still_exits_its_code(self) -> None:
+        # fd 1 closed before the interpreter starts leaves `sys.stdout` as
+        # None, and the answer with nowhere to go. The exit code is the other
+        # half of the wake signal and it is still owed, so the write must fail
+        # silently rather than become an AttributeError and exit 1.
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'exec 1>&-; exec "$0" "$@"', *self._argv("--url", DEAD_URL)],
+            capture_output=True, text=True, env=self._env(), timeout=60,
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_the_shim_hands_the_watchers_own_answer_straight_through(self) -> None:
+        result = self._shim(SHIM, "--url", DEAD_URL)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 transport"]
+        )
+
+    def test_the_shim_answers_for_a_python_that_never_reached_the_module(self) -> None:
+        # The outermost belt: an import that failed, or an interpreter killed
+        # before it could install a handler, never reaches this module at all,
+        # and a caller blocked on the process would wake to a traceback and an
+        # exit code that means nothing in the grammar.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stray = Path(tmp.name) / "bin"
+        stray.mkdir()
+        copy = stray / SHIM.name
+        shutil.copy2(SHIM, copy)  # a tree with no src/ for `merv` to come from
+        result = self._shim(copy, "--url", DEAD_URL, path=tmp.name)
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
+        self.assertIn("No module named", result.stderr)
+
+    def _shim(self, shim: Path, *args: str, path: str = "") -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(shim), *args], capture_output=True, text=True, timeout=60,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "MERV_PYTHON": sys.executable,
+                "PYTHONPATH": path or os.pathsep.join(p for p in sys.path if p),
+            },
+        )
 
 
 if __name__ == "__main__":

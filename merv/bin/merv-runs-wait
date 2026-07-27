@@ -27,4 +27,28 @@ fi
 
 export PYTHONPATH="$PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
-exec "$PYTHON_BIN" -m merv.client.runs_wait "$@"
+# No exec: this is the outermost belt of the wake contract. The watcher answers
+# for everything it can reach, but an import that failed before it ran, or an
+# interpreter killed outright, never reaches it — and a caller blocked on this
+# process would then wake to a traceback and an exit code that means nothing.
+# Its own 0/2/3/4 pass through untouched; anything else becomes the grammar.
+CHILD=""
+trap '[ -n "$CHILD" ] && kill -TERM "$CHILD" 2>/dev/null || true' TERM INT HUP
+
+"$PYTHON_BIN" -m merv.client.runs_wait "$@" &
+CHILD=$!
+
+while true; do
+  RC=0
+  wait "$CHILD" || RC=$?
+  # `wait` also returns when a trapped signal ran, with the child still there:
+  # the watcher answers a signal itself, so let it finish saying so.
+  kill -0 "$CHILD" 2>/dev/null || break
+done
+
+case "$RC" in
+  0|2|3|4) exit "$RC" ;;
+esac
+
+printf 'MERV_RUNS_WAIT poll_error _ crashed\n'
+exit 3

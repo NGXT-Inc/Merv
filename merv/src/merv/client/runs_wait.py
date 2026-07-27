@@ -28,7 +28,10 @@ import contextlib
 import json
 import os
 import re
+import signal
+import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -72,6 +75,9 @@ KEYED_OVERRUN_SECONDS = 5.0
 # A body arrives in pieces, and one piece at a time is what lets a read be
 # abandoned on a clock instead of on the socket's own timeout.
 READ_CHUNK_BYTES = 65536
+# The wall clock is joined a hair past the budget it enforces: handing back
+# early would read as a failed call rather than as the deadline it is.
+JOIN_MARGIN_SECONDS = 0.05
 
 # `finished`, `lost` and `unknown` are all ends of the observation; only
 # `running` is a reason to keep waiting.
@@ -91,6 +97,14 @@ _FACTS_RE = re.compile(
 
 class UsageError(Exception):
     """A bad invocation. Never argparse's SystemExit(2): 2 is still_running."""
+
+
+class _Terminated(Exception):
+    """SIGTERM, in a shape this process can answer.
+
+    Its default action is a silent 143 with an empty stdout — the one way a
+    platform's own teardown can leave the watcher looking like a crash.
+    """
 
 
 class PollError(Exception):
@@ -124,7 +138,22 @@ def _state_of(line: str) -> str:
 def _note(line: str) -> None:
     """Progress goes to stderr; stdout is reserved for the answer."""
     if line:
-        print(line, file=sys.stderr, flush=True)
+        _diagnostic(line)
+
+
+def _diagnostic(text: str) -> None:
+    """Everything that is not the answer, and never at the answer's expense.
+
+    These are notes for a human. A stderr that was closed, replaced or hung up
+    must not turn one into an exception the caller reads as a crash — and it
+    must never fall back to stdout, which carries the wake signal alone.
+    """
+    stream = sys.stderr
+    if stream is None:
+        return
+    with contextlib.suppress(Exception):
+        stream.write(text if text.endswith("\n") else f"{text}\n")
+        stream.flush()
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -315,12 +344,11 @@ def call_sandbox_runs(
 ) -> dict[str, Any]:
     """One sandbox.runs call on the same HTTP MCP wire merv-client prints.
 
-    ``remaining`` is the caller's hard budget, and both clocks here answer to
-    it: the socket gets a little more than the budget per operation, and the
-    body is read under the budget itself — urllib's timeout is per socket
-    OPERATION, so a stream that keeps dribbling keepalives could otherwise
-    hold one read open forever. One call outlives a deadline by one op, never
-    by a stream.
+    ``remaining`` is the caller's hard budget, and the WHOLE call answers to
+    it — connect, headers and body together — because urllib's timeout is per
+    socket OPERATION and a call is many of them: a server that stalls between
+    two ops, or dribbles keepalives inside one, outlasts any setting of it.
+    The per-op timeout stays as the inner belt; the budget is the wall.
     """
     payload = {
         "jsonrpc": "2.0",
@@ -350,10 +378,8 @@ def call_sandbox_runs(
     held = wait_seconds + KEYED_CALL_MARGIN_SECONDS
     budget = held if remaining is None else max(remaining, 0.0)
     timeout = max(1.0, min(held, budget + KEYED_OVERRUN_SECONDS))
-    stop = time.monotonic() + budget
     try:
-        with _OPENER.open(request, timeout=timeout) as response:
-            body = _read_until(response, stop=stop)
+        body = _fetch_within(request, timeout=timeout, budget=budget)
     except urllib.error.HTTPError as exc:
         # A credential rode on this request, so a hop is a disclosure, not a
         # transport hiccup: name it, and never let the opener follow it.
@@ -364,12 +390,63 @@ def call_sandbox_runs(
     return tool_view(body)
 
 
+def _fetch_within(request: Any, *, timeout: float, budget: float) -> str:
+    """The whole call under ONE wall clock, whatever the socket is doing.
+
+    No arrangement of urllib's per-operation timeout bounds a call: a connect
+    that hangs, headers that never come and a body that dribbles are three
+    separate operations, each free to spend the timeout again. So the blocking
+    work runs where it can be WALKED AWAY FROM — a daemon thread, which can
+    never hold this process open — and the budget is spent joining it. The
+    socket is torn down on the way out so the abandoned read gives up too.
+    """
+    stop = time.monotonic() + budget
+    live: list[Any] = []  # the response, from the moment there is one
+    done: list[Any] = []  # the body, or whatever was raised getting it
+
+    def _fetch() -> None:
+        try:
+            response = _OPENER.open(request, timeout=timeout)
+            live.append(response)
+            with contextlib.closing(response):
+                done.append(_read_until(response, stop=stop))
+        except BaseException as exc:  # noqa: BLE001 — relayed, not handled
+            done.append(exc)
+
+    worker = threading.Thread(target=_fetch, name="merv-runs-wait", daemon=True)
+    worker.start()
+    worker.join(max(budget, 0.0) + JOIN_MARGIN_SECONDS)
+    if worker.is_alive():
+        for response in live:
+            _abandon(response)
+        raise PollError("timeout")
+    outcome = done[0] if done else PollError("transport")
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return str(outcome)
+
+
+def _abandon(response: Any) -> None:
+    """Tear the socket down under the worker still reading it.
+
+    Closing need not wake a read already blocked in recv; a shutdown does, and
+    a connection nobody is waiting for should not idle to its own timeout.
+    """
+    raw = getattr(getattr(response, "fp", None), "raw", None)
+    with contextlib.suppress(Exception):
+        raw._sock.shutdown(socket.SHUT_RDWR)  # noqa: SLF001 — the only handle
+    with contextlib.suppress(Exception):
+        response.close()
+
+
 def _read_until(response: Any, *, stop: float) -> str:
-    """The body, read under a WALL clock rather than urllib's per-op timeout.
+    """The body, stopped on the budget between reads rather than on the socket.
 
     Keepalive bytes reset a socket timeout forever; they cannot reset a budget.
-    A stream that never states an outcome hands the caller back a short body,
-    which is a malformed answer — and an answer is what the caller needs.
+    This is the cheap half of the bound — a stream that keeps DRIBBLING ends
+    here, with a short body, which is a malformed answer rather than a hang —
+    and one that goes silent mid-read is caught outside, by the clock that can
+    abandon a read this loop has already entered.
     """
     chunks: list[bytes] = []
     while time.monotonic() < stop:
@@ -428,27 +505,43 @@ def _last_json_message(body: str) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Every way out of this process is one grammar line and its exit code."""
+    """Every way out of this process is one grammar line and its exit code.
+
+    Every way in, too: the standard fds are claimed and SIGTERM is armed here
+    rather than under ``__main__``, so a caller that imports this function is
+    as total as the module invoked as a script.
+    """
+    _claim_std_fds()
+    restore = _arm_terminate()
+    try:
+        return _answer(_observed(argv))
+    finally:
+        restore()
+
+
+def _observed(argv: Sequence[str] | None) -> str:
+    """The one grammar line this invocation earned, however it got there."""
     watched = "_"
     try:
         args = _parser().parse_args(None if argv is None else list(argv))
         watched = _label_of(args)
         line = _watch(args)
     except UsageError as exc:
-        print(f"merv-runs-wait: {exc}", file=sys.stderr)
-        line = final_line(POLL_ERROR, "_", "usage")
-    except KeyboardInterrupt:
+        _diagnostic(f"merv-runs-wait: {exc}")
+        line = final_line(POLL_ERROR, watched, "usage")
+    except (KeyboardInterrupt, _Terminated) as exc:
         # A teardown, not a crash: the run being watched is known, and the
-        # caller is still reading for the grammar rather than for exit 130.
-        print("merv-runs-wait: interrupted", file=sys.stderr)
-        line = final_line(POLL_ERROR, watched, "interrupted")
+        # caller is still reading for the grammar rather than for 130 or 143.
+        reason = "terminated" if isinstance(exc, _Terminated) else "interrupted"
+        _diagnostic(f"merv-runs-wait: {reason}")
+        line = final_line(POLL_ERROR, watched, reason)
     except BaseException as exc:  # noqa: BLE001 — a watcher that dies wakes nobody
         # Whatever went wrong — including an exit some library took upon
         # itself — the caller is a background process watching for this
         # grammar, and leaving through a traceback would strand it.
-        print(f"merv-runs-wait: {exc!r}", file=sys.stderr)
-        line = final_line(POLL_ERROR, "_", "crashed")
-    return _answer(line)
+        _diagnostic(f"merv-runs-wait: {exc!r}")
+        line = final_line(POLL_ERROR, watched, "crashed")
+    return line
 
 
 def _answer(line: str) -> int:
@@ -457,13 +550,60 @@ def _answer(line: str) -> int:
     Stdout carries the final line and nothing else, so a platform watching
     output wakes exactly once and on the answer — and a parent that already
     closed the pipe still gets the exit code its observation earned, not a
-    BrokenPipeError's.
+    BrokenPipeError's. The code is settled BEFORE anything is written, because
+    it is the half of the wake signal no broken stream can eat; and a stream
+    that refused the line is muted right here, since the interpreter would
+    otherwise discover the same failure in its own final flush, where it
+    becomes exit 120 and the code is lost after all.
     """
     code = exit_code_for(line)
-    with contextlib.suppress(OSError, ValueError):
-        sys.stdout.write(f"{line}\n")
-        sys.stdout.flush()
+    if not _say(line) or not _drained(sys.stderr):
+        _mute_std_streams()
     return code
+
+
+def _drained(stream: Any) -> bool:
+    """True once the stream holds nothing that could fail on the way out.
+
+    Flushing what is already flushed costs a call and cannot fail, so this is
+    silent on every healthy run; it is the notes side of the same trap, where
+    a heartbeat left buffered in a stderr nobody is reading becomes exit 120
+    at shutdown just as surely as the answer would.
+    """
+    if stream is None:
+        return True
+    with contextlib.suppress(Exception):
+        stream.flush()
+        return True
+    return False
+
+
+def _say(line: str) -> bool:
+    """The answer onto fd 1, through whatever is left of the stream.
+
+    Spawned with stdout closed, this process has no ``sys.stdout`` object at
+    all; spawned by a parent that hung up, it has one that raises. Neither may
+    reach the caller as a traceback, so the raw fd is the last thing tried.
+    """
+    text = f"{line}\n"
+    stream = sys.stdout
+    if stream is None:
+        return _say_raw(text)
+    try:
+        stream.write(text)
+    except Exception:  # noqa: BLE001 — a stream that would not take it
+        return _say_raw(text)
+    with contextlib.suppress(Exception):
+        stream.flush()
+        return True
+    return False  # written, but into something that will not drain
+
+
+def _say_raw(text: str) -> bool:
+    with contextlib.suppress(Exception):
+        os.write(1, text.encode("utf-8", "replace"))
+        return True
+    return False
 
 
 def _label_of(args: argparse.Namespace) -> str:
@@ -473,18 +613,67 @@ def _label_of(args: argparse.Namespace) -> str:
     return echo(args.label) if args.label else "_"
 
 
-def _mute_std_streams() -> None:
-    """Point the real stdout/stderr at the void on the way out.
+def _claim_std_fds() -> None:
+    """Hold fds 1 and 2 open, pointed at the void if they arrived closed.
 
-    The interpreter flushes them as it exits, and on a pipe the parent already
+    A process spawned with stdout closed has no wake channel — but it does
+    have an exit code, and the fd it was denied would otherwise be handed to
+    the next socket this client opens, which is where the answer would then be
+    written. Live fds are left exactly as they are, so nothing that captures
+    this process's output is disturbed.
+    """
+    for fd in (1, 2):
+        try:
+            os.fstat(fd)
+            continue
+        except OSError:
+            pass
+        with contextlib.suppress(OSError):
+            null = os.open(os.devnull, os.O_WRONLY)
+            if null != fd:  # the void may land ON the fd it is standing in for
+                os.dup2(null, fd)
+                os.close(null)
+
+
+def _mute_std_streams() -> None:
+    """Point the real stdout/stderr at the void, once one of them has failed.
+
+    The interpreter flushes both as it exits, and on a pipe the parent already
     closed that raises — which would print a traceback on the wake channel and
-    replace this process's mapped exit code with one nobody can read.
+    replace this process's mapped exit code with 120. The dance is by the
+    numbers rather than through ``fileno()``: there may be no stream objects
+    left to ask, and /dev/null may itself land on fd 1, where closing the
+    descriptor we just opened would undo the whole point.
     """
     with contextlib.suppress(Exception):
         null = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(null, sys.stdout.fileno())
-        os.dup2(null, sys.stderr.fileno())
-        os.close(null)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        if null > 2:
+            os.close(null)
+
+
+def _terminate(signum: int, frame: Any) -> None:  # noqa: ARG001 — signal hook
+    raise _Terminated()
+
+
+def _arm_terminate() -> Callable[[], None]:
+    """Ask for SIGTERM as an exception, and hand back the way to put it back.
+
+    Best effort by design: off the main thread, or under an embedded
+    interpreter, this simply keeps the default and the outer belts answer.
+    Restoring matters because ``main`` is importable — a host process's own
+    signal handling is not this function's to keep once the wait is over.
+    """
+    with contextlib.suppress(Exception):
+        previous = signal.signal(signal.SIGTERM, _terminate)
+        return lambda: _restore_terminate(previous)
+    return lambda: None
+
+
+def _restore_terminate(previous: Any) -> None:
+    with contextlib.suppress(Exception):
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _watch(args: argparse.Namespace) -> str:
@@ -520,6 +709,11 @@ class _Parser(argparse.ArgumentParser):
     through the protocol rather than through argparse's own exits (its 2 is
     still_running, its 0 is done). The help TEXT still prints — on stderr,
     where a human reads it and a platform's wake channel never does.
+
+    Both writers render the text themselves rather than hand argparse a
+    stream: argparse falls back to STDOUT for a file it was given as None,
+    which is what a dead stderr would arrive as, and help on the wake channel
+    is exactly what this class exists to prevent.
     """
 
     def error(self, message: str):  # noqa: D102 — argparse hook
@@ -529,10 +723,10 @@ class _Parser(argparse.ArgumentParser):
         raise UsageError(message or "help requested")
 
     def print_help(self, file=None) -> None:  # noqa: D102 — argparse hook
-        super().print_help(sys.stderr)
+        _diagnostic(self.format_help())
 
     def print_usage(self, file=None) -> None:  # noqa: D102 — argparse hook
-        super().print_usage(sys.stderr)
+        _diagnostic(self.format_usage())
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -571,9 +765,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    # The only entry point there is (`python -m merv.client.runs_wait`), and
-    # the exit code is half the wake signal: nothing after the final line —
-    # not even the interpreter's own shutdown — may be allowed to change it.
-    _code = main()
-    _mute_std_streams()
-    raise SystemExit(_code)
+    # `python -m merv.client.runs_wait`, and nothing here that an importer of
+    # main() does not also get: the exit code is half the wake signal, and the
+    # muting that protects it from the interpreter's own shutdown now lives
+    # where the answer is written, not in this block.
+    raise SystemExit(main())
