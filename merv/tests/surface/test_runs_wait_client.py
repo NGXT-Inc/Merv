@@ -62,6 +62,8 @@ SHIM = Path(runs_wait.__file__).resolve().parents[3] / "bin" / "merv-runs-wait"
 # first statement of everything those traps now come ahead of.
 ARMED_ANCHOR = "trap 'forward HUP' HUP"
 SETUP_ANCHOR = 'SOURCE="${BASH_SOURCE[0]}"'
+# The watchdog's grace, as the shim spells it, so a test can shorten it.
+GRACE_ANCHOR = "GRACE=10"
 
 
 def _b64(text: str) -> str:
@@ -1037,21 +1039,54 @@ class _RealProcess(unittest.TestCase):
         dangerous thing it could: a `done` with a clean exit code."""
         return self._stub_python(f': > "{marker}"\nprintf "{line}\\n"\nexit 0\n')
 
-    def _armed_python(self) -> str:
+    def _armed_python(self, marker: Path) -> str:
         """A stand-in child that arms for a teardown the instant it starts.
 
         The real watcher needs a quarter of a second to reach its own handler,
         which would make what a forwarded signal DID an artifact of the
         interpreter rather than of the shim. A shell arms in a millisecond, and
-        says plainly which of the two things happened to it.
+        says plainly which of the two things happened to it. It also records
+        having run at all, which is how a test tells a teardown the shim
+        forwarded from one it never had to.
         """
         return self._stub_python(
+            f': > "{marker}"\n'
             'trap \'printf "MERV_RUNS_WAIT poll_error seed0 terminated\\n"; exit 3\' TERM\n'
             "N=0\n"
             "while [ $N -lt 40 ]; do sleep 0.05; N=$((N+1)); done\n"
             'printf "MERV_RUNS_WAIT still_running seed0\\n"\n'
             "exit 2\n"
         )
+
+    def _deaf_python(self) -> str:
+        """A stand-in child that ignores the teardown outright and waits on.
+
+        The shape of a forward that never landed — the send that died with the
+        child's own exec looks exactly like this from the shim's side — and the
+        one a re-send could never have fixed either.
+        """
+        return self._stub_python(
+            "trap '' TERM\n"
+            'printf "# waiting on nothing\\n" >&2\n'
+            "while :; do sleep 0.2; done\n"
+        )
+
+    def _hasty_shim(self, seconds: float) -> Path:
+        """The shim with the watchdog's grace cut down to a test's patience.
+
+        Ten seconds is for a real watcher stating a real line on a loaded
+        machine. What a test needs to see is only that the grace ENDS: a child
+        that never answers is taken out of the way and answered for, rather
+        than waited on by a caller nobody is going to wake.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        copy = Path(tmp.name) / SHIM.name
+        text = SHIM.read_text(encoding="utf-8")
+        self.assertIn(GRACE_ANCHOR, text)
+        copy.write_text(text.replace(GRACE_ANCHOR, f"GRACE={seconds}", 1), encoding="utf-8")
+        copy.chmod(0o755)
+        return copy
 
     def _stalled_shim(self, seconds: float) -> Path:
         """The shim, announcing its traps and then stalling before the child.
@@ -1297,6 +1332,94 @@ class RunsWaitTotalityTest(_RealProcess):
         self.assertEqual(code, 4)
         self.assertNotIn("Traceback", err)
 
+    def test_a_host_that_exits_from_inside_the_write_cannot_say_it_twice(self) -> None:
+        # The same escape one instruction earlier, and the one the latch used
+        # to miss entirely: the host leaves through `write` rather than the
+        # flush after it. The whole line was on the wake channel and the latch
+        # was still down — it went up after the write RETURNED, and this write
+        # never returns — so the crash belt found nothing claimed and said a
+        # second, contradicting thing under an answer already being read.
+        # Claiming the answer before offering the first byte is what makes the
+        # order of those two impossible to get wrong.
+        server = _stub(self, _StubHandler, 410, ["MERV_RUNS_WAIT no_such_run seed0\n"])
+        code, out, err = self._run_python(
+            "import sys\n"
+            "from merv.client import runs_wait\n"
+            "real, spent = sys.stdout, []\n"
+            "class Host:\n"
+            "    def write(self, text):\n"
+            "        real.write(text)\n"
+            "        real.flush()\n"
+            "        if not spent:\n"
+            "            spent.append(1)\n"
+            "            raise SystemExit(9)  # the host's own exit, mid-write\n"
+            "        return len(text)\n"
+            "    def flush(self):\n"
+            "        real.flush()\n"
+            "sys.stdout = Host()\n"
+            "raise SystemExit(runs_wait.main(['--url', sys.argv[1]]))\n",
+            url=f"{_origin(server)}/wait/{UID}/seed0/deadbeef",
+        )
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT no_such_run seed0"])
+        self.assertEqual(code, 4)  # the answer's own code, not the belt's 3
+        self.assertNotIn("Traceback", err)
+
+    def test_a_stream_that_takes_the_line_in_pieces_still_gets_all_of_it(self) -> None:
+        # A short write is not a refusal: `write` returns what it TOOK, and a
+        # pipe under pressure or a host stand-in that dribbles takes less than
+        # it was handed. The answer was offered once and latched whole
+        # regardless, so `MERV_RU` could stand on the wake channel as a
+        # complete answer with the rest of the line never offered to anybody.
+        server = _stub(self, _StubHandler, 410, ["MERV_RUNS_WAIT no_such_run seed0\n"])
+        code, out, err = self._run_python(
+            "import sys\n"
+            "from merv.client import runs_wait\n"
+            "real = sys.stdout\n"
+            "class Trickle:\n"
+            "    def write(self, text):\n"
+            "        real.write(text[:1])\n"
+            "        real.flush()\n"
+            "        return 1  # one character of it, and it says so\n"
+            "    def flush(self):\n"
+            "        real.flush()\n"
+            "sys.stdout = Trickle()\n"
+            "raise SystemExit(runs_wait.main(['--url', sys.argv[1]]))\n",
+            url=f"{_origin(server)}/wait/{UID}/seed0/deadbeef",
+        )
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT no_such_run seed0"])
+        self.assertEqual(code, 4)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_stream_that_stops_taking_leaves_part_of_a_line_and_no_second(self) -> None:
+        # And the end of that loop: a stream that takes seven characters and
+        # then takes nothing, ever. The offering stops rather than spinning on
+        # a writer making no progress, and what it managed is NOT finished
+        # down the raw-fd path — a partial line is the `poll_error` a consumer
+        # re-arms on, where a partial line with a whole one written under it
+        # is two answers. The code the observation earned survives both.
+        server = _stub(self, _StubHandler, 410, ["MERV_RUNS_WAIT no_such_run seed0\n"])
+        code, out, err = self._run_python(
+            "import sys\n"
+            "from merv.client import runs_wait\n"
+            "real, sent = sys.stdout, []\n"
+            "class Cliff:\n"
+            "    def write(self, text):\n"
+            "        if len(sent) >= 7:\n"
+            "            return 0  # and not one character more, ever\n"
+            "        sent.append(1)\n"
+            "        real.write(text[:1])\n"
+            "        real.flush()\n"
+            "        return 1\n"
+            "    def flush(self):\n"
+            "        real.flush()\n"
+            "sys.stdout = Cliff()\n"
+            "raise SystemExit(runs_wait.main(['--url', sys.argv[1]]))\n",
+            url=f"{_origin(server)}/wait/{UID}/seed0/deadbeef",
+        )
+        self.assertEqual(out, "MERV_RU")
+        self.assertEqual(code, 4)
+        self.assertNotIn("Traceback", err)
+
     def test_the_shim_refuses_an_exit_code_with_no_line_behind_it(self) -> None:
         # 0/2/3/4 used to pass through unexamined, so a child that exited 0
         # before the watcher ever ran woke a caller keying on the exit code
@@ -1403,13 +1526,26 @@ class RunsWaitTotalityTest(_RealProcess):
             with self.subTest(trap=trap):
                 self.assertLess(text.index(trap), text.index(SETUP_ANCHOR))
 
-    def test_a_teardown_that_beats_the_child_is_buffered_and_not_dropped(self) -> None:
+    def test_a_teardown_that_beats_the_child_aborts_the_launch(self) -> None:
         # The half of that window a handler can have: a signal that lands once
         # the traps are armed but before there is a pid to forward it to. It
-        # used to be discarded — the caller's own teardown, answered by
-        # nobody, with the wait running on as if nothing had been asked of it.
+        # was first DROPPED — the caller's own teardown, answered by nobody,
+        # with the wait running on as if nothing had been asked of it — and
+        # then buffered for delivery, which is the repair this one replaces:
+        # sent in the same breath as the fork, the signal reaches a child that
+        # is still the shell about to become the watcher and dies with the
+        # exec, so a bounded volley could clear the buffer having delivered
+        # nothing at all. Nothing needs delivering if nothing is started. The
+        # launch is ABORTED and the shim answers under the signal's own name.
+        #
+        # (This assertion is one of the two the round-6 fixes deliberately
+        # changed: the outcome used to be a race between the child's own line
+        # and a generic `crashed`, and is now neither and not a race.)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        marker = Path(tmp.name) / "the-child-ran"
         stalled = self._stalled_shim(0.6)
-        armed = self._armed_python()
+        armed = self._armed_python(marker)
         for attempt in range(3):  # it is a race; run it more than once
             with self.subTest(attempt=attempt):
                 proc = subprocess.Popen(
@@ -1423,16 +1559,59 @@ class RunsWaitTotalityTest(_RealProcess):
                 proc.terminate()
                 out, _ = proc.communicate(timeout=60)
                 self.assertEqual(proc.returncode, 3)
-                # The teardown reached the run. Which way it landed is a race
-                # the shim owes nobody an answer for — the child said so
-                # itself, or it was killed on the way to becoming a watcher and
-                # the shim said so for it. What neither of them is: the
-                # still_running of a wait nobody managed to stop.
-                self.assertIn(
-                    out.splitlines(),
-                    [["MERV_RUNS_WAIT poll_error seed0 terminated"],
-                     ["MERV_RUNS_WAIT poll_error _ crashed"]],
+                # The teardown reached the run, by the only route that cannot
+                # lose it: it named the signal the caller actually sent, and
+                # nothing was ever started for that signal to have to catch.
+                self.assertEqual(
+                    out.splitlines(), ["MERV_RUNS_WAIT poll_error _ terminated"]
                 )
+                self.assertFalse(marker.exists())
+
+    def test_a_child_deaf_to_the_teardown_is_ended_and_answered_for(self) -> None:
+        # The lost forward, in the only shape a test can hold still: a child
+        # that ignores the signal outright, which from the shim's side is what
+        # a send that died with the child's exec looks like too. Re-sending it
+        # could not tell the two apart — nothing acknowledges — so delivery
+        # stopped being the thing that has to work. The grace runs out, the
+        # child is taken out of the way, `wait` returns on its own, and the
+        # shim states the teardown itself rather than waiting on a run nobody
+        # managed to stop or calling it a generic crash.
+        proc = self._spawn(
+            DEAD_URL, [str(self._hasty_shim(0.5)), "--url", DEAD_URL],
+            env=self._shim_env(python=self._deaf_python()),
+        )
+        proc.terminate()
+        out, _ = proc.communicate(timeout=30)
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error _ terminated"])
+
+    def test_a_second_teardown_through_the_shim_cannot_add_a_line(self) -> None:
+        # The shim forwards, the child answers, and the platform signals again
+        # while both are still finishing: one line and one code, whichever of
+        # the two the second signal lands in.
+        url, _ = self._held()
+        proc = self._spawn(url, [str(SHIM), "--url", url], env=self._shim_env())
+        proc.terminate()
+        proc.terminate()
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 terminated"])
+
+    def test_the_shim_lets_go_of_the_reaped_pid_before_anything_else_runs(self) -> None:
+        # `kill -0 "$CHILD"` stood between the reap and the clear: a trap
+        # firing in those few statements forwarded a real signal to a pid the
+        # watcher no longer held, and which the kernel may by then have
+        # reissued to somebody else's process. The probe is gone — the loop
+        # asks bash rather than the OS whether a signal interrupted it — and
+        # the clear is the first statement after the wait, which leaves one
+        # statement of exposure: the same untotalizable class as a signal
+        # delivered before line 1. Order is the fix, so order is what this
+        # pins; the behavior around it is the rest of this class.
+        lines = [ln.strip() for ln in SHIM.read_text(encoding="utf-8").splitlines()]
+        waits = [i for i, ln in enumerate(lines) if ln.startswith("wait ")]
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(lines[waits[0] + 1], 'CHILD=""')
+        self.assertNotIn("kill -0", "\n".join(lines))
 
     def test_the_shims_done_grammar_is_exactly_the_watchers_own(self) -> None:
         # Presence is not the fact: `status=running` is a live run and

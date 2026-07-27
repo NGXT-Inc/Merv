@@ -588,10 +588,12 @@ def _answer(line: str) -> int:
     is owed a line and a code, and a SIGTERM landing between the write and the
     return would hand it a valid line followed by a traceback and exit 1.
 
-    And it is said ONCE. Whatever reaches this function second — the crash belt
-    in ``main``, after an escape from inside the writing itself — arrives too
-    late to change an answer somebody may already have woken on, so it leaves
-    through that answer's own code instead of stating another.
+    And it is said ONCE. The code is mapped here, before the line is offered
+    to any stream, and the latch is claimed down in ``_say`` before the first
+    byte of it goes anywhere — so whatever reaches this function second, the
+    crash belt in ``main`` after an escape from inside the writing itself,
+    arrives too late to change an answer somebody may already have woken on
+    and leaves through that answer's own code instead of stating another.
     """
     _deafen()
     if _ANSWERED:
@@ -625,30 +627,65 @@ def _say(line: str) -> bool:
     all; spawned by a parent that hung up, it has one that raises. Neither may
     reach the caller as a traceback, so the raw fd is the last thing tried.
 
-    The latch is set the instant the line LANDS, before the flush that follows
-    it — a stream that takes the line and then raises out of the flush has
-    still said it, and whatever catches that escape must not say it again.
+    The latch is claimed BEFORE the first byte is offered, not after the write
+    returns. Writing is where the escapes live — a host's ``SystemExit`` from
+    inside ``write``, a signal in that same instruction — and one of those
+    walking out with the latch still unset is how a line already on the wake
+    channel got a second one written under it. Claiming it early can at worst
+    cost a line that never landed; claiming it late costs a caller who is
+    already awake a contradiction. The exit code was settled before either.
     """
+    text = f"{line}\n"
+    _ANSWERED.append(line)
     stream = sys.stdout
     if stream is None:
-        return _say_raw(line)
-    try:
-        stream.write(f"{line}\n")
-    except Exception:  # noqa: BLE001 — a stream that would not take it
-        return _say_raw(line)
-    _ANSWERED.append(line)
+        return _say_raw(text)
+    sent = _delivered(stream.write, text)
+    if not sent:
+        return _say_raw(text)  # nothing landed, so the raw fd is still owed it
+    if sent < len(text):
+        # A stream that took part of the line and then stopped taking. The
+        # rest is not written elsewhere: half a line is the caller's
+        # `poll_error`, and finishing it down another path is a second answer.
+        return False
     with contextlib.suppress(Exception):
         stream.flush()
         return True
     return False  # written, but into something that will not drain
 
 
-def _say_raw(line: str) -> bool:
-    with contextlib.suppress(Exception):
-        os.write(1, f"{line}\n".encode("utf-8", "replace"))
-        _ANSWERED.append(line)
-        return True
-    return False
+def _say_raw(text: str) -> bool:
+    payload = text.encode("utf-8", "replace")
+    return _delivered(lambda chunk: os.write(1, chunk), payload) == len(payload)
+
+
+def _delivered(write: Callable[[Any], Any], payload: Any) -> int:
+    """Offer the whole payload to one writer, however many goes it takes.
+
+    A write that reports fewer units than it was handed has taken only that
+    much, and a caller reading for a whole line has not been answered yet — so
+    the remainder is offered again rather than assumed gone. ``os.write`` says
+    so in bytes and a text stream in characters; both are counts, and both are
+    short on a pipe under pressure or a host stand-in that dribbles.
+
+    A writer that reports nothing at all is taken at its word that it took
+    everything: it did not raise, and there is no count to disagree with.
+    Anything that raises, or that reports no progress, is a stream that will
+    not take the rest — the loop ends there rather than spinning on it, and
+    what it managed is what the caller gets.
+    """
+    sent, total = 0, len(payload)
+    while sent < total:
+        try:
+            wrote = write(payload[sent:])
+        except Exception:  # noqa: BLE001 — a stream that would not take it
+            break
+        if not isinstance(wrote, int):
+            return total  # no count to go on, and it did not refuse
+        if wrote <= 0:
+            break
+        sent = min(sent + wrote, total)
+    return sent
 
 
 def _label_of(args: argparse.Namespace) -> str:

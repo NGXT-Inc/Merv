@@ -11,17 +11,57 @@ set -euo pipefail
 # untotalizable, and not something a handler can be installed early enough for.
 CHILD=""
 PENDING_SIG=""
+SIG_SEEN=""
+TRAPPED=""
+WATCHDOG=""
+# How long a signalled child gets to answer for itself before it is taken out
+# of the way. Long enough for a real watcher to state its line, short enough
+# that no caller waits on a wait nobody managed to stop.
+GRACE=10
 
-# Forward the ACTUAL signal: the watcher tells `interrupted` from `terminated`,
-# and a caller reading that line should see which of the two really happened.
-# Before there is a child, the signal is REMEMBERED rather than dropped — the
+# The shim's own name for a teardown, when it is the one who has to say it:
+# the watcher tells `interrupted` from `terminated`, and a line authored here
+# instead of by the child has to draw the same distinction. HUP is a teardown.
+teardown_line() {
+  case "$1" in
+    INT) LINE="MERV_RUNS_WAIT poll_error _ interrupted" ;;
+    *) LINE="MERV_RUNS_WAIT poll_error _ terminated" ;;
+  esac
+  return 0
+}
+
+# Forward the ACTUAL signal, ONCE. Re-sending it was the wrong repair: a
+# send is not an acknowledgment, so a bounded volley can put all of its
+# attempts into a child that is still the shell about to BECOME the watcher
+# and lose every one of them to the exec, then clear the buffer as though the
+# teardown had been delivered. Instead the send is BACKED: whatever it did,
+# the watchdog below ends the child within the grace, `wait` returns either
+# way, and the answer is then either the child's own line or one this script
+# authors under the name of the signal it saw. Non-delivery is survivable, so
+# it no longer has to be detected.
+#
+# Before there is a child the signal is REMEMBERED rather than dropped — the
 # gap between arming these traps and having something to forward to is short
 # but not empty, and a teardown that lands in it is still a teardown.
 forward() {
-  if [ -n "$CHILD" ]; then
-    kill -"$1" "$CHILD" 2>/dev/null || true
-  else
+  TRAPPED=1
+  if [ -z "$CHILD" ]; then
     PENDING_SIG="$1"
+    return 0
+  fi
+  SIG_SEEN="$1"
+  kill -"$1" "$CHILD" 2>/dev/null || true
+  if [ -z "$WATCHDOG" ]; then
+    # Every descriptor of the caller's is traded for the void first. Killing
+    # this subshell leaves its `sleep` orphaned for the rest of the grace, and
+    # an orphan holding the pipe a platform reads is a wake that never
+    # arrives — with nothing shared, it is a process nobody is waiting on.
+    # The residual is the pid it names being reaped and reissued inside the
+    # grace, so it is stood down the instant the child is reaped, which on any
+    # run that ends at all is long before the sleep is up.
+    ( sleep "$GRACE"; kill -KILL "$CHILD" 2>/dev/null || true ) \
+      </dev/null >/dev/null 2>&1 &
+    WATCHDOG=$!
   fi
   return 0
 }
@@ -31,6 +71,10 @@ trap 'forward HUP' HUP
 
 CAPTURE=""
 cleanup() {
+  if [ -n "$WATCHDOG" ]; then
+    kill "$WATCHDOG" 2>/dev/null || true
+    WATCHDOG=""
+  fi
   if [ -n "$CAPTURE" ]; then
     rm -f "$CAPTURE" 2>/dev/null || true
   fi
@@ -96,35 +140,56 @@ if [ -z "$CAPTURE" ]; then
   exit 3
 fi
 
+# A teardown that beat the child ABORTS the launch. Nothing has started yet,
+# so there is nothing to deliver a signal to and nothing to lose one in: the
+# caller asked for this wait to stop before it began, and the honest answer is
+# to say so under the name of the signal it sent. Starting a watcher here in
+# order to immediately try to stop it is what made delivery a problem at all.
+if [ -n "$PENDING_SIG" ]; then
+  teardown_line "$PENDING_SIG"
+  printf '%s\n' "$LINE" 2>/dev/null || true
+  exit 3
+fi
+
 "$PYTHON_BIN" -m merv.client.runs_wait "$@" >"$CAPTURE" &
 CHILD=$!
 
-# A teardown that beat the launch is delivered now — and delivered until it can
-# land. Sent in the same breath as the fork, a signal reaches a child that is
-# still the shell about to BECOME the watcher, and the handlers that took it
-# die with the exec: one send is not delivery, and it was measured losing the
-# teardown outright, after which the wait ran on as though nobody had asked it
-# to stop. The watcher deafens the moment it answers a signal, so a re-send can
-# only reach a child that has not answered for one yet, and a child that is
-# gone ends this on its own.
+# The sliver the test above cannot cover: a signal landing between it and the
+# fork, buffered by `forward` because there was still no pid. There is one now,
+# so it goes out the same one-shot, watchdog-backed way as any other — a send
+# into a child that may still be mid-exec, which the grace makes survivable.
 if [ -n "$PENDING_SIG" ]; then
-  for TRY in 1 2 3 4 5; do
-    kill -0 "$CHILD" 2>/dev/null || break
-    forward "$PENDING_SIG"
-    sleep 0.04
-  done
+  SIG="$PENDING_SIG"
   PENDING_SIG=""
+  forward "$SIG"
 fi
 
+# The pid is waited on through a COPY. `wait` returns either when the child is
+# gone or when a trapped signal ran with the child still there — the watcher
+# answers a signal itself, so the waiting resumes to let it finish saying so —
+# and `CHILD` is emptied the instant either happens, before anything else in
+# this script runs. From there a trap has nothing of ours to reach, so it can
+# no longer forward a signal to a pid that was reaped and reissued to somebody
+# else while this line was being read. The one statement between `wait`
+# returning and the clear is the same untotalizable class as a signal before
+# line 1: no ordering closes it, only shortening does.
+#
+# Nothing is owed a second forward on the way through here: the watcher deafens
+# the moment it answers a signal, so the only child that could still take one
+# is a child already under the watchdog's grace.
+WATCHER="$CHILD"
 while true; do
-  wait "$CHILD" || true
-  # `wait` also returns when a trapped signal ran, with the child still there:
-  # the watcher answers a signal itself, so let it finish saying so.
-  kill -0 "$CHILD" 2>/dev/null || break
+  TRAPPED=""
+  wait "$WATCHER" 2>/dev/null || true
+  CHILD=""
+  [ -n "$TRAPPED" ] || break
 done
-# Reaped. A signal arriving from here on has nothing of ours left to reach, and
-# the pid it named may already belong to somebody else.
-CHILD=""
+
+# Reaped, so the watchdog is holding a pid that is no longer ours to kill.
+if [ -n "$WATCHDOG" ]; then
+  kill "$WATCHDOG" 2>/dev/null || true
+  WATCHDOG=""
+fi
 
 LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
 
@@ -158,7 +223,16 @@ if [ -z "$CODE" ]; then
   # The child's own exit code is never consulted here: it cannot tell an
   # observation from a stray process, so every way out of this script stands
   # behind a line this script validated.
-  LINE="MERV_RUNS_WAIT poll_error _ crashed"
+  #
+  # When a teardown was forwarded, `crashed` is the wrong name for this: the
+  # child was signalled and never answered — because the send died with its
+  # exec, or because it was deaf to it and the watchdog ended it — and what
+  # the caller is owed there is the teardown it asked for, not a mystery.
+  if [ -n "$SIG_SEEN" ]; then
+    teardown_line "$SIG_SEEN"
+  else
+    LINE="MERV_RUNS_WAIT poll_error _ crashed"
+  fi
   CODE=3
 fi
 
