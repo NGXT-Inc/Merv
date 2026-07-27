@@ -49,13 +49,32 @@ def dual_env_value(
     if legacy_value:
         if env is None and primary not in _warned_legacy_names:
             _warned_legacy_names.add(primary)
-            print(
+            _warn(
                 f"[merv] {legacy} is deprecated; set {primary} instead "
-                "(the legacy value was used)",
-                file=sys.stderr,
+                "(the legacy value was used)"
             )
         return legacy_value
     return None
+
+
+def _warn(text: str) -> None:
+    """A note onto stderr, or onto nothing at all — never onto stdout.
+
+    ``print(file=None)`` FALLS BACK TO STDOUT, and a client spawned with fd 2
+    closed has exactly that: ``sys.stderr`` is None for the life of the
+    process, however the descriptor is reopened afterwards. Clients like
+    ``merv-runs-wait`` carry their wake signal on stdout, where a stray note
+    reads as a protocol line nobody sent — so a note that cannot reach stderr
+    is dropped instead.
+    """
+    stream = sys.stderr
+    if stream is None:
+        return
+    try:
+        stream.write(f"{text}\n")
+        stream.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
 
 
 CLIENT_CONFIG_ENV_VAR = "MERV_CLIENT_CONFIG"

@@ -507,14 +507,23 @@ def _last_json_message(body: str) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     """Every way out of this process is one grammar line and its exit code.
 
-    Every way in, too: the standard fds are claimed and SIGTERM is armed here
-    rather than under ``__main__``, so a caller that imports this function is
-    as total as the module invoked as a script.
+    Every way in, too: the standard fds are claimed and the teardown signals
+    are armed here rather than under ``__main__``, so a caller that imports
+    this function is as total as the module invoked as a script.
     """
     _claim_std_fds()
-    restore = _arm_terminate()
+    restore = _arm_teardown()
     try:
         return _answer(_observed(argv))
+    except BaseException as exc:  # noqa: BLE001 — the seam, and only the seam
+        # A teardown signal fires exactly once and lands wherever the main
+        # thread stands — including in the few instructions between observing
+        # and answering, which neither of them is watching. Nothing has been
+        # written there yet, because the answer deafens before it speaks, so
+        # this belt can still state one rather than leave through a traceback.
+        _deafen()
+        _diagnostic(f"merv-runs-wait: {exc!r}")
+        return _answer(final_line(POLL_ERROR, "_", "crashed"))
     finally:
         restore()
 
@@ -555,7 +564,12 @@ def _answer(line: str) -> int:
     that refused the line is muted right here, since the interpreter would
     otherwise discover the same failure in its own final flush, where it
     becomes exit 120 and the code is lost after all.
+
+    Nothing may interrupt the saying of it either: past this point the caller
+    is owed a line and a code, and a SIGTERM landing between the write and the
+    return would hand it a valid line followed by a traceback and exit 1.
     """
+    _deafen()
     code = exit_code_for(line)
     if not _say(line) or not _drained(sys.stderr):
         _mute_std_streams()
@@ -653,27 +667,55 @@ def _mute_std_streams() -> None:
             os.close(null)
 
 
-def _terminate(signum: int, frame: Any) -> None:  # noqa: ARG001 — signal hook
-    raise _Terminated()
+def _teardown(signum: int, frame: Any) -> None:  # noqa: ARG001 — signal hook
+    """A teardown signal, once, in a shape this process can answer.
+
+    Deafening BOTH signals as the first one fires is the point: the raise
+    lands wherever the main thread happens to stand, and a second one landing
+    inside the clause already answering for the first would escape it — a
+    traceback and exit 1 where the caller is blocked reading for a line.
+    """
+    _deafen()
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt
+    raise _Terminated
 
 
-def _arm_terminate() -> Callable[[], None]:
-    """Ask for SIGTERM as an exception, and hand back the way to put it back.
+def _deafen() -> None:
+    """Stop listening for the signals this process answers for. Idempotent.
+
+    Best effort, like arming them was. Once an answer is settled every
+    remaining instruction IS the wake signal — the line, the flush, the code —
+    and a signal landing in that window would replace a stated answer with a
+    traceback.
+    """
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(Exception):
+            signal.signal(signum, signal.SIG_IGN)
+
+
+def _arm_teardown() -> Callable[[], None]:
+    """Ask for the teardown signals as exceptions, and hand back the undo.
 
     Best effort by design: off the main thread, or under an embedded
-    interpreter, this simply keeps the default and the outer belts answer.
-    Restoring matters because ``main`` is importable — a host process's own
-    signal handling is not this function's to keep once the wait is over.
+    interpreter, this simply keeps the defaults and the outer belts answer.
+    SIGINT is taken over as well as SIGTERM — its default already raises, but
+    only this handler disarms, and the two arrive by the same teardowns.
+    Restoring matters because ``main`` is importable: a host process's own
+    signal handling is not this function's to keep once the wait is over, and
+    the exit path deafened both.
     """
-    with contextlib.suppress(Exception):
-        previous = signal.signal(signal.SIGTERM, _terminate)
-        return lambda: _restore_terminate(previous)
-    return lambda: None
+    previous: dict[int, Any] = {}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(Exception):
+            previous[signum] = signal.signal(signum, _teardown)
+    return lambda: _restore_signals(previous)
 
 
-def _restore_terminate(previous: Any) -> None:
-    with contextlib.suppress(Exception):
-        signal.signal(signal.SIGTERM, previous)
+def _restore_signals(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        with contextlib.suppress(Exception):
+            signal.signal(signum, handler)
 
 
 def _watch(args: argparse.Namespace) -> str:

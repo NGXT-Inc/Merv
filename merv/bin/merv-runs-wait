@@ -28,14 +28,48 @@ fi
 export PYTHONPATH="$PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # No exec: this is the outermost belt of the wake contract. The watcher answers
-# for everything it can reach, but an import that failed before it ran, or an
-# interpreter killed outright, never reaches it — and a caller blocked on this
-# process would then wake to a traceback and an exit code that means nothing.
-# Its own 0/2/3/4 pass through untouched; anything else becomes the grammar.
+# for everything it can reach, but an import that failed before it ran, an
+# interpreter killed outright, or a stray process that exited 0 having said
+# nothing at all never reaches it — and an exit code alone cannot tell those
+# from an observed run, so a caller keying on it would wake to a false `done`.
+#
+# So the child's stdout is CAPTURED and verified rather than trusted, and
+# exactly one line ever leaves this script. Stderr stays passthrough, which is
+# where the heartbeats and diagnostics live; nothing about the wake is delayed
+# by the capture, because the watcher's stdout carries the final answer alone.
+CAPTURE=""
 CHILD=""
-trap '[ -n "$CHILD" ] && kill -TERM "$CHILD" 2>/dev/null || true' TERM INT HUP
 
-"$PYTHON_BIN" -m merv.client.runs_wait "$@" &
+cleanup() {
+  if [ -n "$CAPTURE" ]; then
+    rm -f "$CAPTURE" 2>/dev/null || true
+  fi
+  return 0
+}
+trap cleanup EXIT
+
+# Forward the ACTUAL signal: the watcher tells `interrupted` from `terminated`,
+# and a caller reading that line should see which of the two really happened.
+forward() {
+  if [ -n "$CHILD" ]; then
+    kill -"$1" "$CHILD" 2>/dev/null || true
+  fi
+  return 0
+}
+trap 'forward INT' INT
+trap 'forward TERM' TERM
+trap 'forward HUP' HUP
+
+# A machine with no writable temp dir still gets a watcher: with no capture the
+# child speaks straight to our stdout, and the belt below can only add to what
+# it said rather than verify it.
+CAPTURE="$(mktemp "${TMPDIR:-/tmp}/merv-runs-wait.XXXXXX" 2>/dev/null)" || CAPTURE=""
+
+if [ -n "$CAPTURE" ]; then
+  "$PYTHON_BIN" -m merv.client.runs_wait "$@" >"$CAPTURE" &
+else
+  "$PYTHON_BIN" -m merv.client.runs_wait "$@" &
+fi
 CHILD=$!
 
 while true; do
@@ -46,9 +80,37 @@ while true; do
   kill -0 "$CHILD" 2>/dev/null || break
 done
 
-case "$RC" in
-  0|2|3|4) exit "$RC" ;;
+LINE=""
+if [ -n "$CAPTURE" ]; then
+  LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
+fi
+
+# A whole line is a whole observation, and it names its own code — so the line
+# is what the exit code follows, even when the process died AFTER stating one
+# (killed on the way out, or reclaimed once its handlers were back). Throwing
+# the answer away there would re-arm a caller whose run is already over, and
+# loop one forever on a run that will never exist.
+CODE=""
+case "$LINE" in
+  "MERV_RUNS_WAIT done "*" status="*" exit_code="*) CODE=0 ;;
+  "MERV_RUNS_WAIT still_running "*) CODE=2 ;;
+  "MERV_RUNS_WAIT poll_error "*) CODE=3 ;;
+  "MERV_RUNS_WAIT no_such_run "*) CODE=4 ;;
 esac
 
-printf 'MERV_RUNS_WAIT poll_error _ crashed\n'
-exit 3
+if [ -z "$CODE" ]; then
+  # Nothing sayable came back. With no capture that is only knowable from the
+  # exit code, so its own 0/2/3/4 still pass through untouched.
+  if [ -z "$CAPTURE" ]; then
+    case "$RC" in
+      0|2|3|4) exit "$RC" ;;
+    esac
+  fi
+  LINE="MERV_RUNS_WAIT poll_error _ crashed"
+  CODE=3
+fi
+
+# Every write guarded and the mapped exit unconditional: a closed stdout costs
+# the caller the line, and must never also cost it the code.
+printf '%s\n' "$LINE" 2>/dev/null || true
+exit "$CODE"

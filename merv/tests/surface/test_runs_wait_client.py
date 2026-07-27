@@ -935,8 +935,8 @@ class RunsWaitCliTest(unittest.TestCase):
         self.assertEqual(seen["project_id"], "p1")
 
 
-class RunsWaitProcessTest(unittest.TestCase):
-    """The artifact itself: a real process, and every way out of it.
+class _RealProcess(unittest.TestCase):
+    """Plumbing for the tests that spawn the artifact instead of importing it.
 
     In-process tests can pin what ``main`` returns; only a real one can pin
     what the platform actually observes — the exit code the OS reports, and
@@ -954,16 +954,64 @@ class RunsWaitProcessTest(unittest.TestCase):
         server = _stub(self, _HoldHandler, 200, lines)
         return f"{_origin(server)}/wait/{UID}/seed0/deadbeef", server
 
-    def _spawn(self, url: str, argv: list[str] | None = None) -> subprocess.Popen:
+    def _spawn(
+        self,
+        url: str,
+        argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen:
         proc = subprocess.Popen(
             argv or self._argv("--url", url), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, env=self._env(),
+            stderr=subprocess.PIPE, text=True, env=env or self._env(),
         )
         self.addCleanup(proc.kill)
         # The heartbeat is the handshake: it says the watcher is really waiting
         # and has written nothing to stdout yet.
         self.assertTrue(proc.stderr.readline().startswith("# waiting"))
         return proc
+
+    def _stray_shim(self) -> tuple[Path, str]:
+        """The shim in a tree with no src/ for `merv` to come from."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stray = Path(tmp.name) / "bin"
+        stray.mkdir()
+        copy = stray / SHIM.name
+        shutil.copy2(SHIM, copy)
+        return copy, tmp.name
+
+    def _stub_python(self, body: str) -> str:
+        """A stand-in for the interpreter the shim resolves.
+
+        The shim's belts are for a child that never became a watcher, so a
+        test has to pin what that child does — which a real python running the
+        real module, by construction, cannot be made to do.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stub = Path(tmp.name) / "python-stub"
+        stub.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+        stub.chmod(0o755)
+        return str(stub)
+
+    def _shim_env(self, *, python: str = "", path: str = "") -> dict[str, str]:
+        return {
+            "PATH": os.environ.get("PATH", ""),
+            "MERV_PYTHON": python or sys.executable,
+            "PYTHONPATH": path or os.pathsep.join(p for p in sys.path if p),
+        }
+
+    def _shim(
+        self, shim: Path, *args: str, path: str = "", python: str = ""
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(shim), *args], capture_output=True, text=True, timeout=60,
+            env=self._shim_env(python=python, path=path),
+        )
+
+
+class RunsWaitProcessTest(_RealProcess):
+    """The artifact itself: a real process, and every way out of it."""
 
     def test_help_is_an_answer_on_the_wake_channel_like_any_other(self) -> None:
         # `-h` used to print to stdout and exit 0 — indistinguishable from an
@@ -1052,26 +1100,163 @@ class RunsWaitProcessTest(unittest.TestCase):
         # before it could install a handler, never reaches this module at all,
         # and a caller blocked on the process would wake to a traceback and an
         # exit code that means nothing in the grammar.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        stray = Path(tmp.name) / "bin"
-        stray.mkdir()
-        copy = stray / SHIM.name
-        shutil.copy2(SHIM, copy)  # a tree with no src/ for `merv` to come from
-        result = self._shim(copy, "--url", DEAD_URL, path=tmp.name)
+        copy, tree = self._stray_shim()
+        result = self._shim(copy, "--url", DEAD_URL, path=tree)
         self.assertEqual(result.returncode, 3)
         self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
         self.assertIn("No module named", result.stderr)
 
-    def _shim(self, shim: Path, *args: str, path: str = "") -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [str(shim), *args], capture_output=True, text=True, timeout=60,
+
+class RunsWaitTotalityTest(_RealProcess):
+    """The windows in which a total watcher was still not total.
+
+    Each of these was a real escape: a note on the wake channel, a belt that
+    failed before it could belt, a signal landing in the one window nothing
+    was watching, and an exit code no line stood behind.
+    """
+
+    def test_a_closed_stderr_never_pushes_a_note_onto_the_wake_channel(self) -> None:
+        # `print(file=None)` FALLS BACK TO STDOUT, and fd 2 closed at startup
+        # leaves `sys.stderr` as None for the life of the process — so the
+        # shared legacy-env deprecation note printed itself above the grammar
+        # line, on the one channel that carries the wake signal.
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'exec 2>&-; exec "$0" "$@"',
+             *self._argv("--project-id", "p", "--sandbox-uid", UID,
+                         "--label", "seed0", "--deadline", "5")],
+            capture_output=True, text=True, timeout=60,
             env={
-                "PATH": os.environ.get("PATH", ""),
-                "MERV_PYTHON": sys.executable,
-                "PYTHONPATH": path or os.pathsep.join(p for p in sys.path if p),
+                **self._env(),
+                "MERV_MCP_KEY": "",
+                "RESEARCH_PLUGIN_MCP_KEY": "mk_legacy",  # the legacy spelling warns
+                "MERV_CONTROL_URL": "http://127.0.0.1:1",  # nothing listens: one poll
             },
         )
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(
+            result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 transport"]
+        )
+
+    def test_the_shim_maps_its_exit_with_its_own_stdout_closed(self) -> None:
+        # The shim's belt is a write and an exit, and under `set -e` the write
+        # failing took the exit with it: fd 1 closed plus a child that never
+        # reached the module left exit 1, which is not in the grammar at all.
+        copy, tree = self._stray_shim()
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'exec 1>&-; exec "$0" "$@"', str(copy), "--url", DEAD_URL],
+            capture_output=True, text=True, timeout=60,
+            env=self._shim_env(path=tree),
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_a_signal_in_the_final_window_cannot_unsay_the_answer(self) -> None:
+        # Between the write and the return there is nothing left to do but
+        # exit, and a SIGTERM landing there used to raise straight out of
+        # `main`: a valid line, then a traceback, then exit 1 under it.
+        code, out, err = self._run_python(
+            "import os, signal, sys\n"
+            "from merv.client import runs_wait\n"
+            "said = runs_wait._say\n"
+            "def say(line):\n"
+            "    written = said(line)\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)  # reclaimed mid-answer\n"
+            "    return written\n"
+            "runs_wait._say = say\n"
+            "raise SystemExit(runs_wait.main(['--url', sys.argv[1]]))\n"
+        )
+        self.assertEqual(code, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 transport"])
+        self.assertNotIn("Traceback", err)
+
+    def test_a_second_teardown_signal_cannot_escape_the_first_ones_answer(self) -> None:
+        # A platform that sends SIGTERM twice, or a terminal that sends the
+        # signal the shim also forwards: the second landed inside the clause
+        # already answering for the first and escaped it — no line at all.
+        code, out, err = self._run_python(
+            "import os, signal, sys\n"
+            "from merv.client import runs_wait\n"
+            "def watch(args):\n"
+            "    os.kill(os.getpid(), signal.SIGTERM)\n"
+            "    raise AssertionError('the first signal never landed')\n"
+            "runs_wait._watch = watch\n"
+            "noted, again = runs_wait._diagnostic, []\n"
+            "def note(text):\n"
+            "    noted(text)\n"
+            "    if not again:\n"
+            "        again.append(1)\n"
+            "        os.kill(os.getpid(), signal.SIGTERM)  # while answering the first\n"
+            "runs_wait._diagnostic = note\n"
+            "raise SystemExit(runs_wait.main(['--url', sys.argv[1]]))\n"
+        )
+        self.assertEqual(code, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 terminated"])
+        self.assertIn("merv-runs-wait: terminated", err)  # the second was really sent
+        self.assertNotIn("Traceback", err)
+
+    def _run_python(self, program: str) -> tuple[int, str, str]:
+        result = subprocess.run(
+            [sys.executable, "-c", program, DEAD_URL],
+            capture_output=True, text=True, env=self._env(), timeout=60,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_the_shim_refuses_an_exit_code_with_no_line_behind_it(self) -> None:
+        # 0/2/3/4 used to pass through unexamined, so a child that exited 0
+        # before the watcher ever ran woke a caller keying on the exit code
+        # with a `done` and an empty stdout to read it from.
+        result = self._shim(SHIM, "--url", DEAD_URL, python=self._stub_python("exit 0\n"))
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
+
+    def test_a_line_already_stated_outlives_the_exit_code_that_lost_it(self) -> None:
+        # Killed on the way out, the watcher leaves a whole observation and an
+        # exit code that means nothing. The line is the answer and the answer
+        # names the code, so the line is what the code follows. The belt used
+        # to APPEND a second line here instead — and "last line wins" is no
+        # rule at all for a consumer woken by the first one it reads.
+        stub = self._stub_python(
+            'printf "MERV_RUNS_WAIT done seed0 status=finished exit_code=0\\n"\n'
+            "kill -KILL $$\n"
+        )
+        result = self._shim(SHIM, "--url", DEAD_URL, python=stub)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["MERV_RUNS_WAIT done seed0 status=finished exit_code=0"],
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_the_shim_forwards_the_signal_it_was_actually_sent(self) -> None:
+        # It sent TERM for all three, so a Ctrl-C came back as `terminated`:
+        # the caller was told the platform had reclaimed a watcher it stopped.
+        for signum, reason in (
+            (signal.SIGINT, "interrupted"),
+            (signal.SIGTERM, "terminated"),
+        ):
+            with self.subTest(reason=reason):
+                url, _ = self._held()
+                proc = self._spawn(url, [str(SHIM), "--url", url], env=self._shim_env())
+                proc.send_signal(signum)
+                out, _ = proc.communicate(timeout=60)
+                self.assertEqual(proc.returncode, 3)
+                self.assertEqual(
+                    out.splitlines(), [f"MERV_RUNS_WAIT poll_error seed0 {reason}"]
+                )
+
+    def test_the_shim_relays_a_healthy_answer_untouched(self) -> None:
+        # The capture is a belt, not a filter: the line arrives byte for byte,
+        # the exit code verbatim, and the notes stay on a live stderr — which
+        # is where a platform's own progress watching reads them.
+        stub = self._stub_python(
+            'printf "# waiting 20s\\n" >&2\n'
+            'printf "MERV_RUNS_WAIT no_such_run seed0\\n"\n'
+            "exit 4\n"
+        )
+        result = self._shim(SHIM, "--url", DEAD_URL, python=stub)
+        self.assertEqual(result.returncode, 4)
+        self.assertEqual(result.stdout, "MERV_RUNS_WAIT no_such_run seed0\n")
+        self.assertEqual(result.stderr, "# waiting 20s\n")
 
 
 if __name__ == "__main__":
