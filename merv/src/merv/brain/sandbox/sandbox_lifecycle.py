@@ -344,7 +344,9 @@ class SandboxLifecycle:
                 return lookup_found(str(orphan))
         return lookup_unavailable(unreachable) if unreachable else LOOKUP_NOT_FOUND
 
-    def observe_runs_before_terminal(self, *, row: dict[str, Any]) -> bool:
+    def observe_runs_before_terminal(
+        self, *, row: dict[str, Any], acquire_timeout: float | None = None
+    ) -> bool:
         """Read receipts one last time while the row is still active.
 
         Every terminal path calls this FIRST: once the row leaves
@@ -353,6 +355,12 @@ class SandboxLifecycle:
         as never having finished. Best-effort by construction — a failure
         simply returns False, which leaves the observation unstamped and reads
         downstream as `unknown` rather than `lost`.
+
+        `acquire_timeout` is how long this caller may wait for one of the
+        observer's read slots. None — the reaper's own single-threaded loop —
+        waits for as long as that takes; a request-originated caller passes a
+        finite budget, because the bill stops at the terminate below and must
+        never queue behind another sandbox's receipt read.
 
         Returns whether the read succeeded. The caller stamps it (via
         `commit_runs_observation`) only once the provider confirms the VM is
@@ -368,7 +376,7 @@ class SandboxLifecycle:
         if self.observe_runs is None:
             return False
         with suppress(Exception):  # a receipt read must never block teardown
-            return bool(self.observe_runs(row=row))
+            return bool(self.observe_runs(row=row, acquire_timeout=acquire_timeout))
         return False
 
     def commit_runs_observation(

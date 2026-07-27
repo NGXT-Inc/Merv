@@ -23,6 +23,7 @@ FACADE_INTERNALS = {
     "quotas",
     "repository",
     "runs_ledger",
+    "runs_observer",
     "runtime",
     "runs_wait_poll_seconds",
     "store",

@@ -100,6 +100,9 @@ class SandboxRunsTest(unittest.TestCase):
         args.update(arguments or {})
         return self.app.call_tool("sandbox.runs", args)
 
+    def _sweep(self) -> int:
+        return self.app.sandboxes.runs_observer.observe_live(max_age_seconds=0.0)
+
     def test_runs_refuses_an_experiment_from_another_project(self) -> None:
         """A caller authorized for one project cannot read another's receipts.
 
@@ -149,14 +152,16 @@ class SandboxRunsTest(unittest.TestCase):
 
     def test_run_finished_event_is_emitted_exactly_once(self) -> None:
         self.fake.run_listings[self.sandbox_id] = listing({"label": "seed0"})
-        self.app.sandboxes.runs_ledger.reconcile_live()
+        # Sweeps land in one instant here, so the observer's freshness window is
+        # switched off to make each one the real re-read it would be in life.
+        self._sweep()
         self.assertEqual(self._run_finished_events(), [])
         self.fake.run_listings[self.sandbox_id] = listing(
             {"label": "seed0", "exit_code": 1, "finished_at": "2026-07-05T11:00:00Z"}
         )
         # Reconcile repeatedly — daemon sweeps, tool reads, restarts.
-        self.app.sandboxes.runs_ledger.reconcile_live()
-        self.app.sandboxes.runs_ledger.reconcile_live()
+        self._sweep()
+        self._sweep()
         self._runs()
         events = self._run_finished_events()
         self.assertEqual(len(events), 1)
@@ -310,7 +315,7 @@ class SandboxRunsTest(unittest.TestCase):
             {"label": "seed0"},
             {"label": "prep", "exit_code": 0, "finished_at": "2026-07-05T10:05:00Z"},
         )
-        self.app.sandboxes.runs_ledger.reconcile_live()
+        self._sweep()
         nudge = self.app.call_tool("sandbox.get", get_args)["runs"]
         self.assertIn("1 live", nudge)
         self.assertIn("seed0", nudge)

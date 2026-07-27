@@ -26,6 +26,7 @@ class SandboxQueryHandler:
         self.backend = host.backend
         self.transcript_cache = host.transcript_cache
         self.runs_ledger = host.runs_ledger
+        self.runs_observer = host.runs_observer
         self.runs_wait_poll_seconds = host.runs_wait_poll_seconds
         self.metrics = host.metrics
         self._agent_result = host._agent_result
@@ -296,7 +297,13 @@ class SandboxQueryHandler:
         else:
             rows = self.repository.list_by_experiment(experiment_id=experiment_id)
         for row in rows:
-            self.runs_ledger.reconcile_row(row=row)
+            # One tick's worth of freshness: concurrent pollers on the same box
+            # share the read the first of them paid for, and a poller that
+            # cannot get a read slot within its own tick skips rather than
+            # stretch the loop — its next pass asks again.
+            self.runs_observer.observe(
+                row=row, max_age_seconds=self.runs_wait_poll_seconds
+            )
 
     def health(self) -> dict[str, Any]:
         health = self.backend.health()

@@ -17,6 +17,7 @@ from ..kernel.state.store import Connection
 from ..kernel.utils import NotFoundError, ValidationError, format_iso, parse_iso
 from .lifecycle_reducer import release_decision
 from .queries import SandboxQueryHandler
+from .runs_observer import RELEASE_OBSERVE_ACQUIRE_SECONDS
 from .runtime import SandboxRuntime
 from .sandbox_backend import BackendCapabilities, BackendValidationError, SandboxRequest
 from .sandbox_heartbeat import SandboxActivityPolicy
@@ -133,6 +134,7 @@ class SandboxFacade:
         self.store = self.repository.store
         self.metrics = runtime.metrics
         self.runs_ledger = runtime.runs
+        self.runs_observer = runtime.runs_observer
         self.runs_wait_poll_seconds = RUNS_WAIT_POLL_SECONDS
         self._secrets_delivered: set[str] = set()
         # Per-sandbox HF token resolved at request() from the provisioning user,
@@ -905,7 +907,12 @@ class SandboxFacade:
         was_active = bool(
             row.get("sandbox_id") and row.get("status") in ACTIVE_SANDBOX_STATUSES
         )
-        observed = self.lifecycle.observe_runs_before_terminal(row=row)
+        # A request thread, not the reaper: it waits a bounded while for a read
+        # slot and then terminates without the observation, which is exactly
+        # what a failed SSH read leaves behind (`unknown`, never `lost`).
+        observed = self.lifecycle.observe_runs_before_terminal(
+            row=row, acquire_timeout=RELEASE_OBSERVE_ACQUIRE_SECONDS
+        )
         outcome = self.lifecycle.terminate_vm(
             row=row,
             try_direct=bool(

@@ -40,23 +40,12 @@ class SandboxRunLedger:
 
     # ---------- reconcile (box filesystem -> table) ----------
 
-    def reconcile_live(self) -> int:
-        """Daemon sweep: refresh receipts for every running sandbox.
-
-        Rows without runs cost one cheap remote listing (missing .runs dir is
-        an empty answer). Returns how many rows answered.
-        """
-        reconciled = 0
-        for row in self.repository.list_running_rows():
-            try:
-                if self.reconcile_row(row=row):
-                    reconciled += 1
-            except Exception:  # noqa: BLE001 — the reaper loop must never die
-                continue
-        return reconciled
-
     def reconcile_row(self, *, row: dict[str, Any]) -> bool:
         """Refresh records for one sandbox row from its .runs listing.
+
+        The single remote read; every caller reaches it through `RunsObserver`,
+        which owns the dedupe, the per-sandbox serialization, and the cap on
+        how many boxes this process reads at once.
 
         A None listing ("no news": dead channel, unsupported backend) never
         mutates records — a flaky read cannot un-finish or lose a run. Only
@@ -92,20 +81,6 @@ class SandboxRunLedger:
             except Exception:  # noqa: BLE001 — an unmirrored receipt is not an absent one
                 return False
         return True
-
-    def final_observe(self, *, row: dict[str, Any]) -> bool:
-        """Last receipt read before a sandbox goes terminal. Does NOT stamp.
-
-        Called while the row is STILL active — `reconcile_row` refuses anything
-        else, and the provider VM is about to be destroyed, so this is the only
-        moment a run that finished seconds before termination can be recorded.
-        Stamping is deliberately a separate step (`mark_final_observed`): a
-        terminate can come back `maybe_alive` and leave the row running, and a
-        stamp written on that attempt would still be sitting there when some
-        later path takes the row terminal without reading anything — turning an
-        unobserved outcome into a confident `lost`.
-        """
-        return bool(self.reconcile_row(row=row))
 
     def mark_final_observed(
         self,

@@ -8,6 +8,7 @@ from ..kernel.env import env_float
 from ..kernel.ports.mgmt_keys import MgmtKeyStore
 from ..kernel.state.store import BaseStateStore
 from .repository import SandboxRepository
+from .runs_observer import RunsObserver
 from .sandbox_backend import SandboxBackend
 from .sandbox_daemons import SandboxDaemons
 from .sandbox_lifecycle import SandboxLifecycle
@@ -23,6 +24,7 @@ class SandboxRuntime:
     repository: SandboxRepository
     metrics: SandboxMetrics
     runs: SandboxRunLedger
+    runs_observer: RunsObserver
     lifecycle: SandboxLifecycle
     provisioner: SandboxProvisioner
     daemons: SandboxDaemons
@@ -53,6 +55,10 @@ def build_sandbox_runtime(
         backend=backend,
         mgmt_keys=mgmt_keys,
     )
+    # The process's one gateway to remote receipt reads: every path that wants
+    # a box asked goes through it, so a sandbox is read once per window no
+    # matter how many callers want the answer.
+    runs_observer = RunsObserver(ledger=runs, repository=repository)
     lifecycle = SandboxLifecycle(
         repository=repository,
         backend=backend,
@@ -69,7 +75,7 @@ def build_sandbox_runtime(
         ),
     )
     lifecycle.job_probe = provisioner.job_is_live
-    lifecycle.observe_runs = runs.final_observe
+    lifecycle.observe_runs = runs_observer.observe_forced
     lifecycle.stamp_runs_observed = runs.mark_final_observed
     daemons = SandboxDaemons(
         repository=repository,
@@ -77,15 +83,16 @@ def build_sandbox_runtime(
         provisioner=provisioner,
         lifecycle=lifecycle,
         sample_metrics=metrics.sample_metrics,
-        reconcile_runs=runs.reconcile_live,
+        reconcile_runs=runs_observer.observe_live,
         runs_active=runs.has_running_runs,
-        refresh_runs=runs.reconcile_row,
+        refresh_runs=runs_observer.observe_forced,
         force_expiry_reaper=force_expiry_reaper,
     )
     return SandboxRuntime(
         repository=repository,
         metrics=metrics,
         runs=runs,
+        runs_observer=runs_observer,
         lifecycle=lifecycle,
         provisioner=provisioner,
         daemons=daemons,
