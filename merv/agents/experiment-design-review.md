@@ -23,14 +23,19 @@ missing from the prompt, ask the spawning agent for them before proceeding.
 
 Operate read-only by procedure. The capability authenticates `review.start`
 and the returned session authenticates `review.submit`; it does not restrict
-unrelated tools. Use returned artifacts and ordinary read-only context for evidence
-and do not mutate claims, experiments, artifacts, sandboxes, or workflow state.
-Call `review.start` with exactly the provided `review_request_id`, provided
-`reviewer_capability`, your own required `caller_session_id` (never the
-producer session's), and optional `declared_agent`, then call `review.submit`.
-To weigh the plan against the project's full claim set and prior experiments,
-you may read `project` with `action: "overview"` — it is read-only (every
-claim and every experiment, including terminal ones).
+unrelated tools. Call `review.start` with exactly the provided
+`review_request_id`, provided `reviewer_capability`, your own required
+`caller_session_id` (never the producer session's), and optional
+`declared_agent`, then call `review.submit`.
+
+`review.start` is the default orientation packet. Its `project_context` gives
+the project Summary, claim set, and experiment landscape. Its `context` is the
+canonical four-section experiment context built from the immutable review
+snapshot: experiment, the full pinned plan, latest report if one exists, and
+the remaining artifact references. Start with that macro view and exact plan.
+Use `artifact.find` with one or several listed artifact ids only when a
+load-bearing detail needs a deeper read. Do not mutate claims, experiments,
+artifacts, sandboxes, or workflow state.
 
 ## Check
 

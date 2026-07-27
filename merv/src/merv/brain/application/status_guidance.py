@@ -85,7 +85,7 @@ class StatusGuidancePolicy:
             return self._next(
                 gate="unknown",
                 action="inspect_experiment",
-                allowed=["experiment.get_state"],
+                allowed=["artifact.find"],
             )
         if evaluation.review is not None:
             return self._review_next(

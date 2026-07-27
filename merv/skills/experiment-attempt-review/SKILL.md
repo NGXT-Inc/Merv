@@ -18,15 +18,20 @@ missing from the prompt, ask the spawning agent for them before proceeding.
 
 Operate read-only by procedure. The capability authenticates `review.start`
 and the returned session authenticates `review.submit`; it does not restrict
-unrelated tools. Use returned artifacts and ordinary read-only context for evidence
-and do not mutate claims, experiments, artifacts, sandboxes, or workflow state.
-Call `review.start` with exactly the provided `review_request_id`, provided
-`reviewer_capability`, your own required `caller_session_id` (never the
-producer session's), and optional `declared_agent`, then call `review.submit`.
+unrelated tools. Call `review.start` with exactly the provided
+`review_request_id`, provided `reviewer_capability`, your own required
+`caller_session_id` (never the producer session's), and optional
+`declared_agent`, then call `review.submit`.
 
-In `experiment.get_state` only the newest review carries its findings, notes,
-and evidence; older rounds are listed by synopsis alone. Pass that round's
-`review_id` to read one back in full.
+`review.start` is the default orientation packet. Its `project_context` gives
+the project Summary, claim set, and experiment landscape. Its `context` is the
+canonical four-section experiment context built from the immutable review
+snapshot: experiment, full pinned plan, full pinned report, and the remaining
+artifact references. Start with those macro views and exact documents. Batch
+the listed result, graph, and exhibit ids through
+`artifact.find(..., include_content=true)` when you need their full submitted
+evidence. Do not mutate claims, experiments, artifacts, sandboxes, or workflow
+state.
 
 ## Check
 

@@ -67,8 +67,17 @@ artifact. Bytes live in the sha256-keyed, project-namespaced blob store
 
 ## Reads
 
-- `artifact.find` — resolve one artifact by id, or list a project's complete
-  artifacts filtered by target/role.
+- `workflow.status_and_next` — the canonical four-section experiment context:
+  full live plan or terminal plan Summary, full latest report when present,
+  and timestamped references for every other current-attempt artifact.
+- `experiment.transition` — a compact acknowledgement only; it does not repeat
+  experiment context.
+- `artifact.find` — resolve one artifact by `artifact_id`, resolve an
+  ordered/atomic batch of up to 50 with `artifact_ids`, or list a project's
+  complete artifacts filtered by target/role. Id reads are metadata-only by
+  default; `include_content=true` opts into a bounded text envelope for focused
+  plan/report deep dives and marks binary or unavailable bytes without
+  returning them as text.
 - UI routes: `GET /api/projects/{pid}/artifacts`,
   `.../artifacts/{aid}/content`, `.../artifacts/{aid}/file`,
   `.../artifacts/{aid}/figure?rel=`.

@@ -27,7 +27,10 @@ from merv.brain.application.experiments.tracking import (
     TrackingContextResponse,
 )
 from merv.brain.application.experiments.presentation import SlimExperimentState
-from merv.brain.application.experiments.transition import TransitionResponse
+from merv.brain.application.experiments.transition import (
+    TransitionReceipt,
+    TransitionResponse,
+)
 from merv.brain.application.ports.storage import ProducedObject
 from merv.brain.application.ports.tracking import (
     CreateRunResult,
@@ -90,6 +93,7 @@ APPLICATION_DATACLASS_EXCLUSIONS = frozenset(
         "merv.brain.application.experiments.transition.TransitionExperiment",
         "merv.brain.application.reflections.ReflectionCommands",
         "merv.brain.application.reviews.ReadReviewStatus",
+        "merv.brain.application.reviews.StartReviewSession",
         "merv.brain.application.workflow.ProjectDashboardQuery",
         "merv.brain.application.workflow.StatusAndNextQuery",
     }
@@ -317,6 +321,22 @@ SAMPLES: dict[type, object] = {
         "metrics_exhibit": {"pinned": True},
         "feed_note": "Experiment started.",
     },
+    TransitionReceipt: {
+        "experiment_id": "exp_1",
+        "transition": "start_running",
+        "from_status": "ready_to_run",
+        "to_status": "running",
+        "status": "running",
+        "attempt_index": 1,
+        "event_id": 7,
+        "accepted_at": "2026-07-21T12:00:00Z",
+        "metrics_exhibit": {"pinned": True},
+        "feed_note": "Experiment started.",
+        "mlflow": {"configured": True},
+        "mlflow_run": RUN,
+        "mlflow_guidance": "Log every run.",
+        "mlflow_warning": {"tracking": "unavailable", "error": "down", "repair": "…"},
+    },
     StoredEvent: EVENT,
     EventCatalogEntry: EventCatalogEntry(
         producer="merv.brain.research_core.experiments.ExperimentService.transition_with_event",
@@ -479,6 +499,10 @@ ANNOTATION_DEBT = frozenset(
         ),
         (
             "merv.brain.application.experiments.transition.TransitionResponse.metrics_exhibit",
+            "object",
+        ),
+        (
+            "merv.brain.application.experiments.transition.TransitionReceipt.metrics_exhibit",
             "object",
         ),
         ("merv.brain.application.events.EventReaction.value", "object"),

@@ -366,9 +366,21 @@ class WorkflowGateTest(unittest.TestCase):
 
         self.assertEqual(out["status"], "running")
         self.assertEqual(out["attempt_index"], before["attempt_index"])
-        self.assertIn("Infrastructure retry requested", out["revision_context"])
-        self.assertIn("sandbox expired", out["revision_context"])
-        self.assertIn("provider terminated", out["revision_context"])
+        refreshed = self.call(
+            "workflow.status_and_next",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )
+        self.assertIn(
+            "Infrastructure retry requested",
+            refreshed["workflow"]["revision_context"],
+        )
+        self.assertIn(
+            "sandbox expired", refreshed["workflow"]["revision_context"]
+        )
+        self.assertIn(
+            "provider terminated", refreshed["workflow"]["revision_context"]
+        )
 
         wf = self.call(
             "workflow.status_and_next",
@@ -958,6 +970,88 @@ class WorkflowGateTest(unittest.TestCase):
         self.assertIn(req["review_request_id"], handoff["spawn_prompt"])
         self.assertIn(req["reviewer_capability"], handoff["spawn_prompt"])
         self.assertIn("experiment-design-review", handoff["spawn_prompt"])
+
+    def test_design_reviewer_starts_with_project_and_experiment_context(self) -> None:
+        claim = self.call(
+            "claim.create",
+            project_id=self.project_id,
+            statement="The threshold rule beats the majority baseline.",
+            scope="toy classification",
+            confidence="medium",
+        )
+        self.call(
+            "experiment.create",
+            name="prior-context",
+            project_id=self.project_id,
+            intent="Establish the majority-class baseline.",
+        )
+        exp = self.call(
+            "experiment.create",
+            name="contextual-review",
+            project_id=self.project_id,
+            intent="Test the threshold rule against that baseline.",
+            tested_claim_ids=[claim["id"]],
+        )
+        self._submit(
+            exp_id=exp["id"], path="plan.md", role="plan", body=VALID_PLAN
+        )
+        self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+            transition="submit_design",
+        )
+        request = self.call(
+            "review.request",
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp["id"],
+            role="design_reviewer",
+        )
+
+        session = self.call(
+            "review.start",
+            review_request_id=request["review_request_id"],
+            reviewer_capability=request["reviewer_capability"],
+            caller_session_id="contextual-design-reviewer",
+        )
+        expected_context = self.call(
+            "workflow.status_and_next",
+            project_id=self.project_id,
+            experiment_id=exp["id"],
+        )["context"]
+
+        self.assertEqual(session["project_id"], self.project_id)
+        self.assertEqual(
+            session["target_snapshot_id"], request["target_snapshot_id"]
+        )
+        self.assertEqual(session["context"], expected_context)
+        project = session["project_context"]
+        self.assertEqual(project["id"], self.project_id)
+        self.assertEqual(
+            project["claims"],
+            [
+                {
+                    "id": claim["id"],
+                    "statement": claim["statement"],
+                    "scope": claim["scope"],
+                    "status": claim["status"],
+                    "confidence": claim["confidence"],
+                }
+            ],
+        )
+        summaries = {
+            item["id"]: item["summary"] for item in project["experiments"]
+        }
+        self.assertEqual(
+            summaries[exp["id"]],
+            "Test the threshold rule against that baseline.",
+        )
+        self.assertIn(
+            "Establish the majority-class baseline.", summaries.values()
+        )
+        self.assertEqual(session["context"]["plan"]["content"], VALID_PLAN)
+        self.assertNotIn("submitted_artifacts", session)
 
     def test_review_session_cannot_be_opened_by_the_producer(self) -> None:
         exp = self.call("experiment.create", name="review-helper-bad", project_id=self.project_id, intent="Review helper.")

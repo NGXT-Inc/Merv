@@ -37,11 +37,13 @@ is workflow-level rather than cryptographic identity.
 
    `caller_session_id` is required and its declared value must differ from the
    producer's declared session value.
-6. `review.start` returns the current attempt's submitted gated-role artifacts
-   plus any system metrics exhibit. Ordinary code, input, result, config, model,
-   and note files are not bundled; reviewers obtain any additional context
-   through ordinary read-only calls. The reviewer skill imposes a procedural
-   read-only role. The reviewer submits one structured verdict through:
+6. `review.start` returns bounded project orientation, the target's slim
+   experiment or reflection context, and the current attempt's full submitted
+   gated-role artifacts plus any system metrics exhibit. Ordinary code, input,
+   result, config, model, and note files are not bundled; reviewers obtain any
+   additional context through focused ordinary read-only calls. The reviewer
+   skill imposes a procedural read-only role. The reviewer submits one
+   structured verdict through:
 
    ```text
    review.submit(review_session_id, verdict, synopsis, return_to?, notes?, findings?, evidence?)
@@ -86,9 +88,10 @@ revoke-and-reissue: all prior requested or started sessions for that gate become
 
 The snapshot identifies the target status, attempt, and exact submitted artifact
 versions. `review.start` bundles pinned bytes for the gated artifacts and any
-system metrics exhibit; ordinary artifact ids remain snapshot references
-but their bytes are not included in that response. Reviewers judge the bundled
-submissions rather than later working-tree edits. A gated file revision must be
+system metrics exhibit, alongside project and target context read at successful
+review start. Ordinary artifact ids remain snapshot references but their bytes
+are not included in that response. Reviewers judge the bundled submissions
+rather than later working-tree edits. A gated file revision must be
 re-registered and reviewed under a fresh snapshot.
 
 Experiment-attempt rejections must choose:

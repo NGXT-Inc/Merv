@@ -472,8 +472,8 @@ class ExhibitFlowTest(unittest.TestCase):
         self.assertTrue(payload["pinned"])
 
     def test_reviewer_hydration_includes_the_exhibit_content(self) -> None:
-        # The exhibit exists only as pinned bytes — review.start hydration is
-        # the read-only reviewer's one way to see the ground-truth numbers.
+        # Review start lists the immutable exhibit id; artifact.find is the
+        # reviewer's focused path to the ground-truth numbers.
         exp_id = self._drive_to_running()
         self._log_run("seed-0")
         self._submit_ready(exp_id)
@@ -493,9 +493,18 @@ class ExhibitFlowTest(unittest.TestCase):
             reviewer_capability=req["reviewer_capability"],
             caller_session_id="experiment_reviewer-reviewer",
         )
-        by_role = {a["role"]: a for a in session["submitted_artifacts"]}
-        self.assertIn("exhibit", by_role)
-        exhibit = json.loads(by_role["exhibit"]["content"])
+        exhibit_ref = next(
+            artifact
+            for artifact in session["context"]["artifacts"]
+            if artifact["descriptor"] == "exhibit"
+        )
+        found = self.call(
+            "artifact.find",
+            project_id=self.project_id,
+            artifact_id=exhibit_ref["id"],
+            include_content=True,
+        )
+        exhibit = json.loads(found["content"]["content"])
         self.assertEqual([r["run_id"] for r in exhibit["runs"]], ["seed-0"])
 
     # ---- preview during running ----

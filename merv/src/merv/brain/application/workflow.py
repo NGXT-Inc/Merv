@@ -19,12 +19,12 @@ from .experiments.presentation import (
     project_fields,
     project_rows,
     rich_experiment_state,
-    slim_review_rows,
 )
+from .experiments.context import ExperimentContextQuery
 from .ports.sandbox import SandboxReads
 from .ports.storage import ProducedObjectCatalog
 from .reflection_guidance import literature_hint
-from .status_guidance import StatusGuidancePolicy, _SLIM_ARTIFACT_FIELDS
+from .status_guidance import StatusGuidancePolicy
 
 Record = dict[str, Any]
 RecordQuery = Callable[..., Record]
@@ -61,6 +61,7 @@ class StatusAndNextQuery:
     sandboxes: SandboxReads
     policy: StatusGuidancePolicy
     objects: ProducedObjectCatalog
+    context: ExperimentContextQuery
 
     def status_and_next(
         self, *, project_id: str | None = None, experiment_id: str | None = None
@@ -90,9 +91,16 @@ class StatusAndNextQuery:
     def status_and_next_agent(
         self, *, project_id: str | None = None, experiment_id: str | None = None
     ) -> Record:
-        return _slim_status(
-            self.status_and_next(project_id=project_id, experiment_id=experiment_id)
+        full = self.status_and_next(
+            project_id=project_id, experiment_id=experiment_id
         )
+        experiment = full.get("experiment")
+        context = (
+            self.context.build(state=experiment, project_id=project_id)
+            if isinstance(experiment, dict)
+            else None
+        )
+        return _slim_status(full, experiment_context=context)
 
     def project_models(
         self, *, snapshot: ResearchSnapshot, sandboxes: list[Record]
@@ -453,7 +461,9 @@ def _process_view(
     return result
 
 
-def _slim_status(full: Record) -> Record:
+def _slim_status(
+    full: Record, *, experiment_context: Record | None = None
+) -> Record:
     workflow = full.get("workflow") or {}
     project = full.get("project") or {}
     experiment = full.get("experiment")
@@ -473,26 +483,12 @@ def _slim_status(full: Record) -> Record:
             },
         }
     else:
+        if experiment_context is None:
+            raise RuntimeError("experiment context is required for experiment scope")
         result = {
             "scope": "experiment",
             "workflow": workflow,
-            "experiment": {
-                "id": experiment.get("id"),
-                "name": experiment.get("name"),
-                "status": experiment.get("status"),
-                "attempt_index": experiment.get("attempt_index"),
-                "intent": experiment.get("intent"),
-                "conclusion": experiment.get("conclusion"),
-                "updated_at": experiment.get("updated_at"),
-                "tested_claim_ids": [
-                    claim.get("id") for claim in experiment.get("tested_claims", [])
-                ],
-                "current_attempt_artifacts": project_rows(
-                    experiment.get("current_attempt_artifacts", []),
-                    _SLIM_ARTIFACT_FIELDS,
-                ),
-                "reviews": slim_review_rows(experiment.get("reviews", [])),
-            },
+            "context": experiment_context,
             "sandbox": _sandbox_summary(full.get("sandboxes", [])),
             "project": {"id": project.get("id"), "name": project.get("name")},
         }

@@ -11,6 +11,7 @@ from ...application.facade import (
     GetTrackingContext,
     ReadReviewStatus,
     ReflectionCommands,
+    StartReviewSession,
     StatusAndNextQuery,
     TransitionExperiment,
 )
@@ -38,6 +39,7 @@ def build_control_tool_handlers(
     artifact_submissions: ArtifactSubmissions,
     storage: ObjectStorage | None,
     reviews: ResearchReviewDelivery,
+    review_session: StartReviewSession,
     sandboxes: SandboxFacade,
     feed: FeedDelivery,
     experiment_transition: TransitionExperiment,
@@ -69,6 +71,7 @@ def build_control_tool_handlers(
         "reflection_tools": reflection_tools,
         "artifact_submissions": artifact_submissions,
         "reviews": reviews,
+        "review_session": review_session,
         "review_status": review_status,
         "sandboxes": sandboxes,
         "feed": feed,

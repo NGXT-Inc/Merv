@@ -152,8 +152,9 @@ Reviewer identity is modeled by MCP-issued capabilities.
    plaintext value is returned only in that response; durable state stores a
    hash.
 3. The producer spawns the proper reviewer agent with the role skill and capability.
-4. Reviewer calls `review.start`, inspects only allowed context, and calls
-   `review.submit`.
+4. Reviewer calls `review.start`, receives bounded project orientation, the
+   target's slim experiment/reflection context, and the full pinned submission
+   being judged, then calls `review.submit`.
 5. `review.request` verifies the workflow role against the active gate;
    `review.start` verifies the target snapshot, capability, and that the
    caller-supplied reviewer session string is non-empty and differs from the
@@ -212,10 +213,9 @@ After any experiment execution, the agent should:
    execution/conclusion and resubmit results when sent back to `running`
 8. propose experiment conclusion or claim update only after passing review
 
-Once a reviewed experiment is completed, `experiment.get_state` includes
-`claim_update_suggestions` for every tested claim when a conclusion is present.
-These are pre-scoped `claim.update` call skeletons; they are suggestions, not
-automatic mutations.
+Once a reviewed experiment is completed, its conclusion appears in
+`workflow.status_and_next.context.experiment`. Claim changes remain explicit
+`claim.update` operations; completion does not mutate claims automatically.
 
 Artifacts from prior attempts remain visible as experiment history, but MCP only
 uses current-attempt artifacts to decide whether result retention or

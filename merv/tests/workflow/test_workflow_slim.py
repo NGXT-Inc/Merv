@@ -11,11 +11,6 @@ from tests.support.brain import TestBrain
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 
 
-# association_version_id is the submission pin — agents confirm a
-# re-associate took effect by watching it change, so it stays in the slim view.
-SLIM_ARTIFACT_KEYS = {"id", "role", "lens_id", "path", "size_bytes"}
-HEAVY_ARTIFACT_KEYS = {"content_sha256", "content_type", "created_by", "created_at", "updated_at", "project_id", "submitted_order"}
-
 class WorkflowSlimTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -68,7 +63,10 @@ class WorkflowSlimTest(unittest.TestCase):
         )["id"]
         self.app.submit_artifact(
             project_id=self.project_id, target_type="experiment",
-            target_id=exp_id, role="plan", path="plan.md", body="planned\n",
+            target_id=exp_id,
+            role="plan",
+            path="plan.md",
+            body="## Summary\nTest the staged subset before scaling up.\n",
         )
         return exp_id
 
@@ -79,21 +77,24 @@ class WorkflowSlimTest(unittest.TestCase):
         self.assertEqual(slim["scope"], "experiment")
         self.assertIn("current_gate", slim["workflow"])
 
-        exp = slim["experiment"]
-        # The agent sees the experiment's identity: its name.
+        context = slim["context"]
+        self.assertEqual(
+            set(context), {"experiment", "plan", "report", "artifacts"}
+        )
+        exp = context["experiment"]
         self.assertEqual(exp["name"], "the-thing")
-        # The duplicate all-attempts `resources` list is gone…
-        self.assertNotIn("artifacts", exp)
-        self.assertIn("current_attempt_artifacts", exp)
-        # …and each resource carries only the light fields.
-        res = exp["current_attempt_artifacts"][0]
-        self.assertEqual(set(res), SLIM_ARTIFACT_KEYS)
-        self.assertEqual(HEAVY_ARTIFACT_KEYS & set(res), set())
-        self.assertEqual(res["role"], "plan")
-        # tested_claims collapsed to ids; reviews compacted.
-        self.assertIn("tested_claim_ids", exp)
-        self.assertNotIn("tested_claims", exp)
-        self.assertIsInstance(exp["reviews"], list)
+        self.assertNotIn("attempt_index", exp)
+        self.assertNotIn("conclusion", exp)
+        self.assertEqual(exp["tested_claims"], [])
+
+        plan = context["plan"]
+        self.assertEqual(plan["status"], "submitted")
+        self.assertEqual(plan["attempt_index"], 1)
+        self.assertIn("## Summary", plan["content"])
+        self.assertNotIn("summary", plan)
+        self.assertTrue(plan["submitted_at"])
+        self.assertEqual(context["report"], {"status": "missing"})
+        self.assertEqual(context["artifacts"], [])
 
         # Project block is a bare reference — no other experiments' intents.
         self.assertEqual(set(slim["project"]), {"id", "name"})
@@ -102,18 +103,78 @@ class WorkflowSlimTest(unittest.TestCase):
         self.assertFalse(slim["sandbox"]["active"])
         self.assertIn("note", slim["sandbox"])
 
-    def test_reviews_carry_one_body_and_older_tldrs(self) -> None:
+    def test_review_history_is_not_dumped_into_experiment_context(self) -> None:
         exp_id = self._experiment_with_plan()
         self._seed_review(exp_id=exp_id, review_id="rev_1", seq=1, created_at="2026-06-01T00:00:00Z")
         self._seed_review(exp_id=exp_id, review_id="rev_2", seq=2, created_at="2026-06-03T00:00:00Z")
 
         slim = self.call("workflow.status_and_next", project_id=self.project_id, experiment_id=exp_id)
-        reviews = slim["experiment"]["reviews"]
+        context = slim["context"]
 
-        self.assertEqual([review["id"] for review in reviews], ["rev_2", "rev_1"])
-        self.assertEqual(set(reviews[0]), {"id", "role", "verdict", "created_at", "synopsis",
-                                           "findings", "notes", "evidence"})
-        self.assertEqual(set(reviews[1]), {"id", "role", "verdict", "created_at", "synopsis"})
+        self.assertNotIn("reviews", context)
+        self.assertNotIn("reviews", context["experiment"])
+
+    def test_terminal_context_summarizes_plan_and_keeps_full_report(self) -> None:
+        exp_id = self._experiment_with_plan()
+        report = self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="report",
+            path="report.md",
+            body=(
+                "## Summary\nThe candidate passed.\n\n"
+                "## Results\nAccuracy improved.\n\n"
+                "## Deviations from plan\nNone.\n\n"
+                "## Conclusion\nSupport the claim.\n"
+            ),
+        )
+        result = self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="result",
+            path="results/results.json",
+            body='{"summary": "Accuracy improved by two points."}\n',
+        )
+        with self.app.store.transaction() as conn:
+            conn.execute(
+                "UPDATE experiments SET status = 'complete', conclusion = ? WHERE id = ?",
+                ("The candidate passed the registered threshold.", exp_id),
+            )
+
+        context = self.call(
+            "workflow.status_and_next",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+        )["context"]
+
+        self.assertEqual(
+            context["experiment"]["conclusion"],
+            "The candidate passed the registered threshold.",
+        )
+        self.assertEqual(
+            context["plan"]["summary"],
+            "Test the staged subset before scaling up.",
+        )
+        self.assertNotIn("content", context["plan"])
+        self.assertEqual(context["plan"]["status"], "approved")
+        self.assertEqual(context["report"]["id"], report["artifact_id"])
+        self.assertIn("## Results", context["report"]["content"])
+        self.assertNotIn("summary", context["report"])
+        self.assertTrue(context["report"]["submitted_at"])
+        self.assertEqual(
+            context["artifacts"],
+            [
+                {
+                    "descriptor": "result",
+                    "id": result["artifact_id"],
+                    "path": "results/results.json",
+                    "submitted_at": context["artifacts"][0]["submitted_at"],
+                }
+            ],
+        )
+        self.assertTrue(context["artifacts"][0]["submitted_at"])
 
     def test_active_sandbox_is_summarized(self) -> None:
         exp_id = self._experiment_with_plan()
@@ -137,6 +198,7 @@ class WorkflowSlimTest(unittest.TestCase):
 
         self.assertEqual(slim["scope"], "project")
         self.assertIsNone(slim["experiment"])
+        self.assertNotIn("context", slim)
         self.assertEqual(slim["workflow"]["current_gate"], "project_setup")
         claim = slim["project"]["claims"][0]
         self.assertEqual(set(claim), {"id", "status", "confidence", "statement"})

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from merv.shared.artifact_roles import EXHIBIT_ROLE
 
 from ...artifacts.facade import Artifacts
+from ...kernel.events import StoredEvent
 from ...research_core.facade import (
     ExperimentState,
+    PersistedRunState,
     ResearchCore,
 )
 from ..events import EventDispatcher
@@ -27,6 +29,25 @@ class TransitionResponse(SlimExperimentState, total=False):
     mlflow_warning: dict[str, str]
     metrics_exhibit: dict[str, object]
     feed_note: str
+
+
+class TransitionReceipt(TypedDict, total=False):
+    """Minimal agent acknowledgement for one committed transition."""
+
+    experiment_id: str
+    transition: str
+    from_status: str
+    to_status: str
+    status: str
+    attempt_index: int
+    event_id: int
+    accepted_at: str
+    metrics_exhibit: dict[str, object]
+    feed_note: str
+    mlflow: TrackingContextPayload
+    mlflow_run: PersistedRunState
+    mlflow_guidance: str
+    mlflow_warning: dict[str, str]
 
 
 @dataclass(kw_only=True, eq=False, repr=False)
@@ -47,11 +68,40 @@ class TransitionExperiment:
         transition: str,
         evidence: dict[str, Any] | None = None,
         project_id: str | None = None,
-    ) -> TransitionResponse:
-        return self.execute(
+    ) -> TransitionReceipt:
+        before = self.research.experiment_state(
+            experiment_id=experiment_id, project_id=project_id
+        )
+        response, event = self._execute(
             experiment_id=experiment_id, transition=transition, evidence=evidence,
             project_id=project_id, include_tracking_credentials=True,
         )
+        receipt = TransitionReceipt(
+            experiment_id=experiment_id,
+            transition=transition,
+            from_status=str(before.get("status") or ""),
+            to_status=str(response.get("status") or ""),
+            # Keep the conventional status key as a concise acknowledgement,
+            # not as a second experiment-state projection.
+            status=str(response.get("status") or ""),
+            attempt_index=int(response.get("attempt_index") or 0),
+            event_id=event.id,
+            accepted_at=event.created_at,
+        )
+        # These are operation-specific side-effect receipts, not experiment
+        # context. The normal composition has no tracking fields; compatibility
+        # builds keep them reversible for a later reintroduction.
+        for key in (
+            "metrics_exhibit",
+            "feed_note",
+            "mlflow",
+            "mlflow_run",
+            "mlflow_guidance",
+            "mlflow_warning",
+        ):
+            if key in response:
+                receipt[key] = response[key]
+        return receipt
 
     def execute(
         self,
@@ -62,6 +112,24 @@ class TransitionExperiment:
         project_id: str | None = None,
         include_tracking_credentials: bool = False,
     ) -> TransitionResponse:
+        response, _event = self._execute(
+            experiment_id=experiment_id,
+            transition=transition,
+            evidence=evidence,
+            project_id=project_id,
+            include_tracking_credentials=include_tracking_credentials,
+        )
+        return response
+
+    def _execute(
+        self,
+        *,
+        experiment_id: str,
+        transition: str,
+        evidence: dict[str, Any] | None,
+        project_id: str | None,
+        include_tracking_credentials: bool,
+    ) -> tuple[TransitionResponse, StoredEvent]:
         before = (
             self.research.experiment_state(
                 experiment_id=experiment_id, project_id=project_id
@@ -133,7 +201,7 @@ class TransitionExperiment:
         note = late.outcomes.get("feed")
         if isinstance(note, str):
             response["feed_note"] = note
-        return response
+        return response, committed.event
 
     def _finalize_exhibit(
         self, *, state: ExperimentState
@@ -213,4 +281,4 @@ class TransitionExperiment:
             ),
         }
 
-__all__ = ["TransitionExperiment", "TransitionResponse"]
+__all__ = ["TransitionExperiment", "TransitionReceipt", "TransitionResponse"]

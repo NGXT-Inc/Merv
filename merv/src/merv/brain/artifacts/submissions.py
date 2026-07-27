@@ -379,15 +379,63 @@ class ArtifactSubmissionService:
         *,
         project_id: str | None = None,
         artifact_id: str = "",
+        artifact_ids: list[str] | None = None,
+        include_content: bool = False,
         target_type: str = "",
         target_id: str = "",
         role: str = "",
     ) -> dict[str, Any]:
-        """Compact artifact listing by target or project, or one by id."""
+        """Compact artifact listing, or ordered/atomic reads by one or more ids."""
+        requested_ids = tuple(dict.fromkeys(artifact_ids or ()))
         with closing(self.store.connect()) as conn:
             project_id = self.store.require_project_id(conn=conn, project_id=project_id)
             if artifact_id:
-                return {"artifact": self._require(conn=conn, project_id=project_id, artifact_id=artifact_id)}
+                artifact = self._require(
+                    conn=conn, project_id=project_id, artifact_id=artifact_id
+                )
+                result: dict[str, Any] = {"artifact": artifact}
+                if include_content:
+                    result["content"] = self._content_envelope(artifact=artifact)
+                return result
+            if requested_ids:
+                placeholders = ", ".join("?" for _ in requested_ids)
+                rows = rows_to_dicts(
+                    rows=conn.execute(
+                        f"""
+                        SELECT * FROM artifacts
+                        WHERE project_id = ? AND id IN ({placeholders})
+                        """,
+                        (project_id, *requested_ids),
+                    ).fetchall()
+                )
+                by_id = {str(row["id"]): row for row in rows}
+                missing = [
+                    requested_id
+                    for requested_id in requested_ids
+                    if requested_id not in by_id
+                ]
+                if missing:
+                    raise NotFoundError(
+                        "artifacts not found in project "
+                        f"{project_id}: {', '.join(missing)}",
+                        details={
+                            "field": "artifact_ids",
+                            "artifact_ids": list(requested_ids),
+                            "missing_artifact_ids": missing,
+                        },
+                    )
+                artifacts = []
+                for requested_id in requested_ids:
+                    record = by_id[requested_id]
+                    compact = {
+                        key: record.get(key) for key in _ARTIFACT_LIST_FIELDS
+                    }
+                    if include_content:
+                        compact["content"] = self._content_envelope(
+                            artifact=record
+                        )
+                    artifacts.append(compact)
+                return {"artifacts": artifacts, "count": len(artifacts)}
             where = ["project_id = ?", "status = 'complete'"]
             params: list[Any] = [project_id]
             for column, value in (
@@ -424,6 +472,10 @@ class ArtifactSubmissionService:
         (anything but text/*, JSON, XML, or empty), a NUL byte, or a
         strict-UTF-8 decode failure — never the filename."""
         artifact = self.resolve(artifact_id=artifact_id, project_id=project_id)
+        return self._content_envelope(artifact=artifact)
+
+    def _content_envelope(self, *, artifact: dict[str, Any]) -> dict[str, Any]:
+        """Read submitted bytes for an already tenant-checked artifact row."""
         content_type = str(artifact.get("content_type") or "")
         data = None
         if self.blobs is not None and artifact.get("status") == "complete":
@@ -696,6 +748,7 @@ class ArtifactSubmissionService:
                     submission_id=str(row["submission_id"] or ""),
                     order=int(row["created_seq"] or 0),
                     content=content,
+                    submitted_at=str(row["updated_at"] or row["created_at"] or ""),
                 )
             )
         return tuple(result)

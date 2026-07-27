@@ -242,9 +242,10 @@ Reviews use request-scoped capabilities rather than prompt trust:
    returns the plaintext capability once with a reviewer handoff prompt.
 3. A separate reviewer is expected to call `review.start` with a required
    caller-supplied session string different from the producer-supplied string.
-4. `review.start` returns current-attempt gated artifacts plus any system
-   exhibit; the reviewer skill imposes a procedural read-only role whose only
-   intended state-changing call is `review.submit`.
+4. `review.start` returns bounded project orientation, the target's slim
+   experiment/reflection context, and full current-attempt gated artifacts plus
+   any system exhibit; the reviewer skill imposes a procedural read-only role
+   whose only intended state-changing call is `review.submit`.
 5. Request creation validates a workflow role against the active gate. Start
    rejects invalid/expired/superseded capabilities, equal declared session
    strings, or stale snapshots. Submit rechecks that the request is open and

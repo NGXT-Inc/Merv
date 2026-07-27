@@ -49,7 +49,7 @@ The agent-visible control tools are:
 workflow.status_and_next
 project
 claim.create                 claim.update
-experiment.create            experiment.get_state
+experiment.create
 experiment.transition        experiment.exhibit
 reflection.create            reflection.get
 reflection.transition
@@ -114,9 +114,26 @@ Workflow lints and reviews read the submitted bytes, never a later live edit.
 There is no background checkout scan. Resubmit a changed file to replace the
 slot (a new artifact id is minted, invalidating review snapshots).
 
-`artifact.find(project_id, artifact_id=...)` resolves one artifact; without
-`artifact_id`, it lists the project's complete artifacts filtered by target and
-role.
+`artifact.find(project_id, artifact_id=...)` preserves the singular
+`{artifact}` response. `artifact_ids=[...]` resolves an ordered batch of up to
+50 artifacts as `{artifacts, count}`. Batch ids are de-duplicated in first-seen
+order and a missing or cross-project id fails the request atomically. Both
+id-based forms are metadata-only by default; opt into bounded submitted text
+with `include_content=true`. Singular reads add a sibling `content` envelope;
+plural reads add the envelope to each artifact row. The envelope contains
+`content`, `available`, `is_binary`, `size_bytes`, and `content_type`, so binary
+or unavailable bytes are represented without being injected as text. Without
+either id selector, the tool lists the project's complete artifacts filtered
+by target and role; `include_content` is invalid for this broad list mode.
+
+`workflow.status_and_next(project_id, experiment_id=...)` is the canonical
+experiment read. Its `context` has exactly four sections: experiment, latest
+plan, latest report, and the remaining current-attempt artifact references.
+Live experiments receive the full latest plan; terminal experiments receive
+its bounded Summary; the latest report is full when present. Plan, report, and
+every artifact reference carry their immutable artifact id, local path, and
+submission timestamp. `experiment.get_state` remains an internal compatibility
+reader for UI/service code and is not advertised over MCP.
 
 ## Experiment workflow
 
@@ -155,8 +172,11 @@ A result-review rejection must return to `running` when the approved plan still
 stands, or to `planned` with a new attempt when the design is flawed.
 
 `workflow.status_and_next` returns a deliberately slim orientation view:
-project summary, current experiment, gate, allowed/blocked actions, missing
-evidence, review substate, and next action. The HTTP UI uses richer service views.
+project reference, canonical experiment context, gate, allowed/blocked actions,
+missing evidence, review substate, and next action. `experiment.transition`
+returns only a compact state-change acknowledgement plus operation-specific
+side-effect receipts. Agents call `workflow.status_and_next` afterward when
+they need refreshed context. The HTTP UI uses richer service views.
 
 ## Reflection workflow
 
@@ -206,10 +226,15 @@ the capability, and returns the plaintext capability once with
 open requests for the same target and role.
 
 `caller_session_id` is required at `review.start` and must differ from the
-producer session. Start returns the submitted gated artifacts for the pinned
-snapshot. A capability remains startable while the request is `requested` or
-`started` and the capability is unexpired; the first accepted submission closes
-the request and prevents other sessions from submitting.
+producer session. Start returns the project id, bounded `project_context`, the
+target's canonical experiment `context` or `reflection_context`. Experiment
+context is built only from artifact versions pinned to the immutable request
+snapshot: the plan and report are supplied according to the normal context
+rules, while other artifacts are listed by retrievable id. Reflection reviews
+continue to receive their pinned `submitted_artifacts`. A capability remains startable while the
+request is `requested` or `started` and the capability is unexpired; the first
+accepted submission closes the request and prevents other sessions from
+submitting.
 
 `review.submit` requires a plain-language `synopsis`. Rejected experiment-attempt
 and reflection reviews require `return_to`; design-review rejections always

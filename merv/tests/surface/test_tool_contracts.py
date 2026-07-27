@@ -62,6 +62,7 @@ def _handler_targets() -> dict[str, Any]:
         "artifact_submissions": target,
         "storage": target,
         "reviews": target,
+        "review_session": target,
         "sandboxes": target,
         "feed": target,
         "experiment_transition": target,
@@ -128,6 +129,11 @@ class ToolContractRegistryTest(unittest.TestCase):
         # review.status is served for REST/UI reads and internal dispatch, but
         # agents poll workflow.status_and_next (its review_gate re-reports state).
         self.assertIn("review.status", MCP_HIDDEN_TOOL_NAMES)
+        # Experiment orientation is consolidated in workflow.status_and_next;
+        # the old state reader remains internal for REST/UI compatibility.
+        self.assertIn("experiment.get_state", MCP_HIDDEN_TOOL_NAMES)
+        # The exhibit preview is intentionally unchanged and remains public.
+        self.assertNotIn("experiment.exhibit", MCP_HIDDEN_TOOL_NAMES)
         # Enumeration readers embedded in other responses stay REST/UI-only.
         # sandbox.list is NO LONGER hidden: a project-scoped mk_ key needs it to
         # enumerate the project's (shared) sandboxes over MCP (no-dataplane

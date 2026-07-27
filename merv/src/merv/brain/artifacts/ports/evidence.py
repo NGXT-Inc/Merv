@@ -62,6 +62,7 @@ class SubmittedEvidence:
     submission_id: str
     order: int
     content: str | None
+    submitted_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)

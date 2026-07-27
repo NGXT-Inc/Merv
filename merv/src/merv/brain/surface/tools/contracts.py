@@ -390,13 +390,56 @@ class ArtifactSubmitInput(ProjectScopedInput):
 class ArtifactFindInput(ProjectScopedInput):
     artifact_id: str = Field(
         default="",
-        description="Resolve one artifact by id. Omit to list with the filters below.",
+        description=(
+            "Resolve one artifact by id. Use artifact_ids for an ordered batch, "
+            "or omit both to list with the filters below."
+        ),
+    )
+    artifact_ids: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Resolve 1-50 artifacts in one call. Duplicate ids are de-duplicated "
+            "in first-seen order. Any missing or cross-project id fails the "
+            "whole request."
+        ),
+    )
+    include_content: bool = Field(
+        default=False,
+        description=(
+            "Opt in to bounded submitted text for id-based reads. Metadata is "
+            "the slim default. Singular reads add a sibling content envelope; "
+            "plural reads add that envelope to each artifact row. It contains "
+            "content, available, is_binary, size_bytes, and content_type; "
+            "binary or unavailable bytes are never injected as text. Invalid "
+            "when listing by filters."
+        ),
     )
     target_type: str = Field(
         default="", description="List filter: target kind (e.g. 'experiment')."
     )
     target_id: str = Field(default="", description="List filter: target id.")
     role: str = Field(default="", description="List filter: artifact role.")
+
+    @model_validator(mode="after")
+    def _check_selector(self) -> "ArtifactFindInput":
+        if any(not item for item in self.artifact_ids):
+            raise ValueError("artifact_ids cannot contain blank ids")
+        self.artifact_ids = list(dict.fromkeys(self.artifact_ids))
+        if self.artifact_id and self.artifact_ids:
+            raise ValueError("provide at most one of artifact_id or artifact_ids")
+        filters = [
+            field
+            for field in ("target_type", "target_id", "role")
+            if getattr(self, field)
+        ]
+        if (self.artifact_id or self.artifact_ids) and filters:
+            raise ValueError(
+                "id-based artifact reads cannot be combined with list filters"
+            )
+        if self.include_content and not (self.artifact_id or self.artifact_ids):
+            raise ValueError("include_content requires artifact_id or artifact_ids")
+        return self
 
 
 class StoragePutObjectInput(ProjectScopedInput):
@@ -973,7 +1016,16 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     "workflow.status_and_next": ToolContract(
         handler_identity="workflow.status_and_next_agent",
         input_model=WorkflowStatusAndNextInput,
-        description="Orient the agent from durable project/experiment state.",
+        description=(
+            "The canonical entrypoint for starting or resuming experiment "
+            "work. With experiment_id, returns workflow guidance plus one "
+            "four-section context: experiment, latest plan, latest report, and "
+            "all other current-attempt artifact references. Live experiments "
+            "receive the full latest plan; terminal experiments receive its "
+            "Summary; the latest report is full when present. Every referenced "
+            "artifact carries id, path, and submitted_at. Use artifact.find "
+            "with one id or an ordered id batch for deeper artifact reads."
+        ),
     ),
     "project": ToolContract(
         handler_identity="operations.project",
@@ -1057,23 +1109,23 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
     ),
     "experiment.get_state": ToolContract(
         handler_identity="agent_experiment.experiment",
+        visibility="internal",
         input_model=ExperimentGetStateInput,
         description=(
-            "Get one experiment state. Includes 'allowed_transitions': the "
-            "transitions available from the current status, each with what it "
-            "'requires' (e.g. a submitted plan artifact, a passing review). "
-            "In 'reviews', only the newest round carries its findings, notes, "
-            "and evidence; older rounds are listed by synopsis alone. Pass "
-            "review_id to read an older round's full body back."
+            "Compatibility-only internal experiment state projection. Agents "
+            "use workflow.status_and_next for context and artifact.find for "
+            "focused document retrieval."
         ),
     ),
     "experiment.transition": ToolContract(
         handler_identity="experiment_transition.agent",
         input_model=ExperimentTransitionInput,
         description=(
-            "Apply an allowed experiment transition. See "
-            "experiment.get_state.allowed_transitions for valid transitions "
-            "and their preconditions from the current status."
+            "Apply a transition allowed by workflow.status_and_next. Returns "
+            "only a compact acknowledgement (from/to status, attempt, event "
+            "id, and timestamp), plus any operation-specific side-effect receipt; it "
+            "does not return experiment context. Call "
+            "workflow.status_and_next afterward to continue. "
             " Use retry_running only for infrastructure/interruption reruns "
             "where the experiment should stay running on the same attempt. "
             "At submit_results the system evaluates the attempt's metrics "
@@ -1220,10 +1272,15 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         handler_identity="artifact_submissions.find",
         input_model=ArtifactFindInput,
         description=(
-            "Find submitted artifacts. Pass artifact_id to resolve one, or "
-            "filter the project's complete artifacts by target_type/"
-            "target_id/role. Compact rows: id, target, role, attempt, "
-            "lens_id, path label, title, size, timestamps."
+            "Find submitted artifacts. Pass artifact_id to resolve one, "
+            "artifact_ids to resolve an ordered batch of 1-50, or filter the "
+            "project's complete artifacts by target_type/target_id/role. "
+            "Duplicate batch ids are de-duplicated first-seen; missing ids fail "
+            "the request atomically. Metadata is the slim default. For id-based "
+            "plan/report deep dives, include_content=true returns bounded text "
+            "content envelopes while safely marking binary/unavailable bytes. "
+            "Compact rows: id, target, role, attempt, lens_id, path label, "
+            "title, size, timestamps."
         ),
     ),
     "storage.put_object": ToolContract(
@@ -1305,12 +1362,18 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         ),
     ),
     "review.start": ToolContract(
-        handler_identity="reviews.start",
+        handler_identity="review_session.execute",
         scope_strategy="capability",
         input_model=ReviewStartInput,
         description=(
             "Start a reviewer session for the pinned request snapshot. The "
-            "reviewer skill supplies the procedural read-only boundary."
+            "response includes bounded project orientation and, for an "
+            "experiment target, the same canonical four-section context used "
+            "by workflow.status_and_next, built only from artifact versions "
+            "pinned to the request. Plan/report bodies needed for that review "
+            "are included; use artifact.find for deeper reads of the listed "
+            "artifact ids. The reviewer skill supplies the procedural "
+            "read-only boundary."
         ),
     ),
     "review.submit": ToolContract(

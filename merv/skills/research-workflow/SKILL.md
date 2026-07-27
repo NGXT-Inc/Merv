@@ -540,6 +540,28 @@ To submit a gated document or result file:
 - there is no version history to restore through MCP; edit the live file
   normally and resubmit it
 
+### Batch reads and deeper dives
+
+Inside an experiment, `workflow.status_and_next(project_id, experiment_id)` is
+the one context read. Its `context` has exactly four sections: experiment,
+latest plan, latest report, and the other current-attempt artifacts. A live
+experiment gets the full latest plan; a terminal experiment gets the plan's
+Summary; the latest report is full when present. Every artifact reference has
+an id, local path, and submission timestamp.
+
+Transitions return only a compact acknowledgement. After a transition, call
+`workflow.status_and_next` again when you need the next instruction or refreshed
+context. Do not look for experiment state in the transition response.
+
+`artifact.find(artifact_ids=[...])` likewise batches up to 50 plan/report
+or other artifact ids in first-seen order. It returns slim metadata by default.
+Use ids from the context's artifact list. Only when the macro context cannot
+answer the question, add
+`include_content=true`; bounded textual submissions arrive in each artifact's
+`content` envelope, while binary or unavailable bytes remain marked and are not
+injected as text. A missing id fails the whole batch, so use ids from the same
+project and current authoritative state.
+
 ## Review discipline
 
 When `workflow.status_and_next` says to launch or wait for a reviewer, follow

@@ -8,6 +8,7 @@ from typing import Any
 from merv.shared.storage_guidance import STORAGE_RULE_OF_THUMB, storage_guidance
 
 from ...application.events import EventDispatcher
+from ...application.experiments.context import ExperimentContextQuery
 from ...application.experiments.create import CreateExperiment
 from ...application.experiments.exhibits import ExperimentExhibits
 from ...application.experiments.queries import ExperimentCollectionQuery
@@ -24,7 +25,7 @@ from ...application.timeline import EventTimelineQuery
 from ...application.reflections import ReflectionCommands
 from ...application.status_guidance import StatusGuidancePolicy
 from ...application.workflow import ProjectDashboardQuery, StatusAndNextQuery
-from ...application.reviews import ReadReviewStatus
+from ...application.reviews import ReadReviewStatus, StartReviewSession
 from ...application.tool_commands import ControlToolOperations
 from ...artifacts.facade import ArtifactsFacade
 from ...research_core.facade import ResearchCoreFacade
@@ -90,6 +91,7 @@ class ControlApp:
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
         self.produced_objects = StorageObjectCatalog(store=store)
         self.artifacts = ArtifactsFacade(submissions=core.artifact_submissions)
+        self.experiment_context = ExperimentContextQuery(artifacts=self.artifacts)
         self.experiment_exhibits = ExperimentExhibits(
             research=self.research_core,
             artifacts=self.artifacts,
@@ -122,6 +124,14 @@ class ControlApp:
             research=self.research_core,
             objects=self.produced_objects,
             tracking=self._tracking,
+        )
+        self.start_review_session = StartReviewSession(
+            reviews=core.reviews,
+            projects=core.projects,
+            claims=core.claims,
+            research=self.research_core,
+            experiment_context=self.experiment_context,
+            reflections=self.reflection_commands,
         )
         self.experiment_detail_query = ExperimentDetailQuery(
             research=self.research_core,
@@ -181,6 +191,7 @@ class ControlApp:
             sandboxes=self.sandboxes,
             policy=self.next_action_policy,
             objects=self.produced_objects,
+            context=self.experiment_context,
         )
         self.event_timeline = EventTimelineQuery(source=store)
         self.project_dashboard_query = ProjectDashboardQuery(
@@ -235,6 +246,7 @@ class ControlApp:
                 artifact_submissions=core.artifact_submissions,
                 storage=storage,
                 reviews=core.reviews,
+                review_session=self.start_review_session,
                 sandboxes=self.sandboxes,
                 feed=core.feed,
                 experiment_transition=self.transition_experiment,

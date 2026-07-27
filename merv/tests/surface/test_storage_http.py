@@ -321,7 +321,8 @@ class StorageHttpApiTest(unittest.TestCase):
                 "transition": "abandon",
             },
         )
-        self.assertEqual(transitioned["storage_objects"][0]["id"], object_id)
+        self.assertEqual(transitioned["status"], "abandoned")
+        self.assertNotIn("storage_objects", transitioned)
 
         self.app.call_tool(
             "storage.object",

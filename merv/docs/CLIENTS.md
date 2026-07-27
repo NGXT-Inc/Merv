@@ -228,7 +228,10 @@ The reviewer begins with `review.start`, passing the request id, capability,
 and its own non-empty `caller_session_id`. That id is required and must differ
 from the `producer_session_id` recorded by `review.request`. The brain stores
 only a hash of the capability, pins the request to the target snapshot, rejects
-stale or superseded requests, and rechecks the snapshot at submission.
+stale or superseded requests, and rechecks the snapshot at submission. A
+successful start returns bounded project orientation, the target's slim
+experiment/reflection context, and full content for the pinned submission being
+reviewed.
 
 New sessions that pass the distinct-id check are recorded as
 `verified_agent_review`; `attested_agent_review` remains only on legacy rows.
@@ -310,14 +313,14 @@ Two Cursor-specific notes:
    project's `.cursor/mcp.json`.
 
 2. **Tool ceiling.** Cursor's approximately 40-tool limit applies across all
-   active MCP servers. Merv's catalog (38 public tools with optional storage
-   enabled; 34 without) nearly fills it. Merv hides
-   UI/internal tools such as `project.list` and `review.status` from the
+   active MCP servers. Merv's catalog (35 public tools with optional storage
+   enabled; 31 without) nearly fills it. Merv hides
+   UI/internal tools such as `project.list`, `experiment.get_state`, and `review.status` from the
    agent-facing catalog; if tools disappear when several MCP servers are
    enabled, disable servers or tools that are not in use.
 
 Cursor's MCP settings may show a naming warning for dotted tools such as
-`experiment.get_state`; the client still calls those tools normally.
+`workflow.status_and_next`; the client still calls those tools normally.
 
 ## Use with Gemini CLI
 

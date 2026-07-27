@@ -185,6 +185,8 @@ class McpStreamableHttpProtocolTest(unittest.TestCase):
         self.assertEqual(streamed_catalog.json()["result"], legacy_catalog.json())
         names = {tool["name"] for tool in streamed_catalog.json()["result"]["tools"]}
         self.assertIn("workflow.status_and_next", names)  # public
+        self.assertIn("experiment.exhibit", names)  # intentionally unchanged
+        self.assertNotIn("experiment.get_state", names)  # consolidated/internal
         self.assertNotIn("claim.list", names)  # internal
         self.assertFalse(
             any(tool.get("hidden") for tool in streamed_catalog.json()["result"]["tools"])

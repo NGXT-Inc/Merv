@@ -178,6 +178,43 @@ class ExperimentSlimTest(unittest.TestCase):
         self.assertNotIn("artifacts", listed[0])
         self.assertEqual(set(listed[0]["current_attempt_artifacts"][0]), SLIM_ARTIFACT_KEYS)
 
+    def test_transition_returns_a_receipt_without_experiment_context(self) -> None:
+        exp_id = self.call(
+            "experiment.create",
+            name="transition-tldr",
+            project_id=self.project_id,
+            intent="Exercise the transition projection.",
+        )["id"]
+        self.app.submit_artifact(
+            project_id=self.project_id,
+            target_type="experiment",
+            target_id=exp_id,
+            role="plan",
+            path="experiments/transition-tldr/plan.md",
+            body=(
+                "## Summary\nCompare the candidate with the baseline.\n\n"
+                "## Objective & hypothesis\nThe candidate should improve accuracy.\n\n"
+                "## Evaluation\nCompare accuracy; pass if it exceeds baseline.\n"
+            ),
+        )
+
+        transitioned = self.call(
+            "experiment.transition",
+            project_id=self.project_id,
+            experiment_id=exp_id,
+            transition="submit_design",
+        )
+
+        self.assertEqual(transitioned["from_status"], "planned")
+        self.assertEqual(transitioned["to_status"], "design_review")
+        self.assertEqual(transitioned["status"], "design_review")
+        self.assertEqual(transitioned["attempt_index"], 1)
+        self.assertIsInstance(transitioned["event_id"], int)
+        self.assertTrue(transitioned["accepted_at"])
+        self.assertNotIn("current_attempt_artifacts", transitioned)
+        self.assertNotIn("allowed_transitions", transitioned)
+        self.assertNotIn("gate_checklist", transitioned)
+
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
         exp_id = self._experiment_with_artifacts()
         full = self.app.experiments.get_state(experiment_id=exp_id, project_id=self.project_id)

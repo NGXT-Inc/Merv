@@ -1,6 +1,7 @@
 """Stable delivery-facing Application entrypoints."""
 
 from .experiments.create import CreateExperiment
+from .experiments.context import ExperimentContextQuery
 from .experiments.queries import ExperimentCollectionQuery
 from .experiments.exhibits import ExperimentExhibits
 from .experiments.tracking import (
@@ -18,16 +19,16 @@ from .queries import (
     TenantCountersQuery,
 )
 from .reflections import ReflectionCommands
-from .reviews import ReadReviewStatus
+from .reviews import ReadReviewStatus, StartReviewSession
 from .timeline import EventTimelineQuery
 from .workflow import ProjectDashboardQuery, StatusAndNextQuery
 from .tool_commands import ControlToolOperations
 
 __all__ = (
     "AgentExperimentQuery", "ComputeCostQuery", "ControlToolOperations", "CreateExperiment",
-    "EventTimelineQuery", "ExperimentCollectionQuery", "ExperimentDetailQuery",
+    "EventTimelineQuery", "ExperimentCollectionQuery", "ExperimentContextQuery", "ExperimentDetailQuery",
     "ExperimentExhibits", "ExperimentFigureQuery", "FinalizeTrackingRun", "GetTrackingContext",
     "LogicGraphQuery", "MlflowOverviewQuery", "ProjectDashboardQuery",
-    "ReadReviewStatus", "ReflectionCommands", "StatusAndNextQuery", "TenantCountersQuery",
-    "TransitionExperiment",
+    "ReadReviewStatus", "ReflectionCommands", "StartReviewSession", "StatusAndNextQuery",
+    "TenantCountersQuery", "TransitionExperiment",
 )

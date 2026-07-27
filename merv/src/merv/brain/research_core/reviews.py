@@ -260,9 +260,12 @@ class ReviewService:
             snapshot = snapshot_from_id(snapshot_id=str(req["target_snapshot_id"]))
             return {
                 "review_session_id": session_id,
+                "project_id": req["project_id"],
                 "role": req["role"],
                 "target_type": req["target_type"],
                 "target_id": req["target_id"],
+                "target_snapshot_id": req["target_snapshot_id"],
+                "target_snapshot": snapshot,
                 "independence": independence,
                 "read_scope": [
                     "claim",
@@ -298,6 +301,7 @@ class ReviewService:
                 "path": item.path,
                 "artifact_id": item.artifact_id,
                 "submission_id": item.submission_id,
+                "submitted_at": item.submitted_at,
                 "content": item.content,
             }
             if item.content is None:
