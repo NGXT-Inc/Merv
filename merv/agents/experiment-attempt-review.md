@@ -30,6 +30,10 @@ Call `review.start` with exactly the provided `review_request_id`, provided
 `reviewer_capability`, your own required `caller_session_id` (never the
 producer session's), and optional `declared_agent`, then call `review.submit`.
 
+In `experiment.get_state` only the newest review carries its findings, notes,
+and evidence; older rounds are listed by synopsis alone. Pass that round's
+`review_id` to read one back in full.
+
 ## Check
 
 Grade the attempt against the approved plan — especially its **Evaluation**

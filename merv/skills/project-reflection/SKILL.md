@@ -106,12 +106,18 @@ Spawn five subagents in parallel. Each gets:
   no "as noted last wave", no references to the previous document, and no
   conclusion carried forward without re-verifying it against the current
   records. (Authored lenses are wave-specific and start fresh.);
-- read-only project access through MCP. Use `project(action="overview")` for
-  claims and experiment state, the wave's
-  `corpus.terminal_experiments[].artifacts[]` for the snapshotted report and
-  logic-graph artifact IDs plus bounded submitted content, and MCP review
-  reads for verdict history. Do not read a repository checkout and do not use
-  `artifact.find` as a content reader; it returns metadata only;
+- read-only project access through MCP, with the wave's snapshotted corpus as
+  the primary evidence: `reflection.get` carries the claims,
+  `corpus.terminal_experiments[].artifacts[]` (the snapshotted report and
+  logic-graph artifact IDs plus bounded submitted content), and
+  `corpus.previous_lens_reflections`. Live reads are secondary, for what the
+  snapshot does not carry: `project(action="overview")` for current claim
+  state and `experiment.get_state` for one experiment's verdict history.
+  Reviews arrive there as one-line synopses — only an experiment's newest
+  review carries its body — so read an older round in full with
+  `experiment.get_state` and that round's `review_id`. Do not read a
+  repository checkout and do not use `artifact.find` as a content reader; it
+  returns metadata only;
 - the instruction to write its reflection to a caller-side temporary file
   (the provenance `path` may be
   `reflections/<syn_id>/reflections/<lens_id>.md`), then submit it with

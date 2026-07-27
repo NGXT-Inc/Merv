@@ -42,7 +42,10 @@ workflow state. Call `review.start` with exactly the provided
 
 1. **The project corpus** — gather what you need through read-only access:
    claims and their statuses, experiments and their outcomes, the
-   per-experiment logic graphs, reports, and review history.
+   per-experiment logic graphs, reports, and review history. An experiment
+   lists only its newest review's body; older rounds travel as one-line
+   synopses, and `experiment.get_state` with that round's `review_id` reads
+   one back in full.
    `reflection.get(project_id, reflection_id)` shows the wave's corpus snapshot (the
    finished experiments it claims to cover), the lens roster, and the current
    attempt's artifacts; the snapshot's `new_terminal_experiments` names the
