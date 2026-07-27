@@ -8,6 +8,14 @@ signed URL that needs no credential, and authenticated polling of sandbox.runs
 One test drives a REAL brain over a real socket, from the wait_url a real
 sandbox.runs row rendered to the answer the mounted route streams back, so the
 two sides of this protocol cannot drift apart in silence.
+
+The shim's own tests changed shape with its architecture: it no longer
+supervises a child, it EXECS one, so the supervision this file used to pin —
+a capture file, a shell-side line validator, signal forwarding, a grace timer
+and the killing at the end of it — has no machinery left to test. What is left
+is the seam: the interpreter it resolves, the import belt for one that never
+reaches the module, and the fact that everything after the exec is the
+watcher's own process, answering platform signals with its own handlers.
 """
 
 from __future__ import annotations
@@ -58,16 +66,6 @@ UID = "sbx-1"
 DEAD_URL = f"http://127.0.0.1:1/wait/{UID}/seed0/deadbeef"
 # The shim a platform actually arms, next to the module it runs.
 SHIM = Path(runs_wait.__file__).resolve().parents[3] / "bin" / "merv-runs-wait"
-# Its two seams a test injects at: the last of the teardown traps, and the
-# first statement of everything those traps now come ahead of.
-ARMED_ANCHOR = "trap 'forward HUP' HUP"
-SETUP_ANCHOR = 'SOURCE="${BASH_SOURCE[0]}"'
-# The grace a signalled child gets, as the shim spells it, so a test can
-# shorten it to its own patience.
-GRACE_ANCHOR = "GRACE=10"
-# The first statement after the reap. A test that injects here holds the shim
-# in the window where the child is already gone and nothing has been said yet.
-REAPED_ANCHOR = 'LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""'
 
 
 def _b64(text: str) -> str:
@@ -990,148 +988,65 @@ class _RealProcess(unittest.TestCase):
         shutil.copy2(SHIM, copy)
         return copy, tmp.name
 
-    def _stub_python(self, body: str) -> str:
-        """A stand-in for the interpreter the shim resolves.
+    def _bare_path(self) -> str:
+        """A PATH carrying what the shim itself shells out to, and no python3.
 
-        The shim's belts are for a child that never became a watcher, so a
-        test has to pin what that child does — which a real python running the
-        real module, by construction, cannot be made to do.
+        The shebang's `env bash` plus the two externals the symlink walk uses.
+        Everything else on a real PATH is an interpreter this stands in for the
+        absence of, which cannot be arranged by adding entries in front.
         """
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        stub = Path(tmp.name) / "python-stub"
-        stub.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
-        stub.chmod(0o755)
-        return str(stub)
+        for tool in ("bash", "dirname", "readlink"):
+            found = shutil.which(tool)
+            self.assertIsNotNone(found, tool)
+            os.symlink(found, Path(tmp.name) / tool)
+        return tmp.name
+
+    def _exec_probe_python(self) -> str:
+        """An interpreter that says which pid it was handed, then IS the real one.
+
+        `$$` in a shell the shim EXEC'd is the shim's own pid — the pid the
+        test spawned — and in one it forked is not, so this reads the
+        architecture off a live process rather than off `ps`. It then execs the
+        real interpreter, so what answers underneath is the real watcher.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        probe = Path(tmp.name) / "python-probe"
+        probe.write_text(
+            f'#!/bin/sh\nprintf "# pid %s\\n" "$$" >&2\nexec "{sys.executable}" "$@"\n',
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        return str(probe)
 
     def _shim_env(
-        self, *, python: str = "", path: str = "", tools: str = "", tmpdir: str = ""
+        self, *, python: str | None = "", path: str = "", search: str = ""
     ) -> dict[str, str]:
-        search = os.environ.get("PATH", "")
+        """The environment the shim resolves an interpreter and imports from.
+
+        ``python`` of None leaves MERV_PYTHON unset so the shim falls all the
+        way through its own resolution chain, and ``search`` REPLACES PATH
+        rather than prefixing it, which is the only way to stand in for a
+        machine with no python3 on it at all.
+        """
         env = {
-            # `tools` goes in FRONT: denying the shim a program it shells out
-            # to is the only way to stand in for a machine this one is not.
-            "PATH": f"{tools}{os.pathsep}{search}" if tools else search,
-            "MERV_PYTHON": python or sys.executable,
+            "PATH": search or os.environ.get("PATH", ""),
             "PYTHONPATH": path or os.pathsep.join(p for p in sys.path if p),
         }
-        if tmpdir:
-            env["TMPDIR"] = tmpdir
+        if python is not None:
+            env["MERV_PYTHON"] = python or sys.executable
         return env
 
     def _shim(
-        self, shim: Path, *args: str, path: str = "", python: str = "",
-        tools: str = "", tmpdir: str = "",
+        self, shim: Path, *args: str, path: str = "", python: str | None = "",
+        search: str = "",
     ) -> subprocess.CompletedProcess:
         return subprocess.run(
             [str(shim), *args], capture_output=True, text=True, timeout=60,
-            env=self._shim_env(python=python, path=path, tools=tools, tmpdir=tmpdir),
+            env=self._shim_env(python=python, path=path, search=search),
         )
-
-    def _refusing_mktemp(self) -> str:
-        """A PATH entry whose `mktemp` never succeeds: a machine with nowhere
-        writable at all, which this one — with its real /tmp — is not."""
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        fake = Path(tmp.name) / "mktemp"
-        fake.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-        fake.chmod(0o755)
-        return tmp.name
-
-    def _sentinel_python(self, marker: Path, line: str) -> str:
-        """A stand-in that records having run at all, then says the most
-        dangerous thing it could: a `done` with a clean exit code."""
-        return self._stub_python(f': > "{marker}"\nprintf "{line}\\n"\nexit 0\n')
-
-    def _armed_python(self, marker: Path) -> str:
-        """A stand-in child that arms for a teardown the instant it starts.
-
-        The real watcher needs a quarter of a second to reach its own handler,
-        which would make what a forwarded signal DID an artifact of the
-        interpreter rather than of the shim. A shell arms in a millisecond, and
-        says plainly which of the two things happened to it. It also records
-        having run at all, which is how a test tells a teardown the shim
-        forwarded from one it never had to.
-        """
-        return self._stub_python(
-            f': > "{marker}"\n'
-            'trap \'printf "MERV_RUNS_WAIT poll_error seed0 terminated\\n"; exit 3\' TERM\n'
-            "N=0\n"
-            "while [ $N -lt 40 ]; do sleep 0.05; N=$((N+1)); done\n"
-            'printf "MERV_RUNS_WAIT still_running seed0\\n"\n'
-            "exit 2\n"
-        )
-
-    def _deaf_python(self, pidfile: Path) -> str:
-        """A stand-in child that ignores the teardown outright and waits on.
-
-        The shape of a forward that never landed — the send that died with the
-        child's own exec looks exactly like this from the shim's side — and the
-        one a re-send could never have fixed either.
-
-        It records its own pid on the way in, which is how a test sees that the
-        grace really ENDED it rather than left it running behind the answer.
-        """
-        return self._stub_python(
-            "trap '' TERM\n"
-            f'printf "%s\\n" "$$" > "{pidfile}"\n'
-            'printf "# waiting on nothing\\n" >&2\n'
-            "while :; do sleep 0.2; done\n"
-        )
-
-    def _shim_copy(self, text: str) -> Path:
-        """The shim, rewritten, in a tree of its own and still executable."""
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        copy = Path(tmp.name) / SHIM.name
-        copy.write_text(text, encoding="utf-8")
-        copy.chmod(0o755)
-        return copy
-
-    def _hasty_shim(self, seconds: float) -> Path:
-        """The shim with the grace cut down to a test's patience.
-
-        Ten seconds is for a real watcher stating a real line on a loaded
-        machine. What a test needs to see is only that the grace ENDS: a child
-        that never answers is taken out of the way and answered for, rather
-        than waited on by a caller nobody is going to wake.
-        """
-        text = SHIM.read_text(encoding="utf-8")
-        self.assertIn(GRACE_ANCHOR, text)
-        return self._shim_copy(text.replace(GRACE_ANCHOR, f"GRACE={seconds}", 1))
-
-    def _stalled_shim(self, seconds: float) -> Path:
-        """The shim, announcing its traps and then stalling before the child.
-
-        Two probes, injected at seams of the artifact rather than around it.
-        The handshake fires the instant the traps are armed, so a test signals
-        a script that is really listening instead of racing bash's own startup
-        — a signal delivered before line 1 is the untotalizable residual, and
-        no placement of a handler wins that one. The stall then holds the shim
-        in the phase where the traps exist and the child does not, which is the
-        window the signal has to survive.
-        """
-        text = SHIM.read_text(encoding="utf-8")
-        for anchor in (ARMED_ANCHOR, SETUP_ANCHOR):
-            self.assertIn(anchor, text)
-        text = text.replace(ARMED_ANCHOR, f"{ARMED_ANCHOR}\nprintf '# armed\\n' >&2", 1)
-        return self._shim_copy(text.replace(SETUP_ANCHOR, f"sleep {seconds}\n{SETUP_ANCHOR}", 1))
-
-    def _lingering_shim(self, grace: float, seconds: float) -> Path:
-        """The shim, announcing the reap and then stalling before it answers.
-
-        The window a second teardown has to land in to be the LAST one seen and
-        still change the line: the child is gone, the shim has said nothing
-        yet, and there is no longer anything to forward to. It is a real window
-        — a caller escalating on a wait that did not stop hits it — and the only
-        way to sit in it deterministically is to widen it.
-        """
-        text = SHIM.read_text(encoding="utf-8")
-        for anchor in (GRACE_ANCHOR, REAPED_ANCHOR):
-            self.assertIn(anchor, text)
-        text = text.replace(GRACE_ANCHOR, f"GRACE={grace}", 1)
-        probe = f"printf '# reaped\\n' >&2\nsleep {seconds}\n{REAPED_ANCHOR}"
-        return self._shim_copy(text.replace(REAPED_ANCHOR, probe, 1))
 
 
 class RunsWaitProcessTest(_RealProcess):
@@ -1219,16 +1134,65 @@ class RunsWaitProcessTest(_RealProcess):
             result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 transport"]
         )
 
+    def test_the_shim_relays_a_real_answer_and_its_code_verbatim(self) -> None:
+        # A whole healthy wait, end to end through the artifact a platform
+        # arms: heartbeats on stderr where a progress watcher reads them, one
+        # line on the wake channel, and the exit code the observation earned.
+        # Nothing between the watcher and the caller can add to or grade it,
+        # because after the exec there is nothing between them at all.
+        server = _stub(
+            self, _StubHandler, 200,
+            ["# waiting 20s\n", "MERV_RUNS_WAIT done seed0 status=finished exit_code=137\n"],
+        )
+        result = self._shim(SHIM, "--url", f"{_origin(server)}/wait/{UID}/seed0/deadbeef")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout, "MERV_RUNS_WAIT done seed0 status=finished exit_code=137\n"
+        )
+        self.assertIn("# waiting 20s", result.stderr)
+
+    def test_the_shims_usage_contract_is_the_watchers_own(self) -> None:
+        # `--help` and a bad invocation are answered by the module, which
+        # already treats both as poll_error rather than as argparse's exits;
+        # the shim adds nothing to that and must subtract nothing either.
+        for args in (("--help",), ("--not-a-flag",), ()):
+            with self.subTest(args=args):
+                result = self._shim(SHIM, *args)
+                self.assertEqual(result.returncode, 3)
+                self.assertEqual(
+                    result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ usage"]
+                )
+
     def test_the_shim_answers_for_a_python_that_never_reached_the_module(self) -> None:
-        # The outermost belt: an import that failed, or an interpreter killed
-        # before it could install a handler, never reaches this module at all,
-        # and a caller blocked on the process would wake to a traceback and an
-        # exit code that means nothing in the grammar.
+        # The one belt left, and the only job the supervisor architecture was
+        # ever added for: an import that failed never reaches the module at
+        # all, so a caller blocked on the process would wake to a traceback and
+        # an exit code that means nothing in the grammar. `-c` is what makes
+        # the belt reachable — under `python -m` the failure happens before any
+        # code of ours runs.
         copy, tree = self._stray_shim()
         result = self._shim(copy, "--url", DEAD_URL, path=tree)
         self.assertEqual(result.returncode, 3)
         self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
-        self.assertIn("No module named", result.stderr)
+        self.assertNotIn("Traceback", result.stdout)
+
+    def test_a_machine_with_no_interpreter_is_answered_for_in_shell(self) -> None:
+        # The one answer the shim has to author itself, because there is
+        # nothing to hand the question to. It is plain sequential code — a
+        # guarded write and an exit — reached two ways: a MERV_PYTHON that
+        # names nothing, and a PATH with no python3 on it for the resolution
+        # chain to fall through to.
+        copy, _ = self._stray_shim()
+        for why, kwargs in (
+            ("MERV_PYTHON names nothing", {"python": "/nonexistent/python3"}),
+            ("no python3 anywhere", {"python": None, "search": self._bare_path()}),
+        ):
+            with self.subTest(why=why):
+                result = self._shim(copy, "--url", DEAD_URL, **kwargs)
+                self.assertEqual(result.returncode, 3)
+                self.assertEqual(
+                    result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"]
+                )
 
 
 class RunsWaitTotalityTest(_RealProcess):
@@ -1501,34 +1465,66 @@ class RunsWaitTotalityTest(_RealProcess):
         self.assertEqual(code, 4)
         self.assertNotIn("Traceback", err)
 
-    def test_the_shim_refuses_an_exit_code_with_no_line_behind_it(self) -> None:
-        # 0/2/3/4 used to pass through unexamined, so a child that exited 0
-        # before the watcher ever ran woke a caller keying on the exit code
-        # with a `done` and an empty stdout to read it from.
-        result = self._shim(SHIM, "--url", DEAD_URL, python=self._stub_python("exit 0\n"))
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
+    def test_the_shim_execs_the_watcher_and_supervises_nothing(self) -> None:
+        # Round 7 ended the supervisor rather than hardening it again: portable
+        # bash has no safe primitive for holding a child — it reaps them out
+        # from under `wait`, a trapped `wait` loses wakeups, SIGWINCH is not
+        # portable, and bash 3.2 blocks SIGINT after a trapped wait — so every
+        # finding against the old shim (an exit code no line stood behind, a
+        # second line under a first, a signal in a window nothing was watching,
+        # a KILL at a pid the kernel had reissued) is answered structurally
+        # here: there is no child to lose, no second stdout to add to, and no
+        # pid anything is ever sent to. Order used to be the fix and order was
+        # what these tests pinned; ABSENCE is the fix now, so absence is.
+        code = [
+            line for line in SHIM.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        # The last thing it does is stop being itself.
+        self.assertEqual(code[-1], 'exec "$PYTHON_BIN" -c "$WRAPPER" "$@"')
+        self.assertEqual(len([line for line in code if line.startswith("exec ")]), 1)
+        for line in code:
+            statement = line.strip()
+            with self.subTest(statement=statement):
+                # Nothing is backgrounded, so there is never a second process...
+                self.assertFalse(statement.endswith("&"), "a background child")
+                # ...and none of the machinery that existed to mind one.
+                self.assertNotIn(
+                    statement.split(" ", 1)[0], {"trap", "wait", "kill", "sleep"}
+                )
+                self.assertNotIn("mktemp", statement)
 
-    def test_a_line_already_stated_outlives_the_exit_code_that_lost_it(self) -> None:
-        # Killed on the way out, the watcher leaves a whole observation and an
-        # exit code that means nothing. The line is the answer and the answer
-        # names the code, so the line is what the code follows. The belt used
-        # to APPEND a second line here instead — and "last line wins" is no
-        # rule at all for a consumer woken by the first one it reads.
-        stub = self._stub_python(
-            'printf "MERV_RUNS_WAIT done seed0 status=finished exit_code=0\\n"\n'
-            "kill -KILL $$\n"
+    def test_the_shim_becomes_the_watcher_rather_than_starting_one(self) -> None:
+        # The same fact off a live process: the pid a platform is holding is
+        # the pid the interpreter was handed, so a signal sent to the one it
+        # backgrounded reaches the watcher with nothing in between to relay,
+        # buffer, or lose it.
+        proc = subprocess.Popen(
+            [str(SHIM), "--url", DEAD_URL], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            env=self._shim_env(python=self._exec_probe_python()),
         )
-        result = self._shim(SHIM, "--url", DEAD_URL, python=stub)
-        self.assertEqual(
-            result.stdout.splitlines(),
-            ["MERV_RUNS_WAIT done seed0 status=finished exit_code=0"],
-        )
-        self.assertEqual(result.returncode, 0)
+        self.addCleanup(proc.kill)
+        reported = proc.stderr.readline().strip()
+        out, _ = proc.communicate(timeout=60)
+        self.assertEqual(reported, f"# pid {proc.pid}")
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 transport"])
 
-    def test_the_shim_forwards_the_signal_it_was_actually_sent(self) -> None:
-        # It sent TERM for all three, so a Ctrl-C came back as `terminated`:
-        # the caller was told the platform had reclaimed a watcher it stopped.
+    def test_a_teardown_through_the_shim_lands_on_the_watchers_own_handler(self) -> None:
+        # The shim used to forward, and forwarded TERM for all three, so a
+        # Ctrl-C came back as `terminated`: the caller was told the platform
+        # had reclaimed a watcher it had stopped itself. There is no forwarding
+        # left to get wrong — the platform signals the only process there is,
+        # and the handler that answers is the watcher's own, which already
+        # tells an interrupt from a reclaim.
+        #
+        # The residual this cannot cover, and no test can: a signal arriving in
+        # the tens of milliseconds before those handlers arm takes its default
+        # action, leaving a signal exit code and no line. That is the same
+        # untotalizable class as SIGKILL, and as a signal delivered before bash
+        # reached line 1 of the shim; a consumer reads the missing line as
+        # poll_error and re-arms.
         for signum, reason in (
             (signal.SIGINT, "interrupted"),
             (signal.SIGTERM, "terminated"),
@@ -1543,239 +1539,10 @@ class RunsWaitTotalityTest(_RealProcess):
                     out.splitlines(), [f"MERV_RUNS_WAIT poll_error seed0 {reason}"]
                 )
 
-    def test_the_shim_relays_a_healthy_answer_untouched(self) -> None:
-        # The capture is a belt, not a filter: the line arrives byte for byte,
-        # the exit code verbatim, and the notes stay on a live stderr — which
-        # is where a platform's own progress watching reads them.
-        stub = self._stub_python(
-            'printf "# waiting 20s\\n" >&2\n'
-            'printf "MERV_RUNS_WAIT no_such_run seed0\\n"\n'
-            "exit 4\n"
-        )
-        result = self._shim(SHIM, "--url", DEAD_URL, python=stub)
-        self.assertEqual(result.returncode, 4)
-        self.assertEqual(result.stdout, "MERV_RUNS_WAIT no_such_run seed0\n")
-        self.assertEqual(result.stderr, "# waiting 20s\n")
-
-    def test_an_unusable_tmpdir_is_not_the_end_of_the_capture(self) -> None:
-        # TMPDIR is a caller's preference, not the only writable place there
-        # is, and degrading to no capture is the expensive way to lose one.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        line = "MERV_RUNS_WAIT done seed0 status=finished exit_code=0"
-        stub = self._stub_python(f'printf "{line}\\n"\nexit 7\n')  # a nonsense code
-        result = self._shim(
-            SHIM, "--url", DEAD_URL, python=stub,
-            tmpdir=str(Path(tmp.name) / "no-such-dir"),
-        )
-        # Captured, so the LINE is the answer and the 7 never reaches anybody.
-        self.assertEqual(result.stdout.splitlines(), [line])
-        self.assertEqual(result.returncode, 0)
-
-    def test_with_nowhere_to_capture_the_shim_never_runs_the_child_at_all(self) -> None:
-        # Degrading to a passthrough was the whole escape in one move: the exit
-        # code went back to being trusted unvalidated, and the child's stdout
-        # went back to being able to put a second line under a first one
-        # somebody had already woken on. A machine with no writable temp dir
-        # cannot be watched from, and saying so is a total, honest re-arm —
-        # where a `done` that might be lying is neither.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        marker = Path(tmp.name) / "the-child-ran"
-        result = self._shim(
-            SHIM, "--url", DEAD_URL,
-            python=self._sentinel_python(
-                marker, "MERV_RUNS_WAIT done seed0 status=finished exit_code=0"
-            ),
-            tools=self._refusing_mktemp(),
-        )
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
-        self.assertFalse(marker.exists())  # and nothing was launched to lie
-
-    def test_the_teardown_traps_are_the_first_thing_the_shim_does(self) -> None:
-        # A signal delivered before bash has executed line 1 kills the script
-        # outright — rc -15 and an empty stdout, the exact shape everything
-        # here exists to prevent — and no handler can be installed early enough
-        # to catch that one: it is the same class of thing as SIGKILL. What CAN
-        # be closed is the rest of the script's own startup, which used to run
-        # a symlink walk, several subshells and an interpreter search with the
-        # teardown signals still at their defaults. Order is the fix, so order
-        # is what this pins; the behavior is the test below it.
-        text = SHIM.read_text(encoding="utf-8")
-        for trap in ("trap 'forward INT' INT", "trap 'forward TERM' TERM", ARMED_ANCHOR):
-            with self.subTest(trap=trap):
-                self.assertLess(text.index(trap), text.index(SETUP_ANCHOR))
-
-    def test_a_teardown_that_beats_the_child_aborts_the_launch(self) -> None:
-        # The half of that window a handler can have: a signal that lands once
-        # the traps are armed but before there is a pid to forward it to. It
-        # was first DROPPED — the caller's own teardown, answered by nobody,
-        # with the wait running on as if nothing had been asked of it — and
-        # then buffered for delivery, which is the repair this one replaces:
-        # sent in the same breath as the fork, the signal reaches a child that
-        # is still the shell about to become the watcher and dies with the
-        # exec, so a bounded volley could clear the buffer having delivered
-        # nothing at all. Nothing needs delivering if nothing is started. The
-        # launch is ABORTED and the shim answers under the signal's own name.
-        #
-        # (This assertion is one of the two the round-6 fixes deliberately
-        # changed: the outcome used to be a race between the child's own line
-        # and a generic `crashed`, and is now neither and not a race.)
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        marker = Path(tmp.name) / "the-child-ran"
-        stalled = self._stalled_shim(0.6)
-        armed = self._armed_python(marker)
-        for attempt in range(3):  # it is a race; run it more than once
-            with self.subTest(attempt=attempt):
-                proc = subprocess.Popen(
-                    [str(stalled), "--url", DEAD_URL], stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, text=True,
-                    env=self._shim_env(python=armed),
-                )
-                self.addCleanup(proc.kill)
-                # The handshake: armed, and stalled where there is no child.
-                self.assertEqual(proc.stderr.readline().strip(), "# armed")
-                proc.terminate()
-                out, _ = proc.communicate(timeout=60)
-                self.assertEqual(proc.returncode, 3)
-                # The teardown reached the run, by the only route that cannot
-                # lose it: it named the signal the caller actually sent, and
-                # nothing was ever started for that signal to have to catch.
-                self.assertEqual(
-                    out.splitlines(), ["MERV_RUNS_WAIT poll_error _ terminated"]
-                )
-                self.assertFalse(marker.exists())
-
-    def test_a_child_deaf_to_the_teardown_is_ended_and_answered_for(self) -> None:
-        # The lost forward, in the only shape a test can hold still: a child
-        # that ignores the signal outright, which from the shim's side is what
-        # a send that died with the child's exec looks like too. Re-sending it
-        # could not tell the two apart — nothing acknowledges — so delivery
-        # stopped being the thing that has to work. The grace runs out, the
-        # child is taken out of the way, `wait` returns on its own, and the
-        # shim states the teardown itself rather than waiting on a run nobody
-        # managed to stop or calling it a generic crash.
-        #
-        # The ending is now the PARENT's, prompted by a timer that only ever
-        # taps the shim itself, so what this pins is that the answer still
-        # arrives at the grace and that the child really is gone behind it.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        pidfile = Path(tmp.name) / "the-child-pid"
-        grace = 0.5
-        proc = self._spawn(
-            DEAD_URL, [str(self._hasty_shim(grace)), "--url", DEAD_URL],
-            env=self._shim_env(python=self._deaf_python(pidfile)),
-        )
-        started = time.monotonic()
-        proc.terminate()
-        out, _ = proc.communicate(timeout=30)
-        spent = time.monotonic() - started
-        self.assertEqual(proc.returncode, 3)
-        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error _ terminated"])
-        # At the grace: the child was given all of it, and no more than it.
-        self.assertGreaterEqual(spent, grace * 0.8)
-        self.assertLess(spent, 10.0)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(int(pidfile.read_text().strip()), 0)
-
-    def test_the_line_names_the_last_teardown_and_not_the_first(self) -> None:
-        # A caller that escalates — an interrupt, then a reclaim when the wait
-        # has still not stopped — is answered under the signal it ENDED with.
-        # The second one lands after the child is gone, where there is nothing
-        # left to forward it to, and that used to be where a teardown stopped
-        # being recorded at all: the name was kept only on the branch that had
-        # a child to signal, so the shim answered under the first one and told
-        # the caller its second had never arrived.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        pidfile = Path(tmp.name) / "the-child-pid"
-        proc = self._spawn(
-            DEAD_URL, [str(self._lingering_shim(0.5, 0.6)), "--url", DEAD_URL],
-            env=self._shim_env(python=self._deaf_python(pidfile)),
-        )
-        proc.send_signal(signal.SIGINT)
-        # The handshake: the child has been let go of, and nothing said yet.
-        self.assertEqual(proc.stderr.readline().strip(), "# reaped")
-        proc.terminate()
-        out, _ = proc.communicate(timeout=30)
-        self.assertEqual(proc.returncode, 3)
-        # Measured before the fix: `interrupted`, the signal it started with.
-        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error _ terminated"])
-
-    def test_only_the_parent_ever_ends_the_child(self) -> None:
-        # The watchdog this replaces was a detached subshell that slept out the
-        # grace and only THEN expanded the child's pid — by which time the pid
-        # may have been reaped and reissued to somebody else, and standing the
-        # subshell down was a send nobody acknowledged, so the window could not
-        # be closed from the shim's side at all. Two rules replace it, and both
-        # are structural rather than behavioral, because what has to be true is
-        # a property of every path rather than of one run:
-        #
-        #   the detached helper is a pure TIMER — one signal, SIGWINCH, whose
-        #   default action is IGNORE, sent to one pid, the shim's own;
-        #   the KILL is the parent's, standing on a child it is still waiting
-        #   on, behind a grace that ran out and a teardown that was really seen.
-        #
-        # Chasing pid reuse in a test is not possible; pinning that nothing
-        # anywhere signals a pid from a context that does not own it is.
-        text = SHIM.read_text(encoding="utf-8")
-        lines = [ln.strip() for ln in text.splitlines()]
-        self.assertIn("SHIM_PID=$$", lines)
-        # The timer's trap is armed with the teardowns, ahead of everything.
-        self.assertLess(text.index("trap timed_out WINCH"), text.index(SETUP_ANCHOR))
-        timers = [i for i, ln in enumerate(lines) if 'sleep "$GRACE"' in ln]
-        self.assertEqual(len(timers), 1)
-        self.assertIn('kill -WINCH "$SHIM_PID"', lines[timers[0]])
-        for named in ("$CHILD", "$WATCHER", "-KILL", "-TERM"):
-            self.assertNotIn(named, lines[timers[0]])
-        kills = [i for i, ln in enumerate(lines) if "kill -KILL" in ln]
-        self.assertEqual(len(kills), 1)
-        self.assertIn('kill -KILL "$WATCHER"', lines[kills[0]])
-        guard = "\n".join(lines[max(0, kills[0] - 3):kills[0]])
-        for fact in ('-n "$TIMEOUT"', '-n "$SIG_SEEN"', '-z "$ENDED"'):
-            self.assertIn(fact, guard)
-
-    def test_a_timer_that_outlives_the_answer_disturbs_nothing(self) -> None:
-        # A child that answers its own teardown at once leaves a timer still
-        # sleeping behind it. It is stood down on the way out, but nothing
-        # rests on that: the answer is the child's own, it arrives well inside
-        # the grace, and waiting the whole grace out afterwards changes
-        # neither the line nor the code — a late tap is a SIGWINCH at a pid
-        # this script no longer owns, which is the one signal that costs its
-        # new owner nothing.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        marker = Path(tmp.name) / "the-child-ran"
-        grace = 1.5
-        proc = subprocess.Popen(
-            [str(self._hasty_shim(grace)), "--url", DEAD_URL], stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True,
-            env=self._shim_env(python=self._armed_python(marker)),
-        )
-        self.addCleanup(proc.kill)
-        for _ in range(1000):  # the handshake: the child is really running
-            if marker.exists():
-                break
-            time.sleep(0.01)
-        self.assertTrue(marker.exists())
-        started = time.monotonic()
-        proc.terminate()
-        out, _ = proc.communicate(timeout=60)
-        answered = time.monotonic() - started
-        self.assertEqual(proc.returncode, 3)
-        # The child's own line, relayed: the normal signal path is untouched.
-        self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 terminated"])
-        self.assertLess(answered, grace)
-        time.sleep(grace - answered + 0.3)  # the timer's own moment, spent
-        self.assertEqual(proc.returncode, 3)
-
     def test_a_second_teardown_through_the_shim_cannot_add_a_line(self) -> None:
-        # The shim forwards, the child answers, and the platform signals again
-        # while both are still finishing: one line and one code, whichever of
-        # the two the second signal lands in.
+        # A platform that sends SIGTERM twice. Both land on the watcher, which
+        # deafens as it answers the first, so the second has nothing to
+        # interrupt: one line and one code, whichever instruction it lands in.
         url, _ = self._held()
         proc = self._spawn(url, [str(SHIM), "--url", url], env=self._shim_env())
         proc.terminate()
@@ -1783,63 +1550,6 @@ class RunsWaitTotalityTest(_RealProcess):
         out, _ = proc.communicate(timeout=60)
         self.assertEqual(proc.returncode, 3)
         self.assertEqual(out.splitlines(), ["MERV_RUNS_WAIT poll_error seed0 terminated"])
-
-    def test_the_shim_lets_go_of_the_reaped_pid_before_anything_else_runs(self) -> None:
-        # `kill -0 "$CHILD"` stood between the reap and the clear: a trap
-        # firing in those few statements forwarded a real signal to a pid the
-        # watcher no longer held, and which the kernel may by then have
-        # reissued to somebody else's process. The probe is gone — the loop
-        # asks bash rather than the OS whether a signal interrupted it — and
-        # the clear is the next COMMAND, which is the unit the boundary is
-        # measured in. `wait ... || true` is one line and two commands, and
-        # the `true` ran in exactly the window this closes; a physical-line
-        # comparison could not see it, so this reads the command instead.
-        # Order is the fix, so order is what this pins; the behavior around it
-        # is the rest of this class.
-        text = SHIM.read_text(encoding="utf-8")
-        lines = [ln.strip() for ln in text.splitlines()]
-        waits = [i for i, ln in enumerate(lines) if ln.startswith("wait ")]
-        self.assertEqual(len(waits), 1)
-        # Nothing chained onto the wait, so the reap is the whole command...
-        self.assertNotRegex(lines[waits[0]], r"[;&|]")
-        # ...and nothing between it and the clear, comments included.
-        after = next(ln for ln in lines[waits[0] + 1:] if ln and not ln.startswith("#"))
-        self.assertEqual(after, 'CHILD=""')
-        self.assertNotIn("kill -0", text)
-
-    def test_the_shims_done_grammar_is_exactly_the_watchers_own(self) -> None:
-        # Presence is not the fact: `status=running` is a live run and
-        # `exit_code=garbage` is no code at all, and a recognizer that looked
-        # only for the two words mapped this to exit 0 — the one answer that
-        # tells a caller its waiting is over.
-        forged = "MERV_RUNS_WAIT done seed0 status=running exit_code=garbage"
-        self.assertIsNone(runs_wait._FACTS_RE.match("status=running exit_code=garbage"))
-        result = self._shim(
-            SHIM, "--url", DEAD_URL,
-            python=self._stub_python(f'printf "{forged}\\n"\nexit 0\n'),
-        )
-        self.assertEqual(result.returncode, 3)
-        self.assertEqual(result.stdout.splitlines(), ["MERV_RUNS_WAIT poll_error _ crashed"])
-
-    def test_every_done_the_watcher_can_state_survives_the_shim(self) -> None:
-        # The other side of that seam: the shell recognizer is a grammar, not a
-        # whitelist, and tightening it must not turn a real observation into a
-        # re-arm. Every facts string _FACTS_RE admits comes through untouched.
-        for facts in (
-            "status=finished exit_code=0",
-            "status=finished exit_code=137",
-            "status=finished exit_code=-9",
-            "status=lost exit_code=none",
-            "status=unknown exit_code=none",
-        ):
-            with self.subTest(facts=facts):
-                self.assertIsNotNone(runs_wait._FACTS_RE.match(facts))
-                line = f"MERV_RUNS_WAIT done seed0 {facts}"
-                result = self._shim(
-                    SHIM, "--url", DEAD_URL,
-                    python=self._stub_python(f'printf "{line}\\n"\nexit 0\n'),
-                )
-                self.assertEqual((result.returncode, result.stdout), (0, f"{line}\n"))
 
 
 if __name__ == "__main__":

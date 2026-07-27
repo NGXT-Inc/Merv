@@ -1,117 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The teardown signals come FIRST, ahead of every other statement in this
-# script. A platform reclaims a background watcher with SIGTERM, and the
-# default action for one is a silent 143 with an empty stdout — so a signal
-# landing during this script's own setup used to kill it outright, leaving a
-# caller blocked on the process with no line to read and an exit code outside
-# the grammar. The one window left is a signal delivered before bash executes
-# the trap statements below, which is the same class of thing as SIGKILL:
-# untotalizable, and not something a handler can be installed early enough for.
-CHILD=""
-PENDING_SIG=""
-SIG_SEEN=""
-TRAPPED=""
-TIMEOUT=""
-TIMER=""
-ENDED=""
-# This shell's own pid, recorded here in the shell it names. The grace timer
-# below taps THIS process and nothing else, and it does so from inside a
-# subshell — which is exactly where `$$` stops being a thing worth asking, so
-# the answer is carried in rather than read there.
-SHIM_PID=$$
-# How long a signalled child gets to answer for itself before it is taken out
-# of the way. Long enough for a real watcher to state its line, short enough
-# that no caller waits on a wait nobody managed to stop.
-GRACE=10
-
-# The shim's own name for a teardown, when it is the one who has to say it:
-# the watcher tells `interrupted` from `terminated`, and a line authored here
-# instead of by the child has to draw the same distinction. HUP is a teardown.
-teardown_line() {
-  case "$1" in
-    INT) LINE="MERV_RUNS_WAIT poll_error _ interrupted" ;;
-    *) LINE="MERV_RUNS_WAIT poll_error _ terminated" ;;
-  esac
-  return 0
-}
-
-# Forward the ACTUAL signal, ONCE. Re-sending it was the wrong repair: a
-# send is not an acknowledgment, so a bounded volley can put all of its
-# attempts into a child that is still the shell about to BECOME the watcher
-# and lose every one of them to the exec, then clear the buffer as though the
-# teardown had been delivered. Instead the send is BACKED: whatever it did, the
-# grace below runs out and the wait loop ends the child, `wait` returns either
-# way, and the answer is then either the child's own line or one this script
-# authors under the name of the signal it saw. Non-delivery is survivable, so
-# it no longer has to be detected.
+# ONE process. This script resolves an interpreter and then BECOMES the
+# watcher: no children, no traps, no temp files, no signal ever sent to any
+# pid. Supervision is what kept failing review — bash reaps background children
+# out from under a `wait`, a trapped `wait` has lost wakeups, SIGWINCH is not
+# portable, and bash 3.2 blocks SIGINT after a trapped wait — and none of those
+# have a portable repair. So there is nothing here to supervise: the platform's
+# teardown signals land directly on the Python handlers that already answer for
+# them, and the line and exit code the caller reads are the watcher's own.
 #
-# Before there is a child the signal is REMEMBERED rather than dropped — the
-# gap between arming these traps and having something to forward to is short
-# but not empty, and a teardown that lands in it is still a teardown.
-forward() {
-  TRAPPED=1
-  # The name this script would answer under is the LAST teardown it saw, and
-  # it is recorded before the child is even consulted. A caller that escalates
-  # — TERM, then INT when the wait has not stopped — is ending this wait with
-  # the interrupt, and one that lands after the child is already reaped is
-  # still the caller's own: it has nobody to forward to, which is not the same
-  # as not having arrived.
-  SIG_SEEN="$1"
-  if [ -z "$CHILD" ]; then
-    PENDING_SIG="$1"
-    return 0
-  fi
-  kill -"$1" "$CHILD" 2>/dev/null || true
-  if [ -z "$TIMER" ]; then
-    # A TIMER, and pointedly not a killer. A detached helper that sleeps out
-    # the grace and only THEN expands a child's pid names whoever holds that
-    # pid by the end of the sleep — the kernel is free to reissue it the
-    # moment the child is reaped, and standing the helper down is a send
-    # nobody acknowledges, so that window cannot be closed from here. This one
-    # therefore signals a single process, the shim itself, with a single
-    # signal, SIGWINCH — whose default action is IGNORE. A tap that arrives
-    # late, at a pid this script no longer owns, is the one signal that costs
-    # its new owner nothing at all. The kill it stands in for is the parent's,
-    # below, where the child is still held. Every descriptor of the caller's
-    # is traded for the void first, so what this leaves behind can never be an
-    # orphan holding the pipe a platform reads.
-    ( exec >/dev/null 2>&1 0<&-; sleep "$GRACE"; kill -WINCH "$SHIM_PID" || true ) &
-    TIMER=$!
-  fi
-  return 0
-}
-
-# The grace running out, arriving as a flag and nothing else. Whatever has to
-# be ended is the wait loop's to end — it is the one context still holding the
-# child — and a handler is not it. A tap with no teardown behind it is read by
-# nobody: a terminal resizing its window sends this signal too.
-timed_out() {
-  TRAPPED=1
-  TIMEOUT=1
-  return 0
-}
-trap 'forward INT' INT
-trap 'forward TERM' TERM
-trap 'forward HUP' HUP
-trap timed_out WINCH
-
-CAPTURE=""
-cleanup() {
-  # Best effort, and nothing rests on it: a timer that outlives this script
-  # taps a pid with a signal that is ignored by default, so standing it down
-  # is tidiness rather than safety. It is this shell's own child either way.
-  if [ -n "$TIMER" ]; then
-    kill "$TIMER" 2>/dev/null || true
-    TIMER=""
-  fi
-  if [ -n "$CAPTURE" ]; then
-    rm -f "$CAPTURE" 2>/dev/null || true
-  fi
-  return 0
-}
-trap cleanup EXIT
+# The honest residual: a signal arriving BEFORE those handlers arm — the tens
+# of milliseconds an interpreter spends starting — takes its default action, so
+# the caller sees a signal exit code and no line. That is the same untotalizable
+# class as SIGKILL, and as a signal delivered before bash reaches line 1 here;
+# consumers read a missing line as poll_error and re-arm. Everything after the
+# handlers arm is the watcher's own reviewed totality.
 
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
@@ -139,149 +43,33 @@ fi
 
 export PYTHONPATH="$PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
-# No exec: this is the outermost belt of the wake contract. The watcher answers
-# for everything it can reach, but an import that failed before it ran, an
-# interpreter killed outright, or a stray process that exited 0 having said
-# nothing at all never reaches it — and an exit code alone cannot tell those
-# from an observed run, so a caller keying on it would wake to a false `done`.
-#
-# So the child's stdout is CAPTURED and verified rather than trusted, and
-# exactly one line ever leaves this script. Stderr stays passthrough, which is
-# where the heartbeats and diagnostics live; nothing about the wake is delayed
-# by the capture, because the watcher's stdout carries the final answer alone.
-#
-# Which makes the capture load-bearing rather than an optimization: without it
-# the child speaks straight to our stdout and this script can only ADD to
-# whatever it said, restoring both escapes at once — an unvalidated exit code,
-# and a second line under a first one somebody may already have woken on. So
-# both plausible temp dirs are tried, and a machine with neither gets a total,
-# honest re-arm signal below instead of a watcher that might be lying.
-for TMP in "${TMPDIR:-/tmp}" /tmp; do
-  CAPTURE="$(mktemp "$TMP/merv-runs-wait.XXXXXX" 2>/dev/null)" || CAPTURE=""
-  if [ -n "$CAPTURE" ]; then
-    break
-  fi
-done
-
-if [ -z "$CAPTURE" ]; then
-  # Nowhere to capture, so the child is never launched at all: `poll_error` is
-  # the honest answer for an environment this script cannot watch a run from,
-  # and it re-arms the caller instead of handing it an unverifiable code.
+# No interpreter at all is the one answer this script has to author itself,
+# because there is nothing to hand the question to. Plain sequential code: a
+# guarded write — a closed stdout costs the line and must never cost the code —
+# and the re-arm the caller can act on.
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 && [ ! -x "$PYTHON_BIN" ]; then
   printf '%s\n' "MERV_RUNS_WAIT poll_error _ crashed" 2>/dev/null || true
   exit 3
 fi
 
-# A teardown that beat the child ABORTS the launch. Nothing has started yet,
-# so there is nothing to deliver a signal to and nothing to lose one in: the
-# caller asked for this wait to stop before it began, and the honest answer is
-# to say so under the name of the signal it sent. Starting a watcher here in
-# order to immediately try to stop it is what made delivery a problem at all.
-if [ -n "$PENDING_SIG" ]; then
-  teardown_line "$PENDING_SIG"
-  printf '%s\n' "$LINE" 2>/dev/null || true
-  exit 3
-fi
+# The import-failure belt, and the only job the supervisor architecture was
+# ever added for: a broken PYTHONPATH or a half-installed merv would otherwise
+# hand a caller a traceback and an exit code outside the grammar. `-c` is
+# load-bearing — `python -m merv.client.runs_wait` fails before any module body
+# runs when the package itself is unimportable, so no code of ours gets a turn.
+# Once the import succeeds this process IS the watcher: `main` reads sys.argv[1:],
+# which under `-c` is exactly the arguments passed after the program text.
+WRAPPER='
+import os, sys
+try:
+    from merv.client.runs_wait import main
+except BaseException:
+    try:
+        sys.stdout.write("MERV_RUNS_WAIT poll_error _ crashed\n"); sys.stdout.flush()
+    except BaseException:
+        pass
+    os._exit(3)
+sys.exit(main())
+'
 
-"$PYTHON_BIN" -m merv.client.runs_wait "$@" >"$CAPTURE" &
-CHILD=$!
-
-# The sliver the test above cannot cover: a signal landing between it and the
-# fork, buffered by `forward` because there was still no pid. There is one now,
-# so it goes out the same one-shot, grace-backed way as any other — a send into
-# a child that may still be mid-exec, which the grace makes survivable.
-if [ -n "$PENDING_SIG" ]; then
-  SIG="$PENDING_SIG"
-  PENDING_SIG=""
-  forward "$SIG"
-fi
-
-# The pid is waited on through a COPY. `wait` returns either when the child is
-# gone or when a trapped signal ran with the child still there — the watcher
-# answers a signal itself, so the waiting resumes to let it finish saying so —
-# and `CHILD` is emptied the instant either happens, before anything else in
-# this script runs. From there a trap has nothing of ours to reach, so it can
-# no longer forward a signal to a pid that was reaped and reissued to somebody
-# else while this line was being read. Nothing at all stands between the two —
-# not a `true` off the end of the wait — because the boundary is measured in
-# commands rather than in lines, and every command in it is a window.
-#
-# Nothing is owed a second forward on the way through here: the watcher deafens
-# the moment it answers a signal, so the only child that could still take one
-# is a child already inside the grace.
-WATCHER="$CHILD"
-while true; do
-  # The KILL the grace timer stands in for, in the one place it can stand: the
-  # parent's, on a child it is still waiting on. Every pass through here after
-  # the first is reached by a `wait` a trap CUT SHORT rather than one that came
-  # back with the child's status, so the pid named here is the pid that was
-  # forked. It is spent once, behind a grace that ran out and a teardown this
-  # script actually saw — a bare SIGWINCH, from a terminal or from a timer
-  # outliving its run, reaches this with no teardown behind it and does
-  # nothing. The residual is a child that exits in the few instructions
-  # between the tap and the kill: the same untotalizable class as a signal
-  # delivered before line 1, and the only one no ordering here closes.
-  if [ -n "$TIMEOUT" ] && [ -n "$SIG_SEEN" ] && [ -z "$ENDED" ]; then
-    ENDED=1
-    kill -KILL "$WATCHER" 2>/dev/null || true
-  fi
-  TRAPPED=""
-  # `set -e` is off for exactly one command rather than the wait carrying an
-  # `|| true`: a nonzero wait is the child's own code and not this script's
-  # failure, and `true` is a COMMAND — one that would run between the reap and
-  # the clear, in the boundary this ordering exists to leave empty.
-  set +e
-  wait "$WATCHER" 2>/dev/null
-  CHILD=""
-  set -e
-  [ -n "$TRAPPED" ] || break
-done
-
-LINE="$(tail -n 1 "$CAPTURE" 2>/dev/null)" || LINE=""
-
-# The shell half of the `done` grammar, kept in exact step with `_FACTS_RE` in
-# src/merv/client/runs_wait.py: one of the three terminal statuses, an exit
-# code that is an integer or `none`, and nothing else on the line. The presence
-# of the two words is not the two facts — `status=running exit_code=garbage`
-# has both and states neither — and exit 0 is the one answer that ends a
-# caller's waiting, so a `done` this cannot parse is not one. The end-to-end
-# test through this shim is the seam that keeps the two spellings together.
-DONE_LINE_RE='^MERV_RUNS_WAIT done [^ ]+ status=(finished|lost|unknown) exit_code=(-?[0-9]+|none)$'
-
-# A whole line is a whole observation, and it names its own code — so the line
-# is what the exit code follows, even when the process died AFTER stating one
-# (killed on the way out, or reclaimed once its handlers were back). Throwing
-# the answer away there would re-arm a caller whose run is already over, and
-# loop one forever on a run that will never exist.
-CODE=""
-if [[ "$LINE" =~ $DONE_LINE_RE ]]; then
-  CODE=0
-else
-  case "$LINE" in
-    "MERV_RUNS_WAIT still_running "*) CODE=2 ;;
-    "MERV_RUNS_WAIT poll_error "*) CODE=3 ;;
-    "MERV_RUNS_WAIT no_such_run "*) CODE=4 ;;
-  esac
-fi
-
-if [ -z "$CODE" ]; then
-  # Nothing sayable came back — no line at all, or one that is not an answer.
-  # The child's own exit code is never consulted here: it cannot tell an
-  # observation from a stray process, so every way out of this script stands
-  # behind a line this script validated.
-  #
-  # When a teardown was forwarded, `crashed` is the wrong name for this: the
-  # child was signalled and never answered — because the send died with its
-  # exec, or because it was deaf to it and the watchdog ended it — and what
-  # the caller is owed there is the teardown it asked for, not a mystery.
-  if [ -n "$SIG_SEEN" ]; then
-    teardown_line "$SIG_SEEN"
-  else
-    LINE="MERV_RUNS_WAIT poll_error _ crashed"
-  fi
-  CODE=3
-fi
-
-# Every write guarded and the mapped exit unconditional: a closed stdout costs
-# the caller the line, and must never also cost it the code.
-printf '%s\n' "$LINE" 2>/dev/null || true
-exit "$CODE"
+exec "$PYTHON_BIN" -c "$WRAPPER" "$@"
