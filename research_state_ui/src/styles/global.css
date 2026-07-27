@@ -4250,7 +4250,7 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
 .figure-missing-name { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--faint); word-break: break-all; }
 
 /* Inline per-experiment metrics panel — durable numbers from the centralized
-   MLflow ledger, on the experiment detail page. Flush: a hairline at the
+   legacy metric ledger, on the experiment detail page. Flush: a hairline at the
    section break, headline metrics as rows, telemetry as a quiet line. */
 .results-metrics { border-top: 1px solid var(--line); padding-top: 12px; }
 .results-metrics-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
@@ -4258,7 +4258,7 @@ a.clb-card:focus-visible { outline: 2px solid var(--active); outline-offset: -2p
 .results-metrics-sub { font-size: var(--text-xs); color: var(--faint); text-decoration: none; }
 a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; }
 
-/* Recorded-results renderer (RunMetrics): headline results with folded-in
+/* Legacy recorded-results renderer: headline results with folded-in
    baseline deltas, then telemetry and diagnostics as quiet lines. No tiles. */
 .rr { display: flex; flex-direction: column; gap: 14px; }
 .rr-run + .rr-run { border-top: 1px solid var(--line-soft); padding-top: 12px; }
@@ -4287,7 +4287,7 @@ a.results-metrics-sub:hover { color: var(--active); text-decoration: underline; 
 .mlf-param-k { color: var(--faint); }
 .mlf-empty { font-size: var(--text-sm); color: var(--faint); margin: 8px 0 0; }
 
-/* ── Project ledger (MLflow page): profiler-planned analytics.
+/* ── Legacy project ledger: profiler-planned analytics.
    .lgd-* = page layout, .lgc-* = chart primitives (LedgerCharts.jsx). ── */
 /* Pulse: a flush instrument band — hairline verticals, no tinted boxes. */
 .lgd-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin-bottom: 44px; }

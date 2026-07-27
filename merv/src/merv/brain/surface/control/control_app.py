@@ -38,7 +38,6 @@ from ...kernel.ports.blob_store import EvidenceBlobStore
 from .record_core import build_record_core
 from ...sandbox.sandbox_backend import SandboxBackend
 from ...sandbox.sandbox_support import ACTIVE_SANDBOX_STATUSES
-from ...mlflow import CentralMlflowService
 from ...sandbox.facade import SandboxFacade
 from ...sandbox.runtime import build_sandbox_runtime
 from ...object_storage.service import StorageLedgerService
@@ -61,7 +60,7 @@ class ControlApp:
         storage: StorageLedgerService | None,
         execution_backend: SandboxBackend,
         mgmt_keys: MgmtKeyStore,
-        mlflow_tracking: CentralMlflowService | None = None,
+        mlflow_tracking: Any | None = None,
         force_expiry_reaper: bool = False,
         structured_logging: bool = False,
     ) -> None:
@@ -76,11 +75,11 @@ class ControlApp:
         self._blobs = blobs
         self._storage = storage
         self._execution_backend = execution_backend
-        self._tracking = (
-            mlflow_tracking
-            if mlflow_tracking is not None
-            else CentralMlflowService.from_env()
-        )
+        # The legacy tracking adapter remains injectable for compatibility and
+        # a later reintroduction, but it is no longer auto-composed from the
+        # environment.  A normal product build therefore has no tracking
+        # service, tools, routes, credentials, or response fields.
+        self._tracking = mlflow_tracking
         core = self._record_core = build_record_core(store=store, blobs=blobs)
 
         self.research_core = ResearchCoreFacade(
@@ -137,7 +136,8 @@ class ControlApp:
             objects=self.produced_objects,
         )
         self.experiment_collection_query = ExperimentCollectionQuery(
-            research=self.research_core, objects=self.produced_objects
+            research=self.research_core,
+            objects=self.produced_objects,
         )
         self.create_experiment = CreateExperiment(research=self.research_core)
         self.control_tool_operations = ControlToolOperations(
@@ -182,18 +182,23 @@ class ControlApp:
             policy=self.next_action_policy,
             objects=self.produced_objects,
         )
+        self.event_timeline = EventTimelineQuery(source=store)
         self.project_dashboard_query = ProjectDashboardQuery(
             snapshots=self.research_snapshots,
             workflow=self.workflow,
             artifacts=core.artifact_submissions.find,
             review_queue=core.reviews.queue,
-            recent_events=store.recent_events,
-            health=lambda: self._tracking.health(),
+            recent_events=self.event_timeline.recent,
+            health=(lambda: self._tracking.health()) if self._tracking else (lambda: {}),
             current=core.projects.current,
         )
-        self.mlflow_overview_query = MlflowOverviewQuery(
-            experiments=self.research_core.project_experiment_summaries,
-            tracking=self._tracking,
+        self.mlflow_overview_query = (
+            MlflowOverviewQuery(
+                experiments=self.research_core.project_experiment_summaries,
+                tracking=self._tracking,
+            )
+            if self._tracking is not None
+            else None
         )
         self.experiment_figure_query = ExperimentFigureQuery(
             experiment_state=self.research_core.experiment_state,
@@ -215,11 +220,11 @@ class ControlApp:
             research=self.research_core,
             artifacts=self.artifacts,
         )
-        self.event_timeline = EventTimelineQuery(
-            source=store,
-        )
         self.user_settings = UserHfTokenSettings(store=store)
-        tool_names = available_tool_names(storage_enabled=storage is not None)
+        tool_names = available_tool_names(
+            storage_enabled=storage is not None,
+            tracking_enabled=self._tracking is not None,
+        )
         self.tools = ToolDispatcher(
             handlers=build_control_tool_handlers(
                 workflow=self.workflow,
@@ -240,6 +245,7 @@ class ControlApp:
                 review_status=self.read_review_status,
                 operations=self.control_tool_operations,
                 litreview=core.literature,
+                tracking_enabled=self._tracking is not None,
             ),
             permissions=core.permissions,
             activity=self.activity,

@@ -114,7 +114,7 @@ project, or the owner's whole account).
 
 `/home` is the primary UI bootstrap. It returns `project`, `claims`, the full
 `experiments` list, `artifacts`, `reviews`, `recent_events`, `stats`, `workflow`,
-`active_experiment`, `active_experiments`, `active_processes`, and MLflow health.
+`active_experiment`, `active_experiments`, and `active_processes`.
 `active_experiments` contains non-terminal work with its workflow, sandboxes,
 and active processes. `active_processes` includes both `provisioning` and
 `running` sandboxes.
@@ -132,7 +132,7 @@ PUT   /api/projects/{project_id}/claims/{claim_id}
 Claim creation accepts `statement`, `scope`, and `confidence`. Updates use the
 same control-plane validation as MCP claim mutations.
 
-## Experiments and MLflow
+## Experiments
 
 ```http
 GET  /api/projects/{project_id}/experiments
@@ -144,8 +144,6 @@ GET  /api/projects/{project_id}/experiments/{experiment_id}/status
 GET  /api/projects/{project_id}/experiments/{experiment_id}/figure
 GET  /api/projects/{project_id}/experiments/{experiment_id}/graph
 POST /api/projects/{project_id}/experiments/{experiment_id}/transition
-GET  /api/projects/{project_id}/experiments/{experiment_id}/results/metrics
-GET  /api/projects/{project_id}/mlflow
 ```
 
 Create an experiment with `name`, `intent`, and `claim_ids`. Transitions accept
@@ -155,11 +153,6 @@ workflow table in the UI.
 
 `/figure` is the system-derived experiment view. `/graph` is the submitted,
 agent-authored logic graph plus lint problems and resolved references.
-
-`.../results/metrics` is a bounded UI view over centralized MLflow: matching
-runs, params, final values, and downsampled metric histories. It is not a second
-metrics database. `/mlflow` aggregates that view across the project's
-experiments and provides dashboard links when configured.
 
 ## Literature review
 

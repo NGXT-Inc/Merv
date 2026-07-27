@@ -78,7 +78,7 @@ class HttpDependencies:
     workflow: StatusAndNextQuery
     dashboard: ProjectDashboardQuery
     experiment_figure: ExperimentFigureQuery
-    tracking_overview: MlflowOverviewQuery
+    tracking_overview: MlflowOverviewQuery | None
     tenant_counters: TenantCountersQuery
     literature: ResearchLiterature
     user_settings: UserHfTokenSettings

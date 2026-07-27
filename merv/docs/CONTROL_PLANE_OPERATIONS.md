@@ -18,7 +18,7 @@ Consequences:
   directly to the public internet;
 - treat CORS and `X-RP-Client-Version` as browser/compatibility controls, not
   authentication;
-- protect the separately served Merv UI and MLflow endpoint at the
+- protect the separately served Merv UI at the
   same infrastructure boundary.
 
 ## Topology and modes
@@ -120,25 +120,6 @@ creation and writes the runtime environment under `/opt/merv/env`. Secret values
 are never returned through the agent API or written into retained artifacts by
 the plugin.
 
-## Centralized MLflow
-
-MLflow is the quantitative ledger; the brain does not keep a second metrics
-database.
-
-- `MERV_MLFLOW_TRACKING_URI` is the public run-reachable endpoint
-  returned to agents. Local agent processes and remote sandboxes must both be
-  able to reach it.
-- `MERV_MLFLOW_SERVER_URI` optionally gives the brain a different
-  internal URL for metrics reads.
-- `MERV_MLFLOW_DASHBOARD_URL` optionally gives humans a different
-  browser URL.
-- `MERV_REQUIRE_AGENT_MLFLOW=1` makes startup fail when agents would
-  receive no tracking URI.
-
-In the reference Compose stack, mounting MLflow under a path prefix requires
-matching ingress routes and `MERV_MLFLOW_STATIC_PREFIX`. The routing
-example is in `../deploy/README.md`.
-
 ## Client compatibility
 
 ```http
@@ -223,8 +204,7 @@ or SQLite audit files.
 
 The Merv UI uses project events over SSE for prompt refreshes, with
 ETag-based conditional polling as fallback. Desktop fallback polling is 3 s;
-mobile uses 5 s while work is live and 30 s when quiet. Detail views may own
-slower safety pollers for external state such as MLflow.
+mobile uses 5 s while work is live and 30 s when quiet.
 
 Terminal reads use management SSH and are coalesced by the bounded,
 TTL-controlled transcript cache. Metrics sampling is also briefly coalesced.
@@ -243,22 +223,21 @@ pulled or uploaded beforehand is lost.
 ## Reference deployment and readiness
 
 `deploy/docker-compose.yml` starts a reference control brain with Postgres,
-MinIO, centralized MLflow, and a dev-only mounted management key. It is a local
+MinIO, and a dev-only mounted management key. It is a local
 integration stack, not a managed production deployment.
 
-After supplying a run-reachable MLflow tracking URI and healthy sandbox-provider
-credentials, run:
+After supplying healthy sandbox-provider credentials, run:
 
 ```bash
 python3 deploy/doctor.py --control-url http://127.0.0.1:8787
 ```
 
-The doctor actively checks the control API, MLflow tracking/write path, sandbox
-provider health/options, and object-storage upload/download. The default Compose
-stack may intentionally start without provider credentials or an agent tracking
-URI; in that record-only configuration the full doctor is expected to fail.
+The doctor actively checks the control API, sandbox provider health/options,
+and object-storage upload/download. The default Compose stack may intentionally
+start without provider credentials; in that record-only configuration the full
+doctor is expected to fail.
 
 Production operators must additionally provide TLS termination, real user
 authentication and authorization, managed Postgres and backups, a secret
 store, the cleanup schedule, durable object lifecycle policy,
-monitoring/alerting, and separately hosted UI/MLflow services.
+monitoring/alerting, and a separately hosted UI.

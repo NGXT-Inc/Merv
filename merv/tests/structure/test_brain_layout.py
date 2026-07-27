@@ -607,7 +607,11 @@ load("subprocess")
         self.assertIn("class ControlApp:", source)
         self.assertIn("build_record_core", source)
         self.assertIn("build_control_tool_handlers", source)
-        self.assertIn("tool_names = available_tool_names(storage_enabled=", source)
+        self.assertIn("tool_names = available_tool_names(", source)
+        self.assertIn(
+            "tracking_enabled=self._tracking is not None",
+            source,
+        )
         self.assertIn("tool_names=tool_names", source)
         self.assertNotIn("class ControlActivitySink", source)
         self.assertNotIn("class ControlToolCallSink", source)

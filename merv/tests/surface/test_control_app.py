@@ -30,6 +30,7 @@ from merv.brain.mlflow.config import (
     MLFLOW_SERVER_URI_ENV_VAR,
     MLFLOW_TRACKING_URI_ENV_VAR,
 )
+from merv.brain.mlflow import CentralMlflowService
 from merv.brain.sandbox.execution.backends.fake import FakeSandboxBackend
 from merv.brain.surface.transport.http_api import create_fastapi_app
 from merv.brain.surface.transport.http_policy import HttpSurfacePolicy
@@ -255,7 +256,7 @@ class ControlAppTest(unittest.TestCase):
                 )
         self.assertIn(MGMT_KEY_PATH_ENV_VAR, ctx.exception.message)
 
-    def test_control_app_reads_mlflow_from_injected_env(self) -> None:
+    def test_control_app_ignores_legacy_mlflow_env_without_injection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = build_control_app(
@@ -272,27 +273,28 @@ class ControlAppTest(unittest.TestCase):
             )
             self.addCleanup(app.shutdown)
 
-            self.assertEqual(app._tracking.tracking_uri, "https://mlflow.example.test")
-            self.assertEqual(app._tracking.server_uri, "http://mlflow:5000")
+            self.assertIsNone(app._tracking)
+            tool_names = {tool["name"] for tool in app.tools.list_tools()}
+            self.assertNotIn("mlflow.context", tool_names)
+            self.assertNotIn("mlflow.finalize_run", tool_names)
             self.assertNotIn("mlflow", app.sandboxes.backend_health())
 
-    def test_control_app_can_require_agent_mlflow_tracking_uri(self) -> None:
+    def test_legacy_mlflow_requirement_env_is_inert_without_injection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaises(ValidationError) as ctx:
-                build_control_app(
-                    repo_root=root,
-                    env={
-                        **_mounted_mgmt_key_env(root),
-                        MLFLOW_MODE_ENV_VAR: "external",
-                        MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000",
-                        REQUIRE_AGENT_MLFLOW_ENV_VAR: "1",
-                    },
-                    execution_backend=FakeSandboxBackend(),
-                )
+            app = build_control_app(
+                repo_root=root,
+                env={
+                    **_mounted_mgmt_key_env(root),
+                    MLFLOW_MODE_ENV_VAR: "external",
+                    MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000",
+                    REQUIRE_AGENT_MLFLOW_ENV_VAR: "1",
+                },
+                execution_backend=FakeSandboxBackend(),
+            )
+            self.addCleanup(app.shutdown)
 
-        self.assertIn(REQUIRE_AGENT_MLFLOW_ENV_VAR, ctx.exception.message)
-        self.assertIn(MLFLOW_TRACKING_URI_ENV_VAR, ctx.exception.message)
+            self.assertIsNone(app._tracking)
 
     def test_control_app_can_require_healthy_sandbox_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,12 +336,12 @@ class ControlAppTest(unittest.TestCase):
             root = Path(tmp)
             app = build_control_app(
                 repo_root=root,
-                env={
-                    **_mounted_mgmt_key_env(root),
-                    MLFLOW_TRACKING_URI_ENV_VAR: "https://mlflow.example.test/",
-                    MLFLOW_SERVER_URI_ENV_VAR: "http://mlflow:5000/",
-                },
+                env=_mounted_mgmt_key_env(root),
                 execution_backend=FakeSandboxBackend(),
+                mlflow_tracking=CentralMlflowService(
+                    tracking_uri="https://mlflow.example.test/",
+                    server_uri="http://mlflow:5000/",
+                ),
             )
             self.addCleanup(app.shutdown)
             project_id = app.tools.call_tool("project", {"action": "create", "name": "Control Metrics"})["id"]

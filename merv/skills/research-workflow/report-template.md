@@ -40,11 +40,8 @@
 
 ## Results
 <!--
-  When the system can build a metrics exhibit, it contains up to the newest 50
-  MLflow runs in this attempt's window plus eligible pinned result JSON and is
-  pinned at submit_results as this folder's metrics exhibit JSON. It records
-  when the run cap is reached. Preview with `experiment.exhibit` BEFORE writing
-  this section, then write the interpretation around it:
+  Use the submitted result JSON/CSV as the numeric record, then write the
+  interpretation around it:
 
   If `experiment.exhibit` returns a pinned exhibit:
   - Reference it by name (required whenever it exists), e.g.

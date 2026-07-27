@@ -109,7 +109,7 @@ def with_tracking_if_visible(
     experiment_id: str,
     include_credentials: bool,
 ) -> dict[str, Any]:
-    if not tracking_visible_for_status(state.get("status")):
+    if tracking is None or not tracking_visible_for_status(state.get("status")):
         return state
     block = tracking_connection(
         tracking=tracking,

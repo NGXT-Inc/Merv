@@ -26,21 +26,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: create the separate MLflow database. MLflow owns generic table
-  # names, so keep it out of the Merv record-store database.
-  mlflowdb:
-    image: postgres:16-alpine
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGPASSWORD: rp_dev_password
-    entrypoint: >
-      /bin/sh -c "
-      createdb -h postgres -U rp mlflow 2>/dev/null || true &&
-      echo 'mlflow database ready';
-      "
-
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -69,34 +54,8 @@ services:
       mc alias set local http://minio:9000 rpminio rpminio_dev_password &&
       mc mb --ignore-existing local/merv-blobs &&
       mc mb --ignore-existing local/merv-storage &&
-      mc mb --ignore-existing local/merv-mlflow-artifacts &&
       echo 'bucket ready';
       "
-
-  mlflow:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.mlflow
-    depends_on:
-      mlflowdb:
-        condition: service_completed_successfully
-      createbucket:
-        condition: service_completed_successfully
-    environment:
-      MLFLOW_BACKEND_STORE_URI: postgresql://rp:rp_dev_password@postgres:5432/mlflow
-      MLFLOW_ARTIFACTS_DESTINATION: s3://merv-mlflow-artifacts
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: rpminio
-      AWS_SECRET_ACCESS_KEY: rpminio_dev_password
-      AWS_DEFAULT_REGION: us-east-1
-      AWS_ENDPOINT_URL_S3: http://minio:9000
-      MLFLOW_STATIC_PREFIX: ${MERV_MLFLOW_STATIC_PREFIX:-${RESEARCH_PLUGIN_MLFLOW_STATIC_PREFIX:-}}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - 'exec python -m mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri "$${MLFLOW_BACKEND_STORE_URI}" --artifacts-destination "$${MLFLOW_ARTIFACTS_DESTINATION}" --serve-artifacts $${MLFLOW_STATIC_PREFIX:+--static-prefix "$$MLFLOW_STATIC_PREFIX"}'
-    ports:
-      - "5000:5000"
 
   # One-shot: create a dev-only management SSH key in a named volume. Managed
   # deploys should replace this with an orchestrator/secret-manager mount.
@@ -136,8 +95,6 @@ services:
         condition: service_completed_successfully
       mgmtkey:
         condition: service_completed_successfully
-      mlflow:
-        condition: service_started
     environment:
       MERV_MODE: control
       MERV_HTTP_HOST: 0.0.0.0
@@ -170,15 +127,6 @@ services:
       MERV_STORAGE_BUCKET: merv-storage
       MERV_STORAGE_ENDPOINT_URL: ${MERV_STORAGE_ENDPOINT_URL:-${RESEARCH_PLUGIN_STORAGE_ENDPOINT_URL:-http://minio:9000}}
       MERV_STORAGE_REGION: ${MERV_STORAGE_REGION:-${RESEARCH_PLUGIN_STORAGE_REGION:-us-east-1}}
-      # Centralized MLflow: tracking/dashboard URLs are reported to agents.
-      # Override the tracking URI to the public HTTPS host for remote sandboxes.
-      MERV_MLFLOW_MODE: external
-      MERV_MLFLOW_TRACKING_URI: ${MERV_MLFLOW_TRACKING_URI:-${RESEARCH_PLUGIN_MLFLOW_TRACKING_URI:-}}
-      MERV_MLFLOW_SERVER_URI: ${MERV_MLFLOW_SERVER_URI:-${RESEARCH_PLUGIN_MLFLOW_SERVER_URI:-http://mlflow:5000}}
-      MERV_MLFLOW_DASHBOARD_URL: ${MERV_MLFLOW_DASHBOARD_URL:-${RESEARCH_PLUGIN_MLFLOW_DASHBOARD_URL:-}}
-      # Hosted deployments can opt into fail-fast startup if the control plane
-      # would otherwise give agents no run-reachable MLFLOW_TRACKING_URI.
-      MERV_REQUIRE_AGENT_MLFLOW: ${MERV_REQUIRE_AGENT_MLFLOW:-${RESEARCH_PLUGIN_REQUIRE_AGENT_MLFLOW:-0}}
       # Dev-only mounted management key from the mgmtkey one-shot above.
       MERV_MGMT_KEY_PATH: /run/secrets/research_plugin_mgmt_key/key
       # Signs the auth-exempt run-wait URLs; hosted control has no writable

@@ -107,7 +107,6 @@ off cloud providers.
 - [docs/REVIEW_IDENTITY.md](docs/REVIEW_IDENTITY.md) - reviewer session and capability boundary
 - [docs/ARTIFACT_MODEL.md](docs/ARTIFACT_MODEL.md) - typed submitted-artifact model
 - [docs/STORAGE_MODEL.md](docs/STORAGE_MODEL.md) - optional heavy-object storage
-- [docs/CENTRALIZED_MLFLOW.md](docs/CENTRALIZED_MLFLOW.md) - centralized MLflow tracking
 - [docs/UI_API.md](docs/UI_API.md) - frontend HTTP API
 - [docs/CONTROL_PLANE_OPERATIONS.md](docs/CONTROL_PLANE_OPERATIONS.md) - hosted operations and security boundary
 - [deploy/README.md](deploy/README.md) - reference control-plane deploy

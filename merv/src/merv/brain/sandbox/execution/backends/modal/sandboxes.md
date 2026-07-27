@@ -102,9 +102,7 @@ It writes receipts under the sandbox workdir; the brain mirrors them so
 `sandbox.runs` remains queryable after the machine is gone. Logs and output files
 do not become durable merely because the receipt does.
 
-The image includes an MLflow client, not a tracking server. Agents obtain the
-central tracking environment from `mlflow.context` or the `start_running`
-transition. When `HF_TOKEN` is configured brain-side, Modal's secrets API makes
+When `HF_TOKEN` is configured brain-side, Modal's secrets API makes
 it available inside the sandbox without returning the value to the agent API.
 Never print it or write it into retained files.
 

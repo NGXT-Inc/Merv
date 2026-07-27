@@ -602,22 +602,12 @@ class ProjectKeySurfaceTest(unittest.TestCase):
         # The gate covers only global mutators; open mode otherwise serves.
         self.assertEqual(open_client.get("/api/meta").status_code, 200)
 
-    def test_mlflow_gate_rejects_project_key_but_allows_other_audiences(self) -> None:
-        denied = self.client.get("/internal/auth/mlflow", headers=_bearer(self.key))
-        self.assertEqual(denied.status_code, 403, denied.text)
-        self.assertEqual(denied.json()["error_code"], "credential_audience_forbidden")
-        self.assertEqual(
-            self.client.get(
-                "/internal/auth/mlflow", headers=_bearer(self.jwt_a)
-            ).status_code,
-            204,
-        )
-        self.assertEqual(
-            self.client.get(
-                "/internal/auth/mlflow", headers=_bearer(RR_KEY)
-            ).status_code,
-            204,
-        )
+    def test_mlflow_auth_route_is_absent_for_every_credential_audience(self) -> None:
+        for credential in (self.key, self.jwt_a, RR_KEY):
+            response = self.client.get(
+                "/internal/auth/mlflow", headers=_bearer(credential)
+            )
+            self.assertEqual(response.status_code, 404, response.text)
 
     # ---- per-user Hugging Face token (no-dataplane Phase C) ----
 

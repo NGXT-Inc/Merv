@@ -16,7 +16,7 @@ dispatched by prefix (RapidReview's contract, reimplemented in
   Verified locally (HS256, `SUPABASE_JWT_SECRET`, audience `authenticated`);
   anonymous sessions are rejected. No Supabase round-trip per request.
 - **`rr_sk_` API key** — RapidReview-minted, owner-scoped; everything headless
-  (direct `/mcp` clients, agents, MLflow, curl). sha256-hashed and looked up in
+  (direct `/mcp` clients, agents, curl). sha256-hashed and looked up in
   the shared `api_keys` table over PostgREST (`SUPABASE_SERVICE_KEY`), cached 60s.
   These keys are minted/revoked in RapidReview.
 - **`mk_` key** — minted/revoked **in this repo** via the key-mint UI and
@@ -36,7 +36,7 @@ dispatched by prefix (RapidReview's contract, reimplemented in
 
 Enforcement lives in the `attach_principal` middleware
 (`src/merv/brain/surface/transport/api/app.py`): OPTIONS, `/health`, `/api/meta`, and
-`/internal/auth/mlflow` stay open; the 426 version floor runs before auth so
+the token-bearing upload routes stay open; the 426 version floor runs before auth so
 stale clients get "upgrade", not "login". A verified credential becomes
 `Principal(user_id=<supabase sub>)`.
 
@@ -79,12 +79,6 @@ Any member can manage members (two-trusted-users model; no roles).
   account-scoped key discovers the ids with `project(action="list")`, and a
   project-scoped key may only pass its one bound project. Project membership
   controls authorization in both cases.
-- **Agents / MLflow**: `mlflow.context` env blocks carry
-  `MLFLOW_TRACKING_USERNAME/PASSWORD` (the key in the password slot) when
-  `MERV_MLFLOW_AGENT_KEY` is set; sandbox provisioning also
-  delivers the pair ambiently (VM secrets file / modal.Secret), so training
-  code logs with zero ceremony from anywhere.
-
 ## Rollout runbook (hosted VM)
 
 1. **Rotate the Supabase JWT secret and service-role key first** (both leaked
@@ -103,20 +97,9 @@ Any member can manage members (two-trusted-users model; no roles).
 4. Each user: sign in on the UI; mint a project-scoped key in RapidReview,
    export it as `MERV_MCP_KEY`, and drop the `.mcp.json` http snippet
    (`merv-client env`) on each machine.
-5. MLflow gate: mint a dedicated `rr_sk_` key, set
-   `MERV_MLFLOW_AGENT_KEY`, then wrap the Caddy `/mlflow*` handles
-   (except `/mlflow/health` and the MinIO presigned bucket paths) in:
-   ```
-   forward_auth 127.0.0.1:8787 {
-       uri /internal/auth/mlflow
-       copy_headers Authorization
-   }
-   ```
-   The endpoint answers 204/401 (+`WWW-Authenticate: Basic` so browsers
-   prompt; any username, the key as password).
-6. Bump `MIN_PROXY_VERSION` once clients have upgraded, so pre-auth clients
+5. Bump `MIN_PROXY_VERSION` once clients have upgraded, so pre-auth clients
    get the actionable 426 instead of a bare 401.
-7. Assign projects to the second user via the members endpoint above.
+6. Assign projects to the second user via the members endpoint above.
 
 ## Notes
 

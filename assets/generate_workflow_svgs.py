@@ -218,7 +218,7 @@ def system(s):
         sbox(s["frontend"], 608, 84, 336, 56, "Frontend UI", "supervision · lifecycle controls"),
         sbox(s["brain"], 608, 196, 336, 64, "Brain", "records · gates · providers"),
         sbox(s["infra"], 608, 340, 200, 56, "Cloud sandboxes", "Lambda · Thunder · Modal"),
-        sbox(s["infra"], 828, 340, 140, 56, "Data services", "DB · blobs · MLflow"),
+        sbox(s["infra"], 828, 340, 140, 56, "Data services", "DB · blobs"),
         link(s, "M 128 140 L 128 192", "", 0, 0),
         link(s, "M 524 112 C 572 112, 572 228, 602 228", "HTTP MCP · project key", 566, 170, "start"),
         link(s, "M 776 140 L 776 192", "", 0, 0),
@@ -231,7 +231,7 @@ def system(s):
     return svg(s, "".join(parts),
                "System architecture: agent platforms on your machine connect directly to "
                "the brain over HTTP MCP with a project-scoped key; the brain owns "
-               "research records, workflow gates, data stores, MLflow, and sandbox "
+               "research records, workflow gates, data stores, and sandbox "
                "providers. The UI supervises the brain. The agent runs SSH commands on "
                "cloud sandboxes, pulls retained outputs itself with rsync, and moves "
                "heavy bytes over presigned URLs", 460,

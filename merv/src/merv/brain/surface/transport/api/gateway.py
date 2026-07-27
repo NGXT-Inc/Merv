@@ -422,6 +422,7 @@ def install_auth_routes(
     *,
     verifier: Any | None,
     owner_key_audience: str = "",
+    tracking_enabled: bool = False,
 ) -> None:
     if verifier is None:
         return
@@ -432,22 +433,22 @@ def install_auth_routes(
             )
         )
 
-    @http.get("/internal/auth/mlflow")
-    def mlflow_gate(request: Request) -> Response:
-        if mlflow_suspended():  # ruling 3: no principal passes while suspended
-            return JSONResponse(
-                {"detail": "MLflow is temporarily suspended",
-                 "error_code": "mlflow_suspended"}, status_code=403)
-        try:
-            principal = verifier.verify_basic_or_bearer(
-                request.headers.get("Authorization")
-            )
-        except UnauthorizedError:
-            return Response(status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'})
-        # A project (mk_) key is not a valid MLflow-audience credential (INV-7).
-        if getattr(principal, "key_id", None):
-            return JSONResponse(
-                {"detail": "project API keys are not valid for the MLflow audience",
-                 "error_code": "credential_audience_forbidden"}, status_code=403)
-        return Response(status_code=204)
+    if tracking_enabled:
+        @http.get("/internal/auth/mlflow")
+        def mlflow_gate(request: Request) -> Response:
+            if mlflow_suspended():
+                return JSONResponse(
+                    {"detail": "MLflow is temporarily suspended",
+                     "error_code": "mlflow_suspended"}, status_code=403)
+            try:
+                principal = verifier.verify_basic_or_bearer(
+                    request.headers.get("Authorization")
+                )
+            except UnauthorizedError:
+                return Response(status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="RapidReview MLflow"'})
+            if getattr(principal, "key_id", None):
+                return JSONResponse(
+                    {"detail": "project API keys are not valid for the MLflow audience",
+                     "error_code": "credential_audience_forbidden"}, status_code=403)
+            return Response(status_code=204)

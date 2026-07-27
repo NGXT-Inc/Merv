@@ -42,7 +42,7 @@ class ExperimentExhibits:
             if self.tracking and configured
             else None
         )
-        return build_metrics_exhibit(
+        exhibit = build_metrics_exhibit(
             project_id=project_id,
             experiment_id=experiment_id,
             attempt_index=attempt_index,
@@ -58,6 +58,11 @@ class ExperimentExhibits:
                 experiment_id=experiment_id, attempt_index=attempt_index
             ),
         )
+        if self.tracking is None:
+            # Keep the legacy adapter's envelope dormant without leaking its
+            # name or namespace into normal previews and pinned artifacts.
+            exhibit.pop("mlflow", None)
+        return exhibit
 
     def preview(
         self, *, experiment_id: str, project_id: str | None = None
@@ -85,11 +90,7 @@ class ExperimentExhibits:
             "guidance": (
                 "Preview of the system-generated metrics exhibit. At "
                 "submit_results the system regenerates it from the same sources "
-                f"and pins it at {path} when matching runs are found, or when "
-                "MLflow is unavailable after a plugin-created run. The "
-                "newest 50 runs are captured without curation and the exhibit "
-                "records when that cap is reached. Later runs remain in MLflow "
-                "but are outside the finalized exhibit. When pinned, report.md "
+                f"and may pin it at {path}. When pinned, report.md "
                 f"must reference {METRICS_EXHIBIT_FILENAME} and interpret it "
                 "rather than restate numbers by hand."
             ),
@@ -100,7 +101,7 @@ def should_pin_exhibit(
     *, exhibit: dict[str, object], state: ExperimentState
 ) -> bool:
     verdict = exhibit["verdict"]
-    tracking = exhibit["mlflow"]
+    tracking = exhibit.get("mlflow") or {}
     run = state.get("mlflow_run") or {}
     assert isinstance(verdict, dict) and isinstance(tracking, dict)
     return bool(

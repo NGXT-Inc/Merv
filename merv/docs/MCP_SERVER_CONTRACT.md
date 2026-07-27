@@ -51,7 +51,6 @@ project
 claim.create                 claim.update
 experiment.create            experiment.get_state
 experiment.transition        experiment.exhibit
-mlflow.context               mlflow.finalize_run
 reflection.create            reflection.get
 reflection.transition
 litreview.view               litreview.edit
@@ -147,10 +146,8 @@ The declarative table in `src/merv/brain/research_core/domain/workflow_gates.py`
   spine.
 - `mark_ready_to_run` requires a passing design review for the current snapshot.
 - `submit_results` requires current-attempt `result`, `report`, and `graph`
-  artifacts. It generates the attempt's system metrics exhibit and pins it when
-  runs are found, or when a plugin-created run proves the attempt was quantitative
-  but MLflow is unavailable. When pinned, the report must reference and interpret
-  it.
+  artifacts. When a system metrics exhibit is pinned, the report must reference
+  and interpret it.
 - `complete` requires a passing experiment review for the current snapshot.
 - `retry_running` is a same-attempt infrastructure retry and remains `running`.
 
@@ -263,12 +260,8 @@ lookups are sandbox-scoped even when addressed through an experiment.
 retention checklist, and `confirm_retained=true` terminates the machine. Release
 or expiry destroys anything not explicitly retained.
 
-## MLflow, storage, and feed
+## Storage and feed
 
-- `mlflow.context(project_id, experiment_id?)` returns the centralized tracking
-  endpoint, namespace, and environment for direct MLflow clients.
-- `mlflow.finalize_run(project_id, experiment_id)` closes or refreshes the
-  plugin-associated run.
 - `storage.submit` and `storage.fetch` return a one-line command the agent runs
   to transfer bytes over a presigned URL; `storage.find` and `storage.object`
   operate on the brain's ledger.

@@ -19,7 +19,6 @@ import MobileReviews from './mobile/MobileReviews';
 import MobileProjects from './mobile/MobileProjects';
 import MobileProjectCreateNotice from './mobile/MobileProjectCreateNotice';
 import MobileReflectionScreen from './mobile/MobileReflectionScreen';
-import MobileMlflow from './mobile/MobileMlflow';
 import Home from './pages/Home';
 import Feed from './feed/Feed';
 import CreateProject from './pages/CreateProject';
@@ -35,7 +34,6 @@ import Reviews from './pages/Reviews';
 import Events from './pages/Events';
 import Sandboxes from './pages/Sandboxes';
 import Debug from './pages/Debug';
-import MlflowDashboard from './pages/MlflowDashboard';
 import Settings from './pages/Settings';
 
 // /debug merged into /activity. Preserve ?tool= (v6 <Navigate> drops search).
@@ -201,7 +199,6 @@ export default function App() {
             <Route path="reviews" element={<MobileReviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<SandboxCardList />} />
-            <Route path="mlflow" element={<MobileMlflow />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />
           </Route>
@@ -250,7 +247,6 @@ export default function App() {
             <Route path="reviews" element={<Reviews />} />
             <Route path="events" element={<Events />} />
             <Route path="sandboxes" element={<Sandboxes />} />
-            <Route path="mlflow" element={<MlflowDashboard />} />
             <Route path="settings" element={<Settings />} />
             <Route path="activity" element={<Debug />} />
             <Route path="debug" element={<DebugRedirect />} />

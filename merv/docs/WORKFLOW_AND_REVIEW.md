@@ -49,11 +49,8 @@ Current gates:
    from plan, and Conclusion sections; under 16 KB; every relative figure link
    must resolve to a submitted figure file. The linter checks the sections and
    shape; the reviewer judges whether the Conclusion actually applies the
-   plan's pre-registered decision rule. At `submit_results`, the system pins a
-   **metrics exhibit** when it finds attempt-window MLflow runs, or when MLflow
-   is unavailable after a plugin-created run established quantitative intent.
-   The exhibit contains up to the newest 50 matching runs plus eligible pinned
-   result JSON, each entry with provenance. When an exhibit is pinned, the report must
+   plan's pre-registered decision rule. When a system metrics exhibit is
+   pinned, the report must
    reference and interpret it — the server no longer polices agent-written
    metric tables; the exhibit is the record. An unconfigured/no-run fallback
    can have quantitative result files without producing an exhibit, so that
@@ -234,16 +231,11 @@ result artifacts exist but no report exists, the gate becomes
 `results_report_required` with report-specific guidance; once a report exists
 but no logic graph does, the gate becomes
 `logic_graph_required`.
-The `submit_results` transition first evaluates the system metrics exhibit
-(preview it earlier with `experiment.exhibit`) and pins it when attempt-window
-runs are present, or when MLflow is unavailable after a plugin-created run
-established quantitative intent. Qualitative/no-run attempts receive no pinned
-exhibit. It then lints the report file (sections, the exhibit reference when one
+The `submit_results` transition evaluates the submitted result evidence and any
+system metrics exhibit (preview it earlier with `experiment.exhibit`). It then
+lints the report file (sections, the exhibit reference when one
 is pinned, size, figure links) and the logic graph's envelope (valid JSON, node
 budget, DAG) before the experiment enters review.
-Runs logged after `submit_results` remain in MLflow but are outside the already
-finalized exhibit for that attempt.
-
 If infrastructure fails while the experiment is already `running` and the
 approved plan still stands, call
 `experiment.transition(project_id, experiment_id, transition="retry_running", evidence={...})`. This is a

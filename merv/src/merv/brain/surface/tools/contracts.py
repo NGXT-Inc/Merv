@@ -1062,8 +1062,6 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "Get one experiment state. Includes 'allowed_transitions': the "
             "transitions available from the current status, each with what it "
             "'requires' (e.g. a submitted plan artifact, a passing review). "
-            "Once running or later, includes the central 'mlflow' context and "
-            "any plugin-created 'mlflow_run' identity for quantitative logging. "
             "In 'reviews', only the newest round carries its findings, notes, "
             "and evidence; older rounds are listed by synopsis alone. Pass "
             "review_id to read an older round's full body back."
@@ -1075,20 +1073,12 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         description=(
             "Apply an allowed experiment transition. See "
             "experiment.get_state.allowed_transitions for valid transitions "
-            "and their preconditions from the current status. When a transition "
-            "starts the experiment running, the result includes an 'mlflow' "
-            "connection block for quantitative logging and, when the backend "
-            "MLflow write URI is configured, a plugin-created run id to resume."
+            "and their preconditions from the current status."
             " Use retry_running only for infrastructure/interruption reruns "
             "where the experiment should stay running on the same attempt. "
             "At submit_results the system evaluates the attempt's metrics "
-            "exhibit (up to the newest 50 attempt-window MLflow runs plus "
-            "eligible pinned result JSON, each entry with provenance). It pins "
-            "the exhibit when matching runs are found, or when MLflow is "
-            "unavailable after a plugin-created run; when pinned, report.md "
-            "must reference it. Runs logged "
-            "after submit_results remain in MLflow but are outside the "
-            "finalized attempt exhibit."
+            "exhibit from eligible pinned result JSON with provenance; when an "
+            "exhibit is pinned, report.md must reference it."
         ),
     ),
     "experiment.exhibit": ToolContract(
@@ -1096,14 +1086,10 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         input_model=ExperimentExhibitInput,
         description=(
             "Read-only preview of the system-generated metrics exhibit for a "
-            "running experiment: up to the newest 50 MLflow runs in the "
-            "current attempt window (no curation), plus eligible pinned "
-            "result-file sources (metrics.json, results.json, and "
+            "running experiment from eligible pinned result-file sources "
+            "(metrics.json, results.json, and "
             "results/*.json associated with role 'result'). Call it before "
-            "writing report.md "
-            "— at submit_results the system regenerates it and pins it when "
-            "matching runs are found, or when MLflow is unavailable after a "
-            "plugin-created run. When pinned, the report must "
+            "writing report.md. When pinned, the report must "
             "reference and interpret it rather than hand-copy numbers."
         ),
     ),
@@ -1470,7 +1456,7 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "the run's outcome is NOT known — it may well have succeeded, and it "
             "must never be recorded as a failure. Its logs and unpulled outputs "
             "died with the box; check what you retained (pulled outputs, "
-            "submitted artifacts, MLflow) and re-run if nothing survived. "
+            "submitted artifacts) and re-run if nothing survived. "
             "`lost` is a finding: the receipts WERE read and no sentinel was "
             "there. "
             "Receipts outlive the sandbox: finished runs stay queryable after "
@@ -1523,9 +1509,12 @@ STORAGE_TOOL_NAMES = {
 MCP_HIDDEN_TOOL_NAMES = frozenset(
     name for name, tool in TOOL_MANIFEST.items() if tool.visibility == "internal"
 )
+LEGACY_TRACKING_TOOL_NAMES = frozenset({"mlflow.context", "mlflow.finalize_run"})
 
 
-def available_tool_names(*, storage_enabled: bool) -> set[str]:
+def available_tool_names(
+    *, storage_enabled: bool, tracking_enabled: bool = False
+) -> set[str]:
     """Tool names for the active feature set.
 
     Storage is optional. When it is not configured, the MCP catalog must omit
@@ -1534,6 +1523,8 @@ def available_tool_names(*, storage_enabled: bool) -> set[str]:
     names = set(TOOL_MANIFEST)
     if not storage_enabled:
         names -= STORAGE_TOOL_NAMES
+    if not tracking_enabled:
+        names -= LEGACY_TRACKING_TOOL_NAMES
     return names
 
 

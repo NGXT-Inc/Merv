@@ -21,7 +21,6 @@ class DeployArtifactsTest(unittest.TestCase):
     def test_deploy_dir_has_the_expected_files(self) -> None:
         for name in (
             "Dockerfile",
-            "Dockerfile.mlflow",
             "docker-compose.yml",
             "doctor.py",
             "README.md",
@@ -30,6 +29,10 @@ class DeployArtifactsTest(unittest.TestCase):
         ):
             with self.subTest(file=name):
                 self.assertTrue((DEPLOY / name).is_file(), f"missing deploy/{name}")
+        self.assertFalse(
+            (DEPLOY / "Dockerfile.mlflow").exists(),
+            "temporarily removed tracking must not ship a deploy image",
+        )
 
     def test_dockerfile_installs_control_extra_and_runs_control_entrypoint(self) -> None:
         text = (DEPLOY / "Dockerfile").read_text(encoding="utf-8")
@@ -79,7 +82,6 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("postgresql://", text)
         self.assertIn("MERV_BLOB_BUCKET", text)
         self.assertIn("MERV_MGMT_KEY_PATH", text)
-        self.assertIn("MERV_REQUIRE_AGENT_MLFLOW", text)
         self.assertIn("MERV_REQUIRE_SANDBOX_BACKEND", text)
         self.assertIn("MERV_EXECUTION_BACKEND", text)
         self.assertIn("MERV_PROVIDER_ENV_FILE", text)
@@ -95,7 +97,7 @@ class DeployArtifactsTest(unittest.TestCase):
         self.assertIn("mgmtkey:/run/secrets/research_plugin_mgmt_key:ro", text)
         # Builds from the deploy Dockerfile.
         self.assertIn("dockerfile: deploy/Dockerfile", text)
-        self.assertIn("dockerfile: deploy/Dockerfile.mlflow", text)
+        self.assertNotIn("mlflow", text.lower())
 
     def test_compose_does_not_override_provider_env_file_with_empty_secrets(self) -> None:
         text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
@@ -124,8 +126,6 @@ class DeployArtifactsTest(unittest.TestCase):
             "MERV_MGMT_KEY_PATH",
             "MERV_MGMT_PUBLIC_KEY",
             "MERV_ALLOWED_ORIGINS",
-            "MERV_MLFLOW_TRACKING_URI",
-            "MERV_REQUIRE_AGENT_MLFLOW",
             "MERV_EXECUTION_BACKEND",
             "MERV_REQUIRE_SANDBOX_BACKEND",
             "MERV_PROVIDER_ENV_FILE",
@@ -133,6 +133,7 @@ class DeployArtifactsTest(unittest.TestCase):
             "AWS_ENDPOINT_URL_S3",
         ):
             self.assertIn(var, text)
+        self.assertNotIn("mlflow", text.lower())
 
     def test_doctor_script_covers_startup_readiness_sweep(self) -> None:
         text = (DEPLOY / "doctor.py").read_text(encoding="utf-8")
@@ -142,11 +143,10 @@ class DeployArtifactsTest(unittest.TestCase):
             "sandbox.options",
             "storage.put_object",
             "storage.complete_upload",
-            "deploy_doctor_ready",
-            "ajax-api/2.0/mlflow",
             "RP_DOCTOR_URL_REWRITE",
         ):
             self.assertIn(token, text)
+        self.assertNotIn("mlflow", text.lower())
 
     def test_no_real_secrets_committed(self) -> None:
         # .env.example must only carry placeholders, never a filled-in token.

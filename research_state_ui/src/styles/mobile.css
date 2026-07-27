@@ -42,7 +42,7 @@ html[data-surface="mobile"] .mshell-main {
 }
 
 /* Top app bar. --mbar-h mirrors its rendered height for anything that must
-   stick or float beneath it (MLflow's split header, the feed's new-posts pill). */
+   stick or float beneath it (split headers, the feed's new-posts pill). */
 html[data-surface="mobile"] { --mbar-h: calc(61px + env(safe-area-inset-top, 0px)); }
 html[data-surface="mobile"] .mbar {
   position: sticky;
@@ -382,7 +382,7 @@ html[data-surface="mobile"] .mchip-count {
 
 /* ─────────────── view toggle (graph Figure/Story) ─────────────────
    An underline text toggle, not a boxed control — same idiom as the
-   Experiments filter and the MLflow metric focus. */
+   Experiments filter and metric focus. */
 html[data-surface="mobile"] .mseg {
   display: inline-flex;
   gap: 15px;
@@ -995,7 +995,7 @@ html[data-surface="mobile"] .mbreak {
   border-top: 1px solid var(--line);
   margin: 13px 0 9px;
 }
-/* Large page title (Feed / Experiments / MLflow). */
+/* Large page title. */
 html[data-surface="mobile"] .mtitle-lg {
   font-size: 22px;
   font-weight: 600;
@@ -1415,7 +1415,7 @@ html[data-surface="mobile"] .mterm-row {
 html[data-surface="mobile"] .mterm-row:active { background: var(--hover); }
 html[data-surface="mobile"] .mterm-twist { color: var(--faint); font-size: 12px; }
 
-/* ── MLflow — the ledger as a split instrument. The top block (pulse →
+/* ── Legacy metric ledger. The top block (pulse →
    metric chips → frontier → column headers) sticks under the app bar; run
    rows scroll beneath with native physics — split screen, no scroll hijack.
    (--mbar-h comes from the mobile scope root, next to .mbar.) ── */

@@ -28,7 +28,7 @@ def build_router(
     workflow: StatusAndNextQuery,
     figure: ExperimentFigureQuery,
     graphs: LogicGraphQuery,
-    tracking: MlflowOverviewQuery,
+    tracking: MlflowOverviewQuery | None,
 ) -> APIRouter:
     api_router = APIRouter()
 
@@ -116,18 +116,21 @@ def build_router(
             ),
         )
 
-    @api_router.get(
-        "/api/projects/{project_id}/experiments/{experiment_id}/results/metrics"
-    )
-    def experiment_results_metrics(
-        project_id: str, experiment_id: str
-    ) -> dict[str, Any]:
-        return tracking.experiment_metrics(
-            project_id=project_id, experiment_id=experiment_id
+    if tracking is not None:
+        # Compatibility-only routes for explicitly injected legacy adapters.
+        # They are absent from the normal product surface.
+        @api_router.get(
+            "/api/projects/{project_id}/experiments/{experiment_id}/results/metrics"
         )
+        def experiment_results_metrics(
+            project_id: str, experiment_id: str
+        ) -> dict[str, Any]:
+            return tracking.experiment_metrics(
+                project_id=project_id, experiment_id=experiment_id
+            )
 
-    @api_router.get("/api/projects/{project_id}/mlflow")
-    def project_mlflow(project_id: str) -> dict[str, Any]:
-        return present(tracking(project_id=project_id))
+        @api_router.get("/api/projects/{project_id}/mlflow")
+        def project_mlflow(project_id: str) -> dict[str, Any]:
+            return present(tracking(project_id=project_id))
 
     return api_router

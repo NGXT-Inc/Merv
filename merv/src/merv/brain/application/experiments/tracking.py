@@ -141,7 +141,11 @@ class AgentExperimentQuery:
             project_id=resolved_project_id, experiment_ids=(experiment_id,)
         )[experiment_id]
         response = dict(
-            slim_experiment_state(state, storage_objects=storage_objects)
+            slim_experiment_state(
+                state,
+                storage_objects=storage_objects,
+                include_legacy_tracking=self.tracking is not None,
+            )
         )
         if review_id:
             # Pre-slim state: the older bodies the reviews list no longer carries.
@@ -189,9 +193,12 @@ class ExperimentDetailQuery:
                     project_id=resolved_project_id,
                     experiment_ids=(experiment_id,),
                 )[experiment_id],
+                include_legacy_tracking=self.tracking is not None,
             ),
         )
-        if tracking_visible_for_status(state.get("status")):
+        if self.tracking is None:
+            response.pop("mlflow_run", None)
+        elif tracking_visible_for_status(state.get("status")):
             response["mlflow"] = tracking_connection(
                 tracking=self.tracking,
                 project_id=resolved_project_id,
@@ -266,7 +273,11 @@ class FinalizeTrackingRun:
             )
             state = committed.state
         experiment = dict(
-            slim_experiment_state(state, storage_objects=storage_objects)
+            slim_experiment_state(
+                state,
+                storage_objects=storage_objects,
+                include_legacy_tracking=True,
+            )
         )
         presentation_warning = attach_tracking_if_visible(
             state=experiment,

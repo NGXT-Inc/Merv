@@ -722,12 +722,11 @@ class OAuthSurfaceTest(unittest.TestCase):
         encoded = base64.b64encode(
             f"merv:{tokens['access_token']}".encode()
         ).decode()
-        mlflow_gate = self.client.get(
+        dormant_tracking_gate = self.client.get(
             "/internal/auth/mlflow", headers={"Authorization": f"Basic {encoded}"}
         )
-        self.assertEqual(mlflow_gate.status_code, 403, mlflow_gate.text)
         self.assertEqual(
-            mlflow_gate.json()["error_code"], "credential_audience_forbidden"
+            dormant_tracking_gate.status_code, 404, dormant_tracking_gate.text
         )
 
         initialized = self.client.post(

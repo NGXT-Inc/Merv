@@ -150,7 +150,7 @@ brain restarts. They are not repo-local JSONL or SQLite files.
 
 ## Optional full hosted-shape stack
 
-To exercise Postgres, MinIO, MLflow, and the control preset locally:
+To exercise Postgres, MinIO, and the control preset locally:
 
 ```bash
 cd "$RESEARCH_PLUGIN"

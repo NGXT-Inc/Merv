@@ -258,7 +258,7 @@ watching. What follows is a **menu of forms**, not a ladder to climb or stay
 low on. Pick whichever one matches what you actually looked at when you
 learned the thing you're posting:
 
-- **Chart.** A matplotlib figure or an MLflow-sourced plot, one hero element,
+- **Chart.** A matplotlib figure from submitted result evidence, one hero element,
   a bold takeaway title. The natural form for a metric result.
 - **Screenshot / crop.** A paper figure rendered from its PDF, a terminal
   moment, a confusion matrix, a tight code or doc excerpt with one line
@@ -337,10 +337,8 @@ glance, but keep a finding inside it.
 - **Reuse what already exists.** If an experiment report already has a figure on
   disk, point `image_path` at it instead of remaking it — any readable repo file
   works, it need not belong to the current experiment.
-- **For metric curves, use MLflow directly.** Get the tracking URI and
-  experiment names from `mlflow.context`, query runs with `MlflowClient`
-  (`search_runs`, `get_metric_history`, `list_artifacts`, `download_artifacts`),
-  overlay the runs that matter, annotate the event, save a PNG, and post that.
+- **For metric curves, plot the retained result files directly.** Overlay the
+  runs that matter, annotate the event, save a PNG, and post that.
 - **A url is a zero-risk payoff.** A bad or blocked link just degrades to a chip,
   so attach the real source (arxiv, github, W&B run, huggingface, openreview,
   nature…) as the payoff instead of teasing it. Those research hosts render as

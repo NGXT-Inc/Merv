@@ -4,8 +4,6 @@ import { useProjectStore, selectClaims, selectExperiments, selectSandboxes } fro
 import { classifyExperiment } from '../utils/evidence';
 import { ENTITY_ID_RE, resolveEntity } from '../utils/entityResolve';
 import { expName, TERMINAL_STATUSES } from '../utils/experiment';
-import { flattenLedger, classifyRunMetrics } from '../utils/metricProfile';
-import { fmtNum } from '../utils/format';
 import { computeLayout, nowX as clampNowX } from './mapLayout';
 
 /**
@@ -14,9 +12,8 @@ import { computeLayout, nowX as clampNowX } from './mapLayout';
  * Assembles cards (one per experiment), the world layout, satellite/panel
  * objects, and the inverse citation index from the home snapshot plus three
  * lazy sources: plan/report texts (per-artifact, concurrency-capped),
- * one MLflow overview, and one compute-cost read. Returns progressively —
- * cards render immediately off the snapshot; text-derived refs, metric chips,
- * and compute strings fill in as fetches land.
+ * one compute-cost read. Returns progressively — cards render immediately off
+ * the snapshot; text-derived refs and compute strings fill in as fetches land.
  */
 
 // arxiv.org/(abs|pdf)/<id> or bare arXiv:<id>; id = \d{4}.\d{4,5}, optional vN.
@@ -69,14 +66,13 @@ function enqueueText(pid, res) {
   pumpTexts();
 }
 
-// One overview/spend promise per project: StrictMode's doubled mount and any
+// One spend promise per project: StrictMode's doubled mount and any
 // re-render reuse the same promise instead of double-fetching. Single slot —
 // switching projects evicts, so returning to a project refetches fresh.
-const projFetch = { pid: null, overview: null, spend: null };
+const projFetch = { pid: null, spend: null };
 function projectFetches(pid) {
   if (projFetch.pid !== pid) {
     projFetch.pid = pid;
-    projFetch.overview = api.getMlflowOverview(pid).catch(() => null);
     projFetch.spend = api.getComputeCost(pid).catch(() => null);
   }
   return projFetch;
@@ -167,21 +163,6 @@ function gatesFor(e) {
   return rows;
 }
 
-// RunMetrics' headline treatment as chips: baseline folded into a signed
-// delta (same − glyph), values through fmtNum; max 3.
-function headlineChips(run) {
-  return classifyRunMetrics(run).headline.slice(0, 3).map(({ key, v, anchor }) => {
-    if (anchor != null) {
-      const delta = v - anchor;
-      return {
-        value: `${delta >= 0 ? '+' : '−'}${fmtNum(Math.abs(delta))}`,
-        label: `${key} vs ${fmtNum(anchor)}`,
-      };
-    }
-    return { value: fmtNum(v), label: key };
-  });
-}
-
 // '36h' / '2.5h': integer from 10h up, one decimal below.
 const fmtMapHours = (h) => `${h >= 10 ? Math.round(h) : Number(h.toFixed(1))}h`;
 
@@ -204,7 +185,6 @@ export function useMapModel(viewW) {
   const claims = useProjectStore(selectClaims);
   const sandboxes = useProjectStore(selectSandboxes);
 
-  const [overview, setOverview] = useState(null);
   const [spend, setSpend] = useState(null);
   const [textTick, setTextTick] = useState(0);
 
@@ -224,15 +204,13 @@ export function useMapModel(viewW) {
     };
   }, []);
 
-  // The two project-level reads, once per project (StrictMode-safe via the
-  // shared promise). Errors resolve to null — chips/compute just stay empty.
+  // The project-level compute read, once per project (StrictMode-safe via the
+  // shared promise). Errors resolve to null and compute labels stay empty.
   useEffect(() => {
     if (!projectId) return undefined;
     let alive = true;
-    setOverview(null);
     setSpend(null);
     const f = projectFetches(projectId);
-    f.overview.then((d) => { if (alive) setOverview(d); });
     f.spend.then((d) => { if (alive) setSpend(d); });
     return () => { alive = false; };
   }, [projectId]);
@@ -250,10 +228,6 @@ export function useMapModel(viewW) {
 
   // Cards + papers + citedBy in one pass (the text scan feeds all three).
   const model = useMemo(() => {
-    const runsById = new Map();
-    if (overview) {
-      for (const r of flattenLedger(overview)) if (r.runId) runsById.set(r.runId, r);
-    }
     const spendByExp = new Map();
     for (const en of spend?.by_experiment || []) {
       if (en.experiment_id) spendByExp.set(en.experiment_id, en);
@@ -396,9 +370,6 @@ export function useMapModel(viewW) {
         })),
       ];
 
-      const runId = e.mlflow_run?.run_id;
-      const run = runId ? runsById.get(runId) : null;
-
       const hours = spendByExp.get(e.id)?.hours;
       const sku = sbxRows.map((s) => s.gpu || s.instance_type).find(Boolean) || null;
       const computeStr = Number.isFinite(hours) && hours > 0
@@ -415,7 +386,7 @@ export function useMapModel(viewW) {
         ...pickTldr(e),
         sats,
         refs,
-        metrics: run ? headlineChips(run) : [],
+        metrics: [],
         gates: gatesFor(e),
         artifacts: (e.storage_objects || []).length,
         agent: roleArtifact(e, 'report')?.created_by || roleArtifact(e, 'plan')?.created_by || null,
@@ -432,7 +403,7 @@ export function useMapModel(viewW) {
     }
 
     return { cards, papers, citedBy };
-  }, [home, experiments, claims, sandboxes, overview, spend, textTick]);
+  }, [home, experiments, claims, sandboxes, spend, textTick]);
 
   // Heavy packing keyed on ids + start times + a coarse pane-width bucket:
   // a poll tick that changes card contents (status, tldr, metrics) must not

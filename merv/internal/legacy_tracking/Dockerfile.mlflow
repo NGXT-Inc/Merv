@@ -1,4 +1,4 @@
-# MLflow server image for the reference compose stack.
+# Dormant legacy tracking server image retained for a future reintroduction.
 #
 # Kept separate from deploy/Dockerfile so the control image does not carry
 # MLflow server dependencies.

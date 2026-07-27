@@ -258,26 +258,14 @@ class ModalSandboxBackendTest(unittest.TestCase):
         self.assertEqual(sandbox.tags["experiment_id"], "exp1")
         self.assertEqual(sandbox.tags["research_plugin_role"], "sandbox")
 
-    def test_mlflow_credential_pair_rides_secrets_channel_only(self) -> None:
-        # The credential pair goes ambient via modal secrets; the tracking URI
-        # invariant is untouched (routing still flows through mlflow.context).
+    def test_legacy_tracking_config_is_ignored_by_sandbox_secrets(self) -> None:
         with unittest.mock.patch.dict(
             os.environ,
             {"RESEARCH_PLUGIN_MLFLOW_AGENT_KEY": "rr_sk_agent"},
             clear=False,
         ):
             secrets = self.backend._sandbox_secrets(FakeModal)
-        self.assertEqual(
-            secrets,
-            [
-                {
-                    "secret": {
-                        "MLFLOW_TRACKING_USERNAME": "rp-agent",
-                        "MLFLOW_TRACKING_PASSWORD": "rr_sk_agent",
-                    }
-                }
-            ],
-        )
+        self.assertEqual(secrets, [])
         from merv.brain.sandbox.execution.vm_ssh import sandbox_tokens
 
         with unittest.mock.patch.dict(
@@ -286,8 +274,8 @@ class ModalSandboxBackendTest(unittest.TestCase):
             clear=False,
         ):
             tokens = sandbox_tokens()
-        self.assertEqual(tokens.get("MLFLOW_TRACKING_USERNAME"), "rp-agent")
-        self.assertEqual(tokens.get("MLFLOW_TRACKING_PASSWORD"), "rr_sk_agent")
+        self.assertNotIn("MLFLOW_TRACKING_USERNAME", tokens)
+        self.assertNotIn("MLFLOW_TRACKING_PASSWORD", tokens)
         self.assertNotIn("MLFLOW_TRACKING_URI", tokens)
 
     def test_mlflow_credentials_absent_from_sandbox_env_while_suspended(self) -> None:

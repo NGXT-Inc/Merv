@@ -48,6 +48,7 @@ def build_control_tool_handlers(
     review_status: ReadReviewStatus,
     operations: ControlToolOperations,
     litreview: ResearchLiterature,
+    tracking_enabled: bool = False,
 ) -> dict[str, ToolHandler]:
     """Map control-plane tool names to service methods.
 
@@ -75,7 +76,10 @@ def build_control_tool_handlers(
     }
     if storage is not None:
         owners["storage"] = storage
-    available = available_tool_names(storage_enabled=storage is not None)
+    available = available_tool_names(
+        storage_enabled=storage is not None,
+        tracking_enabled=tracking_enabled,
+    )
     handlers: dict[str, ToolHandler] = {}
     for name, tool in TOOL_MANIFEST.items():
         if name not in available:

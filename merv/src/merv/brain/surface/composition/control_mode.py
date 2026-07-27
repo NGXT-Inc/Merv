@@ -1,6 +1,6 @@
 """Unified brain composition with local and hosted deployment presets.
 
-The composition wires records, workflow, reviews, blobs, MLflow, quotas, and
+The composition wires records, workflow, reviews, blobs, quotas, and
 sandbox lifecycle. Hosted/no-checkout control requires Postgres, a durable blob
 store, and mounted management keys; local deployment selects SQLite and local
 adapters. Checkout I/O never runs here; agents move bounded bytes through
@@ -27,7 +27,6 @@ from ..config import (
     build_blob_store,
     build_object_store,
     build_state_store,
-    REQUIRE_AGENT_MLFLOW_ENV_VAR,
     REQUIRE_SANDBOX_BACKEND_ENV_VAR,
     resolve_blob_bucket,
     resolve_db_url,
@@ -51,8 +50,6 @@ from ..project_keys import ProjectKeys
 from ..project_key_store import SqlProjectKeyRepository
 from ..oauth import OAuthService
 from ..oauth_store import SqlOAuthRepository
-from ...mlflow import CentralMlflowService
-from ...mlflow.config import MLFLOW_TRACKING_URI_ENV_VAR
 from ...object_storage.service import StorageLedgerService
 from ...sandbox.managed_mgmt_keys import MountedMgmtKeyStore
 from ...sandbox.mgmt_keys import LocalMgmtKeyStore
@@ -102,7 +99,7 @@ def build_control_app(
     blobs: BlobStore | None = None,
     storage: Any = _UNSET,
     mgmt_keys: Any | None = None,
-    mlflow_tracking: CentralMlflowService | None = None,
+    mlflow_tracking: Any | None = None,
     local_deployment: bool = False,
 ) -> ControlApp:
     """Build the unified brain app.
@@ -139,12 +136,6 @@ def build_control_app(
         )
     if execution_backend is None:
         execution_backend = build_sandbox_backend(repo_root=staging)
-    mlflow_tracking = (
-        mlflow_tracking
-        if mlflow_tracking is not None
-        else CentralMlflowService.from_env(env)
-    )
-    _validate_agent_mlflow_requirement(mlflow_tracking=mlflow_tracking, env=env)
     _validate_sandbox_backend_requirement(execution_backend=execution_backend, env=env)
     app = ControlApp(
         store=store,
@@ -245,7 +236,7 @@ def build_local_server(
     blobs: BlobStore | None = None,
     storage: Any = _UNSET,
     mgmt_keys: Any | None = None,
-    mlflow_tracking: CentralMlflowService | None = None,
+    mlflow_tracking: Any | None = None,
 ) -> ControlPlaneServer:
     """Build the localhost brain using the same ControlApp composition."""
     root = _local_brain_root(state_dir=state_dir, env=env)
@@ -351,24 +342,6 @@ def _build_mgmt_key_store(
     return MountedMgmtKeyStore(
         private_key_path=Path(key_path),
         public_key=public_key,
-    )
-
-
-def _validate_agent_mlflow_requirement(
-    *,
-    mlflow_tracking: CentralMlflowService,
-    env: Mapping[str, str] | None = None,
-) -> None:
-    if not env_bool(REQUIRE_AGENT_MLFLOW_ENV_VAR, False, env=env):
-        return
-    if mlflow_tracking.tracking_uri:
-        return
-    raise ValidationError(
-        f"{REQUIRE_AGENT_MLFLOW_ENV_VAR}=1 requires "
-        f"{MLFLOW_TRACKING_URI_ENV_VAR}; set it to the public, run-reachable "
-        "MLflow URL agents should receive as MLFLOW_TRACKING_URI, or disable "
-        "the requirement for an intentional read-only/server-only deployment.",
-        details={"missing": [MLFLOW_TRACKING_URI_ENV_VAR]},
     )
 
 

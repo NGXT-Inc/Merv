@@ -233,17 +233,9 @@ class LambdaAvailabilityTest(unittest.TestCase):
         self.assertIn("artifacts_to_keep", user_data)
         self.assertIn("chown -R ubuntu:ubuntu", user_data)
         self.assertIn("ForceCommand /opt/merv/rec.sh", user_data)
-        # Observability deps install individually, only when missing, and with
-        # --ignore-installed: the image ships Debian-owned packages without
-        # RECORD files (e.g. Werkzeug) that pip cannot uninstall, so a normal
-        # install aborts mid-flight; --ignore-installed never calls uninstall.
-        # MLflow is needed as a client library for centralized tracking, not as
-        # a sandbox-local server.
-        self.assertIn(
-            "python3 -c 'import mlflow' >/dev/null 2>&1 || "
-            "python3 -m pip install --break-system-packages --ignore-installed mlflow==2.18.0",
-            user_data,
-        )
+        # The temporarily removed tracking product must not leak back into a
+        # newly provisioned user's environment through the VM bootstrap.
+        self.assertNotIn("mlflow", user_data.lower())
         self.assertNotIn("tensorboard", user_data.lower())
         self.assertIn("install_with_uv_or_pip torch torchvision torchaudio", user_data)
         self.assertNotIn("start_dashboards.sh", user_data)

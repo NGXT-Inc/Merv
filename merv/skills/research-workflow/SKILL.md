@@ -165,107 +165,21 @@ workflow state from memory.
 ## Quantitative observability
 
 For quantitative ML work — training, evaluation, sweeps, ablations, or any run
-where metrics drive the conclusion — use MLflow for params, metrics, and
-artifacts, and save compact plot/table evidence under the experiment folder.
-Do not require MLflow for qualitative experiments, literature work, code-only
-probes, or planning tasks.
-Before a sandbox or local run, call `mlflow.context` with `project_id` and
-`experiment_id`, or use the `mlflow` block returned by
-`experiment.transition(start_running)`:
+where metrics drive the conclusion — save compact machine-readable results,
+plots, and tables under the experiment folder. Keep enough provenance in each
+record to identify the run purpose, configuration, dataset/evaluation slice,
+seed, and the metric's direction. Do not add expensive lineage machinery unless
+the approved plan needs it.
 
 ```sh
-export MLFLOW_TRACKING_URI="<from mlflow.context.env>"
-export MLFLOW_EXPERIMENT_NAME="<from mlflow.context.env>"
-export RP_PROJECT_ID="<from mlflow.context.env>"
-export RP_EXPERIMENT_ID="<from mlflow.context.env>"
-# Optional: present when the plugin created the initial run at start_running.
-export MLFLOW_RUN_ID="<from mlflow.context.env, if present>"
 mkdir -p "$MERV_EXPERIMENT_DIR"/results "$MERV_EXPERIMENT_DIR"/figures
 ```
 
-For local non-sandbox runs, call `mlflow.context` to get the central tracking
-URI. Omit `experiment_id` when you need project-level navigation context and the
-plugin experiment-to-MLflow-name map; include `experiment_id` when you need the
-exact `merv/<project>/<experiment>` name and env vars for a run. A missing
-`MLFLOW_TRACKING_URI` in your current shell is not evidence that the backend
-lacks MLflow; fetch it with `mlflow.context`. Do not create a file-backed local
-MLflow store just because the shell env is empty. `experiment.transition` to
-`start_running` also returns that experiment-scoped `mlflow` block. To review or
-compare runs, use MLflow's own programmatic APIs directly from the returned URI
-and experiment names, e.g. `mlflow.set_tracking_uri(...)`,
-`MlflowClient.search_runs(...)`, `MlflowClient.get_metric_history(...)`,
-`MlflowClient.list_artifacts(...)`, and `MlflowClient.download_artifacts(...)`.
-Plot comparisons yourself from those queries — a labeled figure you can analyze
-and post to the feed. Do not create a file-backed local MLflow store as the
-default tracking path for Merv experiments. If MLflow is unavailable,
-say so in the report and still save compact result files.
-
-For quantitative runs, resume the plugin-created run when `MLFLOW_RUN_ID` is
-present; otherwise create one with MLflow's native API. Keep the MLflow run
-identity lightweight. Log `project_id`, `experiment_id`, and a short
-`run_purpose` / run group. If there is a clear primary metric, also log
-`primary_metric` and `primary_metric_direction`.
-Do not add git metadata or claim ids as a default MLflow requirement; claims are
-traceable through the plugin experiment record, and git/data lineage can be added
-later when the project explicitly needs it. Optional dataset or config notes are
-fine when they are obvious and useful, but do not block the run on dataset
-digests, dataset versioning, or config hashes.
-
-Example MLflow identity pattern for a quantitative run:
-
-```python
-import os
-import mlflow
-
-run_purpose = "seed_0_baseline"
-
-run_id = os.environ.get("MLFLOW_RUN_ID")
-run = mlflow.start_run(run_id=run_id) if run_id else mlflow.start_run(run_name=run_purpose)
-with run:
-    mlflow.set_tag("project_id", os.environ["RP_PROJECT_ID"])
-    mlflow.set_tag("experiment_id", os.environ["RP_EXPERIMENT_ID"])
-    mlflow.set_tag("run_purpose", run_purpose)
-    mlflow.set_tag("primary_metric", "validation_accuracy")
-    mlflow.set_tag("primary_metric_direction", "max")
-```
-
-After the command exits, call `mlflow.finalize_run` before submitting results.
-Omit `run_id` when `MLFLOW_RUN_ID` came from the plugin; pass
-`status="FAILED"` or `"KILLED"` if execution did not finish successfully, or
-`status=null` when the script already ended the MLflow run and you only need
-canonical readback. This refreshes experiment state so stale immediate MLflow
-`RUNNING` statuses do not confuse the report/review loop.
-
-Do not make tracking stores the only submitted result. Save compact evidence
-under the experiment folder, especially `results/*.json`, `results/*.csv`, and
-`figures/*.png`, so `report.md` can cite files that can be submitted and
-reviewed.
-
-### The metrics exhibit — the system writes the numbers, you write the meaning
-
-At `submit_results` the system generates a **metrics exhibit** and pins it as a
-system-authored artifact (`experiments/<name>/metrics_exhibit.json`) when the
-attempt has an observed MLflow run (or a plugin-created run cannot be read back
-because MLflow is unavailable). Attempts with nothing quantitative to exhibit
-get no exhibit and no exhibit-reference gate. A pinned exhibit is built from
-observation, not from your account: up to the newest 50 MLflow runs in this
-attempt's window under `merv/<project>/<experiment>` — the exhibit records when
-that cap is reached — plus pinned result JSON (files submitted with role
-`result`), each entry with provenance. Runs logged after `submit_results`
-remain in MLflow but are outside the attempt's finalized exhibit.
-
-Consequences:
-- Whatever you log IS the record. Log every run to the MLflow env you were
-  handed, tag `project_id`/`experiment_id`, and pull result files into the
-  experiment folder before submitting — an empty or thin exhibit under a
-  quantitative plan is a loud signal to the reviewer.
-- Call `experiment.exhibit` BEFORE writing `report.md` and write the report
-  around it. When it returns a pinned exhibit, reference
-  `metrics_exhibit.json` and interpret it; the gate requires that reference
-  whenever the exhibit exists. If an unconfigured/no-run fallback produces no
-  exhibit, interpret the submitted result evidence and explain the gap instead
-  of inventing an exhibit link. Qualitative experiments with no runs get no
-  exhibit and no extra machinery.
+Submit `results/*.json`, `results/*.csv`, and the figures used by `report.md`.
+Record every attempted seed or configuration, including failures and aborted
+runs; never curate the evidence down to only the favorable rows. The report is
+the interpretation layer, while the submitted result files are the auditable
+numeric record.
 
 ## Execution environment
 
@@ -397,8 +311,8 @@ Read `status`, not just `exit_code`:
 `unknown` is not a failure. The run's outcome is genuinely not known — it may
 well have succeeded — so never record it as a failed run. Only `lost` is a
 finding. The box is gone, so its logs and unpulled outputs are gone with it;
-what survives is whatever you already retained: pulled outputs, submitted
-artifacts, and MLflow runs. Check those. If nothing was retained, you cannot
+what survives is whatever you already retained: pulled outputs and submitted
+artifacts. Check those. If nothing was retained, you cannot
 know how the run went, and the honest move is to re-run it rather than write
 down a result you did not observe.
 
@@ -415,12 +329,8 @@ while the approved plan still stands, call
 `experiment.transition(project_id, experiment_id, transition="retry_running", evidence={...})`
 before requesting or attaching the replacement sandbox. This keeps the same attempt and
 records why execution is being rerun; use a planned retry only when the design
-itself needs to change. The transition response carries the MLflow run to use:
-a still-open run is resumed in place, while one you already finalized (for
-example with `mlflow.finalize_run(project_id, experiment_id, status="FAILED")`
-after the crash) is
-replaced by a fresh run — always take `MLFLOW_RUN_ID` from the retry response
-rather than reusing an old value.
+itself needs to change. Keep the rerun's outputs distinct and record why the
+original execution was interrupted.
 
 While the sandbox is live, make experiment-folder edits on the VM under
 `$MERV_EXPERIMENT_DIR`. No files are copied automatically. Keep datasets, caches,
@@ -429,11 +339,8 @@ Keep durable scripts, configs, notes, compact outputs, report figures/tables,
 and deliberate final artifacts under `$MERV_EXPERIMENT_DIR` so you can pull them
 off deliberately before release.
 
-Use the centralized MLflow env from `mlflow.context` /
-`experiment.transition(start_running)` inside the SSH command that performs the
-run. Sandbox provisioning does not automatically export MLflow env vars, and
-sandbox responses are not the source of truth for tracking configuration. Save
-compact evidence under `$MERV_EXPERIMENT_DIR`.
+Save compact evidence under `$MERV_EXPERIMENT_DIR` as the run proceeds rather
+than depending on transient terminal output.
 
 Before submitting result artifacts, call `sandbox.pull_outputs`
 for light retained files. Its inputs select the sandbox and optional relative
@@ -545,13 +452,8 @@ has BOTH a `result` artifact and a `report` artifact whose SUBMITTED content
 
 - **Summary**, **Results**, **Deviations from plan**, **Conclusion** headings
   with real content.
-- **When a metrics exhibit is pinned, Results must reference it**
-  (`metrics_exhibit.json`) and interpret it — every run it shows, using the
-  exact metrics the plan's Evaluation section named. Do not hand-copy numbers
-  into your own table as the record; the exhibit is the record (see The metrics
-  exhibit above). Preview it with `experiment.exhibit` before writing. If no
-  exhibit is produced, interpret the submitted result evidence and explain
-  the MLflow/no-run gap instead.
+- **Results must reference and interpret the submitted result evidence** using
+  the exact metrics and decision rule named by the plan's Evaluation section.
 - **Under 16 KB.** The report is the executive layer: link raw metrics files
   (`results.json`, logs) as separate result artifacts instead of inlining.
 - **Every relative image link has submitted figure content.** Save figures

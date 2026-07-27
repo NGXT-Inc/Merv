@@ -89,9 +89,9 @@ export default function MobileShell({ children, onRefresh }) {
           <IconExperiments className="mnav-glyph" />
           Exps
         </NavLink>
-        <NavLink to={px('/mlflow')} className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
+        <NavLink to={px('/sandboxes')} className={({ isActive }) => 'mnav-tab' + (isActive ? ' active' : '')}>
           <IconActivity className="mnav-glyph" />
-          MLflow
+          Sandboxes
         </NavLink>
         <button
           type="button"

@@ -326,8 +326,18 @@ class ToolDispatcherTest(unittest.TestCase):
 
 
 class ToolHandlerRegistryTest(unittest.TestCase):
-    def test_handlers_match_manifest(self) -> None:
+    def test_default_handlers_omit_dormant_tracking_tools(self) -> None:
         handlers = build_control_tool_handlers(**_handler_targets())
+
+        self.assertEqual(
+            set(handlers),
+            available_tool_names(storage_enabled=True, tracking_enabled=False),
+        )
+
+    def test_legacy_tracking_handlers_remain_injectable(self) -> None:
+        handlers = build_control_tool_handlers(
+            **_handler_targets(), tracking_enabled=True
+        )
 
         self.assertEqual(set(handlers), set(TOOL_MANIFEST))
 

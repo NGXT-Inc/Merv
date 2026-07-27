@@ -35,7 +35,6 @@ flowchart LR
   Browser["Merv UI"] -->|HTTP API and SSE| Brain
   Brain --> State["SQLite or Postgres"]
   Brain --> Blobs["Local or S3-compatible stores"]
-  Brain --> MLflow["Central MLflow service"]
   Brain --> Providers["Lambda Labs, Thunder Compute, or Modal"]
   Client -->|SSH commands| Providers
   Client -->|presigned PUT/GET| Blobs
@@ -48,7 +47,7 @@ The brain is the single authority for research records and policy. It owns:
 - projects, claims, experiments, artifacts, reviews, reflections, and events;
 - workflow gates, artifact lints, permissions, and reviewer capabilities;
 - sandbox registry, provider credentials, quotas, reapers, and cleanup;
-- blob metadata, optional heavy-object storage, and MLflow context;
+- blob metadata and optional heavy-object storage;
 - the `/mcp/*`, `/api/*`, and server-sent-event surfaces.
 
 The brain never receives a checkout root and never opens files from a user's
@@ -115,7 +114,7 @@ the snippet with `merv-client env` pointed at their own brain.
 It reads project-scoped HTTP views, uses server-sent events for prompt refreshes,
 and falls back to conditional polling with ETags. It renders desktop and mobile
 surfaces for claims, experiments, reviews, artifacts, reflection waves,
-sandboxes, MLflow, storage, events, and the research feed.
+sandboxes, storage, events, and the research feed.
 
 The browser cannot perform checkout-local operations. Local storage transfer,
 feed-image capture, and sandbox output pulls are agent-driven through typed
@@ -138,8 +137,7 @@ root selects adapters and wires the modular monolith:
   [SANDBOX_PROVIDERS.md](SANDBOX_PROVIDERS.md)). A lazy driver registry is the
   runtime provider inventory: composition resolves one descriptor per selected
   name and imports only its factory. VM drivers share a management-SSH base;
-  Modal remains a separate managed-container/provider-exec driver;
-- MLflow: an explicitly configured centralized tracking service.
+  Modal remains a separate managed-container/provider-exec driver.
 
 Research records live in the brain's selected record store. There is no durable
 checkout-local state: a project is bound by its key, not by a machine-local link
@@ -151,15 +149,12 @@ for the research timeline. Recent tool-call traffic is a bounded in-memory
 diagnostic view and is not part of durable research state.
 
 Application workflows can synchronously react to an exact committed event
-through a composition-owned registry. Transition tracking, canonical tracking
-finalization guidance, and terminal Feed guidance use this path.
+through a composition-owned registry. Terminal Feed guidance uses this path.
 Producer-facing review guidance correlates `review.status` with the existing
 `review.submitted` event; it does not append a second event. Fatal, degraded,
 and advisory registrations are explicit, and there is no background event worker
 or delivery checkpoint yet. A committed transition is never reported as a
-failure: start/retry tracking is degraded, so a tracking outage becomes a
-durable `experiment.mlflow_run_unavailable` record plus an `mlflow_warning` on
-the response, repaired later through `mlflow.finalize_run`.
+failure because post-response advisory work cannot roll it back.
 
 ## Tool routing
 
@@ -234,10 +229,6 @@ membership, and byte retrieval. Research receives those immutable facts through
 the public `EvidenceReader` port, then applies experiment/reflection gate and
 review policy. Research never queries Artifact tables or reads blobs directly.
 
-MLflow is the quantitative run ledger. Plugin state stores the research meaning
-around those runs: claim links, reviewed conclusions, artifact references, and
-workflow state.
-
 Nothing on a sandbox is durable by default. Before release or expiry, agents
 must pull compact evidence into the repo or upload heavy files to durable
 storage.
@@ -268,8 +259,8 @@ proof that two separate models reasoned independently.
 
 The brain is a modular monolith. Research, Artifacts, Sandbox, and Feed are
 business components; the Application component coordinates use cases across
-their narrow facades. MLflow is an outbound tracking adapter, concrete object
-storage is infrastructure, Surface delivers HTTP/MCP, and Kernel is the shared
+their narrow facades. Concrete object storage is infrastructure, Surface
+delivers HTTP/MCP, and Kernel is the shared
 dependency floor. Every file is classified independently by component
 ownership and architectural layer. The exact mappings, import laws, and
 shrinking file-pair exception ledger live in

@@ -22,7 +22,6 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
-from .....kernel.env import env_value, mlflow_suspended
 from ...bootstrap_tools import (
     BASELINE_APT_PACKAGES,
     ML_PYTHON_PACKAGES,
@@ -139,10 +138,6 @@ mkdir -p "$RP_SESSION_DIR" 2>/dev/null || true
     printf 'HF_TOKEN=%q\n' "$HF_TOKEN"
     printf 'HUGGING_FACE_HUB_TOKEN=%q\n' "${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
   fi
-  if [ -n "${MLFLOW_TRACKING_PASSWORD:-}" ]; then
-    printf 'MLFLOW_TRACKING_USERNAME=%q\n' "${MLFLOW_TRACKING_USERNAME:-rp-agent}"
-    printf 'MLFLOW_TRACKING_PASSWORD=%q\n' "$MLFLOW_TRACKING_PASSWORD"
-  fi
 } > /opt/merv/env
 mkdir -p /run/sshd
 ssh-keygen -A >/dev/null 2>&1 || true
@@ -177,7 +172,7 @@ RP_SESSION_DIR="${RP_SESSION_DIR:-/workspace/.merv_sessions/$RP_EXPERIMENT_ID}"
 if [ -n "${HF_TOKEN:-}" ] && [ -z "${HUGGING_FACE_HUB_TOKEN:-}" ]; then
   HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
-export RP_WORKDIR MERV_EXPERIMENT_DIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD RP_SESSION_DIR
+export RP_WORKDIR MERV_EXPERIMENT_DIR RP_EXPERIMENT_DIR RP_EXPERIMENT_ID RP_SANDBOX_DATA_DIR RP_DATASET_DIR HF_TOKEN HUGGING_FACE_HUB_TOKEN RP_SESSION_DIR
 mkdir -p "$MERV_EXPERIMENT_DIR" "$RP_SANDBOX_DATA_DIR" "$MERV_EXPERIMENT_DIR/artifacts_to_keep" "$RP_SESSION_DIR" 2>/dev/null || true
 LOG_DIR="$RP_SESSION_DIR"
 LOG="$LOG_DIR/transcript.log"
@@ -571,20 +566,6 @@ class ModalSandboxBackend(SandboxBackendBase):
                     {"HF_TOKEN": hf_token, "HUGGING_FACE_HUB_TOKEN": hf_token}
                 )
             )
-        # MLflow credential pair for the authenticated hosted /mlflow route;
-        # the brain env holds only the namespaced key, so map it explicitly.
-        # Suppressed entirely while MLflow is suspended, so no MLFLOW_TRACKING_*
-        # ever enters the Modal secret set (INV-2 / no-dataplane ruling 3).
-        agent_key = env_value("MERV_MLFLOW_AGENT_KEY") or ""
-        if agent_key and not mlflow_suspended():
-            secrets.append(
-                modal.Secret.from_dict(
-                    {
-                        "MLFLOW_TRACKING_USERNAME": "rp-agent",
-                        "MLFLOW_TRACKING_PASSWORD": agent_key,
-                    }
-                )
-            )
         return secrets
 
     def _ssh_endpoint(self, *, sandbox: Any) -> tuple[str, int]:
@@ -629,7 +610,6 @@ class ModalSandboxBackend(SandboxBackendBase):
                 if self._base_image is None:
                     modal = self._modal_module()
                     self._base_image = self._with_ssh(
-                        self._with_mlflow_client(
                             modal.Image.debian_slim(python_version="3.11")
                             .apt_install(*MODAL_APT_PACKAGES)
                             .pip_install("uv")
@@ -639,7 +619,6 @@ class ModalSandboxBackend(SandboxBackendBase):
                                 "uv pip install --system "
                                 + " ".join((*ML_PYTHON_PACKAGES, "modal")),
                             )
-                        )
                     )
         return self._base_image
 
@@ -649,7 +628,6 @@ class ModalSandboxBackend(SandboxBackendBase):
                 if self._cuda_image is None:
                     modal = self._modal_module()
                     self._cuda_image = self._with_ssh(
-                        self._with_mlflow_client(
                             modal.Image.from_registry(
                                 "nvidia/cuda:12.1.1-devel-ubuntu22.04",
                                 add_python="3.11",
@@ -662,15 +640,8 @@ class ModalSandboxBackend(SandboxBackendBase):
                                 "uv pip install --system "
                                 + " ".join((*ML_PYTHON_PACKAGES, "ninja", "modal")),
                             )
-                        )
                     )
         return self._cuda_image
-
-    def _with_mlflow_client(self, image: Any) -> Any:
-        """Layer in the MLflow client used with the centralized tracking URL."""
-        return image.run_commands(
-            "uv pip install --system mlflow==2.18.0",
-        )
 
     def _with_ssh(self, image: Any) -> Any:
         """Bake the SSH entrypoint and transcript wrapper into the image."""

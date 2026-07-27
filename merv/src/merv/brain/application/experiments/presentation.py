@@ -109,15 +109,24 @@ def rich_experiment_state(
     full: ExperimentState,
     *,
     storage_objects: Iterable[ProducedObject | dict[str, Any]],
+    include_legacy_tracking: bool = False,
 ) -> ExperimentState:
     """Attach Storage facts without mutating Research's authoritative state.
 
-    Existing rich JSON placed ``storage_objects`` immediately before
-    ``mlflow_run``. Preserve that insertion order because cached HTTP bodies
-    are serialized without key sorting.
+    Legacy tracking state is deliberately omitted from this public projection.
+    The persisted columns remain intact so the integration can be reintroduced
+    without a data migration.
     """
 
-    result = dict(full)
+    result = (
+        dict(full)
+        if include_legacy_tracking
+        else {
+            key: value
+            for key, value in full.items()
+            if "mlflow" not in str(key).lower()
+        }
+    )
     checklist = result.get("gate_checklist")
     if isinstance(checklist, dict):
         result["gate_checklist"] = present_gate_checklist(checklist)
@@ -128,8 +137,12 @@ def rich_experiment_state(
         result = dict(items)
     result.pop("storage_objects", None)
     items = list(result.items())
-    storage_at = list(result).index("mlflow_run") if "mlflow_run" in result else len(items)
-    items.insert(storage_at, ("storage_objects", list(storage_objects)))
+    storage_item = ("storage_objects", list(storage_objects))
+    if include_legacy_tracking and "mlflow_run" in result:
+        index = list(result).index("mlflow_run")
+        items.insert(index, storage_item)
+    else:
+        items.append(storage_item)
     return cast(ExperimentState, dict(items))
 
 
@@ -137,10 +150,15 @@ def slim_experiment_state(
     full: ExperimentState,
     *,
     storage_objects: Iterable[ProducedObject | dict[str, Any]],
+    include_legacy_tracking: bool = False,
 ) -> SlimExperimentState:
     """Project rich experiment facts to the exact agent-facing wire shape."""
 
-    rich = rich_experiment_state(full, storage_objects=storage_objects)
+    rich = rich_experiment_state(
+        full,
+        storage_objects=storage_objects,
+        include_legacy_tracking=include_legacy_tracking,
+    )
     attempt = rich.get("attempt_index")
     all_artifacts = rich.get("artifacts", [])
     current = rich.get("current_attempt_artifacts")
@@ -168,13 +186,24 @@ def slim_experiment_state(
         "updated_at": rich.get("updated_at"),
         "allowed_transitions": rich.get("allowed_transitions", []),
         "gate_checklist": rich.get("gate_checklist", {}),
-        "mlflow_run": rich.get("mlflow_run"),
-        "claim_update_suggestions": rich.get("claim_update_suggestions", []),
-        "tested_claims": project_rows(rich.get("tested_claims", []), _SLIM_CLAIM_FIELDS),
-        "current_attempt_artifacts": project_rows(current, _SLIM_ARTIFACT_FIELDS),
-        "storage_objects": project_rows(rich.get("storage_objects", []), _SLIM_STORAGE_FIELDS),
-        "reviews": slim_review_rows(rich.get("reviews", [])),
     }
+    if include_legacy_tracking:
+        slim["mlflow_run"] = rich.get("mlflow_run")
+    slim.update(
+        {
+            "claim_update_suggestions": rich.get("claim_update_suggestions", []),
+            "tested_claims": project_rows(
+                rich.get("tested_claims", []), _SLIM_CLAIM_FIELDS
+            ),
+            "current_attempt_artifacts": project_rows(
+                current, _SLIM_ARTIFACT_FIELDS
+            ),
+            "storage_objects": project_rows(
+                rich.get("storage_objects", []), _SLIM_STORAGE_FIELDS
+            ),
+            "reviews": slim_review_rows(rich.get("reviews", [])),
+        }
+    )
     if prior:
         slim["prior_attempt_artifacts"] = project_rows(prior, _PRIOR_ARTIFACT_FIELDS)
     return cast(SlimExperimentState, slim)

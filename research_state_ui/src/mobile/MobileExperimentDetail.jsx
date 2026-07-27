@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
 import { useProjectStore, useProjectHref } from '../store/useProjectStore';
-import ExperimentMetrics from '../components/ExperimentMetrics';
 import SandboxTerminal from '../components/SandboxTerminal';
 import MobileGraphSection from './MobileGraphSection';
 import MobileDoc from './MobileDoc';
@@ -16,7 +15,7 @@ import { pickIndependentRead } from '../utils/independentRead';
  * introduced by a small label and separated by a hairline. No section
  * navigator — just scroll.
  *
- * The artifacts (intent, plan, terminal, report, curves) are the content;
+ * The artifacts (intent, plan, terminal, report) are the content;
  * everything about the workflow
  * collapses into ONE color-indexed status statement — no FSM enumeration,
  * no gate card, no counts. Heavy panes attach on tap: the terminal (its
@@ -198,12 +197,6 @@ export default function MobileExperimentDetail() {
             experimentStatus={experiment.status}
           />
         )}
-        <ExperimentMetrics
-          projectId={projectId}
-          experimentId={experimentId}
-          refreshKey={`${experiment.status}:${currentAttempt}`}
-          dense
-        />
       </section>
     </div>
   );

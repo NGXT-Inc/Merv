@@ -386,7 +386,6 @@ install_with_uv_or_pip() {{
     python3 -m pip install --break-system-packages "$@"
   fi
 }}
-python3 -c 'import mlflow' >/dev/null 2>&1 || python3 -m pip install --break-system-packages --ignore-installed mlflow==2.18.0 || echo "[merv] mlflow install failed" >> /opt/merv/bootstrap.log
 install_with_uv_or_pip {python_packages} || true
 """
 

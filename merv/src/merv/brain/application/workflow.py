@@ -300,7 +300,7 @@ class ProjectDashboardQuery:
         active_experiments = work["active_experiments"]
         active_processes = work["active_processes"]
         active_experiment = active_experiments[0] if active_experiments else None
-        return {
+        result = {
             "project": status["project"],
             "claims": claims,
             "experiments": experiments,
@@ -324,8 +324,13 @@ class ProjectDashboardQuery:
                 else status["workflow"]
             ),
             "active_experiment": active_experiment,
-            "mlflow": self.health(),
         }
+        tracking_health = self.health()
+        if tracking_health:
+            # Compatibility-only: normal product composition supplies no
+            # tracking service and therefore exposes no tracking-shaped field.
+            result["mlflow"] = tracking_health
+        return result
 
     def current_project(self, *, tenant_id: str | None = None) -> Record:
         result = self.current(tenant_id=tenant_id)

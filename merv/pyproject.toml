@@ -21,8 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# local = localhost-brain extras: the provider SDK and MLflow server.
-local = ["modal>=1.4,<2", "mlflow==2.18.0"]
+# local = localhost-brain provider SDK.
+local = ["modal>=1.4,<2"]
 # control = hosted-brain adapters: Postgres driver + object-store SDK.
 # No provider SDK is required at module load (modal is lazily imported at one
 # site); a control plane that provisions Modal still needs it, so include it.

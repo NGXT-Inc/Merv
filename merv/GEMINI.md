@@ -36,10 +36,8 @@ There is no linking step and no `connect` action. Use
 - Use a sandbox for long or expensive work; lightweight checks may run locally.
   Do not assume a provider. Inspect `sandbox.options` when hardware selection is
   needed, then use the response's provider-shaped fields.
-- For quantitative work, use the MLflow context returned by
-  `experiment.transition(start_running)` or call `mlflow.context`. Resume the
-  plugin-created run, call `mlflow.finalize_run` before submitting results, and
-  do not create a file-backed MLflow store for plugin experiments.
+- For quantitative work, retain compact machine-readable result files and
+  figures under the experiment folder, then submit them as result evidence.
 
 ## Review boundary
 

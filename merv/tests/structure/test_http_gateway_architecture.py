@@ -23,7 +23,9 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         # -> 132 when the key moved off the shared facade onto the gateway
         # (two apps over one backend must not swap each other's keys): the
         # up-front length check with its comment, one import, one ctor line.
-        self.assertLessEqual(len(source.splitlines()), 132)
+        # -> 137 while the reversible tracking adapter is suspended: the
+        # composition root passes one feature flag to the optional auth route.
+        self.assertLessEqual(len(source.splitlines()), 137)
         for seam in (
             "RequestAuthenticator",
             "ProjectAuthorizer",
@@ -69,11 +71,13 @@ class HttpGatewayArchitectureTest(unittest.TestCase):
         # name and one clause, no new branch. +5 when the wait key became a
         # per-composition gateway field (one field with its two-line comment,
         # one two-line forward for sandbox.runs) instead of shared facade state.
-        self.assertLessEqual(gateway_loc, 453)
+        # +1 for the optional tracking-route feature flag; no new boundary or
+        # transport lookup was introduced.
+        self.assertLessEqual(gateway_loc, 454)
         # +1 for the run-wait mount: the gateway itself did not move, so the
         # pair ceiling tracks the factory's two composition lines. Then the
         # per-composition key rework: factory +7, gateway +5.
-        self.assertLessEqual(app_loc + gateway_loc, 585)
+        self.assertLessEqual(app_loc + gateway_loc, 591)
 
     def test_project_membership_has_one_transport_lookup(self) -> None:
         package_source = "\n".join(

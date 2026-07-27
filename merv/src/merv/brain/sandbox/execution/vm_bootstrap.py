@@ -156,9 +156,6 @@ def build_standard_user_data(
     """
     apt = " ".join(shlex.quote(pkg) for pkg in apt_packages)
     python = " ".join(shlex.quote(pkg) for pkg in python_packages)
-    # mlflow gets --ignore-installed for images that ship Debian-owned Python
-    # packages without RECORD files (pip cannot uninstall those).
-    mlflow_package = shlex.quote("mlflow==2.18.0")
     bootstrap_core = build_bootstrap_core(
         public_key=public_key,
         experiment_id=experiment_id,
@@ -193,7 +190,6 @@ install_with_uv_or_pip() {{
     python3 -m pip install --break-system-packages "$@"
   fi
 }}
-python3 -c 'import mlflow' >/dev/null 2>&1 || python3 -m pip install --break-system-packages --ignore-installed {mlflow_package} || echo "[merv] mlflow install failed" >> /opt/merv/bootstrap.log
 install_with_uv_or_pip torch torchvision torchaudio || true
 install_with_uv_or_pip {python} || true
 """

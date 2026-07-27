@@ -10,9 +10,8 @@ The reference stack contains:
 | Service | Responsibility |
 |---|---|
 | `control` | FastAPI brain: research records, workflow gates, reviews, sandbox lifecycle, UI API, and token-authorized upload routes |
-| `postgres` | Research records and a separate MLflow database |
-| `minio` | Submitted-byte blobs, optional heavy-file storage, and MLflow artifacts |
-| `mlflow` | Central tracking server |
+| `postgres` | Research records |
+| `minio` | Submitted-byte blobs and optional heavy-file storage |
 | `mgmtkey` | Generates a development-only brain management SSH key |
 
 Each agent (local Claude Code, cloud Codex, Replit) connects directly to the
@@ -45,15 +44,9 @@ The file may contain `MERV_LAMBDA_API_KEY` (or
 declare those names with empty values under the control service's
 `environment:` map: Compose gives that map precedence over `env_file`.
 
-The compose defaults start the complete set of services, but intentionally make
-the control container **record-only**:
-
-- `MERV_MLFLOW_TRACKING_URI` is empty, so agents are not given a
-  run-reachable tracking URL.
-- sandbox provider credentials are empty, so provisioning is unavailable.
-
-Configure both before treating the stack as run-ready. Remote sandboxes must be
-able to reach the MLflow tracking URL. Heavy-storage presigned URLs are run by
+The compose defaults intentionally leave sandbox provider credentials empty, so
+provisioning is unavailable until a provider is configured. Heavy-storage
+presigned URLs are run by
 agent clients (and the doctor), so they must be reachable from those machines;
 they do not need to be reachable from sandbox execution.
 
@@ -63,10 +56,9 @@ Run the active readiness sweep after a deploy or restart:
 python3 deploy/doctor.py --control-url http://127.0.0.1:8787
 ```
 
-The doctor creates or reuses a smoke project, writes an MLflow run, checks the
-sandbox provider, and exercises heavy object storage. It therefore fails on the
-record-only defaults. `--skip-mlflow-write` skips only the write smoke (not
-MLflow configuration/health); `--skip-storage` skips the storage smoke.
+The doctor creates or reuses a smoke project, checks the sandbox provider, and
+exercises heavy object storage. It therefore fails on the record-only defaults.
+`--skip-storage` skips the storage smoke.
 
 For the local MinIO stack, a host-run doctor may need its Docker hostname
 rewritten to the published port:
@@ -92,17 +84,7 @@ Heavy object storage is optional. Enable it with
 `MERV_STORAGE_PROVIDER` and the storage bucket/credentials. This is
 separate from the submitted-byte blob store, which hosted startup requires.
 
-Central MLflow has three URLs because callers, the brain, and people may reach
-it differently:
-
-| Variable | Consumer |
-|---|---|
-| `MERV_MLFLOW_TRACKING_URI` | agents and sandbox commands; must be reachable from every run location |
-| `MERV_MLFLOW_SERVER_URI` | brain metrics reads; may use an internal service URL |
-| `MERV_MLFLOW_DASHBOARD_URL` | links opened by people; defaults to the tracking URL |
-
-Set `MERV_REQUIRE_AGENT_MLFLOW=1` to reject startup without an agent
-tracking URL. Set `MERV_REQUIRE_SANDBOX_BACKEND=1` to reject startup
+Set `MERV_REQUIRE_SANDBOX_BACKEND=1` to reject startup
 when the selected provider is unhealthy. Provider credentials and the brain
 management key belong only in the hosted secret store; they are never sent to
 agent clients.
@@ -127,11 +109,7 @@ to `MERV_*` (or export the value host-side, which the base dual-reads).
 ## Network and security boundary
 
 The brain serves plain HTTP on port 8787. A real deployment must terminate TLS
-at a load balancer or reverse proxy. In the reference Compose stack, if MLflow
-is exposed under `/mlflow`, set
-`MERV_MLFLOW_STATIC_PREFIX=/mlflow`; Compose forwards it to MLflow's
-`--static-prefix`. Route MLflow's tracking, artifact, UI, and `ajax-api` paths
-consistently. The Python brain itself does not read this variable.
+at a load balancer or reverse proxy.
 
 The reference compose stack ships with authentication required
 (`MERV_REQUIRE_AUTH=1`). A verifier is built from `SUPABASE_URL` and
@@ -148,7 +126,7 @@ its open state on every boot. `MERV_ALLOW_OPEN_CONTROL` is parsed strictly: it
 accepts only `1/true/yes/on` or `0/false/no/off`, and any other value fails the
 boot rather than being guessed, so a typo can never open the plane. CORS
 restrictions and the MCP client-version floor
-are not authentication. Keep an open stack — the brain, MLflow, storage
+are not authentication. Keep an open stack — the brain, storage
 endpoints, and admin routes — on a trusted operator network; do not expose it
 directly to the public internet.
 

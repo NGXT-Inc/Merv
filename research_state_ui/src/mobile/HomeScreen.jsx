@@ -14,7 +14,6 @@ import {
 import { expName } from '../utils/experiment';
 import { fmtDuration, fmtUsd, fmtHrs } from '../utils/format';
 import { densifyDaily } from '../utils/spend';
-import { goodDirection, curveValues } from '../utils/metrics';
 
 const REVIEW_STATES = new Set(['design_review', 'experiment_review']);
 const SOON_MS = 30 * 60 * 1000;
@@ -27,12 +26,6 @@ function gpuCountOf(sandbox) {
   if (!gpu) return 0;
   const m = gpu.match(/(\d+)\s*[x×]/i);
   return m ? Number(m[1]) : 1;
-}
-
-// Preferred live-metric key: a loss-like curve first, else the first curve.
-function pickMetricKey(history) {
-  const keys = Object.keys(history || {});
-  return keys.find(k => /loss/i.test(k)) || keys[0] || null;
 }
 
 function fmtStanding(d) {
@@ -114,45 +107,11 @@ function useComputeSpend(projectId, fleetSignal) {
   return spend;
 }
 
-// Latest metric curve for the live experiment, from the durable MLflow ledger.
-function useLiveMetric(projectId, experimentId) {
-  const [metric, setMetric] = useState(null); // {key, values:[…last 30], last}
-  useEffect(() => {
-    if (!projectId || !experimentId) { setMetric(null); return undefined; }
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await api.getResultsMetrics(projectId, experimentId);
-        if (cancelled) return;
-        const runs = (Array.isArray(res?.experiments) ? res.experiments : [])
-          .flatMap(e => (Array.isArray(e.runs) ? e.runs : []));
-        // Latest run that actually logged a curve.
-        for (let i = runs.length - 1; i >= 0; i--) {
-          const history = runs[i]?.history || {};
-          const key = pickMetricKey(history);
-          const values = key ? curveValues(history[key]) : [];
-          if (values.length >= 2) {
-            setMetric({ key, values: values.slice(-30) });
-            return;
-          }
-        }
-        setMetric(null);
-      } catch { if (!cancelled) setMetric(null); }
-    };
-    load();
-    const t = setInterval(() => {
-      if (document.visibilityState === 'visible') load();
-    }, 30000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [projectId, experimentId]);
-  return metric;
-}
-
 /**
  * Home — the supervisor's instrument snapshot: what this project
  * IS (a clamped project.summary — the name's already in the app bar), a
  * one-line standing, a 24h snapshot band, what's live now with real GPU-util
- * + the run's metric curve, then a compact Needs-you. One Surface: hairlines
+ * telemetry, then a compact Needs-you. One Surface: hairlines
  * only at section breaks, the 3px orange index the sole rupture.
  */
 export default function HomeScreen() {
@@ -190,7 +149,6 @@ export default function HomeScreen() {
     || (liveSandbox ? experiments.find(e => e.id === liveSandbox.experiment_id) : null)
     || null;
   const gpu = useLiveGpu(projectId, liveSandbox);
-  const metric = useLiveMetric(projectId, liveExp?.id);
   const spend = useComputeSpend(projectId, `${sandboxes.length}:${running.length}`);
 
   // ── 24h snapshot band (derived client-side; approximate by design) ──
@@ -254,9 +212,6 @@ export default function HomeScreen() {
   const liveElapsed = liveSandbox?.requested_at
     ? now - Date.parse(liveSandbox.requested_at)
     : (liveExp?.updated_at ? now - Date.parse(liveExp.updated_at) : null);
-  const dir = metric ? Math.sign(metric.values[metric.values.length - 1] - metric.values[0]) : 0;
-  const good = metric ? goodDirection(metric.key) : 0;
-
   return (
     <div className="mhome">
       {lastSyncError && (
@@ -339,20 +294,6 @@ export default function HomeScreen() {
               </div>
             </>
           )}
-          {metric && (
-            <div className="mmetricline">
-              <span className="mmetricline-key">{metric.key} · last {metric.values.length} steps</span>
-              <span className="mmetricline-val tabular">
-                <MiniSpark values={metric.values} />
-                {fmtMetric(metric.values[metric.values.length - 1])}
-                {dir !== 0 && good !== 0 && (
-                  <span className={`tr ${dir === good ? 'tr--good' : 'tr--bad'}`}>
-                    {dir < 0 ? '▼' : '▲'}
-                  </span>
-                )}
-              </span>
-            </div>
-          )}
         </Link>
       ) : (
         <div className="mquiet">nothing running</div>
@@ -422,29 +363,5 @@ function MiniBars({ daily }) {
         <span key={d.date} style={{ height: `${Math.max(4, (vals[i] / vmax) * 100)}%` }} />
       ))}
     </div>
-  );
-}
-
-function fmtMetric(v) {
-  if (!Number.isFinite(v)) return '—';
-  if (Number.isInteger(v)) return String(v);
-  return Number(v.toPrecision(3)).toString();
-}
-
-// The instrument's small pulse curve — 50×16, stroke only, green.
-function MiniSpark({ values }) {
-  if (!values || values.length < 2) return null;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const pts = values.map((v, i) => {
-    const x = (i / (values.length - 1)) * 50;
-    const y = 14 - ((v - min) / span) * 12;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  return (
-    <svg className="mspk" viewBox="0 0 50 16" fill="none" aria-hidden="true">
-      <polyline points={pts} stroke="var(--supports)" strokeWidth="1.6" />
-    </svg>
   );
 }

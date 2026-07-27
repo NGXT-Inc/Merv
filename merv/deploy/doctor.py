@@ -18,7 +18,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib import error as urllib_error
-from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 
@@ -38,12 +37,6 @@ class Check:
     detail: str
 
 
-@dataclass(frozen=True)
-class MlflowSmoke:
-    experiment_id: str
-    run_id: str
-
-
 class Doctor:
     def __init__(
         self,
@@ -54,7 +47,6 @@ class Doctor:
         timeout: float,
         url_rewrite: list[tuple[str, str]],
         skip_storage: bool,
-        skip_mlflow_write: bool,
     ) -> None:
         self.control_url = control_url.rstrip("/")
         self.project_id = project_id
@@ -62,7 +54,6 @@ class Doctor:
         self.timeout = timeout
         self.url_rewrite = url_rewrite
         self.skip_storage = skip_storage
-        self.skip_mlflow_write = skip_mlflow_write
         self.checks: list[Check] = []
 
     def run(self) -> int:
@@ -74,7 +65,6 @@ class Doctor:
             project_id = self._ensure_project()
             self._ok("project", project_id)
 
-            self._check_mlflow(project_id=project_id)
             self._check_sandbox(project_id=project_id)
             if not self.skip_storage:
                 self._check_storage(project_id=project_id)
@@ -106,98 +96,6 @@ class Doctor:
             },
         )
         return str(created["id"])
-
-    def _check_mlflow(self, *, project_id: str) -> None:
-        overview = self._control("GET", f"/api/projects/{project_id}/mlflow")
-        mlflow = overview.get("mlflow") or {}
-        tracking_uri = str(mlflow.get("tracking_uri") or "").rstrip("/")
-        if not mlflow.get("tracking_configured") or not tracking_uri:
-            raise DoctorError("MLflow tracking URI is not configured for agents")
-        if not mlflow.get("read_configured"):
-            raise DoctorError("MLflow backend read URI is not configured")
-        self._raw_request("GET", f"{tracking_uri}/health")
-        if not self.skip_mlflow_write:
-            smoke = self._write_mlflow_smoke(tracking_uri=tracking_uri, project_id=project_id)
-            if self._has_path_prefix(tracking_uri):
-                self._check_mlflow_ui_ajax(
-                    tracking_uri=tracking_uri, experiment_id=smoke.experiment_id
-                )
-                self._ok("mlflow-ui", "ajax-api=ok")
-            self._ok("mlflow", f"tracking_uri={tracking_uri}, smoke_run={smoke.run_id}")
-        else:
-            self._ok("mlflow", f"tracking_uri={tracking_uri}, write skipped")
-
-    def _write_mlflow_smoke(self, *, tracking_uri: str, project_id: str) -> MlflowSmoke:
-        experiment_name = f"merv/{project_id}/deploy_doctor"
-        base = f"{tracking_uri}/api/2.0/mlflow"
-        experiment_id = ""
-        try:
-            created = self._json_request(
-                "POST", f"{base}/experiments/create", {"name": experiment_name}
-            )
-            experiment_id = str(created["experiment_id"])
-        except DoctorError:
-            found = self._json_request(
-                "POST",
-                f"{base}/experiments/search",
-                {"filter": f"name = '{experiment_name}'", "max_results": 1},
-            )
-            experiments = found.get("experiments") or []
-            if not experiments:
-                raise
-            experiment_id = str(experiments[0]["experiment_id"])
-
-        now_ms = int(time.time() * 1000)
-        created_run = self._json_request(
-            "POST",
-            f"{base}/runs/create",
-            {
-                "experiment_id": experiment_id,
-                "start_time": now_ms,
-                "tags": [{"key": "source", "value": "deploy_doctor"}],
-            },
-        )
-        run_id = str(created_run["run"]["info"]["run_id"])
-        self._json_request(
-            "POST",
-            f"{base}/runs/log-metric",
-            {
-                "run_id": run_id,
-                "key": "deploy_doctor_ready",
-                "value": 1.0,
-                "timestamp": now_ms,
-                "step": 0,
-            },
-        )
-        self._json_request(
-            "POST",
-            f"{base}/runs/update",
-            {"run_id": run_id, "status": "FINISHED", "end_time": int(time.time() * 1000)},
-        )
-        return MlflowSmoke(experiment_id=experiment_id, run_id=run_id)
-
-    def _check_mlflow_ui_ajax(self, *, tracking_uri: str, experiment_id: str) -> None:
-        base = f"{tracking_uri}/ajax-api/2.0/mlflow"
-        experiment = self._json_request(
-            "GET", f"{base}/experiments/get?experiment_id={experiment_id}"
-        )
-        if str((experiment.get("experiment") or {}).get("experiment_id") or "") != experiment_id:
-            raise DoctorError("MLflow browser AJAX experiment lookup returned the wrong id")
-        runs = self._json_request(
-            "POST",
-            f"{base}/runs/search",
-            {
-                "experiment_ids": [experiment_id],
-                "max_results": 1,
-                "run_view_type": "ACTIVE_ONLY",
-            },
-        )
-        if not isinstance(runs.get("runs") or [], list):
-            raise DoctorError("MLflow browser AJAX run search returned a malformed payload")
-
-    def _has_path_prefix(self, url: str) -> bool:
-        path = urllib_parse.urlsplit(url).path.rstrip("/")
-        return bool(path)
 
     def _check_sandbox(self, *, project_id: str) -> None:
         health = self._control("GET", "/api/sandboxes/health")
@@ -379,13 +277,6 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("RP_DOCTOR_SKIP_STORAGE", "").lower() in {"1", "true", "yes"},
         help="Skip object-storage upload/download smoke.",
     )
-    parser.add_argument(
-        "--skip-mlflow-write",
-        action="store_true",
-        default=os.environ.get("RP_DOCTOR_SKIP_MLFLOW_WRITE", "").lower()
-        in {"1", "true", "yes"},
-        help="Skip MLflow run creation/metric logging smoke.",
-    )
     args = parser.parse_args(argv)
     rewrites = _parse_rewrites(
         [os.environ.get("RP_DOCTOR_URL_REWRITE", ""), *args.url_rewrite]
@@ -397,7 +288,6 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         url_rewrite=rewrites,
         skip_storage=args.skip_storage,
-        skip_mlflow_write=args.skip_mlflow_write,
     ).run()
 
 

@@ -313,19 +313,6 @@ export const api = {
   // came back empty (e.g. a CPU-only image without nvidia-smi).
   getSandboxMetrics: (pid, eid, { sandboxUid = null } = {}) =>
     request(sandboxPath(pid, eid, sandboxUid, '/metrics')),
-  // Durable per-experiment metrics from the centralized MLflow ledger — powers
-  // the inline ExperimentMetrics panel. Distinct from getSandboxMetrics (live
-  // in-container CPU/RAM/GPU, gone once the VM stops). Returns { available,
-  // experiments:[{name, runs:[...]}], dashboard_experiment_url?, hint? }.
-  getResultsMetrics: (pid, eid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/experiments/${encodeURIComponent(eid)}/results/metrics`),
-  // Project-wide MLflow: central endpoint + every experiment's runs/metric
-  // curves, each with a deep link into the embedded MLflow UI. Powers the
-  // dedicated, project-scoped MLflow page. Returns { mlflow:{configured,
-  // dashboard_url,...}, experiments:[{experiment_id, name, status, intent,
-  // dashboard_experiment_url, metrics:{...results_metrics...}}] }.
-  getMlflowOverview: (pid) =>
-    request(`/api/projects/${encodeURIComponent(pid)}/mlflow`),
   releaseSandbox: (pid, eid, { sandboxUid = null } = {}) =>
     request(sandboxPath(pid, eid, sandboxUid, '/release'), { method: 'POST' }),
   // Project compute spend from the sandbox-generations ledger (price × runtime,

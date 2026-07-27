@@ -94,9 +94,15 @@ class TransitionExperiment:
         response = cast(
             TransitionResponse,
             dict(
-                slim_experiment_state(state, storage_objects=storage_objects)
+                slim_experiment_state(
+                    state,
+                    storage_objects=storage_objects,
+                    include_legacy_tracking=self.tracking is not None,
+                )
             ),
         )
+        if self.tracking is None:
+            response.pop("mlflow_run", None)
         presentation_warning = attach_tracking_if_visible(
             state=response,
             tracking=self.tracking,
@@ -104,11 +110,12 @@ class TransitionExperiment:
             experiment_id=experiment_id,
             include_credentials=include_tracking_credentials,
         )
-        warning = reacted.outcomes.get("tracking_start")
-        if isinstance(warning, dict):
-            response["mlflow_warning"] = cast(dict[str, str], warning)
-        elif presentation_warning is not None:
-            response["mlflow_warning"] = presentation_warning
+        if self.tracking is not None:
+            warning = reacted.outcomes.get("tracking_start")
+            if isinstance(warning, dict):
+                response["mlflow_warning"] = cast(dict[str, str], warning)
+            elif presentation_warning is not None:
+                response["mlflow_warning"] = presentation_warning
         if transition in ("start_running", "retry_running"):
             response["metrics_exhibit"] = self._exhibit_expectation(
                 experiment_id=experiment_id, state=response
@@ -136,9 +143,10 @@ class TransitionExperiment:
         verdict = {
             **dict(exhibit["verdict"]),
             "attempt_index": exhibit["attempt_index"],
-            "mlflow": exhibit["mlflow"],
             "pinned": pinned,
         }
+        if "mlflow" in exhibit:
+            verdict["mlflow"] = exhibit["mlflow"]
         project_id = str(state.get("project_id") or "")
         experiment_id = str(state.get("id") or "")
         self.research.record_exhibit_verdict(
@@ -172,6 +180,20 @@ class TransitionExperiment:
         self, *, experiment_id: str, state: dict[str, Any]
     ) -> dict[str, object]:
         path = self._exhibit_path(experiment_id=experiment_id, state=state)
+        if self.tracking is None:
+            return {
+                "final_path": path,
+                "preview_tool": "experiment.exhibit",
+                "notice": (
+                    "Retain every quantitative run as a role-'result' JSON or "
+                    "CSV artifact, including failed and aborted runs, plus the "
+                    "figures used by the report. At submit_results the system "
+                    "evaluates the attempt's submitted result evidence. Preview "
+                    "the current exhibit with experiment.exhibit; when one is "
+                    f"pinned at {path}, report.md must reference and interpret "
+                    f"{METRICS_EXHIBIT_FILENAME}."
+                ),
+            }
         return {
             "final_path": path,
             "preview_tool": "experiment.exhibit",

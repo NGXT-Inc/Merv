@@ -125,7 +125,7 @@ call; there is no reconnecting. Follow along at
 ## Self-hosting
 
 The hosted brain runs this repo's code, and you can run the whole stack — brain,
-Postgres, S3-compatible store, MLflow — yourself. Start from the reference
+Postgres, and an S3-compatible store — yourself. Start from the reference
 deployment in [merv/deploy/README.md](merv/deploy/README.md); operations are in
 [CONTROL_PLANE_OPERATIONS.md](merv/docs/CONTROL_PLANE_OPERATIONS.md). Clients
 connect the same way — point the MCP `url` at your own brain.

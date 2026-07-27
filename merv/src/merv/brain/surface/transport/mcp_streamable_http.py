@@ -583,4 +583,10 @@ class McpStreamableHttp:
                 )
             except TimeoutError:
                 continue
+            except Exception:
+                # The completed-call renderer below owns JSON-RPC error
+                # serialization. Do not let a task that fails after the SSE
+                # headers are committed escape through Starlette's HTTP
+                # exception handlers.
+                break
         yield _sse_message(await self._completed_call(task, request_id))

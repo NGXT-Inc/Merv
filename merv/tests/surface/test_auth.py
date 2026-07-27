@@ -491,19 +491,17 @@ class AuthedSurfaceTest(unittest.TestCase):
         ).json()
         self.assertEqual([p["id"] for p in listed["projects"]], [project_id])
 
-    def test_mlflow_gate_challenges_and_admits(self) -> None:
-        challenged = self.client.get("/internal/auth/mlflow")
-        self.assertEqual(challenged.status_code, 401)
-        self.assertIn("Basic", challenged.headers.get("WWW-Authenticate", ""))
-        bearer = self.client.get("/internal/auth/mlflow", headers=_bearer(USER_A))
-        self.assertEqual(bearer.status_code, 204)
+    def test_mlflow_auth_route_is_absent_from_default_product(self) -> None:
         encoded = base64.b64encode(f"rp:{KNOWN_KEY}".encode()).decode()
-        basic = self.client.get(
-            "/internal/auth/mlflow", headers={"Authorization": f"Basic {encoded}"}
-        )
-        self.assertEqual(basic.status_code, 204)
+        for headers in (
+            None,
+            _bearer(USER_A),
+            {"Authorization": f"Basic {encoded}"},
+        ):
+            response = self.client.get("/internal/auth/mlflow", headers=headers)
+            self.assertEqual(response.status_code, 404, response.text)
 
-    def test_mlflow_gate_403s_all_principals_while_suspended(self) -> None:
+    def test_legacy_suspension_env_does_not_reintroduce_mlflow_auth_route(self) -> None:
         encoded = base64.b64encode(f"rp:{KNOWN_KEY}".encode()).decode()
         with patch.dict(os.environ, {"MERV_MLFLOW_SUSPENDED": "1"}, clear=False):
             for headers in (
@@ -512,10 +510,7 @@ class AuthedSurfaceTest(unittest.TestCase):
                 {"Authorization": f"Basic {encoded}"},
             ):
                 response = self.client.get("/internal/auth/mlflow", headers=headers)
-                self.assertEqual(response.status_code, 403, response.text)
-                self.assertEqual(
-                    response.json()["error_code"], "mlflow_suspended"
-                )
+                self.assertEqual(response.status_code, 404, response.text)
 
 
 if __name__ == "__main__":

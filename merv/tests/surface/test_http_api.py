@@ -25,6 +25,9 @@ class ResearchPluginHttpApiTest(unittest.TestCase):
             repo_root=self.repo,
             db_path=self.repo / ".research_plugin" / "state.sqlite",
             execution_backend=self.backend,
+            # This legacy compatibility suite explicitly opts into the dormant
+            # adapter. Product/default composition intentionally does not.
+            mlflow_tracking=CentralMlflowService(),
         )
         self.client = TestClient(create_fastapi_app(self.app.http))
 

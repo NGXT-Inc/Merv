@@ -32,6 +32,7 @@ from merv.brain.surface.transport.mcp_streamable_http import (
     PRETTY_RESULT_THRESHOLD_BYTES,
     SERVER_INSTRUCTIONS,
 )
+from merv.shared.errors import ValidationError
 
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -353,13 +354,19 @@ class McpStreamableHttpProgressTest(unittest.TestCase):
         app = FastAPI()
 
         def call_tool(name, arguments, context, request):
-            if name == "slow.tool":
+            if name in {"slow.tool", "slow.error"}:
                 time.sleep(self.SLOW_SECONDS)
+            if name == "slow.error":
+                raise ValidationError("slow tool rejected the request")
             return {"ok": True, "name": name}
 
         register_mcp_routes(
             app,
-            list_tools=lambda: [{"name": "fast.tool"}, {"name": "slow.tool"}],
+            list_tools=lambda: [
+                {"name": "fast.tool"},
+                {"name": "slow.tool"},
+                {"name": "slow.error"},
+            ],
             call_tool=call_tool,
         )
         return app
@@ -456,6 +463,27 @@ class McpStreamableHttpProgressTest(unittest.TestCase):
         self.assertEqual(
             frames[-1]["result"]["structuredContent"],
             {"ok": True, "name": "slow.tool"},
+        )
+
+    def test_slow_failure_is_rendered_in_the_committed_sse_stream(self) -> None:
+        client = TestClient(self._build_app())
+        mcp = _McpClient(client)
+        mcp.initialize()
+
+        response = mcp.request("tools/call", {"name": "slow.error"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        self.assertEqual(frames[-1]["error"]["code"], -32602)
+        self.assertEqual(
+            frames[-1]["error"]["data"]["error_code"], "validation_error"
         )
 
 
