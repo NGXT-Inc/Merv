@@ -52,15 +52,22 @@ class HttpMcpManifestTest(unittest.TestCase):
         )
 
     def test_plugin_manifests_keep_package_identity(self) -> None:
-        for directory in (".claude-plugin", ".cursor-plugin"):
-            manifest = json.loads(
-                (PLUGIN_ROOT / directory / "plugin.json").read_text()
-            )
-            self.assertEqual(manifest["name"], "merv")
-            self.assertEqual(manifest["version"], BACKEND_VERSION)
+        claude = json.loads(
+            (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text()
+        )
+        cursor = json.loads(
+            (PLUGIN_ROOT / ".cursor-plugin" / "plugin.json").read_text()
+        )
         codex = json.loads(
             (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text()
         )
+        for manifest in (claude, cursor, codex):
+            self.assertEqual(manifest["name"], "merv")
+
+        plugin_version = claude["version"]
+        self.assertRegex(plugin_version, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(cursor["version"], plugin_version)
+        self.assertEqual(codex["version"].split("+", 1)[0], plugin_version)
         self.assertEqual(codex["name"], "merv")
         self.assertEqual(codex["mcpServers"], "./.mcp.codex.json")
 
@@ -73,8 +80,6 @@ class HttpMcpManifestTest(unittest.TestCase):
         match = re.search(r"CLIENT_VERSION = '([^']+)'", api_js)
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), BACKEND_VERSION)
-        codex = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text())
-        self.assertTrue(codex["version"].startswith(BACKEND_VERSION))
 
 
 if __name__ == "__main__":
