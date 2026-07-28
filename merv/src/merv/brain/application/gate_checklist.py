@@ -8,6 +8,8 @@ from .guidance_catalog import (
     EXPERIMENT_REQUIREMENTS,
     REFLECTION_REQUIREMENTS,
     REVIEWS,
+    review_action,
+    review_presentation_status,
 )
 
 Record = dict[str, Any]
@@ -33,9 +35,14 @@ def _present_item(item: Record) -> Record:
     if review is None and requirement is None:
         return dict(item)
     action = (
-        review.pass_action
-        if review is not None and item.get("satisfied")
-        else f"launch_{review.action_name}er"
+        review_action(
+            review,
+            review_status=review_presentation_status(
+                satisfied=bool(item.get("satisfied")),
+                status=str(item.get("status") or ""),
+                problems=item.get("problems") or (),
+            ),
+        )
         if review is not None
         else requirement.action
     )

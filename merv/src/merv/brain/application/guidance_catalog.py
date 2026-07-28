@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import NamedTuple
 
 
@@ -117,13 +118,48 @@ REVIEWS = {
 }
 
 
+# A launched reviewer is already at work, so only these states want another one.
+REVIEW_LAUNCH_STATUSES = frozenset({"none", "attested_blocked", "requested"})
+
+
+def review_presentation_status(
+    *, satisfied: bool, status: str, problems: Sequence[str] = ()
+) -> str:
+    """Name a review gate's state the way agents see it.
+
+    Takes the review gate's own facts — the same ones the checklist item and
+    the RequirementEvaluation carry — so every surface names the state once.
+    A live request wins over an attested-but-blocked pass, which is what
+    'wait for the reviewer you already have' depends on.
+    """
+
+    if satisfied:
+        return "passed"
+    if status in {"requested", "started"}:
+        return status
+    return "attested_blocked" if problems else "none"
+
+
+def review_action(review: ReviewGuidance, *, review_status: str) -> str:
+    """The single agent action a review gate implies, for every surface."""
+
+    if review_status == "passed":
+        return review.pass_action
+    if review_status in REVIEW_LAUNCH_STATUSES:
+        return f"launch_{review.action_name}er"
+    return f"wait_for_{review.action_name}"
+
+
 __all__ = [
     "EXPERIMENT_READY",
     "EXPERIMENT_REQUIREMENTS",
     "REFLECTION_READY",
     "REFLECTION_REQUIREMENTS",
     "REVIEWS",
+    "REVIEW_LAUNCH_STATUSES",
     "ReadyGuidance",
     "RequirementGuidance",
     "ReviewGuidance",
+    "review_action",
+    "review_presentation_status",
 ]

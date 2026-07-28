@@ -22,7 +22,10 @@ from .guidance_catalog import (
     EXPERIMENT_REQUIREMENTS,
     REFLECTION_READY,
     REFLECTION_REQUIREMENTS,
+    REVIEW_LAUNCH_STATUSES,
     REVIEWS,
+    review_action,
+    review_presentation_status,
 )
 from .experiments.presentation import project_rows
 from .reflection_guidance import (
@@ -167,10 +170,14 @@ class StatusGuidancePolicy:
             if target_type == "reflection"
             else "experiment.transition"
         )
+        review_status = review_presentation_status(
+            satisfied=gate.satisfied, status=gate.status, problems=gate.problems
+        )
+        action = review_action(review, review_status=review_status)
         if gate.satisfied:
             return self._next(
                 gate=f"{action_name}_passed",
-                action=review.pass_action,
+                action=action,
                 allowed=[transition_tool],
             )
 
@@ -178,24 +185,21 @@ class StatusGuidancePolicy:
         request = (
             {
                 "id": item.get("request_id"),
-                "status": gate.status,
+                "status": review_status,
                 "expires_at": item.get("expires_at"),
             }
-            if gate.status in {"requested", "started"}
+            if review_status in {"requested", "started"}
             else None
         )
-        blocked_reason = gate.problems[0] if gate.problems and request is None else ""
-        review_status = (
-            str(request["status"])
-            if request is not None
-            else "attested_blocked" if blocked_reason else "none"
-        )
-        launch = review_status in {"none", "attested_blocked", "requested"}
-        action = f"launch_{action_name}er" if launch else f"wait_for_{action_name}"
+        blocked_reason = gate.problems[0] if review_status == "attested_blocked" else ""
         allowed = (
             ["workflow.status_and_next", "review.request"]
             if review_status == "requested"
-            else ["review.request"] if launch else ["workflow.status_and_next"]
+            else (
+                ["review.request"]
+                if review_status in REVIEW_LAUNCH_STATUSES
+                else ["workflow.status_and_next"]
+            )
         )
 
         return self._next(
