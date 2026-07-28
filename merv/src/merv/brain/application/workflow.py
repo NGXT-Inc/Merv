@@ -23,6 +23,7 @@ from .experiments.presentation import (
 from .experiments.context import ExperimentContextQuery
 from .ports.sandbox import SandboxReads
 from .ports.storage import ProducedObjectCatalog
+from .project_context import ProjectContextQuery
 from .reflection_guidance import literature_hint
 from .status_guidance import StatusGuidancePolicy
 
@@ -62,6 +63,7 @@ class StatusAndNextQuery:
     policy: StatusGuidancePolicy
     objects: ProducedObjectCatalog
     context: ExperimentContextQuery
+    project_context: ProjectContextQuery
 
     def status_and_next(
         self, *, project_id: str | None = None, experiment_id: str | None = None
@@ -94,6 +96,11 @@ class StatusAndNextQuery:
         full = self.status_and_next(
             project_id=project_id, experiment_id=experiment_id
         )
+        if experiment_id is None:
+            return _slim_status(
+                full,
+                project_context=self.project_context.build(project_id=project_id),
+            )
         experiment = full.get("experiment")
         context = (
             self.context.build(state=experiment, project_id=project_id)
@@ -462,27 +469,24 @@ def _process_view(
 
 
 def _slim_status(
-    full: Record, *, experiment_context: Record | None = None
+    full: Record,
+    *,
+    experiment_context: Record | None = None,
+    project_context: Record | None = None,
 ) -> Record:
     workflow = full.get("workflow") or {}
     project = full.get("project") or {}
     experiment = full.get("experiment")
-    if experiment is None:
+    if project_context is not None:
         result: Record = {
             "scope": "project",
             "experiment": None,
             "workflow": workflow,
-            "project": {
-                "id": project.get("id"),
-                "name": project.get("name"),
-                "summary": project.get("summary"),
-                "claims": project_rows(
-                    project.get("active_claims", []),
-                    ("id", "status", "confidence", "statement"),
-                ),
-            },
+            "context": project_context,
         }
     else:
+        if experiment is None:
+            raise RuntimeError("experiment state is required for experiment scope")
         if experiment_context is None:
             raise RuntimeError("experiment context is required for experiment scope")
         result = {

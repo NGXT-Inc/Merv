@@ -2334,9 +2334,13 @@ class StatusAndNextLiveSiblingsTest(unittest.TestCase):
         self._backdate(live["id"], "2026-01-01T00:00:00Z")
         self._finish_experiment("done-b")
         out = self.call("workflow.status_and_next", project_id=self.project_id)
-        # The scope still resolves to the finished newest experiment...
-        self.assertEqual(out["context"]["experiment"]["status"], "abandoned")
-        # ...but the workflow block re-orients instead of answering 'none'.
+        # Project scope now returns the canonical macro context while the
+        # workflow policy still uses the newest terminal experiment to decide
+        # that live siblings should take over.
+        self.assertIn(
+            "abandoned",
+            {row["status"] for row in out["context"]["experiments"]},
+        )
         workflow = out["workflow"]
         self.assertEqual(workflow["current_gate"], "live_experiments")
         self.assertIn("workflow.status_and_next", workflow["allowed_actions"])

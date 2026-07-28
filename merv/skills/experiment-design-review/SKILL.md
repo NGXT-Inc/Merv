@@ -23,7 +23,9 @@ unrelated tools. Call `review.start` with exactly the provided
 `declared_agent`, then call `review.submit`.
 
 `review.start` is the default orientation packet. Its `project_context` gives
-the project Summary, claim set, and experiment landscape. Its `context` is the
+the project Summary, latest published reflection, literature General Summary,
+complete claim set, and every experiment with one status-dependent summary.
+Its `context` is the
 canonical four-section experiment context built from the immutable review
 snapshot: experiment, the full pinned plan, latest report if one exists, and
 the remaining artifact references. Start with that macro view and exact plan.

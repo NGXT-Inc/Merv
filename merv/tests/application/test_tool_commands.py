@@ -10,13 +10,13 @@ from merv.brain.kernel.utils import ValidationError
 class ControlToolOperationsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.projects = Mock()
-        self.claims = Mock()
         self.experiments = Mock()
+        self.project_context = Mock()
         self.storage = Mock()
         self.operations = ControlToolOperations(
             projects=self.projects,
-            claims=self.claims,
             experiments=self.experiments,
+            project_context=self.project_context,
             storage=self.storage,
         )
 
@@ -49,34 +49,22 @@ class ControlToolOperationsTest(unittest.TestCase):
             user_id="user_1",
         )
 
-    def test_project_overview_reuses_claim_and_slim_experiment_projections(self) -> None:
-        self.projects.get.return_value = {
-            "id": "proj_1",
-            "name": "Project",
-            "summary": "Summary",
-            "extra": "hidden",
+    def test_project_overview_uses_the_canonical_project_context(self) -> None:
+        projected = {
+            "project": {"id": "proj_1", "name": "Project", "summary": "Summary"},
+            "reflection": {"latest_published": None, "open_wave": None},
+            "literature": {"summary": "", "paper_count": 0, "updated_at": None},
+            "claims": [{"id": "claim_1"}],
+            "experiments": [{"id": "exp_1", "status": "planned"}],
         }
-        self.claims.list_claims.return_value = {"claims": [{"id": "claim_1"}]}
-        self.experiments.agent.return_value = {
-            "experiments": [{"id": "exp_1", "status": "planned"}]
-        }
+        self.project_context.build.return_value = projected
 
         result = self.operations.project(action="overview", project_id="proj_1")
 
-        self.assertEqual(
-            result,
-            {
-                "project": {
-                    "id": "proj_1",
-                    "name": "Project",
-                    "summary": "Summary",
-                },
-                "claims": [{"id": "claim_1"}],
-                "experiments": [{"id": "exp_1", "status": "planned"}],
-            },
-        )
-        self.projects.get.assert_called_once_with(project_id="proj_1")
-        self.claims.list_claims.assert_called_once_with(project_id="proj_1")
+        self.assertIs(result, projected)
+        self.project_context.build.assert_called_once_with(project_id="proj_1")
+        self.projects.get.assert_not_called()
+        self.experiments.agent.assert_not_called()
 
     def test_project_current_returns_the_keys_bound_project(self) -> None:
         # D7: a keyed cloud caller reaches the brain (no proxy folder link);
@@ -175,17 +163,21 @@ class ControlToolOperationsTest(unittest.TestCase):
         # Names the fix rather than guessing which project was meant.
         self.assertIn('action="list"', str(caught.exception))
         self.projects.get.assert_not_called()
+        self.project_context.build.assert_not_called()
 
     def test_project_overview_defaults_to_the_bound_project(self) -> None:
-        self.projects.get.return_value = {"id": "proj_bound", "name": "B", "summary": ""}
-        self.claims.list_claims.return_value = {"claims": []}
-        self.experiments.agent.return_value = {"experiments": []}
+        self.project_context.build.return_value = {
+            "project": {"id": "proj_bound", "name": "B", "summary": ""},
+            "reflection": {"latest_published": None, "open_wave": None},
+            "literature": {"summary": "", "paper_count": 0, "updated_at": None},
+            "claims": [],
+            "experiments": [],
+        }
 
         result = self.operations.project(action="overview", key_project_id="proj_bound")
 
         self.assertEqual(result["project"]["id"], "proj_bound")
-        self.projects.get.assert_called_once_with(project_id="proj_bound")
-        self.claims.list_claims.assert_called_once_with(project_id="proj_bound")
+        self.project_context.build.assert_called_once_with(project_id="proj_bound")
 
     def test_storage_find_preserves_resolve_and_list_modes(self) -> None:
         self.storage.resolve.return_value = {"object": {"id": "so_1"}}

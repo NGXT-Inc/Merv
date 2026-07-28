@@ -91,7 +91,12 @@ class EvidenceReader(Protocol):
     ) -> tuple[AssociatedEvidence, ...]: ...
 
     def artifacts_for_targets(
-        self, *, target_type: str, target_ids: tuple[str, ...]
+        self,
+        *,
+        target_type: str,
+        target_ids: tuple[str, ...],
+        roles: tuple[str, ...] = (),
+        attempt_indexes: dict[str, int] | None = None,
     ) -> dict[str, tuple[AssociatedEvidence, ...]]: ...
 
     def submitted_document(

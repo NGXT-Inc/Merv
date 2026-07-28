@@ -198,10 +198,15 @@ class WorkflowSlimTest(unittest.TestCase):
 
         self.assertEqual(slim["scope"], "project")
         self.assertIsNone(slim["experiment"])
-        self.assertNotIn("context", slim)
+        self.assertEqual(
+            set(slim["context"]),
+            {"project", "reflection", "literature", "claims", "experiments"},
+        )
         self.assertEqual(slim["workflow"]["current_gate"], "project_setup")
-        claim = slim["project"]["claims"][0]
-        self.assertEqual(set(claim), {"id", "status", "confidence", "statement"})
+        claim = slim["context"]["claims"][0]
+        self.assertEqual(
+            set(claim), {"id", "statement", "scope", "status", "confidence"}
+        )
 
     def test_service_method_keeps_full_shape_for_ui(self) -> None:
         exp_id = self._experiment_with_plan()

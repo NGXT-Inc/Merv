@@ -6,16 +6,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..kernel.utils import ValidationError
-from ..research_core.facade import ResearchClaims, ResearchProjects
+from ..research_core.facade import ResearchProjects
 from .experiments.queries import ExperimentCollectionQuery
 from .ports.storage import ObjectStorage
+from .project_context import ProjectContextQuery
 
 
 @dataclass(kw_only=True, slots=True)
 class ControlToolOperations:
     projects: ResearchProjects
-    claims: ResearchClaims
     experiments: ExperimentCollectionQuery
+    project_context: ProjectContextQuery
     storage: ObjectStorage | None
 
     def experiment_list(self, *, project_id: str | None = None) -> dict[str, Any]:
@@ -75,16 +76,7 @@ class ControlToolOperations:
                     "projects you can work in, then pass project_id explicitly.",
                     details={"field": "project_id"},
                 )
-            project = self.projects.get(project_id=resolved)
-            return {
-                "project": {
-                    "id": project["id"],
-                    "name": project["name"],
-                    "summary": project.get("summary", ""),
-                },
-                "claims": self.claims.list_claims(project_id=resolved)["claims"],
-                "experiments": self.experiment_list(project_id=resolved)["experiments"],
-            }
+            return self.project_context.build(project_id=resolved)
         raise ValidationError(f'project action="{action}" is not recognized')
 
     def _reachable(self, *, user_id: str, key_project_id: str) -> dict[str, Any]:

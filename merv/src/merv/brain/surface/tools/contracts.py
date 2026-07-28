@@ -78,9 +78,11 @@ class ProjectInput(ContractModel):
             "and creation dates — start here to pick a project_id; "
             "current = the project this credential is bound to, if it is "
             "bound to exactly one; "
-            "overview = the whole-project read — every claim (incl. "
-            "settled/abandoned) and every experiment (incl. terminal) — for "
-            "orienting or re-grounding; create = create a project."
+            "overview = the canonical bounded project context — latest "
+            "published reflection, literature General Summary, every claim "
+            "(incl. settled/abandoned), and every experiment (incl. terminal) "
+            "with one summary — for orienting or re-grounding; "
+            "create = create a project."
         )
     )
     project_id: str = Field(
@@ -1025,14 +1027,17 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
         handler_identity="workflow.status_and_next_agent",
         input_model=WorkflowStatusAndNextInput,
         description=(
-            "The canonical entrypoint for starting or resuming experiment "
-            "work. With experiment_id, returns workflow guidance plus one "
-            "four-section context: experiment, latest plan, latest report, and "
-            "all other current-attempt artifact references. Live experiments "
-            "receive the full latest plan; terminal experiments receive its "
-            "Summary; the latest report is full when present. Every referenced "
-            "artifact carries id, path, and submitted_at. Use artifact.find "
-            "with one id or an ordered id batch for deeper artifact reads."
+            "The canonical entrypoint for starting or resuming work. Without "
+            "experiment_id, returns workflow guidance plus the bounded project "
+            "context: project metadata, latest published reflection, General "
+            "Summary of the literature, every claim, and one status-dependent "
+            "summary for every experiment. With experiment_id, returns the "
+            "four-section experiment context: experiment, latest plan, latest "
+            "report, and all other current-attempt artifact references. Live "
+            "experiments receive the full latest plan; terminal experiments "
+            "receive its Summary; the latest report is full when present. "
+            "Use artifact.find with one id or an ordered id batch for deeper "
+            "artifact reads."
         ),
     ),
     "project": ToolContract(
@@ -1050,9 +1055,11 @@ TOOL_MANIFEST: dict[str, ToolManifest] = {
             "bound to; a credential that reaches several returns exists=false "
             "and the same list, because there is no one current project. "
             "action=overview is the whole-project read for orienting or "
-            "re-grounding: every claim (including settled/abandoned) and every "
-            "experiment (including terminal), independent of what "
-            "workflow.status_and_next chooses to embed. "
+            "re-grounding: the same bounded project context used by project-"
+            "scoped workflow and review starts, including the latest published "
+            "reflection, the literature General Summary, every claim "
+            "(including settled/abandoned), and every experiment (including "
+            "terminal) with one status-dependent summary. "
             "action=create creates a project from a user-confirmed name and "
             "summary."
         ),

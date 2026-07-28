@@ -239,6 +239,15 @@ request is `requested` or `started` and the capability is unexpired; the first
 accepted submission closes the request and prevents other sessions from
 submitting.
 
+`project_context` is the same five-section macro packet returned by
+`project(action="overview")` and by project-scoped
+`workflow.status_and_next`: project metadata; latest published reflection plus
+only its reflection-document and project-graph references; the literature
+General Summary; every claim; and every experiment with tested claim ids and
+one status-dependent summary. Live experiment rows summarize the latest plan;
+reviewing or terminal rows prefer the latest report. Rich workflow, review,
+artifact, and storage state is excluded.
+
 `review.submit` requires a plain-language `synopsis`. Rejected experiment-attempt
 and reflection reviews require `return_to`; design-review rejections always
 return to `planned`. Rejection immediately routes the target state. A passing

@@ -579,25 +579,46 @@ class ArtifactSubmissionService:
         )[target_id]
 
     def artifacts_for_targets(
-        self, *, target_type: str, target_ids: tuple[str, ...]
+        self,
+        *,
+        target_type: str,
+        target_ids: tuple[str, ...],
+        roles: tuple[str, ...] = (),
+        attempt_indexes: dict[str, int] | None = None,
     ) -> dict[str, tuple[AssociatedEvidence, ...]]:
         ids = list(dict.fromkeys(str(target_id) for target_id in target_ids))
         grouped: dict[str, list[AssociatedEvidence]] = {tid: [] for tid in ids}
         if not ids:
             return {}
         placeholders = ", ".join("?" for _ in ids)
+        where = [
+            "status = 'complete'",
+            "target_type = ?",
+            f"target_id IN ({placeholders})",
+        ]
+        params: list[Any] = [target_type, *ids]
+        if roles:
+            role_placeholders = ", ".join("?" for _ in roles)
+            where.append(f"role IN ({role_placeholders})")
+            params.extend(roles)
         with closing(self.store.connect()) as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM artifacts
-                WHERE status = 'complete' AND target_type = ?
-                  AND target_id IN ({placeholders})
+                WHERE {' AND '.join(where)}
                 ORDER BY target_id, attempt_index, role, path
                 """,
-                (target_type, *ids),
+                params,
             ).fetchall()
         for row in rows:
-            grouped[str(row["target_id"])].append(
+            target_id = str(row["target_id"])
+            if (
+                attempt_indexes is not None
+                and int(row["attempt_index"])
+                != int(attempt_indexes.get(target_id, -1))
+            ):
+                continue
+            grouped[target_id].append(
                 _evidence(row, tldr=self._content_tldr(row=row))
             )
         return {tid: tuple(items) for tid, items in grouped.items()}

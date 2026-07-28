@@ -1027,7 +1027,7 @@ class WorkflowGateTest(unittest.TestCase):
         )
         self.assertEqual(session["context"], expected_context)
         project = session["project_context"]
-        self.assertEqual(project["id"], self.project_id)
+        self.assertEqual(project["project"]["id"], self.project_id)
         self.assertEqual(
             project["claims"],
             [
@@ -1045,10 +1045,22 @@ class WorkflowGateTest(unittest.TestCase):
         }
         self.assertEqual(
             summaries[exp["id"]],
-            "Test the threshold rule against that baseline.",
+            "A toy experiment used by the gate tests.",
         )
         self.assertIn(
             "Establish the majority-class baseline.", summaries.values()
+        )
+        self.assertEqual(
+            project,
+            self.call(
+                "project", action="overview", project_id=self.project_id
+            ),
+        )
+        self.assertEqual(
+            project,
+            self.call(
+                "workflow.status_and_next", project_id=self.project_id
+            )["context"],
         )
         self.assertEqual(session["context"]["plan"]["content"], VALID_PLAN)
         self.assertNotIn("submitted_artifacts", session)

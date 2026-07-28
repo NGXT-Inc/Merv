@@ -268,7 +268,9 @@ class ReflectionEvidenceTest(unittest.TestCase):
         )
         session = self._review_session(syn_id=syn_id)
 
-        self.assertEqual(session["project_context"]["id"], self.project_id)
+        self.assertEqual(
+            session["project_context"]["project"]["id"], self.project_id
+        )
         self.assertEqual(session["reflection_context"]["id"], syn_id)
         for artifact in session["reflection_context"]["current_attempt_artifacts"]:
             self.assertNotIn("content", artifact)

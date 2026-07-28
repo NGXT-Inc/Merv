@@ -21,6 +21,7 @@ from ...application.experiments.tracking import (
 )
 from ...application.experiments.transition import TransitionExperiment
 from ...application.queries import ComputeCostQuery, ExperimentFigureQuery, LogicGraphQuery, MlflowOverviewQuery, TenantCountersQuery
+from ...application.project_context import ProjectContextQuery
 from ...application.timeline import EventTimelineQuery
 from ...application.reflections import ReflectionCommands
 from ...application.status_guidance import StatusGuidancePolicy
@@ -29,6 +30,7 @@ from ...application.reviews import ReadReviewStatus, StartReviewSession
 from ...application.tool_commands import ControlToolOperations
 from ...artifacts.facade import ArtifactsFacade
 from ...research_core.facade import ResearchCoreFacade
+from ...research_core.project_context import ProjectContextFactsReader
 from ...research_core.snapshots import ResearchSnapshotReader
 from ..tools.contracts import available_tool_names
 from .control_runtime import ControlActivitySink, ControlToolCallSink
@@ -91,6 +93,10 @@ class ControlApp:
         self.reflection_commands = ReflectionCommands(reflections=self.research_core)
         self.produced_objects = StorageObjectCatalog(store=store)
         self.artifacts = ArtifactsFacade(submissions=core.artifact_submissions)
+        self.project_context = ProjectContextQuery(
+            facts=ProjectContextFactsReader(store=store),
+            evidence=core.artifact_submissions,
+        )
         self.experiment_context = ExperimentContextQuery(artifacts=self.artifacts)
         self.experiment_exhibits = ExperimentExhibits(
             research=self.research_core,
@@ -127,10 +133,9 @@ class ControlApp:
         )
         self.start_review_session = StartReviewSession(
             reviews=core.reviews,
-            projects=core.projects,
-            claims=core.claims,
             research=self.research_core,
             experiment_context=self.experiment_context,
+            project_context=self.project_context,
             reflections=self.reflection_commands,
         )
         self.experiment_detail_query = ExperimentDetailQuery(
@@ -152,8 +157,8 @@ class ControlApp:
         self.create_experiment = CreateExperiment(research=self.research_core)
         self.control_tool_operations = ControlToolOperations(
             projects=core.projects,
-            claims=core.claims,
             experiments=self.experiment_collection_query,
+            project_context=self.project_context,
             storage=storage,
         )
 
@@ -192,6 +197,7 @@ class ControlApp:
             policy=self.next_action_policy,
             objects=self.produced_objects,
             context=self.experiment_context,
+            project_context=self.project_context,
         )
         self.event_timeline = EventTimelineQuery(source=store)
         self.project_dashboard_query = ProjectDashboardQuery(

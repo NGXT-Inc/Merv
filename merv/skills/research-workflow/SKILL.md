@@ -122,11 +122,12 @@ durable object storage instead of into the repo.
 1. Call `project` with `action: "current"` first. Your key binds one immutable
    project, and `current` returns that bound project — its id is the `project.id`
    field of the result. Learn that id here once, then pass it as `project_id`
-   explicitly on every subsequent project-scoped tool. When you need the full project picture — every claim
-   including settled or abandoned ones, every experiment including terminal
-   ones — call `project` with `action: "overview"` rather than expecting an
-   `at_a_glance` block from `current` or inferring state from
-   `workflow.status_and_next`'s active-only view.
+   explicitly on every subsequent project-scoped tool. When you need the full
+   project picture, call `project` with `action: "overview"` or
+   `workflow.status_and_next(project_id)`; both use the same bounded project
+   context: latest published reflection, literature General Summary, every
+   claim including settled or abandoned ones, and every experiment including
+   terminal ones with one status-dependent summary.
 2. Ask MCP for `workflow.status_and_next(project_id, experiment_id?)` before
    acting.
 3. Identify the claim or experiment being worked on. Before creating a new
@@ -542,6 +543,13 @@ To submit a gated document or result file:
   normally and resubmit it
 
 ### Batch reads and deeper dives
+
+At project scope, `project(action="overview")`,
+`workflow.status_and_next(project_id).context`, and
+`review.start(...).project_context` use the same five-section macro packet.
+It names every claim and experiment but references only the latest published
+reflection document and project graph. Use an experiment id to enter its
+four-section context; do not expect project context to enumerate every file.
 
 Inside an experiment, `workflow.status_and_next(project_id, experiment_id)` is
 the one context read. Its `context` has exactly four sections: experiment,
